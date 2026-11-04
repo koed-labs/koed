@@ -15,7 +15,12 @@ import type {
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const inventoryLoad = vi.hoisted(() => ({
-  pending: null as Promise<unknown> | null
+  pending: null as Promise<unknown> | null,
+  load: null as null | ((options?: { silent?: boolean }) => unknown),
+  durableRefresh: vi.fn(),
+  collaborationListener: null as
+    | null
+    | ((snapshot: unknown, update: Record<string, unknown>) => void)
 }));
 const uuid = (n: number) =>
   `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
@@ -59,7 +64,9 @@ vi.mock("../state/personal-memory.js", () => ({
   PersonalMemoryStore: class {
     current = () => snapshot;
     subscribe = () => () => undefined;
-    loadProjects = async () => inventoryLoad.pending ?? snapshot;
+    loadProjects = async (options?: { silent?: boolean }) =>
+      inventoryLoad.load?.(options) ?? inventoryLoad.pending ?? snapshot;
+    refreshFromDurableEvent = () => inventoryLoad.durableRefresh();
     upsertThread = () => undefined;
   }
 }));
@@ -72,7 +79,12 @@ vi.mock("../services/platform.js", () => ({
 }));
 vi.mock("../../collaboration/renderer-client.js", () => ({
   createCollaborationRendererClient: () => ({
-    subscribe: () => () => undefined,
+    subscribe: (
+      listener: (snapshot: unknown, update: Record<string, unknown>) => void
+    ) => {
+      inventoryLoad.collaborationListener = listener;
+      return () => undefined;
+    },
     load: async () => ({}),
     dispose: () => undefined
   })
@@ -134,7 +146,82 @@ describe("V1App launch integration", () => {
     if (root) await act(async () => root!.unmount());
     container?.remove();
     inventoryLoad.pending = null;
+    inventoryLoad.load = null;
+    inventoryLoad.collaborationListener = null;
+    inventoryLoad.durableRefresh.mockClear();
     vi.restoreAllMocks();
+  });
+  const renderOwner = async () => {
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        status: { subscribe: () => () => {} },
+        v1State: {
+          readProfile: async () => ({
+            agentName: "Ada",
+            onboarding: { selections: {}, completed: true }
+          }),
+          readIdentity: async () => ({
+            ownerId: uuid(3),
+            scopeKey: "a".repeat(64)
+          }),
+          readProvenance: async () => ({
+            schemaVersion: 1,
+            projects: {},
+            conversations: {}
+          })
+        }
+      }
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <V1App
+          personalMemoryApi={{} as never}
+          managedConversations={null}
+          statusStore={{ refresh: async () => undefined } as never}
+          themeStore={{ load: async () => undefined } as never}
+        />
+      )
+    );
+  };
+  const failedInventory = { ...snapshot, error: "Inventory is unavailable" };
+  it("shows the inventory once a background load recovers from a failed initial load", async () => {
+    inventoryLoad.load = (options) =>
+      options?.silent ? snapshot : failedInventory;
+    await renderOwner();
+    expect(container!.textContent).toContain("External captured Conversation");
+  });
+  it("recovers the inventory gate from a durable event after every load failed", async () => {
+    inventoryLoad.load = () => failedInventory;
+    await renderOwner();
+    expect(container!.textContent).not.toContain(
+      "External captured Conversation"
+    );
+    inventoryLoad.load = null;
+    await act(async () =>
+      inventoryLoad.collaborationListener?.(
+        {},
+        {
+          kind: "realtime",
+          realtimeUpdate: { type: "personal_memory_upserted" }
+        }
+      )
+    );
+    expect(container!.textContent).toContain("External captured Conversation");
+    expect(inventoryLoad.durableRefresh).not.toHaveBeenCalled();
+    await act(async () =>
+      inventoryLoad.collaborationListener?.(
+        {},
+        {
+          kind: "realtime",
+          realtimeUpdate: { type: "personal_memory_upserted" }
+        }
+      )
+    );
+    expect(inventoryLoad.durableRefresh).toHaveBeenCalledTimes(1);
   });
   it("hides the previous owner's inventory while the new owner's inventory loads", async () => {
     let scopeKey = "a".repeat(64);

@@ -290,21 +290,39 @@ export function V1App({
       active = false;
     };
   }, [profileReadRevision]);
-  const loadInventory = useCallback(async () => {
-    if (!store || !scopeKey) return;
-    try {
-      const result = await store.loadProjects();
+  // Projects stay hidden until a load succeeds for the current owner. Every
+  // successful load the shell awaits opens that gate, so a later recovery is
+  // not left behind an empty sidebar once the store clears its error.
+  const publishInventoryScope = useCallback(
+    async (result: { error: string | null }, expectedScope: string) => {
+      if (result.error) return;
       const identity = await readV1Identity();
       if (
-        !result.error &&
-        identity.scopeKey === scopeKey &&
-        scopeKeyRef.current === scopeKey
+        identity.scopeKey === expectedScope &&
+        scopeKeyRef.current === expectedScope
       )
-        setInventoryScope(scopeKey);
-    } catch (cause) {
-      if (scopeKeyRef.current === scopeKey) setError(String(cause));
-    }
-  }, [store, scopeKey]);
+        setInventoryScope(expectedScope);
+    },
+    []
+  );
+  const loadInventory = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!store || !scopeKey) return;
+      try {
+        await publishInventoryScope(
+          await store.loadProjects(options),
+          scopeKey
+        );
+      } catch (cause) {
+        if (scopeKeyRef.current === scopeKey) setError(String(cause));
+      }
+    },
+    [store, scopeKey, publishInventoryScope]
+  );
+  const loadInventoryRef = useRef(loadInventory);
+  loadInventoryRef.current = loadInventory;
+  const inventoryScopeRef = useRef(inventoryScope);
+  inventoryScopeRef.current = inventoryScope;
   useEffect(() => {
     if (profile?.onboarding.completed && status?.api.state === "healthy")
       void loadInventory();
@@ -378,7 +396,10 @@ export function V1App({
     const resolve = async () => {
       try {
         const metadata = await platform.ensureIndependentProject();
+        const expectedScope = scopeKeyRef.current;
         const refreshed = await store.loadProjects({ silent: true });
+        if (expectedScope)
+          await publishInventoryScope(refreshed, expectedScope);
         const found = projectForLocalProject(
           refreshed.projectsById.values(),
           metadata.localProjectId
@@ -397,7 +418,7 @@ export function V1App({
     return () => {
       active = false;
     };
-  }, [store, ownerId, platform, status?.api.state]);
+  }, [store, ownerId, platform, status?.api.state, publishInventoryScope]);
 
   useEffect(() => {
     if (
@@ -495,7 +516,14 @@ export function V1App({
           appendManagedConversationUpdate(current, realtimeUpdate)
         );
       } else if (update.realtimeUpdate?.type === "personal_memory_upserted") {
-        store?.refreshFromDurableEvent();
+        // The store's own refresh cannot open the owner gate, so recover
+        // through the gated load until one has succeeded for this owner.
+        if (
+          scopeKeyRef.current &&
+          inventoryScopeRef.current !== scopeKeyRef.current
+        )
+          void loadInventoryRef.current({ silent: true });
+        else store?.refreshFromDurableEvent();
       }
     });
     void collaborationClient
