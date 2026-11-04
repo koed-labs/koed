@@ -7,7 +7,8 @@ import {
   runDbMigrations
 } from "../src/index.js";
 
-const databaseUrl = process.env.CONVERSATION_INSPECTION_DATABASE_URL;
+const databaseUrl =
+  process.env.CONVERSATION_INSPECTION_DATABASE_URL ?? process.env.DATABASE_URL;
 
 describe.skipIf(!databaseUrl)(
   "Conversation inspection message metadata",

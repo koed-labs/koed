@@ -12,6 +12,16 @@ import type {
 
 type Event = TimelineItem & { body: string };
 
+const deferredPage = () => {
+  let resolve!: () => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<void>((resolvePage, rejectPage) => {
+    resolve = resolvePage;
+    reject = rejectPage;
+  });
+  return { promise, resolve, reject };
+};
+
 type MockListProps = {
   data: Event[];
   maintainVisibleContentPosition: unknown;
@@ -258,7 +268,7 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
     });
 
   it("prefetches before reaching the top and reports the pending request", async () => {
-    const page = Promise.withResolvers<void>();
+    const page = deferredPage();
     const onLoadOlder = vi.fn(() => page.promise);
     const onLoadingOlderChange = vi.fn();
     await renderTimeline({ onLoadOlder, onLoadingOlderChange });
@@ -276,8 +286,8 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
   });
 
   it("continues after a prepend without requiring the reader to leave the loading boundary", async () => {
-    const firstPage = Promise.withResolvers<void>();
-    const nextPage = Promise.withResolvers<void>();
+    const firstPage = deferredPage();
+    const nextPage = deferredPage();
     const onLoadOlder = vi
       .fn()
       .mockImplementationOnce(() => firstPage.promise)
@@ -346,8 +356,8 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
   });
 
   it("ignores an old thread's page completion while the new thread is loading", async () => {
-    const oldPage = Promise.withResolvers<void>();
-    const newPage = Promise.withResolvers<void>();
+    const oldPage = deferredPage();
+    const newPage = deferredPage();
     const onPageLoadError = vi.fn();
     const oldLoader = vi.fn(() => oldPage.promise);
     const newLoader = vi.fn(() => newPage.promise);
