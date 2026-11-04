@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readAiClientConnections } from "@koed/shared/ai-client-connections";
 import { startHeadlessRemoteLocalAiRuntime } from "../src/headless-remote-runtime.js";
 import type { LocalAiRuntimeServiceFactory } from "../src/local-runtime-server.js";
 
@@ -73,6 +74,13 @@ describe("headless remote Local AI Runtime", () => {
       );
       expect(registration).not.toContain("remote-secret");
       expect(registration).not.toContain("local-secret");
+      // The consented harnesses are the connected clients in this mode, so
+      // their Transcript Watchers start without a Koed Server status check.
+      expect(readAiClientConnections(home)?.connected).toEqual({
+        codex: true,
+        claude: true,
+        pi: false
+      });
     } finally {
       await runtime.close();
     }
