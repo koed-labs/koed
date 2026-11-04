@@ -159,6 +159,38 @@ describe("native Desktop conversation contract", () => {
     expect(split.result[0]?.id).toBe(initial.result[0]?.id);
   });
 
+  it("keeps keys unique when a message splits a tool run that kept an older key", () => {
+    const [a, b, c, d] = Array.from({ length: 4 }, (_, index) =>
+      event(`tool-${index}`, `2026-07-13T11:0${index}:00.000Z`, {
+        actor: "tool"
+      })
+    );
+    const initial = stabilizeConversationTimelineItems(
+      groupConversationEvents([c!, d!]),
+      { byId: new Map(), result: [] }
+    );
+    const prepended = stabilizeConversationTimelineItems(
+      groupConversationEvents([a!, b!, c!, d!]),
+      initial
+    );
+    expect(prepended.result[0]?.id).toBe(initial.result[0]?.id);
+    const split = stabilizeConversationTimelineItems(
+      groupConversationEvents([
+        a!,
+        b!,
+        event("message", "2026-07-13T11:01:30.000Z"),
+        c!,
+        d!
+      ]),
+      prepended
+    );
+    expect(new Set(split.result.map(({ id }) => id)).size).toBe(3);
+    expect(split.result[2]).toMatchObject({
+      id: initial.result[0]?.id,
+      events: [c, d]
+    });
+  });
+
   it("expands approval-review fallback data into the standard timeline shape", () => {
     const transcriptDisplay: NonNullable<
       DesktopConversationEvent["transcriptDisplay"]

@@ -16,6 +16,11 @@ import {
 } from "react";
 
 export type VirtualizedTimelineHandle = {
+  /**
+   * Requests the current older page again after a failed load. Returns false
+   * when no older page is available to request.
+   */
+  retryOlder: () => boolean;
   scrollToEnd: () => void;
 };
 
@@ -149,12 +154,6 @@ export function VirtualizedTimeline<T extends TimelineItem>({
     scrollToEndFrameRefs.current = [frame];
   }, [cancelScrollToEndFrames]);
 
-  useImperativeHandle(
-    controllerRef,
-    () => ({ scrollToEnd: scrollToEndAfterLayout }),
-    [scrollToEndAfterLayout]
-  );
-
   useEffect(() => {
     olderRequestedBoundaryRef.current = null;
     loadGenerationRef.current += 1;
@@ -251,6 +250,25 @@ export function VirtualizedTimeline<T extends TimelineItem>({
         setLoadingOlder(false);
       });
   }, []);
+
+  // A failed boundary stays blocked so failures never loop on their own. A
+  // short timeline cannot scroll out of the prefetch zone to clear it, so the
+  // owner retries explicitly.
+  const retryOlder = useCallback(() => {
+    const { hasOlderEvents, boundary } = olderPageRef.current;
+    if (!hasOlderEvents || !boundary) return false;
+    if (!olderLoadInFlightRef.current) {
+      olderRequestedBoundaryRef.current = null;
+      handleStartReached();
+    }
+    return true;
+  }, [handleStartReached]);
+
+  useImperativeHandle(
+    controllerRef,
+    () => ({ retryOlder, scrollToEnd: scrollToEndAfterLayout }),
+    [retryOlder, scrollToEndAfterLayout]
+  );
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
