@@ -880,10 +880,8 @@ function HatchingStage({
 function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
   const [showSkipped, setShowSkipped] = useState(false);
   const total = ingestion.selected;
-  const completed = ingestion.clients.reduce(
-    (sum, client) => sum + client.completed,
-    0
-  );
+  // Finished already counts completed and skipped Conversations; only the
+  // skipped part is called out, since it needs explaining.
   const skipped = ingestion.clients.reduce(
     (sum, client) => sum + client.skipped,
     0
@@ -937,9 +935,6 @@ function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
         {total === null
           ? `${ingestion.finished} conversations finished`
           : `${ingestion.finished} of ${total} conversations finished`}
-      </span>
-      <span className="v1-home-progress-label">
-        {completed} completed
         {skipped > 0 ? (
           <>
             {" "}

@@ -244,8 +244,12 @@ describe("Home", () => {
       )
     );
     expect(container.querySelector('[role="tooltip"]')).toBeNull();
-    // The "?" help button sits between the skipped count and last activity.
-    expect(container.textContent).toContain("3 completed · 1 skipped");
+    // One line: finished already includes skipped, so there is no separate
+    // completed count; the "?" help sits after the skipped part.
+    expect(container.textContent).toContain(
+      "4 conversations finished · 1 skipped"
+    );
+    expect(container.textContent).not.toContain("completed");
     expect(container.textContent).toContain("Last activity 1m ago");
     const bar = container.querySelector('[role="progressbar"]')!;
     expect(bar.hasAttribute("aria-valuenow")).toBe(false);

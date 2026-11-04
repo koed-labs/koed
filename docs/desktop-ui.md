@@ -88,10 +88,11 @@ scrolls, only when the caption needs more room than the window leaves.
   offers Connect. It
   states the selection limits (recent history only), counts finished
   Conversations per client and overall (completed plus skipped), and keeps the
-  progress bar indeterminate until every selection is known. Below the bar it
-  shows completed and skipped apart, with a short note on why a Conversation
-  is skipped, the latest recorded progress, and, when status can read them,
-  the records read and items indexed for the selected Conversations. It shows
+  progress bar indeterminate until every selection is known. Below the bar one
+  line gives the finished count, how many of those were skipped (with a short
+  note on why), and the latest recorded progress; above it, when status can
+  read them, the records read and items indexed for the selected
+  Conversations. It shows
   no time estimate and no completion notification. Idle or unknown ingestion
   never holds Home here.
   Once a client counts as stuck, the caption says its history has stalled and
