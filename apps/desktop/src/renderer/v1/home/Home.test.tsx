@@ -149,6 +149,120 @@ describe("Home", () => {
     expect(onOpenConversation.mock.calls).toEqual([["newer"]]);
   });
 
+  const pointer = (
+    target: Element,
+    type: string,
+    clientX: number,
+    clientY = 0
+  ) =>
+    target.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        button: 0,
+        isPrimary: true,
+        pointerId: 1,
+        clientX,
+        clientY
+      })
+    );
+
+  it("throws a floor coin without opening its conversation", async () => {
+    reducedMotion = true;
+    const onOpenConversation = vi.fn();
+    await render({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      looseConversations: [
+        {
+          key: "loose",
+          title: "Loose chat",
+          latestAt: "2026-11-03T00:00:00Z",
+          client: null
+        }
+      ],
+      onOpenConversation
+    });
+    const coin = container.querySelector(".v1-home-floor-coin")!;
+    await act(async () => {
+      pointer(coin, "pointerdown", 0);
+      pointer(coin, "pointermove", 60);
+      pointer(coin, "pointermove", 120);
+    });
+    expect(coin.getAttribute("data-motion")).toBe("held");
+    await act(async () => {
+      pointer(coin, "pointerup", 120);
+      (coin as HTMLElement).click();
+    });
+    // With reduced motion it drops straight to the floor where it was let go.
+    expect(coin.getAttribute("data-motion")).toBe("rest");
+    expect((coin as HTMLElement).style.getPropertyValue("--coin-x")).toBe(
+      "calc(50% + 120px)"
+    );
+    expect(onOpenConversation).not.toHaveBeenCalled();
+    await act(async () => (coin as HTMLElement).click());
+    expect(onOpenConversation.mock.calls).toEqual([["loose"]]);
+  });
+
+  it("lets a thrown coin fly, bounce and settle flat", async () => {
+    await render({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      looseConversations: [
+        {
+          key: "loose",
+          title: "Loose chat",
+          latestAt: "2026-11-03T00:00:00Z",
+          client: null
+        }
+      ],
+      onOpenConversation: () => undefined
+    });
+    const coin = container.querySelector<HTMLElement>(".v1-home-floor-coin")!;
+    const height = () => parseFloat(coin.style.getPropertyValue("--coin-y"));
+    const resting = height();
+    await act(async () => {
+      pointer(coin, "pointerdown", 0, 0);
+      for (let step = 1; step <= 4; step += 1) {
+        vi.advanceTimersByTime(16);
+        pointer(coin, "pointermove", step * 10, -step * 30);
+      }
+      pointer(coin, "pointerup", 40, -120);
+    });
+    const heights: number[] = [];
+    const modes = new Set<string>();
+    for (let frame = 0; frame < 400; frame += 1) {
+      await act(async () => vi.advanceTimersByTime(16));
+      heights.push(height());
+      modes.add(coin.dataset.motion!);
+    }
+    expect(modes.has("flying")).toBe(true);
+    // It rises with the flick (to the ceiling of this unsized test stage),
+    // then falls back to the floor.
+    expect(Math.max(...heights)).toBeGreaterThan(resting + 40);
+    expect(coin.dataset.motion).toBe("rest");
+    expect(height()).toBe(resting);
+    // Bounces: it leaves the floor again after first landing.
+    const landed = heights.findIndex((value) => value === resting);
+    expect(heights.slice(landed).some((value) => value > resting)).toBe(true);
+    // Carried right by the throw.
+    expect(coin.style.getPropertyValue("--coin-x")).not.toBe("calc(50% + 0px)");
+  });
+
+  it("spins a Kin by dragging without opening its Project", async () => {
+    const onOpenProject = vi.fn();
+    await render({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      onOpenProject
+    });
+    await act(async () => {
+      pointer(kin("koed"), "pointerdown", 0);
+      pointer(kin("koed"), "pointermove", 40);
+      pointer(kin("koed"), "pointerup", 40);
+      kin("koed").click();
+    });
+    expect(onOpenProject).not.toHaveBeenCalled();
+    await act(async () => kin("koed").click());
+    expect(onOpenProject.mock.calls).toEqual([["koed"]]);
+  });
+
   it("opens a Project from its Kin", async () => {
     const onOpenProject = vi.fn();
     await render({

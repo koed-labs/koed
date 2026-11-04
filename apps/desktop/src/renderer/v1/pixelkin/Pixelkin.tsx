@@ -10,6 +10,7 @@ import {
   wakePixelkins,
   type PixelkinActor
 } from "./stage.js";
+import type { KinSpin } from "../onboarding/kin-spin.js";
 import "./pixelkin.css";
 
 export function Pixelkin({
@@ -18,7 +19,8 @@ export function Pixelkin({
   className = "",
   hopOnChange = false,
   expression = null,
-  hopKey
+  hopKey,
+  spin = null
 }: {
   look?: AgentLook;
   size?: number;
@@ -28,6 +30,8 @@ export function Pixelkin({
   expression?: "neutral" | "surprised" | "happy" | null;
   // Each change makes the Kin hop once.
   hopKey?: number;
+  // Turned by dragging; the caller feeds it pointer events.
+  spin?: KinSpin | null;
 }) {
   const [engine] = useState(pixelkinEngineAvailable);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -62,6 +66,10 @@ export function Pixelkin({
     const actor = actorRef.current;
     if (actor) setPixelkinExpression(actor, expression);
   }, [expression, engine]);
+  useEffect(() => {
+    const actor = actorRef.current;
+    if (actor) actor.spin = spin;
+  }, [spin, engine]);
   const firstHop = useRef(hopKey);
   useEffect(() => {
     const actor = actorRef.current;

@@ -5,6 +5,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject
 } from "react";
@@ -19,6 +21,8 @@ import {
   type IntegrationMutationCommand
 } from "../../views/preferences/integration-consent.js";
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
+import { wakePixelkins } from "../pixelkin/stage.js";
+import { KinSpin } from "../onboarding/kin-spin.js";
 import { projectKinLook, type AgentLook } from "../pixelkin/agent-kin.js";
 import {
   HOME_STAGE_LIMIT,
@@ -45,6 +49,56 @@ import "./home.css";
 export const HOME_RERANK_MS = 6_000;
 // Repeated activity for one Kin within this window shares one tile.
 const FEED_COALESCE_MS = 1_200;
+
+// Drag a Kin sideways to spin it, as with the onboarding Kin; it springs back
+// to face front. A drag doesn't count as a click, so it doesn't open anything.
+function useKinSpins() {
+  const spins = useRef(new Map<string, KinSpin>());
+  const pointer = useRef<number | null>(null);
+  return (id: string) => {
+    let spin = spins.current.get(id);
+    if (!spin) {
+      spin = new KinSpin();
+      spins.current.set(id, spin);
+    }
+    const current = spin;
+    const end = (event: ReactPointerEvent<HTMLElement>, cancelled: boolean) => {
+      if (pointer.current !== event.pointerId) return;
+      pointer.current = null;
+      current.end(event.timeStamp, reducedMotion(), cancelled);
+      wakePixelkins();
+    };
+    const handlers = {
+      onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+        if (event.button !== 0 || !event.isPrimary || pointer.current !== null)
+          return;
+        pointer.current = event.pointerId;
+        const width = event.currentTarget.getBoundingClientRect().width;
+        current.begin(event.clientX, event.timeStamp, width, current.angle);
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        wakePixelkins();
+      },
+      onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+        if (pointer.current !== event.pointerId) return;
+        current.move(event.clientX, event.timeStamp);
+        wakePixelkins();
+      },
+      onPointerUp: (event: ReactPointerEvent<HTMLElement>) => end(event, false),
+      onPointerCancel: (event: ReactPointerEvent<HTMLElement>) =>
+        end(event, true),
+      onClickCapture: (event: ReactMouseEvent<HTMLElement>) => {
+        if (!current.moved) return;
+        current.moved = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    return { spin: current, handlers };
+  };
+}
+
+const reducedMotion = () =>
+  window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 const useReducedMotion = () => {
   const query = useMemo(
@@ -510,6 +564,7 @@ function ProjectsStage({
   const reduced = useReducedMotion();
   const focused = useWindowFocused();
   const now = useNow(30_000);
+  const kinSpin = useKinSpins();
   const [pointerOver, setPointerOver] = useState(false);
   const held = focused && pointerOver;
   const ranked = useMemo(() => rankHomeProjects(entries), [entries]);
@@ -599,6 +654,7 @@ function ProjectsStage({
         const front = rank < 3;
         const feed = feeds.get(entry.id);
         const ago = formatHomeAgo(entry.latestAt, now);
+        const spinProps = kinSpin(entry.id);
         return (
           <button
             key={entry.id}
@@ -615,6 +671,7 @@ function ProjectsStage({
                 : `${entry.name} · ${entry.eventCount.toLocaleString()} events · ${ago}`
             }
             aria-label={`Open Project ${entry.name}, ${entry.eventCount} captured events, active ${ago}`}
+            {...spinProps.handlers}
             onClick={() => onOpenProject(entry.id)}
           >
             {feed && (
@@ -628,6 +685,7 @@ function ProjectsStage({
               size={layout.placements[rank]!.size}
               expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
               hopKey={(feed?.key ?? 0) + (rank === 0 ? leadHopKey : 0)}
+              spin={spinProps.spin}
             />
             <span className="v1-home-kin-shadow" aria-hidden="true" />
             <span className="v1-home-kin-label">
@@ -716,6 +774,7 @@ function SoloStage({
   const topRowRef = useRef<HTMLDivElement>(null);
   const [box, settled] = useStageBox(stageRef, captionRef, topRowRef);
   const layout = layoutStage(box, box?.reserve ?? CAPTION_FALLBACK, soloSlots);
+  const hostSpin = useKinSpins()("host");
   return (
     <section
       ref={stageRef}
@@ -735,12 +794,14 @@ function SoloStage({
         className="v1-home-host"
         data-coin-target
         style={placementStyle(layout, 0)}
+        {...hostSpin.handlers}
       >
         <Pixelkin
           look={agent.look}
           size={layout.placements[0]!.size}
           expression={expression}
           hopKey={hopKey}
+          spin={hostSpin.spin}
         />
         <span className="v1-home-kin-shadow" aria-hidden="true" />
       </div>
@@ -935,32 +996,237 @@ function FloorCoins({
   return (
     <div className="v1-home-floor" aria-label="Conversations in no Project">
       {conversations.slice(0, free.length).map((conversation, index) => (
-        <button
+        <FloorCoin
           key={conversation.key}
-          type="button"
-          className="v1-home-floor-coin"
-          style={
-            {
-              "--coin-x": `calc(50% + ${free[index]}px)`,
-              "--coin-y": `${floor}px`
-            } as CSSProperties
-          }
-          aria-label={`Open ${conversation.title}`}
-          onClick={() => coins.onOpen(conversation.key)}
-        >
-          <PixelCoin />
-          {/* The coin is too small for a legible logo; the tooltip carries it. */}
-          <span className="v1-home-floor-tip" role="tooltip">
-            {conversation.client && (
-              <span className="v1-home-floor-client" aria-hidden="true">
-                <AiClientLogo id={conversation.client} />
-              </span>
-            )}
-            {conversation.title}
-          </span>
-        </button>
+          conversation={conversation}
+          home={free[index]!}
+          floor={floor}
+          half={half}
+          onOpen={coins.onOpen}
+        />
       ))}
     </div>
+  );
+}
+
+// Coin physics in stage pixels per second: x from the stage's centre line, y
+// height above the floor.
+const COIN_GRAVITY = 2400;
+const COIN_BOUNCE = 0.48;
+const COIN_WALL_BOUNCE = 0.55;
+const COIN_FLOOR_FRICTION = 5;
+const COIN_MAX_SPEED = 3200;
+const COIN_DRAG_THRESHOLD = 4;
+const COIN_SIZE = 20;
+
+type CoinMotion = {
+  mode: "rest" | "held" | "flying";
+  x: number;
+  y: number;
+  angle: number;
+};
+
+// A coin to pick up and throw: it flies with the flick's speed, spinning,
+// bounces off the floor with less energy each time, off the stage's sides and
+// top, slides to a stop and settles flat. A click without a drag opens its
+// conversation; with reduced motion a dropped coin settles at once.
+function FloorCoin({
+  conversation,
+  home,
+  floor,
+  half,
+  onOpen
+}: {
+  conversation: HomeLooseConversation;
+  home: number;
+  floor: number;
+  half: number;
+  onOpen: (key: string) => void;
+}) {
+  const reduced = useReducedMotion();
+  const ref = useRef<HTMLButtonElement>(null);
+  // Where it rests once thrown; until then it keeps its place in the row.
+  const [thrownTo, setThrownTo] = useState<number | null>(null);
+  const [flight, setFlight] = useState<CoinMotion | null>(null);
+  const motion: CoinMotion = flight ?? {
+    mode: "rest",
+    x: thrownTo ?? home,
+    y: 0,
+    angle: 0
+  };
+  const body = useRef({ x: 0, y: 0, angle: 0, vx: 0, vy: 0, spin: 0 });
+  const samples = useRef<{ t: number; x: number; y: number }[]>([]);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const dragged = useRef(false);
+  const frame = useRef(0);
+  const ceiling = useRef(400);
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+
+  const toStage = (clientX: number, clientY: number) => {
+    const rect = ref.current?.parentElement?.getBoundingClientRect();
+    if (!rect) return null;
+    ceiling.current = Math.max(60, rect.height - floor - COIN_SIZE);
+    return {
+      x: clientX - (rect.left + rect.width / 2),
+      y: rect.bottom - floor - clientY - COIN_SIZE / 2
+    };
+  };
+  const settle = () => {
+    setThrownTo(body.current.x);
+    setFlight(null);
+  };
+  const fly = () => {
+    let last = performance.now();
+    const step = (now: number) => {
+      const dt = Math.min((now - last) / 1000, 0.032);
+      last = now;
+      const coin = body.current;
+      coin.vy -= COIN_GRAVITY * dt;
+      coin.x += coin.vx * dt;
+      coin.y += coin.vy * dt;
+      coin.angle += coin.spin * dt;
+      if (Math.abs(coin.x) > half) {
+        coin.x = Math.sign(coin.x) * half;
+        coin.vx = -coin.vx * COIN_WALL_BOUNCE;
+      }
+      if (coin.y > ceiling.current) {
+        coin.y = ceiling.current;
+        coin.vy = -Math.abs(coin.vy) * COIN_WALL_BOUNCE;
+      }
+      if (coin.y <= 0) {
+        coin.y = 0;
+        if (coin.vy < -90) {
+          // Each bounce keeps less energy and slows the spin.
+          coin.vy = -coin.vy * COIN_BOUNCE;
+          coin.vx *= 0.8;
+          coin.spin *= 0.6;
+        } else {
+          // Sliding: friction slows it and the spin dies away.
+          const keep = Math.max(0, 1 - COIN_FLOOR_FRICTION * dt);
+          coin.vy = 0;
+          coin.vx *= keep;
+          coin.spin *= keep;
+          if (Math.abs(coin.vx) < 12) {
+            settle();
+            return;
+          }
+        }
+      }
+      setFlight({ mode: "flying", x: coin.x, y: coin.y, angle: coin.angle });
+      frame.current = requestAnimationFrame(step);
+    };
+    frame.current = requestAnimationFrame(step);
+  };
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      className="v1-home-floor-coin"
+      data-motion={motion.mode}
+      style={
+        {
+          "--coin-x": `calc(50% + ${motion.x}px)`,
+          "--coin-y": `${floor + motion.y}px`,
+          "--coin-angle": `${motion.angle}deg`
+        } as CSSProperties
+      }
+      aria-label={`Open ${conversation.title}`}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        cancelAnimationFrame(frame.current);
+        // Catching a coin mid-air holds it where it is.
+        body.current = {
+          x: motion.x,
+          y: motion.y,
+          angle: motion.angle,
+          vx: 0,
+          vy: 0,
+          spin: 0
+        };
+        start.current = { x: event.clientX, y: event.clientY };
+        dragged.current = false;
+        samples.current = [
+          { t: performance.now(), x: event.clientX, y: event.clientY }
+        ];
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        if (!start.current) return;
+        if (
+          !dragged.current &&
+          Math.hypot(
+            event.clientX - start.current.x,
+            event.clientY - start.current.y
+          ) < COIN_DRAG_THRESHOLD
+        )
+          return;
+        dragged.current = true;
+        const point = toStage(event.clientX, event.clientY);
+        if (!point) return;
+        samples.current = [
+          ...samples.current.slice(-5),
+          { t: performance.now(), x: event.clientX, y: event.clientY }
+        ];
+        const coin = body.current;
+        coin.x = Math.max(-half, Math.min(half, point.x));
+        coin.y = Math.max(0, Math.min(ceiling.current, point.y));
+        coin.angle = 0;
+        setFlight({ mode: "held", x: coin.x, y: coin.y, angle: 0 });
+      }}
+      onPointerUp={() => {
+        if (!start.current) return;
+        start.current = null;
+        if (!dragged.current) return;
+        if (reduced) {
+          settle();
+          return;
+        }
+        // The flick's speed over the last few pointer samples.
+        const recent = samples.current;
+        const first = recent[0]!;
+        const last = recent.at(-1)!;
+        const seconds = Math.max((last.t - first.t) / 1000, 0.016);
+        const clamp = (value: number) =>
+          Math.max(-COIN_MAX_SPEED, Math.min(COIN_MAX_SPEED, value));
+        // A stale sample means the coin was held still, then let go.
+        const still = performance.now() - last.t > 100;
+        const coin = body.current;
+        coin.vx = still ? 0 : clamp((last.x - first.x) / seconds);
+        coin.vy = still ? 0 : clamp(-(last.y - first.y) / seconds);
+        coin.spin = coin.vx * 1.4;
+        fly();
+      }}
+      onPointerCancel={() => {
+        if (!start.current) return;
+        start.current = null;
+        // A lost drag lets the coin fall where it was.
+        if (!dragged.current) return;
+        body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
+        if (reduced) settle();
+        else fly();
+      }}
+      onClick={(event) => {
+        // A drag ends with a click; only a plain click opens.
+        if (dragged.current) {
+          dragged.current = false;
+          event.preventDefault();
+          return;
+        }
+        onOpen(conversation.key);
+      }}
+    >
+      <PixelCoin />
+      {/* The coin is too small for a legible logo; the tooltip carries it. */}
+      <span className="v1-home-floor-tip" role="tooltip">
+        {conversation.client && (
+          <span className="v1-home-floor-client" aria-hidden="true">
+            <AiClientLogo id={conversation.client} />
+          </span>
+        )}
+        {conversation.title}
+      </span>
+    </button>
   );
 }
 

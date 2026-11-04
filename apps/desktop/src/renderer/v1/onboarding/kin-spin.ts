@@ -1,5 +1,6 @@
 const TAU = Math.PI * 2;
-const FRONT = -0.14;
+export const KIN_SPIN_FRONT = -0.14;
+const FRONT = KIN_SPIN_FRONT;
 const limit = (value: number, max: number) =>
   Math.max(-max, Math.min(max, value));
 

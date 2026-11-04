@@ -64,7 +64,9 @@ leaves.
   the back row stays out of its beam and shows names only. There is no Project
   page, so a Kin opens its Project's most recent conversation and the sidebar
   expands that Project to show it highlighted, scrolling to it when the sidebar
-  is showing; a hidden sidebar stays hidden.
+  is showing; a hidden sidebar stays hidden. Dragging a Kin sideways spins it,
+  as with the onboarding Kin, and it springs back to face front; a drag does
+  not open anything.
   Counts are the stored captured events of the conversations the sidebar lists
   for the Project; subagent conversations are not listed on their own, so they
   are not counted either, and a Project with no listed conversation is left off
@@ -72,7 +74,10 @@ leaves.
   stage floor as golden coins, newest first and at most 16, in the gaps
   between the front Kin; hovering or focusing one shows its title with its AI
   Client's logo, and clicking opens it and expands "No project" in the
-  sidebar. The Projects list is read again, up to three times, when
+  sidebar. A coin can be picked up and thrown: it flies with the flick's speed,
+  tumbling, bounces off the floor with less height each time and off the
+  stage's sides and top, slides to a stop and rests flat where it lands until
+  Home is reloaded. With reduced motion a dropped coin lands at once. The Projects list is read again, up to three times, when
   the API reports that membership changed mid-read, as it does constantly while
   history imports; only a list that keeps changing reports a failed load.
   Ranking uses those conversations' latest activity, then name, then id.
