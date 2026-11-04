@@ -395,9 +395,6 @@
   }
 }
 
-.v1-home-kin[data-hatch] .v1-pixelkin {
-  animation: v1-home-hatch 900ms ease both;
-}
 /* A beam from the top of the stage that lands on the lead Kin. The layout
    sets where (--spot-x, --spot-y) and how big (--spot-size). */
 .v1-home-spot {
@@ -448,9 +445,6 @@
   opacity: 0.06;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-.v1-home-egg {
-  z-index: 1;
-}
 /* On a light stage a pale beam vanishes; a warm amber one still reads as
    light falling on the Kin. */
 .v1-app[data-theme="light"] .v1-home-spot,
@@ -476,23 +470,28 @@
 .v1-home-caption h1 {
   font-size: 26px;
 }
-.v1-home-egg {
+/* Coins drop from an AI Client's keycap onto the Kin in the spotlight. Each
+   is placed by its own animation, from the layer's top-left corner. */
+.v1-home-coins {
   position: absolute;
-  left: var(--kin-x);
-  bottom: var(--kin-y);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  transform: translateX(-50%);
+  inset: 0;
+  z-index: 6;
+  overflow: hidden;
+  pointer-events: none;
 }
-.v1-home-egg-art {
+.v1-home-coin {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  filter: drop-shadow(0 0 6px rgb(255 209 102 / 0.55));
+}
+.v1-home-coin svg {
   display: block;
-  width: calc(var(--kin-size) * 0.62);
-  height: calc(var(--kin-size) * 0.775);
-  margin-top: calc(var(--kin-size) * 0.225);
-  animation: v1-home-wobble 2.4s ease-in-out infinite;
-  transform-origin: 50% 100%;
+  width: 100%;
+  height: 100%;
 }
 .v1-home-progress {
   display: grid;
@@ -611,49 +610,19 @@
   align-self: center;
   margin-top: 0;
 }
-@keyframes v1-home-wobble {
-  0%,
-  70%,
-  100% {
-    transform: rotate(0);
-  }
-  78% {
-    transform: rotate(-6deg);
-  }
-  86% {
-    transform: rotate(5deg);
-  }
-  94% {
-    transform: rotate(-2deg);
-  }
-}
-@keyframes v1-home-hatch {
-  0% {
-    transform: scale(0.2) translateY(30px);
-    opacity: 0;
-  }
-  60% {
-    transform: scale(1.15, 0.85);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1);
-  }
-}
 @keyframes v1-home-indeterminate {
   to {
     background-position: 17px 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .v1-home-egg-art,
   .v1-home-progress-track[data-indeterminate] span {
     animation: none;
   }
 }
 /* In a short window the Kin need the room more than the hatching sub line. */
 @media (max-height: 700px) {
-  .v1-home-stage-hatching .v1-home-sub {
+  .v1-home[data-mood="ingesting"] .v1-home-caption .v1-home-sub {
     display: none;
   }
 }

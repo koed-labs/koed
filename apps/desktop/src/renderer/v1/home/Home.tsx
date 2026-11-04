@@ -476,11 +476,14 @@ const spotStyle = ({ spot }: StageLayout) =>
 function ProjectsStage({
   entries,
   caption,
-  onOpenProject
+  onOpenProject,
+  leadHopKey = 0
 }: {
   entries: readonly HomeProjectEntry[];
   caption: ReactNode;
   onOpenProject: (projectId: string) => void;
+  // Bumped when a coin lands on the lead Kin.
+  leadHopKey?: number;
 }) {
   const reduced = useReducedMotion();
   const focused = useWindowFocused();
@@ -576,6 +579,7 @@ function ProjectsStage({
             type="button"
             className="v1-home-kin"
             data-lead={rank === 0 || undefined}
+            data-coin-target={rank === 0 || undefined}
             data-front={front || undefined}
             data-heat={homeHeat(entry.latestAt, now)}
             style={placementStyle(layout, rank)}
@@ -597,7 +601,7 @@ function ProjectsStage({
               look={projectKinLook(entry.id)}
               size={layout.placements[rank]!.size}
               expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
-              hopKey={feed?.key}
+              hopKey={(feed?.key ?? 0) + (rank === 0 ? leadHopKey : 0)}
             />
             <span className="v1-home-kin-shadow" aria-hidden="true" />
             <span className="v1-home-kin-label">
@@ -656,13 +660,16 @@ function SoloStage({
   expression,
   label,
   caption,
-  wide = false
+  wide = false,
+  hopKey
 }: {
   agent: { name: string; look: AgentLook };
-  expression: "neutral" | "surprised";
+  expression: "neutral" | "surprised" | "happy";
   label: string;
   caption: ReactNode;
   wide?: boolean;
+  // Bumped when a coin lands on the Koed Kin.
+  hopKey?: number;
 }) {
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
@@ -680,11 +687,16 @@ function SoloStage({
         aria-hidden="true"
         style={spotStyle(layout)}
       />
-      <div className="v1-home-host" style={placementStyle(layout, 0)}>
+      <div
+        className="v1-home-host"
+        data-coin-target
+        style={placementStyle(layout, 0)}
+      >
         <Pixelkin
           look={agent.look}
           size={layout.placements[0]!.size}
           expression={expression}
+          hopKey={hopKey}
         />
         <span className="v1-home-kin-shadow" aria-hidden="true" />
       </div>
@@ -699,185 +711,198 @@ function SoloStage({
   );
 }
 
-// The Koed Kin leads; Projects gather around it, nearest first, and the
-// further back they stand the higher and smaller they are.
-const hatchSlots: readonly StageSlot[] = [
-  { x: 0, y: 0, size: 128, label: 0 },
-  { x: -230, y: 24, size: 76, label: LABEL_BACK },
-  { x: 230, y: 24, size: 76, label: LABEL_BACK },
-  { x: -390, y: 80, size: 60, label: LABEL_BACK },
-  { x: 390, y: 80, size: 60, label: LABEL_BACK },
-  { x: -180, y: 140, size: 52, label: LABEL_BACK },
-  { x: 180, y: 140, size: 52, label: LABEL_BACK }
+// History arrives from each AI Client as golden coins, after the pellets on
+// koed.ai: they drop from that client's keycap and land on the Kin in the
+// spotlight, which hops. One update from a client drops a few coins at most.
+const COINS_PER_UPDATE = 3;
+const COIN_STAGGER_MS = 140;
+const COIN_FLIGHT_MS = 900;
+const COIN_ROWS = [
+  "..XXXX..",
+  ".XHGGGX.",
+  "XHGGGGDX",
+  "XGGDDGDX",
+  "XGGDDGDX",
+  "XGGGGDDX",
+  ".XDDDDX.",
+  "..XXXX.."
 ];
-// The hatching caption carries a progress bar, so it needs more room.
-const HATCH_CAPTION_FALLBACK = 170;
-
-// A pixel egg drawn to sit with the Kin: outline, shell, shade, highlight and
-// a few accent speckles, one row per string.
-const EGG_ROWS = [
-  "....XXXX....",
-  "...XBBBBX...",
-  "..XBHBBBBX..",
-  "..XHBBBBSX..",
-  ".XBHBBPBBSX.",
-  ".XBBBBBBBSX.",
-  "XBBBPBBBBBSX",
-  "XBBBBBBBPBSX",
-  "XBPBBBBBBBSX",
-  "XBBBBBBBBSSX",
-  "XBBBBBPBBSSX",
-  ".XBBBBBBSSX.",
-  ".XSBBBBSSSX.",
-  "..XSSSSSSX..",
-  "...XXXXXX..."
-];
-const EGG_FILL: Record<string, string> = {
-  X: "#141218",
-  B: "#ece3cf",
-  H: "#ffffff",
-  S: "#c3b597",
-  P: "var(--v1-accent)"
+const COIN_FILL: Record<string, string> = {
+  X: "#7a4a12",
+  H: "#fff4c2",
+  G: "#ffd166",
+  D: "#e0a03a"
 };
-// Runs of one colour per row keep the drawing to a few dozen rects.
-const EGG_RUNS = EGG_ROWS.flatMap((row, y) =>
-  [...row.matchAll(/([XBHSP])\1*/g)].map((run) => ({
+const COIN_RUNS = COIN_ROWS.flatMap((row, y) =>
+  [...row.matchAll(/([XHGD])\1*/g)].map((run) => ({
     x: run.index,
     y,
     width: run[0].length,
-    fill: EGG_FILL[run[1]!]!
+    fill: COIN_FILL[run[1]!]!
   }))
 );
 
-function PixelEgg() {
+type Coin = {
+  key: number;
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  delay: number;
+  lands: boolean;
+};
+
+// Work a client has done so far: Conversations finished plus records read
+// and items indexed, when status reports them.
+const clientProgress = (client: HomeIngestionClient) =>
+  client.completed +
+  client.skipped +
+  (client.activity?.recordsRead ?? 0) +
+  (client.activity?.embedded ?? 0);
+
+function FlyingCoin({ coin, onDone }: { coin: Coin; onDone: () => void }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const done = useRef(onDone);
+  done.current = onDone;
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || typeof element.animate !== "function") {
+      done.current();
+      return;
+    }
+    const { from, to } = coin;
+    // An arc: up out of the keycap, then down onto the Kin.
+    const peak = Math.min(from.y, to.y) - 70;
+    const animation = element.animate(
+      [
+        {
+          transform: `translate(${from.x}px, ${from.y}px) scale(0.5)`,
+          opacity: 0
+        },
+        {
+          transform: `translate(${(from.x + to.x) / 2}px, ${peak}px) scale(1)`,
+          opacity: 1,
+          offset: 0.45
+        },
+        {
+          transform: `translate(${to.x}px, ${to.y}px) scale(0.9)`,
+          opacity: 1,
+          offset: 0.9
+        },
+        {
+          transform: `translate(${to.x}px, ${to.y + 6}px) scale(0.4)`,
+          opacity: 0
+        }
+      ],
+      {
+        duration: COIN_FLIGHT_MS,
+        delay: coin.delay,
+        easing: "cubic-bezier(0.4, 0, 0.6, 1)",
+        fill: "both"
+      }
+    );
+    animation.onfinish = () => done.current();
+    return () => animation.cancel();
+  }, [coin]);
   return (
-    <svg
-      className="v1-home-egg-art"
-      viewBox={`0 0 ${EGG_ROWS[0]!.length} ${EGG_ROWS.length}`}
-      shapeRendering="crispEdges"
-    >
-      {EGG_RUNS.map(({ x, y, width, fill }) => (
-        <rect
-          key={`${x}-${y}`}
-          x={x}
-          y={y}
-          width={width}
-          height={1}
-          style={{ fill }}
-        />
-      ))}
-    </svg>
+    <span className="v1-home-coin" ref={ref}>
+      <svg viewBox="0 0 8 8" shapeRendering="crispEdges">
+        {COIN_RUNS.map(({ x, y, width, fill }) => (
+          <rect
+            key={`${x}-${y}`}
+            x={x}
+            y={y}
+            width={width}
+            height={1}
+            style={{ fill }}
+          />
+        ))}
+      </svg>
+    </span>
   );
 }
 
-function HatchingStage({
-  entries,
+// Drops coins when a client's progress rises. The first reading is history
+// already processed, not new activity, so it drops nothing.
+function AgentCoins({
   ingestion,
-  agent,
-  onOpenProject
+  onLand
 }: {
-  entries: readonly HomeProjectEntry[];
-  ingestion: HomeIngestion;
-  agent: { name: string; look: AgentLook };
-  onOpenProject: (projectId: string) => void;
+  ingestion: HomeIngestion | undefined;
+  onLand: () => void;
 }) {
   const reduced = useReducedMotion();
-  const stageRef = useRef<HTMLElement>(null);
-  const captionRef = useRef<HTMLDivElement>(null);
-  const [box, settled] = useStageBox(stageRef, captionRef);
-  // Projects present on the first render were found before this screen opened.
-  const seen = useRef<Set<string> | null>(null);
-  seen.current ??= new Set(entries.map(({ id }) => id));
-  // One satellite slot stays free for the egg.
-  const shown = rankHomeProjects(entries).slice(0, hatchSlots.length - 2);
-  // Fit only the slots in use (at least the first ring), so the back row
-  // doesn't shrink the stage before anything stands there.
-  const layout = layoutStage(
-    box,
-    box?.reserve ?? HATCH_CAPTION_FALLBACK,
-    hatchSlots.slice(0, Math.max(3, shown.length + 2))
-  );
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  const egg = layout.placements[shown.length + 1]!;
-  const stuck = ingestion.clients
-    .filter((client) => client.stuck)
-    .map(({ name }) => name);
+  const layer = useRef<HTMLDivElement>(null);
+  const previous = useRef<Map<string, number> | null>(null);
+  const nextKey = useRef(0);
+  const [coins, setCoins] = useState<Coin[]>([]);
+  useEffect(() => {
+    const totals = new Map(
+      (ingestion?.clients ?? []).map((client) => [
+        client.id,
+        clientProgress(client)
+      ])
+    );
+    const before = previous.current;
+    previous.current = totals;
+    const root = layer.current?.parentElement;
+    if (!before || reduced || !layer.current || !root) return;
+    const origin = layer.current.getBoundingClientRect();
+    const target = root
+      .querySelector("[data-coin-target] .v1-pixelkin")
+      ?.getBoundingClientRect();
+    if (!target) return;
+    const to = {
+      x: target.left + target.width / 2 - origin.left,
+      y: target.top + target.height * 0.35 - origin.top
+    };
+    const launched: Coin[] = [];
+    for (const [id, total] of totals) {
+      const added = total - (before.get(id) ?? total);
+      if (added <= 0) continue;
+      const keycap = root
+        .querySelector(`.v1-home-keycap[data-client="${id}"]`)
+        ?.getBoundingClientRect();
+      if (!keycap) continue;
+      const count = Math.min(COINS_PER_UPDATE, Math.ceil(Math.log2(added + 1)));
+      for (let index = 0; index < count; index += 1)
+        launched.push({
+          key: (nextKey.current += 1),
+          from: {
+            x: keycap.left + keycap.width / 2 - origin.left + (index - 1) * 8,
+            y: keycap.bottom - origin.top
+          },
+          to: { x: to.x + (index - 1) * 10, y: to.y },
+          delay: index * COIN_STAGGER_MS,
+          lands: index === 0
+        });
+    }
+    if (launched.length) setCoins((current) => [...current, ...launched]);
+  }, [ingestion, reduced]);
   return (
-    <section
-      ref={stageRef}
-      className="v1-home-stage v1-home-stage-hatching"
-      data-settling={!settled || undefined}
-      aria-label="Projects found so far"
-    >
-      <div
-        className="v1-home-spot"
-        aria-hidden="true"
-        style={spotStyle(layout)}
-      />
-      <div className="v1-home-host" style={placementStyle(layout, 0)}>
-        <Pixelkin
-          look={agent.look}
-          size={layout.placements[0]!.size}
-          expression={stuck.length ? "neutral" : "happy"}
+    <div className="v1-home-coins" ref={layer} aria-hidden="true">
+      {coins.map((coin) => (
+        <FlyingCoin
+          key={coin.key}
+          coin={coin}
+          onDone={() => {
+            if (coin.lands) onLand();
+            setCoins((current) =>
+              current.filter((item) => item.key !== coin.key)
+            );
+          }}
         />
-        <span className="v1-home-kin-shadow" aria-hidden="true" />
-      </div>
-      {shown.map((id, rank) => {
-        const entry = byId.get(id)!;
-        return (
-          <button
-            key={id}
-            type="button"
-            className="v1-home-kin"
-            data-hatch={(!reduced && !seen.current!.has(id)) || undefined}
-            style={placementStyle(layout, rank + 1)}
-            aria-label={`Open Project ${entry.name}`}
-            onClick={() => onOpenProject(id)}
-          >
-            <Pixelkin
-              look={projectKinLook(id)}
-              size={layout.placements[rank + 1]!.size}
-            />
-            <span className="v1-home-kin-shadow" aria-hidden="true" />
-            <span className="v1-home-kin-label">
-              <strong>{entry.name}</strong>
-            </span>
-          </button>
-        );
-      })}
-      <span
-        className="v1-home-egg"
-        aria-hidden="true"
-        style={
-          {
-            "--kin-x": `calc(50% + ${egg.x}px)`,
-            "--kin-y": `${egg.bottom}px`,
-            "--kin-size": `${egg.size}px`
-          } as CSSProperties
-        }
-      >
-        <PixelEgg />
-        <span className="v1-home-kin-shadow" />
-        {/* Stands where the Kin will, so it hatches in place. */}
-        <span style={{ height: LABEL_BACK }} />
-      </span>
-      <div className="v1-home-caption" ref={captionRef}>
-        <h1>Hatching your Projects</h1>
-        <p
-          className="v1-home-sub"
-          title={`Up to ${AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI Client from the last ${AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.`}
-        >
-          {stuck.length
-            ? `${stuck.join(" and ")} history has stalled, so ${agent.name} keeps retrying. Projects still appear as they’re found.`
-            : `${agent.name} is reading your recent conversations. Projects appear as they’re found.`}
-        </p>
-        <IngestionProgress ingestion={ingestion} />
-      </div>
-    </section>
+      ))}
+    </div>
   );
 }
 
-function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
+function IngestionProgress({
+  ingestion,
+  compact = false
+}: {
+  ingestion: HomeIngestion;
+  // Under the Projects caption: the bar and the finished line only.
+  compact?: boolean;
+}) {
   const [showSkipped, setShowSkipped] = useState(false);
   const total = ingestion.selected;
   // Finished already counts completed and skipped Conversations; only the
@@ -904,7 +929,7 @@ function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
       : null;
   return (
     <div className="v1-home-progress">
-      {activity.length > 0 && (
+      {!compact && activity.length > 0 && (
         <>
           <span className="v1-home-progress-label">
             Reading history · {recordsRead.toLocaleString()} records read
@@ -1035,6 +1060,9 @@ export function Home({
     const timer = window.setInterval(() => void statusStore.refresh(), 15_000);
     return () => window.clearInterval(timer);
   }, [statusStore]);
+  // Each coin batch that lands makes the Kin in the spotlight hop.
+  const [coinHop, setCoinHop] = useState(0);
+  const landCoin = () => setCoinHop((value) => value + 1);
   if (view.kind === "loading")
     return (
       <section className="v1-home" aria-busy="true">
@@ -1077,7 +1105,10 @@ export function Home({
   const warnings = (
     <HomeWarnings problems={view.warnings} statusStore={statusStore} />
   );
-  if (view.kind === "ingesting")
+  if (view.kind === "ingesting") {
+    const stuck = view.ingestion.clients
+      .filter((client) => client.stuck)
+      .map(({ name }) => name);
     return (
       <section className="v1-home" data-mood="ingesting">
         {warnings}
@@ -1086,14 +1117,30 @@ export function Home({
           ingestion={view.ingestion}
           statusStore={statusStore}
         />
-        <HatchingStage
-          entries={entries}
-          ingestion={view.ingestion}
+        <SoloStage
           agent={agent}
-          onOpenProject={onOpenProject}
+          expression={stuck.length ? "neutral" : "happy"}
+          label="Reading your recent conversations"
+          hopKey={coinHop}
+          caption={
+            <>
+              <h1>Hatching your Projects</h1>
+              <p
+                className="v1-home-sub"
+                title={`Up to ${AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI Client from the last ${AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.`}
+              >
+                {stuck.length
+                  ? `${stuck.join(" and ")} history has stalled, so ${agent.name} keeps retrying. Projects still appear as they’re found.`
+                  : `${agent.name} is reading your recent conversations. Projects appear as they’re found.`}
+              </p>
+              <IngestionProgress ingestion={view.ingestion} />
+            </>
+          }
         />
+        <AgentCoins ingestion={view.ingestion} onLand={landCoin} />
       </section>
     );
+  }
   // The next step on an empty stage is connecting a detected client.
   const connectable = clients
     .filter(({ state }) => state === "detected")
@@ -1138,10 +1185,15 @@ export function Home({
   return (
     <section className="v1-home" data-mood="projects">
       {warnings}
-      <Keycaps clients={clients} statusStore={statusStore} />
+      <Keycaps
+        clients={clients}
+        statusStore={statusStore}
+        {...(view.ingestion ? { ingestion: view.ingestion } : {})}
+      />
       <ProjectsStage
         entries={entries}
         onOpenProject={onOpenProject}
+        leadHopKey={coinHop}
         caption={
           <>
             <h1>Your Projects</h1>
@@ -1152,9 +1204,15 @@ export function Home({
               · {total.toLocaleString()} captured events
               {offStage > 0 && ` · ${offStage} more in the sidebar`}
             </p>
+            {view.ingestion && (
+              <IngestionProgress ingestion={view.ingestion} compact />
+            )}
           </>
         }
       />
+      {view.ingestion && (
+        <AgentCoins ingestion={view.ingestion} onLand={landCoin} />
+      )}
     </section>
   );
 }

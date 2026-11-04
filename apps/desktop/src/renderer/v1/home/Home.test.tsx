@@ -254,9 +254,104 @@ describe("Home", () => {
     const bar = container.querySelector('[role="progressbar"]')!;
     expect(bar.hasAttribute("aria-valuenow")).toBe(false);
     expect(bar.hasAttribute("data-indeterminate")).toBe(true);
+    // Hatching is the Koed Kin alone: any Project switches Home to Projects.
     expect(
       container.querySelector('button[aria-label="Open Project koed"]')
-    ).not.toBeNull();
+    ).toBeNull();
+    expect(container.querySelector("[data-coin-target]")).not.toBeNull();
+  });
+
+  const reading = (completed: number): HomeView => ({
+    kind: "ingesting",
+    warnings: [],
+    ingestion: {
+      active: true,
+      finished: completed,
+      selected: 10,
+      clients: [
+        {
+          id: "codex",
+          name: "Codex",
+          lifecycle: "running",
+          selected: 10,
+          completed,
+          skipped: 0,
+          lastErrorCode: null,
+          stuck: false
+        }
+      ]
+    }
+  });
+  const codexClient = {
+    id: "codex" as const,
+    name: "Codex",
+    state: "connected" as const,
+    label: "Connected",
+    version: null
+  };
+
+  it("drops coins from a client's keycap only when its progress rises", async () => {
+    await render({ entries: [], view: reading(2), clients: [codexClient] });
+    expect(container.querySelector(".v1-home-coin")).toBeNull();
+    await render({ entries: [], view: reading(4), clients: [codexClient] });
+    // happy-dom has no animations, so a coin lands as soon as it launches.
+    expect(
+      container.querySelectorAll(".v1-home-coin").length
+    ).toBeLessThanOrEqual(3);
+    await render({ entries: [], view: reading(4), clients: [codexClient] });
+    expect(container.querySelector(".v1-home-coin")).toBeNull();
+  });
+
+  it("drops no coins under reduced motion", async () => {
+    reducedMotion = true;
+    const animate = vi.fn();
+    Object.assign(HTMLElement.prototype, { animate });
+    await render({ entries: [], view: reading(2), clients: [codexClient] });
+    await render({ entries: [], view: reading(6), clients: [codexClient] });
+    expect(container.querySelector(".v1-home-coin")).toBeNull();
+    expect(animate).not.toHaveBeenCalled();
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it("flies a coin for each update with animations available", async () => {
+    const animations: { onfinish: (() => void) | null; cancel: () => void }[] =
+      [];
+    Object.assign(HTMLElement.prototype, {
+      animate: () => {
+        const animation = { onfinish: null, cancel: () => undefined };
+        animations.push(animation);
+        return animation;
+      }
+    });
+    await render({ entries: [], view: reading(2), clients: [codexClient] });
+    await render({ entries: [], view: reading(9), clients: [codexClient] });
+    // Seven more: log2(8) = 3 coins, the cap.
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(3);
+    await act(async () => animations.forEach((item) => item.onfinish?.()));
+    expect(container.querySelector(".v1-home-coin")).toBeNull();
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it("keeps history progress on the Projects view while it runs", async () => {
+    const view = reading(3);
+    await render({
+      entries: [entry("koed", "2026-11-03T11:00:00Z")],
+      clients: [codexClient],
+      view: {
+        kind: "projects",
+        warnings: [],
+        ingestion: view.kind === "ingesting" ? view.ingestion : undefined
+      }
+    });
+    expect(container.textContent).toContain("Your Projects");
+    expect(container.textContent).toContain("3 of 10 conversations finished");
+    expect(container.querySelector('[role="progressbar"]')).not.toBeNull();
+    expect(
+      [...container.querySelectorAll(".v1-home-pill")].map(
+        (pill) => pill.textContent
+      )
+    ).toEqual(["3 of 10 finished"]);
+    expect(container.querySelector("[data-coin-target]")).not.toBeNull();
   });
 
   it("says when history has stalled and when a client is only starting", async () => {

@@ -27,7 +27,9 @@ export type HomeView =
   | { kind: "attention"; problems: HomeProblem[]; primary: HomeProblem | null }
   | { kind: "ingesting"; warnings: HomeProblem[]; ingestion: HomeIngestion }
   | { kind: "empty"; warnings: HomeProblem[] }
-  | { kind: "projects"; warnings: HomeProblem[] };
+  // While history is still processed the Projects found so far take the
+  // stage, with that progress alongside.
+  | { kind: "projects"; warnings: HomeProblem[]; ingestion?: HomeIngestion };
 
 const unhealthy = ({ state }: ComponentStatus) =>
   state === "needs_attention" || state === "not_configured";
@@ -152,7 +154,10 @@ export function selectHomeView(
     });
   }
   if (ingestion.active)
-    return { kind: "ingesting", warnings: problems, ingestion };
+    // Hatching is only for the stretch before the first Project appears.
+    return projects?.length
+      ? { kind: "projects", warnings: problems, ingestion }
+      : { kind: "ingesting", warnings: problems, ingestion };
   if (!projects) return { kind: "loading" };
   return projects.length
     ? { kind: "projects", warnings: problems }

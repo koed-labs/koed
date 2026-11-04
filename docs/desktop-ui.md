@@ -85,20 +85,27 @@ scrolls, only when the caption needs more room than the window leaves.
 
 - **Hatching** shows while any connected AI Client's automatic historical
   ingestion is running, waiting, or retrying after a failure, from
-  `status.historicalIngestion`. Koed reads only connected clients, so progress
-  left from a client that is no longer connected is ignored and its keycap
-  offers Connect. It
-  states the selection limits (recent history only), counts finished
-  Conversations per client and overall (completed plus skipped), and keeps the
-  progress bar indeterminate until every selection is known. Below the bar one
-  line gives the finished count, how many of those were skipped (with a short
-  note on why), and the latest recorded progress; above it, when status can
-  read them, the records read and items indexed for the selected
-  Conversations. It shows
-  no time estimate and no completion notification. Idle or unknown ingestion
-  never holds Home here.
-  Once a client counts as stuck, the caption says its history has stalled and
-  the warning chip reads "Check <client> history", with diagnostics.
+  `status.historicalIngestion`, and no Project has been found yet: the Koed
+  Kin stands alone in the spotlight. Once any Project exists, Home shows
+  Projects instead and keeps the progress on the keycaps and in a slim bar
+  under the caption until ingestion ends. Koed reads only connected clients,
+  so progress left from a client that is no longer connected is ignored and
+  its keycap offers Connect. Hatching states the selection limits (recent
+  history only), counts finished Conversations per client and overall
+  (completed plus skipped), and keeps the progress bar indeterminate until
+  every selection is known. Below the bar one line gives the finished count,
+  how many of those were skipped (with a short note on why), and the latest
+  recorded progress; above it, when status can read them, the records read
+  and items indexed for the selected Conversations. It shows no time estimate
+  and no completion notification. Idle or unknown ingestion never holds Home
+  here. Once a client counts as stuck, the caption says its history has
+  stalled and the warning chip reads "Check <client> history", with
+  diagnostics.
+- **Coins**: while history is processed, a rise in a client's finished
+  Conversations, records read or items indexed drops golden pixel coins from
+  that client's keycap onto the Kin in the spotlight, which hops. One update
+  drops at most three coins, the first reading drops none, and reduced motion
+  drops none.
 
 Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
 presentation smoke check. This fixture does not configure local AI Clients or

@@ -182,6 +182,21 @@ describe("ingestion", () => {
     expect(selectHomeView(waiting, []).kind).toBe("ingesting");
   });
 
+  it("shows Projects with their progress once any exist during ingestion", () => {
+    const running = homeStatus({
+      historicalIngestion: { codex: progress("running", 10, 3) }
+    } as Partial<KoedServerStatus>);
+    expect(selectHomeView(running, [])).toMatchObject({ kind: "ingesting" });
+    expect(
+      selectHomeView(running, [
+        { id: "koed", name: "koed", eventCount: 4, latestAt: null }
+      ])
+    ).toMatchObject({
+      kind: "projects",
+      ingestion: { active: true, clients: [{ id: "codex" }] }
+    });
+  });
+
   it("ignores history progress from an AI Client that isn't connected", () => {
     // Koed reads only connected clients; this is left from before.
     const disconnected = homeStatus({
