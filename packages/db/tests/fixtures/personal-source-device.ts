@@ -1,10 +1,16 @@
 import {
   generateKeyPairSync,
+  type KeyObject,
   randomBytes,
   randomUUID,
   sign
 } from "node:crypto";
 import type pg from "pg";
+import { pdsFinalizedStatementHash } from "@koed/shared";
+import {
+  validatePeerLifecycleFixture,
+  type createPeerLifecycleFixture
+} from "./personal-peer-lifecycle.js";
 import {
   canonicalizePdsJson,
   signPdsRecord,
@@ -35,23 +41,72 @@ const pair = (type: "ed25519" | "x25519") => {
     privateSeed: keys.privateKey.export({ format: "jwk" }).d!
   };
 };
-export const personalSourceDeviceFixture = () => {
-  const authority = pair("ed25519"),
-    recovery = pair("ed25519"),
-    recoveryKem = pair("x25519");
-  const groupId = id(),
-    authorityKeyId = id(),
-    authorityHead = hash(),
-    epoch = "1";
-  const devices = ["origin", "receiver"].map((label) => ({
-    label,
-    deviceId: id(),
-    deploymentId: id(),
-    signingKeyId: id(),
-    signing: pair("ed25519"),
-    kemKeyId: id(),
-    kem: pair("x25519")
-  }));
+export const personalSourceDeviceFixture = (
+  lifecycle?: ReturnType<typeof createPeerLifecycleFixture>
+) => {
+  if (lifecycle) validatePeerLifecycleFixture(lifecycle);
+  const fromKeys = (keys: { privateKey: KeyObject; publicKey: KeyObject }) => ({
+    privateKey: keys.privateKey,
+    publicKey: keys.publicKey.export({ format: "jwk" }).x!,
+    privateSeed: keys.privateKey.export({ format: "jwk" }).d!
+  });
+  const authority = lifecycle
+      ? fromKeys(lifecycle.identities.authority)
+      : pair("ed25519"),
+    recovery = lifecycle
+      ? fromKeys(lifecycle.identities.recovery)
+      : pair("ed25519"),
+    recoveryKem = lifecycle
+      ? fromKeys(lifecycle.identities.recoveryKem)
+      : pair("x25519");
+  const groupId = lifecycle?.expectedGroupId ?? id(),
+    authorityKeyId = lifecycle?.expectedAuthorityKeyId ?? id(),
+    authorityHead = lifecycle?.expectedHead ?? hash(),
+    epoch = lifecycle ? "2" : "1",
+    headSequence = lifecycle ? "3" : "1";
+  const devices = ["origin", "receiver"].map((label, index) => {
+    const signing = lifecycle
+      ? fromKeys(
+          index === 0
+            ? lifecycle.identities.author
+            : lifecycle.identities.receiver
+        )
+      : pair("ed25519");
+    const kem = lifecycle
+      ? fromKeys(
+          index === 0
+            ? lifecycle.identities.deviceKem
+            : lifecycle.identities.receiverKem
+        )
+      : pair("x25519");
+    return {
+      label,
+      deviceId: lifecycle
+        ? index === 0
+          ? lifecycle.genesis.draft.body.initialDeviceId
+          : lifecycle.admission.draft.body.deviceId
+        : id(),
+      deploymentId: id(),
+      signingKeyId: lifecycle
+        ? index === 0
+          ? lifecycle.genesis.draft.body.initialDeviceSigningKeyId
+          : lifecycle.admission.draft.body.deviceSigningKeyId
+        : id(),
+      signing,
+      kemKeyId: lifecycle
+        ? index === 0
+          ? lifecycle.genesis.draft.body.initialDeviceKemKeyId
+          : lifecycle.admission.draft.body.deviceKemKeyId
+        : id(),
+      kem
+    };
+  });
+  const recoverySigningKeyId =
+    lifecycle?.genesis.draft.body.recoverySigningKeyId ?? id();
+  const recoveryKemKeyId =
+    lifecycle?.genesis.draft.body.recoveryKemKeyId ?? id();
+  const recoveryKitHash =
+    lifecycle?.genesis.draft.body.recoveryKitHash ?? hash();
   const issuedAt = new Date(Date.now() - 60_000),
     expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
   const members = devices.map((device) => {
@@ -65,7 +120,7 @@ export const personalSourceDeviceFixture = () => {
       deviceKemPublicKey: device.kem.publicKey,
       epoch,
       operationFamilies: ["pds_relay"],
-      statementSequence: "1",
+      statementSequence: headSequence,
       statementHash: authorityHead,
       issuedAt: issuedAt.toISOString(),
       expiresAt: expiresAt.toISOString()
@@ -154,21 +209,21 @@ export const personalSourceDeviceFixture = () => {
         groupId,
         authorityKeyId,
         authorityPublicKey: authority.publicKey,
-        recoverySigningKeyId: id(),
+        recoverySigningKeyId,
         recoverySigningPublicKey: recovery.publicKey,
-        recoveryKemKeyId: id(),
+        recoveryKemKeyId,
         recoveryKemPublicKey: recoveryKem.publicKey,
-        recoveryKitHash: hash(),
+        recoveryKitHash,
         currentEpoch: epoch,
         pendingEpoch: null,
         pendingStatementSequence: null,
         pendingStatementHash: null,
         pendingBundleHash: null,
-        headSequence: "1",
+        headSequence,
         headHash: authorityHead,
         state: "active",
         stateReason: null,
-        members: members.map((device) => ({
+        members: members.map((device, index) => ({
           deviceId: device.deviceId,
           signingKeyId: device.signingKeyId,
           signingPublicKey: device.signing.publicKey,
@@ -176,7 +231,7 @@ export const personalSourceDeviceFixture = () => {
           kemPublicKey: device.kem.publicKey,
           operationFamilies: ["pds_relay"],
           status: "active",
-          admittedSequence: "1",
+          admittedSequence: lifecycle && index === 1 ? "2" : "1",
           revokedSequence: null,
           revokedAt: null
         })),
@@ -186,11 +241,19 @@ export const personalSourceDeviceFixture = () => {
           historicalBackfillEnabled: false
         }
       },
-      statements: [],
+      statements: lifecycle
+        ? [lifecycle.genesis, lifecycle.admission, lifecycle.statement].map(
+            (statement) => ({
+              sequence: statement.draft.sequence,
+              statementHash: pdsFinalizedStatementHash(statement),
+              canonicalStatement: canonicalizePdsJson(statement)
+            })
+          )
+        : [],
       certificates: members.map((device) => ({
         deviceId: device.deviceId,
         epoch,
-        statementSequence: "1",
+        statementSequence: headSequence,
         statementHash: authorityHead,
         authorityKeyId,
         canonicalCertificate: device.certificate,
@@ -212,9 +275,9 @@ export const personalSourceDeviceFixture = () => {
     runtime,
     capability,
     initialize,
-    sourceFingerprintKey: hash(),
-    tombstoneFloorKey: hash(),
-    projectAliasKey: hash()
+    sourceFingerprintKey: lifecycle?.secrets.sourceFingerprintKey ?? hash(),
+    tombstoneFloorKey: lifecycle?.secrets.tombstoneFloorKey ?? hash(),
+    projectAliasKey: lifecycle?.secrets.projectAliasKey ?? hash()
   };
 };
 export type PersonalSourceDeviceFixture = ReturnType<

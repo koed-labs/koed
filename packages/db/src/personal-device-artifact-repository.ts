@@ -221,6 +221,7 @@ export interface PersonalDeviceArtifactRepository {
   }): Promise<boolean>;
   claimPdsArtifactOutbox(input: {
     workerId: string;
+    excludeIds?: string[];
     limit?: number;
     leaseSeconds?: number;
     state?: "pending" | "committed";
@@ -1650,7 +1651,8 @@ export const createPersonalDeviceArtifactRepository = (
          from pds_artifact_outbox_entries o
          join pds_portable_artifacts a on a.id=o.artifact_id
          join personal_sync_policies p on p.group_id=a.group_id
-         where o.state=$3 and o.retry_at<=now()
+         where (o.state=$3 or ($3='pending' and o.state='uploading')) and o.retry_at<=now()
+           and not (o.id = any($5::uuid[]))
            and (o.lease_until is null or o.lease_until<now())
            and p.enabled=true and p.publication_paused=false
            and a.state in ('ready','published')
@@ -1671,7 +1673,7 @@ export const createPersonalDeviceArtifactRepository = (
          a.artifact_id as "packageId",
          a.transport_manifest_hash as "manifestHash",
          o.attempt_count as "attemptCount",o.transport_id as "transportId"`,
-      [limit, input.workerId, requestedState, seconds]
+      [limit, input.workerId, requestedState, seconds, input.excludeIds ?? []]
     );
     return result.rows;
   },
@@ -1760,7 +1762,7 @@ export const createPersonalDeviceArtifactRepository = (
       const result = await client.query<{ artifact_id: string }>(
         `update pds_artifact_outbox_entries
          set state=$3,transport_id=$4,lease_owner=null,lease_until=null,
-           last_error_class=null,updated_at=now()
+           retry_at=now(),last_error_class=null,updated_at=now()
          where id=$1 and lease_owner=$2
            and state in ('uploading','committed') and lease_until>=now()
          returning artifact_id`,
@@ -1786,8 +1788,8 @@ export const createPersonalDeviceArtifactRepository = (
   async releasePdsCommittedArtifactOutbox(input) {
     const result = await pool.query(
       `update pds_artifact_outbox_entries
-       set lease_owner=null,lease_until=null,updated_at=now()
-       where id=$1 and lease_owner=$2 and state='committed'`,
+       set lease_owner=null,lease_until=null,retry_at=now()+interval '30 seconds',updated_at=now()
+       where id=$1 and lease_owner=$2 and state='committed' and lease_until>=now()`,
       [input.outboxId, input.workerId]
     );
     return result.rowCount === 1;
@@ -1798,7 +1800,7 @@ export const createPersonalDeviceArtifactRepository = (
       `update pds_artifact_outbox_entries
        set state='pending',lease_owner=null,lease_until=null,retry_at=$3,
          last_error_class=$4,updated_at=now()
-       where id=$1 and lease_owner=$2 and state='uploading'`,
+       where id=$1 and lease_owner=$2 and state='uploading' and lease_until>=now()`,
       [input.outboxId, input.workerId, input.retryAt, input.errorClass]
     );
     return result.rowCount === 1;
