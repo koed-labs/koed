@@ -434,6 +434,13 @@ export function createProjectManagementValidationApi() {
     },
     manageProject: async (input) => {
       const p = check(projects.get(input.projectId), input.expectedVersion);
+      if (input.action === "explain_sessions")
+        return personalProjectCommandResultSchema.parse({
+          project: p.meta,
+          explanations: input.sessionIds.map((sessionId) =>
+            explain(p, sessionId)
+          )
+        });
       if (input.action === "explain_session")
         return personalProjectCommandResultSchema.parse({
           project: p.meta,

@@ -15,6 +15,11 @@ Independent inventory and native metadata reads run concurrently, while shared s
 The renderer can also read bounded Recent Conversations, event pages, and Project reconciliation status.
 
 Project management uses reviewed versions and the existing membership engine.
+The `explain_sessions` action reads up to 100 Conversations per request through
+`POST /v1/personal/projects/:projectId/memberships/explain-batch`. Each batch uses
+one owner transaction and checks the reviewed Project version and source ownership.
+Settings and source previews request batches sequentially. A failed batch discards
+partial membership results but keeps the loaded Sync review accessible.
 The settings editor sends one bounded batch through `personal.projects.manage` with the `apply_sources` action.
 The batch can include a rename, source rules, direct membership changes, and a version-pinned exclusion restore.
 The API commits the complete batch under one owner lock and transaction.

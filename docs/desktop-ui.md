@@ -16,7 +16,9 @@ services or inventory are loading, the sidebar shows that state rather than an
 empty Conversation list.
 
 Project settings manages names, source rules, Conversation membership, and
-Personal Device sync. Dragging a Conversation to a Project moves its membership
+Personal Device sync. Sync review remains available when Conversation membership
+cannot be loaded. Settings blocks edits until a complete membership review loads.
+Dragging a Conversation to a Project moves its membership
 from the source Project to the destination; other named memberships remain.
 Folder and Git Anchor references stay intact unless the User explicitly removes
 them in the move dialog or corrects them through source context settings. The

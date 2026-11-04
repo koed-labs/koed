@@ -1,6 +1,7 @@
-import type {
-  PersonalProjectBatchInput,
-  PersonalProjectMembershipExplanation
+import {
+  PERSONAL_PROJECT_INSPECTION_BATCH_SIZE,
+  type PersonalProjectBatchInput,
+  type PersonalProjectMembershipExplanation
 } from "@koed/shared";
 import {
   personalRecallTargetsEqual,
@@ -16,6 +17,7 @@ import {
   directMembership,
   excludedMembership
 } from "./conversation-organization.js";
+import { projectErrorMessage } from "./use-organization-review.js";
 
 export type ProjectSyncState = Awaited<
   ReturnType<NonNullable<PersonalDesktopApi["manageMembershipSync"]>>
@@ -42,7 +44,58 @@ export type ProjectSettingsDraft = {
   conversations: SettingsConversation[];
   memberships: Record<string, MembershipDraft>;
   sync: ProjectSyncState | null;
+  inspectionError?: string;
 };
+
+/** One bounded request at a time, at the same reviewed Project version. */
+async function inspectConversations(
+  api: PersonalDesktopApi,
+  project: DesktopProject,
+  candidates: { sessionId: string; title: string; logicalSessionId?: string }[]
+): Promise<SettingsConversation[]> {
+  const conversations: SettingsConversation[] = [];
+  for (
+    let offset = 0;
+    offset < candidates.length;
+    offset += PERSONAL_PROJECT_INSPECTION_BATCH_SIZE
+  ) {
+    const batch = candidates.slice(
+      offset,
+      offset + PERSONAL_PROJECT_INSPECTION_BATCH_SIZE
+    );
+    const result = await api.manageProject!({
+      action: "explain_sessions",
+      projectId: project.id,
+      expectedVersion: project.namedProject!.version,
+      sessionIds: batch.map((c) => c.sessionId)
+    });
+    const explanations = new Map(
+      result.explanations?.map((e) => [e.sessionId, e])
+    );
+    if (
+      result.project.projectId !== project.id ||
+      result.project.version !== project.namedProject!.version ||
+      result.explanations?.length !== batch.length ||
+      explanations.size !== batch.length
+    )
+      throw new Error("Conversation membership changed. Reopen settings.");
+    for (const candidate of batch) {
+      const explanation = explanations.get(candidate.sessionId);
+      if (
+        !explanation ||
+        (candidate.logicalSessionId &&
+          explanation.logicalSessionId !== candidate.logicalSessionId)
+      )
+        throw new Error("Conversation membership changed. Reopen settings.");
+      conversations.push({
+        sessionId: candidate.sessionId,
+        title: candidate.title,
+        explanation
+      });
+    }
+  }
+  return conversations;
+}
 
 export async function loadProjectSettings(
   api: PersonalDesktopApi,
@@ -102,45 +155,39 @@ export async function loadProjectSettings(
   for (const entity of sync?.memberships ?? [])
     if (entity.entityKind === "exclusion" && entity.source?.localSessionId)
       sessionIds.add(entity.source.localSessionId);
-  const conversations = await Promise.all(
-    [...sessionIds].map(async (sessionId) => {
-      const result = await api.manageProject!({
-        action: "explain_session",
-        projectId: project.id,
-        expectedVersion: project.namedProject!.version,
-        sessionId
-      });
-      if (
-        !result.explanation ||
-        result.explanation.sessionId !== sessionId ||
-        result.project.version !== project.namedProject!.version
-      )
-        throw new Error("Conversation membership changed. Reopen settings.");
-      const thread = projects
-        .flatMap((p) => p.threads)
-        .find(
-          (t) =>
-            t.sessionId === sessionId ||
-            t.sourceReferences?.some((r) => r.sessionId === sessionId)
-        );
-      return {
-        sessionId,
-        title: thread?.name ?? "Conversation",
-        explanation: result.explanation
-      };
-    })
-  );
-  return {
+  const draft: ProjectSettingsDraft = {
     project,
     name: project.name,
     sources,
     selectedSources: new Set(
       sources.filter((s) => s.inclusionId).map((s) => s.id)
     ),
-    conversations,
+    conversations: [],
     memberships: {},
     sync
   };
+  const titles = new Map<string, string>();
+  for (const thread of projects.flatMap((p) => p.threads)) {
+    if (thread.sessionId) titles.set(thread.sessionId, thread.name);
+    for (const reference of thread.sourceReferences ?? [])
+      titles.set(reference.sessionId, thread.name);
+  }
+  try {
+    draft.conversations = await inspectConversations(
+      api,
+      project,
+      [...sessionIds].map((sessionId) => ({
+        sessionId,
+        title: titles.get(sessionId) ?? "Conversation"
+      }))
+    );
+  } catch (cause) {
+    // Keep the successfully loaded sync review available, without a partial edit draft.
+    draft.inspectionError =
+      projectErrorMessage(cause) ||
+      "Conversation membership could not be loaded.";
+  }
+  return draft;
 }
 
 export function settingsMembership(
@@ -220,26 +267,10 @@ export async function selectSettingsSource(
     (candidate) =>
       !draft.conversations.some((row) => row.sessionId === candidate.sessionId)
   );
-  const additional = await Promise.all(
-    missing.map(async (candidate) => {
-      const membership = await api.manageProject!({
-        ...base,
-        action: "explain_session",
-        sessionId: candidate.sessionId
-      });
-      if (
-        !membership.explanation ||
-        membership.explanation.logicalSessionId !==
-          candidate.logicalSessionId ||
-        membership.project.version !== base.expectedVersion
-      )
-        throw new Error("Conversation membership changed. Reopen settings.");
-      return {
-        sessionId: candidate.sessionId,
-        title: candidate.name,
-        explanation: membership.explanation
-      };
-    })
+  const additional = await inspectConversations(
+    api,
+    draft.project,
+    missing.map((candidate) => ({ ...candidate, title: candidate.name }))
   );
   return {
     ...draft,
@@ -261,6 +292,7 @@ export async function selectSettingsSource(
 export function settingsChanges(
   draft: ProjectSettingsDraft
 ): PersonalProjectBatchInput["changes"] {
+  if (draft.inspectionError) return [];
   const changes: PersonalProjectBatchInput["changes"] = [];
   if (draft.name.trim() !== draft.project.name)
     changes.push({ action: "rename", name: draft.name.trim() });

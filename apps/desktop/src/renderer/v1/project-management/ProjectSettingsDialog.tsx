@@ -97,6 +97,11 @@ export function ProjectSettingsDialog({
   }, [active, api, initialProjects]);
   const changes = draft ? settingsChanges(draft) : [];
   const dirty = changes.length > 0;
+  const editError =
+    draft?.inspectionError ??
+    (draft?.sync?.catalog && draft.sync.catalog.state !== "available"
+      ? "Review Project sync before making changes."
+      : undefined);
   const close = () => {
     setNextProject(undefined);
     if (dirty) setConfirmation("discard");
@@ -187,7 +192,8 @@ export function ProjectSettingsDialog({
         <div className="v1-pm-settings-body">
           {!draft && !error && <p role="status">Loading…</p>}
           <ProjectError error={error} />
-          {draft && panel === "general" && (
+          {panel !== "sync" && <ProjectError error={editError} />}
+          {draft && !editError && panel === "general" && (
             <>
               <div className="v1-pm-field">
                 <label htmlFor="v1-pm-project-name">Project name</label>
@@ -236,7 +242,7 @@ export function ProjectSettingsDialog({
               </div>
             </>
           )}
-          {draft && panel === "sources" && (
+          {draft && !editError && panel === "sources" && (
             <>
               <div className="v1-pm-facts">
                 <Badge>{draft.selectedSources.size} sources</Badge>
@@ -288,7 +294,7 @@ export function ProjectSettingsDialog({
               ))}
             </>
           )}
-          {draft && panel === "conversations" && (
+          {draft && !editError && panel === "conversations" && (
             <>
               <div className="v1-pm-list-controls">
                 <Input
@@ -464,7 +470,9 @@ export function ProjectSettingsDialog({
             Cancel
           </Button>
           <Button
-            disabled={!draft || !dirty || !draft.name.trim() || busy}
+            disabled={
+              !draft || !!editError || !dirty || !draft.name.trim() || busy
+            }
             onClick={() =>
               draft && void run(() => onSave(draft.project, changes))
             }

@@ -78,6 +78,100 @@ describe.skipIf(!databaseUrl)("Project exclusions in PostgreSQL", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
+  it("inspects a bounded batch at one Project version without crossing owners or losing exclusions", async () => {
+    const repo = createMemorySourceRepository(pool, options);
+    const actor = {
+      userId: (
+        await repo.createUser({ email: `batch-${randomUUID()}@example.test` })
+      ).id
+    };
+    const other = {
+      userId: (
+        await repo.createUser({ email: `batch-${randomUUID()}@example.test` })
+      ).id
+    };
+    const included = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID()
+    });
+    const excluded = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID()
+    });
+    const foreign = await repo.createCapturedSession(other, {
+      externalSessionId: randomUUID()
+    });
+    let project = await repo.createNamedPersonalProject(actor, {
+      name: "Batch review"
+    });
+    project = (
+      await repo.addPersonalProjectSession(actor, project.projectId, {
+        expectedVersion: project.version,
+        sessionId: included.id
+      })
+    ).project;
+    project = (
+      await repo.excludePersonalProjectSession(actor, project.projectId, {
+        expectedVersion: project.version,
+        sessionId: excluded.id
+      })
+    ).project;
+    const input = {
+      expectedVersion: project.version,
+      sessionIds: [included.id, excluded.id]
+    };
+    const batch = await repo.explainPersonalProjectSessions(
+      actor,
+      project.projectId,
+      input
+    );
+    expect(batch.project).toEqual(project);
+    expect(batch.explanations).toMatchObject([
+      { sessionId: included.id, included: true },
+      {
+        sessionId: excluded.id,
+        included: false,
+        exclusion: { clearedAt: null }
+      }
+    ]);
+    for (const explanation of batch.explanations)
+      expect(explanation).toEqual(
+        (
+          await repo.explainPersonalProjectSession(actor, project.projectId, {
+            expectedVersion: project.version,
+            sessionId: explanation.sessionId
+          })
+        ).explanation
+      );
+    await expect(
+      repo.explainPersonalProjectSessions(actor, project.projectId, {
+        ...input,
+        expectedVersion: project.version - 1
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repo.explainPersonalProjectSessions(other, project.projectId, input)
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      repo.explainPersonalProjectSessions(actor, project.projectId, {
+        ...input,
+        sessionIds: [included.id, foreign.id]
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      repo.explainPersonalProjectSessions(actor, project.projectId, {
+        ...input,
+        sessionIds: Array.from({ length: 101 }, () => randomUUID())
+      })
+    ).rejects.toThrow();
+    expect(
+      (
+        await repo.explainPersonalProjectSessions(
+          actor,
+          project.projectId,
+          input
+        )
+      ).project.version
+    ).toBe(project.version);
+  });
   it("retains all reasons, isolates exclusions, and atomically restores only a reviewed current revision", async () => {
     const repo = createMemorySourceRepository(pool, options);
     const actor = {

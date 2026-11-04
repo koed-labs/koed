@@ -11,6 +11,58 @@ import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop
 import { createPersonalMemoryPreloadApi } from "../ipc/personal-memory-preload.js";
 
 describe("atomic organization bridge", () => {
+  it("routes bounded membership inspections through the validated Desktop bridge", async () => {
+    const fixture = createProjectManagementValidationApi();
+    const projectId = validationId(2),
+      sessionIds = [validationId(100), validationId(101)];
+    const input = {
+      action: "explain_sessions" as const,
+      projectId,
+      expectedVersion: fixture.projects.get(projectId)!.meta.version,
+      sessionIds
+    };
+    const result = await fixture.api.manageProject!(input);
+    const request = vi.fn(
+      async () => result as unknown as Record<string, unknown>
+    );
+    const commands = createProjectCommands({
+      personalRequest: request,
+      lookup: {}
+    } as unknown as ProjectCommandsDeps);
+    const api = createPersonalMemoryPreloadApi(
+      async (_channel, raw) => {
+        const command = raw as { input: typeof input };
+        return {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.manage",
+          ok: true,
+          data: await commands.manage(command.input)
+        };
+      },
+      { on: () => undefined, removeListener: () => undefined }
+    );
+    await expect(api.manageProject!(input)).resolves.toEqual(result);
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      `/v1/personal/projects/${projectId}/memberships/explain-batch`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedVersion: input.expectedVersion,
+          sessionIds
+        })
+      }
+    );
+    await expect(
+      api.manageProject!({
+        ...input,
+        sessionIds: Array.from({ length: 101 }, (_, i) =>
+          validationId(1000 + i)
+        )
+      })
+    ).rejects.toThrow();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it("uses the fixed route and binds its response to the reviewed context", async () => {
     const fixture = createProjectManagementValidationApi(),
       sessionId = validationId(100);

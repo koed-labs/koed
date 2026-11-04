@@ -4,6 +4,7 @@ import type pg from "pg";
 import {
   personalOwnerIdSchema,
   personalProjectAddSessionSchema,
+  personalProjectExplainSessionsSchema,
   personalProjectAddBackSchema,
   personalProjectExclusionSchema,
   personalMembershipExclusionSyncSchema,
@@ -126,6 +127,44 @@ export const createPersonalProjectExclusionRepository = (
 ) => {
   const transact = personalMembershipTransactionRunner(pool, transaction);
   return {
+    async explainPersonalProjectSessions(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: { sessionIds: string[]; expectedVersion: number }
+    ) {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        input = personalProjectExplainSessionsSchema.parse(raw);
+      return transact(
+        actor,
+        async (client) => {
+          const project = await lockPersonalNamedProject(
+            client,
+            actor,
+            projectId,
+            input.expectedVersion
+          );
+          const explanations = [];
+          for (const sessionId of input.sessionIds) {
+            const logicalSessionId = await lockPersonalMembershipSource(
+              client,
+              actor,
+              sessionId
+            );
+            explanations.push(
+              await explain(
+                client,
+                actor,
+                projectId,
+                sessionId,
+                logicalSessionId
+              )
+            );
+          }
+          return { project: mapPersonalNamedProject(project), explanations };
+        },
+        { notify: false }
+      );
+    },
     async explainPersonalProjectSession(
       actor: ActorContext,
       rawProjectId: string,
