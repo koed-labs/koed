@@ -69,9 +69,30 @@ describe("Home", () => {
     { kind: "empty", warnings: [] }
   ])("puts the $kind state on the same stage as Projects", async (view) => {
     await render({ view, entries: [] });
-    expect(container.querySelector(".v1-home-keycaps")).not.toBeNull();
+    // No clients, no keycap row: the stage closes up rather than keep a gap.
+    expect(container.querySelector(".v1-home-keycaps")).toBeNull();
     expect(
       container.querySelector(".v1-home-stage .v1-home-caption")
+    ).not.toBeNull();
+    // While loading nothing is known about the clients yet.
+    if (view.kind === "loading") return;
+    await render({
+      view,
+      entries: [],
+      clients: [
+        {
+          id: "codex",
+          name: "Codex",
+          state: "connected",
+          label: "Connected",
+          version: null
+        }
+      ]
+    });
+    expect(
+      container.querySelector(
+        ".v1-home-stage .v1-home-stage-top .v1-home-keycaps"
+      )
     ).not.toBeNull();
   });
 

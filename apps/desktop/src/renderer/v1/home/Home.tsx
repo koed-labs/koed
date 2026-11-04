@@ -232,9 +232,8 @@ function Keycaps({
   ingestion?: HomeIngestion;
   statusStore?: DesktopStatusStore;
 }) {
-  // An empty row keeps the stage where it will be once the clients load.
-  if (!clients.length)
-    return <div className="v1-home-keycaps" aria-hidden="true" />;
+  // No clients, no row: the stage closes up instead of keeping a gap.
+  if (!clients.length) return null;
   const progress = new Map(
     ingestion?.clients.map((client) => [client.id, client])
   );
@@ -414,32 +413,46 @@ const CAPTION_FALLBACK = 120;
 // The caption sits this far above the stage's bottom edge, with a gap above.
 const CAPTION_INSET = 28 + 16;
 
-// Measures the stage and its caption so the layout can fit around them.
+type MeasuredStage = StageBox & {
+  // Room kept at the bottom for the caption.
+  reserve: number;
+  // Room taken at the top by the AI Client keycaps; 0 when there are none.
+  top: number;
+};
+
+// Measures the stage, its caption and its keycap row so the layout can fit
+// the Kin between them. The height it reports excludes the keycap row.
 function useStageBox(
   stage: RefObject<HTMLElement | null>,
-  caption: RefObject<HTMLElement | null>
+  caption: RefObject<HTMLElement | null>,
+  topRow: RefObject<HTMLElement | null>
 ) {
-  const [box, setBox] = useState<(StageBox & { reserve: number }) | null>(null);
+  const [box, setBox] = useState<MeasuredStage | null>(null);
   // Kin glide when the order changes, but a new measurement (the first one,
   // or a window resize) moves them at once instead of bouncing them there.
   const [settled, setSettled] = useState(true);
-  const last = useRef<(StageBox & { reserve: number }) | null>(null);
+  const last = useRef<MeasuredStage | null>(null);
   useLayoutEffect(() => {
     const element = stage.current;
     if (!element || typeof ResizeObserver === "undefined") return;
     const measure = () => {
-      const { width, height } = element.getBoundingClientRect();
+      const rect = element.getBoundingClientRect();
       const reserve =
         (caption.current?.getBoundingClientRect().height ?? 0) + CAPTION_INSET;
-      if (!width || !height) return;
+      const row = topRow.current?.getBoundingClientRect();
+      const top = row && row.height > 0 ? row.bottom - rect.top : 0;
+      const { width } = rect;
+      const height = rect.height - top;
+      if (!width || !rect.height) return;
       const current = last.current;
       if (
         current?.width === width &&
         current.height === height &&
-        current.reserve === reserve
+        current.reserve === reserve &&
+        current.top === top
       )
         return;
-      last.current = { width, height, reserve };
+      last.current = { width, height, reserve, top };
       setSettled(false);
       setBox(last.current);
     };
@@ -447,8 +460,9 @@ function useStageBox(
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     if (caption.current) observer.observe(caption.current);
+    if (topRow.current) observer.observe(topRow.current);
     return () => observer.disconnect();
-  }, [stage, caption]);
+  }, [stage, caption, topRow]);
   useEffect(() => {
     if (settled) return;
     const frame = requestAnimationFrame(() => setSettled(true));
@@ -466,8 +480,10 @@ const placementStyle = (layout: StageLayout, index: number) => {
   } as CSSProperties;
 };
 
-const spotStyle = ({ spot }: StageLayout) =>
+// The beam starts under the keycap row rather than behind it.
+const spotStyle = ({ spot }: StageLayout, top = 0) =>
   ({
+    "--spot-top": `${top}px`,
     "--spot-x": `${spot.x}px`,
     "--spot-y": `${spot.bottom}px`,
     "--spot-size": `${spot.size}px`
@@ -476,11 +492,14 @@ const spotStyle = ({ spot }: StageLayout) =>
 function ProjectsStage({
   entries,
   caption,
+  keycaps,
   onOpenProject,
   leadHopKey = 0
 }: {
   entries: readonly HomeProjectEntry[];
   caption: ReactNode;
+  // The AI Client keycap row along the top of the stage.
+  keycaps?: ReactNode;
   onOpenProject: (projectId: string) => void;
   // Bumped when a coin lands on the lead Kin.
   leadHopKey?: number;
@@ -544,7 +563,8 @@ function ProjectsStage({
 
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
-  const [box, settled] = useStageBox(stageRef, captionRef);
+  const topRowRef = useRef<HTMLDivElement>(null);
+  const [box, settled] = useStageBox(stageRef, captionRef, topRowRef);
   const onStage = shown.slice(0, HOME_STAGE_LIMIT);
   const layout = layoutStage(
     box,
@@ -566,8 +586,11 @@ function ProjectsStage({
       <div
         className="v1-home-spot"
         aria-hidden="true"
-        style={spotStyle(layout)}
+        style={spotStyle(layout, box?.top)}
       />
+      <div className="v1-home-stage-top" ref={topRowRef}>
+        {keycaps}
+      </div>
       {stageKin.map((entry) => {
         const rank = onStage.indexOf(entry.id);
         const front = rank < 3;
@@ -660,6 +683,7 @@ function SoloStage({
   expression,
   label,
   caption,
+  keycaps,
   wide = false,
   hopKey
 }: {
@@ -667,13 +691,16 @@ function SoloStage({
   expression: "neutral" | "surprised" | "happy";
   label: string;
   caption: ReactNode;
+  // The AI Client keycap row along the top of the stage.
+  keycaps?: ReactNode;
   wide?: boolean;
   // Bumped when a coin lands on the Koed Kin.
   hopKey?: number;
 }) {
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
-  const [box, settled] = useStageBox(stageRef, captionRef);
+  const topRowRef = useRef<HTMLDivElement>(null);
+  const [box, settled] = useStageBox(stageRef, captionRef, topRowRef);
   const layout = layoutStage(box, box?.reserve ?? CAPTION_FALLBACK, soloSlots);
   return (
     <section
@@ -685,8 +712,11 @@ function SoloStage({
       <div
         className="v1-home-spot"
         aria-hidden="true"
-        style={spotStyle(layout)}
+        style={spotStyle(layout, box?.top)}
       />
+      <div className="v1-home-stage-top" ref={topRowRef}>
+        {keycaps}
+      </div>
       <div
         className="v1-home-host"
         data-coin-target
@@ -1066,7 +1096,6 @@ export function Home({
   if (view.kind === "loading")
     return (
       <section className="v1-home" aria-busy="true">
-        <Keycaps clients={[]} />
         <SoloStage
           agent={agent}
           expression="neutral"
@@ -1078,10 +1107,10 @@ export function Home({
   if (view.kind === "attention")
     return (
       <section className="v1-home" data-mood="attention">
-        {/* Koed has to be running again first; client changes can wait. */}
-        <Keycaps clients={clients} />
         <SoloStage
           agent={agent}
+          // Koed has to be running again first; client changes can wait.
+          keycaps={<Keycaps clients={clients} />}
           expression="surprised"
           label={`${agent.name} needs a hand`}
           wide
@@ -1112,13 +1141,15 @@ export function Home({
     return (
       <section className="v1-home" data-mood="ingesting">
         {warnings}
-        <Keycaps
-          clients={clients}
-          ingestion={view.ingestion}
-          statusStore={statusStore}
-        />
         <SoloStage
           agent={agent}
+          keycaps={
+            <Keycaps
+              clients={clients}
+              ingestion={view.ingestion}
+              statusStore={statusStore}
+            />
+          }
           expression={stuck.length ? "neutral" : "happy"}
           label="Reading your recent conversations"
           hopKey={coinHop}
@@ -1149,9 +1180,9 @@ export function Home({
     return (
       <section className="v1-home" data-mood="empty">
         {warnings}
-        <Keycaps clients={clients} statusStore={statusStore} />
         <SoloStage
           agent={agent}
+          keycaps={<Keycaps clients={clients} statusStore={statusStore} />}
           expression="neutral"
           label="No Projects yet"
           caption={
@@ -1185,12 +1216,14 @@ export function Home({
   return (
     <section className="v1-home" data-mood="projects">
       {warnings}
-      <Keycaps
-        clients={clients}
-        statusStore={statusStore}
-        {...(view.ingestion ? { ingestion: view.ingestion } : {})}
-      />
       <ProjectsStage
+        keycaps={
+          <Keycaps
+            clients={clients}
+            statusStore={statusStore}
+            {...(view.ingestion ? { ingestion: view.ingestion } : {})}
+          />
+        }
         entries={entries}
         onOpenProject={onOpenProject}
         leadHopKey={coinHop}

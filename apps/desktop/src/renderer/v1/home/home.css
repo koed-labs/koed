@@ -220,7 +220,7 @@
   flex-direction: column;
   justify-content: flex-end;
   align-items: center;
-  padding: 150px 24px 28px;
+  padding: 24px 24px 28px;
   border-radius: 28px;
   overflow: hidden;
   background:
@@ -381,7 +381,18 @@
   position: relative;
   z-index: 2;
   width: min(460px, 100%);
+  /* At least this much room for the Kin between the keycaps and caption. */
+  margin-top: 150px;
   text-align: center;
+}
+/* The AI Client keycaps run along the top of the stage; with no clients the
+   row is empty and takes no room. */
+.v1-home-stage-top {
+  position: relative;
+  z-index: 3;
+  flex: none;
+  width: 100%;
+  margin-bottom: auto;
 }
 .v1-home-caption[data-wide] {
   width: min(600px, 100%);
@@ -407,7 +418,7 @@
 .v1-home-spot::before {
   content: "";
   position: absolute;
-  top: -24px;
+  top: calc(var(--spot-top, 0px) - 24px);
   bottom: var(--spot-y);
   left: calc(50% + var(--spot-x));
   width: calc(var(--spot-size) * 2.2);
