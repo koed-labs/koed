@@ -68,7 +68,11 @@ leaves.
   Counts are the stored captured events of the conversations the sidebar lists
   for the Project; subagent conversations are not listed on their own, so they
   are not counted either, and a Project with no listed conversation is left off
-  Home (the sidebar still lists it). The Projects list is read again, up to three times, when
+  Home (the sidebar still lists it). Conversations in no Project lie on the
+  stage floor as golden coins, newest first and at most 16, in the gaps
+  between the front Kin; hovering or focusing one shows its title with its AI
+  Client's logo, and clicking opens it and expands "No project" in the
+  sidebar. The Projects list is read again, up to three times, when
   the API reports that membership changed mid-read, as it does constantly while
   history imports; only a list that keeps changing reports a failed load.
   Ranking uses those conversations' latest activity, then name, then id.

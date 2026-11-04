@@ -781,6 +781,31 @@ export function V1App({
     projectId: string;
     key: number;
   } | null>(null);
+  // Conversations in no Project lie on Home's floor as coins.
+  const looseConversations = useMemo(
+    () =>
+      (
+        sidebarProjects.find((project) => project.id === "no-project")
+          ?.conversations ?? []
+      ).map(({ key, title, latestAt, client }) => ({
+        key,
+        title,
+        latestAt,
+        client
+      })),
+    [sidebarProjects]
+  );
+  const openLooseConversation = (key: string) => {
+    const conversation = sidebarProjects
+      .find((project) => project.id === "no-project")
+      ?.conversations.find((item) => item.key === key);
+    if (!conversation) return;
+    setRoute(conversation.route);
+    setRevealProject((previous) => ({
+      projectId: "no-project",
+      key: (previous?.key ?? 0) + 1
+    }));
+  };
   const openProject = (projectId: string) => {
     const latest = sidebarProjects
       .find((project) => project.id === projectId)
@@ -987,6 +1012,8 @@ export function V1App({
               agent={agent}
               statusStore={statusStore}
               onOpenProject={openProject}
+              looseConversations={looseConversations}
+              onOpenConversation={openLooseConversation}
             />
           )}
           {settingsOpen && (

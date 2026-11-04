@@ -735,3 +735,76 @@ button.v1-home-pill[data-repair]:hover {
   gap: 8px;
   margin-top: 4px;
 }
+
+/* Conversations in no Project lie on the floor as coins, flattened as if
+   seen lying down; hover or focus names one. */
+.v1-home-floor {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.v1-home-floor-coin {
+  all: unset;
+  position: absolute;
+  left: var(--coin-x);
+  bottom: var(--coin-y);
+  width: 20px;
+  height: 20px;
+  transform: translateX(-50%) scaleY(0.6);
+  transform-origin: 50% 100%;
+  cursor: pointer;
+  pointer-events: auto;
+  filter: drop-shadow(0 2px 0 rgb(0 0 0 / 0.25));
+  transition: transform 160ms ease;
+}
+.v1-home-floor-coin svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.v1-home-floor-coin:hover,
+.v1-home-floor-coin:focus-visible {
+  transform: translateX(-50%) translateY(-3px) scaleY(1);
+}
+.v1-home-floor-coin:focus-visible {
+  outline: 2px solid var(--v1-accent-text);
+  outline-offset: 3px;
+  border-radius: 50%;
+}
+.v1-home-floor-tip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--v1-border);
+  border-radius: 10px;
+  background: var(--v1-card);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+  color: var(--v1-fg);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+}
+.v1-home-floor-coin:hover .v1-home-floor-tip,
+.v1-home-floor-coin:focus-visible .v1-home-floor-tip {
+  display: inline-flex;
+}
+.v1-home-floor-client {
+  display: inline-grid;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.v1-home-floor-client svg {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}

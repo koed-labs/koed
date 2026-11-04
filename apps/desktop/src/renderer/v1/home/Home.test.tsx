@@ -112,6 +112,43 @@ describe("Home", () => {
     root = createRoot(container);
   });
 
+  it("lays conversations in no Project on the floor as coins", async () => {
+    const onOpenConversation = vi.fn();
+    await render({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      looseConversations: [
+        {
+          key: "older",
+          title: "Older loose chat",
+          latestAt: "2026-11-01T00:00:00Z",
+          client: null
+        },
+        {
+          key: "newer",
+          title: "Pi OAuth and Extension Repair",
+          latestAt: "2026-11-03T00:00:00Z",
+          client: "pi"
+        }
+      ],
+      onOpenConversation
+    });
+    const coins = [
+      ...container.querySelectorAll<HTMLButtonElement>(".v1-home-floor-coin")
+    ];
+    // Newest first; the tooltip names it, with its client's logo.
+    expect(coins.map((coin) => coin.getAttribute("aria-label"))).toEqual([
+      "Open Pi OAuth and Extension Repair",
+      "Open Older loose chat"
+    ]);
+    expect(coins[0]!.querySelector('[role="tooltip"]')?.textContent).toBe(
+      "Pi OAuth and Extension Repair"
+    );
+    expect(coins[0]!.querySelector(".v1-home-floor-client")).not.toBeNull();
+    expect(coins[1]!.querySelector(".v1-home-floor-client")).toBeNull();
+    await act(async () => coins[0]!.click());
+    expect(onOpenConversation.mock.calls).toEqual([["newer"]]);
+  });
+
   it("opens a Project from its Kin", async () => {
     const onOpenProject = vi.fn();
     await render({

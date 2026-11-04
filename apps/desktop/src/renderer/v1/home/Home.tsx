@@ -493,6 +493,7 @@ function ProjectsStage({
   entries,
   caption,
   keycaps,
+  floorCoins,
   onOpenProject,
   leadHopKey = 0
 }: {
@@ -500,6 +501,8 @@ function ProjectsStage({
   caption: ReactNode;
   // The AI Client keycap row along the top of the stage.
   keycaps?: ReactNode;
+  // Conversations in no Project, lying on the floor.
+  floorCoins?: FloorCoinsInput;
   onOpenProject: (projectId: string) => void;
   // Bumped when a coin lands on the lead Kin.
   leadHopKey?: number;
@@ -639,6 +642,14 @@ function ProjectsStage({
           </button>
         );
       })}
+      {floorCoins && (
+        <FloorCoins
+          layout={layout}
+          width={box?.width}
+          floor={(box?.reserve ?? CAPTION_FALLBACK) - 10}
+          coins={floorCoins}
+        />
+      )}
       <div className="v1-home-caption" ref={captionRef}>
         {caption}
       </div>
@@ -684,6 +695,7 @@ function SoloStage({
   label,
   caption,
   keycaps,
+  floorCoins,
   wide = false,
   hopKey
 }: {
@@ -693,6 +705,8 @@ function SoloStage({
   caption: ReactNode;
   // The AI Client keycap row along the top of the stage.
   keycaps?: ReactNode;
+  // Conversations in no Project, lying on the floor.
+  floorCoins?: FloorCoinsInput;
   wide?: boolean;
   // Bumped when a coin lands on the Koed Kin.
   hopKey?: number;
@@ -730,6 +744,14 @@ function SoloStage({
         />
         <span className="v1-home-kin-shadow" aria-hidden="true" />
       </div>
+      {floorCoins && (
+        <FloorCoins
+          layout={layout}
+          width={box?.width}
+          floor={(box?.reserve ?? CAPTION_FALLBACK) - 10}
+          coins={floorCoins}
+        />
+      )}
       <div
         className="v1-home-caption"
         data-wide={wide || undefined}
@@ -834,19 +856,111 @@ function FlyingCoin({ coin, onDone }: { coin: Coin; onDone: () => void }) {
   }, [coin]);
   return (
     <span className="v1-home-coin" ref={ref}>
-      <svg viewBox="0 0 8 8" shapeRendering="crispEdges">
-        {COIN_RUNS.map(({ x, y, width, fill }) => (
-          <rect
-            key={`${x}-${y}`}
-            x={x}
-            y={y}
-            width={width}
-            height={1}
-            style={{ fill }}
-          />
-        ))}
-      </svg>
+      <PixelCoin />
     </span>
+  );
+}
+
+function PixelCoin() {
+  return (
+    <svg viewBox="0 0 8 8" shapeRendering="crispEdges">
+      {COIN_RUNS.map(({ x, y, width, fill }) => (
+        <rect
+          key={`${x}-${y}`}
+          x={x}
+          y={y}
+          width={width}
+          height={1}
+          style={{ fill }}
+        />
+      ))}
+    </svg>
+  );
+}
+
+export type HomeLooseConversation = {
+  key: string;
+  title: string;
+  latestAt: string;
+  client: "codex" | "claude" | "pi" | null;
+};
+type FloorCoinsInput = {
+  conversations: readonly HomeLooseConversation[];
+  onOpen: (key: string) => void;
+};
+// The most coins left lying on the floor; the sidebar lists the rest.
+const FLOOR_COIN_LIMIT = 16;
+const FLOOR_COIN_GAP = 34;
+
+// Conversations in no Project lie as coins on the stage floor, just above the
+// caption, in the gaps between the front Kin. Hover or focus names one;
+// clicking opens it.
+function FloorCoins({
+  layout,
+  width,
+  floor,
+  coins
+}: {
+  layout: StageLayout;
+  width: number | undefined;
+  floor: number;
+  coins: FloorCoinsInput;
+}) {
+  const conversations = [...coins.conversations]
+    .sort((left, right) => right.latestAt.localeCompare(left.latestAt))
+    .slice(0, FLOOR_COIN_LIMIT);
+  if (!conversations.length) return null;
+  const half = (width ?? 900) / 2 - 40;
+  // Kin standing near the floor keep their feet and labels clear.
+  const taken = layout.placements
+    .filter((placement) => placement.bottom < floor + 60)
+    .map((placement) => ({
+      x: placement.x,
+      reach: Math.max(placement.size / 2, 80) + 12
+    }));
+  const free: number[] = [];
+  for (
+    let step = 0;
+    free.length < conversations.length && step * FLOOR_COIN_GAP <= half;
+    step += 1
+  )
+    for (const x of step === 0
+      ? [0]
+      : [step * FLOOR_COIN_GAP, -step * FLOOR_COIN_GAP])
+      if (
+        free.length < conversations.length &&
+        !taken.some((kin) => Math.abs(kin.x - x) < kin.reach)
+      )
+        free.push(x);
+  return (
+    <div className="v1-home-floor" aria-label="Conversations in no Project">
+      {conversations.slice(0, free.length).map((conversation, index) => (
+        <button
+          key={conversation.key}
+          type="button"
+          className="v1-home-floor-coin"
+          style={
+            {
+              "--coin-x": `calc(50% + ${free[index]}px)`,
+              "--coin-y": `${floor}px`
+            } as CSSProperties
+          }
+          aria-label={`Open ${conversation.title}`}
+          onClick={() => coins.onOpen(conversation.key)}
+        >
+          <PixelCoin />
+          {/* The coin is too small for a legible logo; the tooltip carries it. */}
+          <span className="v1-home-floor-tip" role="tooltip">
+            {conversation.client && (
+              <span className="v1-home-floor-client" aria-hidden="true">
+                <AiClientLogo id={conversation.client} />
+              </span>
+            )}
+            {conversation.title}
+          </span>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -1077,7 +1191,9 @@ export function Home({
   entries,
   agent,
   statusStore,
-  onOpenProject
+  onOpenProject,
+  looseConversations = [],
+  onOpenConversation
 }: {
   view: HomeView;
   clients: readonly HomeClient[];
@@ -1085,7 +1201,13 @@ export function Home({
   agent: { name: string; look: AgentLook };
   statusStore: DesktopStatusStore;
   onOpenProject: (projectId: string) => void;
+  looseConversations?: readonly HomeLooseConversation[];
+  onOpenConversation?: (key: string) => void;
 }) {
+  const floorCoins =
+    onOpenConversation && looseConversations.length
+      ? { conversations: looseConversations, onOpen: onOpenConversation }
+      : undefined;
   useEffect(() => {
     const timer = window.setInterval(() => void statusStore.refresh(), 15_000);
     return () => window.clearInterval(timer);
@@ -1152,6 +1274,7 @@ export function Home({
           }
           expression={stuck.length ? "neutral" : "happy"}
           label="Reading your recent conversations"
+          floorCoins={floorCoins}
           hopKey={coinHop}
           caption={
             <>
@@ -1185,6 +1308,7 @@ export function Home({
           keycaps={<Keycaps clients={clients} statusStore={statusStore} />}
           expression="neutral"
           label="No Projects yet"
+          floorCoins={floorCoins}
           caption={
             <>
               <h1>A quiet stage, for now</h1>
@@ -1217,6 +1341,7 @@ export function Home({
     <section className="v1-home" data-mood="projects">
       {warnings}
       <ProjectsStage
+        floorCoins={floorCoins}
         keycaps={
           <Keycaps
             clients={clients}
