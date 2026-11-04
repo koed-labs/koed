@@ -545,15 +545,31 @@ const isUnrepresentableRecordError = (error: unknown): boolean =>
   error instanceof Error &&
   error.message === "historical_record_exceeds_batch_limit";
 
-const skipUnrepresentableSource = async (
+// The Memory API rejecting a batch as invalid (400) is just as permanent: the
+// same records are sent on every retry. Skip the Conversation, keeping the
+// API's code as the reason, rather than block every newer selection.
+const rejectedBatchReason = (error: unknown): string | null => {
+  if (!(error instanceof MemoryApiError) || error.status !== 400) return null;
+  const payload = error.payload;
+  const code =
+    typeof payload === "object" && payload !== null && "code" in payload
+      ? payload.code
+      : undefined;
+  return typeof code === "string" && /^[a-z0-9_.:-]{1,128}$/.test(code)
+    ? code
+    : "historical_batch_rejected";
+};
+
+const skipUnimportableSource = async (
   client: MemoryApiClient,
-  source: HistoricalSource
+  source: HistoricalSource,
+  failureReason: string
 ): Promise<void> => {
   try {
     await client.transitionHistoricalImportSource(source.id, {
       expectedState: "importing",
       state: "failed",
-      failureReason: "historical_record_exceeds_batch_limit"
+      failureReason
     });
   } catch (error) {
     if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
@@ -787,12 +803,19 @@ export const createCodexHistoricalProviderAdapter = (input: {
             config
           });
         } catch (error) {
-          if (!isUnrepresentableRecordError(error)) throw error;
-          await skipUnrepresentableSource(input.client, source);
+          const reason = isUnrepresentableRecordError(error)
+            ? "historical_record_exceeds_batch_limit"
+            : rejectedBatchReason(error);
+          if (!reason) throw error;
+          await skipUnimportableSource(input.client, source, reason);
           return {
             state: "skipped",
             selection: currentSelection,
-            runId: activeRunId
+            runId: activeRunId,
+            // Logged, so a skipped Conversation is never silent.
+            ...(reason === "historical_record_exceeds_batch_limit"
+              ? {}
+              : { diagnosticCode: reason })
           };
         }
         if (progressed) {

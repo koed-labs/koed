@@ -289,7 +289,9 @@ artifact with journal start zero and an immutable `live_start_offset`. If the
 watcher registered first and the transcript advanced before discovery, the
 coordinator narrows its selection to that earlier artifact boundary. A later
 artifact boundary than the frozen selection remains a conflict because it
-would classify post-selection bytes as history. This closes the old gap where
+would classify post-selection bytes as history. The coordinator skips that
+Conversation and logs the conflict code instead of retrying it on every pass,
+so it cannot hold back newer selections. This closes the old gap where
 an unchanged baseline source existed only in watcher-local state. Local source
 paths remain transient discovery inputs and do not enter the coordinator's
 durable state or canonical identity. Unselected baseline sources retain the
@@ -310,7 +312,9 @@ The automatic historical coordinator for each AI Client keeps its selection in
 `KOED_HOME/state/<client>-historical-ingestion.json`, with a `progress` record
 of when it last wrote, its last batch outcome, its last progress, and its last
 pass failure, plus when the current run of failures began (cleared by any
-progress). Koed status summarises that file without starting or changing
+progress). A pass failure records the most specific safe code available,
+including the Memory API's code for a rejected request, rather than a generic
+pass failure. Koed status summarises that file without starting or changing
 ingestion: Conversations count as finished only at a completed or skipped
 outcome, skipped is reported separately, and an unfinished run with no write
 for 15 minutes is reported as idle, never as resumed. Desktop Home uses this
@@ -324,6 +328,11 @@ returns `historical_import_run_not_found`, and the provider then starts a new
 run for that source. A run that is still open but cannot accept the artifact
 returns `historical_import_artifact_unavailable` instead, which does not start
 a run.
+
+A failure that is the same on every retry skips the Conversation rather than
+blocking every newer selection: a Codex record too large for any batch, or a
+Codex batch the Memory API rejects as invalid (a 400, whose code becomes the
+skip's failure reason and is logged).
 
 Before each page,
 Koed compares cursor offset with bounded SHA-256 first/last prefix sentinels.

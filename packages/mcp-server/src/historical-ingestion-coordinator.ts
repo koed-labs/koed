@@ -159,6 +159,29 @@ const persistState = (
   renameSync(temporary, statePath);
 };
 
+const safeCode = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-z0-9_.:-]+$/.test(value);
+
+// The most specific safe code for a failed pass: the error's own code, or the
+// Memory API's code for a rejected request, which would otherwise be lost
+// behind its readable message.
+export const historicalPassErrorCode = (error: unknown): string => {
+  if (error instanceof Error && safeCode(error.message)) return error.message;
+  const { payload, status } = (error ?? {}) as {
+    payload?: unknown;
+    status?: unknown;
+  };
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    "code" in payload &&
+    safeCode(payload.code)
+  )
+    return payload.code;
+  if (typeof status === "number") return `memory_api_http_${status}`;
+  return "historical_ingestion_pass_failed";
+};
+
 export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   adapter: HistoricalProviderAdapter<Candidate>;
   koedHome: string;
@@ -272,11 +295,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
         const progressed = await pass();
         if (progressed) requested = true;
       } catch (error) {
-        reportError(
-          error instanceof Error && /^[a-z0-9_.:-]+$/.test(error.message)
-            ? error.message
-            : "historical_ingestion_pass_failed"
-        );
+        reportError(historicalPassErrorCode(error));
       }
     })().finally(() => {
       running = null;
