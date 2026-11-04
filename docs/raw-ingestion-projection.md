@@ -266,7 +266,8 @@ clients are connected in `KOED_HOME/state/ai-client-connections.json`; a check
 that fails keeps the previous value. The Local AI Runtime rechecks that record
 every 10 seconds and starts or stops each client's Transcript Watcher and
 automatic history to match, so connecting or disconnecting needs no restart. A
-client that was never recorded is not read. Stopping keeps the coordinator's
+client that was never recorded is not read. A headless remote runtime records
+the harnesses its consented descriptor names, since no status check runs there. Stopping keeps the coordinator's
 state, so a client that is connected again resumes its frozen cohort.
 
 The first successful bounded full discovery cycle establishes activation and
@@ -323,7 +324,8 @@ The automatic historical coordinator for each AI Client keeps its selection in
 of when it last wrote, its last batch outcome, its last progress, and its last
 pass failure, plus when the current run of failures began (cleared by any
 progress or by a pass that runs without failing, such as while selected
-sources finish downstream; stopping the runtime is not a failure). A pass failure records the most specific safe code available,
+sources finish downstream, which records `recoveredAt` so status stops reporting
+the failure; stopping the runtime is not a failure). A pass failure records the most specific safe code available,
 including the Memory API's code for a rejected request, rather than a generic
 pass failure. Koed status summarises that file without starting or changing
 ingestion: Conversations count as finished only at a completed or skipped

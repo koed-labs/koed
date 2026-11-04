@@ -366,6 +366,7 @@ describe("provider-owned historical discovery", () => {
     expect(coordinator.snapshot().progress?.lastErrorCode).toBe(
       "historical_batch_rejected"
     );
+    expect(coordinator.snapshot().progress?.recoveredAt).toBeDefined();
     await coordinator.stop();
   });
 

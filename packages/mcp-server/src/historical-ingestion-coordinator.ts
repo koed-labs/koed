@@ -299,6 +299,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
         if (state.progress?.failingSince) {
           const progress = { ...state.progress };
           delete progress.failingSince;
+          progress.recoveredAt = nowIso();
           state.progress = progress;
           save();
         }

@@ -90,6 +90,22 @@ describe("summarizeHistoricalIngestionState", () => {
         now
       ).lifecycle
     ).toBe("waiting");
+    // A clean pass after a failure ends it, even without new progress.
+    expect(
+      summarizeHistoricalIngestionState(
+        state({
+          progress: {
+            updatedAt: at(1),
+            lastBatchState: "waiting",
+            lastProgressAt: at(60_000),
+            lastErrorCode: "historical_batch_rejected",
+            lastErrorAt: at(30_000),
+            recoveredAt: at(5_000)
+          }
+        }),
+        now
+      ).lifecycle
+    ).toBe("waiting");
     expect(
       summarizeHistoricalIngestionState(state({ progress: undefined }), now)
         .lifecycle

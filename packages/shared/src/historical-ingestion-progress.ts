@@ -23,6 +23,8 @@ export interface HistoricalIngestionProgressRecord {
   lastErrorAt?: string;
   /** First failure since the last progress; cleared when progress resumes. */
   failingSince?: string;
+  /** When a pass last ran without failing after a failure. */
+  recoveredAt?: string;
 }
 
 export type HistoricalIngestionLifecycle =
@@ -81,7 +83,8 @@ export const readHistoricalIngestionProgressRecord = (
     ...text("lastProgressAt"),
     ...text("lastErrorCode"),
     ...text("lastErrorAt"),
-    ...text("failingSince")
+    ...text("failingSince"),
+    ...text("recoveredAt")
   } as HistoricalIngestionProgressRecord;
 };
 
@@ -122,8 +125,13 @@ export function summarizeHistoricalIngestionState(
   if (now - updatedAt > HISTORICAL_INGESTION_STALE_MS)
     return { ...base, lifecycle: "idle" };
   const errorAt = timestamp(progress.lastErrorAt);
-  const progressAt = timestamp(progress.lastProgressAt);
-  if (errorAt !== null && (progressAt === null || errorAt > progressAt))
+  // A later clean pass ends a failure even when it made no progress, such as
+  // while selected sources finish downstream.
+  const settledAt = Math.max(
+    timestamp(progress.lastProgressAt) ?? Number.NEGATIVE_INFINITY,
+    timestamp(progress.recoveredAt) ?? Number.NEGATIVE_INFINITY
+  );
+  if (errorAt !== null && errorAt > settledAt)
     return {
       ...base,
       lifecycle: "failed",
