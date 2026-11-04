@@ -110,7 +110,8 @@ function aim(actor: PixelkinActor): [number, number] {
     dy = pointer.y - (rect.top + rect.height / 2);
   const distance = Math.hypot(dx, dy);
   if (distance < rect.width * 0.35) return [0, 0];
-  return [dx / distance, Math.max(-1, Math.min(1, dy / distance))];
+  // Screen Y grows downward; the renderer’s gaze and pitch use upward Y.
+  return [dx / distance, Math.max(-1, Math.min(1, -dy / distance))];
 }
 
 function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
