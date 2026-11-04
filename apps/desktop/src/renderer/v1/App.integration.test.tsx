@@ -533,5 +533,8 @@ describe("V1App launch integration", () => {
     // Home is the stage; there is no new-chat composer any more.
     expect(container.querySelector(".v1-home")).not.toBeNull();
     expect(container.querySelector('[aria-label="First message"]')).toBeNull();
+    expect(container.querySelector(".v1-navigation-title")?.textContent).toBe(
+      "Home"
+    );
   });
 });

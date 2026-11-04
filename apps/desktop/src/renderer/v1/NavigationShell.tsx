@@ -190,7 +190,7 @@ function ShellContent(props: Props) {
             </span>
           )}
           <span className="v1-navigation-title">
-            {props.title ?? "New conversation"}
+            {props.title ?? "Conversation"}
           </span>
         </header>
         <div className="v1-navigation-content">{props.children}</div>

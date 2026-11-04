@@ -888,7 +888,11 @@ export function V1App({
           projects={sidebarProjects}
           route={route}
           scopeKey={scopeKey}
-          title={conversationThread?.name}
+          title={
+            route.kind === "home"
+              ? "Home"
+              : (conversationThread?.name ?? "Conversation")
+          }
           projectName={conversationProject?.name}
           profileName={profileName}
           onSelect={setRoute}
