@@ -3,7 +3,7 @@ import type {
   PrivacyInstallStatus
 } from "../../../cli-install/protocol.js";
 import type { LauncherStatus } from "../../../cli-install/launcher.js";
-import type { InstallState, InstallTool } from "./InstallSetupDialog.js";
+import type { InstallState, InstallTool } from "./InstallSetupContent.js";
 
 type Job = InstallState & {
   message?: string;
