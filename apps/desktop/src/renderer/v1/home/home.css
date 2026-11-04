@@ -12,14 +12,6 @@
   padding: 20px 28px 32px;
   background: var(--v1-bg);
 }
-.v1-home-centred {
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-}
-.v1-home-copy {
-  max-width: 540px;
-}
 .v1-home h1 {
   margin: 0 0 8px;
   font-size: 30px;
@@ -33,11 +25,15 @@
   color: var(--v1-muted);
 }
 
+/* A fixed height keeps the stage in place whatever each client shows. */
 .v1-home-keycaps {
+  flex: none;
   display: flex;
   justify-content: center;
+  align-items: flex-start;
   flex-wrap: wrap;
   gap: 32px;
+  min-height: 136px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -192,10 +188,18 @@
   font-size: 26px;
 }
 
+/* Every state is one stage: Kin stand above a caption at the bottom. The
+   stage fills the window and grows (the page scrolls) only if the caption
+   needs more room than is left. */
 .v1-home-stage {
   position: relative;
-  flex: none;
-  height: 440px;
+  flex: 1 0 auto;
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 150px 24px 28px;
   border-radius: 28px;
   overflow: hidden;
   background:
@@ -341,12 +345,17 @@
   }
 }
 
-.v1-home-stage .v1-home-caption {
-  position: absolute;
-  left: 50%;
-  bottom: 28px;
-  transform: translateX(-50%);
+.v1-home-caption {
+  position: relative;
+  z-index: 2;
+  width: min(460px, 100%);
   text-align: center;
+}
+.v1-home-caption[data-wide] {
+  width: min(600px, 100%);
+}
+.v1-home-caption .v1-home-problems {
+  margin-top: 20px;
 }
 @media (prefers-reduced-motion: reduce) {
   .v1-home-feed {
@@ -356,14 +365,6 @@
 
 .v1-home-kin[data-hatch] .v1-pixelkin {
   animation: v1-home-hatch 900ms ease both;
-}
-.v1-home-fill {
-  overflow: hidden;
-}
-.v1-home-fill .v1-home-stage {
-  flex: 1;
-  height: auto;
-  min-height: 340px;
 }
 /* A beam from the top of the stage that lands on the lead Kin. The layout
    sets where (--spot-x, --spot-y) and how big (--spot-size). */
@@ -404,27 +405,6 @@
     transparent
   );
 }
-/* A lone Kin outside a stage gets its own short beam. */
-.v1-home-solo {
-  position: relative;
-  display: grid;
-  justify-items: center;
-}
-.v1-home-solo > :not(.v1-home-spot) {
-  position: relative;
-  z-index: 1;
-}
-.v1-home-solo > .v1-home-spot {
-  --spot-x: 0px;
-  --spot-y: 0px;
-  --spot-size: 100px;
-  inset: auto;
-  left: 50%;
-  bottom: -14px;
-  width: 360px;
-  height: 200px;
-  transform: translateX(-50%);
-}
 .v1-home[data-mood="attention"] .v1-home-spot {
   --spot-light: var(--v1-heat-4);
 }
@@ -440,10 +420,7 @@
   transform: translateX(-50%);
   --kin-heat: var(--v1-accent);
 }
-.v1-home-caption {
-  z-index: 2;
-  width: min(460px, calc(100% - 48px));
-}
+
 .v1-home-caption h1 {
   font-size: 26px;
 }

@@ -68,7 +68,7 @@ export function layoutStage(
     scale = Math.max(STAGE_MIN_SCALE, fit);
     // Spare height goes partly under the Kin so they don't sit on the caption.
     const used = Math.max(...slots.map((slot) => top(slot, scale)));
-    lift = Math.max(0, Math.min((room - used) * 0.3, 80));
+    lift = Math.max(0, Math.min((room - used) * 0.3, 56));
   }
   const floor = reserve + lift;
   const placements = slots.map((slot) => ({

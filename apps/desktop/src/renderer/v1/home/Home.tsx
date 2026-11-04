@@ -88,7 +88,9 @@ function Keycaps({
   clients: readonly HomeClient[];
   ingestion?: HomeIngestion;
 }) {
-  if (!clients.length) return null;
+  // An empty row keeps the stage where it will be once the clients load.
+  if (!clients.length)
+    return <div className="v1-home-keycaps" aria-hidden="true" />;
   const progress = new Map(
     ingestion?.clients.map((client) => [client.id, client])
   );
@@ -462,6 +464,53 @@ const ingestionLine = (client: HomeIngestionClient) => {
   }
 };
 
+// Every Home state shares one stage; without Projects the Koed Kin stands
+// alone in the spotlight above the caption.
+const soloSlots: readonly StageSlot[] = [{ x: 0, y: 0, size: 96, label: 0 }];
+
+function SoloStage({
+  agent,
+  expression,
+  label,
+  caption,
+  wide = false
+}: {
+  agent: { name: string; look: AgentLook };
+  expression: "neutral" | "surprised";
+  label: string;
+  caption: ReactNode;
+  wide?: boolean;
+}) {
+  const stageRef = useRef<HTMLElement>(null);
+  const captionRef = useRef<HTMLDivElement>(null);
+  const box = useStageBox(stageRef, captionRef);
+  const layout = layoutStage(box, box?.reserve ?? CAPTION_FALLBACK, soloSlots);
+  return (
+    <section ref={stageRef} className="v1-home-stage" aria-label={label}>
+      <div
+        className="v1-home-spot"
+        aria-hidden="true"
+        style={spotStyle(layout)}
+      />
+      <div className="v1-home-host" style={placementStyle(layout, 0)}>
+        <Pixelkin
+          look={agent.look}
+          size={layout.placements[0]!.size}
+          expression={expression}
+        />
+        <span className="v1-home-kin-shadow" aria-hidden="true" />
+      </div>
+      <div
+        className="v1-home-caption"
+        data-wide={wide || undefined}
+        ref={captionRef}
+      >
+        {caption}
+      </div>
+    </section>
+  );
+}
+
 // The Koed Kin leads; Projects gather around it, nearest first, and the
 // further back they stand the higher and smaller they are.
 const hatchSlots: readonly StageSlot[] = [
@@ -661,33 +710,39 @@ export function Home({
 }) {
   if (view.kind === "loading")
     return (
-      <section className="v1-home v1-home-centred" aria-busy="true">
-        <div className="v1-home-solo">
-          <span className="v1-home-spot" aria-hidden="true" />
-          <Pixelkin look={agent.look} size={96} expression="neutral" />
-        </div>
-        <p className="v1-home-sub">Checking on your Projects…</p>
+      <section className="v1-home" aria-busy="true">
+        <Keycaps clients={[]} />
+        <SoloStage
+          agent={agent}
+          expression="neutral"
+          label="Checking on your Projects"
+          caption={<p className="v1-home-sub">Checking on your Projects…</p>}
+        />
       </section>
     );
   if (view.kind === "attention")
     return (
-      <section className="v1-home v1-home-centred" data-mood="attention">
+      <section className="v1-home" data-mood="attention">
         <Keycaps clients={clients} />
-        <div className="v1-home-solo">
-          <span className="v1-home-spot" aria-hidden="true" />
-          <Pixelkin look={agent.look} size={112} expression="surprised" />
-        </div>
-        <div className="v1-home-copy">
-          <h1>{agent.name} needs a hand</h1>
-          <p className="v1-home-sub">
-            Your Projects can’t load until this is sorted. Nothing has been
-            lost.
-          </p>
-        </div>
-        <ProblemList
-          problems={view.problems}
-          primary={view.primary}
-          statusStore={statusStore}
+        <SoloStage
+          agent={agent}
+          expression="surprised"
+          label={`${agent.name} needs a hand`}
+          wide
+          caption={
+            <>
+              <h1>{agent.name} needs a hand</h1>
+              <p className="v1-home-sub">
+                Your Projects can’t load until this is sorted. Nothing has been
+                lost.
+              </p>
+              <ProblemList
+                problems={view.problems}
+                primary={view.primary}
+                statusStore={statusStore}
+              />
+            </>
+          }
         />
       </section>
     );
@@ -696,7 +751,7 @@ export function Home({
   );
   if (view.kind === "ingesting")
     return (
-      <section className="v1-home v1-home-fill" data-mood="ingesting">
+      <section className="v1-home" data-mood="ingesting">
         {warnings}
         <Keycaps clients={clients} ingestion={view.ingestion} />
         <HatchingStage
@@ -709,26 +764,29 @@ export function Home({
     );
   if (view.kind === "empty")
     return (
-      <section className="v1-home v1-home-centred" data-mood="empty">
+      <section className="v1-home" data-mood="empty">
         {warnings}
         <Keycaps clients={clients} />
-        <div className="v1-home-solo">
-          <span className="v1-home-spot" aria-hidden="true" />
-          <Pixelkin look={agent.look} size={112} expression="neutral" />
-        </div>
-        <div className="v1-home-copy">
-          <h1>A quiet stage, for now</h1>
-          <p className="v1-home-sub">
-            {agent.name} is ready, but there’s no history to learn from yet.
-            Projects appear here as you work with your AI Clients.
-          </p>
-        </div>
+        <SoloStage
+          agent={agent}
+          expression="neutral"
+          label="No Projects yet"
+          caption={
+            <>
+              <h1>A quiet stage, for now</h1>
+              <p className="v1-home-sub">
+                {agent.name} is ready, but there’s no history to learn from yet.
+                Projects appear here as you work with your AI Clients.
+              </p>
+            </>
+          }
+        />
       </section>
     );
   const total = entries.reduce((sum, entry) => sum + entry.eventCount, 0);
   const offStage = entries.length - HOME_STAGE_LIMIT;
   return (
-    <section className="v1-home v1-home-fill" data-mood="projects">
+    <section className="v1-home" data-mood="projects">
       {warnings}
       <Keycaps clients={clients} />
       <ProjectsStage

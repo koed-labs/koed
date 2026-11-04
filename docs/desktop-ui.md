@@ -37,7 +37,11 @@ Project membership commands; execution Folder identity is not rewritten.
 ### Home
 
 Home is a read-only stage over existing state; it adds no backend calls and
-never starts a Conversation (New chat opens its own composer route).
+never starts a Conversation (New chat opens its own composer route). Every
+state uses the same layout: the AI Client keycaps in a fixed-height row (empty
+while loading), then one stage with Kin in a spotlight above a caption. Without
+Projects to show, the Koed Kin stands alone; the stage grows, and the page
+scrolls, only when the caption needs more room than the window leaves.
 
 - **Attention** replaces Home only when the local API or its database is down,
   or Koed is stopped, because Projects cannot load. Other setup problems and an

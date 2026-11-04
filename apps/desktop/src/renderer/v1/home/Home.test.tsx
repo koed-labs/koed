@@ -63,6 +63,18 @@ describe("Home", () => {
     )!;
   const front = (name: string) => kin(name).hasAttribute("data-lead");
 
+  it.each<HomeView>([
+    { kind: "loading" },
+    { kind: "attention", problems: [], primary: null },
+    { kind: "empty", warnings: [] }
+  ])("puts the $kind state on the same stage as Projects", async (view) => {
+    await render({ view, entries: [] });
+    expect(container.querySelector(".v1-home-keycaps")).not.toBeNull();
+    expect(
+      container.querySelector(".v1-home-stage .v1-home-caption")
+    ).not.toBeNull();
+  });
+
   it("opens a Project from its Kin", async () => {
     const onOpenProject = vi.fn();
     await render({
