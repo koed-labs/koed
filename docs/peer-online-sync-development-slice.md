@@ -1,6 +1,6 @@
 # Peer-online sync development slice
 
-The test-only peer transport slice exercises signed PDS lifecycle fixtures and in-process checkpoint delivery between two distinct PostgreSQL databases. It is not a production peer-online protocol or deployment. Separately, this work adds a production database guard against registering a local-origin source artifact on a replica Session; its migration fails on existing conflicts rather than repairing them automatically.
+The test-only peer transport slice exercises signed PDS lifecycle fixtures and in-process checkpoint delivery between two distinct PostgreSQL databases. It is not a production peer-online protocol or deployment.
 
 The fixture signs a genesis, an add-device statement with an authorized encrypted key bundle, and a tombstone statement. It verifies the statement chain and bundle, decrypts the bundle for its recipients, and issues test membership certificates at the fixture head. A later signed tombstone can be used to test a matching deletion floor. Lifecycle authorization, the Authority keys, admission, activation and certificates are test fixtures, not a decentralized governance implementation. The fixture does not exercise real pairing or key rotation.
 
