@@ -17,7 +17,6 @@ import type {
   V1Provenance
 } from "../../ipc/v1-state-protocol.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
-import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import {
   projectForLocalProject,
   sessionSelectionId
@@ -42,15 +41,14 @@ import { createCollaborationRendererClient } from "../../collaboration/renderer-
 import { DesktopStatusStore } from "../services/desktop-commands.js";
 import { createRendererPlatform } from "../services/platform.js";
 import { PersonalMemoryStore } from "../state/personal-memory.js";
-import {
-  useManagedConversationLifecycle,
-  type ManagedConversationDraft
-} from "../state/use-managed-conversation-lifecycle.js";
+import { useManagedConversationLifecycle } from "../state/use-managed-conversation-lifecycle.js";
 import { ThemeStore } from "../state/theme.js";
 import { useDesktopStatus } from "../state/use-status.js";
 import { NewConversationComposer } from "../views/personal/NewConversationComposer.js";
 import { StoreConversation } from "../views/personal/PersonalMemoryViews.js";
-import { ConversationProjectsDialog } from "../views/personal/ConversationProjectsDialog.js";
+import { NavigationShell } from "./NavigationShell.js";
+import { buildProjectSidebar } from "./project-sidebar-model.js";
+import { useNavigationHistory } from "./use-navigation-history.js";
 import {
   acknowledgeLateV1Capture,
   confirmV1ProjectMembership,
@@ -63,7 +61,6 @@ import {
   type OnboardingAgent,
   type OnboardingDraft
 } from "./onboarding.js";
-import { V1MemoryPanel } from "./memory.js";
 import {
   V1AgentContext,
   V1ConversationSurface,
@@ -76,13 +73,7 @@ import {
   v1State
 } from "./state.js";
 import { parseAgentLook, serializeAgentLook } from "./pixelkin/agent-kin.js";
-import {
-  DEFAULT_AGENT_LOOK,
-  V1EmptyHero,
-  V1Shell,
-  V1ThreadLayout,
-  type V1HistoryGroup
-} from "./visual.js";
+import { DEFAULT_AGENT_LOOK, V1EmptyHero } from "./visual.js";
 
 const defaultStatusStore = new DesktopStatusStore();
 const defaultThemeStore = new ThemeStore();
@@ -132,110 +123,6 @@ const launchInput = (
     : {}),
   idempotencyKey: intent.idempotencyKey
 });
-
-export const selectV1Projects = (
-  projects: readonly DesktopProject[],
-  provenance: V1Provenance
-): DesktopProject[] =>
-  projects.filter((project) => {
-    const namedId = project.namedProject?.projectId;
-    return (
-      Boolean(
-        namedId &&
-        Object.values(provenance.projects).some(
-          (intent) => intent.projectId === namedId
-        )
-      ) ||
-      Object.values(provenance.conversations).some(
-        (intent) => intent.presentationProjectId === project.id
-      )
-    );
-  });
-
-export const selectV1History = (provenance: V1Provenance) =>
-  Object.values(provenance.conversations).filter((intent) =>
-    Boolean(intent.executionId)
-  );
-
-export const projectConversationRows = (
-  project: DesktopProject,
-  visibleSessionIds: ReadonlySet<string>
-): PersonalDesktopProjectThread[] =>
-  project.threads
-    .filter(
-      (thread) => !!thread.sessionId && visibleSessionIds.has(thread.sessionId)
-    )
-    .sort((left, right) => right.latestAt.localeCompare(left.latestAt));
-
-export const projectConversationSummary = (
-  thread: PersonalDesktopProjectThread
-) =>
-  thread.sample.trim().replace(/\s+/gu, " ").slice(0, 110) || "No messages yet";
-
-export const projectConversationTime = (iso: string, now = new Date()) => {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const today = date.toDateString() === now.toDateString();
-  if (today)
-    return date.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  return date.toDateString() === yesterday.toDateString()
-    ? "Yesterday"
-    : date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
-};
-
-export const projectPageConversations = (
-  projectId: string,
-  captured: readonly PersonalDesktopProjectThread[],
-  intents: readonly V1ConversationIntent[],
-  drafts: ReadonlyMap<string, ManagedConversationDraft>
-) => {
-  const rows = captured.map((thread) => ({
-    key: thread.sessionId ?? thread.id,
-    executionId:
-      intents.find((intent) => intent.capturedSessionId === thread.sessionId)
-        ?.executionId ?? null,
-    title: thread.name || "Conversation",
-    summary: projectConversationSummary(thread),
-    latestAt: thread.latestAt,
-    pendingCapture: false,
-    pendingLabel: null as string | null
-  }));
-  for (const intent of intents) {
-    if (
-      intent.projectMembershipConfirmed ||
-      intent.presentationProjectId !== projectId ||
-      !intent.executionId ||
-      rows.some((row) => row.executionId === intent.executionId)
-    )
-      continue;
-    const draft = drafts.get(intent.executionId);
-    rows.push({
-      key: intent.executionId,
-      executionId: intent.executionId,
-      title: draft?.thread.name || "Conversation",
-      summary:
-        draft?.thread.sample.trim().replace(/\s+/gu, " ").slice(0, 110) ||
-        intent.initialPrompt?.prompt
-          ?.trim()
-          .replace(/\s+/gu, " ")
-          .slice(0, 110) ||
-        "Waiting for capture",
-      latestAt: draft?.thread.latestAt ?? intent.createdAt,
-      pendingCapture: !intent.capturedSessionId,
-      pendingLabel: intent.capturedSessionId
-        ? "Adding to Project"
-        : "Waiting for capture"
-    });
-  }
-  return rows.sort((left, right) =>
-    right.latestAt.localeCompare(left.latestAt)
-  );
-};
 
 export const shouldShowV1Onboarding = (
   profile: V1Profile,
@@ -290,22 +177,17 @@ export function V1App({
   const profileRef = useRef<V1Profile>(emptyProfile);
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const [scopeKey, setScopeKey] = useState<string | null>(null);
+  const [inventoryScope, setInventoryScope] = useState<string | null>(null);
   const scopeKeyRef = useRef<string | null>(null);
   scopeKeyRef.current = scopeKey;
   const [provenance, setProvenance] = useState<V1Provenance>(emptyProvenance);
   const [error, setError] = useState<string | null>(null);
-  const [route, setRoute] = useState<{
-    kind: "home" | "project" | "conversation";
-    projectId?: string;
-    executionId?: string;
-  }>({ kind: "home" });
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [newProjectFolderPath, setNewProjectFolderPath] = useState("");
+  const navigation = useNavigationHistory(scopeKey);
+  const { route, navigate: setRoute } = navigation;
+  const [profileName, setProfileName] = useState("User");
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [launchPending, setLaunchPending] = useState(false);
   const [composerGeneration, setComposerGeneration] = useState(0);
-  const [newProjectBusy, setNewProjectBusy] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null
   );
@@ -325,11 +207,7 @@ export function V1App({
   const [recoveryRevision, setRecoveryRevision] = useState(0);
   const [independentProject, setIndependentProject] =
     useState<DesktopProject | null>(null);
-  const [memoryOpen, setMemoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [membershipExecutionId, setMembershipExecutionId] = useState<
-    string | null
-  >(null);
   const [settingsTab, setSettingsTab] = useState<V1SettingsTab>("general");
   const [revision, setRevision] = useState(0);
   const attemptedReconcile = useRef(new Set<string>());
@@ -412,15 +290,25 @@ export function V1App({
       active = false;
     };
   }, [profileReadRevision]);
+  const loadInventory = useCallback(async () => {
+    if (!store || !scopeKey) return;
+    try {
+      const result = await store.loadProjects();
+      const identity = await readV1Identity();
+      if (
+        !result.error &&
+        identity.scopeKey === scopeKey &&
+        scopeKeyRef.current === scopeKey
+      )
+        setInventoryScope(scopeKey);
+    } catch (cause) {
+      if (scopeKeyRef.current === scopeKey) setError(String(cause));
+    }
+  }, [store, scopeKey]);
   useEffect(() => {
-    if (
-      !store ||
-      !profile?.onboarding.completed ||
-      status?.api.state !== "healthy"
-    )
-      return;
-    void store.loadProjects().catch((cause) => setError(String(cause)));
-  }, [store, profile?.onboarding.completed, status?.api.state]);
+    if (profile?.onboarding.completed && status?.api.state === "healthy")
+      void loadInventory();
+  }, [loadInventory, profile?.onboarding.completed, status?.api.state]);
   useEffect(() => {
     if (status?.api.state === "healthy") setError(null);
   }, [status?.api.state]);
@@ -431,7 +319,6 @@ export function V1App({
   useEffect(() => {
     if (
       !personalMemoryApi ||
-      !managedConversations ||
       !profile?.onboarding.completed ||
       status?.api.state !== "healthy"
     )
@@ -446,6 +333,7 @@ export function V1App({
         if (scopeKey !== identity.scopeKey) {
           attemptedReconcile.current.clear();
           attemptedCaptures.current.clear();
+          setProfileName("User");
           setOwnerId(identity.ownerId);
           setScopeKey(identity.scopeKey);
           setProvenance(emptyProvenance);
@@ -587,6 +475,7 @@ export function V1App({
   useEffect(() => {
     if (!profile?.onboarding.completed || status?.api.state !== "healthy")
       return;
+    let active = true;
     const collaborationClient = createCollaborationRendererClient(
       window.koedDesktop?.collaboration ?? {
         command: async () => {
@@ -611,19 +500,29 @@ export function V1App({
     });
     void collaborationClient
       .load()
-      .then(() => setError(null))
+      .then((snapshot) => {
+        if (!active || scopeKeyRef.current !== scopeKey) return;
+        setProfileName(
+          snapshot.navigation?.personalOwner.displayName ?? "User"
+        );
+        setError(null);
+      })
       .catch((cause) =>
         setError(cause instanceof Error ? cause.message : String(cause))
       );
     return () => {
+      active = false;
       unsubscribe();
       collaborationClient.dispose();
     };
-  }, [store, profile?.onboarding.completed, status?.api.state]);
+  }, [store, profile?.onboarding.completed, status?.api.state, scopeKey]);
 
   const projects = useMemo(
-    () => [...(snapshot?.projectsById.values() ?? [])],
-    [snapshot]
+    () =>
+      scopeKey && inventoryScope === scopeKey
+        ? [...(snapshot?.projectsById.values() ?? [])]
+        : [],
+    [snapshot, scopeKey, inventoryScope]
   );
   const projectForIntent = useCallback(
     (intent: V1ConversationIntent) => {
@@ -690,6 +589,7 @@ export function V1App({
   useEffect(() => {
     if (
       !scopeKey ||
+      inventoryScope !== scopeKey ||
       status?.api.state !== "healthy" ||
       !profile?.onboarding.completed ||
       !managedConversations ||
@@ -830,6 +730,7 @@ export function V1App({
     };
   }, [
     scopeKey,
+    inventoryScope,
     managedConversations,
     personalMemoryApi,
     store,
@@ -979,14 +880,25 @@ export function V1App({
     [managedConversations, refreshProvenance]
   );
 
-  const visibleSessionIds = new Set(
-    Object.values(provenance.conversations).flatMap((intent) =>
-      [intent.capturedSessionId, intent.executionId].filter(
-        (id): id is string => Boolean(id)
-      )
-    )
+  const visibleProjects = projects;
+  const sidebarProjects = useMemo(
+    () =>
+      scopeKey && inventoryScope === scopeKey
+        ? buildProjectSidebar(
+            visibleProjects,
+            Object.values(provenance.conversations),
+            lifecycle.drafts
+          )
+        : [],
+    [
+      visibleProjects,
+      provenance,
+      lifecycle.drafts,
+      revision,
+      scopeKey,
+      inventoryScope
+    ]
   );
-  const visibleProjects = selectV1Projects(projects, provenance);
   const activeProject = selectedProjectId
     ? (visibleProjects.find((project) => project.id === selectedProjectId) ??
       null)
@@ -1012,208 +924,29 @@ export function V1App({
   const selectedDraft = selectedExecution
     ? (lifecycle.drafts.get(selectedExecution) ?? null)
     : null;
-  const conversationProject = selectedIntent
-    ? projectForIntent(selectedIntent)
-    : null;
-  const conversationThread =
-    conversationProject && selectedExecution
-      ? (conversationProject.threads.find(
-          (thread) =>
-            visibleSessionIds.has(thread.sessionId ?? "") &&
-            (thread.sessionId === selectedIntent?.capturedSessionId ||
-              sessionSelectionId(thread) === selectedExecution)
-        ) ??
-        selectedDraft?.thread ??
-        null)
-      : null;
-  const routeProject =
-    route.kind === "project"
-      ? (visibleProjects.find((project) => project.id === route.projectId) ??
-        null)
-      : null;
-  const projectRows = routeProject
-    ? projectPageConversations(
-        routeProject.id,
-        projectConversationRows(routeProject, visibleSessionIds),
-        Object.values(provenance.conversations),
-        lifecycle.drafts
-      )
-    : [];
-  const membershipIntent = Object.values(provenance.conversations).find(
-    (intent) => intent.executionId === membershipExecutionId
-  );
-  const membershipThread = membershipIntent
-    ? (projectForIntent(membershipIntent)?.threads.find(
-        (thread) => thread.sessionId === membershipIntent.capturedSessionId
+  const capturedProject =
+    route.kind === "conversation" && route.projectId
+      ? visibleProjects.find((project) => project.id === route.projectId)
+      : undefined;
+  const conversationProject =
+    capturedProject ??
+    (selectedIntent ? projectForIntent(selectedIntent) : null);
+  const conversationThread = conversationProject
+    ? (conversationProject.threads.find((thread) =>
+        route.kind === "conversation" && route.threadId
+          ? thread.id === route.threadId
+          : Boolean(
+              selectedExecution &&
+              (thread.sessionId === selectedIntent?.capturedSessionId ||
+                sessionSelectionId(thread) === selectedExecution)
+            )
       ) ??
-      (membershipIntent.capturedSessionId && membershipIntent.executionId
-        ? (() => {
-            const draft = lifecycle.drafts.get(membershipIntent.executionId!);
-            return draft
-              ? {
-                  ...draft.thread,
-                  sessionId: membershipIntent.capturedSessionId!
-                }
-              : null;
-          })()
-        : null))
+      selectedDraft?.thread ??
+      null)
     : null;
-  const groups: V1HistoryGroup[] = [
-    {
-      id: "conversations",
-      label: "Conversations",
-      items: Object.values(provenance.conversations)
-        .filter((intent) => intent.executionId)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        .map((intent) => {
-          const draft = lifecycle.drafts.get(intent.executionId!);
-          const project = projectForIntent(intent);
-          const captured = project?.threads.find(
-            (thread) => thread.sessionId === intent.capturedSessionId
-          );
-          const canReviewMembership = Boolean(
-            intent.capturedSessionId &&
-            (captured || draft) &&
-            personalMemoryApi?.manageProject &&
-            store
-          );
-          return {
-            id: intent.executionId!,
-            title: captured?.name || draft?.thread.name || "New Conversation",
-            active:
-              route.kind === "conversation" &&
-              route.executionId === intent.executionId,
-            onSelect: () =>
-              setRoute({
-                kind: "conversation",
-                executionId: intent.executionId
-              }),
-            ...(canReviewMembership
-              ? {
-                  onContextMenu: () =>
-                    setMembershipExecutionId(intent.executionId!)
-                }
-              : {}),
-            ...(personalMemoryApi?.manageProject && store
-              ? {
-                  action: (
-                    <button
-                      type="button"
-                      className="v1-history-membership"
-                      aria-label={`Projects for ${captured?.name || draft?.thread.name || "Conversation"}`}
-                      title={
-                        canReviewMembership
-                          ? "Projects for this Conversation"
-                          : "Available after capture"
-                      }
-                      disabled={!canReviewMembership}
-                      onClick={() =>
-                        setMembershipExecutionId(intent.executionId!)
-                      }
-                    >
-                      ⋯
-                    </button>
-                  )
-                }
-              : {})
-          };
-        })
-    },
-    {
-      id: "projects",
-      label: "Projects",
-      items: visibleProjects
-        .filter((project) => project.namedProject)
-        .map((project) => ({
-          id: project.id,
-          title: project.name,
-          active: route.kind === "project" && route.projectId === project.id,
-          onSelect: () => {
-            setSelectedProjectId(project.id);
-            setRoute({ kind: "project", projectId: project.id });
-          }
-        }))
-    }
-  ];
-  const chooseProjectFolder = async () => {
-    setNewProjectBusy(true);
-    setError(null);
-    try {
-      const selected = await platform.selectProjectDirectory();
-      if (!selected) return;
-      const fresh = await store?.loadProjects({ silent: true });
-      const folder = fresh?.inventory.localFolders.find(
-        (item) =>
-          item.normalizedPath ===
-          (selected.path.projectRoot ?? selected.path.cwd)
-      );
-      if (!folder)
-        throw new Error("The selected Folder is still loading. Try again.");
-      setNewProjectFolderPath(folder.normalizedPath);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setNewProjectBusy(false);
-    }
-  };
-  const createProject = async () => {
-    const name = newProjectName.trim();
-    if (!name || !personalMemoryApi?.createProject || newProjectBusy) return;
-    setNewProjectBusy(true);
-    setError(null);
-    try {
-      const existing = Object.values(
-        (await v1State().readProvenance()).projects
-      ).find(
-        (intent) =>
-          intent.name === name &&
-          (!intent.projectId || (intent.folder && !intent.folderAttached))
-      );
-      const requestId = existing?.requestId ?? crypto.randomUUID();
-      const local = snapshot?.inventory.localFolders.find(
-        (item) => item.normalizedPath === newProjectFolderPath
-      );
-      const folder =
-        existing?.folder ??
-        (local && ownerId
-          ? { ...local.identity, ownerUserId: ownerId }
-          : undefined);
-      if (!existing)
-        await v1State().putProjectIntent({
-          requestId,
-          name,
-          ...(folder ? { folder } : {}),
-          createdAt: new Date().toISOString()
-        });
-      let projectId = existing?.projectId;
-      if (!projectId) {
-        const created = await personalMemoryApi.createProject({
-          name,
-          requestId
-        });
-        projectId = created.projectId;
-        await v1State().ackProject({ requestId, projectId });
-      }
-      await refreshProvenance();
-      const fresh = await store?.loadProjects({ silent: true });
-      const project = [...(fresh?.projectsById.values() ?? [])].find(
-        (item) => item.namedProject?.projectId === projectId
-      );
-      if (project) {
-        setSelectedProjectId(project.id);
-        setRoute({ kind: "project", projectId: project.id });
-      }
-      if (existing && folder && !existing.folderAttached)
-        setReconcileRevision((value) => value + 1);
-      setNewProjectOpen(false);
-      setNewProjectName("");
-      setNewProjectFolderPath("");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setNewProjectBusy(false);
-    }
-  };
+  const conversationRouteId =
+    selectedExecution ??
+    (conversationThread ? sessionSelectionId(conversationThread) : "");
   const onSaveAgent = async (next: OnboardingAgent) => {
     await saveProfile((current) => ({
       ...current,
@@ -1376,60 +1109,35 @@ export function V1App({
           compact: true
         }}
       >
-        <V1Shell
-          title={
-            route.kind === "project"
-              ? visibleProjects.find(
-                  (project) => project.id === route.projectId
-                )?.name
-              : route.kind === "conversation"
-                ? (conversationThread?.name ?? "Conversation")
-                : undefined
-          }
-          groups={groups}
-          accountLabel={agent.name}
-          accountSubLabel="Your Koed"
-          onAccount={() => {
-            setSettingsTab("general");
-            setSettingsOpen(true);
-          }}
-          onHome={() => setRoute({ kind: "home" })}
-          onNewConversation={() => {
+        <NavigationShell
+          projects={sidebarProjects}
+          route={route}
+          scopeKey={scopeKey}
+          title={conversationThread?.name}
+          projectName={conversationProject?.name}
+          profileName={profileName}
+          onSelect={setRoute}
+          onHome={() => {
             setSelectedProjectId(null);
             setLaunchPending(false);
             setComposerGeneration((value) => value + 1);
             setRoute({ kind: "home" });
           }}
-          onNewProject={() => setNewProjectOpen(true)}
-          railFooter={
-            <button
-              type="button"
-              aria-label="Open service status"
-              onClick={() => {
-                setSettingsTab("services");
-                setSettingsOpen(true);
-              }}
-            >
-              Koed{" "}
-              {status?.state === "healthy"
-                ? "ready"
-                : status?.state === "needs_attention"
-                  ? "needs attention"
-                  : status?.state === "starting"
-                    ? "starting"
-                    : "stopped"}
-            </button>
-          }
-          topActions={
-            <>
-              <button type="button" onClick={() => setMemoryOpen(true)}>
-                Memory
-              </button>
-              <button type="button" onClick={() => setSettingsOpen(true)}>
-                Settings
-              </button>
-            </>
-          }
+          onSettings={() => {
+            setSettingsTab("general");
+            setSettingsOpen(true);
+          }}
+          onProfile={() => {
+            setSettingsTab("general");
+            setSettingsOpen(true);
+          }}
+          onBack={navigation.back}
+          onForward={navigation.forward}
+          canGoBack={navigation.canGoBack}
+          canGoForward={navigation.canGoForward}
+          loading={snapshot?.loading}
+          error={snapshot?.error}
+          onRetry={() => void loadInventory()}
         >
           {pendingIntentError && (
             <p role="alert">
@@ -1455,7 +1163,7 @@ export function V1App({
           conversationThread &&
           store ? (
             <StoreConversation
-              key={selectedExecution}
+              key={conversationRouteId}
               managedConversationRevision={revision}
               managedConversationRecoveryRevision={recoveryRevision}
               managedConversationUpdate={realtime}
@@ -1470,283 +1178,22 @@ export function V1App({
                   : null
               }
               project={conversationProject}
-              routeSessionId={selectedExecution!}
+              routeSessionId={conversationRouteId}
               store={store}
               thread={conversationThread}
             />
           ) : route.kind === "conversation" ? (
-            <p role="status">Loading Conversation…</p>
+            <p role="status">
+              {snapshot?.loading
+                ? "Loading Conversation…"
+                : "This conversation is no longer available. Choose another conversation from the sidebar."}
+            </p>
           ) : (
-            <>
-              {route.kind === "project" && (
-                <V1ThreadLayout composer={launchComposer}>
-                  <section className="v1-project-page">
-                    <header className="v1-project-header">
-                      <span className="v1-project-monogram" aria-hidden="true">
-                        {routeProject?.name.charAt(0).toUpperCase() || "P"}
-                      </span>
-                      <div>
-                        <h1>{routeProject?.name ?? "Project"}</h1>
-                        <p>
-                          {folders.length
-                            ? folders.map((folder) => folder.path).join(" · ")
-                            : "No folder · chats and memory only"}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        className="v1-project-new-chat"
-                        onClick={() => {
-                          setSelectedProjectId(route.projectId ?? null);
-                          setLaunchPending(false);
-                          setComposerGeneration((value) => value + 1);
-                          setRoute({ kind: "home" });
-                        }}
-                      >
-                        New chat
-                      </button>
-                    </header>
-                    <button
-                      type="button"
-                      className="v1-project-count"
-                      onClick={() =>
-                        document
-                          .getElementById("v1-project-chats")
-                          ?.scrollIntoView({ block: "nearest" })
-                      }
-                    >
-                      <b>{projectRows.length}</b>{" "}
-                      {projectRows.length === 1 ? "chat" : "chats"}
-                    </button>
-                    <section
-                      className="v1-project-section"
-                      id="v1-project-chats"
-                    >
-                      <h2>
-                        Chats <span>{projectRows.length}</span>
-                      </h2>
-                      {projectRows.length ? (
-                        projectRows.map((thread) => {
-                          return (
-                            <button
-                              className="v1-project-chat"
-                              type="button"
-                              key={thread.key}
-                              onClick={() =>
-                                thread.executionId &&
-                                setRoute({
-                                  kind: "conversation",
-                                  executionId: thread.executionId
-                                })
-                              }
-                            >
-                              <span
-                                className="v1-project-chat-avatar"
-                                aria-hidden="true"
-                              >
-                                {agent.name.charAt(0).toUpperCase()}
-                              </span>
-                              <span className="v1-project-chat-copy">
-                                <b>{thread.title}</b>
-                                <small>{thread.summary}</small>
-                                {thread.pendingLabel && (
-                                  <small>{thread.pendingLabel}</small>
-                                )}
-                              </span>
-                              <time dateTime={thread.latestAt}>
-                                {projectConversationTime(thread.latestAt)}
-                              </time>
-                            </button>
-                          );
-                        })
-                      ) : (
-                        <p className="v1-project-empty">
-                          No chats in {routeProject?.name ?? "this Project"}{" "}
-                          yet. Start one and {agent.name} will use what Koed
-                          remembers about this Project.
-                        </p>
-                      )}
-                    </section>
-                    <section className="v1-project-section">
-                      <h2>Folder</h2>
-                      {folders.length ? (
-                        folders.map((folder) => {
-                          const native =
-                            snapshot?.inventory.localCheckouts.find(
-                              (item) =>
-                                item.path.cwd === folder.path ||
-                                item.path.projectRoot === folder.path
-                            );
-                          return (
-                            <div className="v1-project-folder" key={folder.id}>
-                              <code>{folder.path}</code>
-                              {native && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void platform
-                                      .revealLocalProject(native.localProjectId)
-                                      .catch((cause) =>
-                                        setError(
-                                          cause instanceof Error
-                                            ? cause.message
-                                            : String(cause)
-                                        )
-                                      )
-                                  }
-                                >
-                                  Show in Finder
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="v1-project-folder">
-                          <span>No folder linked</span>
-                        </div>
-                      )}
-                    </section>
-                    {!folders.length &&
-                    snapshot?.inventory.localFolders.length ? (
-                      <label>
-                        Attach a local Folder{" "}
-                        <select
-                          aria-label="Attach a local Folder"
-                          defaultValue=""
-                          onChange={(event) => {
-                            const local = snapshot?.inventory.localFolders.find(
-                              (folder) =>
-                                folder.normalizedPath === event.target.value
-                            );
-                            const project = visibleProjects.find(
-                              (item) => item.id === route.projectId
-                            );
-                            if (
-                              !local ||
-                              !project?.namedProject ||
-                              !ownerId ||
-                              !personalMemoryApi?.manageProject
-                            )
-                              return;
-                            void personalMemoryApi
-                              .manageProject({
-                                action: "add_folder",
-                                projectId: project.namedProject.projectId,
-                                expectedVersion: project.namedProject.version,
-                                folder: {
-                                  ...local.identity,
-                                  ownerUserId: ownerId
-                                }
-                              })
-                              .then(() => store?.loadProjects({ silent: true }))
-                              .catch((cause) =>
-                                setError(
-                                  cause instanceof Error
-                                    ? cause.message
-                                    : String(cause)
-                                )
-                              );
-                          }}
-                        >
-                          <option value="">Choose Folder</option>
-                          {snapshot.inventory.localFolders.map((folder) => (
-                            <option
-                              key={folder.normalizedPath}
-                              value={folder.normalizedPath}
-                            >
-                              {folder.normalizedPath}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    ) : null}
-                    <p className="v1-project-note">
-                      Chats in this Project can use its memory. Use a chat’s
-                      sidebar menu to review which Projects include it.
-                    </p>
-                  </section>
-                </V1ThreadLayout>
-              )}
-              {route.kind === "home" && (
-                <V1EmptyHero
-                  agentName={agent.name}
-                  look={agent.look}
-                  subtitle="Your AI Client, with memory."
-                  composer={launchComposer}
-                />
-              )}
-            </>
-          )}
-          {newProjectOpen && (
-            <div role="dialog" aria-label="Create Project" className="v1-modal">
-              <h2>New Project</h2>
-              <p>
-                A place for related chats and memory. Add a folder if you want
-                your agent to work with local files.
-              </p>
-              <input
-                aria-label="Project name"
-                value={newProjectName}
-                onChange={(event) => setNewProjectName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void createProject();
-                }}
-              />
-              <div className="v1-project-folder-choice">
-                <span>Folder (optional)</span>
-                <code>{newProjectFolderPath || "No folder linked"}</code>
-                <button
-                  type="button"
-                  disabled={newProjectBusy}
-                  onClick={() => void chooseProjectFolder()}
-                >
-                  {newProjectFolderPath ? "Change" : "Choose folder"}
-                </button>
-                {newProjectFolderPath && (
-                  <button
-                    type="button"
-                    disabled={newProjectBusy}
-                    onClick={() => setNewProjectFolderPath("")}
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-              <button
-                type="button"
-                disabled={newProjectBusy || !newProjectName.trim()}
-                onClick={() => void createProject()}
-              >
-                Create
-              </button>
-              <button
-                type="button"
-                disabled={newProjectBusy}
-                onClick={() => setNewProjectOpen(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-          {membershipThread && personalMemoryApi?.manageProject && store && (
-            <ConversationProjectsDialog
-              thread={membershipThread}
-              projects={visibleProjects.filter(
-                (project) => project.namedProject
-              )}
-              manage={personalMemoryApi.manageProject}
-              store={store}
-              open={Boolean(membershipExecutionId)}
-              onOpenChange={(open) => {
-                if (!open) setMembershipExecutionId(null);
-              }}
-            />
-          )}
-          {memoryOpen && personalMemoryApi && (
-            <V1MemoryPanel
-              api={personalMemoryApi}
-              onClose={() => setMemoryOpen(false)}
+            <V1EmptyHero
+              agentName={agent.name}
+              look={agent.look}
+              subtitle="Your AI Client, with memory."
+              composer={launchComposer}
             />
           )}
           {settingsOpen && (
@@ -1770,7 +1217,7 @@ export function V1App({
               }}
             />
           )}
-        </V1Shell>
+        </NavigationShell>
       </ConversationPresentationContext.Provider>
     </V1AgentContext.Provider>
   );

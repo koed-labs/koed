@@ -109,6 +109,56 @@ describe("native Desktop conversation contract", () => {
     ).toHaveLength(499);
   });
 
+  it("keeps a tool group's anchor key when older and newer pages extend it", () => {
+    const tools = Array.from({ length: 4 }, (_, index) =>
+      event(`tool-${index}`, `2026-07-13T11:0${index}:00.000Z`, {
+        actor: "tool"
+      })
+    );
+    const initial = stabilizeConversationTimelineItems(
+      groupConversationEvents(tools.slice(1, 3)),
+      { byId: new Map(), result: [] }
+    );
+    const prepended = stabilizeConversationTimelineItems(
+      groupConversationEvents(tools.slice(0, 3)),
+      initial
+    );
+    const appended = stabilizeConversationTimelineItems(
+      groupConversationEvents(tools),
+      prepended
+    );
+    expect(prepended.result[0]?.id).toBe(initial.result[0]?.id);
+    expect(appended.result[0]?.id).toBe(initial.result[0]?.id);
+    expect(appended.result[0]).toMatchObject({ events: tools });
+    const unchanged = stabilizeConversationTimelineItems(
+      groupConversationEvents(tools),
+      appended
+    );
+    expect(unchanged.result).toBe(appended.result);
+  });
+
+  it("does not give two groups the same key when a message splits a tool run", () => {
+    const tools = Array.from({ length: 4 }, (_, index) =>
+      event(`tool-${index}`, `2026-07-13T11:0${index}:00.000Z`, {
+        actor: "tool"
+      })
+    );
+    const initial = stabilizeConversationTimelineItems(
+      groupConversationEvents(tools),
+      { byId: new Map(), result: [] }
+    );
+    const split = stabilizeConversationTimelineItems(
+      groupConversationEvents([
+        ...tools.slice(0, 2),
+        event("message", "2026-07-13T11:01:30.000Z"),
+        ...tools.slice(2)
+      ]),
+      initial
+    );
+    expect(new Set(split.result.map(({ id }) => id)).size).toBe(3);
+    expect(split.result[0]?.id).toBe(initial.result[0]?.id);
+  });
+
   it("expands approval-review fallback data into the standard timeline shape", () => {
     const transcriptDisplay: NonNullable<
       DesktopConversationEvent["transcriptDisplay"]

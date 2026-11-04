@@ -33,6 +33,11 @@ export type SecureMarkdownProps = {
     maxBytes: number;
   }) => void;
   oversizedFallback?: ReactNode;
+  /** Presentation slot for fenced code; parsing and URL policies remain here. */
+  renderCodeBlock?: (block: {
+    code: string;
+    language: string | null;
+  }) => ReactNode;
   source: string;
 };
 
@@ -224,6 +229,7 @@ export function SecureMarkdown({
   onActionError,
   onOversizedInput,
   oversizedFallback,
+  renderCodeBlock,
   source
 }: SecureMarkdownProps) {
   const validation = useMemo(
@@ -277,6 +283,15 @@ export function SecureMarkdown({
       },
       pre({ children, ...props }) {
         const code = extractMarkdownCodeBlock(children);
+        if (code !== null && renderCodeBlock) {
+          const child = Children.toArray(children)[0];
+          const className = isValidElement<{ className?: string }>(child)
+            ? child.props.className
+            : undefined;
+          const language =
+            className?.match(/(?:^|\s)language-([^\s]+)/u)?.[1] ?? null;
+          return <>{renderCodeBlock({ code, language })}</>;
+        }
         return (
           <div className="memory-markdown-code-block">
             {code === null ? null : (
@@ -298,7 +313,7 @@ export function SecureMarkdown({
         );
       }
     }),
-    [adapters, maxUrlLength, onActionError]
+    [adapters, maxUrlLength, onActionError, renderCodeBlock]
   );
 
   if (!validation.ok) {

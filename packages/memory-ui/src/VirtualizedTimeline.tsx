@@ -4,7 +4,20 @@ import {
   type LegendListRenderItemProps,
   type ViewToken
 } from "@legendapp/list/react";
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref
+} from "react";
+
+export type VirtualizedTimelineHandle = {
+  scrollToEnd: () => void;
+};
 
 export type TimelineItem = {
   id: string;
@@ -19,15 +32,21 @@ export type TimelineVisibleRange<T extends TimelineItem> = {
   visibleItems: readonly T[];
 };
 
+// Fetch before the reader reaches the loaded history's hard scroll boundary.
+const olderPrefetchScreens = 1;
+
 export function VirtualizedTimeline<T extends TimelineItem>({
   ariaLabel,
   className,
+  controllerRef,
   estimatedItemHeight = 156,
   events,
   hasOlderEvents,
+  olderPageKey = events[0]?.id,
   hasNewerEvents = false,
   onAtEndChange,
   onLoadOlder,
+  onLoadingOlderChange,
   onLoadNewer,
   onPageLoadError,
   onVisibleRangeChange,
@@ -36,12 +55,16 @@ export function VirtualizedTimeline<T extends TimelineItem>({
 }: {
   ariaLabel?: string;
   className?: string;
+  controllerRef?: Ref<VirtualizedTimelineHandle>;
   estimatedItemHeight?: number;
   events: T[];
   hasOlderEvents: boolean;
+  /** Source-page cursor, when visible rows group or omit source events. */
+  olderPageKey?: string;
   hasNewerEvents?: boolean;
   onAtEndChange?: (atEnd: boolean) => void;
   onLoadOlder: () => Promise<void> | void;
+  onLoadingOlderChange?: (loading: boolean) => void;
   onLoadNewer?: () => Promise<void> | void;
   onPageLoadError?: (error: unknown, direction: "newer" | "older") => void;
   onVisibleRangeChange?: (range: TimelineVisibleRange<T> | null) => void;
@@ -49,8 +72,9 @@ export function VirtualizedTimeline<T extends TimelineItem>({
   threadKey: string;
 }) {
   const listRef = useRef<LegendListRef | null>(null);
-  const olderLoadArmedRef = useRef(true);
-  const hasOlderEventsRef = useRef(hasOlderEvents);
+  const olderRequestedBoundaryRef = useRef<string | null>(null);
+  const loadGenerationRef = useRef(0);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const isPinnedToEndRef = useRef(true);
   const olderLoadInFlightRef = useRef(false);
   const newerLoadInFlightRef = useRef(false);
@@ -60,9 +84,26 @@ export function VirtualizedTimeline<T extends TimelineItem>({
   const lastReportedAtEndRef = useRef<boolean | null>(null);
   const callbackRef = useRef({
     onAtEndChange,
+    onLoadingOlderChange,
     onVisibleRangeChange
   });
-  callbackRef.current = { onAtEndChange, onVisibleRangeChange };
+  callbackRef.current = {
+    onAtEndChange,
+    onLoadingOlderChange,
+    onVisibleRangeChange
+  };
+  const olderPageRef = useRef({
+    hasOlderEvents,
+    boundary: olderPageKey,
+    onLoadOlder,
+    onPageLoadError
+  });
+  olderPageRef.current = {
+    hasOlderEvents,
+    boundary: olderPageKey,
+    onLoadOlder,
+    onPageLoadError
+  };
 
   const reportAtEnd = useCallback((atEnd: boolean) => {
     if (lastReportedAtEndRef.current === atEnd) return;
@@ -108,26 +149,32 @@ export function VirtualizedTimeline<T extends TimelineItem>({
     scrollToEndFrameRefs.current = [frame];
   }, [cancelScrollToEndFrames]);
 
+  useImperativeHandle(
+    controllerRef,
+    () => ({ scrollToEnd: scrollToEndAfterLayout }),
+    [scrollToEndAfterLayout]
+  );
+
   useEffect(() => {
-    olderLoadArmedRef.current = true;
+    olderRequestedBoundaryRef.current = null;
+    loadGenerationRef.current += 1;
     olderLoadInFlightRef.current = false;
+    setLoadingOlder(false);
     newerLoadInFlightRef.current = false;
     previousEventCountRef.current = 0;
     latestRenderedEventIdRef.current = null;
     lastReportedAtEndRef.current = null;
     callbackRef.current.onVisibleRangeChange?.(null);
     scrollToEndAfterLayout();
-    return cancelScrollToEndFrames;
+    return () => {
+      loadGenerationRef.current += 1;
+      cancelScrollToEndFrames();
+    };
   }, [cancelScrollToEndFrames, scrollToEndAfterLayout, threadKey]);
 
   useEffect(() => {
-    hasOlderEventsRef.current = hasOlderEvents;
-    if (!hasOlderEvents) {
-      olderLoadArmedRef.current = false;
-    } else if (!olderLoadInFlightRef.current) {
-      olderLoadArmedRef.current = true;
-    }
-  }, [hasOlderEvents]);
+    callbackRef.current.onLoadingOlderChange?.(loadingOlder);
+  }, [loadingOlder]);
 
   useEffect(() => {
     const latestEvent = events.at(-1);
@@ -153,14 +200,6 @@ export function VirtualizedTimeline<T extends TimelineItem>({
     }
   }, [events, scrollToEndAfterLayout]);
 
-  const handleScroll = useCallback(() => {
-    const state = listRef.current?.getState?.();
-    if (!state) return;
-    if (!state.isStartReached) olderLoadArmedRef.current = true;
-    isPinnedToEndRef.current = state.isAtEnd;
-    reportAtEnd(state.isAtEnd);
-  }, [reportAtEnd]);
-
   const handleViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: Array<ViewToken<T>> }) => {
       const visible = viewableItems
@@ -184,31 +223,57 @@ export function VirtualizedTimeline<T extends TimelineItem>({
   );
 
   const handleStartReached = useCallback(() => {
+    const { hasOlderEvents, boundary, onLoadOlder, onPageLoadError } =
+      olderPageRef.current;
     if (
       !hasOlderEvents ||
-      !olderLoadArmedRef.current ||
+      !boundary ||
+      olderRequestedBoundaryRef.current === boundary ||
       olderLoadInFlightRef.current
     ) {
       return;
     }
-    olderLoadArmedRef.current = false;
+    olderRequestedBoundaryRef.current = boundary;
     olderLoadInFlightRef.current = true;
+    setLoadingOlder(true);
+    const generation = loadGenerationRef.current;
     void Promise.resolve()
-      .then(() => onLoadOlder())
-      .catch((error: unknown) => onPageLoadError?.(error, "older"))
+      .then(() => {
+        if (generation === loadGenerationRef.current) return onLoadOlder();
+      })
+      .catch((error: unknown) => {
+        if (generation === loadGenerationRef.current)
+          onPageLoadError?.(error, "older");
+      })
       .finally(() => {
+        if (generation !== loadGenerationRef.current) return;
         olderLoadInFlightRef.current = false;
-        window.requestAnimationFrame(() => {
-          const state = listRef.current?.getState?.();
-          const isScrollable =
-            state && state.contentLength > state.scrollLength + 1;
-          olderLoadArmedRef.current = Boolean(
-            hasOlderEventsRef.current &&
-            (!state?.isStartReached || !isScrollable)
-          );
-        });
+        setLoadingOlder(false);
       });
-  }, [hasOlderEvents, onLoadOlder, onPageLoadError]);
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const state = listRef.current?.getState?.();
+    if (!state) return;
+    const nearStart = state.scroll <= state.scrollLength * olderPrefetchScreens;
+    if (!nearStart) olderRequestedBoundaryRef.current = null;
+    else handleStartReached();
+    isPinnedToEndRef.current = state.isAtEnd;
+    reportAtEnd(state.isAtEnd);
+  }, [handleStartReached, reportAtEnd]);
+
+  useEffect(() => {
+    if (loadingOlder || !hasOlderEvents) return;
+    const state = listRef.current?.getState?.();
+    // A prepend can finish inside the prefetch zone without another threshold
+    // crossing. Continue only for a new boundary; an empty/failed page must not loop.
+    if (
+      state &&
+      state.scroll <= state.scrollLength * olderPrefetchScreens &&
+      (!state.isAtEnd || state.contentLength <= state.scrollLength + 1)
+    )
+      handleStartReached();
+  }, [olderPageKey, hasOlderEvents, loadingOlder, handleStartReached]);
 
   const handleEndReached = useCallback(() => {
     if (!hasNewerEvents || !onLoadNewer || newerLoadInFlightRef.current) {
@@ -237,7 +302,7 @@ export function VirtualizedTimeline<T extends TimelineItem>({
       maintainVisibleContentPosition={{ data: true, size: true }}
       onScroll={handleScroll}
       onStartReached={handleStartReached}
-      onStartReachedThreshold={0.25}
+      onStartReachedThreshold={olderPrefetchScreens}
       onEndReached={handleEndReached}
       onEndReachedThreshold={0.25}
       onViewableItemsChanged={handleViewableItemsChanged}

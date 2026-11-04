@@ -66,26 +66,17 @@ body {
   display: flex;
   flex: 1;
   flex-direction: column;
+  /* The timeline host is a grid item, not a flex container. Bound the list
+     to its height so long transcripts scroll instead of being clipped. */
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 .v1-app .v1-conversation-scroll {
   flex: 1;
   min-height: 0;
-  padding: 24px max(24px, calc((100% - 832px) / 2));
-}
-.v1-app .v1-tool-activity {
-  margin: 10px auto;
-  max-width: 760px;
-  font-size: 13px;
-  color: var(--v1-muted);
-}
-.v1-app .v1-tool-activity summary {
-  cursor: pointer;
-}
-.v1-app .v1-conversation-content > [role="alert"] {
-  margin: 12px 24px;
-  color: var(--v1-fg2);
+  height: 100%;
+  padding: 0 24px 24px;
 }
 .v1-app .v1-memory-panel {
   position: absolute;

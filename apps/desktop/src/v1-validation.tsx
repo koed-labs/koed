@@ -1,3 +1,4 @@
+import { SidebarValidation } from "./sidebar-validation.js";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -113,9 +114,12 @@ function Validation() {
     </V1Shell>
   );
 }
-document.documentElement.classList.add("light");
+if (new URLSearchParams(location.search).get("sidebar") !== "1")
+  document.documentElement.classList.add("light");
 createRoot(document.querySelector("#root")!).render(
-  new URLSearchParams(location.search).get("full") === "1" ? (
+  new URLSearchParams(location.search).get("sidebar") === "1" ? (
+    <SidebarValidation />
+  ) : new URLSearchParams(location.search).get("full") === "1" ? (
     <FullAppValidation />
   ) : (
     <Validation />

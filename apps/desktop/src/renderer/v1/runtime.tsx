@@ -1,37 +1,17 @@
 import {
   createContext,
   useContext,
-  useMemo,
-  useRef,
   useState,
   type ComponentProps
 } from "react";
-import {
-  SecureMarkdown,
-  SourceDiff,
-  VirtualizedTimeline,
-  threadSelectionKey
-} from "@koed/memory-ui";
-import type { NativeConversationSurfaceProps } from "../../NativeConversationSurface.js";
-import {
-  conversationEventText,
-  conversationEventPatch,
-  conversationEventToolDisplay,
-  expandConversationDisplayEvents,
-  groupConversationEvents,
-  stabilizeConversationTimelineItems,
-  type StableConversationTimelineItemsState
-} from "../../desktop-conversation.js";
 import {
   permissionLabels,
   selectionForInstance
 } from "../views/personal/ConversationSettings.js";
 import type { ConversationInput } from "../views/personal/ConversationInput.js";
-import { createRendererPlatform } from "../services/platform.js";
 import {
   ModelPicker,
   V1Composer,
-  V1Message,
   DEFAULT_AGENT_LOOK,
   type AgentLook
 } from "./visual.js";
@@ -206,170 +186,4 @@ export function V1ManagedInput(
   );
 }
 
-export function V1ConversationSurface(props: NativeConversationSurfaceProps) {
-  const agent = useContext(V1AgentContext);
-  const platform = useMemo(() => createRendererPlatform(), []);
-  const adapters = props.markdownAdapters ?? {
-    openExternal: platform.openExternal,
-    writeClipboard: platform.copyText
-  };
-  const events = useMemo(
-    () =>
-      expandConversationDisplayEvents(props.model?.events ?? []).filter(
-        (event) =>
-          event.responseStreaming ||
-          Boolean(event.approvalDecisionDisplay) ||
-          event.actor === "tool" ||
-          conversationEventText(event).length > 0
-      ),
-    [props.model?.events]
-  );
-  const previous = useRef<StableConversationTimelineItemsState>({
-    byId: new Map(),
-    result: []
-  });
-  const items = useMemo(() => {
-    const state = stabilizeConversationTimelineItems(
-      groupConversationEvents(events),
-      previous.current
-    );
-    previous.current = state;
-    return state.result;
-  }, [events]);
-  const [copyError, setCopyError] = useState("");
-  if (!props.model)
-    return <p role="alert">Conversation state is unavailable.</p>;
-  return (
-    <div className="v1-conversation-content">
-      {props.model.error && (
-        <p role="alert">
-          {props.model.error}{" "}
-          <button onClick={() => void props.onRetry()}>Retry</button>
-        </p>
-      )}
-      {copyError && <p role="alert">{copyError}</p>}
-      {!items.length && !props.model.error && (
-        <p role="status">
-          {props.model.status === "loading"
-            ? "Loading conversation…"
-            : "Getting ready…"}
-        </p>
-      )}
-      <VirtualizedTimeline
-        className="v1-conversation-scroll"
-        events={items}
-        hasOlderEvents={props.model.hasOlderEvents}
-        onLoadOlder={props.onLoadOlder}
-        threadKey={threadSelectionKey(props.thread)}
-        renderEvent={(item) => {
-          if (item.kind === "tool-group")
-            return (
-              <details className="v1-tool-activity">
-                <summary>
-                  {item.events.length} tool{" "}
-                  {item.events.length === 1 ? "action" : "actions"}
-                </summary>
-                {item.events.map((event) => (
-                  <section key={event.id}>
-                    <strong>{conversationEventToolDisplay(event).label}</strong>
-                    <time dateTime={event.timestamp}>
-                      {new Date(event.timestamp).toLocaleTimeString()}
-                    </time>
-                    {conversationEventPatch(event) ? (
-                      <SourceDiff
-                        details={conversationEventPatch(event)!}
-                        sourceText={conversationEventPatch(event)!.sourceText}
-                      />
-                    ) : (
-                      <SecureMarkdown
-                        adapters={adapters}
-                        source={conversationEventText(event)}
-                      />
-                    )}
-                    {props.onInspectEvent && (
-                      <button
-                        type="button"
-                        onClick={() => props.onInspectEvent?.(event)}
-                      >
-                        View source
-                      </button>
-                    )}
-                  </section>
-                ))}
-              </details>
-            );
-          const event = item.event,
-            text = conversationEventText(event);
-          if (event.approvalDecisionDisplay) {
-            const decision = event.approvalDecisionDisplay;
-            return (
-              <section className="v1-tool-activity" aria-label="Auto approval">
-                <strong>
-                  {decision.outcome === "allow" ? "Allowed" : "Denied"}
-                </strong>
-                <p>
-                  Risk: {decision.riskLevel} · Authorization:{" "}
-                  {decision.userAuthorization}
-                </p>
-                <p>{decision.rationale}</p>
-                {props.onInspectEvent && (
-                  <button onClick={() => props.onInspectEvent?.(event)}>
-                    View source
-                  </button>
-                )}
-              </section>
-            );
-          }
-          if (
-            event.presentation?.mode === "collapsed" ||
-            !["user", "agent", "assistant"].includes(event.actor ?? "")
-          )
-            return (
-              <details className="v1-tool-activity">
-                <summary>{event.activityDisplay?.label ?? "Activity"}</summary>
-                <SecureMarkdown adapters={adapters} source={text} />
-              </details>
-            );
-          return (
-            <V1Message
-              role={event.actor === "user" ? "user" : "assistant"}
-              look={agent.look}
-              meta={
-                <time dateTime={event.timestamp}>
-                  {new Date(event.timestamp).toLocaleTimeString()}
-                </time>
-              }
-              working={Boolean(event.responseStreaming && !text)}
-              actions={
-                text && event.actor !== "user" ? (
-                  <button
-                    type="button"
-                    aria-label="Copy response"
-                    onClick={() => {
-                      void Promise.resolve()
-                        .then(() => adapters.writeClipboard(text ?? ""))
-                        .catch(() =>
-                          setCopyError("The response could not be copied.")
-                        );
-                    }}
-                  >
-                    Copy
-                  </button>
-                ) : undefined
-              }
-            >
-              {event.responseStreaming && !text ? (
-                `${agent.name} is working…`
-              ) : (
-                <SecureMarkdown adapters={adapters} source={text} />
-              )}
-              {event.invalidatedAt && (
-                <small>Excluded from current memory recall</small>
-              )}
-            </V1Message>
-          );
-        }}
-      />
-    </div>
-  );
-}
+export { V1ConversationSurface } from "./conversation/ConversationSurface.js";

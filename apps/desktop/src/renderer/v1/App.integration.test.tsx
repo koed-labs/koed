@@ -14,6 +14,9 @@ import type {
 } from "../../ipc/managed-conversation-protocol.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const inventoryLoad = vi.hoisted(() => ({
+  pending: null as Promise<unknown> | null
+}));
 const uuid = (n: number) =>
   `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 const localProject = {
@@ -56,7 +59,7 @@ vi.mock("../state/personal-memory.js", () => ({
   PersonalMemoryStore: class {
     current = () => snapshot;
     subscribe = () => () => undefined;
-    loadProjects = async () => snapshot;
+    loadProjects = async () => inventoryLoad.pending ?? snapshot;
     upsertThread = () => undefined;
   }
 }));
@@ -130,9 +133,66 @@ describe("V1App launch integration", () => {
   afterEach(async () => {
     if (root) await act(async () => root!.unmount());
     container?.remove();
+    inventoryLoad.pending = null;
     vi.restoreAllMocks();
   });
-  it("selects the rail Project as the composer and Folder context", async () => {
+  it("hides the previous owner's inventory while the new owner's inventory loads", async () => {
+    let scopeKey = "a".repeat(64);
+    let statusChanged: (() => void) | undefined;
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        status: {
+          subscribe: (listener: () => void) => {
+            statusChanged = listener;
+            return () => {};
+          }
+        },
+        v1State: {
+          readProfile: async () => ({
+            agentName: "Ada",
+            onboarding: { selections: {}, completed: true }
+          }),
+          readIdentity: async () => ({ ownerId: uuid(3), scopeKey }),
+          readProvenance: async () => ({
+            schemaVersion: 1,
+            projects: {},
+            conversations: {}
+          })
+        }
+      }
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <V1App
+          personalMemoryApi={{} as never}
+          managedConversations={null}
+          statusStore={{ refresh: async () => undefined } as never}
+          themeStore={{ load: async () => undefined } as never}
+        />
+      )
+    );
+    expect(container.textContent).toContain("External captured Conversation");
+    let finish!: (value: unknown) => void;
+    inventoryLoad.pending = new Promise((resolve) => {
+      finish = resolve;
+    });
+    scopeKey = "b".repeat(64);
+    await act(async () => statusChanged!());
+    expect(container.textContent).not.toContain(
+      "External captured Conversation"
+    );
+    await act(async () =>
+      finish({ ...snapshot, error: "New owner's inventory is unavailable" })
+    );
+    expect(container.textContent).not.toContain(
+      "External captured Conversation"
+    );
+  });
+  it("expands Projects without replacing the conversation pane and selects an existing Project for launching", async () => {
     const namedId = uuid(30),
       requestId = uuid(31);
     const identity = {
@@ -213,22 +273,32 @@ describe("V1App launch integration", () => {
       await new Promise((resolve) => setTimeout(resolve, 40));
     });
     const rail = [
-      ...container.querySelectorAll<HTMLButtonElement>("button")
-    ].find((button) => button.textContent?.trim() === "Made here");
+      ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")
+    ].find((button) => button.textContent?.includes("Made here"));
     expect(rail).toBeDefined();
     await act(async () => rail!.click());
-    expect(container.querySelector(".v1-project-header h1")?.textContent).toBe(
-      "Made here"
-    );
+    expect(container.querySelector(".v1-project-page")).toBeNull();
     expect(
-      container.querySelector(".v1-project-folder code")?.textContent
-    ).toBe("/tmp/koed-v1-project");
+      container.querySelector('[aria-label="First message"]')
+    ).not.toBeNull();
+    await act(async () =>
+      container!
+        .querySelector<HTMLButtonElement>('[aria-label="Select Project"]')!
+        .click()
+    );
+    const choice = [
+      ...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
+    ].find((button) => button.textContent === "Made here");
+    await act(async () => choice!.click());
+    expect(
+      container.querySelector('[aria-label="Select Project"]')?.textContent
+    ).toContain("Made here");
     expect(container.textContent).toContain("koed-v1-project");
     snapshot.projectsById.delete(namedId);
     (snapshot.inventory.localFolders as unknown[]).length = 0;
   });
 
-  it("hides external capture and persists intent and first prompt before backend calls", async () => {
+  it("shows external captures and persists intent and first prompt before backend calls", async () => {
     const calls: string[] = [];
     const state: { profile: V1Profile; provenance: V1Provenance } = {
       profile: {
@@ -374,14 +444,24 @@ describe("V1App launch integration", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
     });
-    expect(container.textContent).not.toContain(
-      "External captured Conversation"
+    expect(container.textContent).toContain("External captured Conversation");
+    const captured = container.querySelector<HTMLButtonElement>(
+      ".v1-nav-conversation"
+    );
+    await act(async () => captured!.click());
+    expect(container.textContent).toContain("Conversation opened");
+    expect(container.querySelector('[aria-label="Create Project"]')).toBeNull();
+    expect(container.querySelector('[aria-label^="Projects for"]')).toBeNull();
+    await act(async () =>
+      container!
+        .querySelector<HTMLButtonElement>('[aria-label="Koed, home"]')!
+        .click()
     );
     const projectButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Select Project"]'
     );
     await act(async () => projectButton?.click());
-    expect(container.textContent).not.toContain("External captured Project");
+    expect(container.textContent).toContain("External captured Project");
     const input = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="First message"]'
     );

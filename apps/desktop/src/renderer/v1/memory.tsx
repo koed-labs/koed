@@ -12,9 +12,11 @@ const errorMessage = (cause: unknown) =>
 
 export function V1MemoryPanel({
   api,
+  hideNotes = false,
   onClose
 }: {
   api: PersonalDesktopApi;
+  hideNotes?: boolean;
   onClose: () => void;
 }) {
   const [notes, setNotes] = useState<PersonalDesktopNoteSummary[]>([]);
@@ -30,6 +32,7 @@ export function V1MemoryPanel({
     writeClipboard: platform.copyText
   };
   useEffect(() => {
+    if (hideNotes) return;
     let active = true;
     void api
       .listNotes?.({ limit: 50 })
@@ -45,7 +48,7 @@ export function V1MemoryPanel({
     return () => {
       active = false;
     };
-  }, [api]);
+  }, [api, hideNotes]);
   useEffect(() => {
     if (!turn || turn.status !== "pending" || !api.loadAskThread) return;
     let active = true,
@@ -102,15 +105,12 @@ export function V1MemoryPanel({
   return (
     <aside className="v1-memory-panel" aria-label="Personal Memory">
       <header>
-        <h2>Memory</h2>
+        <h2>{hideNotes ? "Ask" : "Memory"}</h2>
         <button type="button" onClick={onClose} aria-label="Close memory">
           ×
         </button>
       </header>
-      <p>
-        Personal Memory from your work. Imported conversations contribute to
-        memory without appearing in your chat history.
-      </p>
+      <p>Ask about the Personal Memory captured from your work.</p>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -150,38 +150,42 @@ export function V1MemoryPanel({
           )}
         </section>
       )}
-      <h3>Personal notes</h3>
-      {notes.length === 0 && <p>No notes yet.</p>}
-      {notes.map((note) => (
-        <article key={note.noteId}>
-          <strong>{note.title}</strong>
-          <small>
-            {note.projectionState === "available"
-              ? "Available to recall"
-              : note.projectionState === "pending"
-                ? "Preparing memory"
-                : "Needs attention"}
-          </small>
-        </article>
-      ))}
-      {cursor !== null && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            void api
-              .listNotes?.({ limit: 50, beforeSequence: cursor })
-              .then((result) => {
-                setNotes((current) => [...current, ...result.notes]);
-                setCursor(result.nextBeforeSequence);
-              })
-              .catch((cause) => setError(errorMessage(cause)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Show more
-        </button>
+      {!hideNotes && (
+        <>
+          <h3>Personal notes</h3>
+          {notes.length === 0 && <p>No notes yet.</p>}
+          {notes.map((note) => (
+            <article key={note.noteId}>
+              <strong>{note.title}</strong>
+              <small>
+                {note.projectionState === "available"
+                  ? "Available to recall"
+                  : note.projectionState === "pending"
+                    ? "Preparing memory"
+                    : "Needs attention"}
+              </small>
+            </article>
+          ))}
+          {cursor !== null && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void api
+                  .listNotes?.({ limit: 50, beforeSequence: cursor })
+                  .then((result) => {
+                    setNotes((current) => [...current, ...result.notes]);
+                    setCursor(result.nextBeforeSequence);
+                  })
+                  .catch((cause) => setError(errorMessage(cause)))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Show more
+            </button>
+          )}
+        </>
       )}
     </aside>
   );

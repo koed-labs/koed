@@ -18,6 +18,23 @@ Publication remains a separate decision.
 
 The [installation guide](docs/optional-privacy-installation.md) defines compatibility selection, filtering readiness, and CPU fallback.
 
+## Conversation inspector
+
+- [ ] Make startup Project inventory resilient to concurrent capture. The named
+      inventory's owner-wide selection fence can return
+      `selection_enumeration_stale` while the source inventory succeeds, leaving
+      Desktop waiting for a complete successful inventory. Preserve membership
+      and owner isolation when defining an inspection snapshot or retry strategy;
+      do not relax the shared selection-consumer fence used by other workflows.
+- [ ] Hide the unavailable prompt composer for captured conversations when no
+      supported continuation action exists, so the inspector gets that space.
+      Keep the composer for Conversations that can be continued.
+- [ ] Make collapsed activity more informative using recorded tool names and
+      file/command context where available; preserve the original source and do
+      not infer successful outcomes from missing status.
+- [ ] Add unobtrusive date separators for Conversations spanning multiple days.
+      Preserve stable virtualized row keys and pagination anchors.
+
 ## Desktop Preferences design
 
 - [ ] Restart services after a Privacy rollback compare-and-swap conflict

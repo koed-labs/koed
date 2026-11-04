@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
-import { act, createElement, type ReactNode, type Ref } from "react";
+import { act, createElement, createRef, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
+  VirtualizedTimelineHandle,
   TimelineItem,
   TimelineVisibleRange
 } from "./VirtualizedTimeline.js";
@@ -35,6 +36,7 @@ const listMock = vi.hoisted(() => ({
     contentLength: 1_000,
     isAtEnd: true,
     isStartReached: false,
+    scroll: 600,
     scrollLength: 500
   })),
   props: null as MockListProps | null,
@@ -86,6 +88,7 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
       contentLength: 1_000,
       isAtEnd: true,
       isStartReached: false,
+      scroll: 600,
       scrollLength: 500
     });
     vi.stubGlobal(
@@ -109,10 +112,13 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
     events = [event("e1"), event("e2")],
     ...overrides
   }: {
+    controllerRef?: Ref<VirtualizedTimelineHandle>;
     events?: Event[];
     hasOlderEvents?: boolean;
+    olderPageKey?: string;
     onAtEndChange?: (atEnd: boolean) => void;
     onLoadOlder?: () => Promise<void> | void;
+    onLoadingOlderChange?: (loading: boolean) => void;
     onPageLoadError?: (error: unknown, direction: "newer" | "older") => void;
     onVisibleRangeChange?: (range: TimelineVisibleRange<Event> | null) => void;
     threadKey?: string;
@@ -145,6 +151,7 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
       contentLength: 1_000,
       isAtEnd: false,
       isStartReached: false,
+      scroll: 600,
       scrollLength: 500
     });
     act(() => {
@@ -180,6 +187,33 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
     });
   });
 
+  it("leaves new messages unpinned while reading, then explicitly jumps to the end", async () => {
+    const controllerRef = createRef<VirtualizedTimelineHandle>();
+    await renderTimeline({ controllerRef });
+    listMock.getState.mockReturnValue({
+      contentLength: 1000,
+      scrollLength: 500,
+      isAtEnd: false,
+      isStartReached: false,
+      scroll: 600
+    });
+    act(() => listMock.props?.onScroll?.());
+    listMock.scrollToEnd.mockClear();
+    await renderTimeline({
+      controllerRef,
+      events: [event("e1"), event("e2"), event("e3")]
+    });
+    expect(listMock.scrollToEnd).not.toHaveBeenCalled();
+    act(() => controllerRef.current?.scrollToEnd());
+    expect(listMock.scrollToEnd).toHaveBeenCalledWith({ animated: false });
+    listMock.scrollToEnd.mockClear();
+    await renderTimeline({
+      controllerRef,
+      events: [event("e1"), event("e2"), event("e3"), event("e4")]
+    });
+    expect(listMock.scrollToEnd).toHaveBeenCalled();
+  });
+
   it("captures synchronous page failures and prevents duplicate loads", async () => {
     const error = new Error("load failed");
     const onLoadOlder = vi.fn(() => {
@@ -212,5 +246,134 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
 
     expect(onVisibleRangeChange).toHaveBeenCalledWith(null);
     expect(listMock.scrollToEnd).toHaveBeenCalled();
+  });
+
+  const nearStart = () =>
+    listMock.getState.mockReturnValue({
+      contentLength: 1000,
+      scrollLength: 500,
+      scroll: 200,
+      isAtEnd: false,
+      isStartReached: true
+    });
+
+  it("prefetches before reaching the top and reports the pending request", async () => {
+    const page = Promise.withResolvers<void>();
+    const onLoadOlder = vi.fn(() => page.promise);
+    const onLoadingOlderChange = vi.fn();
+    await renderTimeline({ onLoadOlder, onLoadingOlderChange });
+    nearStart();
+    await act(async () => {
+      listMock.props?.onScroll?.();
+      listMock.props?.onStartReached?.();
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    expect(onLoadingOlderChange).toHaveBeenLastCalledWith(true);
+    await act(async () => page.resolve());
+    expect(onLoadingOlderChange).toHaveBeenLastCalledWith(false);
+    await act(async () => listMock.props?.onScroll?.());
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues after a prepend without requiring the reader to leave the loading boundary", async () => {
+    const firstPage = Promise.withResolvers<void>();
+    const nextPage = Promise.withResolvers<void>();
+    const onLoadOlder = vi
+      .fn()
+      .mockImplementationOnce(() => firstPage.promise)
+      .mockImplementationOnce(() => nextPage.promise);
+    await renderTimeline({ onLoadOlder });
+    nearStart();
+    await act(async () => listMock.props?.onScroll?.());
+    listMock.scrollToEnd.mockClear();
+    await renderTimeline({
+      onLoadOlder,
+      events: [event("e0"), event("e1"), event("e2")]
+    });
+    await act(async () => listMock.props?.onStartReached?.());
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await act(async () => firstPage.resolve());
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+    expect(listMock.scrollToEnd).not.toHaveBeenCalled();
+    await act(async () => nextPage.resolve());
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it("also continues when the prepended data commits after the load promise settles", async () => {
+    const onLoadOlder = vi.fn().mockResolvedValue(undefined);
+    await renderTimeline({ onLoadOlder });
+    nearStart();
+    await act(async () => listMock.props?.onScroll?.());
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await renderTimeline({
+      onLoadOlder,
+      events: [event("e0"), event("e1"), event("e2")]
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the source cursor even when older tools extend the same visible group", async () => {
+    const onLoadOlder = vi.fn().mockResolvedValue(undefined);
+    const events = [event("stable-tool-group")];
+    await renderTimeline({ events, olderPageKey: "tool-20", onLoadOlder });
+    nearStart();
+    await act(async () => listMock.props?.onScroll?.());
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await renderTimeline({ events, olderPageKey: "tool-10", onLoadOlder });
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not automatically loop on a failed page, but permits retry after leaving the boundary", async () => {
+    const onLoadOlder = vi.fn().mockRejectedValue(new Error("offline"));
+    const onPageLoadError = vi.fn();
+    await renderTimeline({ onLoadOlder, onPageLoadError });
+    nearStart();
+    await act(async () => listMock.props?.onScroll?.());
+    await act(async () => listMock.props?.onStartReached?.());
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    expect(onPageLoadError).toHaveBeenCalledTimes(1);
+    listMock.getState.mockReturnValue({
+      contentLength: 1200,
+      scrollLength: 500,
+      scroll: 600,
+      isAtEnd: false,
+      isStartReached: false
+    });
+    act(() => listMock.props?.onScroll?.());
+    nearStart();
+    await act(async () => listMock.props?.onScroll?.());
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores an old thread's page completion while the new thread is loading", async () => {
+    const oldPage = Promise.withResolvers<void>();
+    const newPage = Promise.withResolvers<void>();
+    const onPageLoadError = vi.fn();
+    const oldLoader = vi.fn(() => oldPage.promise);
+    const newLoader = vi.fn(() => newPage.promise);
+    const onLoadingOlderChange = vi.fn();
+    await renderTimeline({
+      onLoadOlder: oldLoader,
+      onPageLoadError,
+      onLoadingOlderChange
+    });
+    nearStart();
+    await act(async () => listMock.props?.onStartReached?.());
+    await renderTimeline({
+      threadKey: "thread-b",
+      events: [event("b")],
+      onLoadOlder: newLoader,
+      onPageLoadError,
+      onLoadingOlderChange
+    });
+    await act(async () => listMock.props?.onStartReached?.());
+    expect(newLoader).toHaveBeenCalledTimes(1);
+    await act(async () => oldPage.reject(new Error("old failure")));
+    expect(onPageLoadError).not.toHaveBeenCalled();
+    expect(onLoadingOlderChange).toHaveBeenLastCalledWith(true);
+    await act(async () => listMock.props?.onStartReached?.());
+    expect(newLoader).toHaveBeenCalledTimes(1);
+    await act(async () => newPage.resolve());
+    expect(onLoadingOlderChange).toHaveBeenLastCalledWith(false);
   });
 });
