@@ -32,6 +32,17 @@ const writer = () => {
   };
 };
 
+// No automatic history has run for any AI Client.
+const noHistoricalIngestion = {
+  lifecycle: "unknown",
+  selected: null,
+  completed: 0,
+  skipped: 0,
+  updatedAt: null,
+  lastErrorCode: null,
+  failingSince: null
+} as const;
+
 const status: KoedServerStatus = {
   ok: true,
   state: "healthy",
@@ -46,6 +57,11 @@ const status: KoedServerStatus = {
   embeddingService: { state: "healthy" },
   privacyService: { state: "healthy" },
   localAiRuntime: { state: "healthy" },
+  historicalIngestion: {
+    codex: noHistoricalIngestion,
+    claude: noHistoricalIngestion,
+    pi: noHistoricalIngestion
+  },
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },

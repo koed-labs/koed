@@ -1156,10 +1156,18 @@ const tomlSection = (content: string, sectionName: string): string => {
   return sectionLines.join("\n");
 };
 
+// Inspecting an integration never records connections, so callers that only
+// inspect (tests, headless checks) need not supply the recorder.
 type CodexStatusDependencies = Required<
-  Omit<KoedServerStatusDependencies, "desktopRuntimeCapability" | "appRuntime">
+  Omit<
+    KoedServerStatusDependencies,
+    "desktopRuntimeCapability" | "appRuntime" | "recordAiClientConnections"
+  >
 > &
-  Pick<KoedServerStatusDependencies, "desktopRuntimeCapability" | "appRuntime">;
+  Pick<
+    KoedServerStatusDependencies,
+    "desktopRuntimeCapability" | "appRuntime" | "recordAiClientConnections"
+  >;
 
 const inspectCodexInstallation = (
   environment: NodeJS.ProcessEnv,
