@@ -537,6 +537,7 @@ export function ConversationTimeline({
       events={timelineItems}
       hasNewerEvents={hasNewerEvents}
       hasOlderEvents={hasOlderEvents}
+      olderPageKey={events[0]?.id}
       onLoadNewer={onLoadNewer}
       onLoadOlder={onLoadOlder}
       renderEvent={renderEvent}
@@ -670,6 +671,7 @@ function ConversationPresentation({
         className="native-timeline-scroll"
         events={timelineItems}
         hasOlderEvents={model.hasOlderEvents}
+        olderPageKey={model.events[0]?.id}
         onLoadOlder={onLoadOlder}
         renderEvent={renderEvent}
         threadKey={threadSelectionKey(thread)}

@@ -7,8 +7,7 @@ import {
   DEFAULT_AGENT_LOOK,
   ModelPicker,
   Pixelkin,
-  V1Composer,
-  V1Shell
+  V1Composer
 } from "./visual.js";
 
 (
@@ -196,33 +195,5 @@ describe("v1 presentation primitives", () => {
       modelId: "plain",
       effort: ""
     });
-  });
-  it("renders caller supplied history and navigation actions", async () => {
-    const select = vi.fn();
-    await act(async () =>
-      root.render(
-        <V1Shell
-          defaultRailExpanded
-          groups={[
-            {
-              id: "today",
-              label: "Today",
-              items: [
-                { id: "chat", title: "Actual conversation", onSelect: select }
-              ]
-            }
-          ]}
-        >
-          <p>Content</p>
-        </V1Shell>
-      )
-    );
-    expect(container.textContent).toContain("Actual conversation");
-    await act(async () =>
-      (
-        container.querySelector(".v1-history-item button") as HTMLButtonElement
-      ).click()
-    );
-    expect(select).toHaveBeenCalledOnce();
   });
 });

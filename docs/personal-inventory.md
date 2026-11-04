@@ -18,6 +18,13 @@ Activity changes do not shift page boundaries. A refresh includes new captures o
 Desktop collects each raw page before it hides nested subagents or removes repeated logical Conversations.
 A parent on a later page can therefore hide its nested subagent correctly.
 
+Conversation inspection selects the authorized event page before enriching its
+messages with source metadata. It reads matching Conversation Items as one batch
+and retains the earliest matching source per message, scoped to the owning User
+and visibility. Provider item IDs, prompt correlation and Approval Activity
+display metadata remain available without scanning the source journal once for
+every message in the Conversation. Event order and pagination cursors are unchanged.
+
 The shared inventory helpers classify recorded source identities and deduplicate logical Conversations.
 Deduplication retains local source references and inclusion reasons for navigation and source management.
 Repeated views of one logical Conversation do not add their event counts together.
