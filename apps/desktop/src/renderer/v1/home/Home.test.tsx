@@ -61,8 +61,7 @@ describe("Home", () => {
     container.querySelector<HTMLButtonElement>(
       `button[aria-label^="Open Project ${name},"]`
     )!;
-  const front = (name: string) =>
-    kin(name).style.getPropertyValue("--kin-size") === "144px";
+  const front = (name: string) => kin(name).hasAttribute("data-lead");
 
   it("opens a Project from its Kin", async () => {
     const onOpenProject = vi.fn();
@@ -81,7 +80,7 @@ describe("Home", () => {
       )
     });
     expect(container.textContent).toContain("10 Projects");
-    expect(container.textContent).toContain("2 more in the sidebar");
+    expect(container.textContent).toContain("3 more in the sidebar");
   });
 
   it("puts the most recently active Project in front", async () => {

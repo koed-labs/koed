@@ -10,27 +10,12 @@
   flex-direction: column;
   gap: 20px;
   padding: 20px 28px 32px;
-  background:
-    radial-gradient(
-      ellipse 34% 55% at 50% 0%,
-      color-mix(in srgb, #fff0c8 9%, transparent),
-      transparent 70%
-    ),
-    var(--v1-bg);
+  background: var(--v1-bg);
 }
 .v1-home-centred {
   align-items: center;
   justify-content: center;
   text-align: center;
-}
-.v1-home[data-mood="attention"] {
-  background:
-    radial-gradient(
-      ellipse 38% 55% at 50% 0%,
-      color-mix(in srgb, var(--v1-heat-4) 10%, transparent),
-      transparent 70%
-    ),
-    var(--v1-bg);
 }
 .v1-home-copy {
   max-width: 540px;
@@ -215,11 +200,6 @@
   overflow: hidden;
   background:
     radial-gradient(
-      ellipse 30% 70% at 50% -5%,
-      color-mix(in srgb, #fff0c8 12%, transparent),
-      transparent 70%
-    ),
-    radial-gradient(
       ellipse 55% 14% at 50% 90%,
       color-mix(in srgb, var(--v1-accent) 22%, transparent),
       transparent 70%
@@ -288,10 +268,15 @@
 }
 .v1-home-kin-label {
   display: grid;
+  max-width: 150px;
   text-align: center;
   font-size: 12px;
   line-height: 1.35;
   white-space: nowrap;
+}
+.v1-home-kin-label > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .v1-home-kin[data-front] .v1-home-kin-label {
   font-size: 14px;
@@ -356,10 +341,7 @@
   }
 }
 
-.v1-home-stage-projects .v1-home-kin {
-  bottom: calc(var(--kin-y) + 120px);
-}
-.v1-home-stage-projects .v1-home-caption {
+.v1-home-stage .v1-home-caption {
   position: absolute;
   left: 50%;
   bottom: 28px;
@@ -383,41 +365,84 @@
   height: auto;
   min-height: 340px;
 }
-.v1-home-stage-hatching {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 0 24px 28px;
-  text-align: center;
-}
+/* A beam from the top of the stage that lands on the lead Kin. The layout
+   sets where (--spot-x, --spot-y) and how big (--spot-size). */
 .v1-home-spot {
+  --spot-light: #fff0c8;
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(
-    ellipse 22% 60% at 50% 0%,
-    color-mix(in srgb, #fff0c8 14%, transparent),
-    transparent 75%
+  filter: blur(14px);
+}
+.v1-home-spot::before {
+  content: "";
+  position: absolute;
+  top: -24px;
+  bottom: var(--spot-y);
+  left: calc(50% + var(--spot-x));
+  width: calc(var(--spot-size) * 2.2);
+  transform: translateX(-50%);
+  clip-path: polygon(40% 0, 60% 0, 100% 100%, 0 100%);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--spot-light) 2%, transparent),
+    color-mix(in srgb, var(--spot-light) 10%, transparent)
   );
 }
-.v1-home-stage-hatching .v1-home-kin {
-  bottom: calc(var(--kin-y) + 150px);
+.v1-home-spot::after {
+  content: "";
+  position: absolute;
+  bottom: calc(var(--spot-y) - var(--spot-size) * 0.2);
+  left: calc(50% + var(--spot-x));
+  width: calc(var(--spot-size) * 2.4);
+  height: calc(var(--spot-size) * 0.4);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--spot-light) 16%, transparent),
+    transparent
+  );
+}
+/* A lone Kin outside a stage gets its own short beam. */
+.v1-home-solo {
+  position: relative;
+  display: grid;
+  justify-items: center;
+}
+.v1-home-solo > :not(.v1-home-spot) {
+  position: relative;
+  z-index: 1;
+}
+.v1-home-solo > .v1-home-spot {
+  --spot-x: 0px;
+  --spot-y: 0px;
+  --spot-size: 100px;
+  inset: auto;
+  left: 50%;
+  bottom: -14px;
+  width: 360px;
+  height: 200px;
+  transform: translateX(-50%);
+}
+.v1-home[data-mood="attention"] .v1-home-spot {
+  --spot-light: var(--v1-heat-4);
 }
 .v1-home-host {
-  position: relative;
+  position: absolute;
+  left: var(--kin-x);
+  bottom: var(--kin-y);
   z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
-  --kin-size: 128px;
+  gap: 8px;
+  transform: translateX(-50%);
   --kin-heat: var(--v1-accent);
-  margin-bottom: 20px;
 }
 .v1-home-caption {
-  position: relative;
   z-index: 2;
-  width: min(460px, 100%);
+  width: min(460px, calc(100% - 48px));
 }
 .v1-home-caption h1 {
   font-size: 26px;
@@ -425,7 +450,7 @@
 .v1-home-egg {
   position: absolute;
   left: var(--kin-x);
-  bottom: calc(var(--kin-y) + 150px + 26px);
+  bottom: var(--kin-y);
   transform: translateX(-50%);
 }
 .v1-home-egg i {
@@ -562,5 +587,11 @@
   .v1-home-egg i,
   .v1-home-progress-track[data-indeterminate] span {
     animation: none;
+  }
+}
+/* In a short window the Kin need the room more than the hatching sub line. */
+@media (max-height: 700px) {
+  .v1-home-stage-hatching .v1-home-sub {
+    display: none;
   }
 }

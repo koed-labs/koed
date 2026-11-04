@@ -297,7 +297,7 @@ export const holdHomeOrder = (
   return [...kept, ...ranked.filter((id) => !known.has(id))];
 };
 
-export const HOME_STAGE_LIMIT = 8;
+export const HOME_STAGE_LIMIT = 7;
 
 export function formatHomeAgo(latestAt: string | null, now: number): string {
   const at = time(latestAt);

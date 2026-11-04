@@ -47,9 +47,12 @@ never starts a Conversation (New chat opens its own composer route).
   offers its existing setup command, keeping that command's consent step, or
   its status message as manual guidance.
 - **Quiet stage** shows when Projects have loaded and none exist.
-- **Projects** shows a Kin for each named Project the sidebar lists, up to eight
+- **Projects** shows a Kin for each named Project the sidebar lists, up to seven
   on the stage with the most recent in the spotlight; the caption says how many
-  more are in the sidebar, which is the full list. Counts are the Project summary's
+  more are in the sidebar, which is the full list. The stage is laid out in
+  design units and scaled to fit the window, so Kin grow and shrink with it
+  while their labels keep a fixed size; the spotlight follows the lead Kin, and
+  the back row stays out of its beam and shows names only. Counts are the Project summary's
   stored captured events, and ranking uses its latest thread activity, then
   name, then id. `conversation_events_changed` refreshes the summaries through
   `PersonalMemoryStore`; a rise in a summary's count plays one coalesced

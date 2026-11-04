@@ -1,10 +1,12 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
-  type ReactNode
+  type ReactNode,
+  type RefObject
 } from "react";
 import {
   AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
@@ -27,6 +29,12 @@ import {
   type HomeProjectEntry,
   type HomeView
 } from "./home-model.js";
+import {
+  layoutStage,
+  type StageBox,
+  type StageLayout,
+  type StageSlot
+} from "./stage-layout.js";
 import "./home.css";
 
 // Re-ranking waits at least this long between moves so Kin don't jostle.
@@ -218,23 +226,75 @@ function ProblemList({
 
 type Feed = { key: number; added: number; at: number };
 
-// Bottom offsets are a share of the stage above the caption; the most
-// recently active Project stands in the spotlight.
-const slots: ReadonlyArray<{ x: number; y: number; size: number }> = [
-  { x: 50, y: 4, size: 144 },
-  { x: 27, y: 10, size: 100 },
-  { x: 73, y: 10, size: 100 },
-  { x: 33, y: 46, size: 68 },
-  { x: 67, y: 46, size: 68 },
-  { x: 10, y: 38, size: 68 },
-  { x: 90, y: 38, size: 68 },
-  { x: 50, y: 58, size: 60 }
+// Design units; the most recently active Project leads in the spotlight,
+// with the rest standing further back, out of the beam.
+const LABEL_FRONT = 38;
+const LABEL_BACK = 17;
+const slots: readonly StageSlot[] = [
+  { x: 0, y: 0, size: 144, label: LABEL_FRONT },
+  { x: -250, y: 34, size: 100, label: LABEL_FRONT },
+  { x: 250, y: 34, size: 100, label: LABEL_FRONT },
+  { x: -150, y: 200, size: 64, label: LABEL_BACK },
+  { x: 150, y: 200, size: 64, label: LABEL_BACK },
+  { x: -410, y: 140, size: 64, label: LABEL_BACK },
+  { x: 410, y: 140, size: 64, label: LABEL_BACK }
 ];
-// Two Projects share the spotlight instead of leaving one side empty.
-const pairSlots: typeof slots = [
-  { x: 39, y: 4, size: 144 },
-  { x: 61, y: 8, size: 112 }
+// Two Projects share the stage instead of leaving one side empty.
+const pairSlots: readonly StageSlot[] = [
+  { x: -110, y: 0, size: 144, label: LABEL_FRONT },
+  { x: 110, y: 16, size: 112, label: LABEL_FRONT }
 ];
+// Room kept under the Kin for the caption until it has been measured.
+const CAPTION_FALLBACK = 120;
+// The caption sits this far above the stage's bottom edge, with a gap above.
+const CAPTION_INSET = 28 + 16;
+
+// Measures the stage and its caption so the layout can fit around them.
+function useStageBox(
+  stage: RefObject<HTMLElement | null>,
+  caption: RefObject<HTMLElement | null>
+) {
+  const [box, setBox] = useState<(StageBox & { reserve: number }) | null>(null);
+  useLayoutEffect(() => {
+    const element = stage.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const { width, height } = element.getBoundingClientRect();
+      const reserve =
+        (caption.current?.getBoundingClientRect().height ?? 0) + CAPTION_INSET;
+      if (!width || !height) return;
+      setBox((current) =>
+        current?.width === width &&
+        current.height === height &&
+        current.reserve === reserve
+          ? current
+          : { width, height, reserve }
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    if (caption.current) observer.observe(caption.current);
+    return () => observer.disconnect();
+  }, [stage, caption]);
+  return box;
+}
+
+const placementStyle = (layout: StageLayout, index: number) => {
+  const placement = layout.placements[index]!;
+  return {
+    "--kin-x": `calc(50% + ${placement.x}px)`,
+    "--kin-y": `${placement.bottom}px`,
+    "--kin-size": `${placement.size}px`
+  } as CSSProperties;
+};
+
+const spotStyle = ({ spot }: StageLayout) =>
+  ({
+    "--spot-x": `${spot.x}px`,
+    "--spot-y": `${spot.bottom}px`,
+    "--spot-size": `${spot.size}px`
+  }) as CSSProperties;
 
 function ProjectsStage({
   entries,
@@ -302,21 +362,34 @@ function ProjectsStage({
     });
   }, [entries, reduced]);
 
+  const stageRef = useRef<HTMLElement>(null);
+  const captionRef = useRef<HTMLDivElement>(null);
+  const box = useStageBox(stageRef, captionRef);
   const onStage = shown.slice(0, HOME_STAGE_LIMIT);
+  const layout = layoutStage(
+    box,
+    box?.reserve ?? CAPTION_FALLBACK,
+    onStage.length === 2 ? pairSlots : slots.slice(0, onStage.length || 1)
+  );
   // Kin render in a fixed order so a re-rank moves them instead of remounting.
   const stageKin = entries.filter(({ id }) => onStage.includes(id));
   return (
     <section
+      ref={stageRef}
       className="v1-home-stage v1-home-stage-projects"
       aria-label="Most active Projects"
       data-reduced-motion={reduced || undefined}
       onPointerEnter={() => setPointerOver(true)}
       onPointerLeave={() => setPointerOver(false)}
     >
-      <div className="v1-home-spot" aria-hidden="true" />
+      <div
+        className="v1-home-spot"
+        aria-hidden="true"
+        style={spotStyle(layout)}
+      />
       {stageKin.map((entry) => {
         const rank = onStage.indexOf(entry.id);
-        const slot = (onStage.length === 2 ? pairSlots : slots)[rank]!;
+        const front = rank < 3;
         const feed = feeds.get(entry.id);
         const ago = formatHomeAgo(entry.latestAt, now);
         return (
@@ -324,14 +397,14 @@ function ProjectsStage({
             key={entry.id}
             type="button"
             className="v1-home-kin"
-            data-front={rank < 3 || undefined}
+            data-lead={rank === 0 || undefined}
+            data-front={front || undefined}
             data-heat={homeHeat(entry.latestAt, now)}
-            style={
-              {
-                "--kin-x": `${slot.x}%`,
-                "--kin-y": `${slot.y}%`,
-                "--kin-size": `${slot.size}px`
-              } as CSSProperties
+            style={placementStyle(layout, rank)}
+            title={
+              front
+                ? undefined
+                : `${entry.name} · ${entry.eventCount.toLocaleString()} events · ${ago}`
             }
             aria-label={`Open Project ${entry.name}, ${entry.eventCount} captured events, active ${ago}`}
             onClick={() => onOpenProject(entry.id)}
@@ -344,21 +417,26 @@ function ProjectsStage({
             )}
             <Pixelkin
               look={projectKinLook(entry.id)}
-              size={slot.size}
+              size={layout.placements[rank]!.size}
               expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
               hopKey={feed?.key}
             />
             <span className="v1-home-kin-shadow" aria-hidden="true" />
             <span className="v1-home-kin-label">
               <strong>{entry.name}</strong>
-              <span>
-                {entry.eventCount.toLocaleString()} events · {ago}
-              </span>
+              {/* Back-row Kin carry just a name; the rest is in the tooltip. */}
+              {front && (
+                <span>
+                  {entry.eventCount.toLocaleString()} events · {ago}
+                </span>
+              )}
             </span>
           </button>
         );
       })}
-      <div className="v1-home-caption">{caption}</div>
+      <div className="v1-home-caption" ref={captionRef}>
+        {caption}
+      </div>
     </section>
   );
 }
@@ -384,15 +462,19 @@ const ingestionLine = (client: HomeIngestionClient) => {
   }
 };
 
-// Around the Koed Kin in the middle of the stage, nearest first.
-const hatchSlots: ReadonlyArray<{ x: number; y: number; size: number }> = [
-  { x: 26, y: 18, size: 76 },
-  { x: 74, y: 18, size: 76 },
-  { x: 12, y: 8, size: 60 },
-  { x: 88, y: 8, size: 60 },
-  { x: 38, y: 4, size: 56 },
-  { x: 62, y: 4, size: 56 }
+// The Koed Kin leads; Projects gather around it, nearest first, and the
+// further back they stand the higher and smaller they are.
+const hatchSlots: readonly StageSlot[] = [
+  { x: 0, y: 0, size: 128, label: 0 },
+  { x: -230, y: 24, size: 76, label: LABEL_BACK },
+  { x: 230, y: 24, size: 76, label: LABEL_BACK },
+  { x: -390, y: 80, size: 60, label: LABEL_BACK },
+  { x: 390, y: 80, size: 60, label: LABEL_BACK },
+  { x: -180, y: 140, size: 52, label: LABEL_BACK },
+  { x: 180, y: 140, size: 52, label: LABEL_BACK }
 ];
+// The hatching caption carries a progress bar, so it needs more room.
+const HATCH_CAPTION_FALLBACK = 170;
 
 function HatchingStage({
   entries,
@@ -406,25 +488,42 @@ function HatchingStage({
   onOpenProject: (projectId: string) => void;
 }) {
   const reduced = useReducedMotion();
+  const stageRef = useRef<HTMLElement>(null);
+  const captionRef = useRef<HTMLDivElement>(null);
+  const box = useStageBox(stageRef, captionRef);
   // Projects present on the first render were found before this screen opened.
   const seen = useRef<Set<string> | null>(null);
   seen.current ??= new Set(entries.map(({ id }) => id));
-  const shown = rankHomeProjects(entries).slice(0, hatchSlots.length - 1);
+  // One satellite slot stays free for the egg.
+  const shown = rankHomeProjects(entries).slice(0, hatchSlots.length - 2);
+  // Fit only the slots in use (at least the first ring), so the back row
+  // doesn't shrink the stage before anything stands there.
+  const layout = layoutStage(
+    box,
+    box?.reserve ?? HATCH_CAPTION_FALLBACK,
+    hatchSlots.slice(0, Math.max(3, shown.length + 2))
+  );
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  const slotStyle = (rank: number) => {
-    const slot = hatchSlots[rank]!;
-    return {
-      "--kin-x": `${slot.x}%`,
-      "--kin-y": `${slot.y}%`,
-      "--kin-size": `${slot.size}px`
-    } as CSSProperties;
-  };
+  const egg = layout.placements[shown.length + 1]!;
   return (
     <section
+      ref={stageRef}
       className="v1-home-stage v1-home-stage-hatching"
       aria-label="Projects found so far"
     >
-      <div className="v1-home-spot" aria-hidden="true" />
+      <div
+        className="v1-home-spot"
+        aria-hidden="true"
+        style={spotStyle(layout)}
+      />
+      <div className="v1-home-host" style={placementStyle(layout, 0)}>
+        <Pixelkin
+          look={agent.look}
+          size={layout.placements[0]!.size}
+          expression="happy"
+        />
+        <span className="v1-home-kin-shadow" aria-hidden="true" />
+      </div>
       {shown.map((id, rank) => {
         const entry = byId.get(id)!;
         return (
@@ -433,11 +532,14 @@ function HatchingStage({
             type="button"
             className="v1-home-kin"
             data-hatch={(!reduced && !seen.current!.has(id)) || undefined}
-            style={slotStyle(rank)}
+            style={placementStyle(layout, rank + 1)}
             aria-label={`Open Project ${entry.name}`}
             onClick={() => onOpenProject(id)}
           >
-            <Pixelkin look={projectKinLook(id)} size={hatchSlots[rank]!.size} />
+            <Pixelkin
+              look={projectKinLook(id)}
+              size={layout.placements[rank + 1]!.size}
+            />
             <span className="v1-home-kin-shadow" aria-hidden="true" />
             <span className="v1-home-kin-label">
               <strong>{entry.name}</strong>
@@ -448,15 +550,18 @@ function HatchingStage({
       <span
         className="v1-home-egg"
         aria-hidden="true"
-        style={slotStyle(shown.length)}
+        style={
+          {
+            "--kin-x": `calc(50% + ${egg.x}px)`,
+            // The egg stands where the Kin's feet will be, above its label.
+            "--kin-y": `${egg.bottom + LABEL_BACK + 8}px`,
+            "--kin-size": `${egg.size}px`
+          } as CSSProperties
+        }
       >
         <i />
       </span>
-      <div className="v1-home-host">
-        <Pixelkin look={agent.look} size={128} expression="happy" />
-        <span className="v1-home-kin-shadow" aria-hidden="true" />
-      </div>
-      <div className="v1-home-caption">
+      <div className="v1-home-caption" ref={captionRef}>
         <h1>Hatching your Projects</h1>
         <p
           className="v1-home-sub"
@@ -557,7 +662,10 @@ export function Home({
   if (view.kind === "loading")
     return (
       <section className="v1-home v1-home-centred" aria-busy="true">
-        <Pixelkin look={agent.look} size={96} expression="neutral" />
+        <div className="v1-home-solo">
+          <span className="v1-home-spot" aria-hidden="true" />
+          <Pixelkin look={agent.look} size={96} expression="neutral" />
+        </div>
         <p className="v1-home-sub">Checking on your Projects…</p>
       </section>
     );
@@ -565,7 +673,10 @@ export function Home({
     return (
       <section className="v1-home v1-home-centred" data-mood="attention">
         <Keycaps clients={clients} />
-        <Pixelkin look={agent.look} size={112} expression="surprised" />
+        <div className="v1-home-solo">
+          <span className="v1-home-spot" aria-hidden="true" />
+          <Pixelkin look={agent.look} size={112} expression="surprised" />
+        </div>
         <div className="v1-home-copy">
           <h1>{agent.name} needs a hand</h1>
           <p className="v1-home-sub">
@@ -601,7 +712,10 @@ export function Home({
       <section className="v1-home v1-home-centred" data-mood="empty">
         {warnings}
         <Keycaps clients={clients} />
-        <Pixelkin look={agent.look} size={112} expression="neutral" />
+        <div className="v1-home-solo">
+          <span className="v1-home-spot" aria-hidden="true" />
+          <Pixelkin look={agent.look} size={112} expression="neutral" />
+        </div>
         <div className="v1-home-copy">
           <h1>A quiet stage, for now</h1>
           <p className="v1-home-sub">
