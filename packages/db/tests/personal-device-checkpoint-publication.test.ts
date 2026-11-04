@@ -2,6 +2,7 @@ import { canonicalConversationItemKey } from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
+import { createPdsLocalSyncService } from "../../../apps/worker/src/personal-device-sync-service.js";
 import {
   createDbPool,
   createMemorySourceRepository,
@@ -418,5 +419,321 @@ describeDb("PDS automatic checkpoint publication", () => {
       localRepository.checkpointPdsSourceSession(input)
     ).rejects.toThrow("PdsPublicationMembershipError");
     expect(published).toHaveLength(2);
+
+    // Committed rows must yield to other work until their next reconciliation.
+    await pool.query(
+      `update pds_outbox_entries set state='committed',transport_id='transport',
+         retry_at='1960-01-01T00:00:00Z',lease_owner=null,lease_until=null where id=$1`,
+      [checkpointRows.rows[0]!.id]
+    );
+    await pool.query(
+      `update pds_outbox_entries set state='committed',transport_id='transport-2',
+         retry_at=now()+interval '1 hour',lease_owner=null,lease_until=null where id=$1`,
+      [checkpointRows.rows[1]!.id]
+    );
+    expect(await localRepository.getPdsLocalSyncWakeAt()).toBe(
+      "1960-01-01T00:00:00.000Z"
+    );
+    expect(
+      await localRepository.getPdsLocalSyncWakeAt({
+        excludeSourceAcknowledgements: true
+      })
+    ).not.toBe("1960-01-01T00:00:00.000Z");
+    const claimed = await localRepository.claimPdsCommittedOutbox({
+      workerId: "retry-test"
+    });
+    expect(claimed.map((row) => row.id)).not.toContain(
+      checkpointRows.rows[1]!.id
+    );
+    expect(claimed.map((row) => row.id)).toContain(checkpointRows.rows[0]!.id);
+    expect(
+      await localRepository.releasePdsCommittedOutbox({
+        workerId: "retry-test",
+        outboxId: checkpointRows.rows[0]!.id
+      })
+    ).toBe(true);
+    await pool.query(
+      "update pds_outbox_entries set retry_at=now() where id=$1",
+      [checkpointRows.rows[1]!.id]
+    );
+    const restarted = createPersonalDeviceSyncLocalRepository(pool);
+    const next = await restarted.claimPdsCommittedOutbox({
+      workerId: "retry-test"
+    });
+    expect(next.map((row) => row.id)).not.toContain(checkpointRows.rows[0]!.id);
+    expect(next.map((row) => row.id)).toContain(checkpointRows.rows[1]!.id);
+    expect(await restarted.getPdsLocalSyncWakeAt()).not.toBeNull();
+    await pool.query(
+      "update pds_outbox_entries set lease_until=now()-interval '1 second' where id=$1",
+      [checkpointRows.rows[1]!.id]
+    );
+    expect(
+      (await restarted.claimPdsCommittedOutbox({ workerId: "new-lease" })).map(
+        (row) => row.id
+      )
+    ).toContain(checkpointRows.rows[1]!.id);
+    expect(
+      await restarted.completePdsOutbox({
+        workerId: "retry-test",
+        outboxId: checkpointRows.rows[1]!.id,
+        state: "acked",
+        transportId: "transport-2"
+      })
+    ).toBe(false);
+    expect(
+      await restarted.completePdsOutbox({
+        workerId: "new-lease",
+        outboxId: checkpointRows.rows[1]!.id,
+        state: "acked",
+        transportId: "transport-2"
+      })
+    ).toBe(true);
+
+    const artifact = await pool.query<{ id: string }>(
+      `insert into pds_portable_artifacts
+       (group_id,owner_user_id,artifact_id,work_identity,artifact_class,source_package_id,
+        source_manifest_hash,source_fingerprint,source_closure_hash,producer_device_id,
+        claim_generation,compatibility_contract_hash,payload_hash,transport_manifest_hash,
+        semantic_claim_completed_at,encrypted_envelope)
+       select id,$1,$2,$2,'memory_event/v1','source','hash','fingerprint','closure',
+         $3,'1','contract','payload','manifest',now(),'{}'::jsonb
+       from personal_device_groups where group_id=$4 returning id`,
+      [userId, randomUUID(), deviceId, groupId]
+    );
+    const artifactOutbox = await pool.query<{ id: string }>(
+      `insert into pds_artifact_outbox_entries
+       (artifact_id,idempotency_key,state,lease_owner,lease_until)
+       values ($1,$2,'uploading','old','1971-01-01T00:00:00Z') returning id`,
+      [artifact.rows[0]!.id, randomUUID()]
+    );
+    const artifactId = artifactOutbox.rows[0]!.id;
+    const futureRetry = await pool.query<{ retry_at: Date }>(
+      "update pds_artifact_outbox_entries set retry_at=now()+interval '5 seconds' where id=$1 returning retry_at",
+      [artifactId]
+    );
+    expect(
+      (await memory.claimPdsArtifactOutbox({ workerId: "too-early" })).map(
+        (row) => row.id
+      )
+    ).not.toContain(artifactId);
+    expect(await restarted.getPdsLocalSyncWakeAt()).toBe(
+      futureRetry.rows[0]!.retry_at.toISOString()
+    );
+    expect(
+      await restarted.getPdsLocalSyncWakeAt({
+        excludeArtifactAcknowledgements: true
+      })
+    ).toBe(futureRetry.rows[0]!.retry_at.toISOString());
+    await pool.query(
+      "update pds_artifact_outbox_entries set state='committed',retry_at='1960-01-01T00:00:00Z',lease_until=null where id=$1",
+      [artifactId]
+    );
+    expect(await restarted.getPdsLocalSyncWakeAt()).toBe(
+      "1960-01-01T00:00:00.000Z"
+    );
+    expect(
+      await restarted.getPdsLocalSyncWakeAt({
+        excludeArtifactAcknowledgements: true
+      })
+    ).not.toBe("1960-01-01T00:00:00.000Z");
+    await pool.query(
+      "update pds_artifact_outbox_entries set state='uploading',lease_until='1971-01-01T00:00:00Z',retry_at='1970-01-01T00:00:00Z' where id=$1",
+      [artifactId]
+    );
+    expect(await restarted.getPdsLocalSyncWakeAt()).toBe(
+      "1971-01-01T00:00:00.000Z"
+    );
+    const recovered = await memory.claimPdsArtifactOutbox({
+      workerId: "restart"
+    });
+    expect(recovered.map((row) => row.id)).toContain(artifactId);
+    await pool.query(
+      "update pds_artifact_outbox_entries set lease_until=now()-interval '1 second' where id=$1",
+      [artifactId]
+    );
+    expect(
+      await memory.retryPdsArtifactOutbox({
+        workerId: "restart",
+        outboxId: artifactId,
+        retryAt: new Date(),
+        errorClass: "Error"
+      })
+    ).toBe(false);
+    expect(
+      (await memory.claimPdsArtifactOutbox({ workerId: "new" })).map(
+        (row) => row.id
+      )
+    ).toContain(artifactId);
+    expect(
+      await memory.completePdsArtifactOutbox({
+        workerId: "new",
+        outboxId: artifactId,
+        state: "committed",
+        transportId: "transport"
+      })
+    ).toBe(true);
+    expect(
+      (
+        await memory.claimPdsArtifactOutbox({
+          workerId: "new",
+          state: "committed"
+        })
+      ).map((row) => row.id)
+    ).toContain(artifactId);
+    await pool.query(
+      "update pds_artifact_outbox_entries set lease_until=now()-interval '1 second' where id=$1",
+      [artifactId]
+    );
+    expect(
+      await memory.releasePdsCommittedArtifactOutbox({
+        workerId: "new",
+        outboxId: artifactId
+      })
+    ).toBe(false);
+    expect(
+      (
+        await memory.claimPdsArtifactOutbox({
+          workerId: "new",
+          state: "committed"
+        })
+      ).map((row) => row.id)
+    ).toContain(artifactId);
+    expect(
+      await memory.releasePdsCommittedArtifactOutbox({
+        workerId: "new",
+        outboxId: artifactId
+      })
+    ).toBe(true);
+    expect(
+      (
+        await memory.claimPdsArtifactOutbox({
+          workerId: "new",
+          state: "committed"
+        })
+      ).map((row) => row.id)
+    ).not.toContain(artifactId);
+
+    // Concurrent runs of one service must not share publication leases.
+    for (const kind of ["source", "artifact"] as const) {
+      for (const staleOutcome of ["complete", "retry"] as const) {
+        await pool.query(
+          "update pds_outbox_entries set retry_at=now()+interval '1 hour' where closure_id in (select c.id from pds_session_closures c join personal_device_groups g on g.id=c.group_id where g.group_id=$1)",
+          [groupId]
+        );
+        await pool.query(
+          "update pds_artifact_outbox_entries set retry_at=now()+interval '1 hour' where artifact_id=$1",
+          [artifact.rows[0]!.id]
+        );
+        const table =
+          kind === "source"
+            ? "pds_outbox_entries"
+            : "pds_artifact_outbox_entries";
+        const outboxId =
+          kind === "source" ? checkpointRows.rows[0]!.id : artifactId;
+        await pool.query(
+          `update ${table} set state='pending',retry_at=now(),lease_owner=null,lease_until=null,transport_id=null where id=$1`,
+          [outboxId]
+        );
+        await pool.query(
+          "update pds_portable_artifacts set state='ready' where id=$1",
+          [artifact.rows[0]!.id]
+        );
+        const calls: Array<{
+          workerId: string;
+          resolve: (value: { state: "committed"; transportId: string }) => void;
+          reject: (error: Error) => void;
+        }> = [];
+        let notify!: () => void;
+        const waitForCall = () =>
+          new Promise<void>((resolve) => {
+            notify = resolve;
+          });
+        let called = waitForCall();
+        const publish = (input: { workerId: string }) =>
+          new Promise<{ state: "committed"; transportId: string }>(
+            (resolve, reject) => {
+              calls.push({ workerId: input.workerId, resolve, reject });
+              notify();
+            }
+          );
+        const service = createPdsLocalSyncService({
+          repository: memory,
+          secureRuntime: {
+            heartbeatGroups: async () => [groupId],
+            poll: async () => [],
+            publish,
+            publishArtifact: publish,
+            outboundState: async () => "committed",
+            materialize: async () => {
+              throw new Error("unexpected materialize");
+            }
+          },
+          wakePool: pool,
+          logger: { warn() {} } as unknown as Parameters<
+            typeof createPdsLocalSyncService
+          >[0]["logger"],
+          workerId: "same-service"
+        });
+        const first = service.run();
+        await called;
+        await pool.query(
+          `update ${table} set lease_until=now()-interval '1 second' where id=$1`,
+          [outboxId]
+        );
+        called = waitForCall();
+        const second = service.run();
+        await called;
+        const oldOwner = calls[0]!.workerId;
+        if (staleOutcome === "complete")
+          calls[0]!.resolve({ state: "committed", transportId: "stale" });
+        else calls[0]!.reject(new Error("stale"));
+        await first;
+        const row = await pool.query<{
+          state: string;
+          lease_owner: string;
+          transport_id: string | null;
+        }>(`select state,lease_owner,transport_id from ${table} where id=$1`, [
+          outboxId
+        ]);
+        expect(row.rows[0]).toMatchObject({
+          state: "uploading",
+          lease_owner: calls[1]!.workerId,
+          transport_id: null
+        });
+        const staleRetry = {
+          workerId: oldOwner,
+          outboxId,
+          errorClass: "Error",
+          retryAt: new Date()
+        };
+        const staleComplete = {
+          workerId: oldOwner,
+          outboxId,
+          state: "committed" as const,
+          transportId: "stale"
+        };
+        expect(
+          await (kind === "source"
+            ? memory.retryPdsOutbox(staleRetry)
+            : memory.retryPdsArtifactOutbox(staleRetry))
+        ).toBe(false);
+        expect(
+          await (kind === "source"
+            ? memory.completePdsOutbox(staleComplete)
+            : memory.completePdsArtifactOutbox(staleComplete))
+        ).toBe(false);
+        calls[1]!.resolve({ state: "committed", transportId: "fresh" });
+        await second;
+        const completed = await pool.query<{
+          state: string;
+          transport_id: string;
+        }>(`select state,transport_id from ${table} where id=$1`, [outboxId]);
+        expect(completed.rows[0]).toMatchObject({
+          state: "committed",
+          transport_id: "fresh"
+        });
+        await service.stop();
+      }
+    }
   });
 });

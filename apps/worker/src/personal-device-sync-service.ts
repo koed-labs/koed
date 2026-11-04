@@ -33,6 +33,7 @@ export interface PdsWorkerSecureRuntime {
   outboundState(input: {
     groupId: string;
     transportId: string;
+    signal?: AbortSignal;
   }): Promise<"committed" | "acked" | "missing">;
   /** Durable lifecycle controls run before mailbox, publication, or Recall work. */
   pollLifecycle?(): Promise<void>;
@@ -162,6 +163,125 @@ export const createPdsLocalSyncService = (input: {
   let lastPeerRouteRefreshAt = 0;
   let reconciliationFailureAttempt = 0;
   let runtimeAvailable = false;
+  let stopGeneration = 0;
+  const stopWaiters = new Set<() => void>();
+
+  const waitForAckBatches = async (
+    batches: Promise<unknown>,
+    generation: number
+  ): Promise<void> => {
+    if (generation !== stopGeneration) return;
+    let finish!: () => void;
+    const interrupted = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    stopWaiters.add(finish);
+    const timer = setTimeout(finish, 30_000);
+    try {
+      await Promise.race([batches, interrupted]);
+    } finally {
+      clearTimeout(timer);
+      stopWaiters.delete(finish);
+    }
+  };
+
+  const pendingOutboundStates = {
+    source: new Map<string, AbortController>(),
+    artifact: new Map<string, AbortController>()
+  };
+  // Hold each claim through slot registration, but never through ACK completion.
+  const claimTails: Record<"source" | "artifact", Promise<void>> = {
+    source: Promise.resolve(),
+    artifact: Promise.resolve()
+  };
+  const withClaimLock = async <T>(
+    kind: "source" | "artifact",
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    const previous = claimTails[kind];
+    let release!: () => void;
+    claimTails[kind] = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  const trackOutboundFinalization = (
+    kind: "source" | "artifact",
+    id: string,
+    operation: (
+      controller: AbortController,
+      trackLookup: (lookup: Promise<unknown>) => void
+    ) => Promise<void>
+  ): Promise<void> => {
+    const pending = pendingOutboundStates[kind];
+    const controller = new AbortController();
+    pending.set(id, controller);
+    let lookupPending = false;
+    let finalizationPending = true;
+    const releaseSlot = () => {
+      if (lookupPending || finalizationPending) return;
+      pending.delete(id);
+      if (!stopped) requestProcessing();
+    };
+    const trackLookup = (lookup: Promise<unknown>) => {
+      lookupPending = true;
+      void lookup.then(
+        () => {
+          lookupPending = false;
+          releaseSlot();
+        },
+        () => {
+          lookupPending = false;
+          releaseSlot();
+        }
+      );
+    };
+    return operation(controller, trackLookup).finally(() => {
+      finalizationPending = false;
+      releaseSlot();
+    });
+  };
+  const boundedOutboundState = async (
+    controller: AbortController,
+    trackLookup: (lookup: Promise<unknown>) => void,
+    entry: { groupId: string; transportId: string },
+    generation: number
+  ): Promise<"committed" | "acked" | "missing"> => {
+    if (generation !== stopGeneration)
+      throw new Error("PdsOutboundStateAborted");
+    const lookup = Promise.resolve().then(() => {
+      if (controller.signal.aborted || generation !== stopGeneration)
+        throw new Error("PdsOutboundStateAborted");
+      return input.secureRuntime.outboundState({
+        ...entry,
+        signal: controller.signal
+      });
+    });
+    trackLookup(lookup);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      const result = await Promise.race([
+        lookup,
+        new Promise<never>((_, reject) => {
+          onAbort = () => reject(new Error("PdsOutboundStateAborted"));
+          controller.signal.addEventListener("abort", onAbort, { once: true });
+          timer = setTimeout(() => controller.abort(), 30_000);
+        })
+      ]);
+      if (generation !== stopGeneration)
+        throw new Error("PdsOutboundStateAborted");
+      return result;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (onAbort) controller.signal.removeEventListener("abort", onAbort);
+    }
+  };
 
   const retryAt = (attempt: number) =>
     new Date(
@@ -199,13 +319,28 @@ export const createPdsLocalSyncService = (input: {
     await peerRouteRefreshInFlight;
   };
 
-  const processOnce = async (): Promise<{
+  const trackAckBatch = (batch: Promise<void[]>): void => {
+    void batch
+      .catch((error) => {
+        input.logger.warn({ err: error }, "PDS acknowledgement batch failed");
+      })
+      .finally(() => {
+        if (!stopped) requestProcessing();
+      });
+  };
+
+  const processOnce = async (
+    waitForAcks = true
+  ): Promise<{
     failed: boolean;
     needsDrain: boolean;
   }> => {
     let needsDrain = false;
+    const generation = stopGeneration;
     try {
       const groups = (await input.secureRuntime.heartbeatGroups?.()) ?? [];
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
       runtimeAvailable = groups.length > 0;
       if (!runtimeAvailable) {
         remoteWakeAbort?.abort();
@@ -213,6 +348,8 @@ export const createPdsLocalSyncService = (input: {
         return { failed: false, needsDrain: false };
       }
       for (const groupId of groups) {
+        if (generation !== stopGeneration)
+          return { failed: false, needsDrain: false };
         await Promise.all([
           input.repository.heartbeatPdsWorker({
             groupId,
@@ -226,8 +363,14 @@ export const createPdsLocalSyncService = (input: {
           })
         ]);
       }
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
       await input.secureRuntime.pollLifecycle?.();
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
       await refreshPeerRoutesIfDue();
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
       try {
         const configurations =
           (await input.secureRuntime.reconcilePersonalConfiguration?.()) ?? 0;
@@ -241,39 +384,56 @@ export const createPdsLocalSyncService = (input: {
           "Personal configuration reconciliation is pending"
         );
       }
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
       const selections =
         (await input.secureRuntime.reconcileProjectSelections?.()) ?? 0;
       needsDrain ||= selections >= 10;
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
       const stagedArtifacts =
         (await input.secureRuntime.reconcileArtifacts?.()) ?? 0;
       needsDrain ||= stagedArtifacts >= 50;
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
       const incomingPackages = await input.secureRuntime.poll();
       needsDrain ||= incomingPackages.length >= 50;
       for (const incoming of incomingPackages) {
+        if (generation !== stopGeneration)
+          return { failed: false, needsDrain: false };
         await input.repository.receivePdsInbox(incoming);
       }
-      const outbox = await input.repository.claimPdsOutbox({ workerId });
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
+      const sourcePublicationWorkerId = randomUUID();
+      const outbox = await input.repository.claimPdsOutbox({
+        workerId: sourcePublicationWorkerId
+      });
       needsDrain ||= outbox.length >= 10;
       for (const entry of outbox) {
+        if (generation !== stopGeneration)
+          return { failed: false, needsDrain: false };
         try {
           // Pause may change after claim. Check durable policy before relay I/O.
           if (
             !(await input.repository.beginPdsOutboxNetworkAction({
-              workerId,
+              workerId: sourcePublicationWorkerId,
               outboxId: entry.id
             }))
           ) {
             continue;
           }
+          if (generation !== stopGeneration)
+            return { failed: false, needsDrain: false };
           const result = await input.secureRuntime.publish({
-            workerId,
+            workerId: sourcePublicationWorkerId,
             outboxId: entry.id,
             closureId: entry.closureId,
             packageId: entry.packageId,
             sourceManifestHash: entry.sourceManifestHash
           });
           await input.repository.completePdsOutbox({
-            workerId,
+            workerId: sourcePublicationWorkerId,
             outboxId: entry.id,
             state: result.state,
             transportId: result.transportId
@@ -299,39 +459,46 @@ export const createPdsLocalSyncService = (input: {
             "PDS outbound package processing failed"
           );
           await input.repository.retryPdsOutbox({
-            workerId,
+            workerId: sourcePublicationWorkerId,
             outboxId: entry.id,
             errorClass: errorClass(error),
             retryAt: retryAt(entry.attemptCount)
           });
         }
       }
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
+      const artifactPublicationWorkerId = randomUUID();
       const artifactOutbox = await input.repository.claimPdsArtifactOutbox({
-        workerId
+        workerId: artifactPublicationWorkerId
       });
       needsDrain ||= artifactOutbox.length >= 10;
       for (const entry of artifactOutbox) {
+        if (generation !== stopGeneration)
+          return { failed: false, needsDrain: false };
         try {
           if (!input.secureRuntime.publishArtifact) {
             throw new Error("PdsArtifactRuntimeUnavailableError");
           }
           if (
             !(await input.repository.beginPdsArtifactOutboxNetworkAction({
-              workerId,
+              workerId: artifactPublicationWorkerId,
               outboxId: entry.id
             }))
           ) {
             continue;
           }
+          if (generation !== stopGeneration)
+            return { failed: false, needsDrain: false };
           const result = await input.secureRuntime.publishArtifact({
-            workerId,
+            workerId: artifactPublicationWorkerId,
             outboxId: entry.id,
             artifactId: entry.artifactId,
             packageId: entry.packageId,
             manifestHash: entry.manifestHash
           });
           await input.repository.completePdsArtifactOutbox({
-            workerId,
+            workerId: artifactPublicationWorkerId,
             outboxId: entry.id,
             state: result.state,
             transportId: result.transportId
@@ -352,115 +519,189 @@ export const createPdsLocalSyncService = (input: {
             "PDS outbound artifact processing failed"
           );
           await input.repository.retryPdsArtifactOutbox({
-            workerId,
+            workerId: artifactPublicationWorkerId,
             outboxId: entry.id,
             errorClass: errorClass(error),
             retryAt: retryAt(entry.attemptCount)
           });
         }
       }
-      const committedOutbox = await input.repository.claimPdsCommittedOutbox({
-        workerId
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
+      const sourceBatch = await withClaimLock("source", async () => {
+        if (generation !== stopGeneration) return { batch: Promise.all([]) };
+        const committedWorkerId = randomUUID();
+        const sourceCapacity = Math.max(
+          0,
+          10 - pendingOutboundStates.source.size
+        );
+        const committedOutbox =
+          sourceCapacity > 0
+            ? await input.repository.claimPdsCommittedOutbox({
+                workerId: committedWorkerId,
+                excludeIds: [...pendingOutboundStates.source.keys()],
+                limit: sourceCapacity
+              })
+            : [];
+        needsDrain ||=
+          sourceCapacity > 0 && committedOutbox.length >= sourceCapacity;
+        const batch = Promise.all(
+          committedOutbox
+            .filter((entry) => !pendingOutboundStates.source.has(entry.id))
+            .map((entry) =>
+              trackOutboundFinalization(
+                "source",
+                entry.id,
+                async (controller, trackLookup) => {
+                  const workerId = committedWorkerId;
+                  try {
+                    const state = await boundedOutboundState(
+                      controller,
+                      trackLookup,
+                      {
+                        groupId: entry.groupId,
+                        transportId: entry.transportId
+                      },
+                      generation
+                    );
+                    if (state === "acked") {
+                      await input.repository.completePdsOutbox({
+                        workerId,
+                        outboxId: entry.id,
+                        state: "acked",
+                        transportId: entry.transportId
+                      });
+                    } else if (state === "missing") {
+                      const requeued =
+                        await input.repository.requeuePdsExpiredCheckpointOutbox(
+                          {
+                            workerId,
+                            outboxId: entry.id,
+                            transportId: entry.transportId
+                          }
+                        );
+                      if (!requeued)
+                        await input.repository.releasePdsCommittedOutbox({
+                          workerId,
+                          outboxId: entry.id
+                        });
+                    } else {
+                      await input.repository.releasePdsCommittedOutbox({
+                        workerId,
+                        outboxId: entry.id
+                      });
+                    }
+                  } catch (error) {
+                    input.logger.warn(
+                      {
+                        err: error,
+                        event: {
+                          name: "worker.pds.outbox_ack_reconciliation.failed",
+                          category: "pds"
+                        },
+                        pds: { outboxId: entry.id }
+                      },
+                      "PDS outbound acknowledgement reconciliation failed"
+                    );
+                    await input.repository.releasePdsCommittedOutbox({
+                      workerId,
+                      outboxId: entry.id
+                    });
+                  }
+                }
+              )
+            )
+        );
+        if (committedOutbox.length) trackAckBatch(batch);
+        return { batch };
       });
-      needsDrain ||= committedOutbox.length >= 10;
-      for (const entry of committedOutbox) {
-        try {
-          const state = await input.secureRuntime.outboundState({
-            groupId: entry.groupId,
-            transportId: entry.transportId
-          });
-          if (state === "acked") {
-            await input.repository.completePdsOutbox({
-              workerId,
-              outboxId: entry.id,
-              state: "acked",
-              transportId: entry.transportId
-            });
-          } else if (state === "missing") {
-            const requeued =
-              await input.repository.requeuePdsExpiredCheckpointOutbox({
-                workerId,
-                outboxId: entry.id,
-                transportId: entry.transportId
-              });
-            if (!requeued)
-              await input.repository.releasePdsCommittedOutbox({
-                workerId,
-                outboxId: entry.id
-              });
-          } else {
-            await input.repository.releasePdsCommittedOutbox({
-              workerId,
-              outboxId: entry.id
-            });
-          }
-        } catch (error) {
-          input.logger.warn(
-            {
-              err: error,
-              event: {
-                name: "worker.pds.outbox_ack_reconciliation.failed",
-                category: "pds"
-              },
-              pds: { outboxId: entry.id }
-            },
-            "PDS outbound acknowledgement reconciliation failed"
-          );
-          await input.repository.releasePdsCommittedOutbox({
-            workerId,
-            outboxId: entry.id
-          });
-        }
-      }
-      const committedArtifactOutbox =
-        await input.repository.claimPdsArtifactOutbox({
-          workerId,
-          state: "committed"
-        });
-      needsDrain ||= committedArtifactOutbox.length >= 10;
-      for (const entry of committedArtifactOutbox) {
-        try {
-          if (!entry.transportId) {
-            throw new Error("PdsArtifactTransportIdentityError");
-          }
-          const state = await input.secureRuntime.outboundState({
-            groupId: entry.groupId,
-            transportId: entry.transportId
-          });
-          if (state === "acked") {
-            await input.repository.completePdsArtifactOutbox({
-              workerId,
-              outboxId: entry.id,
-              state: "acked",
-              transportId: entry.transportId
-            });
-          } else {
-            await input.repository.releasePdsCommittedArtifactOutbox({
-              workerId,
-              outboxId: entry.id
-            });
-          }
-        } catch (error) {
-          input.logger.warn(
-            {
-              err: error,
-              event: {
-                name: "worker.pds.artifact_outbox_ack.failed",
-                category: "pds"
-              },
-              pds: { artifactId: entry.artifactId }
-            },
-            "PDS artifact acknowledgement reconciliation failed"
-          );
-          await input.repository.releasePdsCommittedArtifactOutbox({
-            workerId,
-            outboxId: entry.id
-          });
-        }
-      }
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
+      const artifactBatch = await withClaimLock("artifact", async () => {
+        if (generation !== stopGeneration) return { batch: Promise.all([]) };
+        const committedArtifactWorkerId = randomUUID();
+        const artifactCapacity = Math.max(
+          0,
+          10 - pendingOutboundStates.artifact.size
+        );
+        const committedArtifactOutbox =
+          artifactCapacity > 0
+            ? await input.repository.claimPdsArtifactOutbox({
+                workerId: committedArtifactWorkerId,
+                state: "committed",
+                excludeIds: [...pendingOutboundStates.artifact.keys()],
+                limit: artifactCapacity
+              })
+            : [];
+        needsDrain ||=
+          artifactCapacity > 0 &&
+          committedArtifactOutbox.length >= artifactCapacity;
+        const batch = Promise.all(
+          committedArtifactOutbox
+            .filter((entry) => !pendingOutboundStates.artifact.has(entry.id))
+            .map((entry) =>
+              trackOutboundFinalization(
+                "artifact",
+                entry.id,
+                async (controller, trackLookup) => {
+                  const workerId = committedArtifactWorkerId;
+                  try {
+                    if (!entry.transportId) {
+                      throw new Error("PdsArtifactTransportIdentityError");
+                    }
+                    const state = await boundedOutboundState(
+                      controller,
+                      trackLookup,
+                      {
+                        groupId: entry.groupId,
+                        transportId: entry.transportId
+                      },
+                      generation
+                    );
+                    if (state === "acked") {
+                      await input.repository.completePdsArtifactOutbox({
+                        workerId,
+                        outboxId: entry.id,
+                        state: "acked",
+                        transportId: entry.transportId
+                      });
+                    } else {
+                      await input.repository.releasePdsCommittedArtifactOutbox({
+                        workerId,
+                        outboxId: entry.id
+                      });
+                    }
+                  } catch (error) {
+                    input.logger.warn(
+                      {
+                        err: error,
+                        event: {
+                          name: "worker.pds.artifact_outbox_ack.failed",
+                          category: "pds"
+                        },
+                        pds: { artifactId: entry.artifactId }
+                      },
+                      "PDS artifact acknowledgement reconciliation failed"
+                    );
+                    await input.repository.releasePdsCommittedArtifactOutbox({
+                      workerId,
+                      outboxId: entry.id
+                    });
+                  }
+                }
+              )
+            )
+        );
+        if (committedArtifactOutbox.length) trackAckBatch(batch);
+        return { batch };
+      });
+      if (generation !== stopGeneration)
+        return { failed: false, needsDrain: false };
       const inbox = await input.repository.claimPdsInbox({ workerId });
       needsDrain ||= inbox.length >= 10;
       for (const entry of inbox) {
+        if (generation !== stopGeneration)
+          return { failed: false, needsDrain: false };
         try {
           const materialized = await input.secureRuntime.materialize({
             workerId,
@@ -585,6 +826,11 @@ export const createPdsLocalSyncService = (input: {
           });
         }
       }
+      if (waitForAcks)
+        await waitForAckBatches(
+          Promise.all([sourceBatch.batch, artifactBatch.batch]),
+          generation
+        );
     } catch (error) {
       input.logger.warn(
         {
@@ -600,11 +846,21 @@ export const createPdsLocalSyncService = (input: {
 
   const scheduleDueWake = async (): Promise<void> => {
     if (stopped) return;
-    const wakeAt = await input.repository.getPdsLocalSyncWakeAt();
+    const wakeAt = await input.repository.getPdsLocalSyncWakeAt({
+      excludeSourceAcknowledgements: pendingOutboundStates.source.size >= 10,
+      excludeArtifactAcknowledgements:
+        pendingOutboundStates.artifact.size >= 10,
+      excludeSourceOutboxIds: [...pendingOutboundStates.source.keys()],
+      excludeArtifactOutboxIds: [...pendingOutboundStates.artifact.keys()]
+    });
+    if (stopped) return;
     if (dueTimer) clearTimeout(dueTimer);
     dueTimer = null;
     if (!wakeAt) return;
-    const delayMs = Math.max(0, Date.parse(wakeAt) - Date.now());
+    const delayMs = Math.max(
+      runtimeAvailable ? 0 : 30_000,
+      Date.parse(wakeAt) - Date.now()
+    );
     dueTimer = setTimeout(
       () => {
         dueTimer = null;
@@ -676,7 +932,8 @@ export const createPdsLocalSyncService = (input: {
     void (async () => {
       do {
         runAgain = false;
-        const outcome = await processOnce();
+        const outcome = await processOnce(false);
+        if (stopped) break;
         if (outcome.failed) {
           const delayMs = Math.min(
             1_000 * 2 ** reconciliationFailureAttempt,
@@ -751,6 +1008,8 @@ export const createPdsLocalSyncService = (input: {
       void connectWakeClient();
     },
     async stop() {
+      stopGeneration += 1;
+      for (const finish of stopWaiters) finish();
       stopped = true;
       runAgain = false;
       if (dueTimer) clearTimeout(dueTimer);
@@ -767,6 +1026,9 @@ export const createPdsLocalSyncService = (input: {
       lastPeerRouteRefreshAt = 0;
       remoteWakeAbort?.abort();
       remoteWakeAbort = null;
+      for (const pending of Object.values(pendingOutboundStates)) {
+        for (const controller of pending.values()) controller.abort();
+      }
       if (wakeClient) {
         const client = wakeClient;
         wakeClient = null;

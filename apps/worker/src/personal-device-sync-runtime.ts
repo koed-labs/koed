@@ -1388,7 +1388,7 @@ const createPdsWorkerRuntimeFromSecret = (
           throw new Error("PdsCryptoIdentityError");
         let responseValue: unknown;
         try {
-          responseValue = await relay.transport(work.transportId);
+          responseValue = await relay.transport(work.transportId, work.signal);
         } catch (error) {
           if (
             error instanceof Error &&
