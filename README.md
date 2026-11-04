@@ -34,7 +34,7 @@ middle.
 ## Benchmark
 
 We ran 20 selected Terminal-Bench 4 tasks 3 times each on GPT-6 Luna, with and
-without Koed. With Koed, 12 tasks improved and estimated cost per passing run fell from $1.16 to $0.12. Cost figures include Koed's known recall and preparation costs.
+without Koed. With Koed, 12 tasks improved with captured knowledge and estimated cost per passing run fell from $1.16 to $0.12. Cost figures include Koed's known recall and preparation costs. Full results [here](docs/benchmark-results.md).
 
 <br/>
 
