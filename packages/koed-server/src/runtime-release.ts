@@ -206,10 +206,10 @@ export async function installReleaseRuntime(
     owner = resolveKoedRuntimeOwner();
   const choice = options.cuda ?? "preserve",
     environment = options.environment ?? process.env;
-  const signal = AbortSignal.any([
-    AbortSignal.timeout(10 * 60_000),
-    ...(options.signal ? [options.signal] : [])
-  ]);
+  // No whole-install deadline: a large CUDA download on a slow link is legitimate.
+  // Downloads fail after 30 s without data, probes and GPU validation keep their own
+  // budgets, and the Operator's signal cancels everything else.
+  const signal = options.signal ?? new AbortController().signal;
   const plan = () => {
     signal.throwIfAborted();
     const selected = readNativeSelection(paths, catalog);

@@ -596,7 +596,9 @@ describe("immutable component and generation store", () => {
           runtime: item.input.runtime
         }
       );
-      const rejected = expect(pending).rejects.toThrow();
+      const rejected = expect(pending).rejects.toThrow(
+        "component download stalled: no data for 30 s"
+      );
       await vi.advanceTimersByTimeAsync(30_001);
       await rejected;
       if (phase === "body") expect(cancelled).toBe(true);

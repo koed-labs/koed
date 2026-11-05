@@ -11,6 +11,19 @@ export type DownloadProgress = (event: {
 }) => void;
 const MAX_REDIRECTS = 5;
 const REQUEST_TIMEOUT_MS = 30_000;
+// Report the caller's deadline as a timeout, never as an Operator cancellation.
+const abortedError = (signal: AbortSignal, cause?: unknown): Error =>
+  new Error(
+    (signal.reason as { name?: unknown } | undefined)?.name === "TimeoutError"
+      ? "component installation timed out"
+      : "component installation cancelled",
+    cause === undefined ? undefined : { cause }
+  );
+const stalledError = (cause: unknown): Error =>
+  new Error(
+    `component download stalled: no data for ${REQUEST_TIMEOUT_MS / 1000} s`,
+    { cause }
+  );
 const cancelBody = async (response: Response): Promise<void> => {
   try {
     await response.body?.cancel();
@@ -36,7 +49,7 @@ export async function fetchBounded(
   if (url.protocol !== "https:" || url.username || url.password)
     throw new Error("component downloads require safe HTTPS URLs");
   for (let redirects = 0; ; redirects++) {
-    if (signal?.aborted) throw new Error("component installation cancelled");
+    if (signal?.aborted) throw abortedError(signal);
     let response: Response;
     const timeoutController = new AbortController();
     const requestSignal = signal
@@ -56,8 +69,8 @@ export async function fetchBounded(
         signal: requestSignal
       });
     } catch (error) {
-      if (signal?.aborted)
-        throw new Error("component installation cancelled", { cause: error });
+      if (signal?.aborted) throw abortedError(signal, error);
+      if (timeoutController.signal.aborted) throw stalledError(error);
       if (attempt < 2 && error instanceof TypeError) {
         await new Promise((resolveRetry) =>
           setTimeout(resolveRetry, 100 * (attempt + 1))
@@ -157,8 +170,8 @@ export async function fetchBounded(
       );
     } catch (error) {
       rmSync(destination, { force: true });
-      if (signal?.aborted)
-        throw new Error("component installation cancelled", { cause: error });
+      if (signal?.aborted) throw abortedError(signal, error);
+      if (timeoutController.signal.aborted) throw stalledError(error);
       if (attempt < 2 && error instanceof TypeError) {
         await new Promise((resolveRetry) =>
           setTimeout(resolveRetry, 100 * (attempt + 1))
