@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import {
-  createReadStream,
+  constants,
+  lstatSync,
   createWriteStream,
-  existsSync,
   mkdirSync,
   renameSync,
   rmSync,
   statSync
 } from "node:fs";
+import { open } from "node:fs/promises";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { basename, dirname, resolve } from "node:path";
@@ -146,20 +147,36 @@ export const resolveLocalModelManifest = (
   };
 };
 
-export const sha256File = async (path: string): Promise<string> => {
+export const sha256File = async (
+  path: string,
+  signal?: AbortSignal
+): Promise<string> => {
   const hash = createHash("sha256");
-  await pipeline(createReadStream(path), hash);
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    if (!(await file.stat()).isFile())
+      throw new Error("The model must be a regular file.");
+    await pipeline(file.createReadStream(), hash, { signal });
+  } finally {
+    await file.close();
+  }
   return hash.digest("hex");
 };
 
 export const collectLocalModelStatus = async (
   paths: KoedServerPaths,
   kind: LocalModelKind = "embedding",
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal
 ): Promise<LocalModelStatus> => {
   const manifest = resolveLocalModelManifest(paths, kind, environment);
   const mode = dependencyMode(environment);
-  if (!existsSync(manifest.modelPath)) {
+  const file = statSync(manifest.modelPath, { throwIfNoEntry: false });
+  if (!file) {
+    if (lstatSync(manifest.modelPath, { throwIfNoEntry: false }))
+      throw new Error(
+        "The installed model path does not resolve to a regular file."
+      );
     return {
       state: "missing",
       message: `${manifest.key} model is not installed at ${manifest.modelPath}.`,
@@ -172,7 +189,9 @@ export const collectLocalModelStatus = async (
     };
   }
 
-  const sizeBytes = statSync(manifest.modelPath).size;
+  if (!file.isFile())
+    throw new Error("The installed model must be a regular file.");
+  const sizeBytes = file.size;
   if (!manifest.sha256) {
     return {
       state: "not_configured",
@@ -184,7 +203,7 @@ export const collectLocalModelStatus = async (
     };
   }
 
-  const actual = await sha256File(manifest.modelPath);
+  const actual = await sha256File(manifest.modelPath, signal);
   if (actual !== manifest.sha256) {
     return {
       state: "checksum_mismatch",

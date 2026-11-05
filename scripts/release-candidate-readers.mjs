@@ -70,8 +70,6 @@ export const createCandidateReaders = ({
       github(`${repo(repository)}/releases/${id(releaseId)}`),
     getAsset: (repository, assetId) =>
       github(`${repo(repository)}/releases/assets/${id(assetId)}`, true),
-    getNativeAsset: (url, { signal }) =>
-      fetchImpl(url, { method: "GET", signal }),
     getRegistryVersion: async (name, version) => {
       if (
         name !== "@koed-labs/server" ||

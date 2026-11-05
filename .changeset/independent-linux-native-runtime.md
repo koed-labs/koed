@@ -2,4 +2,4 @@
 "@koed-labs/server": minor
 ---
 
-Prepare independently versioned Linux CPU runtime assets, reviewed native publication, and authenticated native pins in the Koed Server Control Plane. Add a stopped-runtime lifecycle boundary and an offline handover for deferred CUDA qualification. Release-provider installation remains gated on reviewed native publication.
+Add an optional Linux CUDA package to each product release. The CLI installs the CPU core by default. Use `koed runtime install --provider release --dependency-mode bundled-local --with-cuda` to add CUDA while Koed is stopped.

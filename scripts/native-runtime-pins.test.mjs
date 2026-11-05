@@ -15,10 +15,7 @@ import {
   getNativeRuntimeCatalog,
   validateNativeRuntimeCatalog
 } from "../packages/koed-server/dist/native-runtime-catalog.js";
-import {
-  authenticateNativePins,
-  verifyPackagedNativeCatalog
-} from "./native-runtime-pins.mjs";
+import { verifyPackagedNativeCatalog } from "./native-runtime-pins.mjs";
 import { verifyReleaseCandidate } from "./release-candidate-verification.mjs";
 import {
   setupCandidate,
@@ -26,6 +23,59 @@ import {
 } from "./test-utils/release-candidate-fixture.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
+
+const cudaFixture = (catalog) => {
+  const archive = Buffer.from("CUDA archive"),
+    recipe = { kind: "cuda", fixture: "separate" };
+  const recipeId = hash(canonicalArtifactJson(recipe)),
+    url = `https://github.com/koed-labs/koed/releases/download/native-cuda-${recipeId}/koed-native-cuda-${recipeId}-linux-x64.tar.gz`;
+  const shared = {
+    recipeId,
+    runtimeVersion: "1.0.0",
+    target: catalog.core.target,
+    contracts: { layout: 1, embedding: 1 },
+    llamaCpp: catalog.core.components.llamaCpp,
+    cuda: {
+      toolkitVersion: "12.4",
+      minimumDriverLinux: "550.54.14",
+      architectures: [89]
+    }
+  };
+  const raw = Buffer.from(
+    JSON.stringify({
+      ...shared,
+      kind: "cuda",
+      schemaVersion: 1,
+      recipe,
+      inventory: []
+    })
+  );
+  const pin = {
+    ...shared,
+    url,
+    sha256: hash(archive),
+    archiveBytes: archive.length,
+    expandedBytes: raw.length,
+    manifestSha256: hash(raw)
+  };
+  return { pin, archive, manifest: raw };
+};
+
+test("rejects CUDA packages with a different llama.cpp revision", () => {
+  const { catalog } = fixture();
+  const { pin } = cudaFixture(catalog);
+  assert.throws(
+    () =>
+      validateNativeRuntimeCatalog({
+        ...catalog,
+        cuda: {
+          ...pin,
+          llamaCpp: { ...pin.llamaCpp, revision: "e".repeat(40) }
+        }
+      }),
+    /does not match/
+  );
+});
 const fixture = () => {
   const recipe = { fixture: true };
   const recipeId = hash(canonicalArtifactJson(recipe));
@@ -67,9 +117,7 @@ const fixture = () => {
       manifestSha256: hash(manifestBytes)
     }
   };
-  const read = async (url) =>
-    new Response(url === catalog.core.url ? archive : manifestBytes);
-  return { catalog, archive, manifestBytes, read };
+  return { catalog, archive, manifestBytes };
 };
 
 test("CPU-only native catalog enforces URL, target, contract, version and fixed pgvector boundaries", () => {
@@ -145,64 +193,64 @@ test("packaged native authority is inspected statically and must equal the revie
   }
 });
 
-test("native URL authentication streams exact archive bytes and authenticates the manifest", async () => {
-  const f = fixture();
-  const report = await authenticateNativePins(f.catalog, f.read);
-  assert.equal(report.core.sha256, f.catalog.core.sha256);
-  assert.equal(report.cuda, null);
-  for (const read of [
-    async () => new Response(null, { status: 404 }),
-    async () => new Response(Buffer.alloc(f.archive.length, 1)),
-    async () => new Response(Buffer.alloc(f.archive.length + 1)),
-    async (url) =>
-      url === f.catalog.core.url
-        ? f.read(url)
-        : new Response("changed manifest")
-  ])
-    await assert.rejects(
-      authenticateNativePins(f.catalog, read),
-      /unavailable|differs|bound/
-    );
-  const changed = JSON.parse(f.manifestBytes);
-  changed.contracts.layout = 2;
-  const bytes = Buffer.from(canonicalArtifactJson(changed));
-  f.catalog.core.manifestSha256 = hash(bytes);
-  await assert.rejects(
-    authenticateNativePins(
-      f.catalog,
-      async (url) =>
-        new Response(url === f.catalog.core.url ? f.archive : bytes)
-    ),
-    /conflicts/
-  );
-});
-
-test("product candidate verification authenticates effective native pins before promotion", async () => {
+test("promotion binds both packaged pins to the same product draft", async () => {
   const f = await setupCandidate();
-  const native = fixture();
   try {
+    const native = fixture(),
+      { catalog } = native;
+    const cuda = cudaFixture(catalog);
+    catalog.cuda = cuda.pin;
+    for (const [kind, archive, manifest] of [
+      ["core", native.archive, native.manifestBytes],
+      ["cuda", cuda.archive, cuda.manifest]
+    ]) {
+      const pin = catalog[kind];
+      const name = `koed-native-${kind}-${pin.recipeId}-linux-x64.tar.gz`;
+      pin.url = `https://github.com/koed-labs/koed/releases/download/v${f.expected.version}/${name}`;
+      f.contents.set(name, archive);
+      f.contents.set(`native-${kind}-manifest.json`, manifest);
+    }
+    f.contents.set(
+      "native-runtime-catalog.json",
+      Buffer.from(JSON.stringify(catalog))
+    );
     const path = resolve(f.packageRoot, "vendor/control-plane.js");
-    writeFileSync(
-      path,
-      readFileSync(path, "utf8").replace(
-        "export const productionNativeRuntimeCatalog = null;",
-        `export const productionNativeRuntimeCatalog = ${JSON.stringify(native.catalog)};`
-      )
-    );
-    refreshCandidatePackage(f);
-    await assert.rejects(
-      verifyReleaseCandidate(f.input, f.readers),
-      /reader is missing/
-    );
-    f.readers.getNativeAsset = native.read;
+    const source = readFileSync(path, "utf8");
+    function pack() {
+      writeFileSync(
+        path,
+        source.replace(
+          "export const productionNativeRuntimeCatalog = null;",
+          `export const productionNativeRuntimeCatalog = ${JSON.stringify(catalog)};`
+        )
+      );
+      refreshCandidatePackage(f);
+      f.release.assets = [...f.contents.keys()].map((name, index) => ({
+        id: index + 10,
+        name
+      }));
+    }
+    pack();
     assert.equal(
       (await verifyReleaseCandidate(f.input, f.readers)).kind,
       "verified-release-candidate"
     );
-    f.readers.getNativeAsset = async () => new Response(null, { status: 404 });
+    f.contents.set("native-cuda-manifest.json", Buffer.from("changed"));
+    pack();
     await assert.rejects(
       verifyReleaseCandidate(f.input, f.readers),
-      /unavailable/
+      /differs from the product draft/
+    );
+    f.contents.set("native-cuda-manifest.json", cuda.manifest);
+    catalog.cuda.url = catalog.cuda.url.replace("/v1.2.3/", "/v1.2.2/");
+    f.contents.set(
+      "native-runtime-catalog.json",
+      Buffer.from(JSON.stringify(catalog))
+    );
+    pack();
+    await assert.rejects(
+      verifyReleaseCandidate(f.input, f.readers),
+      /differs from the product draft/
     );
   } finally {
     f.cleanup();

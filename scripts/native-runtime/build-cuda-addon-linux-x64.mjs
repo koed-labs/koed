@@ -132,7 +132,7 @@ const neededLibraries = (path) =>
       const match = line.match(/\(NEEDED\).*\[([^\]]+)\]/);
       return match ? [match[1]] : [];
     });
-const stageRuntime = (binaryRoot, destination, sourceRoot) => {
+const stageRuntime = (binaryRoot, destination, sourceRoot, openmpFiles) => {
   const files = filesUnder(binaryRoot).filter(
     (path) =>
       basename(path) === "llama-server" ||
@@ -185,6 +185,8 @@ const stageRuntime = (binaryRoot, destination, sourceRoot) => {
     copyFileSync(path, resolve(destination, name));
   for (const [name, canonical] of names)
     if (name !== canonical) symlinkSync(canonical, resolve(destination, name));
+  for (const [name, path] of Object.entries(openmpFiles))
+    copyFileSync(path, resolve(destination, name));
   copyFileSync(resolve(sourceRoot, "LICENSE"), resolve(destination, "LICENSE"));
   copyFileSync(
     resolve(cudaRoot, "EULA.txt"),
@@ -192,7 +194,12 @@ const stageRuntime = (binaryRoot, destination, sourceRoot) => {
   );
 };
 
-export const buildCudaAddon = ({ coreDir, outDir, sourceDir }) => {
+export const buildCudaAddon = ({
+  coreDir,
+  outDir,
+  sourceDir,
+  runtimeVersion
+}) => {
   const coreRoot = realpathSync(coreDir);
   const core = verifyFrozenCore(coreRoot);
   const out = resolve(realpathSync(dirname(resolve(outDir))), basename(outDir));
@@ -225,6 +232,7 @@ export const buildCudaAddon = ({ coreDir, outDir, sourceDir }) => {
   const configuration = JSON.parse(
     readFileSync(new URL("./cuda.linux-x64.json", import.meta.url), "utf8")
   );
+  if (runtimeVersion) configuration.runtimeVersion = runtimeVersion;
   assertCudaCoreCompatibility(core, {
     kind: "cuda",
     target: configuration.target,
@@ -263,26 +271,52 @@ export const buildCudaAddon = ({ coreDir, outDir, sourceDir }) => {
       );
     const source = resolve(buildRoot, "source"),
       build = resolve(buildRoot, "build");
+    // The linker resolves the backend's libcuda.so.1 dependency by SONAME.
+    // The toolkit ships that stub as libcuda.so, without the versioned alias.
+    const driverLink = resolve(buildRoot, "driver-link");
+    mkdirSync(driverLink);
+    symlinkSync(
+      realpathSync(resolve(toolkitRoot, "lib64/stubs/libcuda.so")),
+      resolve(driverLink, "libcuda.so.1")
+    );
     const flags = [
       "-G",
       "Unix Makefiles",
       "-DGGML_CUDA=ON",
+      "-DGGML_CUDA_NCCL=OFF",
       "-DGGML_NATIVE=OFF",
-      "-DLLAMA_CURL=OFF",
+      "-DLLAMA_OPENSSL=OFF",
+      "-DLLAMA_BUILD_UI=OFF",
       "-DLLAMA_BUILD_TESTS=OFF",
       "-DLLAMA_BUILD_EXAMPLES=OFF",
       "-DLLAMA_BUILD_SERVER=ON",
       "-DCMAKE_BUILD_TYPE=Release",
+      `-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,${driverLink}`,
       "-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON",
       "-DCMAKE_BUILD_RPATH=$ORIGIN",
       "-DCMAKE_INSTALL_RPATH=$ORIGIN",
       `-DCMAKE_CUDA_ARCHITECTURES=${configuration.cuda.architectures.join(";")}`
     ];
+    // The CUDA launcher resolves libraries in its own directory. Minimal Jammy
+    // does not supply the GNU OpenMP runtime required by the CPU backend.
+    const openmpFiles = {
+      "libgomp.so.1": realpathSync(
+        run("gcc", ["-print-file-name=libgomp.so.1"])
+      ),
+      "libgomp-copyright.txt": "/usr/share/doc/libgomp1/copyright",
+      "libgomp-GPL-3.txt": "/usr/share/common-licenses/GPL-3"
+    };
     const recipe = {
       schemaVersion: 1,
       kind: "cuda",
       configuration,
       toolchain,
+      bundledLibraries: Object.fromEntries(
+        Object.entries(openmpFiles).map(([name, path]) => [
+          name,
+          sha256File(path)
+        ])
+      ),
       environment,
       build: { configure: flags, target: "llama-server", jobs: 2 },
       logic: Object.fromEntries(
@@ -351,7 +385,8 @@ export const buildCudaAddon = ({ coreDir, outDir, sourceDir }) => {
     stageRuntime(
       resolve(build, "bin"),
       resolve(runtimeRoot, "llama.cpp/cuda"),
-      source
+      source,
+      openmpFiles
     );
     pruneNativeRuntimeBuildArtifacts(runtimeRoot);
     stripNativeRuntimeBinaries({ runtimeRoot, platform: "linux" });

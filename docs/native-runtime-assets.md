@@ -79,12 +79,8 @@ default-branch cache workflow. The validated payload is cached by its pinned
 source and build recipe; releases repackage that payload and publish the archive,
 SHA-256 sidecar, and provenance manifest without recompiling it.
 
-Real CUDA proof uses the manually dispatched `Trusted Linux CUDA package
-validation` workflow on the protected default branch. It requires a self-hosted
-Linux x64 runner labelled `koed-cuda`, NVIDIA driver 550.54.14 or newer, and the
-system libraries required by the pinned ONNX Runtime CUDA provider. The job
-uses the independently verified cached native payload and exact standalone app
-runtime; it does not treat a hosted-runner policy check as hardware evidence.
+Linux CLI releases also include a smaller CPU core and an optional CUDA add-on.
+See [Linux CPU and CUDA release packages](native-runtime-artifact-pipeline.md#linux-cpu-and-cuda-release-packages).
 
 ## Validation
 

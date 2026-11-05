@@ -30,7 +30,11 @@ import {
   resolveEffectiveRuntimeConfig
 } from "./effective-runtime-config.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
-import { readCurrentRuntimeOwner } from "./generation-lifecycle.js";
+import { hasReleaseRuntime } from "./runtime-artifact-source.js";
+import {
+  readCurrentRuntimeOwner,
+  withSourceNativeStartLock
+} from "./generation-lifecycle.js";
 import {
   resolveDesktopRuntimeOwner,
   validateDesktopRuntimeCapability,
@@ -51,11 +55,15 @@ import {
   loadRepoEnv,
   resolveApiUrl
 } from "./env-file.js";
-import { startLocalEmbeddingRuntime } from "./local-embedding-runtime.js";
+import {
+  nativeLlamaServerOverride,
+  startLocalEmbeddingRuntime
+} from "./local-embedding-runtime.js";
 import { startLocalPrivacyRuntime } from "./local-privacy-runtime.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
 import { ensurePackagedLocalServiceSecrets } from "./local-service-secrets.js";
 import {
+  hasCompletePostgresOverride,
   startLocalPostgresRuntime,
   stopLocalPostgresRuntime
 } from "./local-postgres-runtime.js";
@@ -719,12 +727,28 @@ const waitForChildExit = (
 export const stopChildProcess = async (
   child: ChildProcess | undefined,
   timeoutMs = 5_000,
-  label = "managed child"
+  label = "managed child",
+  privateGroup = false
 ): Promise<void> => {
   if (!child?.pid || child.exitCode != null || child.signalCode != null) return;
-  child.kill("SIGTERM");
+  const pid = child.pid;
+  const signal = (value: NodeJS.Signals) => {
+    if (!privateGroup) {
+      child.kill(value);
+      return;
+    }
+    // Only the still-live child spawned as a private group leader can authorize
+    // a group signal. Never discover unrelated processes by name or command line.
+    if (child.exitCode != null || child.signalCode != null) return;
+    try {
+      process.kill(-pid, value);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+  signal("SIGTERM");
   if (await waitForChildExit(child, timeoutMs)) return;
-  child.kill("SIGKILL");
+  signal("SIGKILL");
   if (!(await waitForChildExit(child, timeoutMs))) {
     throw new Error(`Timed out stopping ${label} process ${child.pid}.`);
   }
@@ -1162,7 +1186,12 @@ export const startKoedServer = async ({
         ];
         for (const name of shutdownOrder) {
           try {
-            await stopChildProcess(managedChildren[name], 5_000, name);
+            await stopChildProcess(
+              managedChildren[name],
+              5_000,
+              name,
+              name === "embeddingService" && Boolean(paths.nativeSelectionRoot)
+            );
           } catch (error) {
             cleanupErrors.push(
               error instanceof Error ? error.message : String(error)
@@ -1177,7 +1206,8 @@ export const startKoedServer = async ({
             await stopChildProcess(
               nativeEmbeddingProcess,
               5_000,
-              "embeddingService"
+              "embeddingService",
+              Boolean(paths.nativeSelectionRoot)
             );
           } catch (error) {
             cleanupErrors.push(
@@ -1281,6 +1311,27 @@ export const startKoedServer = async ({
           requiredRuntime
         );
         assertKoedAppRuntimeAvailable(appRuntime, paths);
+      }
+      if (
+        useBundledLocalDependencies &&
+        hasReleaseRuntime(paths) &&
+        !(
+          hasCompletePostgresOverride(refreshedEnv) &&
+          nativeLlamaServerOverride(refreshedEnv)
+        )
+      ) {
+        const { resolveSelectedCoreForStart } =
+          await import("./runtime-release.js");
+        const admitSelection = () =>
+          resolveSelectedCoreForStart(
+            paths,
+            refreshedEnv,
+            !nativeLlamaServerOverride(refreshedEnv)
+          );
+        const selected = generationPin
+          ? admitSelection()
+          : withSourceNativeStartLock(paths, admitSelection);
+        if (selected) paths.nativeSelectionRoot = selected;
       }
       if (appRuntime.kind === "source") {
         runCommand(

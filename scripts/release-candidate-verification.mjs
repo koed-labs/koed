@@ -18,7 +18,7 @@ import { inspectReleasePackage } from "./inspect-release-package.mjs";
 import { validateReviewedRuntimeIdentities } from "./reviewed-build-identity-runtimes.mjs";
 import { compareVersions } from "./release-promotion-lib.mjs";
 import { verifyPackagedDesktopCatalog } from "../apps/desktop/scripts/verify-packaged-component-catalog.mjs";
-import { authenticateNativePins } from "./native-runtime-pins.mjs";
+import { verifyDraftNativePins } from "./native-runtime-pins.mjs";
 
 export const sha256 = (bytes) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -299,13 +299,17 @@ export const verifyReleaseCandidate = async (input, readers) => {
       root: resolve(root, "package"),
       catalogPath
     });
-    // The protected npm integrity above authenticates the effective exported
-    // authority. Authenticate its retained native URLs before any promotion.
-    if (nativeCatalog) {
-      if (!readers.getNativeAsset)
-        fail("Native pin authentication reader is missing.");
-      await authenticateNativePins(nativeCatalog, readers.getNativeAsset);
-    }
+    if (
+      nativeCatalog ||
+      expected.artifacts.some(
+        (asset) => asset.name === "koed-linux-native-packages"
+      )
+    )
+      verifyDraftNativePins(nativeCatalog, {
+        root,
+        version: expected.version,
+        assets: expected.assets
+      });
     const desktop = inspectDesktop(expected, root, catalogPath);
     const registry = await readers.getRegistryVersion(
       "@koed-labs/server",

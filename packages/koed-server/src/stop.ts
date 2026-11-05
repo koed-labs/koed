@@ -29,6 +29,8 @@ import {
   readSupervisorLock,
   resolveProcessIdentity as defaultResolveProcessIdentity
 } from "./supervisor-lock.js";
+import { observeStoppedRuntime } from "./stopped-runtime.js";
+import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import { requestSupervisorExit } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
@@ -234,7 +236,7 @@ export const stopKoedServer = ({
     process.kill(pid, signal);
   },
   checkPid = defaultCheckPid,
-  waitForExitMs = 5_000,
+  waitForExitMs: requestedWait,
   pollIntervalMs = 100,
   sleepSync = defaultSleepSync,
   readSupervisorLock: readLock = readSupervisorLock,
@@ -242,6 +244,8 @@ export const stopKoedServer = ({
   desktopRuntimeCapability
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
+  const waitForExitMs = requestedWait ?? 5_000;
+  const releaseManaged = hasReleaseRuntime(paths);
   const runtimeEnvironment = environmentWithRepoEnv(
     paths.repoRoot,
     environment
@@ -252,11 +256,17 @@ export const stopKoedServer = ({
   });
 
   if (!runtime) {
+    const observation = releaseManaged
+      ? observeStoppedRuntime(paths)
+      : undefined;
+    const uncertain = observation && observation.state !== "stopped";
     return {
-      ok: true,
-      state: "not_configured",
+      ok: !uncertain,
+      state: uncertain ? "needs_attention" : "not_configured",
       koedHome: paths.koedHome,
-      message: "No koed runtime state was found.",
+      message: uncertain
+        ? observation.message
+        : "No koed runtime state was found.",
       stoppedPids: [],
       missingPids: [],
       stoppedServices: [],
@@ -371,7 +381,9 @@ export const stopKoedServer = ({
       });
       supervisorStoppedGracefully = waitForPidExit(runtime.pid, {
         checkPid,
-        waitForExitMs,
+        // Let the supervisor finish its bounded per-child shutdown before falling
+        // back to direct PID signals, which cannot reach llama-server descendants.
+        waitForExitMs: requestedWait ?? (releaseManaged ? 60_000 : 5_000),
         pollIntervalMs,
         sleepSync
       });
@@ -505,6 +517,16 @@ export const stopKoedServer = ({
     }
   }
 
+  if (releaseManaged && errors.length === 0) {
+    const observation = observeStoppedRuntime(paths);
+    if (observation.state !== "stopped")
+      errors.push({
+        target: observation.pid
+          ? `native process (${observation.pid})`
+          : "native runtime",
+        error: observation.message
+      });
+  }
   return {
     ok: errors.length === 0,
     state: errors.length === 0 ? "healthy" : "needs_attention",

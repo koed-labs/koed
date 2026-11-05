@@ -23,6 +23,7 @@ import { resolveKoedServerPaths } from "./paths.js";
 import {
   activateServerPackage,
   cleanupServerPackages,
+  extractNativeArchive,
   collectServerPackageStatus,
   installServerPackage,
   isVersionDowngrade,
@@ -609,6 +610,95 @@ describe("standalone koed-server package runtime", () => {
       })
     ).rejects.toThrow("Package version");
     expect(existsSync(victimFile)).toBe(true);
+  });
+
+  it.each([
+    [
+      "CPU payload",
+      tarHeader("koed-runtime/llama.cpp/cpu/server", 0, "0", 0o755)
+    ],
+    [
+      "host driver",
+      tarHeader("koed-runtime/llama.cpp/cuda/libcuda.so.1", 0, "0", 0o644)
+    ],
+    [
+      "link into CPU",
+      tarHeader(
+        "koed-runtime/llama.cpp/cuda/alias",
+        0,
+        "2",
+        0o777,
+        "../cpu/shared.so"
+      )
+    ]
+  ] as const)("rejects %s in a CUDA archive", async (_label, header) => {
+    const root = tempDir(),
+      archive = writeRawArchive(
+        root,
+        [header, Buffer.alloc(1024)],
+        "cuda.tar.gz"
+      );
+    await expect(
+      extractNativeArchive("cuda", archive, resolve(root, "out"), 0)
+    ).rejects.toThrow(/Unsafe native|escapes the payload/);
+  });
+
+  it("materializes a native library link only after its contained file exists", async () => {
+    const root = tempDir();
+    const archive = writeRawArchive(
+      root,
+      [
+        tarHeader("koed-runtime/", 0, "5", 0o755),
+        tarHeader("koed-runtime/alias", 0, "2", 0o777, "library.1"),
+        tarHeader("koed-runtime/library.1", 3, "0", 0o755),
+        padded(Buffer.from("lib")),
+        Buffer.alloc(1024)
+      ],
+      "native.tar.gz"
+    );
+    const out = resolve(root, "out");
+    await extractNativeArchive("core", archive, out, 3);
+    expect(readFileSync(resolve(out, "koed-runtime/alias"), "utf8")).toBe(
+      "lib"
+    );
+  });
+
+  it.each([
+    ["absolute", [tarHeader("koed-runtime/a", 0, "2", 0o777, "/tmp/file")]],
+    ["escaping", [tarHeader("koed-runtime/a", 0, "2", 0o777, "../outside")]],
+    [
+      "chain",
+      [
+        tarHeader("koed-runtime/a", 0, "2", 0o777, "b"),
+        tarHeader("koed-runtime/b", 0, "2", 0o777, "file")
+      ]
+    ],
+    [
+      "link parent",
+      [
+        tarHeader("koed-runtime/a", 0, "2", 0o777, "file"),
+        tarHeader("koed-runtime/a/write", 0, "0")
+      ]
+    ],
+    ["duplicate", [tarHeader("koed-runtime/file", 0, "0")]],
+    ["hard link", [tarHeader("koed-runtime/a", 0, "1", 0o644, "file")]],
+    ["special", [tarHeader("koed-runtime/a", 0, "6")]],
+    ["special mode", [tarHeader("koed-runtime/a", 0, "0", 0o4755)]]
+  ] as const)("refuses a native archive with %s", async (_kind, entries) => {
+    const root = tempDir();
+    const archive = writeRawArchive(
+      root,
+      [
+        tarHeader("koed-runtime/", 0, "5", 0o755),
+        tarHeader("koed-runtime/file", 0, "0"),
+        ...entries,
+        Buffer.alloc(1024)
+      ],
+      "native.tar.gz"
+    );
+    await expect(
+      extractNativeArchive("core", archive, resolve(root, "out"), 0)
+    ).rejects.toThrow();
   });
 
   it("rejects package archives containing symlinks before following them", async () => {

@@ -11,9 +11,7 @@ import {
 } from "../packages/shared/dist/privacy-classifier-generation.js";
 import { isPrivacyInferenceVerification } from "../packages/koed-server/dist/privacy-inference.js";
 
-// Release qualification runs on hosted runners. CUDA execution is proven
-// separately by the manual Trusted Linux CUDA package validation workflow; the
-// Linux CPU stage still runs the CUDA archive through its CPU fallback.
+// The hosted Linux release gate verifies CPU fallback for the CUDA archive.
 const stages = new Map([
   ["macos", { platform: "macos", architecture: "arm64", cases: ["macos"] }],
   [

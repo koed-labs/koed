@@ -69,7 +69,7 @@ const readRegularFile = (path: string): string => {
 };
 const sameOwner = (left: RuntimeOwner, right: RuntimeOwner): boolean =>
   left.kind === right.kind && left.installationId === right.installationId;
-const assertDirectoryChain = (base: string, target: string): void => {
+export const assertDirectoryChain = (base: string, target: string): void => {
   const relativePath = relative(resolve(base), resolve(target));
   if (relativePath.startsWith("..") || isAbsolute(relativePath))
     throw new Error("runtime lifecycle path escaped KOED_HOME");
@@ -148,7 +148,7 @@ const acquireLifecycleLock = (paths: KoedServerPaths): LifecycleLockRecord => {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     throw new Error(
-      "runtime lifecycle is locked; stale locks require stopped-runtime operator recovery",
+      "runtime lifecycle is locked; if Koed is running, run koed stop and retry. Wait for any active installation. Stale locks require stopped-runtime operator recovery",
       { cause: error }
     );
   }
@@ -579,13 +579,37 @@ export async function readCurrentRuntimeOwner(
   ).owner;
 }
 
+// The source supervisor already owns its supervisor lock; installers recheck it
+// under this exclusion before every swap. Packaged starts hold a generation pin.
+export function withSourceNativeStartLock<T>(
+  paths: KoedServerPaths,
+  check: () => T
+): T {
+  const lock = acquireLifecycleLock(paths);
+  try {
+    const owner = readSupervisorLock(resolve(paths.runDir, "koed-server.lock"));
+    if (
+      !owner ||
+      owner.pid !== process.pid ||
+      !owner.processIdentity ||
+      owner.processIdentity !== resolveProcessIdentity(process.pid)
+    )
+      throw new Error(
+        "Source native selection requires the active supervisor lock."
+      );
+    return check();
+  } finally {
+    releaseLifecycleLock(paths, lock);
+  }
+}
+
 // Reuse the generation lock for stopped-runtime mutations. The action must
 // bound and await all of its work, including test-process cleanup. Never race it
 // against a timer that could release the lock while mutation is still running.
 export async function withStoppedRuntime<T>(
   paths: KoedServerPaths,
   requester: RuntimeOwner,
-  action: () => Promise<T>
+  action: () => Promise<T> | T
 ): Promise<T> {
   const lock = acquireLifecycleLock(paths);
   try {

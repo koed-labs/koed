@@ -24,10 +24,22 @@ before returning or throwing. A timer must not release the lock while the
 callback still performs work. The boundary releases its own lock on success
 or failure and preserves a lock whose ownership record changed.
 
-The frequent read-only status observer remains separate. Existing startup,
-generation pinning, shutdown, and Desktop behavior remain unchanged by this
-prefactor. The release installer and source-mode selection integration are
-later tickets. This boundary alone does not expose a new runtime provider.
+The explicit Linux release installer checks ownership and stopped state before staging.
+It repeats those checks under the same lock before activation. Source starts using
+the native store resolve one verified selection while their supervisor holds
+the lock. Packaged starts do so while their generation pin holds the lock.
+
+For a CUDA selection the installer runs the packaged CPU/GPU validator inside
+the activation lock. A failed probe leaves the previous selection active.
+The validator also runs independently with `koed runtime validate --runtime-root
+<trusted-directory> --require-model --json`. It uses the same stopped-state and
+owner checks, a private temporary directory and Unix sockets, and a two-minute
+deadline. Cancellation kills the probe process groups before releasing the lock.
+
+For a selected release core, the supervisor starts the Embedding Service in a
+private process group. Explicit shutdown signals that group, including its
+llama-server child. The stop command gives the supervisor time to finish its
+bounded child cleanup and reports any remaining native process evidence.
 
 ## Operator recovery
 
@@ -46,6 +58,19 @@ evidence before removing only the confirmed stale lifecycle or supervisor
 record. Use Postgres recovery procedures for a retained `postmaster.pid`.
 Do not remove payloads, component selections, models, or database files.
 Run the original operation again, then start Koed explicitly when ready.
+
+If integrity checks identify a damaged native payload, establish stopped state
+first. Preserve `KOED_HOME/runtime/native` by moving that directory to a separate
+backup location. Keep the two fixed entry links, models, components, and Postgres
+data in place. From a Control Plane containing the reviewed pin, run:
+
+```bash
+koed runtime install --provider release --dependency-mode bundled-local
+koed runtime status --provider release --json
+```
+
+If an entry link points elsewhere, inspect ownership before making changes.
+Keep using the existing provider for Homebrew or Desktop installations.
 
 ## Focused validation
 

@@ -12,6 +12,7 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import type { KoedServerPaths } from "./paths.js";
+import { assertNoReleaseRuntime } from "./runtime-artifact-source.js";
 
 type SpawnSyncLike = (
   command: string,
@@ -492,6 +493,7 @@ export const installHomebrewRuntime = (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: HomebrewRuntimeDependencies = {}
 ): HomebrewRuntimeInstallResult => {
+  assertNoReleaseRuntime(paths);
   const deps = {
     platform: dependencies.platform ?? process.platform,
     existsSync: dependencies.existsSync ?? existsSync,

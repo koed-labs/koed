@@ -6,176 +6,69 @@ The Linux release-provider work reuses the existing lifecycle exclusion for
 stopped-runtime changes. See [stopped native runtime operations](stopped-native-runtime.md)
 for the internal boundary, process-state checks, and Operator recovery rules.
 
-## Independent Linux CPU core candidates
+## Linux CPU and CUDA release packages
 
-The independent core builder requires an unprivileged user on Ubuntu 22.04
-(x64, glibc 2.35) and Node 24.13.1. Install build prerequisites before running it:
+The Release workflow attaches the CPU core and the optional CUDA add-on to the
+same product release. A hosted Ubuntu 22.04 runner builds the packages with
+CUDA Toolkit 12.4 on a cache miss. A cache hit reuses the frozen archives.
+Each package keeps the runtime version of the release that built it.
 
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential bison flex libssl-dev curl ca-certificates patchelf
-node scripts/native-runtime/build-core-linux-x64.mjs --out-dir /path/to/new-core --json
-```
+The release CLI contains the download URL, size, and SHA-256 checksum for each
+archive. The existing release approval covers both packages. Older clients can
+continue to download the combined Linux archive.
 
-The output directory must not exist. The build uses an exclusive temporary
-directory and removes its own build work on completion or failure. It downloads
-only the pinned Postgres, pgvector, and CPU llama.cpp inputs. It does not need
-CUDA tools, a GPU, or a cached CUDA payload. The old combined builder remains
-available with its existing inputs and validation rules.
+## Linux release-provider installation
 
-`core.linux-x64.json` sets the independent runtime version, target, exact
-llama.cpp revision, and invocation contracts. `native-core-manifest.json`
-records those values and a recipe digest. The recipe includes the upstream
-archive digests, build-tool hashes and versions, installed build packages,
-compiler environment, linked OpenSSL inputs, build-script hashes, and packaging
-policy. The upstream CPU llama.cpp binary is an exact digest-pinned input; this
-builder does not reproduce its upstream compilation. Build images and package
-versions may change the recipe identity. A changed recipe must receive review
-and an appropriate monotonic runtime version before publication.
-
-The core inventory records every directory, regular-file size, digest and mode,
-and each relative library link target. Symlink modes use the archive's fixed
-0777 value. Postgres timezone hard links become independent regular files before
-the inventory is frozen. Archive hard links, special files, escaping links,
-link chains, and CUDA content are rejected. Postgres ELF files use a relative
-`$ORIGIN` RUNPATH so tools find the selected `libpq` after relocation.
-
-Each candidate directory contains the frozen `koed-runtime/` tree, its
-`koed-native-core-<recipe-id>-linux-x64.tar.gz` archive, a checksum sidecar, and
-`core-candidate.json`. The candidate report records the archive and manifest
-digests, exact compressed and expanded regular-file sizes, runtime version,
-target, and contracts. The size policy allows at most 50 MB compressed and
-100 MB expanded. The historical combined-archive baseline is unchanged.
-
-To repeat packaging without rebuilding or changing provenance:
+The explicit CLI path targets Linux x64 with glibc 2.35 or later. It requires a
+core pin compiled into the release CLI.
 
 ```bash
-node scripts/native-runtime/build-core-linux-x64.mjs \
-  --source-dir /path/to/frozen/koed-runtime \
-  --out-dir /path/to/new-repack --json
+koed stop
+koed runtime install --provider release --dependency-mode bundled-local --json
+koed runtime status --provider release --json
+koed start
 ```
 
-Frozen packaging verifies the complete inventory and never replaces an existing
-archive. Product version variables do not affect the output. Identical frozen
-inputs produce identical archives with the same packaging runtime. This is not
-a claim that fresh compilations on different hosts produce identical files.
+For a fresh installation, install the matching Base component and embedding model
+before starting. On an unsupported host, the Homebrew alternative requires a
+supported Homebrew host and a working Homebrew installation. Its install command
+is `koed runtime install --provider homebrew --dependency-mode bundled-local`.
 
-Extract the exact candidate archive into a new directory, verify its recorded
-checksum, then qualify it as an unprivileged Linux x64 user:
+The installer streams the pinned archive to a private staging directory and checks
+its size and digest. It requires free space for the compressed archive, expanded
+files, and a 128 MiB reserve. Existing retained payloads already occupy space.
+An intact selected core needs no download. The native extractor creates direct
+relative library links after extracting regular files and authenticates the complete
+inventory. Component extraction retains its existing link policy.
 
-```bash
-node scripts/native-runtime/qualify-core-linux-x64.mjs \
-  --runtime-root /path/to/extracted/koed-runtime \
-  --model-path /path/to/Qwen3-Embedding-0.6B-Q8_0.gguf \
-  --out-dir /path/to/new-evidence
-```
+Core payloads live under `runtime/native/core/<recipe-id>`. Locally composed
+selection directories link Postgres, the launcher, and CPU libraries to that payload.
+The supervisor and installer share the lifecycle exclusion. Before changing
+`runtime/native/current`, the installer checks stopped state, ownership, the
+expected selection, Postgres major version, and bounded CPU executable probes.
+The durable pointer swap selects the whole runtime. Earlier payloads and
+selections remain available for inspection. A cache-write warning leaves the
+activated selection usable. Read-only status derives its result from that selection.
 
-This explicit CPU check verifies the inventory, every ELF loader, automatic and
-explicit CPU launcher policies, Postgres initialization and restart, pgvector,
-pgcrypto, and two finite, nonzero 1024-dimension embeddings. It exercises the
-composed selection links, uses temporary data and ports, and stops its own test
-processes before reporting success. Its overall deadline is three minutes plus
-bounded cleanup. It does not start Koed or download assets or models. The model
-must match the runner's fixed qualification digest. Retain `qualification.json`
-and the two service logs together with `core-candidate.json` and the archive.
+Use `--with-cuda` on the release install command to stage a compatible core and
+CUDA add-on together. CUDA payloads live under `runtime/native/cuda/<recipe-id>`.
+The installer checks the host before downloading CUDA, verifies the full archive
+and inventory, then runs the staged validator under the lock before switching the
+pointer. Without an installed model the result is device-only. A failed check
+preserves the active pair. A CPU execution policy continues to use CPU.
 
-Candidate qualification does not establish release-provider installation health
-or GPU readiness. Native publication, trusted Control Plane pins, and the
-release provider have separate ticket acceptance gates. CUDA qualification is
-deferred until a suitable machine is available.
+With neither asset flag, a core update reuses compatible installed CUDA bytes
+without another copy or download. If the new core is incompatible, `auto` or
+`cpu` may select CPU alone. Forced CUDA requires the combined update. Use
+`--without-cuda` with an `auto` or `cpu` policy to remove CUDA from the selection.
+The prior payload stays available for recovery. Status reports installed and
+pinned IDs and the current execution policy without running device discovery.
 
-### Native publication and retention
-
-`.github/workflows/native-runtime-core.yml` builds CPU candidates independently
-of product releases. It uses only Node and the native CPU build prerequisites.
-It qualifies the extracted archive and retains an offline handover bundle.
-The build records separate digests for the candidate report and qualification
-report before requesting approval through the existing `production` environment.
-
-The publication job authenticates those reports and the archive before extraction.
-`publish-core.mjs` requires independent production approval and verifies identical
-frozen packaging. It creates a draft under `native-core-<recipe-id>`, uploads
-every required asset, and authenticates retained bytes before publication.
-It sets `make_latest` to `false`, as defined by the
-[GitHub release API](https://docs.github.com/en/rest/releases/releases#create-a-release).
-Product releases keep their existing publication approval boundary.
-
-Retries can upload missing draft assets. They cannot replace changed bytes.
-Retries of a complete published release only authenticate retained assets.
-A new recipe requires a greater runtime version than existing published cores.
-Never delete native releases, assets, or tags, including during cleanup.
-Whole-release retention remains necessary even when GitHub immutability is enabled.
-
-On 2026-11-04, `GET /repos/koed-labs/koed/immutable-releases` reported
-`enabled: false` and `enforced_by_owner: false`. This work does not change that
-repository setting. The publication adapter provides no overwrite or delete
-operation. Administrators can still remove or change releases outside that
-adapter. GitHub immutability and a live product-publication retry remain pending
-the normal repository configuration and release approval process.
-
-The retention review on 2026-11-04 found no release or tag deletion path in
-the repository workflows and release scripts. The product release workflow
-selects an exact `v<product-version>` tag. `ensure-release-assets.mjs` accepts
-only an existing draft and refuses changed asset bytes. Product promotion also
-requires that exact product tag. The native publisher uploads every required
-asset before publication, rejects changed bytes, and treats published retries
-as read-only authentication. These controls do not restrict administrator actions
-outside the repository workflows. A fresh GitHub read still reported immutability
-disabled and no `native-core-` tags.
-
-The new workflow is prepared but has not run on GitHub. No native release or
-production pin from this work is published. The compiled native catalog remains
-unset until a retained release and its exact URLs and digests receive review.
-
-Reviewed pins live in `packages/koed-server/src/native-runtime-catalog-data.mjs`.
-The Control Plane build reads that source authority and replaces stale compiled
-data while bundling. The packaged export shares its module with runtime
-consumers. Static inspection checks the effective packaged export without
-executing candidate code. No environment variable can replace production pins.
-
-The catalog records the core URL, recipe identity, archive and manifest digests,
-compressed and expanded sizes, runtime version, minimum version, target, and
-contracts. A complete CPU catalog has `cuda: null`. Core validation fixes
-pgvector at 0.8.3 and rejects unsupported contracts, targets, and URLs.
-
-Product promotion first authenticates the protected npm package. It then reads
-the native authority inside that exact package and authenticates every referenced
-native archive and manifest through bounded HTTPS reads. Missing or altered
-assets fail before promotion. An unset catalog cannot authorize installation.
-The Base component keeps its separate product-version admission checks.
-
-## Independent Linux CUDA add-on candidates
-
-`build-cuda-addon-linux-x64.mjs` prepares a separate CUDA candidate from
-`cuda.linux-x64.json`. It requires a verified frozen core with the exact same
-llama.cpp revision, target, and layout and embedding contracts. Postgres versions
-and core recipe identities do not affect the CUDA recipe or frozen bytes.
-
-The cold build requires an unprivileged Ubuntu 22.04 x64 user, CUDA toolkit 12.4,
-and the normal C++ build tools. It uses a fixed environment and two compilation
-jobs. The recipe records the source digest, installed package versions, tool and
-toolkit file hashes, architecture list, build flags, and build and packaging logic.
-The core and product versions do not enter CUDA provenance.
-
-The archive contains only `koed-runtime/llama.cpp/cuda/` and its parent directories.
-`native-cuda-manifest.json` lives inside that CUDA directory. The inventory
-records file digests, modes, sizes, and direct relative library links. The builder
-stages required CUDA runtime libraries recursively from the toolkit. It includes
-license files and never bundles the host `libcuda.so.1` driver. Escaping links,
-link chains, hard links, special files, and content outside the payload fail admission.
-
-The separate budget is 750 MB compressed and 1.6 GB of expanded regular files.
-Those limits use the ticket 01 CUDA packaging measurement as their initial basis.
-The historical combined baseline and the CPU budgets remain unchanged.
-Frozen repackaging verifies inventory and produces the same archive with the
-same Node packaging runtime. Fresh compilation reproducibility remains unproven.
-
-The builder, fixture tests, and combined-layout loader runner are prepared but
-unrun. No independent CUDA candidate or production CUDA pin exists yet. All CUDA
-testing remains deferred for the Operator's machine arrangement. The
-[CUDA handover](qualification/linux-cuda-handover.md) packages the source checks,
-exact CPU candidate, commands, expected results, and the remaining release gates.
-Its layout check does not replace GPU inference through the shipped CLI validator.
+The compiled minimum version and native contracts apply at startup. A compatible
+older core can run while status reports the available update. Explicit binary
+overrides retain their precedence. Install and update preserve the database and
+model files. See [stopped-runtime recovery](stopped-native-runtime.md) for stale
+locks, uncertain processes, and damaged installations.
 
 ## macOS arm64 local artifact build
 
@@ -310,21 +203,6 @@ build/validation code changes, refreshes the cache on a bounded schedule, and
 may be dispatched manually. The cache key covers payload-producing inputs;
 validation-only changes revalidate the existing payload without recompiling it.
 Ordinary CI and local setup never compile CUDA automatically.
-
-`.github/workflows/native-runtime-linux-cuda-validation.yml` is the manual
-hardware-proof path. It is restricted to the trusted default branch and a
-self-hosted runner carrying the `linux`, `x64`, and `koed-cuda` labels. The
-runner must expose an NVIDIA GPU through `nvidia-smi`, use driver 550.54.14 or
-newer, and provide the system libraries required by the pinned ONNX Runtime
-CUDA provider. The workflow refuses to rebuild an unreviewed native payload: it
-requires the independently populated recipe-keyed cache, packages and extracts
-that exact payload, and runs full loader/PostgreSQL/provider validation. It then
-proves CUDA discovery and real embedding inference from the extracted CUDA
-`llama-server`, including CPU/GPU vector agreement and observed VRAM use. A
-separately built exact Linux standalone app runtime must initialize the Privacy
-Filter CUDA provider, match CPU classification, switch providers, unload and
-reload after idle, and reject Core ML. The workflow retains the bounded JSON
-evidence for 30 days. Policy-only hosted CI never sets these hardware boxes.
 
 The release workflow independently rebuilds the macOS native runtime and
 Desktop package from the exact merged release commit. Each supported standalone

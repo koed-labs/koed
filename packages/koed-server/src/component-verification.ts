@@ -554,7 +554,7 @@ export const verifyComponent = (
   input: ComponentVerificationInput
 ): Promise<ComponentManifest> => verifyComponentSync(input);
 
-function hashFileDescriptor(fd: number): string {
+export function hashFileDescriptor(fd: number): string {
   const digest = createHash("sha256");
   let position = 0;
   while (true) {

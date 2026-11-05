@@ -6,7 +6,6 @@ Related decisions:
 
 - [0031 Verified Embedding Acceleration](0031-verified-embedding-acceleration.md)
 - [0057 Versioned Component Manifest Pins](0057-versioned-component-manifest-pins.md)
-- [Linux baseline measurements](../qualification/linux-native-baseline.md)
 
 ## Context
 
@@ -16,15 +15,13 @@ The measured CPU split is about 24 MB compressed. Product-version provenance
 also changes archive identity when the native binaries remain unchanged.
 
 Homebrew remains useful for existing installations and explicit source-checkout
-choices. Its complete installation costs differ from native archive sizes.
-The baseline therefore records the complete Homebrew path and treats proposed
-CPU download savings as provisional.
+choices. Comparing total download sizes requires measuring the complete setup,
+including the model and dependencies.
 
 ## Decision
 
 Publish an independently versioned Linux x64 CPU core and an optional CUDA
-add-on. The core can build, qualify, and ship without CUDA tools or GPU hardware.
-CUDA publication requires real GPU qualification against exact frozen artifacts.
+add-on. The product release workflow builds both archives on hosted Linux. The installer checks CUDA on the Operator’s machine.
 This supersedes the requirement in ADR 0031 that every new Linux artifact must
 contain both variants. The old combined artifact remains during the transition.
 
@@ -42,11 +39,10 @@ modes. Frozen packaging preserves these bytes without rebuilding or inserting
 product-version metadata. This guarantees repeatable packaging of frozen inputs.
 It does not claim identical output from fresh compilations on different hosts.
 
-A reviewed native release provides immutable URLs and archive and manifest
-digests. The trusted Control Plane compiles those pins. Operators cannot
-override production native pins. A catalog containing only the core is valid.
-Published identities must not be overwritten or deleted, including their tags.
-Native releases must not become the latest product release.
+The product release contains both archives and their manifests. The release
+workflow compiles the URLs and checksums into the Control Plane. Each archive
+retains its native build version across cache hits. A fresh build uses the new
+product version. Operators cannot override the compiled download locations.
 
 Native selection changes require stopped Koed and the existing lifecycle lock.
 One atomic pointer selects a complete set of admitted immutable payloads.
@@ -65,7 +61,5 @@ again. The Control Plane must enforce a compiled minimum version, target,
 contracts, and inventory integrity at startup. An outdated compatible core
 remains usable. A recipe digest alone cannot establish compatibility.
 
-Separate native identities add release-retention and pin-promotion obligations.
-CUDA retains independent provenance so unrelated Postgres changes do not force
-a new add-on. Initial updates preserve the Postgres major version and pgvector
+Each product release retains its native archives and their build records. Initial updates preserve the Postgres major version and pgvector
 version. Database and Homebrew migration remain separate work.

@@ -162,6 +162,7 @@ test("targeted asset retries regenerate a reviewed identity for the current atte
     "standalone-koed-server-release-assets",
     "standalone-koed-server-release-metadata",
     "native-runtime-linux-x64-release-assets",
+    "linux-native-packages",
     "signed-desktop-release-assets",
     "privacy-release-qualification"
   ])

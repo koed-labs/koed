@@ -204,18 +204,8 @@ as proportional estimates because gzip does not expose independently compressed
 members. CI compares the exact total archive size with the immutable v0.6.2
 baseline and fails above the reviewed 5% growth allowance.
 
-Trusted CUDA evidence is produced only by the manually dispatched
-`Trusted Linux CUDA package validation` workflow on the protected default
-branch. Its self-hosted runner must have the `koed-cuda` label and a compatible
-NVIDIA GPU/driver. The job consumes the exact independently cached native
-payload, validates the extracted archive, runs real CUDA llama.cpp embedding
-inference with CPU parity and VRAM evidence, and runs the exact standalone
-Privacy Filter payload through CUDA initialization, classification, provider
-switching, parity, idle unload/reload, and fail-closed unavailable-provider
-checks. The evidence artifact is retained for 30 days. Hosted policy CI and a
-runner without those labels cannot claim this proof. The Release workflow does
-not wait for this evidence: its Privacy gate requires only the hosted macOS and
-Linux CPU qualification stages.
+The Release workflow builds the optional CUDA add-on on hosted Linux and attaches
+it to the product release. See [Linux CPU and CUDA release packages](native-runtime-artifact-pipeline.md#linux-cpu-and-cuda-release-packages).
 
 Desktop release and recovery workflows also publish
 `desktop-artifact-size-report.json`. It separates the Electron framework and

@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import {
   cpSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -84,7 +85,7 @@ const identifyToolchain = () => ({
   )
 });
 
-export const buildLinuxCore = ({ outDir, sourceDir }) => {
+export const buildLinuxCore = ({ outDir, sourceDir, runtimeVersion }) => {
   const out = resolve(outDir);
   // A new output directory prevents overwriting frozen candidates or payloads.
   mkdirSync(out, { recursive: false });
@@ -137,6 +138,7 @@ export const buildLinuxCore = ({ outDir, sourceDir }) => {
     const configuration = JSON.parse(
       readFileSync(resolve(import.meta.dirname, "core.linux-x64.json"), "utf8")
     );
+    if (runtimeVersion) configuration.runtimeVersion = runtimeVersion;
     const combinedSources = JSON.parse(
       readFileSync(
         resolve(import.meta.dirname, "sources.linux-x64.json"),
@@ -149,12 +151,27 @@ export const buildLinuxCore = ({ outDir, sourceDir }) => {
         combinedSources[key]
       ])
     );
+    // The upstream CPU llama-server links GNU OpenMP. A minimal Jammy host
+    // has libstdc++ but need not have libgomp. The launcher loads from cpu/.
+    const redistributables = {
+      "libgomp.so.1": realpathSync(
+        run("cc", ["-print-file-name=libgomp.so.1"])
+      ),
+      "libgomp-copyright.txt": "/usr/share/doc/libgomp1/copyright",
+      "libgomp-GPL-3.txt": "/usr/share/common-licenses/GPL-3"
+    };
     const recipe = {
       schemaVersion: 1,
       kind: "core",
       configuration,
       sources,
       toolchain: identifyToolchain(),
+      bundledLibraries: Object.fromEntries(
+        Object.entries(redistributables).map(([name, path]) => [
+          name,
+          sha256File(path)
+        ])
+      ),
       environment,
       logic: Object.fromEntries(
         logicFiles.map((path) => [path, sha256File(resolve(repoRoot, path))])
@@ -188,6 +205,8 @@ export const buildLinuxCore = ({ outDir, sourceDir }) => {
       throw new Error("CPU-only procurement produced CUDA content.");
     pruneNativeRuntimeBuildArtifacts(builtRoot);
     stripNativeRuntimeBinaries({ runtimeRoot: builtRoot, platform: "linux" });
+    for (const [name, path] of Object.entries(redistributables))
+      copyFileSync(path, resolve(builtRoot, "llama.cpp/cpu", name));
     // PostgreSQL tools must find their selected libpq after relocation.
     for (const file of collectPlatformBinaries({
       runtimeRoot: resolve(builtRoot, "postgres"),
