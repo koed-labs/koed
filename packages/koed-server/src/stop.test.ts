@@ -650,7 +650,50 @@ describe("stopKoedServer", () => {
     expect(result.stoppedServices).toContain("embedding-service-native");
   });
 
-  it("stops a release-managed Embedding Service as a process group", () => {
+  it.each([
+    { leader: "embedding-13", expected: [11, 10, -13] },
+    // The recorded PID now leads an unrelated group: signal nothing.
+    { leader: "unrelated-process", expected: [11, 10] }
+  ])(
+    "signals a release-managed Embedding Service group only with a matching identity ($leader)",
+    ({ leader, expected }) => {
+      const koedHome = makeHome();
+      mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });
+      writeRuntime(
+        koedHome,
+        runtime({
+          services: ["embedding-service-native", "api", "worker"],
+          processes: { api: 10, worker: 11, embeddingService: 13 },
+          processIdentities: { embeddingService: "embedding-13" }
+        })
+      );
+      const targets: number[] = [];
+      const live = new Set([13]);
+
+      const result = stopKoedServer({
+        environment: { KOED_HOME: koedHome },
+        resolveProcessIdentity: (pid) =>
+          pid === 13 ? leader : "test-supervisor",
+        isProcessGroupLeader: (pid) => pid === 13,
+        kill: (pid) => {
+          targets.push(pid);
+          live.delete(Math.abs(pid));
+        },
+        checkPid: (pid) => live.has(Math.abs(pid))
+      });
+
+      expect(targets).toEqual(expected);
+      if (leader === "embedding-13")
+        expect(result.stoppedServices).toContain("embedding-service-native");
+      else
+        expect(result.errors).toContainEqual({
+          target: "embedding-service-native (13)",
+          error: "Process identity changed before signaling"
+        });
+    }
+  );
+
+  it("never signals an Embedding Service group without a recorded identity", () => {
     const koedHome = makeHome();
     mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });
     writeRuntime(
@@ -663,10 +706,10 @@ describe("stopKoedServer", () => {
     const targets: number[] = [];
     const live = new Set([13]);
 
-    const result = stopKoedServer({
+    stopKoedServer({
       environment: { KOED_HOME: koedHome },
       resolveProcessIdentity: () => "test-supervisor",
-      isProcessGroupLeader: (pid) => pid === 13,
+      isProcessGroupLeader: () => true,
       kill: (pid) => {
         targets.push(pid);
         live.delete(Math.abs(pid));
@@ -674,8 +717,7 @@ describe("stopKoedServer", () => {
       checkPid: (pid) => live.has(Math.abs(pid))
     });
 
-    expect(targets).toEqual([11, 10, -13]);
-    expect(result.stoppedServices).toContain("embedding-service-native");
+    expect(targets).toEqual([11, 10, 13]);
   });
 
   it("does not stop external dependency services", () => {

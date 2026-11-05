@@ -34,6 +34,13 @@ const validProcessMap = (value: unknown): boolean =>
       (pid) => typeof pid === "number" && Number.isInteger(pid) && pid >= 0
     ));
 
+const validIdentityMap = (value: unknown): boolean =>
+  value === undefined ||
+  (isRecord(value) &&
+    Object.values(value).every(
+      (identity) => typeof identity === "string" && identity.length > 0
+    ));
+
 const validRuntimeState = (value: unknown): value is KoedServerRuntimeState => {
   if (!isRecord(value)) return false;
   const validRuntimeMode =
@@ -62,7 +69,8 @@ const validRuntimeState = (value: unknown): value is KoedServerRuntimeState => {
     validRuntimeMode &&
     validDependencyMode &&
     validAutomaticPorts &&
-    validProcessMap(value.processes)
+    validProcessMap(value.processes) &&
+    validIdentityMap(value.processIdentities)
   );
 };
 

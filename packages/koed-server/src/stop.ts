@@ -458,16 +458,27 @@ export const stopKoedServer = ({
           missingServices.push("embedding-service-native");
         } else {
           // Release-managed runtimes start the Embedding Service as a private
-          // group leader. Signal the group so llama-server descendants stop too.
+          // group leader. Signal the group, so llama-server descendants stop too,
+          // only while the leader keeps the identity recorded at spawn. A recorded
+          // identity also refuses any signal to a reused PID.
+          const embeddingIdentity = runtime.processIdentities?.embeddingService;
           const stopped = stopPid("embedding-service-native", embeddingPid, {
             kill,
             checkPid,
             waitForExitMs,
             pollIntervalMs,
             sleepSync,
+            ...(embeddingIdentity
+              ? {
+                  expectedProcessIdentity: embeddingIdentity,
+                  resolveProcessIdentity
+                }
+              : {}),
             processGroup:
               releaseManaged &&
+              embeddingIdentity !== undefined &&
               checkPid(embeddingPid) &&
+              resolveProcessIdentity(embeddingPid) === embeddingIdentity &&
               isProcessGroupLeader(embeddingPid)
           });
           stoppedPids.push(...stopped.stoppedPids);

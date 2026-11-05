@@ -165,4 +165,6 @@ export interface KoedServerRuntimeState {
   apiUrl: string;
   services: string[];
   processes?: Record<string, number>;
+  // Process identities for recorded children that koed stop may signal as a group.
+  processIdentities?: Record<string, string>;
 }

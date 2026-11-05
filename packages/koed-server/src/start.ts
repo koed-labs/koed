@@ -81,7 +81,8 @@ import {
 } from "./status.js";
 import {
   acquireKoedServerSupervisorLock,
-  releaseKoedServerSupervisorLock
+  releaseKoedServerSupervisorLock,
+  resolveProcessIdentity
 } from "./supervisor-lock.js";
 
 import { maintainSupervisorLog } from "./supervisor-log.js";
@@ -1510,6 +1511,10 @@ export const startKoedServer = async ({
       manageChild("api", api);
       emitStartupMilestone("api_process_spawned");
 
+      const embeddingIdentity =
+        paths.nativeSelectionRoot && nativeEmbeddingProcess?.pid
+          ? resolveProcessIdentity(nativeEmbeddingProcess.pid)
+          : null;
       const runtime: KoedServerRuntimeState = {
         pid: process.pid,
         startedAt: supervisorStartedAt,
@@ -1522,6 +1527,11 @@ export const startKoedServer = async ({
         claudeTranscriptWatcherEnabled: config.claudeTranscriptWatcherEnabled,
         piTranscriptWatcherEnabled: config.piTranscriptWatcherEnabled,
         services: [...runtimeServices, "api"],
+        // The release-managed Embedding Service leads a private process group.
+        // koed stop signals that group only while its leader keeps this identity.
+        ...(embeddingIdentity
+          ? { processIdentities: { embeddingService: embeddingIdentity } }
+          : {}),
         processes: {
           ...(nativeEmbeddingProcess
             ? { embeddingService: nativeEmbeddingProcess.pid ?? 0 }

@@ -41,8 +41,9 @@ private process group. Explicit shutdown signals that group, including its
 llama-server child. Shutdown waits for the whole group to drain, not only its
 leader, and kills any member still running at the deadline. The stop command
 gives the supervisor time to finish its bounded child cleanup. If the supervisor
-does not exit, the fallback signals the recorded Embedding Service group while
-its leader is alive, and reports any remaining native process evidence.
+does not exit, the fallback signals the recorded Embedding Service group only while
+its leader still has the process identity recorded at spawn. It reports any
+remaining native process evidence.
 
 ## Operator recovery
 
