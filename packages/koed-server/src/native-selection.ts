@@ -199,14 +199,29 @@ export function readNativeSelection(
   }
 }
 
+// An installed core may lag the pinned core. It stays startable while it meets the
+// reviewed minimum version and implements the same native contracts.
+export function coreStartBlocker(
+  pin: NativeCorePin,
+  catalog: NativeRuntimeCatalog
+): string | null {
+  if (compareNativeVersions(pin.runtimeVersion, catalog.minimumCoreVersion) < 0)
+    return `Native core ${pin.runtimeVersion} is below the required ${catalog.minimumCoreVersion}`;
+  if (
+    canonicalArtifactJson(pin.contracts) !==
+    canonicalArtifactJson(catalog.core.contracts)
+  )
+    return `Native core ${pin.runtimeVersion} implements contracts ${canonicalArtifactJson(pin.contracts)}, but this Control Plane requires ${canonicalArtifactJson(catalog.core.contracts)}`;
+  return null;
+}
+
 export function assertStartableCore(
   pin: NativeCorePin,
   catalog: NativeRuntimeCatalog
 ): void {
-  if (compareNativeVersions(pin.runtimeVersion, catalog.minimumCoreVersion) < 0)
-    throw new Error(
-      `Native core ${pin.runtimeVersion} is below the required ${catalog.minimumCoreVersion}. Stop Koed and run ${releaseInstallCommand}.`
-    );
+  const blocker = coreStartBlocker(pin, catalog);
+  if (blocker)
+    throw new Error(`${blocker}. Stop Koed and run ${releaseInstallCommand}.`);
 }
 
 export function composeNativeSelection(

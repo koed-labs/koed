@@ -65,7 +65,16 @@ The prior payload stays available for recovery. Status reports installed and
 pinned IDs and the current execution policy without running device discovery.
 
 The compiled minimum version and native contracts apply at startup. A compatible
-older core can run while status reports the available update. Explicit binary
+older core can run while status reports the available update.
+
+The minimum comes from the reviewed
+`scripts/native-runtime/core-compatibility.linux-x64.json`, not from the core a
+release happens to build. A cache miss or rebuild therefore never strands older
+installed cores. Raise `minimumCoreVersion` only when older cores must stop starting
+and the change cannot be expressed as a contract change. Release staging refuses a
+minimum above the product version or above the staged core. An installed core with
+different native contracts cannot start. Status reports it as `incompatible`
+instead of failing. Explicit binary
 overrides retain their precedence. Install and update preserve the database and
 model files. See [stopped-runtime recovery](stopped-native-runtime.md) for stale
 locks, uncertain processes, and damaged installations.

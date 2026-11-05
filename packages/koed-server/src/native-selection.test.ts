@@ -18,6 +18,7 @@ import {
   activateNativeSelection,
   assertStartableCore,
   composeNativeSelection,
+  coreStartBlocker,
   currentNativeId,
   nativeStore,
   readNativeSelection
@@ -205,6 +206,32 @@ it("keeps the previous complete selection on swap failure and verifies either se
   expect(
     realpathSync(resolve(first.selection.root, "llama.cpp/llama-server"))
   ).toBe(resolve(first.root, "llama.cpp/llama-server"));
+});
+
+it("starts an older core with the same contracts and refuses a contract change or a raised minimum", () => {
+  const paths = home(),
+    older = candidate(paths, "1.0.0"),
+    newer = candidate(paths, "1.2.0");
+  expect(coreStartBlocker(older.catalog.core, newer.catalog)).toBeNull();
+  expect(() =>
+    assertStartableCore(older.catalog.core, newer.catalog)
+  ).not.toThrow();
+  const changed = {
+    ...newer.catalog,
+    core: {
+      ...newer.catalog.core,
+      contracts: { ...newer.catalog.core.contracts, layout: 2 }
+    }
+  } as unknown as typeof newer.catalog;
+  expect(coreStartBlocker(older.catalog.core, changed)).toMatch(
+    /this Control Plane requires/
+  );
+  expect(() =>
+    assertStartableCore(older.catalog.core, {
+      ...newer.catalog,
+      minimumCoreVersion: "1.1.0"
+    })
+  ).toThrow(/below the required 1\.1\.0/);
 });
 
 it("refuses changed payload bytes and unrecognized fixed entry links", () => {

@@ -26,6 +26,7 @@ import {
 import {
   activateNativeSelection,
   assertStartableCore,
+  coreStartBlocker,
   composeNativeSelection,
   payloadRoot,
   currentNativeId,
@@ -87,7 +88,21 @@ export function collectReleaseRuntimeStatus(
       executionPolicy: policy,
       message: `Install the CPU runtime with ${releaseInstallCommand}.`
     };
-  assertStartableCore(selected.pin, catalog);
+  const blocker = coreStartBlocker(selected.pin, catalog);
+  if (blocker)
+    return {
+      ok: false,
+      provider: "release",
+      state: "incompatible",
+      selectionId: selected.id,
+      installedCoreId: selected.pin.recipeId,
+      pinnedCoreId: catalog.core.recipeId,
+      installedCudaId: selected.cuda?.recipeId ?? null,
+      pinnedCudaId: catalog.cuda?.recipeId ?? null,
+      executionPolicy: policy,
+      runtimeVersion: selected.pin.runtimeVersion,
+      message: `${blocker}. Stop Koed and run ${releaseInstallCommand}.`
+    };
   const coreOutdated = selected.pin.recipeId !== catalog.core.recipeId;
   const cudaOutdated = !!(
     selected.cuda &&

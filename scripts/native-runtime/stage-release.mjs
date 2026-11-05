@@ -96,9 +96,40 @@ assertCudaCoreCompatibility(
   { kind: "core", ...core },
   { kind: "cuda", ...cuda }
 );
+// The minimum is a reviewed compatibility floor, not the version of the core this
+// release happened to build. Raise it only when older cores must stop starting.
+const compatibility = JSON.parse(
+  readFileSync(
+    new URL("./core-compatibility.linux-x64.json", import.meta.url),
+    "utf8"
+  )
+);
+const minimumCoreVersion = compatibility.minimumCoreVersion;
+const semver = (value) => value.split(".").map(Number);
+const below = (left, right) => {
+  const [a, b] = [semver(left), semver(right)];
+  for (let index = 0; index < 3; index++)
+    if (a[index] !== b[index]) return a[index] < b[index];
+  return false;
+};
+if (
+  compatibility.schemaVersion !== 1 ||
+  Object.keys(compatibility).sort().join(",") !==
+    "minimumCoreVersion,schemaVersion" ||
+  !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(minimumCoreVersion ?? "")
+)
+  throw new Error("Invalid native core compatibility file.");
+if (below(version, minimumCoreVersion))
+  throw new Error(
+    `Minimum native core ${minimumCoreVersion} is above product version ${version}.`
+  );
+if (below(core.runtimeVersion, minimumCoreVersion))
+  throw new Error(
+    `Cached native core ${core.runtimeVersion} is below the reviewed minimum ${minimumCoreVersion}. Rebuild the native packages.`
+  );
 const catalog = {
   schemaVersion: 1,
-  minimumCoreVersion: core.runtimeVersion,
+  minimumCoreVersion,
   core,
   cuda
 };
