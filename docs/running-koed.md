@@ -1,5 +1,14 @@
 # Running Koed
 
+> **Managed Conversation execution is disabled.** Managed execution, runner,
+> source-control and terminal entry points are unavailable; the worker does not
+> claim or resume managed commands. Existing records are not removed by this
+> change. Managed execution instructions below describe historical behavior.
+> Before upgrading, stop all older workers and API instances: an older worker
+> with direct database access is not fenced by the new API. Stopping a running
+> AI Client may leave partial external effects, and this release does not
+> automatically resume queued work. Capture and Recall remain independent.
+
 ## Headless Remote Integration
 
 An AI Client can use an existing backend without Electron or local database,

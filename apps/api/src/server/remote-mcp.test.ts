@@ -163,6 +163,30 @@ const fixture = (teamEnabled = false) => {
 };
 
 describe("API remote MCP bridge", () => {
+  it("does not expose managed conversation or runner entry points", async () => {
+    vi.stubEnv("KOED_REMOTE_MCP_ENABLED", "false");
+    vi.stubEnv("DATABASE_URL", undefined);
+    vi.stubEnv("WORK_QUEUE_BACKEND", "local");
+    const app = await buildServer();
+    apps.push(app);
+    for (const [method, url] of [
+      ["GET", "/v1/managed-conversations/access"],
+      ["POST", "/v1/managed-conversations"],
+      ["POST", "/v1/managed-conversations/test/prompts"],
+      ["POST", "/v1/managed-conversations/test/files"],
+      ["POST", "/v1/managed-conversations/test/previews"],
+      ["POST", "/v1/managed-conversations/test/terminals"],
+      ["POST", "/v1/managed-conversation-runner/commands/claim"],
+      ["POST", "/v1/managed-conversations/test/source-control"]
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url,
+        payload: method === "POST" ? {} : undefined
+      });
+      expect(response.statusCode, url).toBe(404);
+    }
+  });
   it("submits Team Memory Answer tasks and returns the local helper answer", async () => {
     const f = fixture(true);
     const workspaceId = "7c07a3cc-5679-4df2-bb67-c86571df93c2";

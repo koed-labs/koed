@@ -6877,12 +6877,11 @@ describe("api health", () => {
     }
   });
 
-  it("keeps authenticated Conversation draft access available after background quotas are exhausted", async () => {
+  it("keeps managed Conversation routes unavailable when background quotas are exhausted", async () => {
     const previousKoedHome = process.env.KOED_HOME;
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-draft-quota-"));
     process.env.KOED_HOME = koedHome;
     const keys: string[] = [];
-    let exhaustConversations = false;
     const app = await buildServer({
       repository: createFakeRepository(),
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
@@ -6893,10 +6892,7 @@ describe("api health", () => {
           keys.push(key);
           return {
             count:
-              key.startsWith("memoryRead:") ||
-              key.startsWith("memoryWrite:") ||
-              (exhaustConversations &&
-                key.startsWith("managedConversationRead:"))
+              key.startsWith("memoryRead:") || key.startsWith("memoryWrite:")
                 ? 1000000
                 : 1,
             resetAt: Date.now() + 60000
@@ -6947,27 +6943,33 @@ describe("api health", () => {
         url: "/v1/managed-conversations/access",
         headers
       });
-      expect(access.statusCode).toBe(200);
-      expect(jsonBody<{ user: { id: string } }>(access).user.id).toBeTypeOf(
-        "string"
-      );
+      expect(access.statusCode).toBe(404);
       expect(
         keys.some((key) => key.startsWith("managedConversationRead:"))
-      ).toBe(true);
+      ).toBe(false);
       const revoked = await app.inject({
         method: "GET",
         url: "/v1/managed-conversations/access",
         headers: { authorization: "Bearer invalid" }
       });
-      expect(revoked.statusCode).toBe(401);
-      exhaustConversations = true;
-      const throttled = await app.inject({
-        method: "GET",
-        url: "/v1/managed-conversations/access",
-        headers
-      });
-      expect(throttled.statusCode).toBe(429);
-      expect(throttled.headers["retry-after"]).toBeDefined();
+      expect(revoked.statusCode).toBe(404);
+      for (const url of [
+        "/v1/managed-conversations",
+        "/v1/managed-conversations/test/prompts",
+        "/v1/managed-conversations/test/files",
+        "/v1/managed-conversations/test/previews",
+        "/v1/managed-conversations/test/terminals",
+        "/v1/managed-conversations/test/source-control",
+        "/v1/managed-conversation-runner/commands/claim"
+      ]) {
+        const response = await app.inject({
+          method: "POST",
+          url,
+          headers,
+          payload: {}
+        });
+        expect(response.statusCode, url).toBe(404);
+      }
     } finally {
       await app.close();
       if (previousKoedHome === undefined) delete process.env.KOED_HOME;

@@ -406,7 +406,7 @@ describe("Team collaboration feature switch", () => {
     });
   });
 
-  it("advertises local managed previews only with the encrypted managed runtime", () => {
+  it("does not advertise managed execution, previews or source control", () => {
     const disabled = buildCapabilitiesResponse({
       deploymentProfile: "local_personal",
       runtimeMode: "local-personal",
@@ -423,16 +423,20 @@ describe("Team collaboration feature switch", () => {
     });
 
     expect(disabled.memory.managedDevelopmentPreviews).toBe("unavailable");
-    expect(enabled.memory.managedDevelopmentPreviews).toBe("available");
-    expect(
-      enabled.capabilities["memory.managedDevelopmentPreviews"]
-    ).toMatchObject({
-      availability: "available",
-      endpoints: expect.arrayContaining([
-        "/v1/managed-conversations/{executionId}/previews",
-        "/v1/managed-conversations/{executionId}/previews/{previewId}/access"
-      ]),
-      requiresAuthentication: true
+    expect(enabled.memory).toMatchObject({
+      managedConversations: "unavailable",
+      managedDevelopmentPreviews: "unavailable",
+      managedSourceControl: "unavailable"
     });
+    for (const name of [
+      "memory.managedConversations",
+      "memory.managedDevelopmentPreviews",
+      "memory.managedSourceControl"
+    ] as const) {
+      expect(enabled.capabilities[name]).toMatchObject({
+        availability: "unavailable",
+        endpoints: undefined
+      });
+    }
   });
 });

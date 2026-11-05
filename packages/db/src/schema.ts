@@ -60,6 +60,188 @@ const now = () =>
 const updatedNow = () =>
   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
 
+export const peerOnlineMembershipGroups = pgTable(
+  "peer_online_membership_groups",
+  {
+    groupId: text("group_id").primaryKey(),
+    genesisHash: text("genesis_hash").notNull(),
+    recordCount: integer("record_count").notNull(),
+    conflict: boolean("conflict").notNull(),
+    incomplete: boolean("incomplete").notNull(),
+    limitEvidence: text("limit_evidence")
+  }
+);
+
+// Immutable: the one local owner User whose Personal Memory a group syncs.
+export const peerOnlineGroupOwners = pgTable("peer_online_group_owners", {
+  groupId: text("group_id")
+    .primaryKey()
+    .references(() => peerOnlineMembershipGroups.groupId),
+  ownerUserId: uuid("owner_user_id")
+    .notNull()
+    .references(() => users.id)
+});
+
+export const peerOnlineMembershipEvidence = pgTable(
+  "peer_online_membership_evidence",
+  {
+    groupId: text("group_id")
+      .notNull()
+      .references(() => peerOnlineMembershipGroups.groupId),
+    position: integer("position").notNull(),
+    hash: text("hash").notNull(),
+    json: text("json").notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.groupId, table.position] }),
+    unique().on(table.groupId, table.hash)
+  ]
+);
+
+export const peerOnlineAdmissionAttempts = pgTable(
+  "peer_online_admission_attempts",
+  {
+    groupId: text("group_id")
+      .notNull()
+      .references(() => peerOnlineMembershipGroups.groupId),
+    attemptId: text("attempt_id").notNull(),
+    expectedHead: text("expected_head").notNull(),
+    approverDeviceId: text("approver_device_id").notNull(),
+    targetJson: text("target_json").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    transcriptHash: text("transcript_hash"),
+    outcomeHash: text("outcome_hash"),
+    outcomeJson: text("outcome_json")
+  },
+  (table) => [primaryKey({ columns: [table.groupId, table.attemptId] })]
+);
+
+export const peerOnlineSessions = pgTable(
+  "peer_online_sessions",
+  {
+    groupId: text("group_id")
+      .notNull()
+      .references(() => peerOnlineMembershipGroups.groupId),
+    sessionKey: text("session_key").notNull(),
+    bindingHash: text("binding_hash").notNull(),
+    binding: text("binding").notNull(),
+    deletionHash: text("deletion_hash"),
+    deletion: text("deletion"),
+    checkpointSequence: text("checkpoint_sequence"),
+    checkpointHash: text("checkpoint_hash")
+  },
+  (table) => [primaryKey({ columns: [table.groupId, table.sessionKey] })]
+);
+
+export const peerOnlineCheckpoints = pgTable(
+  "peer_online_checkpoints",
+  {
+    groupId: text("group_id").notNull(),
+    sessionKey: text("session_key").notNull(),
+    sequence: text("sequence").notNull(),
+    hash: text("hash").notNull(),
+    envelope: text("envelope").notNull(),
+    payload: text("payload").notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.groupId, table.sessionKey, table.sequence] }),
+    foreignKey({
+      columns: [table.groupId, table.sessionKey],
+      foreignColumns: [
+        peerOnlineSessions.groupId,
+        peerOnlineSessions.sessionKey
+      ]
+    })
+  ]
+);
+
+export const peerOnlineDeletionOutbox = pgTable(
+  "peer_online_deletion_outbox",
+  {
+    groupId: text("group_id").notNull(),
+    sessionKey: text("session_key").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    localSessionId: uuid("local_session_id").notNull(),
+    preparedDeletion: text("prepared_deletion"),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({ columns: [table.groupId, table.sessionKey] }),
+    foreignKey({
+      columns: [table.groupId, table.sessionKey],
+      foreignColumns: [
+        peerOnlineSessions.groupId,
+        peerOnlineSessions.sessionKey
+      ]
+    }),
+    foreignKey({
+      columns: [table.localSessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId]
+    }),
+    unique().on(table.ownerUserId, table.localSessionId)
+  ]
+);
+
+export const peerOnlineReplicas = pgTable(
+  "peer_online_replicas",
+  {
+    groupId: text("group_id").notNull(),
+    sessionKey: text("session_key").notNull(),
+    bindingHash: text("binding_hash").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    localSessionId: uuid("local_session_id").notNull(),
+    checkpointSequence: text("checkpoint_sequence").notNull(),
+    checkpointHash: text("checkpoint_hash").notNull(),
+    itemCount: integer("item_count").notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.groupId, table.sessionKey] }),
+    foreignKey({
+      columns: [table.groupId, table.sessionKey],
+      foreignColumns: [
+        peerOnlineSessions.groupId,
+        peerOnlineSessions.sessionKey
+      ]
+    }),
+    foreignKey({
+      columns: [table.localSessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId]
+    }),
+    unique().on(table.localSessionId),
+    check("peer_online_replicas_item_count_check", sql`${table.itemCount} >= 0`)
+  ]
+);
+
+export const peerOnlineSourceItems = pgTable(
+  "peer_online_source_items",
+  {
+    groupId: text("group_id").notNull(),
+    sessionKey: text("session_key").notNull(),
+    sourceOrdinal: integer("source_ordinal").notNull(),
+    sourceDigest: text("source_digest").notNull(),
+    conversationItemId: uuid("conversation_item_id")
+      .notNull()
+      .references(() => conversationItems.id)
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.groupId, table.sessionKey, table.sourceOrdinal]
+    }),
+    foreignKey({
+      columns: [table.groupId, table.sessionKey],
+      foreignColumns: [
+        peerOnlineReplicas.groupId,
+        peerOnlineReplicas.sessionKey
+      ]
+    }),
+    unique().on(table.conversationItemId),
+    check(
+      "peer_online_source_items_ordinal_check",
+      sql`${table.sourceOrdinal} >= 0`
+    )
+  ]
+);
+
 export const visibilityScope = pgEnum("visibility_scope", ["personal"]);
 export const sourceRuntime = pgEnum("source_runtime", [
   "codex",

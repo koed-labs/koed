@@ -1,6 +1,9 @@
 # Same-Network Personal Device Enrollment
 
 Status: Accepted, amended by current capability-pairing policy below.
+[ADR 0066](./0066-peer-online-personal-device-sync.md) supersedes conflicting
+enrollment requirements for its separately versioned peer-online profile only;
+this decision remains in force for PDS V1.
 
 Related decisions:
 

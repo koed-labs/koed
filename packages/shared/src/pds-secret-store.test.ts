@@ -49,6 +49,23 @@ describe("application-managed PDS secret store", () => {
     expect(store.get("pds-runtime")).toBeNull();
   });
 
+  it("supports read-only access without creating directories or allowing writes", () => {
+    const root = createRoot();
+    const readonly = createPdsApplicationSecretStore({
+      rootPath: root,
+      readOnly: true
+    });
+    expect(() => readonly.get("pds-runtime")).toThrow();
+    expect(() => lstatSync(join(root, "secrets"))).toThrow();
+    expect(() => readonly.put("pds-runtime", "secret")).toThrow("read-only");
+    expect(() => readonly.delete("pds-runtime")).toThrow("read-only");
+    createPdsApplicationSecretStore({ rootPath: root }).put(
+      "pds-runtime",
+      "secret"
+    );
+    expect(readonly.get("pds-runtime")).toBe("secret");
+  });
+
   it("enforces reference and value bounds", () => {
     const store = createPdsApplicationSecretStore({ rootPath: createRoot() });
     expect(() => store.get("not a reference")).toThrow("reference is invalid");

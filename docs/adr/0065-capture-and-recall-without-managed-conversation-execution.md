@@ -8,7 +8,7 @@ Related decisions:
 - [0015 Managed Conversation Execution and Realtime](./0015-managed-conversation-execution-and-realtime.md)
 - [0016 Exclusive Execution Handoff and Fork Lineage](./0016-exclusive-execution-handoff-and-fork-lineage.md)
 - [0034 Conversation Presentation Lifecycle](./0034-conversation-presentation-lifecycle.md)
-- [0066 Peer-Online Personal Device Sync and Group Governance](./0066-peer-online-personal-device-sync.md) (Proposed)
+- [0066 Peer-Online Personal Device Sync and Group Governance](./0066-peer-online-personal-device-sync.md) (Accepted)
 
 ## Context
 
@@ -33,7 +33,7 @@ Managed Conversation execution-specific requirements in dependent decisions, inc
 - Existing code and documentation may still implement or describe Managed Conversations. This decision does not claim that routes, background work, UI, stored data, or deployment behavior have already changed.
 - Plan and implement retirement separately, including treatment of existing Conversations, retained Memory, in-flight or persisted executions and handoffs, and compatibility. Do not discard User data merely to enact this decision.
 - Review execution-dependent ADRs and implementation without removing independent capture, organization, source provenance, Recall, or access-control functionality.
-- ADR 0066 proposes a separate peer-online profile. It depends on this product boundary but remains Proposed; accepted PDS V1 decisions and behavior continue until explicitly changed.
+- ADR 0066 accepts a separate peer-online profile that depends on this product boundary. It is not yet implemented; PDS V1 decisions and behavior continue for V1 until a separately specified cutover.
 
 ## Alternatives
 

@@ -1,4 +1,5 @@
 import { registerPersonalSyncCommands } from "./cli-personal-sync.js";
+import { registerPeerOnlineCommands } from "./cli-peer-online.js";
 import { registerRemoteCommands } from "./cli-remote.js";
 import {
   registerInternalCommands,
@@ -73,6 +74,9 @@ export const runCommandTree = async (
     exitCode = code;
   });
   registerRemoteCommands(program, dependencies, (code) => {
+    exitCode = code;
+  });
+  registerPeerOnlineCommands(program, dependencies, (code) => {
     exitCode = code;
   });
   registerPersonalSyncCommands(

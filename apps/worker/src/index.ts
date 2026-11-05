@@ -51,6 +51,7 @@ import {
 import { createReloadablePdsWorkerRuntimeFromEnvironment } from "./personal-device-sync-runtime.js";
 import { createConversationSourceReplicationService } from "./conversation-source-replication-service.js";
 import { createManagedConversationRuntimeCoordinator } from "./managed-conversation-runtime-coordinator.js";
+import { createManagedConversationServiceForWorker } from "./managed-conversation-availability.js";
 import { createSharedMemoryEmbeddingService } from "./shared-memory-embedding-service.js";
 import {
   createPrivacyMaterializationService,
@@ -449,45 +450,48 @@ const sharedMemoryPrivacyMaterializationService =
         logger
       })
     : null;
-const workerDeviceIdentity = inspectDeviceIdentityAtKoedHome({
-  koedHome: workerEnv.koedHome,
-  environment: process.env
-});
-const managedConversationLocalOwnerUserId =
-  workerEnv.managedConversationApiUrl && workerEnv.managedConversationApiToken
-    ? await new MemoryApiClient({
-        apiUrl: workerEnv.managedConversationApiUrl,
-        apiToken: workerEnv.managedConversationApiToken,
-        requestTimeoutMs: 30_000
-      })
-        .accessCheck()
-        .then((access) => access.user.id)
-        .catch(() => null)
-    : null;
 const managedConversationService =
-  repository &&
-  pool &&
-  envelopeEncryptionProvider &&
-  managedConversationLocalOwnerUserId &&
-  workerEnv.managedConversationApiUrl &&
-  workerEnv.managedConversationApiToken &&
-  workerDeviceIdentity.health === "healthy" &&
-  workerDeviceIdentity.deviceInstanceId &&
-  workerDeviceIdentity.deploymentId
-    ? createManagedConversationRuntimeCoordinator({
-        localRepository: repository,
-        localOwnerUserId: managedConversationLocalOwnerUserId,
-        apiUrl: workerEnv.managedConversationApiUrl,
-        apiToken: workerEnv.managedConversationApiToken,
-        appServerBinary: workerEnv.managedConversationAppServerBinary,
-        koedHome: workerEnv.koedHome,
-        envelopeEncryptionProvider,
-        commandWakePool: notificationPool!,
-        deviceId: workerDeviceIdentity.deviceInstanceId,
-        deploymentId: workerDeviceIdentity.deploymentId,
-        logger
-      })
-    : null;
+  await createManagedConversationServiceForWorker(async () => {
+    const workerDeviceIdentity = inspectDeviceIdentityAtKoedHome({
+      koedHome: workerEnv.koedHome,
+      environment: process.env
+    });
+    const managedConversationLocalOwnerUserId =
+      workerEnv.managedConversationApiUrl &&
+      workerEnv.managedConversationApiToken
+        ? await new MemoryApiClient({
+            apiUrl: workerEnv.managedConversationApiUrl,
+            apiToken: workerEnv.managedConversationApiToken,
+            requestTimeoutMs: 30_000
+          })
+            .accessCheck()
+            .then((access) => access.user.id)
+            .catch(() => null)
+        : null;
+    return repository &&
+      pool &&
+      envelopeEncryptionProvider &&
+      managedConversationLocalOwnerUserId &&
+      workerEnv.managedConversationApiUrl &&
+      workerEnv.managedConversationApiToken &&
+      workerDeviceIdentity.health === "healthy" &&
+      workerDeviceIdentity.deviceInstanceId &&
+      workerDeviceIdentity.deploymentId
+      ? createManagedConversationRuntimeCoordinator({
+          localRepository: repository,
+          localOwnerUserId: managedConversationLocalOwnerUserId,
+          apiUrl: workerEnv.managedConversationApiUrl,
+          apiToken: workerEnv.managedConversationApiToken,
+          appServerBinary: workerEnv.managedConversationAppServerBinary,
+          koedHome: workerEnv.koedHome,
+          envelopeEncryptionProvider,
+          commandWakePool: notificationPool!,
+          deviceId: workerDeviceIdentity.deviceInstanceId,
+          deploymentId: workerDeviceIdentity.deploymentId,
+          logger
+        })
+      : null;
+  });
 const activeBackgroundServices = startWorkerBackgroundServices({
   teamCollaborationEnabled: workerEnv.teamCollaborationEnabled,
   personal: [

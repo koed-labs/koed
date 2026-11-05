@@ -2023,3 +2023,56 @@ export type {
 } from "./team-sharing-review-contract.js";
 
 export { transferredSelectionSharingScopeSchema } from "./selection-sharing-journal.js";
+export {
+  derivePeerSessionKey,
+  validatePeerOnlineBinding,
+  validatePeerOnlineDeletion
+} from "./peer-online-deletion.js";
+export {
+  signPeerOnlineCheckpoint,
+  verifyPeerOnlineCheckpoint
+} from "./peer-online-checkpoint.js";
+export type {
+  PeerOnlineCheckpointInput,
+  VerifiedPeerOnlineCheckpoint
+} from "./peer-online-checkpoint.js";
+export {
+  encryptPeerOnlinePayload,
+  decryptPeerOnlinePayload
+} from "./peer-online-payload.js";
+export type {
+  PeerOnlinePayloadAuthority,
+  PeerOnlinePayloadRecipient
+} from "./peer-online-payload.js";
+export {
+  PEER_ONLINE_SESSION_SNAPSHOT_PROTOCOL,
+  PEER_ONLINE_SESSION_SNAPSHOT_MAX_ITEMS,
+  encodePeerOnlineSessionSnapshot,
+  parsePeerOnlineSessionSnapshot
+} from "./peer-online-session-snapshot.js";
+export type {
+  PeerOnlineSessionSnapshot,
+  PeerOnlineSessionSnapshotItem
+} from "./peer-online-session-snapshot.js";
+export {
+  derivePeerOnlineSourceIdentityCommitment,
+  hashPeerOnlineCheckpointEnvelope,
+  sealPeerOnlineCheckpoint,
+  signPeerOnlineBinding
+} from "./peer-online-producer.js";
+export type { PeerSessionIdentity } from "./peer-online-deletion.js";
+
+export {
+  PEER_MEMBERSHIP_PROTOCOL,
+  isValidPeerEd25519PublicKey,
+  initializePeerMembership,
+  applyPeerMembership,
+  inspectPeerMembership,
+  lookupHistoricalPeerMember
+} from "./peer-online-membership.js";
+export type {
+  PeerMembershipAnchor,
+  PeerMembershipMember,
+  PeerMembershipResult,
+  PeerMembershipState
+} from "./peer-online-membership.js";

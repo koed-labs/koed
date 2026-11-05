@@ -680,20 +680,9 @@ export const buildCapabilitiesResponse = (
       (config.applicationLayerEncryption === "unavailable"
         ? ("unavailable" as const)
         : ("available" as const)),
-    managedConversations:
-      config.applicationLayerEncryption !== "unavailable"
-        ? (config.managedConversations ?? ("available" as const))
-        : ("unavailable" as const),
-    managedDevelopmentPreviews:
-      ["developer", "local_personal"].includes(config.deploymentProfile) &&
-      config.applicationLayerEncryption !== "unavailable"
-        ? ("available" as const)
-        : ("unavailable" as const),
-    managedSourceControl:
-      ["developer", "local_personal"].includes(config.deploymentProfile) &&
-      config.applicationLayerEncryption !== "unavailable"
-        ? ("available" as const)
-        : ("unavailable" as const),
+    managedConversations: "unavailable" as const,
+    managedDevelopmentPreviews: "unavailable" as const,
+    managedSourceControl: "unavailable" as const,
     personalDeviceSync: config.personalDeviceSync ?? ("unavailable" as const),
     memoryInbox: "unavailable" as const
   };

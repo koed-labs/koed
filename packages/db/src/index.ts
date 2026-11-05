@@ -1,4 +1,5 @@
 export { createAuditRepository } from "./audit-repository.js";
+export { createPeerOnlineFloorRepository } from "./peer-online-floor-repository.js";
 export {
   createSelectionSharingReconciliation,
   type SelectionSharingInventoryReader
@@ -282,6 +283,7 @@ export {
   type PdsRelayDeviceReadiness,
   type PersonalDeviceSyncRelayRepository
 } from "./personal-device-sync-relay-repository.js";
+export { createPeerOnlineMembershipRepository } from "./peer-online-membership-repository.js";
 export {
   createPersonalDeviceSyncLifecycleRepository,
   type PersonalDeviceSyncLifecycleRepository

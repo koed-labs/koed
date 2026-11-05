@@ -1089,6 +1089,18 @@ export const registerLocalEdgeRoutes = (
       assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
       const repo = requireRepository();
       const input = localEdgeUpstreamOperationSchema.parse(request.body);
+      if (
+        input.operation_family === "managed_execution" ||
+        input.operation_family === "managed_file_read" ||
+        input.operation_family === "managed_terminal"
+      ) {
+        throw Object.assign(
+          new Error("Managed Conversation execution is disabled"),
+          {
+            statusCode: 403
+          }
+        );
+      }
       if (input.operation_family === "memory_answer_execution")
         throw Object.assign(
           new Error("Use the scoped Memory Answer task routes"),

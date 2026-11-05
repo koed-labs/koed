@@ -1,6 +1,7 @@
 # Peer-Online Personal Device Sync and Group Governance
 
-Status: Proposed.
+Status: Accepted. This decision selects a separately versioned peer-online
+profile; it does not mean the profile is implemented or available.
 
 Related decisions:
 
@@ -39,7 +40,7 @@ not independent peer governance. In particular, ADRs 0012 and 0041 require the
 Authority/Relay for their existing profile. Equal data-plane participation does
 not currently make group governance independent of that host.
 
-## Proposed Direction
+## Decision
 
 In line with ADR 0065, AI Clients create and continue Conversations outside Koed;
 this profile synchronizes eligible captured Memory rather than managing their
@@ -83,7 +84,7 @@ contain reusable group credentials. Scanning a link does not by itself make a
 mobile client a replica.
 
 If one installation is permanently lost, a surviving trusted installation
-can help the User pair a replacement. The initial version does not provide
+can help the User pair a replacement while the group is unconflicted. The initial version does not provide
 separate group recovery material: if all trusted installations are lost, the
 group cannot be recovered. This does not transfer authorship of an existing
 Session or recover data that existed only on a lost installation. Restoring old
@@ -94,7 +95,9 @@ to detect every restored backup automatically.
 Separate the synchronization contract from connection establishment. First
 validate local and Tailscale connectivity; later add internet pairing and a
 protected relay transport without changing the meaning of the replicated
-records. A protected channel alone does not establish group membership or
+records. Relay v2 is the intended starting point for that later transport,
+subject to security and lifecycle validation; its prototype is not production
+integration. A protected channel alone does not establish group membership or
 authorize a mobile client.
 
 The User can revoke an installation from any one remaining trusted
@@ -106,17 +109,35 @@ revoked installation must pair again as a new device rather than silently
 regain access. Revocation cannot erase data or credentials already obtained by
 that device.
 
-Admission and revocation by one trusted installation do not settle propagation
-of approvals, the effect of a subsequent revocation of the approving
-installation, conflicting changes, key rotation, or fencing. These require
-specification before implementation. Permanently unavailable members need an
-explicit recovery path.
+If conflicting membership changes are detected, fail closed: each installation
+pauses Memory synchronization for the whole group when it learns valid conflict
+evidence. Offline or unaware installations cannot pause until they learn of it.
+Do not automatically choose or merge either change. A peer that is merely behind is
+not, by itself, a conflict and should catch up after its history is validated.
+Local capture and Recall remain available, and safe conflict evidence is
+retained. The initial release does not resolve membership conflicts in place;
+synchronization remains paused. Recovery through a new group and re-pairing is
+a later feature, not an automatic fallback. A future resolution design must
+retain every valid revocation observed on any conflicting branch, require fresh
+User approval for conflicting admissions, and not silently restore a revoked
+device. The User may authorize a resolution only from an installation that was
+trusted before the histories diverged and has not been revoked on any validated
+branch. The initial protocol must define conflict detection, validation of
+revocations and status without relying on that future resolution process.
+
+Revoking an installation does not undo admissions it validly approved before
+the revocation. It prevents future approvals; concurrent or disputed approvals
+follow the fail-closed conflict process. Propagation of approvals, causal
+ordering, key rotation, and fencing require specification before implementation.
+Handling permanently unavailable members requires a separately designed recovery
+path.
 
 ## Consequences and Required Invariants
 
 - Each installation retains durable local work while peers are unavailable.
-  Exchange must resume safely and applying the same change repeatedly must be
-  idempotent. A session not yet exchanged can be lost with its only copy.
+  After recoverable interruptions, exchange must resume safely, and applying the
+  same change repeatedly must be idempotent. Membership conflicts remain paused
+  as described above. A session not yet exchanged can be lost with its only copy.
 - Detected identity, origin, signature, sequence, closure, checkpoint-prefix,
   or immutable-record mismatches fail closed: do not silently overwrite or
   merge conflicting source data, project it as valid, advance a success cursor,
@@ -173,11 +194,11 @@ equal offline-replica requirement.
 
 ## Open Design and Validation Work
 
-Before accepting this decision or implementing a new governance profile, specify
-and review:
+Before implementing the new governance profile, specify and review:
 
-1. Membership authorization, concurrent offline decisions, conflict handling,
-   revocation, recovery proof, and fencing of an old Authority or device.
+1. Membership authorization, concurrent offline decisions, fail-closed conflict
+   detection, revocation, and fencing of an old Authority or device. Recovery
+   from a membership conflict is deferred to a later feature.
 2. Deletion authorization, offline intent, acknowledgements, retained deletion
    floors, stale-backup handling, and the meaning of completed deletion.
 3. Which Captured Sessions and checkpoints are eligible, whether historical
@@ -192,10 +213,16 @@ and review:
    installations. Synthetic tests alone are not evidence of end-to-end AI
    Client capture.
 
-Until a successor decision and protocol are accepted, ADRs 0012, 0019, 0041,
-0045 and the PDS V1 protocol remain in force. In particular, V1's cross-origin
-convergence and Authority/Relay requirements are not changed by this proposal.
-If this profile is accepted, explicitly amend or supersede conflicting
-requirements for that profile, including identity and deletion implications,
-and define authenticated version negotiation and cutover. Update the protocol
-and operational documentation as part of implementation.
+For the peer-online profile only, this decision supersedes conflicting
+requirements in ADRs 0012, 0019 and 0041 for fixed Authority/Relay governance,
+a durable mailbox, V1 enrollment and recovery, and cross-origin convergence,
+including the associated V1 identity and deletion requirements. ADR 0045's
+checkpoint ordering, integrity and read-only receiver requirements remain
+applicable where checkpoints are supported; eligibility remains open.
+
+Existing PDS V1 requirements and behavior remain in force for V1 until a
+separately specified, authenticated upgrade or cutover is implemented. This
+decision does not silently change V1. Independent consent, security,
+provenance, capture, Team access and lifecycle requirements remain applicable
+unless explicitly changed. Define authenticated version negotiation and cutover,
+and update protocol and operational documentation as part of implementation.

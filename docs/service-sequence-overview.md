@@ -6,10 +6,12 @@ the backend stores, projects, embeds, and retrieves memory, while the connected
 AI Client performs Answer Synthesis and creates LCM Summaries through the Local
 AI Runtime.
 
-Sections describing Managed Conversation execution reflect existing implementation,
-not current product direction. [ADR 0065](adr/0065-capture-and-recall-without-managed-conversation-execution.md)
-removes Koed-managed Conversation execution from scope; retirement and a detailed
-documentation inventory remain follow-up work.
+Sections describing Managed Conversation execution below are historical: the
+server no longer registers its managed execution, runner, or source-control
+routes, and the worker does not start its managed coordinator. Managed terminal
+WebTransport admission is also disabled. The implementation remains in the
+repository, but is not available in this build. [ADR 0065](adr/0065-capture-and-recall-without-managed-conversation-execution.md)
+defines the product boundary; a detailed documentation inventory remains follow-up work.
 
 ## Services In Scope
 

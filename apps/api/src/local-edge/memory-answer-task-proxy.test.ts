@@ -16,7 +16,13 @@ vi.mock("@koed/shared", async (original) => ({
     operationFamilies:
       authorization === "Koed-Device execution-only:secret"
         ? ["memory_answer_execution"]
-        : ["memory_answer_execution", "team_workspace_read"]
+        : [
+            "memory_answer_execution",
+            "team_workspace_read",
+            "managed_execution",
+            "managed_file_read",
+            "managed_terminal"
+          ]
   })
 }));
 vi.mock("./upstream-routing.js", async (original) => ({
@@ -29,7 +35,10 @@ vi.mock("./upstream-routing.js", async (original) => ({
         id: "team",
         baseUrl: "https://team.example.test",
         profile: "private_vps",
-        routePolicy: { memoryAnswerExecution: "enabled" },
+        routePolicy: {
+          memoryAnswerExecution: "enabled",
+          managedExecution: "enabled"
+        },
         credential: { status: "configured" },
         capabilities: {
           state: "validated",
@@ -61,6 +70,11 @@ const fixture = () => {
   const fetch = vi.fn(
     async (_url: string | URL | Request, options?: RequestInit) => {
       const headers = new Headers(options?.headers);
+      if (String(_url).includes("/v1/managed-conversations")) {
+        return new Response(JSON.stringify({ accepted: true }), {
+          headers: { "content-type": "application/json" }
+        });
+      }
       expect(headers.get("authorization")).toBe(
         "Bearer broader-upstream-credential"
       );
@@ -110,6 +124,36 @@ const fixture = () => {
     });
   return { app, fetch, request };
 };
+
+describe("managed Conversation proxy disablement", () => {
+  it.each([
+    ["managed_execution", "POST", "/v1/managed-conversations"],
+    ["managed_file_read", "GET", "/v1/managed-conversations/session/files"],
+    ["managed_terminal", "POST", "/v1/managed-conversations/session/terminals"]
+  ])(
+    "rejects %s before contacting an upstream",
+    async (family, method, path) => {
+      const { app, fetch } = fixture();
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/local-edge/upstream-operations",
+        headers: { authorization: "Koed-Device team-only:secret" },
+        payload: {
+          upstream_backend_id: "team",
+          operation_family: family,
+          requested_mode: "live_upstream_proxy",
+          method,
+          path
+        }
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().message).toBe(
+        "Managed Conversation execution is disabled"
+      );
+      expect(fetch).not.toHaveBeenCalled();
+    }
+  );
+});
 
 describe("Team-only native Memory Answer task proxy", () => {
   it("narrows all target operations and cleanup despite broader stored upstream authority", async () => {

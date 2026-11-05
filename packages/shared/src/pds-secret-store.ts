@@ -24,6 +24,7 @@ export interface PdsApplicationSecretStoreOptions {
   storeFilename?: string;
   keyFilename?: string;
   dependencies?: EncryptedStateTransactionDeps;
+  readOnly?: boolean;
 }
 
 export interface PdsApplicationSecretStore {
@@ -132,11 +133,13 @@ const assertPrivatePathAncestry = (path: string): void => {
   }
 };
 
-const assertPrivateDirectory = (path: string): void => {
-  try {
-    mkdirSync(path, { recursive: true, mode: 0o700 });
-  } catch {
-    throw new Error("PDS secret store directory is unsafe.");
+const assertPrivateDirectory = (path: string, readOnly = false): void => {
+  if (!readOnly) {
+    try {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    } catch {
+      throw new Error("PDS secret store directory is unsafe.");
+    }
   }
   assertPrivatePathAncestry(path);
   const stat = lstatSync(path);
@@ -182,10 +185,13 @@ const assertPrivateFile = (
   }
 };
 
-const assertSafePaths = (paths: PdsApplicationSecretStorePaths): void => {
+const assertSafePaths = (
+  paths: PdsApplicationSecretStorePaths,
+  readOnly = false
+): void => {
   assertSupportedPlatform();
-  assertPrivateDirectory(dirname(paths.storePath));
-  assertPrivateDirectory(dirname(paths.keyPath));
+  assertPrivateDirectory(dirname(paths.storePath), readOnly);
+  assertPrivateDirectory(dirname(paths.keyPath), readOnly);
   assertPrivateFile(paths.storePath, MAX_SECRET_STORE_BYTES);
   assertPrivateFile(paths.keyPath, 256);
   assertPrivateFile(`${paths.storePath}.lock`, 1_024);
@@ -286,7 +292,7 @@ export const createPdsApplicationSecretStore = (
   return {
     get(reference) {
       assertReference(reference);
-      assertSafePaths(paths);
+      assertSafePaths(paths, input.readOnly);
       const state = transaction.read();
       if (!Object.hasOwn(state.secrets, reference)) return null;
       const envelope = state.secrets[reference];
@@ -306,6 +312,7 @@ export const createPdsApplicationSecretStore = (
       }
     },
     put(reference, value) {
+      if (input.readOnly) throw new Error("PDS secret store is read-only.");
       assertReference(reference);
       assertValue(value);
       assertSafePaths(paths);
@@ -342,6 +349,7 @@ export const createPdsApplicationSecretStore = (
       });
     },
     delete(reference) {
+      if (input.readOnly) throw new Error("PDS secret store is read-only.");
       assertReference(reference);
       assertSafePaths(paths);
       transaction.mutate({

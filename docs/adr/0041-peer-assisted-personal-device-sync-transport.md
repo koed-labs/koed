@@ -1,6 +1,8 @@
 # Peer-Assisted Personal Device Sync Transport
 
-Status: Accepted.
+Status: Accepted. [ADR 0066](./0066-peer-online-personal-device-sync.md)
+supersedes conflicting requirements for its separately versioned peer-online
+profile only; this decision remains in force for PDS V1.
 
 Related decisions:
 

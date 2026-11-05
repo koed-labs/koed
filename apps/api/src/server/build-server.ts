@@ -138,10 +138,9 @@ import {
 import {
   createManagedDevelopmentPreviewRuntime,
   createManagedTerminalRuntime,
-  createManagedTerminalWebTransportHandler,
-  registerManagedConversationRoutes,
-  registerManagedConversationRunnerRoutes
+  createManagedTerminalWebTransportHandler
 } from "../managed-conversations/index.js";
+import { managedInteractiveHandlers } from "../managed-conversations/interactive-availability.js";
 import {
   createCollaborationAdmissionController,
   createCollaborationRealtimeService,
@@ -202,10 +201,7 @@ import { registerRemoteMcpRoutes } from "./remote-mcp.js";
 import { supportsWorkos } from "./capabilities.js";
 import type { ApiRouteContext } from "./context.js";
 import { registerTeamCollaborationFeatureGate } from "./team-collaboration-feature.js";
-import {
-  createSourceControlRuntime,
-  registerSourceControlRoutes
-} from "../source-control/index.js";
+import { createSourceControlRuntime } from "../source-control/index.js";
 
 export {
   canReceiveGraphStreamPayload,
@@ -1753,12 +1749,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         tlsKey,
         admissionService: realtimeTransportAdmissionService,
         durableAdapter,
-        interactiveHandlers: new Map([
-          [
-            "managed_terminal",
-            createManagedTerminalWebTransportHandler(managedTerminalRuntime)
-          ]
-        ]),
+        interactiveHandlers: managedInteractiveHandlers(() =>
+          createManagedTerminalWebTransportHandler(managedTerminalRuntime)
+        ),
         maxSessions: webTransport.maxSessions,
         maxStreamsPerSession: webTransport.maxStreamsPerSession,
         maxDatagramBytes: webTransport.maxDatagramBytes,
@@ -2043,9 +2036,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerCrossIdentitySyncRoutes(app, routeContext);
   registerConversationSourceReplicationRoutes(app, routeContext);
   registerConversationSourceRestoreRoutes(app, routeContext);
-  registerManagedConversationRoutes(app, routeContext);
-  registerSourceControlRoutes(app, routeContext);
-  registerManagedConversationRunnerRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);

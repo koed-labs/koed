@@ -17,3 +17,15 @@ pnpm --filter @koed/db exec vitest run tests/personal-peer-lifecycle.test.ts tes
 ```
 
 The databases must have different database names, even if they are on different servers. The database suite skips if either URL is absent; a skipped run is not validation. Migrations are applied to both databases, and test rows are retained; do not point it at production or valued data.
+
+## Membership history experiment
+
+A separate, test-only peer membership model exercises a supplied trust anchor, signed history, authorization at each parent, and fail-closed fork and resource-limit latches. It is not wired into the PDS lifecycle fixture above or into production sync. A disposable PostgreSQL fixture tests replay through a fresh connection pool, transaction rollback, and concurrent sibling writers; it does not test process or database crashes, actual pairing, sync fencing, key distribution, or recovery. The test fixture creates and drops its own uniquely named schema, not production tables.
+
+```sh
+pnpm --filter @koed/shared exec vitest run src/peer-membership-history.test.ts
+PEER_MEMBERSHIP_EVIDENCE_DATABASE_URL=postgresql:///peer_evidence_disposable \
+  pnpm --filter @koed/db exec vitest run tests/peer-membership-evidence.test.ts
+```
+
+Use a disposable database. The PostgreSQL test skips without its environment variable; a skipped run does not verify persistence.
