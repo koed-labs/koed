@@ -325,13 +325,32 @@ export const stopKoedServer = ({
         "Supervisor identity changed during stop; refusing fallback signals"
     });
   };
+  // A supervisor that crashed or was killed cannot vouch for its children, so
+  // stop never signals them. When every recorded child has also exited there is
+  // nothing to signal, and stop continues to clean up the dead runtime's records.
+  let supervisorExitChecked = false;
+  const noteExitedSupervisor = (): void => {
+    if (supervisorExitChecked) return;
+    supervisorExitChecked = true;
+    for (const [name, pid] of Object.entries(runtime.processes ?? {})) {
+      if (typeof pid !== "number" || pid <= 0) continue;
+      if (checkPid(pid))
+        errors.push({
+          target: `${name} (${pid})`,
+          error:
+            "Supervisor exited; refusing to signal a recorded child without supervisor identity"
+        });
+      else missingPids.push(pid);
+    }
+  };
   const canSignalFallbackProcesses = (): boolean => {
     if (!supervisorLockMatches) return false;
     if (
       expectedSupervisorIdentity &&
       !isExpectedSupervisorRunning(expectedSupervisorIdentity)
     ) {
-      markSupervisorIdentityUnverified();
+      if (runtime.pid > 0 && !checkPid(runtime.pid)) noteExitedSupervisor();
+      else markSupervisorIdentityUnverified();
       return false;
     }
     return true;

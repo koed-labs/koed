@@ -1,9 +1,10 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { stopKoedServer } from "./stop.js";
+import { resolveKoedRuntimeOwner } from "./app-runtime.js";
 import {
   resolveDesktopRuntimeOwner,
   verifyDesktopRuntimeBundle
@@ -718,6 +719,74 @@ describe("stopKoedServer", () => {
     });
 
     expect(targets).toEqual([11, 10, 13]);
+  });
+
+  describe("after a supervisor crash with a generation pin", () => {
+    const crashedHome = () => {
+      const koedHome = makeHome();
+      mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });
+      const supervisor = 999_991;
+      writeRuntime(
+        koedHome,
+        runtime({
+          pid: supervisor,
+          processes: { api: 999_992, worker: 999_993 }
+        })
+      );
+      writeFileSync(
+        resolve(koedHome, "run", "koed-server.lock"),
+        JSON.stringify({ pid: supervisor, processIdentity: "crashed" })
+      );
+      writeFileSync(
+        resolve(koedHome, "run", "runtime-generation.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          generationId: "a".repeat(64),
+          pid: supervisor,
+          processIdentity: "crashed",
+          startedAt: runtime().startedAt,
+          owner: resolveKoedRuntimeOwner(),
+          pinToken: "b".repeat(64)
+        })
+      );
+      return koedHome;
+    };
+    const lock = (koedHome: string) =>
+      resolve(koedHome, "run", "koed-server.lock");
+
+    it("clears the dead runtime's records when every recorded child exited", () => {
+      const koedHome = crashedHome();
+      const signals: number[] = [];
+
+      const result = stopKoedServer({
+        environment: { KOED_HOME: koedHome },
+        kill: (pid) => signals.push(pid),
+        checkPid: () => false
+      });
+
+      expect(result).toMatchObject({ ok: true, state: "healthy" });
+      expect(signals).toEqual([]);
+      expect(existsSync(lock(koedHome))).toBe(false);
+      expect(
+        existsSync(resolve(koedHome, "run", "runtime-generation.json"))
+      ).toBe(false);
+    });
+
+    it("refuses to signal a live recorded child and keeps the records", () => {
+      const koedHome = crashedHome();
+      const signals: number[] = [];
+
+      const result = stopKoedServer({
+        environment: { KOED_HOME: koedHome },
+        kill: (pid) => signals.push(pid),
+        checkPid: (pid) => pid === 999_992
+      });
+
+      expect(result.state).toBe("needs_attention");
+      expect(signals).toEqual([]);
+      expect(result.errors?.[0]?.target).toBe("api (999992)");
+      expect(existsSync(lock(koedHome))).toBe(true);
+    });
   });
 
   it("does not stop external dependency services", () => {
