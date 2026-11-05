@@ -173,13 +173,17 @@ export const collectLocalModelStatus = async (
   const mode = dependencyMode(environment);
   const file = statSync(manifest.modelPath, { throwIfNoEntry: false });
   if (!file) {
-    if (lstatSync(manifest.modelPath, { throwIfNoEntry: false }))
-      throw new Error(
-        "The installed model path does not resolve to a regular file."
-      );
+    // A dangling link (for example after its target was cleaned up) is reported
+    // as missing so status and device-only validation keep working. Installation
+    // replaces the link itself.
+    const dangling = lstatSync(manifest.modelPath, {
+      throwIfNoEntry: false
+    })?.isSymbolicLink();
     return {
       state: "missing",
-      message: `${manifest.key} model is not installed at ${manifest.modelPath}.`,
+      message: dangling
+        ? `${manifest.key} model link at ${manifest.modelPath} points to a missing file.`
+        : `${manifest.key} model is not installed at ${manifest.modelPath}.`,
       action:
         mode === "external"
           ? modelDownloadBlockedAction(manifest)
