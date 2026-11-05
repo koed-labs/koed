@@ -166,7 +166,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
       canonicalAdvertisement: rawBody(request as RawRequest).toString("utf8"),
       canonicalRequestProof: input.canonicalProof
     });
-    return { accepted: true };
+    return { accepted: true, extensionNonce: input.proof.nonce };
   });
   app.get(
     PDS_CONFIGURATION_CAPABILITY_PATH,
@@ -176,9 +176,13 @@ export const registerPersonalDeviceSyncRelayRoutes = (
         throw error("Personal Device Sync relay is unavailable", 503);
       const input = await authenticate(request as RawRequest, context);
       return {
-        capabilities: await input.relay.listPdsConfigurationCapabilities(
-          input.auth
-        )
+        capabilities: await input.relay.listPdsConfigurationCapabilities({
+          ...input.auth,
+          includeExtended:
+            new URL(request.url, "http://koed.local").searchParams.get(
+              "extended"
+            ) === "1"
+        })
       };
     }
   );

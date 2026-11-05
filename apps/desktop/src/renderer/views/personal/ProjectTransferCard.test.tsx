@@ -205,12 +205,17 @@ function fixture({
     if (input.action === "apply_sources") {
       const before = catalog;
       try {
-        for (const change of input.changes)
+        for (const change of input.changes) {
+          if (change.action === "set_details")
+            throw new Error(
+              "Unexpected Project details edit during a transfer."
+            );
           await execute({
             ...change,
             projectId: input.projectId,
             expectedVersion: catalog.at(-1)!.namedProject!.version
           });
+        }
         return { project: catalog.at(-1)!.namedProject! };
       } catch (error) {
         catalog = before;

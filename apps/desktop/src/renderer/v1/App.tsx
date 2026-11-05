@@ -1159,8 +1159,6 @@ export function V1App({
           {projectManagement.overlays}
           {settingsOpen && (
             <V1Settings
-              agent={agent}
-              onSaveAgent={onSaveAgent}
               statusStore={statusStore}
               themeStore={themeStore}
               onClose={() => setSettingsOpen(false)}

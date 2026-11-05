@@ -18,6 +18,12 @@ import {
   excludedMembership
 } from "./conversation-organization.js";
 import { projectErrorMessage } from "./use-organization-review.js";
+import {
+  projectKinLook,
+  projectKinSettings,
+  sameAgentLook,
+  type AgentLook
+} from "../pixelkin/agent-kin.js";
 
 export type ProjectSyncState = Awaited<
   ReturnType<NonNullable<PersonalDesktopApi["manageMembershipSync"]>>
@@ -39,6 +45,7 @@ export type MembershipDraft = {
 export type ProjectSettingsDraft = {
   project: DesktopProject;
   name: string;
+  look: AgentLook;
   sources: SettingsSource[];
   selectedSources: Set<string>;
   conversations: SettingsConversation[];
@@ -158,6 +165,7 @@ export async function loadProjectSettings(
   const draft: ProjectSettingsDraft = {
     project,
     name: project.name,
+    look: projectKinLook(project.id, project.namedProject.kin),
     sources,
     selectedSources: new Set(
       sources.filter((s) => s.inclusionId).map((s) => s.id)
@@ -294,7 +302,17 @@ export function settingsChanges(
 ): PersonalProjectBatchInput["changes"] {
   if (draft.inspectionError) return [];
   const changes: PersonalProjectBatchInput["changes"] = [];
-  if (draft.name.trim() !== draft.project.name)
+  const originalLook = projectKinLook(
+    draft.project.id,
+    draft.project.namedProject?.kin
+  );
+  if (!sameAgentLook(originalLook, draft.look))
+    changes.push({
+      action: "set_details",
+      name: draft.name.trim(),
+      kin: projectKinSettings(draft.look)
+    });
+  else if (draft.name.trim() !== draft.project.name)
     changes.push({ action: "rename", name: draft.name.trim() });
   for (const source of draft.sources) {
     const selected = draft.selectedSources.has(source.id);

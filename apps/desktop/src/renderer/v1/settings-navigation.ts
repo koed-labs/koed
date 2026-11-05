@@ -5,14 +5,19 @@ export type V1SettingsPage = "privacy" | "cli" | "health" | "embedding";
 export const settingsPageParent = (page: V1SettingsPage): V1SettingsTab =>
   page === "privacy" || page === "cli" ? "general" : "services";
 
+const currentSettingsTab = (tab: V1SettingsTab | "agent"): V1SettingsTab =>
+  tab === "agent" ? "general" : tab;
+
 // History belongs to this settings instance; unrelated application entries are preserved.
 export function useSettingsNavigation(
-  initialTab: V1SettingsTab,
+  initialTab: V1SettingsTab | "agent",
   initialPage?: V1SettingsPage
 ) {
   const owner = useId();
   const [tab, updateTab] = useState(
-    initialPage ? settingsPageParent(initialPage) : initialTab
+    initialPage
+      ? settingsPageParent(initialPage)
+      : currentSettingsTab(initialTab)
   );
   const [page, updatePage] = useState<V1SettingsPage | null>(
     initialPage ?? null
@@ -29,8 +34,8 @@ export function useSettingsNavigation(
     const restore = () => {
       const entry = history.state?.koedSettings;
       if (entry?.owner === owner) {
-        updateTab(entry.tab);
-        updatePage(entry.page);
+        updateTab(currentSettingsTab(entry.tab));
+        updatePage(entry.tab === "agent" ? null : entry.page);
       } else {
         updatePage(null);
         updateTab(current.current.tab);

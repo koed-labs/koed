@@ -223,6 +223,16 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
           (p) => p.namedProject?.projectId === projectId
         )?.threads
       ).toHaveLength(2);
+      const kin = { shape: "cube", colour: "#55cca3", personality: "curious" };
+      const saved = await app.inject({
+        method: "POST",
+        url: `/v1/personal/projects/${projectId}/sources`,
+        payload: {
+          expectedVersion: projects[0]!.version,
+          changes: [{ action: "set_details", name: projects[0]!.name, kin }]
+        }
+      });
+      expect(saved.statusCode, saved.body).toBe(200);
       expect(
         (
           await app.inject({
@@ -230,7 +240,7 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
             url: `/v1/personal/projects/${projectId}`,
             payload: {
               name: "Koed work",
-              expectedVersion: projects[0]!.version
+              expectedVersion: saved.json().project.version
             }
           })
         ).statusCode
@@ -265,6 +275,7 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
       let named = (await inventory()).projects.find(
         (p) => p.namedProject?.projectId === projectId
       )!;
+      expect(named.namedProject?.kin).toEqual(kin);
       expect(named.threads).toHaveLength(0);
       expect(named.inclusionRules).toHaveLength(0);
       expect(await repo.listNamedPersonalProjects(actor)).toHaveLength(1);

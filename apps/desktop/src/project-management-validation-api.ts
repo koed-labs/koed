@@ -488,7 +488,10 @@ export function createProjectManagementValidationApi() {
       const before = structuredClone(p);
       try {
         for (const change of changes) {
-          if (change.action === "rename") p.meta.name = change.name;
+          if (change.action === "set_details") {
+            p.meta.name = change.name;
+            p.meta.kin = change.kin;
+          } else if (change.action === "rename") p.meta.name = change.name;
           else if (change.action === "delete") p.meta.deletedAt = at;
           else if (change.action === "add_repository")
             rule(p, { kind: "repository", repository: change.repository });
@@ -633,7 +636,11 @@ export function createProjectManagementValidationApi() {
                 revisionId: p.meta.headRevisionId,
                 authorDeviceId: "this-mac",
                 replaces: [],
-                operation: { kind: "set_project", name: p.meta.name }
+                operation: {
+                  kind: "set_project",
+                  name: p.meta.name,
+                  ...(p.meta.kin && { kin: p.meta.kin })
+                }
               }
             ]
           },

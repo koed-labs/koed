@@ -4,6 +4,7 @@ import {
   personalProjectSourceSelectorKey
 } from "./personal-project-source-target.js";
 import { z } from "zod";
+import { personalProjectDetailsSchema } from "./personal-project-kin.js";
 import {
   personalFolderReferenceSchema,
   personalGitContextSchema,
@@ -57,12 +58,7 @@ export const personalMembershipRevisionSchema = z
       .optional(),
     replaces: z.array(personalIdentifierSchema).max(1024),
     operation: z.discriminatedUnion("kind", [
-      z
-        .object({
-          kind: z.literal("set_project"),
-          name: z.string().trim().min(1).max(160)
-        })
-        .strict(),
+      personalProjectDetailsSchema.extend({ kind: z.literal("set_project") }),
       z.object({ kind: z.literal("delete_project") }).strict(),
       z
         .object({
@@ -96,6 +92,7 @@ export const personalMembershipRevisionSchema = z
         identity = personalProjectDefaultIdentity(initial.target);
       if (
         value.replaces.length ||
+        (op.kind === "set_project" && op.kin !== undefined) ||
         (op.kind !== "set_project" && op.kind !== "include") ||
         identity.sourceKey !== initial.sourceKey ||
         identity.projectIdentity !== value.project.projectId ||

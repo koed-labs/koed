@@ -23,6 +23,10 @@ partial membership results but keeps the loaded Sync review accessible.
 The settings editor sends one bounded batch through `personal.projects.manage` with the `apply_sources` action.
 The batch can include a rename, source rules, direct membership changes, and a version-pinned exclusion restore.
 The API commits the complete batch under one owner lock and transaction.
+Contract version 29 carries the optional Project Kin in named Project inventory and
+catalog review. The `set_details` change saves the name and Kin together at the
+reviewed Project version.
+
 Contract version 28 adds the `organize` action to `personal.sources.manage`.
 Electron main maps it to `POST /v1/personal/sessions/:sessionId/organization`.
 It carries the reviewed source context, Project versions, desired direct/excluded membership states,

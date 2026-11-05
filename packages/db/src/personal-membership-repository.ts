@@ -6,6 +6,7 @@ import {
   personalDirectMembershipReadySql,
   personalGraphExclusionBlocksSql
 } from "./personal-membership-selection-sql.js";
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
@@ -18,11 +19,15 @@ import {
   personalSourceReferenceSchema,
   personalOwnerIdSchema,
   type PersonalNamedProject,
+  type PersonalProjectKin,
   type PersonalDirectMembership
 } from "@koed/shared";
 import type { ActorContext } from "./types.js";
 
 const uuid = personalOwnerIdSchema;
+const updateDetails = personalProjectUpdateSchema.extend({
+  kin: personalNamedProjectSchema.shape.kin
+});
 const unavailable = () =>
   Object.assign(new Error("Personal Project not found"), { statusCode: 404 });
 const stale = () =>
@@ -32,6 +37,7 @@ const stale = () =>
 type ProjectRow = {
   project_id: string;
   name: string;
+  kin: PersonalProjectKin | null;
   version: number;
   head_revision_id: string;
   deleted_at: Date | null;
@@ -53,6 +59,7 @@ export const mapPersonalNamedProject = (
   personalNamedProjectSchema.parse({
     projectId: row.project_id,
     name: row.name,
+    ...(row.kin && { kin: row.kin }),
     version: row.version,
     headRevisionId: row.head_revision_id,
     deletedAt: row.deleted_at?.toISOString() ?? null,
@@ -447,10 +454,10 @@ export const createPersonalMembershipRepository = (
     async updateNamedPersonalProject(
       actor: ActorContext,
       rawProjectId: string,
-      raw: { name: string; expectedVersion: number }
+      raw: { name: string; kin?: PersonalProjectKin; expectedVersion: number }
     ): Promise<PersonalNamedProject> {
       const projectId = uuid.parse(rawProjectId),
-        input = personalProjectUpdateSchema.parse(raw);
+        input = updateDetails.parse(raw);
       return transact(actor, async (client) => {
         const previous = await lockPersonalNamedProject(
           client,
@@ -458,12 +465,16 @@ export const createPersonalMembershipRepository = (
           projectId,
           input.expectedVersion
         );
-        if (previous.name === input.name)
+        const kin = input.kin ?? previous.kin;
+        if (
+          previous.name === input.name &&
+          isDeepStrictEqual(previous.kin, kin)
+        )
           return mapPersonalNamedProject(previous);
         const revisionId = randomUUID();
         const result = await client.query<ProjectRow>(
-          `update personal_named_projects set name=$3,version=version+1,head_revision_id=$4,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
-          [actor.userId, projectId, input.name, revisionId]
+          `update personal_named_projects set name=$3,kin=$5,version=version+1,head_revision_id=$4,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
+          [actor.userId, projectId, input.name, revisionId, kin]
         );
         await appendPersonalMembershipRevision(
           client,
@@ -473,7 +484,7 @@ export const createPersonalMembershipRepository = (
           revisionId,
           [previous.head_revision_id],
           "set_project",
-          { name: input.name }
+          { name: input.name, ...(kin && { kin }) }
         );
         return mapPersonalNamedProject(result.rows[0]!);
       });

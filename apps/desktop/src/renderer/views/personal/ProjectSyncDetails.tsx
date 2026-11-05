@@ -22,7 +22,12 @@ type Change = Extract<
 >["review"]["change"];
 const operationLabel = (revision: Entity["heads"][number]) => {
   const operation = revision.operation;
-  if (operation.kind === "set_project") return `Name: ${operation.name}`;
+  if (operation.kind === "set_project") {
+    const kin = operation.kin;
+    return kin
+      ? `Name: ${operation.name} · Kin: ${kin.shape}, ${kin.colour}, ${kin.personality}`
+      : `Name: ${operation.name}`;
+  }
   if (operation.kind === "delete_project") return "Delete Project";
   if (operation.kind === "include") {
     const target = operation.selector;
@@ -201,31 +206,27 @@ export function ProjectSyncDetails({
           </details>
         ) : null}
         <ul>
-          {entity.heads.map((head) => (
-            <li key={head.revisionId}>
-              <span>{operationLabel(head)}</span>
-              {entity.state === "conflict" &&
-              entity.entityKind === "project" &&
-              (head.operation.kind === "set_project" ||
-                head.operation.kind === "delete_project") ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    void review(
-                      entity,
-                      head.operation.kind === "set_project"
-                        ? { kind: "set_project", name: head.operation.name }
-                        : { kind: "delete_project" }
-                    )
-                  }
-                >
-                  Review this choice
-                </Button>
-              ) : null}
-            </li>
-          ))}
+          {entity.heads.map((head) => {
+            const operation = head.operation;
+            return (
+              <li key={head.revisionId}>
+                <span>{operationLabel(head)}</span>
+                {entity.state === "conflict" &&
+                entity.entityKind === "project" &&
+                (operation.kind === "set_project" ||
+                  operation.kind === "delete_project") ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void review(entity, operation)}
+                  >
+                    Review this choice
+                  </Button>
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
         {entity.entityKind === "rule" && entity.state !== "pending" ? (
           <div className="personal-project-sync-actions">
@@ -349,7 +350,7 @@ export function ProjectSyncDetails({
               {preview.after.operation.kind === "delete_project"
                 ? "The Project will be deleted. Its retained history remains available for sync."
                 : preview.after.operation.kind === "set_project"
-                  ? "This name will replace all reviewed conflicting catalog revisions."
+                  ? "This choice sets the Project name and Kin across your paired devices."
                   : preview.after.operation.kind === "exclude"
                     ? "This exclusion will block the Conversation from every inclusion reason in this Project."
                     : preview.after.operation.kind === "clear_exclusion"

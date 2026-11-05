@@ -1,6 +1,8 @@
 import {
+  basePdsConfigurationFeatures,
   createPdsConfigurationCapabilityAdvertisement,
   pdsConfigurationCapabilityRecordSchema,
+  pdsConfigurationFeaturesSchema,
   PDS_CONFIGURATION_CAPABILITY_PATH,
   type PersonalConfigurationFeature,
   type PdsConfigurationCapabilityRecord
@@ -280,21 +282,39 @@ export class PdsRelayClient {
     features: PersonalConfigurationFeature[],
     now = new Date()
   ): Promise<void> {
-    const response = asRecord(
-      await this.request<unknown>(
-        "POST",
-        PDS_CONFIGURATION_CAPABILITY_PATH,
-        createPdsConfigurationCapabilityAdvertisement(features, now)
-      )
-    );
-    if (response.accepted !== true)
-      throw new TypeError("PDS configuration capability response is invalid");
+    const full = pdsConfigurationFeaturesSchema.parse(features);
+    const publish = async (
+      view: PersonalConfigurationFeature[],
+      baseNonce?: string
+    ) => {
+      const response = asRecord(
+        await this.request<unknown>(
+          "POST",
+          PDS_CONFIGURATION_CAPABILITY_PATH,
+          createPdsConfigurationCapabilityAdvertisement(view, now, baseNonce)
+        )
+      );
+      if (response.accepted !== true)
+        throw new TypeError("PDS configuration capability response is invalid");
+      return response;
+    };
+    const base = basePdsConfigurationFeatures(full);
+    const ack = await publish(base);
+    // Legacy relays acknowledge only the base view. A new relay returns the
+    // nonce that ties the separately signed extension to this exact refresh.
+    if (full.length !== base.length && typeof ack.extensionNonce === "string")
+      await publish(full, ack.extensionNonce);
   }
-  async configurationCapabilities(): Promise<
+  async configurationCapabilities({ includeExtended = false } = {}): Promise<
     PdsConfigurationCapabilityRecord[]
   > {
     const response = asRecord(
-      await this.request<unknown>("GET", PDS_CONFIGURATION_CAPABILITY_PATH)
+      await this.request<unknown>(
+        "GET",
+        includeExtended
+          ? `${PDS_CONFIGURATION_CAPABILITY_PATH}?extended=1`
+          : PDS_CONFIGURATION_CAPABILITY_PATH
+      )
     );
     if (
       !Array.isArray(response.capabilities) ||

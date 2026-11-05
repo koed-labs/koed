@@ -4,8 +4,7 @@
 
 The Personal interface starts with staged local setup and AI Client
 configuration. Setup progress comes from the real setup workflow. Failure
-preserves selections and offers a retry. Agent name and appearance are optional
-Settings choices. Running setup again preserves Personal Memory, Projects,
+preserves selections and offers a retry. Running setup again preserves Personal Memory, Projects,
 Conversations, and saved customization.
 
 The sidebar shows the current User's Project inventory, including Conversations
@@ -15,7 +14,12 @@ Conversation pane. On narrow windows, the sidebar opens as a drawer. While
 services or inventory are loading, the sidebar shows that state rather than an
 empty Conversation list.
 
-Project settings manages names, source rules, Conversation membership, and
+In **Project settings → Kin**, choose a body shape, colour, and personality. The
+Kin appears under a spotlight beside the controls. Home labels it with the Project name. Each Project starts with a
+look generated from its ID. Saving a Kin updates Home and syncs the choice to
+paired Personal devices.
+
+Project settings also manages names, source rules, Conversation membership, and
 Personal Device sync. Sync review remains available when Conversation membership
 cannot be loaded. Settings blocks edits until a complete membership review loads.
 Dragging a Conversation to a Project moves its membership
@@ -70,7 +74,7 @@ leaves.
   its status message as manual guidance.
 - **Quiet stage** shows when Projects have loaded and none exist. It offers to
   connect up to two detected AI Clients, the same step their keycaps offer.
-- **Projects** shows a Kin for each named Project the sidebar lists, up to seven
+- **Projects** shows a Kin for each named Project with a Conversation to open, up to seven
   on the stage with the most recent in the spotlight; the caption says how many
   more are in the sidebar, which is the full list. The stage is laid out in
   design units and scaled to fit the window, so Kin grow and shrink with it
