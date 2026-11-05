@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -11,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   observeStoppedRuntime,
+  removeStaleRuntimeRecords,
   type StoppedRuntimeDependencies
 } from "./stopped-runtime.js";
 
@@ -67,15 +69,17 @@ describe("strict stopped-runtime observation", () => {
     }
   );
 
-  it("preserves live, reused, stale, and unreadable supervisor locks", () => {
+  it("preserves live, reused, uncertain, and unreadable supervisor locks", () => {
     const { paths, dependencies, observe } = fixture();
     const path = resolve(paths.runDir, "koed-server.lock");
     const contents = JSON.stringify({ pid: 41, processIdentity: "original" });
     writeFileSync(path, contents);
     dependencies.processIdentity = () => "original";
     expect(observe()).toMatchObject({ state: "running", pid: 41 });
+    dependencies.processState = () => "running";
     dependencies.processIdentity = () => "reused";
     expect(observe().state).toBe("uncertain");
+    dependencies.processState = () => "uncertain";
     dependencies.processIdentity = () => null;
     expect(observe().state).toBe("uncertain");
     expect(readFileSync(path, "utf8")).toBe(contents);
@@ -98,9 +102,42 @@ describe("strict stopped-runtime observation", () => {
     writeFileSync(path, contents);
     dependencies.processIdentity = () => "original";
     expect(observe().state).toBe("running");
+    dependencies.processState = () => "uncertain";
     dependencies.processIdentity = () => null;
     expect(observe().state).toBe("uncertain");
     expect(readFileSync(path, "utf8")).toBe(contents);
+  });
+
+  it("reports records of a dead supervisor as stale and removes only unchanged ones", () => {
+    const { paths, dependencies, observe } = fixture();
+    const lock = resolve(paths.runDir, "koed-server.lock");
+    const contents = JSON.stringify({ pid: 41, processIdentity: "original" });
+    writeFileSync(lock, contents);
+    const observation = observe();
+    expect(observation).toMatchObject({
+      state: "stopped",
+      staleRecords: [{ path: lock, contents }]
+    });
+    // Observation itself never removes evidence.
+    expect(readFileSync(lock, "utf8")).toBe(contents);
+
+    // A supervisor that started after observation keeps its new record.
+    const replaced = JSON.stringify({ pid: 43, processIdentity: "new" });
+    writeFileSync(lock, replaced);
+    removeStaleRuntimeRecords(observation);
+    expect(readFileSync(lock, "utf8")).toBe(replaced);
+
+    writeFileSync(lock, contents);
+    removeStaleRuntimeRecords(observe());
+    expect(existsSync(lock)).toBe(false);
+
+    // A dead lock is not stale while native discovery still finds a process.
+    writeFileSync(lock, contents);
+    dependencies.processes = () => [
+      { pid: 44, command: `postgres -D ${paths.postgresDataDir}` }
+    ];
+    expect(observe()).toMatchObject({ state: "uncertain", pid: 44 });
+    expect(observe().staleRecords).toBeUndefined();
   });
 
   it.each(["41\n", "-41\n", "invalid\n"])(

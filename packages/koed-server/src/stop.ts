@@ -29,7 +29,10 @@ import {
   readSupervisorLock,
   resolveProcessIdentity as defaultResolveProcessIdentity
 } from "./supervisor-lock.js";
-import { observeStoppedRuntime } from "./stopped-runtime.js";
+import {
+  observeStoppedRuntime,
+  removeStaleRuntimeRecords
+} from "./stopped-runtime.js";
 import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import { requestSupervisorExit } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
@@ -276,6 +279,7 @@ export const stopKoedServer = ({
       ? observeStoppedRuntime(paths)
       : undefined;
     const uncertain = observation && observation.state !== "stopped";
+    if (observation) removeStaleRuntimeRecords(observation);
     return {
       ok: !uncertain,
       state: uncertain ? "needs_attention" : "not_configured",
@@ -541,6 +545,7 @@ export const stopKoedServer = ({
 
   if (releaseManaged && errors.length === 0) {
     const observation = observeStoppedRuntime(paths);
+    removeStaleRuntimeRecords(observation);
     if (observation.state !== "stopped")
       errors.push({
         target: observation.pid

@@ -41,7 +41,10 @@ import { isVersionDowngrade } from "./package-runtime.js";
 import { renameAtomically } from "./generation-lifecycle-filesystem.js";
 import { acquireDirectoryLock } from "./directory-lock.js";
 import { canonicalArtifactJson } from "./artifact-canonical-json.mjs";
-import { observeStoppedRuntime } from "./stopped-runtime.js";
+import {
+  observeStoppedRuntime,
+  removeStaleRuntimeRecords
+} from "./stopped-runtime.js";
 
 interface LifecycleLockRecord {
   pid: number;
@@ -632,6 +635,7 @@ export async function withStoppedRuntime<T>(
       throw new Error(
         `${observation.message} Run koed stop before retrying. Stale or unreadable locks require stopped-runtime Operator recovery.`
       );
+    removeStaleRuntimeRecords(observation);
     return await action();
   } finally {
     releaseLifecycleLock(paths, lock);

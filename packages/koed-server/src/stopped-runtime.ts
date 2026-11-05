@@ -4,17 +4,26 @@ import {
   constants,
   fstatSync,
   openSync,
-  readFileSync
+  readFileSync,
+  rmSync
 } from "node:fs";
 import { resolve } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
 import { isRuntimeGenerationState } from "./runtime-state.js";
 import { resolveProcessIdentity } from "./supervisor-lock.js";
 
+export interface StaleRuntimeRecord {
+  path: string;
+  contents: string;
+}
+
 export interface StoppedRuntimeObservation {
   state: "stopped" | "running" | "uncertain";
   message: string;
   pid?: number;
+  // Supervisor locks or generation pins whose recorded process no longer exists.
+  // Present only when every other check also established stopped state.
+  staleRecords?: StaleRuntimeRecord[];
 }
 
 interface ProcessEvidence {
@@ -97,6 +106,7 @@ export function observeStoppedRuntime(
     state: "uncertain",
     message
   });
+  const staleRecords: StaleRuntimeRecord[] = [];
   try {
     for (const name of ["koed-server.lock", "runtime-generation.json"]) {
       const path =
@@ -120,6 +130,13 @@ export function observeStoppedRuntime(
           pid: value.pid,
           message: "Koed is running or pinned."
         };
+      // A crashed or killed supervisor leaves its record behind. When its PID no
+      // longer exists, the record is stale evidence, provided the remaining checks
+      // and native process discovery below also find nothing running.
+      if (stateOf(value.pid) === "stopped") {
+        staleRecords.push({ path, contents });
+        continue;
+      }
       return uncertain(
         `${name} is stale or its process identity is uncertain. Operator recovery is required.`
       );
@@ -192,11 +209,24 @@ export function observeStoppedRuntime(
       };
     return {
       state: "stopped",
-      message: "Koed and its recorded native processes are stopped."
+      message: "Koed and its recorded native processes are stopped.",
+      ...(staleRecords.length > 0 ? { staleRecords } : {})
     };
   } catch {
     return uncertain(
       "Stopped runtime state could not be established. Inspect process state and runtime files before retrying."
     );
   }
+}
+
+// Remove stale records reported by observeStoppedRuntime. Each file is removed
+// only if it still holds the observed contents, so a supervisor that started in
+// the meantime keeps its new record.
+export function removeStaleRuntimeRecords(
+  observation: StoppedRuntimeObservation
+): void {
+  if (observation.state !== "stopped") return;
+  for (const record of observation.staleRecords ?? [])
+    if (readState(record.path) === record.contents)
+      rmSync(record.path, { force: true });
 }

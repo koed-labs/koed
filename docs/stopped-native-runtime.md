@@ -50,6 +50,13 @@ If Koed runs, use its normal `koed stop` command for the same `KOED_HOME`.
 If another lifecycle command runs, let it finish before retrying. Do not
 remove its lock to bypass contention.
 
+A crashed or killed supervisor can leave its lock or generation pin behind.
+When the recorded process no longer exists, and no recorded child, Postgres lock,
+or process that references the native runtime remains, `koed stop` and stopped
+runtime operations remove that stale record. They remove it only if it is
+unchanged since observation. A record whose process is alive but has a different
+identity, or whose state cannot be read, still requires Operator recovery.
+
 After an interrupted command, inspect the lock owner record, supervisor state,
 generation pin, recorded process IDs, and Postgres `postmaster.pid`. Establish
 that the matching supervisor and all native children exited. PID absence alone
