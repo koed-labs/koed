@@ -38,8 +38,11 @@ deadline. Cancellation kills the probe process groups before releasing the lock.
 
 For a selected release core, the supervisor starts the Embedding Service in a
 private process group. Explicit shutdown signals that group, including its
-llama-server child. The stop command gives the supervisor time to finish its
-bounded child cleanup and reports any remaining native process evidence.
+llama-server child. Shutdown waits for the whole group to drain, not only its
+leader, and kills any member still running at the deadline. The stop command
+gives the supervisor time to finish its bounded child cleanup. If the supervisor
+does not exit, the fallback signals the recorded Embedding Service group while
+its leader is alive, and reports any remaining native process evidence.
 
 ## Operator recovery
 

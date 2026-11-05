@@ -724,33 +724,76 @@ const waitForChildExit = (
     child.once("exit", onExit);
   });
 
+// A process group outlives its leader while any member is alive, and Linux does not
+// reuse a PID that still names a live group. Probing the group immediately before
+// each signal therefore reaches only descendants of the child Koed spawned.
+const processGroupAlive = (pid: number): boolean => {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
+  }
+};
+
+const signalProcessGroup = (pid: number, value: NodeJS.Signals): void => {
+  if (!processGroupAlive(pid)) return;
+  try {
+    process.kill(-pid, value);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+};
+
+const waitForProcessGroupExit = async (
+  pid: number,
+  timeoutMs: number
+): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (processGroupAlive(pid)) {
+    if (Date.now() >= deadline) return false;
+    await delay(Math.min(50, Math.max(1, deadline - Date.now())));
+  }
+  return true;
+};
+
 export const stopChildProcess = async (
   child: ChildProcess | undefined,
   timeoutMs = 5_000,
   label = "managed child",
   privateGroup = false
 ): Promise<void> => {
-  if (!child?.pid || child.exitCode != null || child.signalCode != null) return;
+  if (!child?.pid) return;
   const pid = child.pid;
-  const signal = (value: NodeJS.Signals) => {
-    if (!privateGroup) {
-      child.kill(value);
-      return;
-    }
-    // Only the still-live child spawned as a private group leader can authorize
-    // a group signal. Never discover unrelated processes by name or command line.
-    if (child.exitCode != null || child.signalCode != null) return;
-    try {
-      process.kill(-pid, value);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-    }
-  };
-  signal("SIGTERM");
-  if (await waitForChildExit(child, timeoutMs)) return;
-  signal("SIGKILL");
-  if (!(await waitForChildExit(child, timeoutMs))) {
-    throw new Error(`Timed out stopping ${label} process ${child.pid}.`);
+  const exited = () => child.exitCode != null || child.signalCode != null;
+  if (!privateGroup) {
+    if (exited()) return;
+    child.kill("SIGTERM");
+    if (await waitForChildExit(child, timeoutMs)) return;
+    child.kill("SIGKILL");
+    if (!(await waitForChildExit(child, timeoutMs)))
+      throw new Error(`Timed out stopping ${label} process ${child.pid}.`);
+    return;
+  }
+  // The group leader can exit on SIGTERM while llama-server descendants are still
+  // shutting down, or after it already exited on its own. Drain the whole group.
+  const deadline = Date.now() + timeoutMs;
+  signalProcessGroup(pid, "SIGTERM");
+  await waitForChildExit(child, timeoutMs);
+  if (
+    exited() &&
+    (await waitForProcessGroupExit(pid, Math.max(0, deadline - Date.now())))
+  )
+    return;
+  signalProcessGroup(pid, "SIGKILL");
+  if (
+    !(await waitForChildExit(child, timeoutMs)) ||
+    !(await waitForProcessGroupExit(pid, timeoutMs))
+  ) {
+    throw new Error(`Timed out stopping ${label} process group ${pid}.`);
   }
 };
 

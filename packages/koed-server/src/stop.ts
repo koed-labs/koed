@@ -65,6 +65,7 @@ export interface KoedServerStopOptions {
   sleepSync?: (ms: number) => void;
   readSupervisorLock?: typeof readSupervisorLock;
   resolveProcessIdentity?: (pid: number) => string | null;
+  isProcessGroupLeader?: (pid: number) => boolean;
   desktopRuntimeCapability?: DesktopRuntimeCapability;
 }
 
@@ -125,6 +126,17 @@ const defaultCheckPid = (pid: number): boolean => {
   }
 };
 
+// Linux reports the process group in field 5 of /proc/<pid>/stat.
+const defaultIsProcessGroupLeader = (pid: number): boolean => {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return Number(fields[2]) === pid;
+  } catch {
+    return false;
+  }
+};
+
 const errorCode = (error: unknown): string =>
   typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code)
@@ -165,6 +177,8 @@ const stopPid = (
   > & {
     expectedProcessIdentity?: string;
     resolveProcessIdentity?: (pid: number) => string | null;
+    // Signal and wait for the whole group that `pid` leads.
+    processGroup?: boolean;
   }
 ): {
   stoppedPids: number[];
@@ -190,14 +204,15 @@ const stopPid = (
   if (deps.expectedProcessIdentity && !deps.checkPid(pid))
     return { stoppedPids: [], missingPids: [pid], errors: [] };
   if (!identityMatches()) return identityError();
+  const target = deps.processGroup ? -pid : pid;
   try {
-    deps.kill(pid, "SIGTERM");
-    if (waitForPidExit(pid, deps)) {
+    deps.kill(target, "SIGTERM");
+    if (waitForPidExit(target, deps)) {
       return { stoppedPids: [pid], missingPids: [], errors: [] };
     }
     if (!identityMatches()) return identityError();
-    deps.kill(pid, "SIGKILL");
-    if (waitForPidExit(pid, deps)) {
+    deps.kill(target, "SIGKILL");
+    if (waitForPidExit(target, deps)) {
       return { stoppedPids: [pid], missingPids: [], errors: [] };
     }
     return {
@@ -241,6 +256,7 @@ export const stopKoedServer = ({
   sleepSync = defaultSleepSync,
   readSupervisorLock: readLock = readSupervisorLock,
   resolveProcessIdentity = defaultResolveProcessIdentity,
+  isProcessGroupLeader = defaultIsProcessGroupLeader,
   desktopRuntimeCapability
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
@@ -437,12 +453,18 @@ export const stopKoedServer = ({
         if (!embeddingPid || embeddingPid <= 0) {
           missingServices.push("embedding-service-native");
         } else {
+          // Release-managed runtimes start the Embedding Service as a private
+          // group leader. Signal the group so llama-server descendants stop too.
           const stopped = stopPid("embedding-service-native", embeddingPid, {
             kill,
             checkPid,
             waitForExitMs,
             pollIntervalMs,
-            sleepSync
+            sleepSync,
+            processGroup:
+              releaseManaged &&
+              checkPid(embeddingPid) &&
+              isProcessGroupLeader(embeddingPid)
           });
           stoppedPids.push(...stopped.stoppedPids);
           missingPids.push(...stopped.missingPids);

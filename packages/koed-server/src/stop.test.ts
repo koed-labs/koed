@@ -650,6 +650,34 @@ describe("stopKoedServer", () => {
     expect(result.stoppedServices).toContain("embedding-service-native");
   });
 
+  it("stops a release-managed Embedding Service as a process group", () => {
+    const koedHome = makeHome();
+    mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });
+    writeRuntime(
+      koedHome,
+      runtime({
+        services: ["embedding-service-native", "api", "worker"],
+        processes: { api: 10, worker: 11, embeddingService: 13 }
+      })
+    );
+    const targets: number[] = [];
+    const live = new Set([13]);
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
+      isProcessGroupLeader: (pid) => pid === 13,
+      kill: (pid) => {
+        targets.push(pid);
+        live.delete(Math.abs(pid));
+      },
+      checkPid: (pid) => live.has(Math.abs(pid))
+    });
+
+    expect(targets).toEqual([11, 10, -13]);
+    expect(result.stoppedServices).toContain("embedding-service-native");
+  });
+
   it("does not stop external dependency services", () => {
     const koedHome = makeHome();
     writeRuntime(
