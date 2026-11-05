@@ -31,8 +31,10 @@ import {
 } from "./supervisor-lock.js";
 import {
   observeStoppedRuntime,
-  removeStaleRuntimeRecords
+  removeStaleRuntimeRecords,
+  type StoppedRuntimeObservation
 } from "./stopped-runtime.js";
+import { withLifecycleLock } from "./generation-lifecycle.js";
 import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import { requestSupervisorExit } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
@@ -137,6 +139,22 @@ const defaultIsProcessGroupLeader = (pid: number): boolean => {
     return Number(fields[2]) === pid;
   } catch {
     return false;
+  }
+};
+
+// Remove stale supervisor records under the lifecycle lock that supervisor-lock
+// reclaim also takes. Returns an error message when another command holds it.
+const removeStaleRecordsLocked = (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  observation: StoppedRuntimeObservation
+): string | undefined => {
+  if (observation.state !== "stopped" || !observation.staleRecords?.length)
+    return undefined;
+  try {
+    withLifecycleLock(paths, () => removeStaleRuntimeRecords(observation));
+    return undefined;
+  } catch (error) {
+    return `Stale runtime records were left in place: ${errorMessage(error)}`;
   }
 };
 
@@ -278,15 +296,18 @@ export const stopKoedServer = ({
     const observation = releaseManaged
       ? observeStoppedRuntime(paths)
       : undefined;
-    const uncertain = observation && observation.state !== "stopped";
-    if (observation) removeStaleRuntimeRecords(observation);
+    const cleanupError = observation
+      ? removeStaleRecordsLocked(paths, observation)
+      : undefined;
+    const uncertain =
+      (observation && observation.state !== "stopped") || !!cleanupError;
     return {
       ok: !uncertain,
       state: uncertain ? "needs_attention" : "not_configured",
       koedHome: paths.koedHome,
-      message: uncertain
-        ? observation.message
-        : "No koed runtime state was found.",
+      message:
+        cleanupError ??
+        (uncertain ? observation!.message : "No koed runtime state was found."),
       stoppedPids: [],
       missingPids: [],
       stoppedServices: [],
@@ -575,7 +596,9 @@ export const stopKoedServer = ({
 
   if (releaseManaged && errors.length === 0) {
     const observation = observeStoppedRuntime(paths);
-    removeStaleRuntimeRecords(observation);
+    const cleanupError = removeStaleRecordsLocked(paths, observation);
+    if (cleanupError)
+      errors.push({ target: "runtime records", error: cleanupError });
     if (observation.state !== "stopped")
       errors.push({
         target: observation.pid

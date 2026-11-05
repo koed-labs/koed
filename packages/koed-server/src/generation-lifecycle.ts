@@ -171,6 +171,21 @@ const releaseLifecycleLock = (
     return;
   rmSync(path, { recursive: true, force: true });
 };
+// Run a short synchronous action under the lifecycle lock. Supervisor-lock reclaim
+// at start and stale-record removal at stop both take it, so neither can delete a
+// record the other has just replaced. Throws when another lifecycle command holds it.
+export function withLifecycleLock<T>(
+  paths: KoedServerPaths,
+  action: () => T
+): T {
+  const lock = acquireLifecycleLock(paths);
+  try {
+    return action();
+  } finally {
+    releaseLifecycleLock(paths, lock);
+  }
+}
+
 const withStoreLock = async <T>(
   paths: KoedServerPaths,
   action: () => Promise<T>

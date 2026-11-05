@@ -33,6 +33,7 @@ import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
 import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import {
   readCurrentRuntimeOwner,
+  withLifecycleLock,
   withSourceNativeStartLock
 } from "./generation-lifecycle.js";
 import {
@@ -966,7 +967,9 @@ export const startKoedServer = async ({
   assertObservedOwner(observeRuntimeLifecycle(paths));
 
   ensureKoedHome(paths);
-  const supervisorLock = acquireKoedServerSupervisorLock(paths);
+  const supervisorLock = acquireKoedServerSupervisorLock(paths, {
+    exclusive: (action) => withLifecycleLock(paths, action)
+  });
   if (!supervisorLock.acquired) {
     assertObservedOwner(observeRuntimeLifecycle(paths));
     console.log(

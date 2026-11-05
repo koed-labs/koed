@@ -79,13 +79,24 @@ export const resolveProcessIdentity = (pid: number): string | null => {
   }
 };
 
+const readLockText = (lockPath: string): string | null => {
+  try {
+    return readFileSync(lockPath, "utf8");
+  } catch {
+    return null;
+  }
+};
+
 export const readSupervisorLock = (
   lockPath: string
 ): SupervisorLockRecord | null => {
+  const text = readLockText(lockPath);
+  return text === null ? null : parseSupervisorLock(text);
+};
+
+const parseSupervisorLock = (text: string): SupervisorLockRecord | null => {
   try {
-    const value = JSON.parse(
-      readFileSync(lockPath, "utf8")
-    ) as Partial<SupervisorLockRecord>;
+    const value = JSON.parse(text) as Partial<SupervisorLockRecord>;
     return Number.isInteger(value.pid) && Number(value.pid) > 0
       ? {
           pid: Number(value.pid),
@@ -108,9 +119,13 @@ export const acquireKoedServerSupervisorLock = (
     now?: () => Date;
     isProcessRunning?: (pid: number) => boolean;
     resolveProcessIdentity?: (pid: number) => string | null;
+    // Exclusion for removing a stale record. The supervisor passes the lifecycle
+    // lock, which stale-record cleanup in koed stop also takes.
+    exclusive?: (action: () => void) => void;
   } = {}
 ): KoedServerSupervisorLock => {
   const pid = options.pid ?? process.pid;
+  const exclusive = options.exclusive ?? ((action: () => void) => action());
   const isRunning = options.isProcessRunning ?? processIsRunning;
   const identify = options.resolveProcessIdentity ?? resolveProcessIdentity;
   const processIdentity = identify(pid);
@@ -142,7 +157,8 @@ export const acquireKoedServerSupervisorLock = (
       return { acquired: true, lockPath, ownerPid: pid, processIdentity };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const owner = readSupervisorLock(lockPath);
+      const observed = readLockText(lockPath);
+      const owner = observed === null ? null : parseSupervisorLock(observed);
       if (!owner) return { acquired: false, lockPath };
       if (isRunning(owner.pid)) {
         const ownerIdentity = identify(owner.pid);
@@ -161,7 +177,11 @@ export const acquireKoedServerSupervisorLock = (
           }
         }
       }
-      rmSync(lockPath, { force: true });
+      // Remove only the record judged stale, never one written since.
+      exclusive(() => {
+        if (readLockText(lockPath) === observed)
+          rmSync(lockPath, { force: true });
+      });
     }
   }
 

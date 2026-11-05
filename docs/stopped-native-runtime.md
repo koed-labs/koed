@@ -55,7 +55,8 @@ A crashed or killed supervisor can leave its lock or generation pin behind.
 `koed stop` never signals the children of a supervisor that has exited. When
 every recorded child has also exited, and no Postgres lock or process that
 references the native runtime remains, `koed stop` and stopped runtime operations
-remove the stale records, only if each record is unchanged since observation.
+remove the stale records. They do so under the lifecycle lock, which supervisor
+start also takes to reclaim a stale lock, and only if each record is unchanged.
 A live recorded child, a record whose process is alive with a different identity,
 or unreadable state still requires Operator recovery.
 

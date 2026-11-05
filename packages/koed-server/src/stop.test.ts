@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { stopKoedServer } from "./stop.js";
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
+import { withLifecycleLock } from "./generation-lifecycle.js";
+import { resolveKoedServerPaths } from "./paths.js";
 import {
   resolveDesktopRuntimeOwner,
   verifyDesktopRuntimeBundle
@@ -785,6 +787,24 @@ describe("stopKoedServer", () => {
       expect(result.state).toBe("needs_attention");
       expect(signals).toEqual([]);
       expect(result.errors?.[0]?.target).toBe("api (999992)");
+      expect(existsSync(lock(koedHome))).toBe(true);
+    });
+
+    it("leaves stale records while another lifecycle command holds the lock", () => {
+      const koedHome = crashedHome();
+      const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
+
+      const result = withLifecycleLock(paths, () =>
+        stopKoedServer({
+          environment: { KOED_HOME: koedHome },
+          checkPid: () => false
+        })
+      );
+
+      expect(result.state).toBe("needs_attention");
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({ target: "runtime records" })
+      );
       expect(existsSync(lock(koedHome))).toBe(true);
     });
   });
