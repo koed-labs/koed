@@ -60,6 +60,22 @@ export function chooseCuda(
   return null;
 }
 
+// A core update keeps a compatible installed CUDA add-on by default and validates
+// it on the new core. When that GPU check fails, point to the CPU-only update.
+export function preservedCudaFailure(
+  error: unknown,
+  choice: CudaAssetChoice,
+  policy: string
+): unknown {
+  if (
+    choice === "preserve" &&
+    (policy === "auto" || policy === "cpu") &&
+    error instanceof Error
+  )
+    error.message += ` The installed CUDA add-on is kept by default. To update the CPU core without it, run ${releaseInstallCommand} --without-cuda.`;
+  return error;
+}
+
 // Only compiled catalog pins may reach this acquisition path. Previously
 // installed receipts can select and verify retained bytes but never supply a URL.
 export async function stageNativeAsset(

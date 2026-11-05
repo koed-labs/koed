@@ -42,6 +42,7 @@ import {
 import {
   chooseCuda,
   embeddingPolicy,
+  preservedCudaFailure,
   stageNativeAsset,
   type CudaAssetChoice
 } from "./runtime-release-assets.js";
@@ -265,7 +266,13 @@ export async function installReleaseRuntime(
         }
       };
     }
-    if (choice === "with") await checkCudaHost(signal);
+    // Check the host before downloading whenever the result keeps or adds CUDA,
+    // including a core update that preserves a compatible add-on.
+    if (cuda)
+      await checkCudaHost(signal).catch((error: unknown) => {
+        if (signal.aborted) throw error;
+        throw preservedCudaFailure(error, choice, policy);
+      });
     return {
       unchanged: false as const,
       previousId: selected?.id ?? null,
@@ -326,7 +333,12 @@ export async function installReleaseRuntime(
       const next = composeNativeSelection(paths, pin, staging, catalog, cuda);
       await probeCore(next.root, signal);
       const validation = cuda
-        ? await validateStagedCuda(paths, next.root, environment, { signal })
+        ? await validateStagedCuda(paths, next.root, environment, {
+            signal
+          }).catch((error: unknown) => {
+            if (signal.aborted) throw error;
+            throw preservedCudaFailure(error, choice, policy);
+          })
         : undefined;
       signal.throwIfAborted();
       activateNativeSelection(paths, next.id);

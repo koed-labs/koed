@@ -58,7 +58,9 @@ pointer. Without an installed model the result is device-only. A failed check
 preserves the active pair. A CPU execution policy continues to use CPU.
 
 With neither asset flag, a core update reuses compatible installed CUDA bytes
-without another copy or download. If the new core is incompatible, `auto` or
+without another copy or download. The installer checks the CUDA host before
+downloading the core. If that check or GPU validation fails under an `auto` or
+`cpu` policy, the error suggests `--without-cuda` for a CPU-only update. If the new core is incompatible, `auto` or
 `cpu` may select CPU alone. Forced CUDA requires the combined update. Use
 `--without-cuda` with an `auto` or `cpu` policy to remove CUDA from the selection.
 The prior payload stays available for recovery. Status reports installed and

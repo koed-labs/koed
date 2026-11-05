@@ -24,7 +24,7 @@ import {
   readNativeSelection
 } from "./native-selection.js";
 import * as filesystem from "./generation-lifecycle-filesystem.js";
-import { chooseCuda } from "./runtime-release-assets.js";
+import { chooseCuda, preservedCudaFailure } from "./runtime-release-assets.js";
 
 const homes: string[] = [];
 it("retains an admitted add-on without a new pin, but only a compatible core may reuse it", () => {
@@ -268,4 +268,17 @@ it("refuses foreign provider metadata and escaping or dangling selection pointer
   rmSync(pointer);
   symlinkSync(`selections/${"f".repeat(64)}`, pointer);
   expect(() => readNativeSelection(paths, c.catalog)).toThrow();
+});
+
+it("suggests the CPU-only update only when a preserved CUDA check fails under auto or cpu policy", () => {
+  const failure = () => new Error("CUDA device discovery failed.");
+  expect(
+    (preservedCudaFailure(failure(), "preserve", "auto") as Error).message
+  ).toMatch(/--without-cuda\.$/);
+  expect(
+    (preservedCudaFailure(failure(), "preserve", "cuda") as Error).message
+  ).toBe("CUDA device discovery failed.");
+  expect(
+    (preservedCudaFailure(failure(), "with", "auto") as Error).message
+  ).toBe("CUDA device discovery failed.");
 });
