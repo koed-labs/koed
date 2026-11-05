@@ -191,6 +191,14 @@ Follow-ups:
       GeForce RTX 3070 (8 GB). Run the default embedding model through the shipped
       CLI, compare its vectors with the CPU results, and record peak VRAM, driver
       version, GPU model, and artifact digests before claiming support at that size.
+- [ ] Stop fully rehashing release-managed native payloads (up to about 1.6 GB
+      with CUDA) on every `koed start` and `runtime status`. Keep full verification
+      for install and explicit `runtime validate`, and decide whether start and status
+      may rely on a bounded identity check instead.
+- [ ] Pass the install's phase-1 CUDA host result into staged GPU validation so
+      one `--with-cuda` install does not run `nvidia-smi` and the libcuda probe twice.
+- [ ] Share one helper for the `runtime/<name>` → `native/current/<name>` entry-link
+      check used by release-runtime detection, start, and selection admission.
 - [ ] Qualify opt-in Desktop Install CLI: launcher validity, PATH checks,
       conflict handling, repair/removal, relocation, npm coexistence, and execution
       through the bundled runtime without system Node. Preserve User state on uninstall.
