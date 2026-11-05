@@ -696,7 +696,7 @@ describe("stopKoedServer", () => {
     }
   );
 
-  it("never signals an Embedding Service group without a recorded identity", () => {
+  it("preserves the release-managed Embedding Service PID when its identity is missing", () => {
     const koedHome = makeHome();
     mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });
     writeRuntime(
@@ -709,9 +709,10 @@ describe("stopKoedServer", () => {
     const targets: number[] = [];
     const live = new Set([13]);
 
-    stopKoedServer({
+    const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
-      resolveProcessIdentity: () => "test-supervisor",
+      resolveProcessIdentity: (pid) =>
+        pid === 13 ? "reused-pid" : "test-supervisor",
       isProcessGroupLeader: () => true,
       kill: (pid) => {
         targets.push(pid);
@@ -720,7 +721,14 @@ describe("stopKoedServer", () => {
       checkPid: (pid) => live.has(Math.abs(pid))
     });
 
-    expect(targets).toEqual([11, 10, 13]);
+    expect(targets).toEqual([11, 10]);
+    expect(result.state).toBe("needs_attention");
+    expect(result.errors).toContainEqual({
+      target: "embedding-service-native (13)",
+      error:
+        "Embedding Service process identity is missing; refusing to signal it"
+    });
+    expect(existsSync(resolve(koedHome, "run", "koed-server.json"))).toBe(true);
   });
 
   describe("after a supervisor crash with a generation pin", () => {

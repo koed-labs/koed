@@ -42,8 +42,13 @@ llama-server child. Shutdown waits for the whole group to drain, not only its
 leader, and kills any member still running at the deadline. The stop command
 gives the supervisor time to finish its bounded child cleanup. If the supervisor
 does not exit, the fallback signals the recorded Embedding Service group only while
-its leader still has the process identity recorded at spawn. It reports any
-remaining native process evidence.
+its leader still has the process identity recorded at spawn. If the record lacks
+that identity, the fallback leaves the Embedding Service alone and reports
+`needs_attention`.
+
+Each supervisor publishes its PID and start time in `run/koed-server.json`.
+Startup and shutdown share a short file lock when they write or remove this record.
+Shutdown compares the PID and start time under that lock before it removes the file.
 
 ## Operator recovery
 

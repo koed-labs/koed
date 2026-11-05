@@ -1,4 +1,11 @@
-import { readFileSync as nodeReadFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  readFileSync as nodeReadFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { withFileLock } from "./file-lock.js";
 import { isProcessRunning } from "./process-liveness.js";
 import type { RuntimeOwner } from "./component-contract.js";
 import type { KoedServerRuntimeState } from "./types.js";
@@ -100,6 +107,52 @@ export const isRuntimeGenerationState = (
   /^[A-Za-z0-9._-]{1,128}$/.test(value.owner.installationId) &&
   typeof value.pinToken === "string" &&
   /^[a-f0-9]{64}$/.test(value.pinToken);
+
+// Readers can poll without locking. Writers publish a complete record by rename.
+export function writeRuntimeState(
+  path: string,
+  state: KoedServerRuntimeState
+): void {
+  withFileLock(path, () => {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, {
+        flag: "wx",
+        mode: 0o600
+      });
+      renameSync(temporary, path);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+  });
+}
+
+// The ownership check and deletion must exclude a concurrent supervisor's write.
+export function removeOwnedRuntimeState(
+  path: string,
+  owner: Pick<KoedServerRuntimeState, "pid" | "startedAt">,
+  read: (path: string, encoding: "utf8") => string = nodeReadFileSync,
+  remove = rmSync
+): boolean {
+  return withFileLock(path, () => {
+    let contents: string;
+    try {
+      contents = read(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
+    const state: unknown = JSON.parse(contents);
+    if (
+      !isRecord(state) ||
+      state.pid !== owner.pid ||
+      state.startedAt !== owner.startedAt
+    )
+      return false;
+    remove(path, { force: true });
+    return true;
+  });
+}
 
 export const readActiveRuntimeState = (
   path: string,

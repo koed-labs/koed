@@ -1,9 +1,4 @@
-import {
-  existsSync as nodeExistsSync,
-  readFileSync,
-  rmSync,
-  type PathLike
-} from "node:fs";
+import { existsSync as nodeExistsSync, readFileSync, rmSync } from "node:fs";
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
@@ -23,6 +18,7 @@ import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   isRuntimeGenerationState,
+  removeOwnedRuntimeState,
   type RuntimeGenerationState
 } from "./runtime-state.js";
 import {
@@ -490,18 +486,24 @@ export const stopKoedServer = ({
 
     if (runtime.dependencyMode === "bundled-local") {
       const embeddingPid = runtime.processes?.embeddingService;
+      const embeddingIdentity = runtime.processIdentities?.embeddingService;
       if (
         canSignalFallbackProcesses() &&
         runtime.services.includes("embedding-service-native")
       ) {
         if (!embeddingPid || embeddingPid <= 0) {
           missingServices.push("embedding-service-native");
+        } else if (releaseManaged && !embeddingIdentity) {
+          errors.push({
+            target: `embedding-service-native (${embeddingPid})`,
+            error:
+              "Embedding Service process identity is missing; refusing to signal it"
+          });
         } else {
           // Release-managed runtimes start the Embedding Service as a private
           // group leader. Signal the group, so llama-server descendants stop too,
           // only while the leader keeps the identity recorded at spawn. A recorded
           // identity also refuses any signal to a reused PID.
-          const embeddingIdentity = runtime.processIdentities?.embeddingService;
           const stopped = stopPid("embedding-service-native", embeddingPid, {
             kill,
             checkPid,
@@ -576,21 +578,21 @@ export const stopKoedServer = ({
   }
 
   if (errors.length === 0) {
-    const currentRuntime = readRuntimeState(paths.runtimeStatePath, {
-      existsSync: pathExists,
-      readFileSync: readFile
-    });
-    if (
-      currentRuntime &&
-      (currentRuntime.pid !== runtime.pid ||
-        currentRuntime.startedAt !== runtime.startedAt)
-    ) {
-      errors.push({
-        target: "runtime-state",
-        error: "Runtime state changed while stop was in progress"
-      });
-    } else {
-      remove(paths.runtimeStatePath as PathLike, { force: true });
+    try {
+      if (
+        !removeOwnedRuntimeState(
+          paths.runtimeStatePath,
+          runtime,
+          readFile,
+          remove
+        )
+      )
+        errors.push({
+          target: "runtime-state",
+          error: "Runtime state changed while stop was in progress"
+        });
+    } catch (error) {
+      errors.push({ target: "runtime-state", error: errorMessage(error) });
     }
   }
 

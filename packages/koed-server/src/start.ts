@@ -10,13 +10,7 @@ import {
 } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   assertKoedAppRuntimeAvailable,
@@ -30,6 +24,7 @@ import {
   resolveEffectiveRuntimeConfig
 } from "./effective-runtime-config.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
+import { removeOwnedRuntimeState, writeRuntimeState } from "./runtime-state.js";
 import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import {
   readCurrentRuntimeOwner,
@@ -1193,20 +1188,6 @@ export const startKoedServer = async ({
     let runtimeStateWritten = false;
     let stopSupervisorExitMonitor: () => void = () => undefined;
     let stopCapabilityMaintenance: () => void = () => undefined;
-    const runtimeStateOwnedByCurrentProcess = (): boolean => {
-      try {
-        const runtime = JSON.parse(
-          readFileSync(paths.runtimeStatePath, "utf8")
-        ) as Partial<KoedServerRuntimeState>;
-        return (
-          runtime.pid === process.pid &&
-          runtime.startedAt === supervisorStartedAt
-        );
-      } catch {
-        return false;
-      }
-    };
-
     let deviceRequestService:
       | Awaited<ReturnType<typeof startDeviceRequestService>>
       | undefined;
@@ -1546,13 +1527,7 @@ export const startKoedServer = async ({
         }
       };
       const persistRuntime = (): void => {
-        writeFileSync(
-          paths.runtimeStatePath,
-          `${JSON.stringify(runtime, null, 2)}\n`,
-          {
-            mode: 0o600
-          }
-        );
+        writeRuntimeState(paths.runtimeStatePath, runtime);
         runtimeStateWritten = true;
       };
       persistRuntime();
@@ -1758,9 +1733,6 @@ export const startKoedServer = async ({
       if (!startupReady) emitStartupMilestone("startup_failed");
       try {
         await cleanupStartedResources();
-        if (runtimeStateOwnedByCurrentProcess()) {
-          rmSync(paths.runtimeStatePath, { force: true });
-        }
       } catch (cleanupError) {
         throw new Error(
           `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
@@ -1776,8 +1748,18 @@ export const startKoedServer = async ({
       process.off("SIGTERM", shutdown);
       signal?.removeEventListener("abort", shutdown);
       managedProcessMonitor.dispose();
-      if (runtimeStateWritten && runtimeStateOwnedByCurrentProcess()) {
-        rmSync(paths.runtimeStatePath, { force: true });
+      if (runtimeStateWritten) {
+        try {
+          removeOwnedRuntimeState(paths.runtimeStatePath, {
+            pid: process.pid,
+            startedAt: supervisorStartedAt
+          });
+        } catch (error) {
+          // Release the supervisor's other resources even if this record needs cleanup.
+          console.warn(
+            `Could not clear runtime state: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
       if (sourceRuntimeLeaseAcquired) {
         try {
