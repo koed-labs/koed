@@ -39,6 +39,8 @@ type Modal =
       destinationId?: string;
       axis?: "git" | "folder";
     };
+// How long a confirmation, and its Undo, stay up.
+export const NOTICE_MS = 5_000;
 type Notice = {
   message: string;
   undo?: PersonalConversationOrganizationResult;
@@ -134,7 +136,8 @@ export function useProjectManagement({
     check: () => void,
     target: ConversationManagementTarget,
     edit: PersonalConversationOrganizationInput,
-    preferredProjectId?: string
+    preferredProjectId?: string,
+    message = `Updated ${target.title}`
   ) => {
     check();
     const result = await api!.manageSourceContext!({
@@ -148,13 +151,13 @@ export function useProjectManagement({
         "The saved organization result is missing. Refresh before trying again."
       );
     open(null);
-    notice({ message: `Updated ${target.title}`, undo: result.organization });
+    notice({ message, undo: result.organization });
     try {
       await refresh(check, target.sessionId, preferredProjectId);
     } catch (cause) {
       check();
       notice({
-        message: `Updated ${target.title}`,
+        message,
         undo: result.organization,
         error: projectErrorMessage(cause)
       });
@@ -174,20 +177,26 @@ export function useProjectManagement({
       }
     });
   };
-  const drop = (row: SidebarConversation, destinationId: string) => {
+  // Resolves true once the Conversation is in the Project; false when nothing
+  // changed, a dialog took over, or it failed (the toast says why).
+  const drop = (
+    row: SidebarConversation,
+    destinationId: string
+  ): Promise<boolean> => {
     if (
       !row.sessionId ||
       row.managementPending ||
       row.sourceProjectId === destinationId ||
       locked.current
     )
-      return;
+      return Promise.resolve(false);
     const target = {
       sessionId: row.sessionId,
       title: row.title,
       sourceProjectId: row.sourceProjectId
     };
-    void run(async (check) => {
+    let moved = false;
+    return run(async (check) => {
       const review = await reviewConversationOrganization(
         api!,
         projects,
@@ -210,14 +219,27 @@ export function useProjectManagement({
         target.sourceProjectId,
         destinationId
       );
-      if (edit) await perform(check, target, edit, destinationId);
-    }).catch((cause) => {
-      if (scope.current === scopeKey)
-        notice({
-          message: "Could not move Conversation",
-          error: projectErrorMessage(cause)
-        });
-    });
+      if (edit) {
+        const name = projects.find((p) => p.id === destinationId)?.name;
+        await perform(
+          check,
+          target,
+          edit,
+          destinationId,
+          name ? `Added ${target.title} to ${name}` : undefined
+        );
+        moved = true;
+      }
+    })
+      .then(() => moved)
+      .catch((cause) => {
+        if (scope.current === scopeKey)
+          notice({
+            message: "Could not move Conversation",
+            error: projectErrorMessage(cause)
+          });
+        return false;
+      });
   };
   const management: SidebarManagement | undefined = available
     ? {
@@ -281,6 +303,13 @@ export function useProjectManagement({
         notice({ ...current.notice!, error: projectErrorMessage(cause) });
     }
   };
+  // A confirmation clears itself; an error stays until dismissed.
+  const clearing = current.notice && !current.notice.error;
+  useEffect(() => {
+    if (!clearing || busy) return;
+    const timer = window.setTimeout(() => notice(null), NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [current.notice, clearing, busy]);
   const overlays = available && (
     <>
       {modal?.kind === "create" && (

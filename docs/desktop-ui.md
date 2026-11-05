@@ -91,7 +91,14 @@ leaves.
   sidebar. A coin can be picked up and thrown: it flies with the flick's speed,
   tumbling, bounces off the floor with less height each time and off the
   stage's sides and top, slides to a stop and rests flat where it lands until
-  Home is reloaded. With reduced motion a dropped coin lands at once. The Projects list is read again, up to three times, when
+  Home is reloaded. With reduced motion a dropped coin lands at once. A held coin
+  dragged over a Project's Kin ringed it at once; after half a second there the
+  Kin glows and says "Add to <Project>", and letting go adds the Conversation
+  to that Project through the same organization path as the sidebar's
+  drag-and-drop. The coin shrinks into the Kin, which hops, and a toast with
+  Undo clears itself after five seconds; leaving the Kin first restarts the
+  wait, and if the add fails the coin drops back to the floor and the toast
+  says why. The Projects list is read again, up to three times, when
   the API reports that membership changed mid-read, as it does constantly while
   history imports; only a list that keeps changing reports that it changed
   while refreshing, with a retry.

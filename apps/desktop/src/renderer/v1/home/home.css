@@ -823,3 +823,86 @@ button.v1-home-pill[data-repair]:hover {
   height: 100%;
   fill: currentColor;
 }
+
+/* A coin held over a Kin: a ring fills over the wait, then the Kin glows and
+   says what letting go will do. */
+.v1-home-kin[data-drop] .v1-pixelkin {
+  transform: translateY(-6px) scale(1.04);
+}
+.v1-home-kin[data-drop]::before {
+  content: "";
+  position: absolute;
+  inset: -10px -14px 18px;
+  border: 2px dashed var(--v1-accent-text);
+  border-radius: 20px;
+  opacity: 0.55;
+  pointer-events: none;
+  animation: v1-home-drop-arm 500ms linear both;
+}
+.v1-home-kin[data-drop="ready"]::before {
+  border-style: solid;
+  opacity: 1;
+  background: color-mix(in srgb, var(--v1-accent-text) 14%, transparent);
+  box-shadow: 0 0 22px
+    color-mix(in srgb, var(--v1-accent-text) 45%, transparent);
+  animation: none;
+}
+@keyframes v1-home-drop-arm {
+  from {
+    opacity: 0.1;
+    transform: scale(1.12);
+  }
+  to {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+}
+.v1-home-kin-drop {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--v1-accent-text);
+  color: var(--v1-bg);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.v1-home-kin-drop:empty {
+  display: none;
+}
+/* Taken in: the coin shrinks into the Kin it was let go over. */
+.v1-home-floor-coin[data-motion="absorbed"] {
+  transform: translateX(-50%) scale(0.2);
+  opacity: 0;
+  transition:
+    transform 260ms ease-in,
+    opacity 260ms ease-in;
+  pointer-events: none;
+}
+.v1-home-floor-coin[data-motion="absorbed"] .v1-home-floor-tip {
+  display: none;
+}
+.v1-home-stage[data-reduced-motion] .v1-home-kin[data-drop]::before {
+  animation: none;
+}
+
+/* A long title is cut with an ellipsis; if the tooltip stays up it slides to
+   show the rest, then back. */
+.v1-home-floor-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.v1-home-floor-coin:hover .v1-home-floor-title[style*="--marquee"],
+.v1-home-floor-coin:focus-visible .v1-home-floor-title[style*="--marquee"] {
+  animation: v1-home-title-slide 4s ease-in-out 0.7s infinite alternate;
+}
+@keyframes v1-home-title-slide {
+  to {
+    text-indent: var(--marquee);
+  }
+}

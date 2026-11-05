@@ -841,6 +841,15 @@ export function V1App({
       key: (previous?.key ?? 0) + 1
     }));
   };
+  // A floor coin let go over a Project's Kin adds its conversation there.
+  const dropLooseConversation = (key: string, projectId: string) => {
+    const row = sidebarProjects
+      .find((project) => project.id === "no-project")
+      ?.conversations.find((item) => item.key === key);
+    return row && projectManagement.management
+      ? projectManagement.management.onDrop(row, projectId).then(Boolean)
+      : Promise.resolve(false);
+  };
   const openProject = (projectId: string) => {
     const latest = sidebarProjects
       .find((project) => project.id === projectId)
@@ -1142,6 +1151,9 @@ export function V1App({
               onOpenProject={openProject}
               looseConversations={looseConversations}
               onOpenConversation={openLooseConversation}
+              {...(projectManagement.management
+                ? { onDropConversation: dropLooseConversation }
+                : {})}
             />
           )}
           {projectManagement.overlays}

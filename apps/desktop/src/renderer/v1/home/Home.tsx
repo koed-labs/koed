@@ -549,6 +549,7 @@ function ProjectsStage({
   keycaps,
   floorCoins,
   onOpenProject,
+  onDropConversation,
   leadHopKey = 0
 }: {
   entries: readonly HomeProjectEntry[];
@@ -558,6 +559,8 @@ function ProjectsStage({
   // Conversations in no Project, lying on the floor.
   floorCoins?: FloorCoinsInput;
   onOpenProject: (projectId: string) => void;
+  // Adds a floor coin's conversation to a Project; true once it is added.
+  onDropConversation?: (key: string, projectId: string) => Promise<boolean>;
   // Bumped when a coin lands on the lead Kin.
   leadHopKey?: number;
 }) {
@@ -565,6 +568,33 @@ function ProjectsStage({
   const focused = useWindowFocused();
   const now = useNow(30_000);
   const kinSpin = useKinSpins();
+  // The Kin a dragged coin is over, and whether it has stayed long enough
+  // for letting go to add the conversation.
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  // A Kin hops each time it takes a conversation in.
+  const [received, setReceived] = useState<ReadonlyMap<string, number>>(
+    new Map()
+  );
+  const coinDrop = useMemo<CoinDrop | undefined>(
+    () =>
+      onDropConversation
+        ? {
+            onTarget: setDropTarget,
+            onDrop: async (key, projectId) => {
+              const added = await onDropConversation(key, projectId);
+              if (added)
+                setReceived((current) =>
+                  new Map(current).set(
+                    projectId,
+                    (current.get(projectId) ?? 0) + 1
+                  )
+                );
+              return added;
+            }
+          }
+        : undefined,
+    [onDropConversation]
+  );
   const [pointerOver, setPointerOver] = useState(false);
   const held = focused && pointerOver;
   const ranked = useMemo(() => rankHomeProjects(entries), [entries]);
@@ -663,6 +693,14 @@ function ProjectsStage({
             data-lead={rank === 0 || undefined}
             data-coin-target={rank === 0 || undefined}
             data-front={front || undefined}
+            data-drop-project={coinDrop ? entry.id : undefined}
+            data-drop={
+              dropTarget?.id === entry.id
+                ? dropTarget.armed
+                  ? "ready"
+                  : "pending"
+                : undefined
+            }
             data-heat={homeHeat(entry.latestAt, now)}
             style={placementStyle(layout, rank)}
             title={
@@ -684,10 +722,19 @@ function ProjectsStage({
               look={projectKinLook(entry.id)}
               size={layout.placements[rank]!.size}
               expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
-              hopKey={(feed?.key ?? 0) + (rank === 0 ? leadHopKey : 0)}
+              hopKey={
+                (feed?.key ?? 0) +
+                (rank === 0 ? leadHopKey : 0) +
+                (received.get(entry.id) ?? 0)
+              }
               spin={spinProps.spin}
             />
             <span className="v1-home-kin-shadow" aria-hidden="true" />
+            {dropTarget?.id === entry.id && (
+              <span className="v1-home-kin-drop" aria-hidden="true">
+                {dropTarget.armed ? `Add to ${entry.name}` : null}
+              </span>
+            )}
             <span className="v1-home-kin-label">
               <strong>{entry.name}</strong>
               {/* Back-row Kin carry just a name; the rest is in the tooltip. */}
@@ -706,6 +753,7 @@ function ProjectsStage({
           width={box?.width}
           floor={(box?.reserve ?? CAPTION_FALLBACK) - 10}
           coins={floorCoins}
+          drop={coinDrop}
         />
       )}
       <div className="v1-home-caption" ref={captionRef}>
@@ -945,6 +993,14 @@ export type HomeLooseConversation = {
   latestAt: string;
   client: "codex" | "claude" | "pi" | null;
 };
+// A dragged coin must stay over a Kin this long before letting go adds its
+// conversation, so one flung across the stage doesn't add by accident.
+export const COIN_DROP_ARM_MS = 500;
+type DropTarget = { id: string; armed: boolean };
+type CoinDrop = {
+  onTarget: (target: DropTarget | null) => void;
+  onDrop: (key: string, projectId: string) => Promise<boolean>;
+};
 type FloorCoinsInput = {
   conversations: readonly HomeLooseConversation[];
   onOpen: (key: string) => void;
@@ -960,12 +1016,14 @@ function FloorCoins({
   layout,
   width,
   floor,
-  coins
+  coins,
+  drop
 }: {
   layout: StageLayout;
   width: number | undefined;
   floor: number;
   coins: FloorCoinsInput;
+  drop?: CoinDrop | undefined;
 }) {
   const conversations = [...coins.conversations]
     .sort((left, right) => right.latestAt.localeCompare(left.latestAt))
@@ -1003,6 +1061,7 @@ function FloorCoins({
           floor={floor}
           half={half}
           onOpen={coins.onOpen}
+          drop={drop}
         />
       ))}
     </div>
@@ -1035,16 +1094,30 @@ function FloorCoin({
   home,
   floor,
   half,
-  onOpen
+  onOpen,
+  drop
 }: {
   conversation: HomeLooseConversation;
   home: number;
   floor: number;
   half: number;
   onOpen: (key: string) => void;
+  drop?: CoinDrop | undefined;
 }) {
   const reduced = useReducedMotion();
   const ref = useRef<HTMLButtonElement>(null);
+  const title = useRef<HTMLSpanElement>(null);
+  // A title wider than the tooltip is cut off with an ellipsis and, while the
+  // tooltip is up, slides to show the rest (not under reduced motion).
+  const measureTitle = () =>
+    requestAnimationFrame(() => {
+      const label = title.current;
+      if (!label) return;
+      const overflow = label.scrollWidth - label.clientWidth;
+      if (overflow > 0 && !reduced)
+        label.style.setProperty("--marquee", `-${overflow + 4}px`);
+      else label.style.removeProperty("--marquee");
+    });
   // Where it rests once thrown; until then it keeps its place in the row.
   const [thrownTo, setThrownTo] = useState<number | null>(null);
   const [flight, setFlight] = useState<CoinMotion | null>(null);
@@ -1060,7 +1133,35 @@ function FloorCoin({
   const dragged = useRef(false);
   const frame = useRef(0);
   const ceiling = useRef(400);
-  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+  // Taken into a Project: it shrinks away until the list catches up.
+  const [absorbed, setAbsorbed] = useState(false);
+  const alive = useRef(true);
+  const over = useRef<DropTarget | null>(null);
+  const arming = useRef(0);
+  const dropRef = useRef(drop);
+  dropRef.current = drop;
+  // Tracks the Kin under a held coin; it arms after COIN_DROP_ARM_MS there.
+  const hover = (id: string | null) => {
+    if ((over.current?.id ?? null) === id) return;
+    window.clearTimeout(arming.current);
+    over.current = id ? { id, armed: false } : null;
+    dropRef.current?.onTarget(over.current);
+    if (!id) return;
+    arming.current = window.setTimeout(() => {
+      if (over.current?.id !== id) return;
+      over.current = { id, armed: true };
+      dropRef.current?.onTarget(over.current);
+    }, COIN_DROP_ARM_MS);
+  };
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      cancelAnimationFrame(frame.current);
+      window.clearTimeout(arming.current);
+      if (over.current) dropRef.current?.onTarget(null);
+    };
+  }, []);
 
   const toStage = (clientX: number, clientY: number) => {
     const rect = ref.current?.parentElement?.getBoundingClientRect();
@@ -1123,7 +1224,7 @@ function FloorCoin({
       ref={ref}
       type="button"
       className="v1-home-floor-coin"
-      data-motion={motion.mode}
+      data-motion={absorbed ? "absorbed" : motion.mode}
       style={
         {
           "--coin-x": `calc(50% + ${motion.x}px)`,
@@ -1132,6 +1233,8 @@ function FloorCoin({
         } as CSSProperties
       }
       aria-label={`Open ${conversation.title}`}
+      onPointerEnter={measureTitle}
+      onFocus={measureTitle}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         cancelAnimationFrame(frame.current);
@@ -1173,11 +1276,38 @@ function FloorCoin({
         coin.y = Math.max(0, Math.min(ceiling.current, point.y));
         coin.angle = 0;
         setFlight({ mode: "held", x: coin.x, y: coin.y, angle: 0 });
+        if (drop)
+          hover(
+            document
+              .elementsFromPoint?.(event.clientX, event.clientY)
+              .map((element) =>
+                element.closest<HTMLElement>("[data-drop-project]")
+              )
+              .find(Boolean)?.dataset.dropProject ?? null
+          );
       }}
       onPointerUp={() => {
         if (!start.current) return;
         start.current = null;
         if (!dragged.current) return;
+        const target = over.current;
+        hover(null);
+        if (drop && target?.armed) {
+          // Let go over a Kin that has waited its turn: add it at once.
+          setAbsorbed(true);
+          void drop
+            .onDrop(conversation.key, target.id)
+            .catch(() => false)
+            .then((added) => {
+              if (added || !alive.current) return;
+              // Not added: the coin drops back onto the floor.
+              setAbsorbed(false);
+              body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
+              if (reduced) settle();
+              else fly();
+            });
+          return;
+        }
         if (reduced) {
           settle();
           return;
@@ -1200,6 +1330,7 @@ function FloorCoin({
       onPointerCancel={() => {
         if (!start.current) return;
         start.current = null;
+        hover(null);
         // A lost drag lets the coin fall where it was.
         if (!dragged.current) return;
         body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
@@ -1224,7 +1355,9 @@ function FloorCoin({
             <AiClientLogo id={conversation.client} />
           </span>
         )}
-        {conversation.title}
+        <span className="v1-home-floor-title" ref={title}>
+          {conversation.title}
+        </span>
       </span>
     </button>
   );
@@ -1401,8 +1534,7 @@ function IngestionProgress({
               {showSkipped && (
                 <span id="v1-home-skip-explanation" role="tooltip">
                   Koed may skip a conversation it can’t safely process, such as
-                  one containing a record that is too large or invalid. Skipping
-                  lets the rest continue.
+                  one containing a record that is too large or invalid.
                 </span>
               )}
             </span>
@@ -1459,7 +1591,8 @@ export function Home({
   statusStore,
   onOpenProject,
   looseConversations = [],
-  onOpenConversation
+  onOpenConversation,
+  onDropConversation
 }: {
   view: HomeView;
   clients: readonly HomeClient[];
@@ -1469,6 +1602,8 @@ export function Home({
   onOpenProject: (projectId: string) => void;
   looseConversations?: readonly HomeLooseConversation[];
   onOpenConversation?: (key: string) => void;
+  // Adds a floor coin's conversation to a Project; true once it is added.
+  onDropConversation?: (key: string, projectId: string) => Promise<boolean>;
 }) {
   const floorCoins =
     onOpenConversation && looseConversations.length
@@ -1617,6 +1752,7 @@ export function Home({
         }
         entries={entries}
         onOpenProject={onOpenProject}
+        {...(onDropConversation ? { onDropConversation } : {})}
         leadHopKey={coinHop}
         caption={
           <>

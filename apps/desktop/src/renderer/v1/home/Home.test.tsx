@@ -668,4 +668,124 @@ describe("Home", () => {
       operatorConsented: true
     });
   });
+
+  describe("dropping a floor coin on a Kin", () => {
+    const loose = {
+      key: "loose",
+      title: "Loose chat",
+      latestAt: "2026-11-03T00:00:00Z",
+      client: null
+    } as const;
+    const press = (target: Element, type: string, clientX: number) =>
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          button: 0,
+          isPrimary: true,
+          pointerId: 1,
+          clientX,
+          clientY: 0
+        })
+      );
+    // happy-dom has no hit testing; the pointer is "over" whatever is set.
+    let under: Element[] = [];
+    beforeEach(() => {
+      under = [];
+      Object.defineProperty(document, "elementsFromPoint", {
+        configurable: true,
+        value: () => under
+      });
+    });
+    afterEach(() => {
+      delete (document as { elementsFromPoint?: unknown }).elementsFromPoint;
+    });
+    const setup = async (
+      onDropConversation: (key: string, projectId: string) => Promise<boolean>
+    ) => {
+      reducedMotion = true;
+      await render({
+        entries: [entry("koed", "2026-11-03T11:59:00Z")],
+        looseConversations: [loose],
+        onOpenConversation: vi.fn(),
+        onDropConversation
+      });
+      const coin = container.querySelector<HTMLElement>(".v1-home-floor-coin")!;
+      await act(async () => {
+        press(coin, "pointerdown", 0);
+        press(coin, "pointermove", 60);
+      });
+      return { coin, target: kin("koed") };
+    };
+
+    it("adds the conversation only after half a second over the Kin", async () => {
+      const onDrop = vi
+        .fn<(key: string, projectId: string) => Promise<boolean>>()
+        .mockResolvedValue(true);
+      const { coin, target } = await setup(onDrop);
+      under = [target];
+      await act(async () => press(coin, "pointermove", 70));
+      // Over the Kin, but not yet for long enough.
+      expect(target.getAttribute("data-drop")).toBe("pending");
+      await act(async () => vi.advanceTimersByTime(499));
+      expect(target.getAttribute("data-drop")).toBe("pending");
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(target.getAttribute("data-drop")).toBe("ready");
+      expect(target.querySelector(".v1-home-kin-drop")?.textContent).toBe(
+        "Add to koed"
+      );
+      await act(async () => press(coin, "pointerup", 70));
+      expect(onDrop.mock.calls).toEqual([
+        ["loose", target.dataset.dropProject]
+      ]);
+      expect(coin.dataset.motion).toBe("absorbed");
+      expect(target.hasAttribute("data-drop")).toBe(false);
+    });
+
+    it("does nothing when let go before the wait is over", async () => {
+      const onDrop = vi
+        .fn<(key: string, projectId: string) => Promise<boolean>>()
+        .mockResolvedValue(true);
+      const { coin, target } = await setup(onDrop);
+      under = [target];
+      await act(async () => press(coin, "pointermove", 70));
+      await act(async () => vi.advanceTimersByTime(300));
+      await act(async () => press(coin, "pointerup", 70));
+      await act(async () => vi.advanceTimersByTime(1_000));
+      expect(onDrop).not.toHaveBeenCalled();
+      expect(coin.dataset.motion).toBe("rest");
+      expect(target.hasAttribute("data-drop")).toBe(false);
+    });
+
+    it("restarts the wait when the coin leaves the Kin and returns", async () => {
+      const onDrop = vi
+        .fn<(key: string, projectId: string) => Promise<boolean>>()
+        .mockResolvedValue(true);
+      const { coin, target } = await setup(onDrop);
+      under = [target];
+      await act(async () => press(coin, "pointermove", 70));
+      await act(async () => vi.advanceTimersByTime(400));
+      under = [];
+      await act(async () => press(coin, "pointermove", 200));
+      expect(target.hasAttribute("data-drop")).toBe(false);
+      under = [target];
+      await act(async () => press(coin, "pointermove", 70));
+      await act(async () => vi.advanceTimersByTime(400));
+      expect(target.getAttribute("data-drop")).toBe("pending");
+      await act(async () => press(coin, "pointerup", 70));
+      expect(onDrop).not.toHaveBeenCalled();
+    });
+
+    it("puts the coin back on the floor when the add does not happen", async () => {
+      const onDrop = vi
+        .fn<(key: string, projectId: string) => Promise<boolean>>()
+        .mockResolvedValue(false);
+      const { coin, target } = await setup(onDrop);
+      under = [target];
+      await act(async () => press(coin, "pointermove", 70));
+      await act(async () => vi.advanceTimersByTime(500));
+      await act(async () => press(coin, "pointerup", 70));
+      expect(onDrop).toHaveBeenCalledTimes(1);
+      expect(coin.dataset.motion).toBe("rest");
+    });
+  });
 });

@@ -54,7 +54,7 @@ export type SidebarManagement = {
     row: SidebarConversation,
     action: "move" | "membership" | "context"
   ) => void;
-  onDrop: (row: SidebarConversation, projectId: string) => void;
+  onDrop: (row: SidebarConversation, projectId: string) => Promise<unknown>;
   busy?: boolean;
 };
 
@@ -107,7 +107,10 @@ export function ProjectSidebar({
   const [now, setNow] = useState(Date.now);
   const { pins, toggle, ready, error: pinError } = useSidebarPins(scopeKey);
   const drag = useConversationDrag(
-    management?.busy ? undefined : management?.onDrop
+    management?.busy
+      ? undefined
+      : management?.onDrop &&
+          ((row, projectId) => void management.onDrop(row, projectId))
   );
   const showEmptyStates =
     inventoryReady && !loading && !servicesStarting && !error;
