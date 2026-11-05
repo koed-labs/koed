@@ -45,7 +45,8 @@ export function ProjectSyncDetails({
   onDeleted,
   open: controlledOpen,
   onOpenChange,
-  returnFocus
+  returnFocus,
+  popupClassName
 }: {
   project: DesktopProject;
   projects?: readonly DesktopProject[];
@@ -55,6 +56,7 @@ export function ProjectSyncDetails({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   returnFocus?: RefObject<HTMLButtonElement | null>;
+  popupClassName?: string;
 }) {
   const [localOpen, setLocalOpen] = useState(false),
     [busy, setBusy] = useState(false),
@@ -329,7 +331,7 @@ export function ProjectSyncDetails({
           Sync details
         </Button>
       ) : null}
-      <DialogPopup finalFocus={returnFocus}>
+      <DialogPopup finalFocus={returnFocus} className={popupClassName}>
         <DialogHeader>
           <DialogTitle>Project sync details</DialogTitle>
           <DialogDescription>

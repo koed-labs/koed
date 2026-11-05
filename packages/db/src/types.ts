@@ -1,8 +1,12 @@
-import type { PersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
+import type {
+  PersonalSelectionConsumerRepository,
+  PersonalInventorySelectionRepository
+} from "./personal-selection-consumer-repository.js";
 import type { PersonalProjectDefaultRepository } from "./personal-project-default-repository.js";
 import type { PersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
 import type { PersonalConfigurationRepository } from "./personal-configuration-repository.js";
 import type { PersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
+import type { PersonalConversationOrganizationRepository } from "./personal-conversation-organization-repository.js";
 import type { PersonalProjectExclusionRepository } from "./personal-project-exclusion-repository.js";
 import type { PersonalMembershipRepository } from "./personal-membership-repository.js";
 import type { PersonalProjectBatchRepository } from "./personal-project-batch-repository.js";
@@ -1982,6 +1986,7 @@ export interface MemorySourceRepository
     PersonalProjectBatchRepository,
     PersonalProjectExclusionRepository,
     PersonalSourceCorrectionRepository,
+    PersonalConversationOrganizationRepository,
     CollaborationRepository,
     CollaborationRealtimeMaterializationRepository,
     ConversationItemRepository,
@@ -2009,6 +2014,7 @@ export interface MemorySourceRepository
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
   personalProjectSelections: PersonalProjectSelectionRepository;
+  personalInventorySelections?: PersonalInventorySelectionRepository;
   personalConfiguration?: PersonalConfigurationRepository;
   countUsers(): Promise<number>;
   createUser(input: CreateUserInput): Promise<{ id: string }>;

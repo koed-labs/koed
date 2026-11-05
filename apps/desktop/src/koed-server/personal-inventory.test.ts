@@ -35,7 +35,7 @@ describe("Personal inventory scheduling", () => {
     expect(waits).toEqual([200, 400]);
   });
 
-  it("reports a failed load, not a conflict, when Projects keep changing", async () => {
+  it("reports the conflict once Projects keep changing past the retries", async () => {
     await expect(
       loadNamedPersonalInventory(
         async () => {
@@ -44,7 +44,7 @@ describe("Personal inventory scheduling", () => {
         {},
         async () => undefined
       )
-    ).rejects.toMatchObject({ code: "request_failed", retryable: true });
+    ).rejects.toMatchObject({ code: "conflict" });
   });
 
   it("starts independent inventories together and preserves complete source pagination", async () => {

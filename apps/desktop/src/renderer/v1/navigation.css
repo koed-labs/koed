@@ -12,7 +12,7 @@
   --muted-foreground: var(--v1-muted);
   --border: var(--v1-border);
   --ring: var(--v1-accent);
-  --sidebar-width: 302px;
+  --sidebar-width: 280px;
 }
 .v1-app.v1-navigation {
   display: flex;
@@ -84,7 +84,7 @@
 }
 .v1-navigation-sidebar[data-mobile="true"] {
   height: 100dvh;
-  width: 302px;
+  width: 280px;
   max-width: calc(100vw - 40px);
 }
 .v1-navigation .v1-navigation-main {
@@ -165,11 +165,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 36px;
+  height: 32px;
   padding: 0 10px;
   background: var(--v1-surface);
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   color: var(--v1-muted);
 }
 .v1-nav-search:focus-within {
@@ -214,6 +214,7 @@
   gap: 0;
   overflow-x: hidden;
   padding: 10px 10px 28px;
+  scrollbar-gutter: stable;
 }
 .v1-nav-scroll [data-slot="sidebar-group"] {
   padding: 0;
@@ -223,7 +224,7 @@
   align-items: center;
   gap: 5px;
   height: 32px;
-  padding: 0 7px;
+  padding: 0 8px;
   width: 100%;
   color: var(--v1-muted);
   font-size: 11px;
@@ -266,7 +267,7 @@
   height: 38px;
   border-radius: 9px;
   gap: 7px;
-  padding: 0 7px;
+  padding: 0 8px;
   font-size: 12px;
   font-weight: 500;
 }
@@ -307,8 +308,9 @@
   min-height: 40px;
   border-radius: 9px;
   gap: 7px;
-  padding: 9px 30px 9px 8px;
+  padding: 9px 8px;
   font-size: 12px;
+  translate: none;
 }
 .v1-nav-conversation[aria-current] {
   background: var(--v1-accent-soft);
@@ -400,6 +402,9 @@
   font-size: 11px;
 }
 .v1-nav-empty button {
+  display: block;
+  width: fit-content;
+  margin-top: 6px;
   text-decoration: underline;
 }
 @media (hover: none) {

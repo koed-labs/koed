@@ -124,6 +124,9 @@ export const currentConsumerSnapshot = async (client: pg.PoolClient) => {
 /** A portable Conversation resolves only through its exact verified local
  * binding. Native-only selection uses the actual owned Session ID directly. */
 export interface SelectionConsumerOptions {
+  /** Read-only inventory checks membership and context, not incoming content.
+   * This is an internal adapter option, never a public consumer input. */
+  scopeToInventory?: boolean;
   /** Only the sharing-preview adapter uses a bounded selection-state version.
    * Generic consumers retain their owner-wide transaction-visibility fence. */
   scopeToSharingReview?: boolean;

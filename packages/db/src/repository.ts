@@ -1,10 +1,14 @@
 import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
 import { personalOwnerIdSchema } from "@koed/shared";
-import { createPersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
+import {
+  createPersonalSelectionConsumerRepository,
+  createPersonalInventorySelectionRepository
+} from "./personal-selection-consumer-repository.js";
 import { createPersonalProjectDefaultRepository } from "./personal-project-default-repository.js";
 import { createPersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
 import { createPersonalConfigurationRepository } from "./personal-configuration-repository.js";
 import { createPersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
+import { createPersonalConversationOrganizationRepository } from "./personal-conversation-organization-repository.js";
 import {
   effectiveProjectPathSql,
   effectiveProjectNameSql
@@ -4110,10 +4114,13 @@ export const createMemorySourceRepository = (
     ...createPersonalProjectDefaultRepository(pool),
     ...createPersonalMembershipReviewRepository(pool),
     ...createPersonalSelectionConsumerRepository(pool),
+    personalInventorySelections:
+      createPersonalInventorySelectionRepository(pool),
     ...createPersonalProjectRuleRepository(pool),
     ...createPersonalProjectBatchRepository(pool),
     ...createPersonalProjectExclusionRepository(pool),
     ...createPersonalSourceCorrectionRepository(pool),
+    ...createPersonalConversationOrganizationRepository(pool),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       resolveCapturePolicy: (actor, input, client) =>

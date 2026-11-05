@@ -6,15 +6,15 @@ It wraps the same local `koed-server` command surface, shows service status,
 runs client-neutral core setup, AI Client onboarding, and health checks, and provides
 the local Project, Captured Session, and raw Conversation UI in one window.
 
-The main Desktop experience is Project-first. On wide windows it uses a
-persistent master-detail workspace: active and disclosed inactive local
-Projects remain in the master list while the detail pane shows the selected
-Project's Captured Sessions or a raw Conversation. Narrow windows deliberately
-switch to list → Project → Conversation drill-down, with breadcrumb controls
-returning to the previous level. Project and Captured Session names, source AI Client when available, activity,
-counts, and Conversation previews form the primary scanning hierarchy; local
-paths, Git identity, discovery provenance, and manual assignment controls sit
-in secondary disclosures.
+The main Desktop experience uses a persistent sidebar with search, pinned
+Conversations, and expandable Projects beside the Conversation pane. It includes
+captured AI Client Conversations and those started in Desktop. On narrow
+windows, the sidebar opens as a drawer. Project settings manages source rules,
+Conversation memberships, and Personal Device sync. Drag and drop moves a
+Conversation between Projects while retaining its Folder and Git Anchor
+references by default. The Conversation header shows those references as tags.
+See [Desktop UI](../../docs/desktop-ui.md) for the current interface and the
+older full-interface baseline retained for validation.
 
 Opening a Captured Session loads its Memory Events through an exact, typed
 Electron IPC operation and renders the raw Conversation inside the Desktop.

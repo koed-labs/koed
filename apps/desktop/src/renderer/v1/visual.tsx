@@ -50,7 +50,6 @@ export type ModelPickerProps = {
   selection?: V1ModelSelection | null;
   onChange: (selection: V1ModelSelection) => void;
   look?: AgentLook;
-  onOpenSettings?: () => void;
   onOpen?: () => void;
   disabled?: boolean;
   lockedProviderId?: string;
@@ -69,7 +68,6 @@ export function ModelPicker({
   selection,
   onChange,
   look = DEFAULT_AGENT_LOOK,
-  onOpenSettings,
   onOpen,
   disabled = false,
   lockedProviderId
@@ -225,19 +223,6 @@ export function ModelPicker({
                     ))}
                   </div>
                 ))}
-              {onOpenSettings && (
-                <button
-                  type="button"
-                  className="v1-model-settings"
-                  onClick={() => {
-                    setOpen(false);
-                    onOpenSettings();
-                  }}
-                >
-                  AI settings
-                  <ChevronRight size={16} />
-                </button>
-              )}
             </>
           ) : (
             <div className="v1-reason-panel">
@@ -424,14 +409,12 @@ export function V1EmptyHero({
   look = DEFAULT_AGENT_LOOK,
   agentName = "Koed",
   subtitle,
-  composer,
-  children
+  composer
 }: {
   look?: AgentLook;
   agentName?: string;
   subtitle?: ReactNode;
   composer: ReactNode;
-  children?: ReactNode;
 }) {
   return (
     <section className="v1-hero">
@@ -441,62 +424,6 @@ export function V1EmptyHero({
       </div>
       {subtitle && <p className="v1-hero-subtitle">{subtitle}</p>}
       <div className="v1-hero-composer">{composer}</div>
-      {children}
     </section>
-  );
-}
-export function V1ThreadLayout({
-  children,
-  composer
-}: {
-  children: ReactNode;
-  composer: ReactNode;
-}) {
-  return (
-    <>
-      <div className="v1-scroll">
-        <div className="v1-thread">{children}</div>
-      </div>
-      <div className="v1-dock">{composer}</div>
-    </>
-  );
-}
-export function V1Message({
-  role,
-  children,
-  actions,
-  meta,
-  working = false,
-  look = DEFAULT_AGENT_LOOK
-}: {
-  role: "user" | "assistant";
-  children: ReactNode;
-  actions?: ReactNode;
-  meta?: ReactNode;
-  working?: boolean;
-  look?: AgentLook;
-}) {
-  return role === "user" ? (
-    <article className="v1-message v1-user">
-      <div className="v1-bubble">{children}</div>
-      {actions && <div className="v1-message-actions">{actions}</div>}
-    </article>
-  ) : (
-    <article className="v1-message v1-assistant">
-      {working ? (
-        <div className="v1-thinking">
-          <Pixelkin look={look} size={26} />
-          <span>{children}</span>
-        </div>
-      ) : (
-        <div className="v1-answer">{children}</div>
-      )}
-      {(actions || meta) && (
-        <div className="v1-message-actions">
-          {actions}
-          {meta && <span className="v1-message-meta">{meta}</span>}
-        </div>
-      )}
-    </article>
   );
 }

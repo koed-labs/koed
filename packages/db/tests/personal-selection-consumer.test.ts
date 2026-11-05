@@ -146,15 +146,22 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
     }
   });
 
-  it.each(["repository", "project"] as const)(
-    "keeps a continuous %s sharing review fresh during capture but fences scope changes",
-    async (kind) => {
+  it.each(
+    (["repository", "project", "folder"] as const).flatMap((kind) =>
+      (["sharing", "inventory"] as const).map((mode) => ({ kind, mode }))
+    )
+  )(
+    "keeps $kind $mode reads fresh during capture but fences scope changes",
+    async ({ kind, mode }) => {
       const repo = createMemorySourceRepository(pool, {
         envelopeEncryptionProvider: encryption
       });
-      const review = createPersonalSelectionConsumerRepository(pool, {
-        scopeToSharingReview: true
-      });
+      const review =
+        mode === "inventory"
+          ? repo.personalInventorySelections!
+          : createPersonalSelectionConsumerRepository(pool, {
+              scopeToSharingReview: true
+            });
       const actor = await user();
       const git: PersonalGitContext = {
         kind: "portable_repository",
@@ -167,9 +174,22 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
         selectedRemote: "origin",
         anchorDisplay: "example.test/review"
       };
+      const folder: PersonalFolderObservation = {
+        identity: {
+          folderId: randomUUID(),
+          originatingDeploymentId: "inventory",
+          originatingDeviceId: "device",
+          originatingProfileId: "profile",
+          directoryIncarnationId: randomUUID()
+        },
+        normalizedPath: "/inventory/project",
+        capturedPath: "/inventory/project",
+        observedAt: new Date().toISOString()
+      };
       const selected = await repo.createCapturedSession(actor, {
         externalSessionId: randomUUID(),
-        repositoryIdentity: git
+        repositoryIdentity: git,
+        folderObservation: folder
       });
       const project = await repo.createNamedPersonalProject(actor, {
         name: "Selected Project"
@@ -181,13 +201,18 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
       const target =
         kind === "repository"
           ? { kind, repository: git }
-          : {
-              kind,
-              project: {
-                ownerUserId: actor.userId,
-                projectId: project.projectId
+          : kind === "folder"
+            ? {
+                kind,
+                folder: { ownerUserId: actor.userId, ...folder.identity }
               }
-            };
+            : {
+                kind,
+                project: {
+                  ownerUserId: actor.userId,
+                  projectId: project.projectId
+                }
+              };
       const baseline = () =>
         review.startPersonalSelectionEnumeration(actor, { target });
       const page = await baseline();
@@ -258,7 +283,8 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
       const beforeAddition = await baseline();
       const added = await repo.createCapturedSession(actor, {
         externalSessionId: randomUUID(),
-        repositoryIdentity: git
+        repositoryIdentity: git,
+        folderObservation: folder
       });
       if (kind === "project") {
         const current = await repo.getPersonalMembershipSyncState(
@@ -292,54 +318,60 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
       ).rejects.toMatchObject({ statusCode: 404 });
     }
   );
-  it("continues sharing review pages through unrelated capture and rejects changed selected context", async () => {
-    const repo = createMemorySourceRepository(pool, {
-      envelopeEncryptionProvider: encryption
-    });
-    const review = createPersonalSelectionConsumerRepository(pool, {
-      scopeToSharingReview: true
-    });
-    const actor = await user();
-    const git: PersonalGitContext = {
-      kind: "portable_repository",
-      key: `gr_${randomUUID()}`,
-      root: null,
-      branch: null,
-      reason: "origin",
-      checkoutId: null,
-      originatingDeviceId: "paged-review",
-      selectedRemote: "origin",
-      anchorDisplay: "example.test/paged-review"
-    };
-    for (let i = 0; i < 101; i++)
-      await repo.createCapturedSession(actor, {
-        externalSessionId: randomUUID(),
-        repositoryIdentity: git
+  it.each(["sharing", "inventory"] as const)(
+    "continues %s pages through unrelated capture and rejects changed selected context",
+    async (mode) => {
+      const repo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: encryption
       });
-    const first = await review.startPersonalSelectionEnumeration(actor, {
-      target: { kind: "repository", repository: git }
-    });
-    expect(first.entries).toHaveLength(100);
-    expect(first.nextCursor).not.toBeNull();
-    await repo.createCapturedSession(actor, {
-      externalSessionId: randomUUID()
-    });
-    const last = await review.continuePersonalSelectionEnumeration(actor, {
-      cursor: first.nextCursor!
-    });
-    expect(last.entries).toHaveLength(1);
-    expect(last.snapshotVersion).toBe(first.snapshotVersion);
-    expect(last.changeCursor).not.toBeNull();
-    await pool.query(
-      "update sessions set repository_assignment_version=repository_assignment_version+1 where id=$1",
-      [first.entries[0]!.source.localSessionId]
-    );
-    await expect(
-      review.continuePersonalSelectionEnumeration(actor, {
+      const review =
+        mode === "inventory"
+          ? repo.personalInventorySelections!
+          : createPersonalSelectionConsumerRepository(pool, {
+              scopeToSharingReview: true
+            });
+      const actor = await user();
+      const git: PersonalGitContext = {
+        kind: "portable_repository",
+        key: `gr_${randomUUID()}`,
+        root: null,
+        branch: null,
+        reason: "origin",
+        checkoutId: null,
+        originatingDeviceId: "paged-review",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/paged-review"
+      };
+      for (let i = 0; i < 101; i++)
+        await repo.createCapturedSession(actor, {
+          externalSessionId: randomUUID(),
+          repositoryIdentity: git
+        });
+      const first = await review.startPersonalSelectionEnumeration(actor, {
+        target: { kind: "repository", repository: git }
+      });
+      expect(first.entries).toHaveLength(100);
+      expect(first.nextCursor).not.toBeNull();
+      await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID()
+      });
+      const last = await review.continuePersonalSelectionEnumeration(actor, {
         cursor: first.nextCursor!
-      })
-    ).rejects.toMatchObject({ code: "selection_enumeration_stale" });
-  });
+      });
+      expect(last.entries).toHaveLength(1);
+      expect(last.snapshotVersion).toBe(first.snapshotVersion);
+      expect(last.changeCursor).not.toBeNull();
+      await pool.query(
+        "update sessions set repository_assignment_version=repository_assignment_version+1 where id=$1",
+        [first.entries[0]!.source.localSessionId]
+      );
+      await expect(
+        review.continuePersonalSelectionEnumeration(actor, {
+          cursor: first.nextCursor!
+        })
+      ).rejects.toMatchObject({ code: "selection_enumeration_stale" });
+    }
+  );
   it("requires conclusive owner-bound evidence before removing a known Git Anchor member", async () => {
     const repo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: encryption

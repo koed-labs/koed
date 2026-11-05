@@ -4877,6 +4877,10 @@ export const createKoedServerManager = ({
                 : "invalid_response",
               cause instanceof LocalApiRateLimitError
             );
+      const inventoryConflict =
+        boundaryError.code === "conflict" &&
+        (request.operation === "personal.projects.list" ||
+          request.operation === "personal.projects.named.list");
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -4886,17 +4890,19 @@ export const createKoedServerManager = ({
           message:
             cause instanceof LocalApiRateLimitError
               ? cause.message
-              : boundaryError.code === "conflict" &&
-                  request.operation === "personal.projects.sync"
-                ? "Project membership or its source changed. Review the current revisions again."
+              : inventoryConflict
+                ? "The conversation list changed while refreshing. Try again."
                 : boundaryError.code === "conflict" &&
-                    request.operation === "personal.sources.manage"
-                  ? "Source context or Project membership changed. Preview the correction again."
+                    request.operation === "personal.projects.sync"
+                  ? "Project membership or its source changed. Review the current revisions again."
                   : boundaryError.code === "conflict" &&
-                      request.operation === "personal.projects.manage"
-                    ? "The Project changed. Reload it and try again."
-                    : personalMemoryErrorMessage(boundaryError.code),
-          retryable: boundaryError.retryable
+                      request.operation === "personal.sources.manage"
+                    ? "Source context or Project membership changed. Preview the correction again."
+                    : boundaryError.code === "conflict" &&
+                        request.operation === "personal.projects.manage"
+                      ? "The Project changed. Reload it and try again."
+                      : personalMemoryErrorMessage(boundaryError.code),
+          retryable: inventoryConflict || boundaryError.retryable
         }
       });
     }

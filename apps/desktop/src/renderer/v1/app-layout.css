@@ -1,23 +1,6 @@
 .v1-launch {
   width: 100%;
 }
-.v1-launch > label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin: 0 0.5rem 0.75rem 0;
-  font-size: 0.8rem;
-  color: var(--v1-muted, #777);
-}
-.v1-launch select {
-  min-width: 10rem;
-  max-width: 18rem;
-  padding: 0.45rem 0.6rem;
-  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  border-radius: 0.55rem;
-  color: inherit;
-  background: var(--v1-surface, transparent);
-}
 .v1-launch .personal-new-conversation-composer {
   width: 100%;
 }

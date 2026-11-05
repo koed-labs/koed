@@ -15517,6 +15517,17 @@ describe("account and access flows", () => {
         }
       }));
     repository.explainPersonalProjectSession = explain;
+    const explainBatch = vi.fn<
+      NonNullable<typeof repository.explainPersonalProjectSessions>
+    >(async (_actor, _projectId, input) => ({
+      project: result.project,
+      explanations: input.sessionIds.map((id) => ({
+        ...result.explanation,
+        sessionId: id,
+        logicalSessionId: id
+      }))
+    }));
+    repository.explainPersonalProjectSessions = explainBatch;
     repository.excludePersonalProjectSession = exclude;
     repository.restorePersonalProjectSession = restore;
     const app = await buildServer({ repository });
@@ -15588,6 +15599,56 @@ describe("account and access flows", () => {
       });
       expect(missingRevision.statusCode).toBe(400);
       expect(restore).toHaveBeenCalledTimes(1);
+      const batchUrl = `/v1/personal/projects/${projectId}/memberships/explain-batch`;
+      const sessionIds = Array.from(
+        { length: 100 },
+        (_, i) =>
+          `00000000-0000-4000-8000-${(1000 + i).toString().padStart(12, "0")}`
+      );
+      const batchPayload = { expectedVersion: 4, sessionIds };
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: batchUrl,
+            payload: batchPayload
+          })
+        ).statusCode
+      ).toBe(401);
+      for (const payload of [
+        { ...batchPayload, ownerUserId: "foreign" },
+        { ...batchPayload, expectedVersion: 0 },
+        { ...batchPayload, sessionIds: [] },
+        { ...batchPayload, sessionIds: [sessionId, sessionId] },
+        { ...batchPayload, sessionIds: [...sessionIds, sessionId] }
+      ]) {
+        expect(
+          (
+            await app.inject({
+              method: "POST",
+              url: batchUrl,
+              headers,
+              payload
+            })
+          ).statusCode
+        ).toBe(400);
+      }
+      expect(explainBatch).not.toHaveBeenCalled();
+      const batchResponse = await app.inject({
+        method: "POST",
+        url: batchUrl,
+        headers,
+        payload: batchPayload
+      });
+      expect(batchResponse.statusCode).toBe(200);
+      expect(
+        jsonBody<{ explanations: unknown[] }>(batchResponse).explanations
+      ).toHaveLength(100);
+      expect(explainBatch).toHaveBeenCalledExactlyOnceWith(
+        { userId: ownerUserId },
+        projectId,
+        batchPayload
+      );
     } finally {
       await app.close();
     }

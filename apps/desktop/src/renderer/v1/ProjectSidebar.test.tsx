@@ -28,17 +28,26 @@ const projects: SidebarProject[] = [
 function Harness({
   scope = "owner-a",
   data = projects,
-  reveal = null
+  reveal = null,
+  servicesStarting = false,
+  loading = false,
+  inventoryReady = true
 }: {
   scope?: string;
   data?: SidebarProject[];
   reveal?: { projectId: string; key: number } | null;
+  servicesStarting?: boolean;
+  loading?: boolean;
+  inventoryReady?: boolean;
 }) {
   const navigation = useNavigationHistory(scope);
   return (
     <NavigationShell
       projects={data}
       revealProject={reveal}
+      servicesStarting={servicesStarting}
+      loading={loading}
+      inventoryReady={inventoryReady}
       scopeKey={scope}
       route={navigation.route}
       onSelect={navigation.navigate}
@@ -108,9 +117,44 @@ describe("Project sidebar interactions", () => {
     expect(container.textContent).toContain("Opened from Home");
   });
 
+  it("distinguishes service startup, inventory loading and an empty inventory", async () => {
+    await act(async () =>
+      root.render(<Harness data={[]} inventoryReady={false} />)
+    );
+    expect(container.textContent).not.toContain("No conversations yet");
+    expect(container.textContent).toContain(
+      "Pin conversations to keep them here"
+    );
+    await act(async () => root.render(<Harness data={[]} servicesStarting />));
+    expect(container.textContent).toContain("Services starting…");
+    expect(container.textContent).not.toContain("No conversations yet");
+    expect(container.textContent).toContain(
+      "Pin conversations to keep them here"
+    );
+    await act(async () => root.render(<Harness data={[]} loading />));
+    expect(container.textContent).toContain("Loading conversations…");
+    expect(container.textContent).not.toContain("Services starting…");
+    expect(container.textContent).not.toContain("No conversations yet");
+    expect(container.textContent).toContain(
+      "Pin conversations to keep them here"
+    );
+    await act(async () => root.render(<Harness data={[]} />));
+    expect(container.textContent).toContain("No conversations yet");
+    expect(container.textContent).toContain(
+      "Pin conversations to keep them here"
+    );
+    await act(async () => root.render(<Harness servicesStarting />));
+    expect(container.textContent).toContain("Captured from Claude");
+    expect(container.textContent).toContain("Services starting…");
+  });
   it("persists pins across remounts, isolates owners, and supports unpinning", async () => {
     await act(async () => root.render(<Harness />));
-    await act(async () => button("Pin Captured from Claude").click());
+    await act(async () => button("Actions for Captured from Claude").click());
+    await act(async () =>
+      [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+        .find((item) => item.textContent === "Pin")!
+        .click()
+    );
     expect(container.querySelector(".v1-nav-pinned")?.textContent).toContain(
       "Captured from Claude"
     );
@@ -128,7 +172,12 @@ describe("Project sidebar interactions", () => {
     expect(container.querySelector(".v1-nav-pinned")?.textContent).toContain(
       "Captured from Claude"
     );
-    await act(async () => button("Unpin Captured from Claude").click());
+    await act(async () => button("Actions for Captured from Claude").click());
+    await act(async () =>
+      [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+        .find((item) => item.textContent === "Unpin")!
+        .click()
+    );
     expect(
       container.querySelector(".v1-nav-pinned")?.textContent
     ).not.toContain("Captured from Claude");

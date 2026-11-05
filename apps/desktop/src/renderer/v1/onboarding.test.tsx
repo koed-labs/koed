@@ -75,7 +75,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-describe("prototype onboarding", () => {
+describe("desktop onboarding", () => {
   let container: HTMLDivElement;
   let root: Root;
   afterEach(async () => {

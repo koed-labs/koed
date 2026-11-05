@@ -1,8 +1,6 @@
 import type {
   V1StateDesktopApi,
-  V1Profile,
-  V1ConversationIntent,
-  V1ProjectIntent
+  V1Profile
 } from "../../ipc/v1-state-protocol.js";
 
 export const v1State = (): V1StateDesktopApi => {
@@ -11,21 +9,6 @@ export const v1State = (): V1StateDesktopApi => {
   return api;
 };
 
-/** Call before the backend create/start request, then acknowledge its exact returned ID. */
-export const prepareV1Conversation = async (intent: V1ConversationIntent) =>
-  v1State().putConversationIntent(intent);
-export const acknowledgeV1Conversation = async (
-  idempotencyKey: string,
-  executionId: string,
-  capturedSessionId?: string
-) =>
-  v1State().ackConversation({ idempotencyKey, executionId, capturedSessionId });
-export const prepareV1Project = async (intent: V1ProjectIntent) =>
-  v1State().putProjectIntent(intent);
-export const acknowledgeV1Project = async (
-  requestId: string,
-  projectId: string
-) => v1State().ackProject({ requestId, projectId });
 export const readV1Identity = async () => v1State().readIdentity();
 export const readV1Profile = async (): Promise<V1Profile> =>
   v1State().readProfile();

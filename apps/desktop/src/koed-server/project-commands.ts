@@ -233,29 +233,59 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     const input = personalSourceContextCommandSchema.parse(raw);
     const base = `/v1/personal/sessions/${encodeURIComponent(input.sessionId)}/source-context`;
     const payload =
-      input.action === "get"
-        ? await deps.personalRequest(base)
-        : input.action === "preview"
-          ? await deps.personalRequest(`${base}/reviews`, {
+      input.action === "organize"
+        ? await deps.personalRequest(
+            `/v1/personal/sessions/${encodeURIComponent(input.sessionId)}/organization`,
+            {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify(input.correction)
-            })
-          : await deps.personalRequest(
-              `${base}/reviews/${encodeURIComponent(input.reviewId)}/apply`,
-              {
+              body: JSON.stringify(input.edit)
+            }
+          )
+        : input.action === "get"
+          ? await deps.personalRequest(base)
+          : input.action === "preview"
+            ? await deps.personalRequest(`${base}/reviews`, {
                 method: "POST",
                 headers: { "content-type": "application/json" },
-                body: JSON.stringify({ expectedVersion: input.expectedVersion })
-              }
-            );
+                body: JSON.stringify(input.correction)
+              })
+            : await deps.personalRequest(
+                `${base}/reviews/${encodeURIComponent(input.reviewId)}/apply`,
+                {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                    expectedVersion: input.expectedVersion
+                  })
+                }
+              );
     const result = personalSourceContextCommandResultSchema.parse(payload);
     if (
       result.context.sessionId !== input.sessionId ||
       (result.preview &&
         (result.preview.before.sessionId !== input.sessionId ||
           result.preview.after.sessionId !== input.sessionId)) ||
-      (input.action === "apply" && result.preview?.reviewId !== input.reviewId)
+      (input.action === "apply" &&
+        result.preview?.reviewId !== input.reviewId) ||
+      (input.action === "organize" &&
+        (!result.organization ||
+          result.organization.before.context.sessionId !== input.sessionId ||
+          result.organization.after.context.sessionId !== input.sessionId ||
+          JSON.stringify(result.organization.before.context) !==
+            JSON.stringify(input.edit.expectedContext) ||
+          result.organization.before.projects.length !==
+            input.edit.reviewedProjects.length ||
+          result.organization.before.projects.some(
+            ({ project }) =>
+              !input.edit.reviewedProjects.some(
+                (reviewed) =>
+                  reviewed.projectId === project.projectId &&
+                  reviewed.expectedVersion === project.version
+              )
+          ) ||
+          JSON.stringify(result.organization.after.context) !==
+            JSON.stringify(result.context)))
     )
       throw new Error(
         "Source context response belongs to another Conversation or review."
@@ -279,6 +309,11 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         method = "POST";
         path = `${base}/memberships/explain`;
         body.sessionId = input.sessionId;
+        break;
+      case "explain_sessions":
+        method = "POST";
+        path = `${base}/memberships/explain-batch`;
+        body.sessionIds = input.sessionIds;
         break;
       case "exclude_session":
         method = "POST";

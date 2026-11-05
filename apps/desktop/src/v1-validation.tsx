@@ -1,4 +1,8 @@
 import { SidebarValidation } from "./sidebar-validation.js";
+import {
+  installProjectManagementValidation,
+  ProjectManagementValidation
+} from "./project-management-validation.js";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -21,6 +25,8 @@ const validation =
     ? installOnboardingValidation()
     : null;
 const statusStore = new DesktopStatusStore();
+if (new URLSearchParams(location.search).get("projects") === "1")
+  installProjectManagementValidation();
 const providers = [
   {
     id: "codex",
@@ -123,7 +129,9 @@ function Validation() {
 if (new URLSearchParams(location.search).get("sidebar") !== "1")
   document.documentElement.classList.add("light");
 createRoot(document.querySelector("#root")!).render(
-  new URLSearchParams(location.search).get("sidebar") === "1" ? (
+  new URLSearchParams(location.search).get("projects") === "1" ? (
+    <ProjectManagementValidation />
+  ) : new URLSearchParams(location.search).get("sidebar") === "1" ? (
     <SidebarValidation />
   ) : new URLSearchParams(location.search).get("full") === "1" ? (
     <FullAppValidation />

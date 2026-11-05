@@ -172,8 +172,8 @@ const requestStableInventory = async (
         error.code !== "conflict"
       )
         throw error;
-      if (attempt >= INVENTORY_STALE_RETRIES)
-        throw new PersonalMemoryBoundaryError("request_failed", true);
+      // A list that keeps changing is reported as the conflict it is.
+      if (attempt >= INVENTORY_STALE_RETRIES) throw error;
       await wait(INVENTORY_RETRY_MS * (attempt + 1));
     }
   }

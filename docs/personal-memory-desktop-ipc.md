@@ -15,10 +15,37 @@ Independent inventory and native metadata reads run concurrently, while shared s
 The renderer can also read bounded Recent Conversations, event pages, and Project reconciliation status.
 
 Project management uses reviewed versions and the existing membership engine.
-The source editor sends one bounded batch through `personal.projects.manage` with the `apply_sources` action.
+The `explain_sessions` action reads up to 100 Conversations per request through
+`POST /v1/personal/projects/:projectId/memberships/explain-batch`. Each batch uses
+one owner transaction and checks the reviewed Project version and source ownership.
+Settings and source previews request batches sequentially. A failed batch discards
+partial membership results but keeps the loaded Sync review accessible.
+The settings editor sends one bounded batch through `personal.projects.manage` with the `apply_sources` action.
+The batch can include a rename, source rules, direct membership changes, and a version-pinned exclusion restore.
 The API commits the complete batch under one owner lock and transaction.
-The bridge exposes no Project move or captured-source assignment command.
-Source-context correction has its own versioned review and operation.
+Contract version 28 adds the `organize` action to `personal.sources.manage`.
+Electron main maps it to `POST /v1/personal/sessions/:sessionId/organization`.
+It carries the reviewed source context, Project versions, desired direct/excluded membership states,
+and up to two explicit source corrections. The renderer supplies no API origin or filesystem mutation.
+
+An ordinary sidebar move changes only the originating and destination Projects.
+It removes the originating direct inclusion, excludes the Conversation when a source rule would add it back,
+and adds a direct inclusion to the destination. Other Projects, the Folder assignment, and Git Anchor remain unchanged.
+An excluded destination requires the exact reviewed exclusion revision and explicit restoration.
+Pending or conflicting synchronized exclusions cannot be bypassed.
+
+Advanced moves and the source context editor can also clear or correct Folder/Git assignments.
+The UI combines the existing server correction previews for both axes; each preview must match the reviewed context and Project catalog.
+The atomic organization operation checks that context and, for source edits, the complete active Project catalog again.
+It reuses the existing correction and membership repositories inside one owner transaction, including their sync guards and publication records.
+A failed change rolls back all assignments and memberships. Original source evidence and execution Folders are retained.
+The result contains bound before/after snapshots. Undo submits their inverse with the resulting source and Project versions;
+it fails on intervening edits rather than replacing a stale inventory.
+
+The V1 sidebar exposes these actions through compact Project settings, Conversation menus, and source tags.
+Source edits retain their drafts across tabs and save together. Newly selected Project sources load their matching Conversation preview,
+without exposing a full-library add picker. Capture provenance is still authoritative for launch reconciliation;
+pending membership confirmations must finish before a captured Conversation can be reorganized.
 
 Ask accepts one explicit named Project, Git Anchor, or exact Folder target.
 A nested list filter does not change the Ask target.

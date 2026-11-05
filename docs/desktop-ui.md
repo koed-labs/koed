@@ -1,20 +1,34 @@
 # Koed Desktop
 
-## Solo V1 interface
+## Current desktop interface
 
-The solo interface starts with Chief of Staff appearance and name, AI Client
-configuration, and Personal Memory. It runs the existing local setup and client
-commands; it does not replace service startup, authentication, capture, or recall.
-Setup progress comes from the real setup workflow. Failure leaves selections
-saved and offers a retry. A saved onboarding note is identified as saved or
-preparing, rather than presented as a simulated recall answer.
+The Personal interface starts with staged local setup and AI Client
+configuration. Setup progress comes from the real setup workflow. Failure
+preserves selections and offers a retry. Agent name and appearance are optional
+Settings choices. Running setup again preserves Personal Memory, Projects,
+Conversations, and saved customization.
 
-Its chat and Project lists contain identities created through this interface.
-Existing AI Client conversations continue to feed Personal Memory under the
-existing Capture Policy, but do not populate those lists. Team, scheduled jobs,
-the phone companion, attachments, and additional memory-management semantics
-are outside this interface. Their stored data and backend authority are not
-changed by hiding their controls.
+The sidebar shows the current User's Project inventory, including Conversations
+captured from supported AI Clients and those started in Desktop. Search, pinned
+Conversations, expandable Projects, and navigation history share the same
+Conversation pane. On narrow windows, the sidebar opens as a drawer. While
+services or inventory are loading, the sidebar shows that state rather than an
+empty Conversation list.
+
+Project settings manages names, source rules, Conversation membership, and
+Personal Device sync. Sync review remains available when Conversation membership
+cannot be loaded. Settings blocks edits until a complete membership review loads.
+Dragging a Conversation to a Project moves its membership
+from the source Project to the destination; other named memberships remain.
+Folder and Git Anchor references stay intact unless the User explicitly removes
+them in the move dialog or corrects them through source context settings. The
+Conversation header shows Project, Git, and Folder tags; Folder tags use the
+directory name with the full path available on hover. Projects are flat; nested
+Projects are not part of this interface.
+
+Team, scheduled jobs, the phone companion, attachments, and additional
+memory-management controls remain outside this interface. Their stored data and
+backend authority are unchanged.
 
 The model and reasoning picker reads current AI Client capabilities. Existing
 Conversations keep their execution owner, while a new Conversation can choose
@@ -79,7 +93,8 @@ leaves.
   stage's sides and top, slides to a stop and rests flat where it lands until
   Home is reloaded. With reduced motion a dropped coin lands at once. The Projects list is read again, up to three times, when
   the API reports that membership changed mid-read, as it does constantly while
-  history imports; only a list that keeps changing reports a failed load.
+  history imports; only a list that keeps changing reports that it changed
+  while refreshing, with a retry.
   Ranking uses those conversations' latest activity, then name, then id.
   `conversation_events_changed` refreshes the summaries through
   `PersonalMemoryStore`; a rise in a summary's count plays one coalesced
@@ -126,17 +141,16 @@ leaves.
   drops none.
 
 Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
-presentation smoke check. This fixture does not configure local AI Clients or
-certify a live model response or performance measurement.
-
-The reference design’s prototype controls (Restart setup, Fill with examples,
-and other prototype-only shortcuts) are deliberately excluded. The Settings
-command to run onboarding again preserves existing data.
+presentation and onboarding checks. The validation entry also provides sidebar
+and Project management fixtures using the current production components. These
+fixtures do not configure local AI Clients or certify a live model response or
+performance measurement.
 
 ## Full desktop capabilities (baseline reference)
 
-The following describes the original full interface. Its hidden controls are
-not exposed by Solo V1.
+The following describes the original full interface retained for baseline
+validation. Its hidden controls are not exposed by the current Personal
+interface.
 
 Koed Desktop presents Personal Memory, Personal chat, Team collaboration, and
 Team-shared Memory in one application without merging their authority or
