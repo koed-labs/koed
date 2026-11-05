@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   personalSourceCorrectionInputSchema,
-  personalSourceCorrectionApplySchema
+  personalSourceCorrectionApplySchema,
+  personalConversationOrganizationInputSchema
 } from "@koed/shared";
 import type { ApiRouteContext } from "../server/context.js";
 
@@ -16,6 +17,19 @@ export const registerPersonalSourceContextRoutes = (
     auth: { authenticate },
     rateLimit: { memoryRead: read, memoryWrite: write }
   } = context;
+  app.post(
+    "/v1/personal/sessions/:sessionId/organization",
+    { preHandler: write },
+    async (request) => {
+      const user = await authenticate(request);
+      const { sessionId } = sourceParams.parse(request.params);
+      return requireRepository().organizePersonalConversation(
+        { userId: user.id },
+        sessionId,
+        personalConversationOrganizationInputSchema.parse(request.body)
+      );
+    }
+  );
   app.get(
     "/v1/personal/sessions/:sessionId/source-context",
     { preHandler: read },

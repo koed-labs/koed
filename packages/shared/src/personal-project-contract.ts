@@ -103,6 +103,19 @@ export const personalProjectVersionSchema = z
 export const personalProjectAddSessionSchema = personalProjectVersionSchema
   .extend({ sessionId: z.uuid() })
   .strict();
+export const PERSONAL_PROJECT_INSPECTION_BATCH_SIZE = 100;
+export const personalProjectExplainSessionsSchema = personalProjectVersionSchema
+  .extend({
+    sessionIds: z
+      .array(z.uuid())
+      .min(1)
+      .max(PERSONAL_PROJECT_INSPECTION_BATCH_SIZE)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        "Duplicate Conversations"
+      )
+  })
+  .strict();
 export const personalProjectAddBackSchema = personalProjectAddSessionSchema
   .extend({
     exclusionId: z.uuid(),
@@ -180,6 +193,20 @@ const projectCommandBase = {
 export const personalProjectBatchChangeSchema = z.discriminatedUnion("action", [
   z
     .object({
+      action: z.literal("rename"),
+      name: z.string().trim().min(1).max(160)
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("add_back"),
+      sessionId: z.uuid(),
+      exclusionId: z.uuid(),
+      expectedExclusionRevisionId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("add_repository"),
       repository: personalGitContextSchema
     })
@@ -211,6 +238,9 @@ export type PersonalProjectBatchInput = z.infer<
 >;
 
 export const personalProjectCommandSchema = z.discriminatedUnion("action", [
+  personalProjectExplainSessionsSchema
+    .extend({ action: z.literal("explain_sessions"), projectId: z.uuid() })
+    .strict(),
   personalProjectBatchInputSchema
     .extend({ action: z.literal("apply_sources"), projectId: z.uuid() })
     .strict(),
@@ -301,7 +331,11 @@ export const personalProjectCommandResultSchema = z
     membership: personalDirectMembershipSchema.optional(),
     rule: personalProjectRuleSchema.optional(),
     preview: personalProjectRulePreviewSchema.optional(),
-    explanation: personalProjectMembershipExplanationSchema.optional()
+    explanation: personalProjectMembershipExplanationSchema.optional(),
+    explanations: z
+      .array(personalProjectMembershipExplanationSchema)
+      .max(PERSONAL_PROJECT_INSPECTION_BATCH_SIZE)
+      .optional()
   })
   .strict();
 export type PersonalProjectCommand = z.infer<

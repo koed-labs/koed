@@ -160,28 +160,6 @@
   text-align: center;
   text-wrap: balance;
 }
-.v1-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  scroll-behavior: smooth;
-}
-.v1-thread {
-  max-width: 780px;
-  margin: 0 auto;
-  padding: 12px 16px 40px;
-  display: flex;
-  flex-direction: column;
-  gap: 30px;
-}
-.v1-dock {
-  flex: none;
-  padding: 0 16px 18px;
-}
-.v1-dock > .v1-composer {
-  max-width: 780px;
-  margin: 0 auto;
-}
 .v1-composer {
   position: relative;
   background: var(--v1-card);
@@ -371,22 +349,6 @@
   color: var(--v1-muted);
   line-height: 1.35;
 }
-.v1-model-settings {
-  all: unset;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 9px 12px;
-  border-radius: 12px;
-  cursor: pointer;
-  font-size: 14px;
-  color: var(--v1-fg2);
-}
-.v1-model-settings:hover {
-  background: var(--v1-surface);
-}
 .v1-reason-panel {
   padding: 6px 6px 8px;
 }
@@ -454,66 +416,6 @@
 .v1-reason-bars:hover > span:not(.on) i {
   background: color-mix(in srgb, var(--v1-fg) 14%, var(--v1-surface-hover));
 }
-.v1-message.v1-user {
-  align-self: flex-end;
-  max-width: min(78%, 620px);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-}
-.v1-bubble {
-  background: var(--v1-surface);
-  padding: 10px 16px;
-  border-radius: 22px 22px 6px 22px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.v1-message.v1-assistant {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-.v1-answer {
-  min-width: 0;
-  word-break: break-word;
-}
-.v1-message-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: -8px;
-}
-.v1-user .v1-message-actions {
-  opacity: 0;
-}
-.v1-user:hover .v1-message-actions,
-.v1-user:focus-within .v1-message-actions {
-  opacity: 1;
-}
-.v1-message-meta {
-  font-size: 12.5px;
-  color: var(--v1-faint);
-  margin-left: 6px;
-  white-space: nowrap;
-}
-.v1-thinking {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--v1-muted);
-  font-size: 14.5px;
-}
-.v1-thinking .v1-pixelkin {
-  border-radius: 8px;
-  animation: v1-bob 1.4s ease-in-out infinite;
-}
-@keyframes v1-bob {
-  50% {
-    transform: translateY(-3px);
-  }
-}
 .v1-field {
   display: flex;
   flex-direction: column;
@@ -542,8 +444,5 @@
   .v1-composer,
   .v1-send {
     transition: none;
-  }
-  .v1-thinking .v1-pixelkin {
-    animation: none;
   }
 }

@@ -12,6 +12,7 @@ export type ConversationRoute = {
   projectId?: string;
   threadId?: string;
   executionId?: string;
+  sessionId?: string;
 };
 export type NavigationRoute = { kind: "home" } | ConversationRoute;
 export type SidebarConversation = {
@@ -22,12 +23,16 @@ export type SidebarConversation = {
   client: "codex" | "claude" | "pi" | null;
   route: ConversationRoute;
   projectName: string;
+  sessionId?: string;
+  sourceProjectId?: string;
+  managementPending?: boolean;
 };
 export type SidebarProject = {
   id: string;
   name: string;
   latestAt: string;
   conversations: SidebarConversation[];
+  managed?: boolean;
 };
 const timestamp = (value: string) => Date.parse(value) || 0;
 const activityOrder = <
@@ -67,7 +72,8 @@ export function buildProjectSidebar(
       id,
       name: ungrouped ? "No project" : project.name,
       latestAt: "",
-      conversations: []
+      conversations: [],
+      managed: Boolean(project.namedProject)
     };
     for (const thread of project.threads) {
       if (
@@ -105,9 +111,15 @@ export function buildProjectSidebar(
           kind: "conversation",
           projectId: project.id,
           threadId: thread.id,
+          sessionId: thread.sessionId ?? undefined,
           ...(intent?.executionId ? { executionId: intent.executionId } : {})
         },
-        projectName: group.name
+        projectName: group.name,
+        sessionId: thread.sessionId ?? undefined,
+        sourceProjectId: project.namedProject ? project.id : undefined,
+        managementPending: Boolean(
+          intent?.presentationProjectId && !intent.projectMembershipConfirmed
+        )
       };
       const existing = group.conversations.findIndex(
         (item) => item.key === key
@@ -146,7 +158,8 @@ export function buildProjectSidebar(
       id,
       name: project?.name ?? "No project",
       latestAt: "",
-      conversations: []
+      conversations: [],
+      managed: Boolean(project?.namedProject)
     };
     group.conversations.push({
       key: `execution:${intent.executionId}`,

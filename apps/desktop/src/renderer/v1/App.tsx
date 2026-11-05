@@ -47,6 +47,8 @@ import { useDesktopStatus } from "../state/use-status.js";
 import { NewConversationComposer } from "../views/personal/NewConversationComposer.js";
 import { StoreConversation } from "../views/personal/PersonalMemoryViews.js";
 import { NavigationShell } from "./NavigationShell.js";
+import { useProjectManagement } from "./project-management/use-project-management.js";
+import { ConversationTags } from "./project-management/ConversationTags.js";
 import { buildProjectSidebar } from "./project-sidebar-model.js";
 import { useNavigationHistory } from "./use-navigation-history.js";
 import {
@@ -216,7 +218,17 @@ export function V1App({
   const selectedProjectIdRef = useRef<string | null>(null);
   selectedProjectIdRef.current = selectedProjectId;
   const platform = useMemo(() => createRendererPlatform(), []);
-  const { status } = useDesktopStatus(statusStore);
+  const { status, error: statusError } = useDesktopStatus(statusStore);
+  const serviceError =
+    statusError && status?.api.state !== "healthy"
+      ? "Service status is unavailable. Try again."
+      : status?.lifecycle?.state === "stopped"
+        ? "Services are stopped. Start them in Settings."
+        : status?.lifecycle?.state === "unavailable"
+          ? "Services are unavailable. Check Settings."
+          : null;
+  const servicesStarting = !serviceError && status?.api.state !== "healthy";
+  const inventoryReady = Boolean(scopeKey && inventoryScope === scopeKey);
   const store = useMemo(
     () =>
       personalMemoryApi ? new PersonalMemoryStore(personalMemoryApi) : null,
@@ -227,6 +239,15 @@ export function V1App({
     store?.current ?? (() => null),
     store?.current ?? (() => null)
   );
+  const inventoryLoading =
+    snapshot?.loading ||
+    Boolean(
+      store &&
+      status?.api.state === "healthy" &&
+      !inventoryReady &&
+      !snapshot?.error &&
+      !error
+    );
   const lifecycle = useManagedConversationLifecycle({
     api: managedConversations,
     store,
@@ -334,6 +355,20 @@ export function V1App({
     void statusStore.refresh();
     void themeStore.load();
   }, [statusStore, themeStore]);
+  useEffect(
+    () => window.koedDesktop?.status?.subscribe(() => statusStore.invalidate()),
+    [statusStore]
+  );
+  useEffect(() => {
+    if (status?.api.state === "healthy") return;
+    // Lifecycle events refresh immediately. Poll at the existing Desktop
+    // cadence as services can become ready without a new supervisor epoch.
+    const interval = window.setInterval(
+      () => void statusStore.refresh(),
+      5_000
+    );
+    return () => window.clearInterval(interval);
+  }, [statusStore, status?.api.state]);
   useEffect(() => {
     if (
       !personalMemoryApi ||
@@ -630,6 +665,9 @@ export function V1App({
     const claimed = new Set<string>();
     const reconcile = async () => {
       setPendingIntentError(null);
+      // Older versions saved Project creation requests here. Finish any pending
+      // request before retiring its recovery path, even though the current
+      // Project settings flow no longer writes these intents.
       for (const intent of Object.values(provenance.projects)) {
         if (intent.projectId && (!intent.folder || intent.folderAttached))
           continue;
@@ -908,28 +946,19 @@ export function V1App({
     [managedConversations, refreshProvenance]
   );
 
-  const visibleProjects = projects;
   const sidebarProjects = useMemo(
     () =>
       scopeKey && inventoryScope === scopeKey
         ? buildProjectSidebar(
-            visibleProjects,
+            projects,
             Object.values(provenance.conversations),
             lifecycle.drafts
           )
         : [],
-    [
-      visibleProjects,
-      provenance,
-      lifecycle.drafts,
-      revision,
-      scopeKey,
-      inventoryScope
-    ]
+    [projects, provenance, lifecycle.drafts, revision, scopeKey, inventoryScope]
   );
   const activeProject = selectedProjectId
-    ? (visibleProjects.find((project) => project.id === selectedProjectId) ??
-      null)
+    ? (projects.find((project) => project.id === selectedProjectId) ?? null)
     : independentProject;
   const folders =
     activeProject && selectedProjectId && snapshot
@@ -952,10 +981,27 @@ export function V1App({
   const selectedDraft = selectedExecution
     ? (lifecycle.drafts.get(selectedExecution) ?? null)
     : null;
-  const capturedProject =
+  const routeProject =
     route.kind === "conversation" && route.projectId
-      ? visibleProjects.find((project) => project.id === route.projectId)
+      ? projects.find((project) => project.id === route.projectId)
       : undefined;
+  const matchesConversation = (thread: DesktopProject["threads"][number]) =>
+    route.kind === "conversation" &&
+    Boolean(
+      (route.threadId && thread.id === route.threadId) ||
+      (route.sessionId &&
+        (thread.sessionId === route.sessionId ||
+          thread.sourceReferences?.some(
+            (ref) => ref.sessionId === route.sessionId
+          ))) ||
+      (selectedIntent?.capturedSessionId &&
+        thread.sessionId === selectedIntent.capturedSessionId)
+    );
+  const capturedProject = routeProject?.threads.some(matchesConversation)
+    ? routeProject
+    : [...projects]
+        .sort((a, b) => Number(!!b.namedProject) - Number(!!a.namedProject))
+        .find((p) => p.threads.some(matchesConversation));
   const conversationProject =
     capturedProject ??
     (selectedIntent ? projectForIntent(selectedIntent) : null);
@@ -969,12 +1015,55 @@ export function V1App({
                 sessionSelectionId(thread) === selectedExecution)
             )
       ) ??
+      conversationProject.threads.find(matchesConversation) ??
       selectedDraft?.thread ??
       null)
     : null;
   const conversationRouteId =
     selectedExecution ??
     (conversationThread ? sessionSelectionId(conversationThread) : "");
+  const currentRoute = useRef(route);
+  currentRoute.current = route;
+  const currentSession = useRef(conversationThread?.sessionId);
+  currentSession.current = conversationThread?.sessionId;
+  const projectManagement = useProjectManagement({
+    scopeKey,
+    api: personalMemoryApi,
+    store,
+    projects,
+    onOrganized: (sessionId, nextProjects, preferredProjectId) => {
+      const selectedRoute = currentRoute.current;
+      if (
+        selectedRoute.kind !== "conversation" ||
+        currentSession.current !== sessionId
+      )
+        return;
+      const candidates = nextProjects.filter((p) =>
+        p.threads.some(
+          (t) =>
+            t.sessionId === sessionId ||
+            t.sourceReferences?.some((ref) => ref.sessionId === sessionId)
+        )
+      );
+      const project =
+        candidates.find((p) => p.id === preferredProjectId) ??
+        candidates.find((p) => p.id === selectedRoute.projectId) ??
+        candidates.find((p) => p.namedProject) ??
+        candidates[0];
+      const thread = project?.threads.find(
+        (t) =>
+          t.sessionId === sessionId ||
+          t.sourceReferences?.some((ref) => ref.sessionId === sessionId)
+      );
+      if (project && thread)
+        setRoute({
+          ...selectedRoute,
+          projectId: project.id,
+          threadId: thread.id,
+          sessionId
+        });
+    }
+  });
   const onSaveAgent = async (next: OnboardingAgent) => {
     await saveProfile((current) => ({
       ...current,
@@ -1030,7 +1119,7 @@ export function V1App({
             >
               No project
             </button>
-            {visibleProjects
+            {projects
               .filter((project) => project.namedProject)
               .map((project) => (
                 <button
@@ -1127,7 +1216,6 @@ export function V1App({
         statusStore={statusStore}
       />
     );
-  // The prototype debug restart panel is excluded; Settings owns "Run setup again".
   return (
     <V1AgentContext.Provider value={agent}>
       <ConversationPresentationContext.Provider
@@ -1163,9 +1251,16 @@ export function V1App({
           onForward={navigation.forward}
           canGoBack={navigation.canGoBack}
           canGoForward={navigation.canGoForward}
-          loading={snapshot?.loading}
-          error={snapshot?.error}
-          onRetry={() => void loadInventory()}
+          loading={inventoryLoading}
+          servicesStarting={servicesStarting}
+          inventoryReady={inventoryReady}
+          error={serviceError ?? snapshot?.error}
+          onRetry={() => {
+            if (serviceError || status?.api.state !== "healthy")
+              void statusStore.refresh();
+            else void loadInventory();
+          }}
+          management={projectManagement.management}
         >
           {pendingIntentError && (
             <p role="alert">
@@ -1190,31 +1285,58 @@ export function V1App({
           conversationProject &&
           conversationThread &&
           store ? (
-            <StoreConversation
-              key={conversationRouteId}
-              managedConversationRevision={revision}
-              managedConversationRecoveryRevision={recoveryRevision}
-              managedConversationUpdate={realtime}
-              managedConversations={managedConversations}
-              pendingCanonicalConversation={Boolean(
-                selectedDraft && selectedDraft.status !== "ready"
+            <>
+              {personalMemoryApi && projectManagement.management && (
+                <ConversationTags
+                  key={`${scopeKey}:${conversationThread.sessionId}`}
+                  api={personalMemoryApi}
+                  projects={projects}
+                  thread={conversationThread}
+                  sourceProjectId={
+                    conversationProject.namedProject
+                      ? conversationProject.id
+                      : undefined
+                  }
+                  revision={snapshot?.revision ?? 0}
+                  busy={
+                    projectManagement.busy ||
+                    Boolean(
+                      selectedIntent?.presentationProjectId &&
+                      !selectedIntent.projectMembershipConfirmed
+                    )
+                  }
+                  onProject={projectManagement.openSettings}
+                  onContext={projectManagement.openContext}
+                />
               )}
-              managedDraft={selectedDraft}
-              onRetryManagedConversation={
-                selectedExecution
-                  ? () => void lifecycle.retry(selectedExecution)
-                  : null
-              }
-              project={conversationProject}
-              routeSessionId={conversationRouteId}
-              store={store}
-              thread={conversationThread}
-            />
+              <StoreConversation
+                key={conversationRouteId}
+                managedConversationRevision={revision}
+                managedConversationRecoveryRevision={recoveryRevision}
+                managedConversationUpdate={realtime}
+                managedConversations={managedConversations}
+                pendingCanonicalConversation={Boolean(
+                  selectedDraft && selectedDraft.status !== "ready"
+                )}
+                managedDraft={selectedDraft}
+                onRetryManagedConversation={
+                  selectedExecution
+                    ? () => void lifecycle.retry(selectedExecution)
+                    : null
+                }
+                project={conversationProject}
+                routeSessionId={conversationRouteId}
+                store={store}
+                thread={conversationThread}
+              />
+            </>
           ) : route.kind === "conversation" ? (
             <p role="status">
-              {snapshot?.loading
-                ? "Loading Conversation…"
-                : "This conversation is no longer available. Choose another conversation from the sidebar."}
+              {servicesStarting
+                ? "Services starting…"
+                : inventoryLoading
+                  ? "Loading Conversation…"
+                  : "This conversation is no longer available. Choose another conversation from the sidebar."}
             </p>
           ) : (
             <V1EmptyHero
@@ -1224,6 +1346,7 @@ export function V1App({
               composer={launchComposer}
             />
           )}
+          {projectManagement.overlays}
           {settingsOpen && (
             <V1Settings
               agent={agent}

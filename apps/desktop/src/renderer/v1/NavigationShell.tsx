@@ -12,7 +12,7 @@ import {
   useSidebar
 } from "@koed/ui";
 import { ChevronLeft, ChevronRight, Folder, Settings } from "lucide-react";
-import { ProjectSidebar } from "./ProjectSidebar.js";
+import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
 import type {
   NavigationRoute,
   SidebarProject
@@ -36,14 +36,17 @@ type Props = {
   canGoBack: boolean;
   canGoForward: boolean;
   loading?: boolean;
+  servicesStarting?: boolean;
+  inventoryReady?: boolean;
   error?: string | null;
   onRetry: () => void;
+  management?: SidebarManagement;
 };
 export function NavigationShell(props: Props) {
   return (
     <SidebarProvider
       className="v1-app v1-navigation"
-      style={{ "--sidebar-width": "302px" } as React.CSSProperties}
+      style={{ "--sidebar-width": "280px" } as React.CSSProperties}
     >
       <ShellContent {...props} />
     </SidebarProvider>
@@ -155,8 +158,11 @@ function ShellContent(props: Props) {
           }}
           searchRef={searchRef}
           loading={props.loading}
+          servicesStarting={props.servicesStarting}
+          inventoryReady={props.inventoryReady}
           error={props.error}
           onRetry={props.onRetry}
+          management={props.management}
         />
       </Sidebar>
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>
