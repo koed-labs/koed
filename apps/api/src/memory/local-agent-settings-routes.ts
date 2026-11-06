@@ -12,11 +12,15 @@ import {
   aiClientCapabilitySnapshotSchema,
   aiClientInstanceParamsSchema,
   aiClientInstanceSchema,
+  memoryModelSettingsSchema,
   localMemoryAgentSettingsParamsSchema,
   localMemoryAgentSettingsSchema
 } from "./local-agent-settings-schemas.js";
 
-type AssignmentInput = z.infer<typeof localMemoryAgentSettingsSchema>;
+type AssignmentInput = Omit<
+  z.infer<typeof localMemoryAgentSettingsSchema>,
+  "timeout_ms" | "max_attempts"
+>;
 type AiClientInstance = Awaited<
   ReturnType<MemorySourceRepository["listAiClientInstances"]>
 >[number];
@@ -300,6 +304,29 @@ const registerSettingsWriteRoute = (
     auth: { authenticate },
     rateLimit
   } = context;
+  app.put(
+    "/v1/memory/local-agent-settings/memory-model",
+    { preHandler: rateLimit.aiClientControl },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticate(request);
+      const actor = { userId: user.id };
+      const input = memoryModelSettingsSchema.parse(request.body);
+      const [instances, snapshots] = await Promise.all([
+        repo.listAiClientInstances(actor),
+        repo.listCurrentAiClientCapabilitySnapshots(actor)
+      ]);
+      validateAssignment(instances, snapshots, input, false);
+      await repo.setMemoryModel(actor, {
+        provider: input.provider,
+        aiClientInstanceId: input.ai_client_instance_id,
+        model: input.model,
+        reasoningEffort: input.reasoning_effort,
+        limits: input.limits
+      });
+      return { ok: true };
+    }
+  );
   app.put(
     "/v1/memory/local-agent-settings/:flowKey",
     { preHandler: rateLimit.aiClientControl },

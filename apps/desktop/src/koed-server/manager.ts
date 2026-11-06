@@ -4715,7 +4715,10 @@ export const createKoedServerManager = ({
       } catch {
         refreshError = "Capability refresh could not be completed.";
       }
-    } else if (request.operation === "set") {
+    } else if (
+      request.operation === "set" ||
+      request.operation === "setMemoryModel"
+    ) {
       await saveLocalAiClientSetting(request);
     } else if (request.operation === "reset") {
       await resetLocalAiClientSetting(request.flowKey);
@@ -4728,18 +4731,24 @@ export const createKoedServerManager = ({
   };
 
   const saveLocalAiClientSetting = async (
-    request: Extract<LocalAiClientCommand, { operation: "set" }>
+    request: Extract<
+      LocalAiClientCommand,
+      { operation: "set" | "setMemoryModel" }
+    >
   ) => {
+    const key = request.operation === "set" ? request.flowKey : "memory-model";
     await authenticatedPersonalMemoryRequest(
       ({ apiOrigin }) => ({
         url: new URL(
-          `/v1/memory/local-agent-settings/${encodeURIComponent(request.flowKey)}`,
+          `/v1/memory/local-agent-settings/${encodeURIComponent(key)}`,
           apiOrigin
         ),
         init: {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(request.assignment)
+          body: JSON.stringify(
+            request.operation === "set" ? request.assignment : request.input
+          )
         }
       }),
       1 * 1_024 * 1_024

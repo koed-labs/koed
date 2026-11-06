@@ -3,6 +3,7 @@ import {
   parseLocalAiClientResponse,
   localAiClientCommandChannel,
   type LocalAiClientCommand,
+  type MemoryModelInput,
   type LocalAiClientResponse
 } from "./local-ai-client-protocol.js";
 
@@ -48,6 +49,10 @@ export const createLocalAiClientPreloadApi = (
       });
       return invokeCommand(command);
     },
+    setMemoryModel: async (input: MemoryModelInput) =>
+      invokeCommand(
+        localAiClientCommandSchema.parse({ operation: "setMemoryModel", input })
+      ),
     reset: async (
       flowKey: Extract<LocalAiClientCommand, { operation: "reset" }>["flowKey"]
     ): Promise<LocalAiClientResponse> => {

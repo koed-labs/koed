@@ -26661,6 +26661,45 @@ describeDb("memory repository visibility", () => {
     expect(await repo.listLocalMemoryAgentSettings({ userId: bob.id })).toEqual(
       []
     );
+    const actor = { userId: alice.id };
+    const conversation = await repo.upsertLocalMemoryAgentSetting(actor, {
+      flowKey: "conversations",
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "chat",
+      reasoningEffort: "low",
+      timeoutMs: 120000,
+      maxAttempts: 2
+    });
+    const limits = { timeout_ms: 60000, max_attempts: 1 };
+    await repo.setMemoryModel(actor, {
+      provider: "claude",
+      aiClientInstanceId: "claude.work",
+      model: "sonnet",
+      reasoningEffort: "high",
+      limits: {
+        mcp_memory_answer: limits,
+        lcm_summary: limits,
+        session_title: limits,
+        curated_memory_review: limits
+      }
+    });
+    const settings = await repo.listLocalMemoryAgentSettings(actor);
+    expect(settings).toHaveLength(5);
+    expect(settings).toContainEqual(conversation);
+    expect(
+      settings
+        .filter((s) => s.flowKey !== "conversations")
+        .map((s) => [s.flowKey, s.model, s.timeoutMs, s.maxAttempts])
+    ).toEqual([
+      ["curated_memory_review", "sonnet", 150000, 3],
+      ["lcm_summary", "sonnet", 90000, 4],
+      ["mcp_memory_answer", "sonnet", 120000, 2],
+      ["session_title", "sonnet", 60000, 1]
+    ]);
+    expect(await repo.listLocalMemoryAgentSettings({ userId: bob.id })).toEqual(
+      []
+    );
   });
 
   it("returns the newest unexpired capability snapshot instead of a newer expired snapshot", async () => {

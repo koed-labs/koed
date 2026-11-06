@@ -1,12 +1,18 @@
-import { Activity, ChevronRight, Settings2 } from "lucide-react";
+import { Badge, Button, Card } from "@koed/ui";
+import { Activity, Clipboard, FileText, RefreshCw } from "lucide-react";
 import type { ComponentStatus, KoedServerStatus } from "../../types.js";
 import {
   EmbeddingStateDetails,
   embeddingSummaryLabel,
   formatDuration
 } from "../views/preferences/EmbeddingStateDetails.js";
-import { SettingsBack } from "./settings-tools.js";
-import type { V1SettingsPage } from "./settings-navigation.js";
+import {
+  Group,
+  PageHeading,
+  PageLink,
+  Row,
+  type Detail
+} from "./settings-controls.js";
 
 export function settingsServiceComponents(
   status: KoedServerStatus | null
@@ -46,7 +52,7 @@ export function SettingsServicesOverview({
 }: {
   status: KoedServerStatus | null;
   embeddingSupported?: boolean;
-  onOpen: (page: V1SettingsPage) => void;
+  onOpen: (page: Detail) => void;
 }) {
   const components = settingsServiceComponents(status);
   const healthy = components.filter(
@@ -64,77 +70,47 @@ export function SettingsServicesOverview({
       : pending === 0 && embedding?.activity === "idle"
         ? "Up to date"
         : "Estimate unavailable";
+  const metrics = [
+    [
+      "Healthy services",
+      components.length ? healthy + " / " + components.length : "—",
+      healthSummary(components)
+    ]
+  ];
+  if (hasEmbedding)
+    metrics.push(
+      ["Pending embeddings", pending?.toLocaleString() ?? "—", estimate],
+      [
+        "Throughput",
+        embedding?.throughput?.measuredTokensPerSecond.toLocaleString() ?? "—",
+        "tokens / second"
+      ]
+    );
   return (
     <>
-      <div className="v1-service-metrics">
-        <div>
-          <span>Services</span>
-          <b>{components.length ? `${healthy} / ${components.length}` : "—"}</b>
-          <small>healthy</small>
-        </div>
-        {hasEmbedding && (
-          <>
-            <div>
-              <span>Pending embeddings</span>
-              <b>{pending === null ? "—" : pending.toLocaleString()}</b>
-              <small>{estimate}</small>
-            </div>
-            <div>
-              <span>Throughput</span>
-              <b>
-                {embedding?.throughput
-                  ? Math.round(
-                      embedding.throughput.measuredTokensPerSecond
-                    ).toLocaleString()
-                  : "—"}
-              </b>
-              <small>tokens / second</small>
-            </div>
-          </>
-        )}
+      <div className="metrics">
+        {metrics.map(([label, value, detail]) => (
+          <Card key={label} className="metric">
+            <small>{label}</small>
+            <strong>{value}</strong>
+            <span>{detail}</span>
+          </Card>
+        ))}
       </div>
-      <div className="v1-service-links">
-        <button
-          type="button"
-          data-settings-page="health"
-          className="v1-service-link"
-          onClick={() => onOpen("health")}
-        >
-          <span
-            className="v1-tool-mark v1-service-health-mark"
-            data-state={
-              components.length &&
-              components.every(([, component]) => component.state === "healthy")
-                ? "healthy"
-                : "needs_attention"
-            }
-          >
-            <Activity size={18} />
-          </span>
-          <span>
-            <b>Service health</b>
-            <small>{healthSummary(components)}</small>
-          </span>
-          <ChevronRight size={17} />
-        </button>
+      <Group title="Service details">
+        <PageLink
+          page="health"
+          onOpen={onOpen}
+          note="Inspect individual services and attention messages."
+        />
         {hasEmbedding && (
-          <button
-            type="button"
-            data-settings-page="embedding"
-            className="v1-service-link"
-            onClick={() => onOpen("embedding")}
-          >
-            <span className="v1-tool-mark">
-              <Settings2 size={18} />
-            </span>
-            <span>
-              <b>Embedding status</b>
-              <small>{embeddingSummaryLabel(embedding ?? null)}</small>
-            </span>
-            <ChevronRight size={17} />
-          </button>
+          <PageLink
+            page="embedding"
+            onOpen={onOpen}
+            note={embeddingSummaryLabel(embedding ?? null)}
+          />
         )}
-      </div>
+      </Group>
     </>
   );
 }
@@ -150,59 +126,149 @@ export function SettingsServicePage({
   const components = settingsServiceComponents(status);
   return (
     <>
-      <header className="v1-parity-heading">
-        <SettingsBack parent="Services" onBack={onBack} />
-        <h3>{page === "health" ? "Service health" : "Embedding status"}</h3>
-        <p>
-          {page === "health"
-            ? "Current state of the services running on this Mac."
-            : "Progress, queues and activity for your local memory index."}
-        </p>
-      </header>
+      <PageHeading page={page} onBack={onBack} />
       {page === "health" ? (
-        <>
-          <p className="v1-service-summary" role="status">
-            <Activity size={18} />
-            {healthSummary(components)}
-          </p>
+        <Group title="Reported components">
           {components.length ? (
-            <dl className="v1-service-readout" aria-label="Service health">
-              {components.map(([title, component]) => (
-                <div key={title}>
-                  <dt>{title}</dt>
-                  <dd>
-                    <strong data-state={component.state}>
-                      {component.state === "healthy"
-                        ? "Healthy"
-                        : component.state === "needs_attention"
-                          ? "Needs attention"
-                          : component.state.replaceAll("_", " ")}
-                    </strong>
-                    {component.state !== "healthy" && component.message && (
-                      <span>{component.message}</span>
-                    )}
-                  </dd>
-                </div>
-              ))}
-            </dl>
+            components.map(([name, component]) => (
+              <Row
+                key={name}
+                title={name}
+                description={
+                  component.state === "healthy" ? undefined : component.message
+                }
+              >
+                <Badge variant="outline">
+                  <i
+                    className={
+                      "status-dot" +
+                      (component.state === "healthy" ? "" : " attention")
+                    }
+                  />
+                  {component.state === "healthy"
+                    ? "Healthy"
+                    : component.state === "needs_attention"
+                      ? "Needs attention"
+                      : component.state.replaceAll("_", " ")}
+                </Badge>
+              </Row>
+            ))
           ) : (
-            <p className="v1-settings-caption" role="status">
-              Service status has not loaded. Refresh status to try again.
+            <p className="pad" role="status">
+              Service status unavailable. Refresh status to try again.
             </p>
           )}
-        </>
-      ) : status?.embeddingState === undefined && status ? (
-        <p className="v1-settings-caption" role="status">
-          Embedding status is not offered by this deployment.
-        </p>
+        </Group>
+      ) : status && status.embeddingState === undefined ? (
+        <p role="status">Embedding status is not offered by this deployment.</p>
       ) : (
-        <div className="v1-embedding-readout">
+        <Card className="embedding">
           <EmbeddingStateDetails
             state={status?.embeddingState ?? null}
             presentation="page"
           />
-        </div>
+        </Card>
       )}
+    </>
+  );
+}
+export type ServiceAction =
+  | "start"
+  | "restart"
+  | "open_logs"
+  | "diagnostics"
+  | "doctor";
+export function ServiceActions({
+  running,
+  busy,
+  disabled,
+  notice,
+  updatedAt,
+  run,
+  refresh
+}: {
+  running: boolean;
+  busy: ServiceAction | null;
+  disabled: boolean;
+  notice: string | null;
+  updatedAt?: string;
+  run: (action: ServiceAction) => void;
+  refresh: () => void;
+}) {
+  return (
+    <>
+      <Group title="Service actions">
+        <Row
+          title="Local services"
+          description={
+            running
+              ? "Restart the services on this device."
+              : "Start the services on this device."
+          }
+        >
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => run(running ? "restart" : "start")}
+          >
+            {busy === "restart"
+              ? "Restarting…"
+              : busy === "start"
+                ? "Starting…"
+                : running
+                  ? "Restart Koed"
+                  : "Start Koed"}
+          </Button>
+        </Row>
+        <div className="actions pad">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => run("doctor")}
+          >
+            <Activity />
+            {busy === "doctor" ? "Running diagnostics…" : "Run diagnostics"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => run("open_logs")}
+          >
+            <FileText />
+            {busy === "open_logs" ? "Opening…" : "Open logs"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => run("diagnostics")}
+          >
+            <Clipboard />
+            {busy === "diagnostics" ? "Copying…" : "Copy diagnostics"}
+          </Button>
+        </div>
+      </Group>
+      <div className="service-footer">
+        <span role="status">
+          {notice ??
+            (updatedAt
+              ? "Updated " + new Date(updatedAt).toLocaleTimeString()
+              : "")}
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-label="Refresh status"
+          disabled={disabled}
+          onClick={refresh}
+        >
+          <RefreshCw />
+          Refresh status
+        </Button>
+      </div>
     </>
   );
 }

@@ -53,16 +53,6 @@
   width: 36px;
   height: 36px;
 }
-.v1-profile-badge {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  color: var(--v1-fg);
-  background: var(--v1-surface-hover);
-  font-size: 13px;
-}
 .v1-navigation [data-slot="sidebar-container"] {
   position: absolute;
   top: 0;

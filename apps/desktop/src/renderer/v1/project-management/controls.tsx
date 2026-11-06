@@ -21,10 +21,14 @@ export function ProjectChoice({
   value,
   options,
   onChange,
+  placeholder,
+  portalContainer,
   disabled
 }: {
   label: string;
-  value: string;
+  value: string | null;
+  placeholder?: string;
+  portalContainer?: HTMLElement | null;
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
   disabled?: boolean;
@@ -39,10 +43,11 @@ export function ProjectChoice({
       disabled={disabled}
     >
       <SelectTrigger aria-label={label}>
-        <SelectValue />
+        <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectPopup
         className="v1-app v1-project-ui v1-pm-select"
+        portalContainer={portalContainer}
         alignItemWithTrigger={false}
       >
         {options.map((option) => (

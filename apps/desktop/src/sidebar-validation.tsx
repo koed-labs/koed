@@ -148,13 +148,11 @@ export function SidebarValidation() {
         scopeKey={scope}
         title={current?.title}
         projectName={current?.projectName}
-        profileName="Hill"
         onSelect={navigation.navigate}
         onHome={() => navigation.navigate({ kind: "home" })}
         onSettings={() =>
           setNotice("Settings opens the existing Settings view")
         }
-        onProfile={() => setNotice("Profile opens the existing Settings view")}
         onBack={navigation.back}
         onForward={navigation.forward}
         canGoBack={navigation.canGoBack}

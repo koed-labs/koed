@@ -100,23 +100,6 @@
 .v1-logo {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 3px;
-  padding: 9px;
-  background: var(--v1-surface);
-  flex: none;
-}
-.v1-logo i {
-  background: var(--v1-fg);
-  border-radius: 2px;
-}
-.v1-logo i:nth-child(2) {
-  opacity: 0.45;
-}
-.v1-logo i:nth-child(3) {
-  opacity: 0.7;
 }
 .v1-hero {
   flex: 1;

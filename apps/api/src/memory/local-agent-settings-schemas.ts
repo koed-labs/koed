@@ -7,6 +7,7 @@ import {
   type AiClientCapabilityId
 } from "@koed/shared";
 import { z } from "zod";
+import { memoryModelFlowKeys } from "@koed/shared/ai-client-flow-defaults";
 
 const aiClientDriverIdSchema = z
   .string()
@@ -161,16 +162,28 @@ export const localMemoryAgentSettingsParamsSchema = z.object({
   flowKey: localMemoryAgentFlowKeySchema
 });
 
-export const localMemoryAgentSettingsSchema = z
+const assignmentFields = z
   .object({
     provider: supportedAiClientDriverSchema,
     ai_client_instance_id: aiClientInstanceIdSchema.optional(),
     model: z.string().trim().min(1),
-    reasoning_effort: z.string().trim().min(1),
+    reasoning_effort: z.string().trim().min(1)
+  })
+  .strict();
+const executionLimitsSchema = z
+  .object({
     timeout_ms: z.coerce.number().int().min(1000).max(1800000),
     max_attempts: z.coerce.number().int().min(1).max(25)
   })
-  .strict()
+  .strict();
+
+export const memoryModelSettingsSchema = assignmentFields.extend({
+  ai_client_instance_id: aiClientInstanceIdSchema,
+  limits: z.record(z.enum(memoryModelFlowKeys), executionLimitsSchema)
+});
+
+export const localMemoryAgentSettingsSchema = assignmentFields
+  .extend(executionLimitsSchema.shape)
   .transform((input) => ({
     ...input,
     ai_client_instance_id:

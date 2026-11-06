@@ -1,11 +1,15 @@
 import type { SupportedAiClientDriverId } from "./ai-client-contract.js";
 
-export const localAiClientFlowKeys = [
-  "conversations",
+export const memoryModelFlowKeys = [
   "mcp_memory_answer",
   "lcm_summary",
   "session_title",
   "curated_memory_review"
+] as const;
+export type MemoryModelFlowKey = (typeof memoryModelFlowKeys)[number];
+export const localAiClientFlowKeys = [
+  "conversations",
+  ...memoryModelFlowKeys
 ] as const;
 export type LocalAiClientFlowKey = (typeof localAiClientFlowKeys)[number];
 

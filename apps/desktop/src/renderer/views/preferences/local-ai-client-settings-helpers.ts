@@ -1,4 +1,3 @@
-import { aiClientModelLabel } from "@koed/shared/ai-client-contract";
 import type {
   LocalAiClientAssignment,
   LocalAiClientFlowKey,
@@ -66,7 +65,7 @@ export const modelId = (
 
 export const modelLabel = (
   model: ReadModel["capabilitySnapshots"][number]["models"][number]
-): string => aiClientModelLabel({ ...model, id: model.fullId });
+): string => model.displayName?.trim() || model.model?.trim() || model.id;
 
 export const modelMatches = (
   model: ReadModel["capabilitySnapshots"][number]["models"][number],

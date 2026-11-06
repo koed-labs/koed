@@ -60,7 +60,7 @@ describe("SettingsTools", () => {
         )?.textContent;
       try {
         await open();
-        expect(badge()).toBe("Installed");
+        expect(badge()).toMatch(/^Installed · /);
 
         await close();
         const failedCheck = deferred();
@@ -72,10 +72,10 @@ describe("SettingsTools", () => {
         await act(async () =>
           failedCheck.reject(new Error("Inspection failed"))
         );
-        expect(badge()).toBe("Unavailable");
+        expect(badge()).toContain("Unavailable");
         expect(card().textContent).toContain("Review setup");
         expect(card().textContent).not.toContain("Installed");
-        expect(otherBadge()).toBe("Installed");
+        expect(otherBadge()).toMatch(/^Installed · /);
 
         await close();
         const recoveryCheck = deferred();
@@ -85,8 +85,11 @@ describe("SettingsTools", () => {
         expect(card().textContent).not.toContain("Installed");
 
         await act(async () => recoveryCheck.resolve());
-        expect(badge()).toBe("Installed");
-        expect(card().textContent).toContain("Manage");
+        expect(badge()).toMatch(/^Installed · /);
+        expect(card().querySelector("button") ?? card()).toHaveProperty(
+          "disabled",
+          false
+        );
         expect(inspect).toHaveBeenCalledTimes(3);
         expect(api.installPrivacy).not.toHaveBeenCalled();
         expect(api.updatePath).not.toHaveBeenCalled();

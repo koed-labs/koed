@@ -166,7 +166,7 @@ describe("Agent Configuration selectors", () => {
     delete window.koedDesktop;
   });
 
-  it("saves a conversation default using conversation capabilities", async () => {
+  it("omits Conversation defaults from the legacy settings surface", async () => {
     container = document.createElement("div");
     document.body.append(container);
     const value = response();
@@ -184,28 +184,8 @@ describe("Agent Configuration selectors", () => {
     await act(async () =>
       root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
     );
-    const fieldset = flowFieldset(container, "Conversations")!;
-    const select = fieldset.querySelector<HTMLSelectElement>(
-      'select[aria-label="Conversations Agent"]'
-    )!;
-    await act(async () => {
-      select.value = "claude.work";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await act(async () => {
-      [...fieldset.querySelectorAll("button")]
-        .find((button) => button.textContent === "Save")!
-        .click();
-    });
-    expect(api.set).toHaveBeenCalledWith(
-      "conversations",
-      expect.objectContaining({
-        provider: "claude",
-        ai_client_instance_id: "claude.work",
-        model: "sonnet",
-        reasoning_effort: "medium"
-      })
-    );
+    expect(flowFieldset(container, "Conversations")).toBeUndefined();
+    expect(flowFieldset(container, "Memory Answer")).toBeDefined();
   });
 
   it("uses the shared spinner in a scoped loading state", async () => {
@@ -256,7 +236,7 @@ describe("Agent Configuration selectors", () => {
       root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
     );
     await vi.waitFor(() =>
-      expect(container.querySelectorAll("fieldset")).toHaveLength(5)
+      expect(container.querySelectorAll("fieldset")).toHaveLength(4)
     );
 
     expect(container.textContent).toContain("Agent Configuration");
@@ -278,8 +258,10 @@ describe("Agent Configuration selectors", () => {
     expect(container.textContent).not.toContain("Documented default (code)");
     expect(container.textContent).toContain("Memory Answer");
     expect(container.textContent).toContain("Claude Work");
-    expect(container.textContent).toContain("openai/gpt-5");
-    expect(container.textContent).toContain("GPT 5 (openai/gpt-5)");
+    const piOption = [...container.querySelectorAll("option")].find(
+      (option) => option.value === "pi.default\u0000openai/gpt-5"
+    );
+    expect(piOption?.textContent).toBe("GPT 5");
     expect(container.textContent).toContain("stale capability snapshot");
     expect(
       container
@@ -487,7 +469,7 @@ describe("Agent Configuration selectors", () => {
       root!.render(<LocalAiClientSettingsSection localAiClients={api} />)
     );
     await vi.waitFor(() =>
-      expect(container.querySelectorAll("fieldset")).toHaveLength(5)
+      expect(container.querySelectorAll("fieldset")).toHaveLength(4)
     );
     expect(container.querySelector('input[type="search"]')).toBeNull();
     expect(container.textContent).not.toContain(

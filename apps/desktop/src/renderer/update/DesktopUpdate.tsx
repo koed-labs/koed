@@ -1,5 +1,7 @@
 import { useCallback, useState } from "react";
-import { ArrowUpCircle, Download, RefreshCw, X } from "lucide-react";
+import { Badge, Button } from "@koed/ui";
+import { Group, Row } from "../v1/settings-controls.js";
+import { ArrowUpCircle, Check, Download, RefreshCw, X } from "lucide-react";
 import type { DesktopUpdateController } from "./use-desktop-update.js";
 import "./desktop-update.css";
 
@@ -95,74 +97,60 @@ export function DesktopUpdatePanel({
   update,
   installedVersion
 }: {
-  update: DesktopUpdateController;
+  update?: DesktopUpdateController;
   installedVersion?: string;
 }) {
-  const state = update.state;
+  const state = update?.state;
   const version = availableUpdateVersion(update);
   const installed = state?.installedVersion ?? installedVersion ?? "Loading…";
-  const status = version ? null : state?.status === "checking" ||
-    update.busy ? (
-    <p role="status">Checking for updates…</p>
-  ) : state?.status === "error" ? (
-    <p role="alert">{update.error ?? "Update status could not be checked."}</p>
-  ) : state?.status === "current" ? (
-    <p role="status">You're up to date.</p>
-  ) : state?.status === "disabled" ? (
-    <p>Update notices are unavailable for this build.</p>
-  ) : (
-    <p>Update status not checked.</p>
-  );
+  const checking = state?.status === "checking" || update?.busy;
+  const status = version
+    ? `Koed ${version} is available`
+    : checking
+      ? "Checking…"
+      : state?.status === "current"
+        ? "Up to date"
+        : state?.status === "error"
+          ? "Check failed"
+          : state?.status === "disabled" || !update
+            ? "Unavailable"
+            : "Not checked";
   return (
-    <section
-      className="desktop-update-panel"
-      aria-labelledby="desktop-update-title"
-    >
-      <h4 id="desktop-update-title">Updates</h4>
-      {version ? (
-        <div className="desktop-update-available">
-          <p className="desktop-update-headline">Koed {version} is available</p>
-          <p>You have {installed}.</p>
-          <div className="desktop-update-actions">
-            <button
-              type="button"
-              className="desktop-update-button desktop-update-button-primary"
+    <Group title="Updates">
+      <Row title={"Installed version " + installed}>
+        <Badge variant="outline" role="status">
+          {state?.status === "current" && <Check />}
+          {status}
+        </Badge>
+      </Row>
+      {update && state?.status !== "disabled" && (
+        <div className="actions pad">
+          {version && (
+            <Button
+              size="sm"
               disabled={update.busy}
               onClick={() => void update.open()}
             >
-              <Download aria-hidden="true" /> Download {version}
-            </button>
-            <button
-              type="button"
-              className="desktop-update-button desktop-update-button-quiet"
-              disabled={update.busy}
-              onClick={() => void update.check()}
-            >
-              Check again
-            </button>
-          </div>
+              <Download />
+              Download {version}
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={update.busy}
+            onClick={() => void update.check()}
+          >
+            <RefreshCw />
+            {version ? "Check again" : "Check for updates"}
+          </Button>
         </div>
-      ) : (
-        <>
-          <p>Installed version: {installed}</p>
-          {status}
-          {state?.status !== "disabled" ? (
-            <div className="desktop-update-actions">
-              <button
-                type="button"
-                className="desktop-update-button"
-                disabled={update.busy}
-                onClick={() => void update.check()}
-              >
-                <RefreshCw aria-hidden="true" /> Check for updates
-              </button>
-            </div>
-          ) : null}
-        </>
       )}
-      {update.error && state?.status !== "error" ? (
-        <p role="alert">{update.error}</p>
-      ) : null}
-    </section>
+      {(update?.error || state?.status === "error") && (
+        <p className="pad" role="alert">
+          {update?.error ?? "Update status could not be checked."}
+        </p>
+      )}
+    </Group>
   );
 }

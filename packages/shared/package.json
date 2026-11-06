@@ -31,6 +31,10 @@
       "types": "./dist/durable-realtime.d.ts",
       "import": "./dist/durable-realtime.js"
     },
+    "./ai-client-flow-defaults": {
+      "types": "./dist/ai-client-flow-defaults.d.ts",
+      "import": "./dist/ai-client-flow-defaults.js"
+    },
     "./ai-client-connections": {
       "types": "./dist/ai-client-connections.d.ts",
       "import": "./dist/ai-client-connections.js"

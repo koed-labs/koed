@@ -273,7 +273,7 @@ describe("Desktop update notice", () => {
         })}
       />
     );
-    expect(html).toContain("up to date");
+    expect(html).toContain("Up to date");
   });
 
   it("shows a dismissible app-wide notice that stays dismissed for that version", async () => {

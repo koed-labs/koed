@@ -186,8 +186,8 @@ updated hooks if prompted before expecting new captures.
 
 ## Packaged First-Run
 
-Packaged Desktop uses `Koed` app metadata, `assets/icon.icns`, and
-`assets/koed-icon.png` for branding. First run starts bundled-local
+Packaged Desktop uses the coloured Koed icon in the Dock and taskbar.
+The logos in navigation and Settings follow the selected theme. First run starts bundled-local
 `koed-server`, allocates ports, and verifies runtime/model assets under
 `KOED_HOME` before the main window reports healthy. Production release signing
 uses electron-builder's built-in Developer ID Application and notarization flow

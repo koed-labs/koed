@@ -1,3 +1,4 @@
+import { KoedLogo } from "../KoedLogo.js";
 import { useEffect, useRef, type ReactNode } from "react";
 import {
   Sidebar,
@@ -33,11 +34,9 @@ type Props = {
   // A Project for the sidebar to expand; see ProjectSidebar.
   revealProject?: { projectId: string; key: number } | null;
   projectName?: string;
-  profileName: string;
   onSelect: (route: NavigationRoute) => void;
   onHome: () => void;
   onSettings: () => void;
-  onProfile: () => void;
   onBack: () => void;
   onForward: () => void;
   canGoBack: boolean;
@@ -126,12 +125,7 @@ function ShellContent(props: Props) {
           <SidebarMenu>
             {railButton(
               "Koed, home",
-              <span className="v1-logo">
-                <i />
-                <i />
-                <i />
-                <i />
-              </span>,
+              <KoedLogo className="v1-logo" />,
               props.onHome,
               true
             )}
@@ -146,13 +140,6 @@ function ShellContent(props: Props) {
                 <DesktopUpdateDot update={props.update} />
               </>,
               props.onSettings
-            )}
-            {railButton(
-              "Profile",
-              <span className="v1-profile-badge">
-                {props.profileName.charAt(0).toUpperCase() || "K"}
-              </span>,
-              props.onProfile
             )}
           </SidebarMenu>
         </SidebarFooter>

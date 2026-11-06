@@ -3,13 +3,11 @@ import { supportedAiClientDriverIds } from "@koed/shared/ai-client-contract";
 
 export const localAiClientCommandChannel = "koed:local-ai-client:command";
 
-export const localAiClientFlowKeys = [
-  "conversations",
-  "mcp_memory_answer",
-  "lcm_summary",
-  "session_title",
-  "curated_memory_review"
-] as const;
+import {
+  localAiClientFlowKeys,
+  memoryModelFlowKeys
+} from "@koed/shared/ai-client-flow-defaults";
+export { localAiClientFlowKeys };
 export type LocalAiClientFlowKey = (typeof localAiClientFlowKeys)[number];
 
 const flowKeySchema = z.enum(localAiClientFlowKeys);
@@ -28,6 +26,15 @@ export type LocalAiClientAssignment = z.infer<
   typeof localAiClientAssignmentSchema
 >;
 
+const limits = localAiClientAssignmentSchema.pick({
+  timeout_ms: true,
+  max_attempts: true
+});
+export const memoryModelInputSchema = localAiClientAssignmentSchema
+  .omit({ timeout_ms: true, max_attempts: true })
+  .extend({ limits: z.record(z.enum(memoryModelFlowKeys), limits) });
+export type MemoryModelInput = z.infer<typeof memoryModelInputSchema>;
+
 export const localAiClientCommandSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("list") }).strict(),
   z.object({ operation: z.literal("refresh") }).strict(),
@@ -36,6 +43,12 @@ export const localAiClientCommandSchema = z.discriminatedUnion("operation", [
       operation: z.literal("set"),
       flowKey: flowKeySchema,
       assignment: localAiClientAssignmentSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("setMemoryModel"),
+      input: memoryModelInputSchema
     })
     .strict(),
   z.object({ operation: z.literal("reset"), flowKey: flowKeySchema }).strict()
@@ -144,7 +157,7 @@ export type LocalAiClientReadModel = z.infer<
 
 export const localAiClientResponseSchema = z
   .object({
-    operation: z.enum(["list", "refresh", "set", "reset"]),
+    operation: z.enum(["list", "refresh", "set", "setMemoryModel", "reset"]),
     readModel: localAiClientReadModelSchema,
     refreshed: z.boolean().optional(),
     refreshError: z.string().nullable().optional()

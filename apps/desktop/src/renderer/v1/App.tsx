@@ -148,7 +148,6 @@ export function V1App({
   const [error, setError] = useState<string | null>(null);
   const navigation = useNavigationHistory(scopeKey);
   const { route, navigate: setRoute } = navigation;
-  const [profileName, setProfileName] = useState("User");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null
   );
@@ -359,7 +358,6 @@ export function V1App({
         if (scopeKey !== identity.scopeKey) {
           attemptedReconcile.current.clear();
           attemptedCaptures.current.clear();
-          setProfileName("User");
           setOwnerId(identity.ownerId);
           setScopeKey(identity.scopeKey);
           setProvenance(emptyProvenance);
@@ -463,11 +461,8 @@ export function V1App({
     });
     void collaborationClient
       .load()
-      .then((snapshot) => {
+      .then(() => {
         if (!active || scopeKeyRef.current !== scopeKey) return;
-        setProfileName(
-          snapshot.navigation?.personalOwner.displayName ?? "User"
-        );
         setError(null);
       })
       .catch((cause) =>
@@ -960,17 +955,12 @@ export function V1App({
               : (conversationThread?.name ?? "Conversation")
           }
           projectName={conversationProject?.name}
-          profileName={profileName}
           onSelect={setRoute}
           onHome={() => {
             setSelectedProjectId(null);
             setRoute({ kind: "home" });
           }}
           onSettings={() => {
-            setSettingsTab("general");
-            setSettingsOpen(true);
-          }}
-          onProfile={() => {
             setSettingsTab("general");
             setSettingsOpen(true);
           }}
