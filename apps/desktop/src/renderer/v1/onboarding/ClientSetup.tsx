@@ -75,7 +75,7 @@ export function ClientSetup({
     scanned: boolean;
     failed: boolean;
   }) => void;
-  onFinished: () => void;
+  onFinished: (connected: ClientId[]) => void;
 }) {
   const { status, busyCommand } = useDesktopStatus(statusStore);
   const [scanning, setScanning] = useState(true);
@@ -407,7 +407,9 @@ export function ClientSetup({
                 type="button"
                 className="lp-primary-button"
                 disabled={!canContinue}
-                onClick={onFinished}
+                onClick={() =>
+                  onFinished(successful.map((client) => client.id))
+                }
               >
                 Continue <Arrow />
               </button>

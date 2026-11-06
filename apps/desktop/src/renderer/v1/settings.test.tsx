@@ -7,6 +7,7 @@ import type {
   StatusSnapshot
 } from "../services/desktop-commands.js";
 import type { ThemeStore, ThemeSnapshot } from "../state/theme.js";
+import { memoryModelFixture } from "./onboarding/memory-model.fixture.js";
 import { V1Settings } from "./settings.js";
 
 describe("V1Settings", () => {
@@ -251,6 +252,47 @@ describe("V1Settings", () => {
       "Model A"
     );
     expect(localAiClients.set).not.toHaveBeenCalled();
+  });
+  it("can replace an incomplete Pi default with Codex and retain each task’s limits", async () => {
+    const api = {
+      ...memoryModelFixture(() => ["codex"]),
+      set: vi.fn(),
+      reset: vi.fn()
+    };
+    const save = vi.spyOn(api, "setMemoryModel");
+    await render("ai", { localAiClients: api });
+    const client = container.querySelector<HTMLButtonElement>(
+      '[role="combobox"][aria-label="AI Client"]'
+    )!;
+    expect(client.disabled).toBe(false);
+    await act(async () =>
+      client.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })
+      )
+    );
+    const option = [
+      ...container.querySelectorAll<HTMLElement>('[role="option"]')
+    ].find((o) => o.textContent === "Codex")!;
+    await act(async () => option.click());
+    const button = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Save Memory Model"
+    )!;
+    expect(button.disabled).toBe(false);
+    await act(async () => button.click());
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "codex",
+        limits: {
+          mcp_memory_answer: { timeout_ms: 1800000, max_attempts: 2 },
+          lcm_summary: { timeout_ms: 240000, max_attempts: 4 },
+          session_title: { timeout_ms: 240000, max_attempts: 4 },
+          curated_memory_review: { timeout_ms: 90000, max_attempts: 2 }
+        }
+      })
+    );
+    expect(container.textContent).toContain(
+      "Memory Model saved for all four tasks."
+    );
   });
   it("opens General for an old Your agent navigation entry", async () => {
     await render("agent");

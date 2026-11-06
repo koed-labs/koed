@@ -6,6 +6,7 @@ import type { DesktopSetupSnapshot, KoedServerStatus } from "../../types.js";
 import { DesktopStatusStore } from "../services/desktop-commands.js";
 import { V1Onboarding } from "./onboarding.js";
 import { DEFAULT_AGENT_LOOK } from "./visual.js";
+import { memoryModelFixture } from "./onboarding/memory-model.fixture.js";
 import { stageIds } from "./onboarding/model.js";
 
 vi.mock("./onboarding/LoadingKin.js", () => ({
@@ -91,6 +92,7 @@ describe("desktop onboarding", () => {
       draft?: unknown;
       savedName?: string;
       strict?: boolean;
+      memoryApi?: ReturnType<typeof memoryModelFixture>;
       inspect?: () => Promise<DesktopSetupSnapshot>;
     } = {}
   ) {
@@ -138,6 +140,7 @@ describe("desktop onboarding", () => {
       configurable: true,
       value: {
         setup,
+        localAiClients: options.memoryApi,
         invoke,
         theme: { get: async () => "light", set: themeSet }
       }
@@ -637,6 +640,7 @@ describe("desktop onboarding", () => {
     await click("Next");
     await click("Connect");
     await click("Continue");
+    await click("Set up later");
     await click("Let’s go");
     expect(saveAgent).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledOnce();
@@ -649,6 +653,7 @@ describe("desktop onboarding", () => {
     await click("Next");
     await click("Connect");
     await click("Continue");
+    await click("Set up later");
     complete.mockRejectedValueOnce(new Error("Completion could not be saved"));
     await click("Let’s go");
     expect(text()).toContain("Completion could not be saved");
@@ -658,11 +663,145 @@ describe("desktop onboarding", () => {
       expect.objectContaining({ name: "Koed" })
     );
   });
+  it("saves a connected client for all four memory tasks before advancing, even with an incomplete Pi default", async () => {
+    const memoryApi = memoryModelFixture(() => ["codex", "pi"]);
+    const save = vi
+      .spyOn(memoryApi, "setMemoryModel")
+      .mockRejectedValueOnce(new Error("Save failed"));
+    const { click, complete } = await render({
+      status: serverStatus(["codex"]),
+      memoryApi
+    });
+    await click("Next");
+    await click("Connect");
+    await click("Continue");
+    expect(text()).toContain("Choose a Memory Model.");
+    expect(
+      container.querySelector('[aria-label="AI Client"]')?.textContent
+    ).toBe("Codex");
+    expect(container.querySelector('[aria-label="Model"]')?.textContent).toBe(
+      "GPT-6 Luna"
+    );
+    expect(
+      container.querySelector('[aria-label="Reasoning"]')?.textContent
+    ).toBe("High");
+    expect(save).not.toHaveBeenCalled();
+    await click("Save and continue");
+    expect(text()).toContain("Save failed");
+    expect(text()).not.toContain("You’re all set.");
+    await click("Save and continue");
+    expect(text()).toContain("You’re all set.");
+    const { readModel } = await memoryApi.list();
+    expect(
+      readModel.settings.map((s) => [
+        s.flowKey,
+        s.provider,
+        s.timeoutMs,
+        s.maxAttempts
+      ])
+    ).toEqual([
+      ["mcp_memory_answer", "codex", 1800000, 2],
+      ["lcm_summary", "codex", 240000, 4],
+      ["session_title", "codex", 240000, 4],
+      ["curated_memory_review", "codex", 90000, 2]
+    ]);
+    await click("Let’s go");
+    expect(complete).toHaveBeenCalledOnce();
+  });
+  it.each([
+    {
+      label: "Haiku 5.5",
+      efforts: ["medium", "high"],
+      expected: "Haiku 5.5",
+      id: "haiku",
+      effort: "high"
+    },
+    {
+      label: "Haiku 5.5",
+      efforts: ["none"],
+      expected: "Haiku 5.5",
+      id: "haiku",
+      effort: "none"
+    },
+    {
+      label: "Haiku 4.5",
+      efforts: ["none"],
+      expected: "Sonnet",
+      id: "sonnet",
+      effort: "high"
+    }
+  ])(
+    "uses an available Claude model and effort for $label ($efforts)",
+    async ({ label, efforts, expected, id, effort }) => {
+      const memoryApi = memoryModelFixture(() => ["claude"]);
+      const result = await memoryApi.refresh();
+      const haiku = result.readModel.capabilitySnapshots[0]!.models.find(
+        (m) => m.id === "haiku"
+      )!;
+      haiku.displayName = label;
+      haiku.reasoningEfforts = efforts;
+      vi.spyOn(memoryApi, "refresh").mockResolvedValue(result);
+      const save = vi.spyOn(memoryApi, "setMemoryModel");
+      const { click } = await render({
+        draft: { version: 2, step: "memory-model", selected: ["claude"] },
+        memoryApi
+      });
+      expect(container.querySelector('[aria-label="Model"]')?.textContent).toBe(
+        expected
+      );
+      await click("Save and continue");
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "claude",
+          model: id,
+          reasoning_effort: effort
+        })
+      );
+    }
+  );
+
+  it("waits for an explicit client choice when several models are available after a retry", async () => {
+    const memoryApi = memoryModelFixture(() => ["codex", "pi"]);
+    vi.spyOn(memoryApi, "list").mockRejectedValueOnce(
+      new Error("Client discovery failed")
+    );
+    const save = vi.spyOn(memoryApi, "setMemoryModel");
+    const { click } = await render({
+      draft: { version: 2, step: "memory-model", selected: ["codex", "pi"] },
+      memoryApi
+    });
+    expect(text()).toContain("Client discovery failed");
+    expect(text()).not.toContain("Set up later");
+    await click("Try again");
+    expect(text()).toContain("Choose a connected client");
+    expect(text()).toContain("Choose an AI Client first");
+    expect(text()).toContain("Choose a model first");
+    await click("Save and continue");
+    expect(save).not.toHaveBeenCalled();
+    expect(text()).toContain("Choose a Memory Model.");
+  });
+
+  it("offers Back and Set up later when connected clients have no usable model", async () => {
+    const memoryApi = memoryModelFixture(() => []);
+    const save = vi.spyOn(memoryApi, "setMemoryModel");
+    const { click } = await render({
+      draft: { version: 2, step: "memory-model", selected: ["pi"] },
+      memoryApi
+    });
+    expect(text()).toContain("No models available");
+    await click("Back to AI Clients");
+    await click("Connect");
+    await click("Continue");
+    await click("Set up later");
+    expect(text()).toContain("You’re all set.");
+    expect(save).not.toHaveBeenCalled();
+  });
   it("starts final setup and client checks together", async () => {
     const { click, setup, invoke, complete } = await render();
     await click("Next");
     await click("Connect");
     await click("Continue");
+    await click("Set up later");
     const inspection = deferred<DesktopSetupSnapshot>();
     setup.inspect.mockImplementationOnce(() => inspection.promise);
     invoke.mockClear();
@@ -677,6 +816,7 @@ describe("desktop onboarding", () => {
     await click("Next");
     await click("Connect");
     await click("Continue");
+    await click("Set up later");
     setStatus(serverStatus());
     await click("Let’s go");
     expect(complete).not.toHaveBeenCalled();
@@ -712,8 +852,9 @@ describe("desktop onboarding", () => {
     const { click, saveDraft, complete } = await render();
     await click("Next");
     await click("Connect");
-    saveDraft.mockRejectedValueOnce(new Error("Disk temporarily unavailable"));
     await click("Continue");
+    saveDraft.mockRejectedValueOnce(new Error("Disk temporarily unavailable"));
+    await click("Set up later");
     expect(text()).toContain("Disk temporarily unavailable");
     await click("Let’s go");
     expect(complete).not.toHaveBeenCalled();
@@ -740,6 +881,7 @@ describe("desktop onboarding", () => {
     await click("Next");
     await click("Connect");
     await click("Continue");
+    await click("Set up later");
     setup.inspect.mockResolvedValueOnce(setupSnapshot("ready", "changed"));
     await click("Let’s go");
     expect(complete).not.toHaveBeenCalled();
@@ -764,6 +906,7 @@ describe("desktop onboarding", () => {
       pending.resolve({ ok: true });
     });
     await click("Continue");
+    await click("Set up later");
     const finishing = deferred<void>();
     complete.mockImplementationOnce(() => finishing.promise);
     await click("Let’s go");
@@ -799,6 +942,7 @@ describe("desktop onboarding", () => {
     await click("Next");
     await click("Connect");
     await click("Continue");
+    await click("Set up later");
     setup.inspect.mockRejectedValueOnce(new Error("Inspection unavailable"));
     await click("Let’s go");
     expect(complete).not.toHaveBeenCalled();

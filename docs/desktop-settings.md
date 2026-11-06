@@ -35,10 +35,11 @@ shows that restriction rather than claiming installation succeeded.
 
 ## AI models
 
-Memory Model selects one connected AI Client, model, and reasoning level for
-Memory Answer synthesis, LCM summaries, captured-session titles, and Curated
-Memory reviews. Select **Save Memory Model** to apply the choice to all four
-tasks. The selector lists clients with a current, authenticated Local Synthesis
+During onboarding, you choose a Memory Model after connecting your AI Clients.
+This client, model, and reasoning level apply to Memory Answer synthesis, LCM
+summaries, captured-session titles, and Curated Memory reviews. To change your
+choice later, open **Settings → AI models**, choose the new model, and select
+**Save Memory Model**. The selector lists clients with a current, authenticated Local Synthesis
 capability and a reported model and reasoning level.
 
 When earlier assignments differ, Settings asks you to choose a shared model.

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { DesktopStatusStore } from "../services/desktop-commands.js";
 import { useDesktopStatus } from "../state/use-status.js";
 import { Arrow, ClientSetup } from "./onboarding/ClientSetup.js";
+import { MemoryModelStep } from "./onboarding/MemoryModelStep.js";
 import { LoadingKin } from "./onboarding/LoadingKin.js";
 import { OnboardingConfetti } from "./onboarding/OnboardingConfetti.js";
 import {
@@ -60,6 +61,7 @@ export function V1Onboarding({
   const [completeError, setCompleteError] = useState<string | null>(null);
   const [draftError, setDraftError] = useState<string | null>(null);
   const finishLock = useRef(false);
+  const workspace = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const mounted = useRef(true);
   const draftWrites = useRef<Promise<void>>(Promise.resolve());
@@ -100,10 +102,12 @@ export function V1Onboarding({
     !running && (!!setup.error || setup.snapshot?.state === "failed");
   // A restored draft cannot bypass current prerequisite inspection.
   const showingClients = screen === "clients" && state.ready && !setup.busy;
+  const showingMemory = screen === "memory-model" && state.ready && !setup.busy;
+  const showingPanel = showingClients || showingMemory;
   const complete = screen === "complete" && state.ready;
   const welcome =
     !setupStarted &&
-    !showingClients &&
+    !showingPanel &&
     !complete &&
     !failed &&
     !state.ready &&
@@ -176,7 +180,8 @@ export function V1Onboarding({
   }
   return (
     <main
-      className={`lp-workspace ${showingClients ? "lp-client-workspace" : ""}`}
+      ref={workspace}
+      className={`lp-workspace ${showingPanel ? "lp-client-workspace" : ""}`}
     >
       <div className="lp-window-drag" aria-hidden="true" />
       {complete && (
@@ -185,37 +190,49 @@ export function V1Onboarding({
         </div>
       )}
       <section
-        className={`lp-loader ${showingClients ? "lp-client-screen" : ""} ${complete ? "lp-complete-screen" : ""} ${failed ? "lp-setup-error" : ""}`}
+        className={`lp-loader ${showingPanel ? "lp-client-screen" : ""} ${complete ? "lp-complete-screen" : ""} ${failed ? "lp-setup-error" : ""}`}
         aria-label={
           complete
             ? "All set"
-            : showingClients
-              ? "Connect AI Clients"
-              : "Setting up Koed"
+            : showingMemory
+              ? "Choose a Memory Model"
+              : showingClients
+                ? "Connect AI Clients"
+                : "Setting up Koed"
         }
       >
         <div className="lp-kin-area">
           <div className="lp-kin-stage">
             <LoadingKin
               initialized={!!setup.snapshot}
-              complete={complete || (!showingClients && state.ready)}
-              stage={showingClients ? (feedback.scanned ? 1 : 0) : state.index}
+              complete={complete || (!showingPanel && state.ready)}
+              stage={
+                showingMemory
+                  ? 1
+                  : showingClients
+                    ? feedback.scanned
+                      ? 1
+                      : 0
+                    : state.index
+              }
               midpointReached={
-                !showingClients && !failed && (state.fraction ?? 0) >= 0.5
+                !showingPanel && !failed && (state.fraction ?? 0) >= 0.5
               }
               sad={failed || (showingClients && feedback.failed)}
             />
           </div>
-          {showingClients && (
+          {showingPanel && (
             <div className="lp-kin-caption">
               <p key={feedback.failed ? "failed" : feedback.found}>
-                {feedback.failed
-                  ? "A little hiccup. We can try again."
-                  : !feedback.scanned
-                    ? "Let’s make some introductions."
-                    : feedback.found
-                      ? "Looks like we’re in good company."
-                      : "A few new faces to meet."}
+                {showingMemory
+                  ? "How shall we remember things?"
+                  : feedback.failed
+                    ? "A little hiccup. We can try again."
+                    : !feedback.scanned
+                      ? "Let’s make some introductions."
+                      : feedback.found
+                        ? "Looks like we’re in good company."
+                        : "A few new faces to meet."}
               </p>
             </div>
           )}
@@ -227,10 +244,18 @@ export function V1Onboarding({
             selectionInitialized={selectionInitialized}
             onSelection={onSelection}
             onFeedback={onFeedback}
-            onFinished={() => {
+            onFinished={(connected) => {
               setCompleteError(null);
-              setScreen("complete");
+              setSelected(connected);
+              setScreen("memory-model");
             }}
+          />
+        ) : showingMemory ? (
+          <MemoryModelStep
+            portalContainer={workspace}
+            connected={selected}
+            onBack={() => setScreen("clients")}
+            onContinue={() => setScreen("complete")}
           />
         ) : welcome ? (
           <button
@@ -375,7 +400,7 @@ export function V1Onboarding({
           </p>
         )}
       </section>
-      {!showingClients && !welcome && (
+      {!showingPanel && !welcome && (
         <p className="lp-sr-only" role="status" aria-live="polite">
           {complete
             ? "Setup complete. Your AI Clients are connected."

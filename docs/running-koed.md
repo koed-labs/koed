@@ -1308,8 +1308,8 @@ Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app suppo
 ### Packaged Desktop first-run
 
 Personal Desktop onboarding proceeds through local setup, AI Client connection,
-and completion. The opening screen shows Kin and **Get Started**; status text and
-progress appear once setup begins. Onboarding follows the system appearance with
+Memory Model selection, and completion. The opening screen shows Kin and
+**Get Started**. Status text and progress appear once setup begins. Onboarding follows the system appearance with
 no theme toggle. Kin can be dragged to spin; a fast spin briefly startles it.
 Reduced motion disables release momentum. **Get Started** authorizes the existing six-stage local workflow;
 progress reflects completed steps and actual download bytes. Download progress
@@ -1325,8 +1325,16 @@ After core setup, detected Codex, Claude Code, and Pi installations are initiall
 selected for connection. Selection and discovery do not configure them. **Connect**
 authorizes changes to the selected AI Clients only. Failed connections and sign-in
 requirements remain visible and can be retried independently. At least one ready,
-authenticated AI Client is required before **Let’s go** saves completion. Settings
-retains agent customization and **Run setup again**; the earlier onboarding chat
+authenticated AI Client is required before **Let’s go** saves completion.
+After connecting clients, choose the client, model, and reasoning level for your
+four memory tasks. Onboarding suggests GPT-6 Luna for Codex and Haiku 5.5 for
+Claude Code, both with High reasoning when supported. If the client does not
+offer its suggested model, onboarding selects its first available model.
+Select **Save and continue** to use that choice. If no
+connected client offers a usable model, go back to AI Clients or select **Set
+up later**. You can change this choice in **Settings → AI models**.
+
+Settings retains agent customization and **Run setup again**; the earlier onboarding chat
 and memory demonstration are no longer part of this flow. Capture, recall, and
 service ordering retain their existing implementations.
 

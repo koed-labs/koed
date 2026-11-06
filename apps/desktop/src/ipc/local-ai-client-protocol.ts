@@ -138,6 +138,9 @@ export const localAiClientDefaultSchema = z
     available: z.boolean(),
     persistable: z.boolean().optional(),
     assignment: localAiClientRuntimeAssignmentSchema.nullable(),
+    executionLimits: localAiClientRuntimeAssignmentSchema
+      .pick({ timeout_ms: true, max_attempts: true })
+      .optional(),
     reason: z.string().nullable()
   })
   .strict();
