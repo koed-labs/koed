@@ -29,10 +29,14 @@ Project-assignment requests. Preload validates each operation and result in
 both directions. The renderer receives domain data and typed loaders/callbacks
 only; it never receives an API Token, Authorization header, API base URL,
 generic request path, or remote authority for these Personal Memory operations.
-Desktop uses the shared virtualized timeline contract, so long
-Conversations retain bounded rendering and older-event pagination without
-coupling their navigation shells. Persisted Project discovery metadata is
-merged with captured Memory activity locally, so a discovered Project can
+
+The Conversation views share `VirtualizedTimeline` to render long histories and
+keep the reader’s place when older events load. Team Chat uses `ChatTimeline`
+to group messages, mark the first unread message, and report which messages
+are visible so the Team Chat route can acknowledge them.
+
+Persisted Project discovery metadata is merged with captured Memory activity
+locally, so a discovered Project can
 remain visible before its first Captured Session.
 Settings includes a collapsed, optional Team Backend setup/readiness
 disclosure. Users paste only a plain HTTP(S) Team Backend origin; URLs with
@@ -49,6 +53,11 @@ tool-call payloads as the primary summary. In the raw Conversation, User and AI
 Client messages remain individually visible while consecutive tool calls are
 collapsed into an expandable Agent activity group; expanding it preserves every
 raw Memory Event and its captured content.
+
+Conversation, Ask, Notes, and Team Chat render Markdown through
+`SecureMarkdown`. It limits input size, suppresses raw HTML
+and remote images, and allows absolute HTTP, HTTPS, and mailto links.
+Views supply the Desktop callbacks for opening links and copying code.
 
 Settings describes local readiness through the User outcomes of Capture,
 Recall, and Memory processing. Degraded outcomes offer a relevant recovery

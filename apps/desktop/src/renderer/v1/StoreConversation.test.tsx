@@ -12,27 +12,21 @@ import { ConversationPresentationContext } from "../conversation-presentation.js
 import { StoreConversation } from "../views/personal/PersonalMemoryViews.js";
 import { V1ConversationSurface, V1ManagedInput } from "./runtime.js";
 
-vi.mock("@koed/memory-ui", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@koed/memory-ui")>();
-  return {
-    ...actual,
-    VirtualizedTimeline: ({
-      events,
-      renderEvent
-    }: {
-      events: Array<{ id: string }>;
-      renderEvent: (event: never) => ReactNode;
-    }) => (
-      <>
-        {events.map((event) => (
-          <div key={event.id}>{renderEvent(event as never)}</div>
-        ))}
-      </>
-    )
-  };
-});
-
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+vi.mock("../conversation/VirtualizedTimeline.js", () => ({
+  VirtualizedTimeline: <T extends { id: string }>({
+    events,
+    renderEvent
+  }: {
+    events: readonly T[];
+    renderEvent: (event: T) => ReactNode;
+  }) => (
+    <>
+      {events.map((event) => (
+        <div key={event.id}>{renderEvent(event)}</div>
+      ))}
+    </>
+  )
+}));
 
 it("renders a captured Conversation without execution or continuation controls when managed API is null", async () => {
   const thread: PersonalDesktopProjectThread = {

@@ -3,7 +3,10 @@ import type {
   PersonalDesktopNote,
   PersonalDesktopNoteSummary
 } from "@koed/shared/personal-desktop";
-import { SecureMarkdown, type MarkdownPlatformAdapters } from "@koed/memory-ui";
+import {
+  SecureMarkdown,
+  type MarkdownPlatformAdapters
+} from "../../markdown/SecureMarkdown.js";
 import {
   ArrowLeft,
   Check,

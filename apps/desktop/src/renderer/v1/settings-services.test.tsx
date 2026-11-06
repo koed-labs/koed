@@ -8,9 +8,6 @@ import {
   SettingsServicePage,
   SettingsServicesOverview
 } from "./settings-services.js";
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 const embedding = (): EmbeddingStateSnapshot => ({
   generatedAt: "2026-11-03T10:00:00Z",
   activity: "working",

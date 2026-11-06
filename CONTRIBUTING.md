@@ -61,8 +61,8 @@ Existing typescript-eslint suppression comments remain supported. Declare new
 globals in `.oxlintrc.json`, because native Oxlint does not honor the existing
 `/* global ... */` comments. The configuration already records those globals.
 
-The MCP Server test project extends `tsconfig.lint.json` to supply the existing
-aliases and test globals. The production and test projects retain their current
-file scopes and checks. `scripts/oxlint-safety.test.mjs` checks typed rules,
+The MCP Server test project extends `tsconfig.test.json` for workspace aliases
+and test globals, and enables TypeScript extensions in its imports.
+`scripts/oxlint-safety.test.mjs` checks typed rules,
 production/test overrides, native optional-chain checks, suppression behavior, and
 the JavaScript source-file policy.

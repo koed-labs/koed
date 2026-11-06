@@ -802,10 +802,8 @@ describe("SetupChecklist", () => {
       );
     });
 
-    resolveSetup();
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Codex: ready")
-    );
+    await act(async () => resolveSetup());
+    expect(container.textContent).toContain("Codex: ready");
   });
 
   it("completes successful multi-client onboarding in queue order", async () => {

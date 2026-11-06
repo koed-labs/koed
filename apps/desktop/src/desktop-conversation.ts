@@ -2,7 +2,7 @@ import {
   conversationToolKindAndLabel,
   type PersonalDesktopConversationEvent
 } from "@koed/shared/personal-desktop";
-import { parseSourcePatch, type SourcePatchDetails } from "@koed/memory-ui";
+import { parseSourcePatch, type SourcePatchDetails } from "./source-diff.js";
 
 export type DesktopConversationEvent = PersonalDesktopConversationEvent & {
   responseStreaming?: boolean;

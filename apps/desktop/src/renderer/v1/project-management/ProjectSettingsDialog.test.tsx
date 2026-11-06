@@ -12,8 +12,6 @@ import { projectKinLook } from "../pixelkin/agent-kin.js";
 import { homeProjectEntries } from "../home/home-model.js";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog.js";
 
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-
 it("opens sync conflict review even when a retained exclusion blocks membership inspection", async () => {
   const f = createProjectManagementValidationApi();
   const projectId = validationId(2),

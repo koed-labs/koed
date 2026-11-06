@@ -1,15 +1,10 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { beforeEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ProjectSelectionCommandResult } from "@koed/shared/project-selection";
 import { ProjectAssociationPanel } from "./ProjectAssociationPanel.js";
 const localProjectId = `lp_${"a".repeat(32)}`;
-beforeEach(() => {
-  (
-    globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
-  ).IS_REACT_ACT_ENVIRONMENT = true;
-});
 const accepted = {
   groupId: "group",
   associationId: "association",

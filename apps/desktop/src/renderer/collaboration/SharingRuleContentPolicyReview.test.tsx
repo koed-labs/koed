@@ -12,9 +12,6 @@ import {
 import { SharingRuleContentPolicyReview } from "./SharingRuleContentPolicyReview.js";
 
 type Client = Parameters<typeof SharingRuleContentPolicyReview>[0]["client"];
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 const id = (value: number) =>
   `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const hash = "a".repeat(64);
