@@ -134,6 +134,56 @@ describe("update discovery", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects premature pagination termination after an earlier last-page promise", async () => {
+    const firstPageFetcher = vi.fn(async (input: string | URL | Request) => {
+      const page = Number(new URL(String(input)).searchParams.get("page"));
+      if (page === 1) {
+        return response([version("0.12.0")], {
+          link: '<https://api.github.com/repos/koed-labs/koed/releases?per_page=100&page=2>; rel="next", <https://api.github.com/repos/koed-labs/koed/releases?per_page=100&page=3>; rel="last"'
+        });
+      }
+      return response([version(page === 2 ? "0.13.0" : "1.0.0")]);
+    }) as unknown as typeof fetch;
+    const result = await createUpdateDiscovery({
+      eligible: true,
+      installedVersion: "0.10.0",
+      fetch: firstPageFetcher
+    }).check();
+    expect(result.status).toBe("error");
+    expect(firstPageFetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels streaming bodies for rejected HTTP and content-type responses", async () => {
+    for (const rejectedResponse of [
+      { status: 503, contentType: "application/json" },
+      { status: 200, contentType: "text/html" }
+    ]) {
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("pending"));
+        },
+        cancel() {
+          cancelled = true;
+        }
+      });
+      const fetcher = vi.fn(
+        async () =>
+          new Response(body, {
+            status: rejectedResponse.status,
+            headers: { "content-type": rejectedResponse.contentType }
+          })
+      ) as unknown as typeof fetch;
+      const result = await createUpdateDiscovery({
+        eligible: true,
+        installedVersion: "0.10.0",
+        fetch: fetcher
+      }).check();
+      expect(result.status).toBe("error");
+      expect(cancelled).toBe(true);
+    }
+  });
+
   it("fails closed when highest stable release lacks required assets", async () => {
     const incomplete = { ...version("0.11.0"), assets: [] };
     const fetcher = fetchForPages([[version("0.10.1")], [incomplete], []]);

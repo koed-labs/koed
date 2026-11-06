@@ -79,6 +79,13 @@ const verifyAssets = (assets: unknown[], version: string) => {
   }
 };
 
+const cancelResponseBody = (response: Response): void => {
+  const cancellation = response.body?.cancel();
+  void cancellation?.catch((error: unknown) => {
+    console.error("Desktop update response body cancellation failed.", error);
+  });
+};
+
 const readJson = async (
   response: Response,
   expectedUrl: string,
@@ -88,16 +95,20 @@ const readJson = async (
     !response.ok ||
     response.redirected ||
     (response.url && response.url !== expectedUrl)
-  )
+  ) {
+    cancelResponseBody(response);
     throw new Error("Official release metadata unavailable.");
+  }
   if (
     !response.headers
       .get("content-type")
       ?.toLowerCase()
       .startsWith("application/json") ||
     !response.body
-  )
+  ) {
+    cancelResponseBody(response);
     throw new Error("Invalid release metadata response.");
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let bytes = 0;
@@ -126,8 +137,11 @@ const readJson = async (
   }
 };
 
-const paginationNext = (link: string | null, page: number): boolean => {
-  if (!link) return false;
+const paginationNext = (
+  link: string | null,
+  page: number
+): { hasNext: boolean; lastPage?: number } => {
+  if (!link) return { hasNext: false };
   const relations = new Map<string, number>();
   for (const part of link.split(",")) {
     const match = /^\s*<([^>]+)>;\s*rel="(next|prev|first|last)"\s*$/u.exec(
@@ -160,12 +174,13 @@ const paginationNext = (link: string | null, page: number): boolean => {
     ((lastPage > page && !hasNext) || (hasNext && lastPage < page + 1))
   )
     throw new Error("Inconsistent pagination.");
-  return hasNext;
+  return { hasNext, ...(lastPage === undefined ? {} : { lastPage }) };
 };
 
 const discover = async (fetcher: typeof fetch, signal: AbortSignal) => {
   const budget = { bytes: 0 };
   let highest: { version: string; release: unknown } | undefined;
+  let expectedLastPage: number | undefined;
   for (let page = 1; page <= maxPages; page += 1) {
     const url = pageUrl(page);
     const response = await fetcher(url, {
@@ -201,8 +216,23 @@ const discover = async (fetcher: typeof fetch, signal: AbortSignal) => {
       else if (candidate === highest.version)
         throw new Error("Duplicate release version.");
     }
-    const next = paginationNext(response.headers.get("link"), page);
-    if (!next && entries.length < pageSize) return highest?.release ?? null;
+    const pagination = paginationNext(response.headers.get("link"), page);
+    if (pagination.lastPage !== undefined) {
+      if (
+        expectedLastPage !== undefined &&
+        pagination.lastPage !== expectedLastPage
+      )
+        throw new Error("Inconsistent pagination.");
+      expectedLastPage = pagination.lastPage;
+    }
+    if (
+      expectedLastPage !== undefined &&
+      expectedLastPage > page &&
+      !pagination.hasNext
+    )
+      throw new Error("Incomplete pagination.");
+    if (!pagination.hasNext && entries.length < pageSize)
+      return highest?.release ?? null;
   }
   throw new Error("Release pagination limit exceeded.");
 };
@@ -285,6 +315,7 @@ export const createUpdateDiscovery = (
         });
       } finally {
         clearTimeout(deadline);
+        activeController.abort();
         controller = undefined;
       }
       return current();
