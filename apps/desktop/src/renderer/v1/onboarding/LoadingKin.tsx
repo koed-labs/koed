@@ -127,11 +127,19 @@ export function LoadingKin({
           lastComplete = state.complete;
         }
         lastInitialized = state.initialized;
-        const dt = previousTime
-          ? Math.min((now - previousTime) / 1000, 0.05)
+        const elapsed = previousTime
+          ? Math.max(0, (now - previousTime) / 1000)
           : 0;
+        const dt = Math.min(elapsed, 0.05);
         const wasSpinning = dragSpin.active;
-        dragSpin.step(dt, reduced);
+        dragSpin.step(dt, reduced, now);
+        if (pointer !== null && !dragSpin.dragging) {
+          const id = pointer;
+          pointer = null;
+          control.dataset.dragging = "false";
+          suppressClick.current = true;
+          if (control.hasPointerCapture(id)) control.releasePointerCapture(id);
+        }
         if (wasSpinning && !dragSpin.active) idleSince = clock;
         if (!reduced) clock += dt;
         previousTime = now;
