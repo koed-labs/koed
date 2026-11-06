@@ -1,9 +1,4 @@
-import {
-  existsSync as nodeExistsSync,
-  readFileSync,
-  rmSync,
-  type PathLike
-} from "node:fs";
+import { existsSync as nodeExistsSync, readFileSync, rmSync } from "node:fs";
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
@@ -23,12 +18,20 @@ import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   isRuntimeGenerationState,
+  removeOwnedRuntimeState,
   type RuntimeGenerationState
 } from "./runtime-state.js";
 import {
   readSupervisorLock,
   resolveProcessIdentity as defaultResolveProcessIdentity
 } from "./supervisor-lock.js";
+import {
+  observeStoppedRuntime,
+  removeStaleRuntimeRecords,
+  type StoppedRuntimeObservation
+} from "./stopped-runtime.js";
+import { withLifecycleLock } from "./generation-lifecycle.js";
+import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import { requestSupervisorExit } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
@@ -63,6 +66,7 @@ export interface KoedServerStopOptions {
   sleepSync?: (ms: number) => void;
   readSupervisorLock?: typeof readSupervisorLock;
   resolveProcessIdentity?: (pid: number) => string | null;
+  isProcessGroupLeader?: (pid: number) => boolean;
   desktopRuntimeCapability?: DesktopRuntimeCapability;
 }
 
@@ -123,6 +127,33 @@ const defaultCheckPid = (pid: number): boolean => {
   }
 };
 
+// Linux reports the process group in field 5 of /proc/<pid>/stat.
+const defaultIsProcessGroupLeader = (pid: number): boolean => {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return Number(fields[2]) === pid;
+  } catch {
+    return false;
+  }
+};
+
+// Remove stale supervisor records under the lifecycle lock that supervisor-lock
+// reclaim also takes. Returns an error message when another command holds it.
+const removeStaleRecordsLocked = (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  observation: StoppedRuntimeObservation
+): string | undefined => {
+  if (observation.state !== "stopped" || !observation.staleRecords?.length)
+    return undefined;
+  try {
+    withLifecycleLock(paths, () => removeStaleRuntimeRecords(observation));
+    return undefined;
+  } catch (error) {
+    return `Stale runtime records were left in place: ${errorMessage(error)}`;
+  }
+};
+
 const errorCode = (error: unknown): string =>
   typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code)
@@ -163,6 +194,8 @@ const stopPid = (
   > & {
     expectedProcessIdentity?: string;
     resolveProcessIdentity?: (pid: number) => string | null;
+    // Signal and wait for the whole group that `pid` leads.
+    processGroup?: boolean;
   }
 ): {
   stoppedPids: number[];
@@ -188,14 +221,15 @@ const stopPid = (
   if (deps.expectedProcessIdentity && !deps.checkPid(pid))
     return { stoppedPids: [], missingPids: [pid], errors: [] };
   if (!identityMatches()) return identityError();
+  const target = deps.processGroup ? -pid : pid;
   try {
-    deps.kill(pid, "SIGTERM");
-    if (waitForPidExit(pid, deps)) {
+    deps.kill(target, "SIGTERM");
+    if (waitForPidExit(target, deps)) {
       return { stoppedPids: [pid], missingPids: [], errors: [] };
     }
     if (!identityMatches()) return identityError();
-    deps.kill(pid, "SIGKILL");
-    if (waitForPidExit(pid, deps)) {
+    deps.kill(target, "SIGKILL");
+    if (waitForPidExit(target, deps)) {
       return { stoppedPids: [pid], missingPids: [], errors: [] };
     }
     return {
@@ -234,14 +268,17 @@ export const stopKoedServer = ({
     process.kill(pid, signal);
   },
   checkPid = defaultCheckPid,
-  waitForExitMs = 5_000,
+  waitForExitMs: requestedWait,
   pollIntervalMs = 100,
   sleepSync = defaultSleepSync,
   readSupervisorLock: readLock = readSupervisorLock,
   resolveProcessIdentity = defaultResolveProcessIdentity,
+  isProcessGroupLeader = defaultIsProcessGroupLeader,
   desktopRuntimeCapability
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
+  const waitForExitMs = requestedWait ?? 5_000;
+  const releaseManaged = hasReleaseRuntime(paths);
   const runtimeEnvironment = environmentWithRepoEnv(
     paths.repoRoot,
     environment
@@ -252,11 +289,21 @@ export const stopKoedServer = ({
   });
 
   if (!runtime) {
+    const observation = releaseManaged
+      ? observeStoppedRuntime(paths)
+      : undefined;
+    const cleanupError = observation
+      ? removeStaleRecordsLocked(paths, observation)
+      : undefined;
+    const uncertain =
+      (observation && observation.state !== "stopped") || !!cleanupError;
     return {
-      ok: true,
-      state: "not_configured",
+      ok: !uncertain,
+      state: uncertain ? "needs_attention" : "not_configured",
       koedHome: paths.koedHome,
-      message: "No koed runtime state was found.",
+      message:
+        cleanupError ??
+        (uncertain ? observation!.message : "No koed runtime state was found."),
       stoppedPids: [],
       missingPids: [],
       stoppedServices: [],
@@ -295,13 +342,32 @@ export const stopKoedServer = ({
         "Supervisor identity changed during stop; refusing fallback signals"
     });
   };
+  // A supervisor that crashed or was killed cannot vouch for its children, so
+  // stop never signals them. When every recorded child has also exited there is
+  // nothing to signal, and stop continues to clean up the dead runtime's records.
+  let supervisorExitChecked = false;
+  const noteExitedSupervisor = (): void => {
+    if (supervisorExitChecked) return;
+    supervisorExitChecked = true;
+    for (const [name, pid] of Object.entries(runtime.processes ?? {})) {
+      if (typeof pid !== "number" || pid <= 0) continue;
+      if (checkPid(pid))
+        errors.push({
+          target: `${name} (${pid})`,
+          error:
+            "Supervisor exited; refusing to signal a recorded child without supervisor identity"
+        });
+      else missingPids.push(pid);
+    }
+  };
   const canSignalFallbackProcesses = (): boolean => {
     if (!supervisorLockMatches) return false;
     if (
       expectedSupervisorIdentity &&
       !isExpectedSupervisorRunning(expectedSupervisorIdentity)
     ) {
-      markSupervisorIdentityUnverified();
+      if (runtime.pid > 0 && !checkPid(runtime.pid)) noteExitedSupervisor();
+      else markSupervisorIdentityUnverified();
       return false;
     }
     return true;
@@ -371,7 +437,9 @@ export const stopKoedServer = ({
       });
       supervisorStoppedGracefully = waitForPidExit(runtime.pid, {
         checkPid,
-        waitForExitMs,
+        // Let the supervisor finish its bounded per-child shutdown before falling
+        // back to direct PID signals, which cannot reach llama-server descendants.
+        waitForExitMs: requestedWait ?? (releaseManaged ? 60_000 : 5_000),
         pollIntervalMs,
         sleepSync
       });
@@ -418,19 +486,42 @@ export const stopKoedServer = ({
 
     if (runtime.dependencyMode === "bundled-local") {
       const embeddingPid = runtime.processes?.embeddingService;
+      const embeddingIdentity = runtime.processIdentities?.embeddingService;
       if (
         canSignalFallbackProcesses() &&
         runtime.services.includes("embedding-service-native")
       ) {
         if (!embeddingPid || embeddingPid <= 0) {
           missingServices.push("embedding-service-native");
+        } else if (releaseManaged && !embeddingIdentity) {
+          errors.push({
+            target: `embedding-service-native (${embeddingPid})`,
+            error:
+              "Embedding Service process identity is missing; refusing to signal it"
+          });
         } else {
+          // Release-managed runtimes start the Embedding Service as a private
+          // group leader. Signal the group, so llama-server descendants stop too,
+          // only while the leader keeps the identity recorded at spawn. A recorded
+          // identity also refuses any signal to a reused PID.
           const stopped = stopPid("embedding-service-native", embeddingPid, {
             kill,
             checkPid,
             waitForExitMs,
             pollIntervalMs,
-            sleepSync
+            sleepSync,
+            ...(embeddingIdentity
+              ? {
+                  expectedProcessIdentity: embeddingIdentity,
+                  resolveProcessIdentity
+                }
+              : {}),
+            processGroup:
+              releaseManaged &&
+              embeddingIdentity !== undefined &&
+              checkPid(embeddingPid) &&
+              resolveProcessIdentity(embeddingPid) === embeddingIdentity &&
+              isProcessGroupLeader(embeddingPid)
           });
           stoppedPids.push(...stopped.stoppedPids);
           missingPids.push(...stopped.missingPids);
@@ -487,24 +578,37 @@ export const stopKoedServer = ({
   }
 
   if (errors.length === 0) {
-    const currentRuntime = readRuntimeState(paths.runtimeStatePath, {
-      existsSync: pathExists,
-      readFileSync: readFile
-    });
-    if (
-      currentRuntime &&
-      (currentRuntime.pid !== runtime.pid ||
-        currentRuntime.startedAt !== runtime.startedAt)
-    ) {
-      errors.push({
-        target: "runtime-state",
-        error: "Runtime state changed while stop was in progress"
-      });
-    } else {
-      remove(paths.runtimeStatePath as PathLike, { force: true });
+    try {
+      if (
+        !removeOwnedRuntimeState(
+          paths.runtimeStatePath,
+          runtime,
+          readFile,
+          remove
+        )
+      )
+        errors.push({
+          target: "runtime-state",
+          error: "Runtime state changed while stop was in progress"
+        });
+    } catch (error) {
+      errors.push({ target: "runtime-state", error: errorMessage(error) });
     }
   }
 
+  if (releaseManaged && errors.length === 0) {
+    const observation = observeStoppedRuntime(paths);
+    const cleanupError = removeStaleRecordsLocked(paths, observation);
+    if (cleanupError)
+      errors.push({ target: "runtime records", error: cleanupError });
+    if (observation.state !== "stopped")
+      errors.push({
+        target: observation.pid
+          ? `native process (${observation.pid})`
+          : "native runtime",
+        error: observation.message
+      });
+  }
   return {
     ok: errors.length === 0,
     state: errors.length === 0 ? "healthy" : "needs_attention",

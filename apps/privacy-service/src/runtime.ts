@@ -709,7 +709,7 @@ export class DeterministicPrivacyRuntime implements PrivacyRuntimeAdapter {
   async classify(text: string): Promise<RawPrivacyClassification> {
     const tokenOffsets: TokenOffset[] = [];
     let byteCursor = 0;
-    for (let start = 0; start < text.length; ) {
+    for (let start = 0; start < text.length;) {
       const width = text.codePointAt(start)! > 0xffff ? 2 : 1;
       const byteWidth = Buffer.byteLength(text.slice(start, start + width));
       tokenOffsets.push({

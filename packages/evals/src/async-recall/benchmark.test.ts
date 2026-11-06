@@ -86,13 +86,11 @@ describe("submit/collect recall traces", () => {
     events.splice(
       3,
       0,
-      ...[100, 200, 300].map(
-        (atMs): RecallEvent => ({
-          ...base,
-          kind: "pending_poll",
-          atMs
-        })
-      )
+      ...[100, 200, 300].map((atMs): RecallEvent => ({
+        ...base,
+        kind: "pending_poll",
+        atMs
+      }))
     );
     const score = scoreRecallTrace(independent, events);
     expect(score.passed).toBe(true);

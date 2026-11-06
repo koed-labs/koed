@@ -12,6 +12,7 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import type { KoedServerPaths } from "./paths.js";
+import { assertNoReleaseRuntime } from "./runtime-artifact-source.js";
 
 type SpawnSyncLike = (
   command: string,
@@ -262,9 +263,7 @@ const candidatePgvectorControlPaths = (
       : undefined
   ].filter((value): value is string => Boolean(value));
 
-const candidatePgvectorSqlPaths = (
-  controlPath: string | undefined
-): string[] =>
+const candidatePgvectorSqlPaths = (controlPath: string | undefined): string[] =>
   controlPath ? [resolve(dirname(controlPath), "vector--*.sql")] : [];
 
 const pgSharedir = (
@@ -494,6 +493,7 @@ export const installHomebrewRuntime = (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: HomebrewRuntimeDependencies = {}
 ): HomebrewRuntimeInstallResult => {
+  assertNoReleaseRuntime(paths);
   const deps = {
     platform: dependencies.platform ?? process.platform,
     existsSync: dependencies.existsSync ?? existsSync,

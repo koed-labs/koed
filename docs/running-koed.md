@@ -283,7 +283,7 @@ node /opt/homebrew/Cellar/node@24/24.14.0/lib/node_modules/corepack/dist/pnpm.js
 ```
 
 Typecheck, build, lint, and targeted formatting passed. Full
-`pnpm fmt:prettier:check` remains blocked by eight pre-existing untracked
+At that verification, `pnpm fmt:prettier:check` was blocked by eight pre-existing untracked
 `.superpowers/sdd/2026-10-05-publish-koed-labs-server/` planning files; they were
 not reformatted as unrelated material.
 

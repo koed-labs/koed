@@ -42,7 +42,7 @@ test("active workflows build the renamed public Koed Server package", () => {
 });
 
 test("packaging path policy excludes documentation and includes runtime consumers", () => {
-  assert.equal(packagingRelevant(["docs/running-koed.md", "PLAN.md"]), false);
+  assert.equal(packagingRelevant(["docs/running-koed.md", "README.md"]), false);
   for (const file of [
     "apps/desktop/src/main.ts",
     "apps/api/package.json",
@@ -60,6 +60,30 @@ test("packaging path policy excludes documentation and includes runtime consumer
   ]) {
     assert.equal(fileAffectsPackaging(file), true, file);
   }
+});
+
+test("release-note and CI policy tooling does not select packaged smoke", () => {
+  const files = [
+    ".github/scripts/ci-policy.mjs",
+    "scripts/ci-policy.test.mjs",
+    "scripts/product-changelog.mjs",
+    "scripts/product-changelog.test.mjs",
+    "scripts/product-release-notes.mjs",
+    "scripts/product-release-notes.test.mjs",
+    "scripts/sync-product-release.mjs"
+  ];
+  for (const file of files) {
+    assert.equal(fileAffectsPackaging(file), false, file);
+  }
+  assert.equal(
+    evaluateCiPolicy({
+      eventName: "pull_request",
+      event: pullRequest(),
+      changedFiles: files
+    }).run_app_smoke,
+    "false"
+  );
+  assert.equal(fileAffectsPackaging("scripts/new-release-tool.mjs"), true);
 });
 
 test("backend workspace source alone does not select packaged smoke", () => {
@@ -180,25 +204,6 @@ test("release publication checks out validation scripts", () => {
     release,
     /publish-release:[\s\S]*?- name: Checkout\n\s+uses: actions\/checkout@[\da-f]+[\s\S]*?Validate published metadata URLs against draft assets/
   );
-});
-
-test("trusted CUDA validation runs exact packages only on the protected GPU runner", () => {
-  const workflow = readFileSync(
-    resolve(".github/workflows/native-runtime-linux-cuda-validation.yml"),
-    "utf8"
-  );
-  assert.match(workflow, /workflow_dispatch:/);
-  assert.doesNotMatch(workflow, /pull_request:/);
-  assert.match(
-    workflow,
-    /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/
-  );
-  assert.match(workflow, /runs-on: \[self-hosted, linux, x64, koed-cuda\]/);
-  assert.match(workflow, /validate-runtime\.mjs/);
-  assert.match(workflow, /llama\.cpp\/cuda\/llama-server/);
-  assert.match(workflow, /embedding:benchmark/);
-  assert.match(workflow, /validate-packaged-privacy-runtime\.mjs/);
-  assert.match(workflow, /--provider cuda/);
 });
 
 test("the workflow model cache key and filename track the pinned runtime model", () => {

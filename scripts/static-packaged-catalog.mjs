@@ -179,12 +179,10 @@ const resolveBinding = (root, path, symbol, seen, exported = true) => {
   return value;
 };
 
-export const readPackagedCatalog = (modulePath) => {
+export const readPackagedCatalog = (
+  modulePath,
+  symbol = "productionComponentManifestCatalog"
+) => {
   const path = realpathSync(resolve(modulePath));
-  return resolveBinding(
-    realpathSync(dirname(path)),
-    path,
-    "productionComponentManifestCatalog",
-    new Set()
-  );
+  return resolveBinding(realpathSync(dirname(path)), path, symbol, new Set());
 };

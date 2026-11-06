@@ -30,7 +30,7 @@ const completeSourceOffset = (transcriptPath: string): number | null => {
     if (!source.isFile() || source.size === 0) return null;
     const descriptor = openSync(transcriptPath, "r");
     try {
-      for (let end = source.size; end > 0; ) {
+      for (let end = source.size; end > 0;) {
         const length = Math.min(64 * 1024, end);
         const start = end - length;
         const buffer = Buffer.allocUnsafe(length);

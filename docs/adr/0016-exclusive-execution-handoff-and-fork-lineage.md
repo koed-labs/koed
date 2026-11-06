@@ -1,6 +1,6 @@
 # Conversation Continuation Uses Exclusive Handoff And Explicit Fork Lineage
 
-Status: Accepted.
+Status: Accepted; partially superseded by [ADR 0065](./0065-capture-and-recall-without-managed-conversation-execution.md). Koed-managed continuation, execution handoff, and fork are outside the current product scope; independent source provenance requirements require separate review. This document remains a historical record and does not imply that existing implementation has already been retired.
 
 Related decisions:
 

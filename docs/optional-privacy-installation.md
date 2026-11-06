@@ -115,4 +115,6 @@ Controlled compatibility and failure fixtures can run on this Mac.
 They cannot establish Linux execution or successful CUDA execution.
 Native Linux x64 acceptance requires CPU and fallback evidence.
 CUDA acceptance requires a compatible NVIDIA host and actual CUDA kernel execution.
-The release remains unqualified until those results pass for the final candidate.
+CUDA qualification stays unproven until a real GPU run passes for the candidate.
+The Release workflow qualifies the frozen components on hosted macOS arm64 and Linux x64 CPU runners; the Linux stage also runs the CUDA archive through its CPU fallback.
+A release can proceed on that hosted CPU and fallback evidence without a GPU runner.

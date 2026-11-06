@@ -66,6 +66,8 @@ function fixture(startupDelayMs = 0, bundled = false) {
     >;
     requests.push(request);
     if (request.type === "extension_ui_response") return;
+    const spawnCall = mocks.spawn.mock.calls.at(-1);
+    expect(spawnCall).toBeDefined();
     const response = {
       type: "response",
       id: request.id,
@@ -76,9 +78,9 @@ function fixture(startupDelayMs = 0, bundled = false) {
               sessionId,
               sessionFile:
                 (
-                  JSON.parse(
-                    (mocks.spawn.mock.calls.at(-1)?.[1] as string[]).at(-1)!
-                  ) as { resumeSessionPath?: string }
+                  JSON.parse((spawnCall![1] as string[]).at(-1)!) as {
+                    resumeSessionPath?: string;
+                  }
                 ).resumeSessionPath ??
                 path.join(root, "sessions", "session.jsonl")
             }

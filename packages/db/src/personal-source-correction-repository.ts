@@ -28,10 +28,7 @@ const stale = () =>
     ),
     { statusCode: 409 }
   );
-const versionFor = (
-  row: PersonalCorrectionSourceRow,
-  axis: "git" | "folder"
-) =>
+const versionFor = (row: PersonalCorrectionSourceRow, axis: "git" | "folder") =>
   axis === "git"
     ? row.repository_assignment_version
     : row.folder_assignment.revision;

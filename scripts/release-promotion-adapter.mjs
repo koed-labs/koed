@@ -43,6 +43,105 @@ export const verifyNpmCandidate = async (expected, loadRegistryVersion) => {
   return { verified: true };
 };
 
+const pollRegistry = async (read, check, options = {}) => {
+  const {
+    attempts = Infinity,
+    timeoutMs = 300000,
+    now = () => performance.now(),
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    initialDelayMs = 1000,
+    maxDelayMs = 10000
+  } = options;
+  const deadline = now() + timeoutMs;
+  let delay = initialDelayMs;
+  let lastError;
+  for (let attempt = 0; attempt < attempts && now() < deadline; attempt++) {
+    let actual;
+    try {
+      actual = await read(Math.max(1, Math.floor(deadline - now())));
+    } catch (error) {
+      if (!error?.transient || attempt + 1 === attempts) throw error;
+      lastError = error;
+    }
+    if (actual) {
+      lastError = undefined;
+      if (now() < deadline && (await check(actual)) && now() < deadline) return;
+    }
+    const remaining = deadline - now();
+    if (attempt + 1 < attempts && remaining > 0)
+      await sleep(Math.min(delay, remaining));
+    delay = Math.min(delay * 2, maxDelayMs);
+  }
+  if (lastError)
+    throw new Error(
+      "npm registry polling deadline exceeded after transient errors.",
+      { cause: lastError }
+    );
+};
+
+export const waitForNpmCandidate = async (
+  expected,
+  loadRegistryVersion,
+  options = {}
+) => {
+  let verified = false;
+  await pollRegistry(
+    (remaining) =>
+      loadRegistryVersion(expected.packageName, expected.version, remaining),
+    async (actual) => {
+      await verifyNpmCandidate(expected, async () => actual);
+      verified = true;
+      return true;
+    },
+    options
+  );
+  if (!verified)
+    throw new Error(
+      "npm candidate version is missing from registry after waiting for publication."
+    );
+};
+
+export const waitForNpmTag = async (
+  packageName,
+  tag,
+  version,
+  loadRegistryVersion,
+  options = {}
+) => {
+  let verified = false;
+  await pollRegistry(
+    (remaining) => loadRegistryVersion(packageName, tag, remaining),
+    (actual) => {
+      if (actual.version !== version) return false;
+      if (
+        actual.name !== packageName ||
+        (options.integrity && actual.dist?.integrity !== options.integrity)
+      )
+        throw new Error(
+          `npm tag ${tag} package identity or integrity mismatch.`
+        );
+      verified = true;
+      return true;
+    },
+    options
+  );
+  if (!verified)
+    throw new Error(
+      `npm tag ${tag} did not resolve to ${version} after waiting.`
+    );
+};
+
+export const verifyPublishedAssets = (assets, directory, download) => {
+  for (const asset of assets) {
+    const path = resolve(directory, asset.name);
+    try {
+      download(asset, path);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  }
+};
+
 export const parseArgs = (argv) => {
   const args = {};
   const flags = new Map([
@@ -81,16 +180,43 @@ const command = (name, args, options = {}) =>
     stdio: ["ignore", "pipe", "inherit"],
     ...options
   });
-const registryVersion = async (packageName, version) => {
+export const registryVersion = async (
+  packageName,
+  version,
+  fetchImpl = fetch,
+  timeoutMs = 10000
+) => {
   const name = encodeURIComponent(packageName).replace("%2F", "%2f");
-  const response = await fetch(
-    `https://registry.npmjs.org/${name}/${version}`,
-    { headers: { accept: "application/json" } }
-  );
+  let response;
+  try {
+    response = await fetchImpl(
+      `https://registry.npmjs.org/${name}/${version}`,
+      {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(Math.min(10000, timeoutMs))
+      }
+    );
+  } catch (cause) {
+    throw Object.assign(new Error("npm registry request failed.", { cause }), {
+      transient: true
+    });
+  }
   if (response.status === 404) return undefined;
   if (!response.ok)
-    throw new Error(`npm registry returned HTTP ${response.status}.`);
-  return response.json();
+    throw Object.assign(
+      new Error(`npm registry returned HTTP ${response.status}.`),
+      {
+        transient: response.status === 429 || response.status >= 500
+      }
+    );
+  try {
+    return await response.json();
+  } catch (cause) {
+    if (cause instanceof SyntaxError) throw cause;
+    throw Object.assign(new Error("npm registry response failed.", { cause }), {
+      transient: true
+    });
+  }
 };
 
 export const runReleasePromotion = async (args, adapters = {}) => {
@@ -104,7 +230,11 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     throw new Error(
       "Full release promotion requires effective Desktop verification."
     );
-  const { run = command, fetchRegistry = registryVersion } = adapters;
+  const {
+    run = command,
+    fetchRegistry = (name, version, timeout) =>
+      registryVersion(name, version, fetch, timeout)
+  } = adapters;
   const temp = mkdtempSync(resolve(tmpdir(), "koed-release-promotion-"));
   const download = (asset, path) => {
     const reviewed = candidate.assets.find((item) => item.name === asset.name);
@@ -261,11 +391,12 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         assetsByName.set(asset.name, asset);
       }
       const verifyDir = mkdtempSync(resolve(temp, "published-"));
-      for (const { name } of candidate.assets) {
+      const verifiedAssets = candidate.assets.map(({ name }) => {
         const asset = assetsByName.get(name);
         if (!asset) throw new Error(`Published release asset missing: ${name}`);
-        download(asset, resolve(verifyDir, name));
-      }
+        return asset;
+      });
+      verifyPublishedAssets(verifiedAssets, verifyDir, download);
     };
     // Every consumed immutable asset must match protected build bytes before
     // any irreversible mutation.
@@ -280,15 +411,25 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         candidateNpmTag(args.version),
         "--provenance"
       ]);
-      published = await fetchRegistry(expected.packageName, expected.version);
+      await waitForNpmCandidate(expected, fetchRegistry, {
+        sleep: adapters.sleep
+      });
+    } else {
+      await verifyNpmCandidate(expected, async () => published);
     }
-    await verifyNpmCandidate(expected, async () => published);
     run("npm", [
       "dist-tag",
       "add",
       `${expected.packageName}@${args.version}`,
       candidateNpmTag(args.version)
     ]);
+    await waitForNpmTag(
+      expected.packageName,
+      candidateNpmTag(args.version),
+      args.version,
+      fetchRegistry,
+      { sleep: adapters.sleep, integrity: expected.integrity }
+    );
     const latest = await fetchRegistry(expected.packageName, "latest");
     const plan = planReleasePromotion(
       {
@@ -348,6 +489,13 @@ export const runReleasePromotion = async (args, adapters = {}) => {
           `${expected.packageName}@${args.version}`,
           "latest"
         ]);
+        await waitForNpmTag(
+          expected.packageName,
+          "latest",
+          args.version,
+          fetchRegistry,
+          { sleep: adapters.sleep, integrity: expected.integrity }
+        );
       } else if (action.kind === "publish-github") {
         const beforePatch = await runReleaseVerification(
           args,

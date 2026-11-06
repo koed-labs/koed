@@ -847,6 +847,54 @@ describe("start supervisor", () => {
     expect(signals).toEqual(["SIGTERM"]);
   });
 
+  it.each([
+    { survivor: true, expected: ["SIGTERM", "SIGKILL"] },
+    { survivor: false, expected: ["SIGTERM"] }
+  ])(
+    "drains a private process group after its leader exits (survivor: $survivor)",
+    async ({ survivor, expected }) => {
+      const value = new EventEmitter() as EventEmitter & {
+        pid: number;
+        exitCode: number | null;
+        signalCode: NodeJS.Signals | null;
+      };
+      value.pid = 4242;
+      value.exitCode = null;
+      value.signalCode = null;
+      let groupAlive = true;
+      const signals: Array<string | number> = [];
+      const kill = vi.spyOn(process, "kill").mockImplementation(((
+        target: number,
+        signal?: string | number
+      ) => {
+        expect(target).toBe(-4242);
+        if (signal === 0) {
+          if (!groupAlive)
+            throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+          return true;
+        }
+        signals.push(signal ?? "SIGTERM");
+        if (signal === "SIGTERM")
+          setImmediate(() => {
+            value.signalCode = "SIGTERM";
+            value.emit("exit", null, "SIGTERM");
+            // Without a survivor the descendants exit with their leader.
+            if (!survivor) groupAlive = false;
+          });
+        if (signal === "SIGKILL") groupAlive = false;
+        return true;
+      }) as typeof process.kill);
+      try {
+        await expect(
+          stopChildProcess(value as never, 100, "embeddingService", true)
+        ).resolves.toBeUndefined();
+        expect(signals).toEqual(expected);
+      } finally {
+        kill.mockRestore();
+      }
+    }
+  );
+
   it("rejects when a managed process exited before listeners attach", async () => {
     const alreadyExited = new EventEmitter() as EventEmitter & {
       exitCode: number | null;

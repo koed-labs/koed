@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { syncProductPackageVersions } from "./product-release-version-lib.mjs";
+import { syncChangelogs } from "./product-changelog.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const releaseChangelogPath = path.join(
@@ -12,6 +13,13 @@ const releaseChangelogPath = path.join(
   "CHANGELOG.md"
 );
 const productChangelogPath = path.join(root, "CHANGELOG.md");
+const serverChangelogPath = path.join(
+  root,
+  "packages",
+  "koed-server",
+  "CHANGELOG.md"
+);
+const desktopChangelogPath = path.join(root, "apps", "desktop", "CHANGELOG.md");
 const changesetDir = path.join(root, ".changeset");
 const consumeChangesets = process.argv.includes("--consume-changesets");
 
@@ -28,12 +36,18 @@ for (const { label } of synchronized.changed) {
   console.log(`Synced ${label} version to ${synchronized.version}`);
 }
 
-if (fs.existsSync(releaseChangelogPath)) {
-  const releaseChangelog = fs.readFileSync(releaseChangelogPath, "utf8");
-  const productChangelog = releaseChangelog.replace(/^# .+$/m, "# Koed");
-  if (writeIfChanged(productChangelogPath, productChangelog)) {
-    console.log("Synced root CHANGELOG.md from the product release changelog");
-  }
+const changelogs = syncChangelogs({
+  root: fs.readFileSync(productChangelogPath, "utf8"),
+  desktop: fs.readFileSync(desktopChangelogPath, "utf8"),
+  product: fs.readFileSync(releaseChangelogPath, "utf8"),
+  server: fs.readFileSync(serverChangelogPath, "utf8"),
+  version: synchronized.version
+});
+if (writeIfChanged(productChangelogPath, changelogs.root)) {
+  console.log("Synced root CHANGELOG.md from release changelogs");
+}
+if (writeIfChanged(desktopChangelogPath, changelogs.desktop)) {
+  console.log("Synced Desktop CHANGELOG.md release heading");
 }
 
 if (consumeChangesets && fs.existsSync(changesetDir)) {

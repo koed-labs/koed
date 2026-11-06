@@ -974,6 +974,9 @@ const koedServerConfigEnvironment = (
 });
 
 const LOCAL_RATE_LIMIT_RETRY_MAX_MS = 2_000;
+// Access checks authenticate against the database and read local embedding
+// status, so they can lag behind other local API checks on a fresh stack.
+const API_TOKEN_CHECK_TIMEOUT_MS = 15_000;
 
 const parseRetryAfterMilliseconds = (value: string | null): number | null => {
   const seconds = Number(value);
@@ -2789,7 +2792,7 @@ export const collectKoedServerStartupStatus = async (
     runtimeEnvironment,
     repoEnv,
     apiUrl,
-    fetcher,
+    withFetchTimeout(deps.fetch, API_TOKEN_CHECK_TIMEOUT_MS),
     deps.delay
   );
   const localAiRuntime = inspectLocalAiRuntime(
@@ -2994,7 +2997,7 @@ export const collectKoedServerStatus = async (
     runtimeEnvironment,
     repoEnv,
     apiUrl,
-    fetcher,
+    withFetchTimeout(deps.fetch, API_TOKEN_CHECK_TIMEOUT_MS),
     deps.delay
   );
   const capabilityReadModel = await fetchAiClientCapabilityReadModel(

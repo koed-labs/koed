@@ -1,5 +1,19 @@
 # @koed/koed-server
 
+## 0.10.3
+
+### Patch Changes
+
+- 69065f0: Fix npm provenance verification by including the source repository in the published server package.
+
+## 0.10.2
+
+## 0.10.1
+
+### Patch Changes
+
+- e3cdae1: Add a user-focused package README with headless setup steps and version-matched component download commands.
+
 ## 0.10.0
 
 ### Minor Changes

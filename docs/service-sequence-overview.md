@@ -6,6 +6,11 @@ the backend stores, projects, embeds, and retrieves memory, while the connected
 AI Client performs Answer Synthesis and creates LCM Summaries through the Local
 AI Runtime.
 
+Sections describing Managed Conversation execution reflect existing implementation,
+not current product direction. [ADR 0065](adr/0065-capture-and-recall-without-managed-conversation-execution.md)
+removes Koed-managed Conversation execution from scope; retirement and a detailed
+documentation inventory remain follow-up work.
+
 ## Services In Scope
 
 - **AI Client**: Codex, Claude Code, and Pi are supported AI Clients in this build.
@@ -338,7 +343,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     `claude auth login` and refreshing makes execution capabilities ready without
     profile reinstall. Claude Desktop authentication and Anthropic API keys are
     outside this flow and are never inspected or reused. `koed setup pi
---json` independently installs Koed's stable local package and registers
+    --json` independently installs Koed's stable local package and registers
     `pi.default` after canonical executable/version checks. Authenticated-model
     discovery is advisory for profile setup: no-model setup succeeds with
     structured partial readiness, while Pi execution remains unavailable until
@@ -352,7 +357,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     optional independently consented multi-select client setup with defer,
     per-client check/repair/remove for stale local config, and
     provision the embedding model through `koed models status/install
---json` in bundled-local mode without requiring the Operator to invoke
+    --json` in bundled-local mode without requiring the Operator to invoke
     repo-local scripts directly. Its Project and Captured Session navigation is
     native to the Desktop renderer. Selecting a Captured Session requests
     paginated Memory Events from the API and renders the raw Conversation

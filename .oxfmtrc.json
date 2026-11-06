@@ -1,0 +1,31 @@
+{
+  "semi": true,
+  "singleQuote": false,
+  "trailingComma": "none",
+  "printWidth": 80,
+  "sortImports": false,
+  "sortPackageJson": false,
+  "sortTailwindcss": false,
+  "ignorePatterns": [
+    "node_modules",
+    ".pnpm-store",
+    ".venv",
+    "scratch/",
+    "dist",
+    "dist-validation",
+    "coverage",
+    ".turbo",
+    "apps/desktop/dist-electron",
+    "apps/desktop/dist-types",
+    "apps/desktop/release",
+    "apps/desktop/.koed-runtime",
+    "models",
+    "vendor",
+    ".env",
+    ".env.*",
+    "pnpm-*",
+    "benchmarks/**/artifacts/",
+    "prompts/**/*.md",
+    "packages/evals/src/experience-replay/harbor/pyproject.toml"
+  ]
+}

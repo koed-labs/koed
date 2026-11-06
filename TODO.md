@@ -1,5 +1,46 @@
 # Implementation backlog
 
+## Retire Koed-managed Conversation execution
+
+- [ ] Inventory execution-dependent ADRs and operational documentation; update
+      their scoped requirements in line with ADR 0065 while preserving independent
+      capture, Memory, source-access, and realtime decisions.
+- [ ] Design and implement retirement of managed Conversation UI, routes, and
+      runtime work, including safe handling of persisted and in-flight executions,
+      handoffs, retained Memory, and compatibility.
+- [ ] Review replica source-authority enforcement and existing data against the
+      remaining capture, source-generation, import, and PDS V1 paths before
+      introducing a migration or changing synchronization behavior.
+
+## Combined Oxfmt and Oxlint migration
+
+- [x] Pin both Oxc packages and the typed engine. Replace the formatter and lint
+      scripts, preserve formatting options and ignores, and configure the editor.
+- [x] Preserve typed-rule scopes, globals, and suppression policy. Keep native
+      optional-chain checks under the User-approved retirement of three rules.
+- [x] Apply the TypeScript 7-compatible configuration while retaining TypeScript 6
+      and existing checks. Add the MCP test project for native project discovery.
+- [x] Return the Fastify reply from the hijacked async OAuth callback. Preserve
+      terminal cleanup with one explained native false-positive suppression.
+- [x] Pass repository lint, the 104 retained safety cases, and the source-policy test.
+- [x] Complete production/test/browser/Electron checks and DB-backed route tests
+      on the PR runner. Probe all 1,754 executable typed files and restore them.
+- [x] Measure the earlier bridge implementation against Oxfmt plus ESLint, with all plugin workers
+      included. Measure complete static jobs with declaration prerequisites and
+      dependency installation. Record remaining TypeScript memory costs.
+      Five pairs show 80.6% less time and 34.1% less peak memory. The complete
+      static sequence also passes. Those measurements cover the earlier bridge
+      policy, not the current native-only simplification.
+- [x] Remove the four-rule ESLint bridge under the User-approved simpler policy.
+      Retire duplicate-argument, legacy-octal, and useless-assignment checks. Keep
+      native optional-chain checking and repair the affected test expressions.
+      Keep the typed-safety cases and enforce the `.mjs`/`.tsx` source policy.
+- [x] Validate the native-only setup on the PR runner, including the five affected
+      application test files and complete typed coverage. All 158 affected tests,
+      49 route tests, compiler checks, and 1,754 probes pass without skipped tests.
+- [ ] Reevaluate the native `Promise.finally` exception when upstream parity is
+      available, using the committed safety suite before removing its suppression.
+
 ## Optional Privacy runtime release gates
 
 The optional runtime implementation and development qualification are complete.
@@ -9,6 +50,10 @@ Publication remains a separate decision.
 - [ ] Bind all native reports, frozen components, and the complete embedded catalog to the final reviewed release candidate.
 - [ ] Complete signed/notarized clean-Mac launch and downloaded native-code acceptance using the final signed artifacts.
 - [ ] Complete required release CI and exact public runtime-URL installation against that candidate.
+- [ ] Define when release candidates require separate GPU qualification.
+      The hosted Linux release job checks the CUDA Privacy archive's CPU fallback.
+      Track actual CUDA execution against the candidate's digests when a
+      compatible GPU host is available.
 - [ ] Before publishing a resumed draft release, verify that its tag and target
       commit match the commit the release assets were built from.
 - [ ] Stop the MCP Server's `tsc -b --force` from recompiling the Server, which
@@ -169,6 +214,18 @@ Follow-ups:
 - [ ] Qualify supported Linux targets, the declared glibc baseline, and actual
       WSL2 on a Windows host. Container results do not establish WSL2 behavior or
       native performance. Keep CUDA reports tied to their exact candidate.
+- [ ] Qualify the packaged Linux CUDA add-on on an NVIDIA RTX A2000 (6 GB) or
+      GeForce RTX 3070 (8 GB). Run the default embedding model through the shipped
+      CLI, compare its vectors with the CPU results, and record peak VRAM, driver
+      version, GPU model, and artifact digests before claiming support at that size.
+- [ ] Stop fully rehashing release-managed native payloads (up to about 1.6 GB
+      with CUDA) on every `koed start` and `runtime status`. Keep full verification
+      for install and explicit `runtime validate`, and decide whether start and status
+      may rely on a bounded identity check instead.
+- [ ] Pass the install's phase-1 CUDA host result into staged GPU validation so
+      one `--with-cuda` install does not run `nvidia-smi` and the libcuda probe twice.
+- [ ] Share one helper for the `runtime/<name>` → `native/current/<name>` entry-link
+      check used by release-runtime detection, start, and selection admission.
 - [ ] Qualify opt-in Desktop Install CLI: launcher validity, PATH checks,
       conflict handling, repair/removal, relocation, npm coexistence, and execution
       through the bundled runtime without system Node. Preserve User state on uninstall.
@@ -222,6 +279,10 @@ approval checks and content-safe sharing measurements.
   AI Client control bucket. Reproduce slow startup with request accounting before
   choosing caching, coalescing, or cadence changes. Preserve authentication and
   production rate limits; smoke-only bounded doctor recovery is not this fix.
+
+- Find why `/v1/access/check` exceeded 5s during the packaged Desktop release
+  smoke (Release run 41324692913). Doctor now allows 15s for the API Token
+  check; confirm whether the slow path is token lookup or embedding status.
 
 ## Memory Answer evidence-selection follow-ups
 

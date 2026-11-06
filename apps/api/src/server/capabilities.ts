@@ -261,9 +261,7 @@ export const resolveRuntimeDependencyMode = (
   return "external";
 };
 
-const managedByForProfile = (
-  profile: DeploymentProfile
-): DeploymentManagedBy =>
+const managedByForProfile = (profile: DeploymentProfile): DeploymentManagedBy =>
   profile === "koed_managed_cloud"
     ? "koed"
     : profile === "team_self_hosted"

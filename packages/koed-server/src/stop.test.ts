@@ -1,9 +1,12 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { stopKoedServer } from "./stop.js";
+import { resolveKoedRuntimeOwner } from "./app-runtime.js";
+import { withLifecycleLock } from "./generation-lifecycle.js";
+import { resolveKoedServerPaths } from "./paths.js";
 import {
   resolveDesktopRuntimeOwner,
   verifyDesktopRuntimeBundle
@@ -648,6 +651,170 @@ describe("stopKoedServer", () => {
     expect(result.ok).toBe(true);
     expect(pids).toEqual([11, 10, 13]);
     expect(result.stoppedServices).toContain("embedding-service-native");
+  });
+
+  it.each([
+    { leader: "embedding-13", expected: [11, 10, -13] },
+    // The recorded PID now leads an unrelated group: signal nothing.
+    { leader: "unrelated-process", expected: [11, 10] }
+  ])(
+    "signals a release-managed Embedding Service group only with a matching identity ($leader)",
+    ({ leader, expected }) => {
+      const koedHome = makeHome();
+      mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });
+      writeRuntime(
+        koedHome,
+        runtime({
+          services: ["embedding-service-native", "api", "worker"],
+          processes: { api: 10, worker: 11, embeddingService: 13 },
+          processIdentities: { embeddingService: "embedding-13" }
+        })
+      );
+      const targets: number[] = [];
+      const live = new Set([13]);
+
+      const result = stopKoedServer({
+        environment: { KOED_HOME: koedHome },
+        resolveProcessIdentity: (pid) =>
+          pid === 13 ? leader : "test-supervisor",
+        isProcessGroupLeader: (pid) => pid === 13,
+        kill: (pid) => {
+          targets.push(pid);
+          live.delete(Math.abs(pid));
+        },
+        checkPid: (pid) => live.has(Math.abs(pid))
+      });
+
+      expect(targets).toEqual(expected);
+      if (leader === "embedding-13")
+        expect(result.stoppedServices).toContain("embedding-service-native");
+      else
+        expect(result.errors).toContainEqual({
+          target: "embedding-service-native (13)",
+          error: "Process identity changed before signaling"
+        });
+    }
+  );
+
+  it("preserves the release-managed Embedding Service PID when its identity is missing", () => {
+    const koedHome = makeHome();
+    mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });
+    writeRuntime(
+      koedHome,
+      runtime({
+        services: ["embedding-service-native", "api", "worker"],
+        processes: { api: 10, worker: 11, embeddingService: 13 }
+      })
+    );
+    const targets: number[] = [];
+    const live = new Set([13]);
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: (pid) =>
+        pid === 13 ? "reused-pid" : "test-supervisor",
+      isProcessGroupLeader: () => true,
+      kill: (pid) => {
+        targets.push(pid);
+        live.delete(Math.abs(pid));
+      },
+      checkPid: (pid) => live.has(Math.abs(pid))
+    });
+
+    expect(targets).toEqual([11, 10]);
+    expect(result.state).toBe("needs_attention");
+    expect(result.errors).toContainEqual({
+      target: "embedding-service-native (13)",
+      error:
+        "Embedding Service process identity is missing; refusing to signal it"
+    });
+    expect(existsSync(resolve(koedHome, "run", "koed-server.json"))).toBe(true);
+  });
+
+  describe("after a supervisor crash with a generation pin", () => {
+    const crashedHome = () => {
+      const koedHome = makeHome();
+      mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });
+      const supervisor = 999_991;
+      writeRuntime(
+        koedHome,
+        runtime({
+          pid: supervisor,
+          processes: { api: 999_992, worker: 999_993 }
+        })
+      );
+      writeFileSync(
+        resolve(koedHome, "run", "koed-server.lock"),
+        JSON.stringify({ pid: supervisor, processIdentity: "crashed" })
+      );
+      writeFileSync(
+        resolve(koedHome, "run", "runtime-generation.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          generationId: "a".repeat(64),
+          pid: supervisor,
+          processIdentity: "crashed",
+          startedAt: runtime().startedAt,
+          owner: resolveKoedRuntimeOwner(),
+          pinToken: "b".repeat(64)
+        })
+      );
+      return koedHome;
+    };
+    const lock = (koedHome: string) =>
+      resolve(koedHome, "run", "koed-server.lock");
+
+    it("clears the dead runtime's records when every recorded child exited", () => {
+      const koedHome = crashedHome();
+      const signals: number[] = [];
+
+      const result = stopKoedServer({
+        environment: { KOED_HOME: koedHome },
+        kill: (pid) => signals.push(pid),
+        checkPid: () => false
+      });
+
+      expect(result).toMatchObject({ ok: true, state: "healthy" });
+      expect(signals).toEqual([]);
+      expect(existsSync(lock(koedHome))).toBe(false);
+      expect(
+        existsSync(resolve(koedHome, "run", "runtime-generation.json"))
+      ).toBe(false);
+    });
+
+    it("refuses to signal a live recorded child and keeps the records", () => {
+      const koedHome = crashedHome();
+      const signals: number[] = [];
+
+      const result = stopKoedServer({
+        environment: { KOED_HOME: koedHome },
+        kill: (pid) => signals.push(pid),
+        checkPid: (pid) => pid === 999_992
+      });
+
+      expect(result.state).toBe("needs_attention");
+      expect(signals).toEqual([]);
+      expect(result.errors?.[0]?.target).toBe("api (999992)");
+      expect(existsSync(lock(koedHome))).toBe(true);
+    });
+
+    it("leaves stale records while another lifecycle command holds the lock", () => {
+      const koedHome = crashedHome();
+      const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
+
+      const result = withLifecycleLock(paths, () =>
+        stopKoedServer({
+          environment: { KOED_HOME: koedHome },
+          checkPid: () => false
+        })
+      );
+
+      expect(result.state).toBe("needs_attention");
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({ target: "runtime records" })
+      );
+      expect(existsSync(lock(koedHome))).toBe(true);
+    });
   });
 
   it("does not stop external dependency services", () => {

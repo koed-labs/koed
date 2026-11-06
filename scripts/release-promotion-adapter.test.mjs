@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 import {
@@ -9,8 +11,183 @@ import {
 import {
   runReleasePromotion,
   verifyNpmCandidate,
+  waitForNpmCandidate,
+  verifyPublishedAssets,
+  waitForNpmTag,
+  registryVersion,
   parseArgs
 } from "./release-promotion-adapter.mjs";
+
+test("candidate polling backs off with a cap and respects its overall deadline", async () => {
+  let now = 0;
+  const delays = [];
+  const budgets = [];
+  await assert.rejects(
+    waitForNpmCandidate(
+      { packageName: "pkg", version: "1.2.3", integrity: "good" },
+      async (_name, _version, budget) => {
+        budgets.push(budget);
+        return undefined;
+      },
+      {
+        timeoutMs: 7000,
+        now: () => now,
+        sleep: async (ms) => {
+          delays.push(ms);
+          now += ms;
+        },
+        initialDelayMs: 1000,
+        maxDelayMs: 2000
+      }
+    ),
+    /missing from registry/
+  );
+  assert.deepEqual(delays, [1000, 2000, 2000, 2000]);
+  assert.deepEqual(budgets, [7000, 6000, 4000, 2000]);
+});
+
+test("registry body transport errors are transient but malformed JSON is permanent", async () => {
+  const bodyError = new TypeError("connection reset");
+  await assert.rejects(
+    registryVersion("pkg", "1.2.3", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw bodyError;
+      }
+    })),
+    (error) => error.transient === true
+  );
+  await assert.rejects(
+    registryVersion("pkg", "1.2.3", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("bad JSON");
+      }
+    })),
+    (error) => !error.transient
+  );
+});
+
+test("candidate visibility retries transient failures but rejects permanent failures", async () => {
+  const expected = { packageName: "pkg", version: "1.2.3", integrity: "good" };
+  let reads = 0;
+  await waitForNpmCandidate(
+    expected,
+    async () => {
+      if (++reads === 1)
+        throw Object.assign(new Error("temporary"), { transient: true });
+      return { name: "pkg", version: "1.2.3", dist: { integrity: "good" } };
+    },
+    { attempts: 2, sleep: async () => {} }
+  );
+  assert.equal(reads, 2);
+  await assert.rejects(
+    waitForNpmCandidate(
+      expected,
+      async () => {
+        throw new Error("permanent");
+      },
+      { attempts: 2, sleep: async () => {} }
+    ),
+    /permanent/
+  );
+});
+
+test("npm tag readback waits for propagation and rejects a persistent stale tag", async () => {
+  let reads = 0;
+  await waitForNpmTag(
+    "pkg",
+    "latest",
+    "1.2.3",
+    async () => ({ name: "pkg", version: ++reads < 3 ? "1.0.0" : "1.2.3" }),
+    { attempts: 3, sleep: async () => {} }
+  );
+  assert.equal(reads, 3);
+  await assert.rejects(
+    waitForNpmTag(
+      "pkg",
+      "latest",
+      "1.2.3",
+      async () => ({ version: "1.0.0" }),
+      { attempts: 2, sleep: async () => {} }
+    ),
+    /latest.*1.2.3/
+  );
+});
+
+test("published asset downloads are removed after verification, including failures", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-test-"));
+  try {
+    const assets = [{ name: "a" }, { name: "b" }];
+    const download = (asset, path) => {
+      assert.equal(existsSync(join(dir, "a")), false);
+      writeFileSync(path, asset.name);
+      if (asset.name === "b") throw new Error("bad digest");
+    };
+    assert.throws(
+      () => verifyPublishedAssets(assets, dir, download),
+      /bad digest/
+    );
+    assert.equal(existsSync(join(dir, "b")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("waits for a published candidate without retrying mismatches", async () => {
+  const expected = {
+    packageName: "@koed-labs/server",
+    version: "1.2.3",
+    integrity: "sha512-good"
+  };
+  const metadata = {
+    name: expected.packageName,
+    version: expected.version,
+    dist: { integrity: expected.integrity }
+  };
+  let reads = 0;
+  let sleeps = 0;
+  await waitForNpmCandidate(
+    expected,
+    async () => (++reads < 3 ? undefined : metadata),
+    {
+      attempts: 3,
+      sleep: async () => {
+        sleeps++;
+      }
+    }
+  );
+  assert.equal(reads, 3);
+  assert.equal(sleeps, 2);
+  reads = 0;
+  await assert.rejects(
+    waitForNpmCandidate(
+      expected,
+      async () => {
+        reads++;
+        return { ...metadata, version: "9.0.0" };
+      },
+      { attempts: 3, sleep: async () => {} }
+    ),
+    /mismatch/
+  );
+  assert.equal(reads, 1);
+  reads = 0;
+  await assert.rejects(
+    waitForNpmCandidate(
+      expected,
+      async () => {
+        reads++;
+        return undefined;
+      },
+      { attempts: 3, sleep: async () => {} }
+    ),
+    /missing from registry/
+  );
+  assert.equal(reads, 3);
+});
 
 for (const flag of [
   "--trust-roots",
@@ -134,6 +311,7 @@ for (const downloadDrift of [
       );
       const args = verificationArgs(f);
       let published = false;
+      let latestPromoted = false;
       const mutations = [];
       const downloads = [];
       const tarCalls = [];
@@ -182,12 +360,16 @@ for (const downloadDrift of [
           }
           mutations.push([command, ...argv]);
           if (command === "npm" && argv[0] === "publish") published = true;
+          if (command === "npm" && argv.at(-1) === "latest")
+            latestPromoted = true;
           if (command === "gh" && argv.includes("PATCH"))
             f.release.draft = false;
           return "";
         },
         fetchRegistry: async (_name, version) =>
-          version === "latest" || !published ? null : metadata
+          (version === "latest" && !latestPromoted) || !published
+            ? null
+            : metadata
       };
       if (downloadDrift) {
         await assert.rejects(

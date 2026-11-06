@@ -1,0 +1,6 @@
+{
+  "[javascript][javascriptreact][typescript][typescriptreact][json][jsonc][yaml][markdown][html][css][scss]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "eslint.enable": false
+}

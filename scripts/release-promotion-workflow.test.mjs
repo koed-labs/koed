@@ -10,15 +10,19 @@ const release = readFileSync(
   "utf8"
 );
 
-test("candidate verification has read-only permissions and protected build identity dependencies", () => {
+test("candidate verification can read the draft but gets no publication credentials, with protected build identity dependencies", () => {
   const { jobs } = parse(release);
   const identity = jobs["reviewed-release-identity"];
   const verification = jobs["verify-release-candidate"];
   assert.ok(identity, "missing independent build identity job");
+  // Draft releases and their assets are visible only with contents: write.
   assert.deepEqual(verification.permissions, {
-    contents: "read",
+    contents: "write",
     actions: "read"
   });
+  assert.equal(verification.environment, undefined);
+  assert.equal(verification.permissions["id-token"], undefined);
+  assert.equal(JSON.stringify(verification.steps).includes("NPM_TOKEN"), false);
   assert.ok(verification.needs.includes("reviewed-release-identity"));
   assert.ok(jobs["publish-release"].needs.includes("verify-release-candidate"));
   assert.equal(
@@ -143,6 +147,48 @@ test("production gate precedes dependency installation", () => {
   );
   const install = steps.findIndex((step) => step.run?.includes("pnpm install"));
   assert.ok(gate >= 0 && install > gate);
+});
+
+test("targeted asset retries regenerate a reviewed identity for the current attempt before production approval", () => {
+  const { jobs } = parse(release);
+  const catalog = jobs["component-manifest-catalog"];
+  const identity = jobs["reviewed-release-identity"];
+  const verification = jobs["verify-release-candidate"];
+  const publication = jobs["publish-release"];
+
+  assert.ok(catalog.needs.includes("frozen-component-release-assets"));
+  for (const job of [
+    "component-manifest-catalog",
+    "standalone-koed-server-release-assets",
+    "standalone-koed-server-release-metadata",
+    "native-runtime-linux-x64-release-assets",
+    "linux-native-packages",
+    "signed-desktop-release-assets",
+    "privacy-release-qualification"
+  ])
+    assert.ok(identity.needs.includes(job), `identity must wait for ${job}`);
+  assert.ok(verification.needs.includes("reviewed-release-identity"));
+  assert.ok(publication.needs.includes("reviewed-release-identity"));
+  assert.ok(publication.needs.includes("verify-release-candidate"));
+  assert.equal(publication.environment, "production");
+
+  const identityScript = readFileSync(
+    resolve(root, "scripts/reviewed-build-identity.mjs"),
+    "utf8"
+  );
+  assert.match(
+    identityScript,
+    /runAttempt: Number\(process\.env\.GITHUB_RUN_ATTEMPT\)/
+  );
+  for (const job of [verification, publication]) {
+    const command = job.steps.find((step) =>
+      step.run?.includes("--approved-run-attempt")
+    );
+    assert.match(
+      command.run,
+      /--approved-run-attempt '\$\{\{ github\.run_attempt \}\}'/
+    );
+  }
 });
 
 test("asset jobs only run for absent releases or resumable drafts", () => {

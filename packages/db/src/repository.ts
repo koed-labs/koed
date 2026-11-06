@@ -7015,35 +7015,31 @@ export const createMemorySourceRepository = (
       );
       // Stored source snapshots are never authority for current source text.
       const sourceItems: LcmSourceItem[] = [
-        ...childNodes.map(
-          (child, position): LcmSourceItem => ({
-            kind: "lcm_child",
-            nodeId: child.id,
-            text: child.summaryText,
-            position
-          })
-        ),
-        ...visibleSources.map(
-          (source, position): LcmSourceItem => ({
-            kind:
-              source.metadata.sourceTable === "messages"
-                ? "message"
-                : source.metadata.sourceTable === "tool_events"
-                  ? "tool_event"
-                  : "memory_event",
-            sourceTable:
-              source.metadata.sourceTable === "messages"
-                ? "messages"
-                : source.metadata.sourceTable === "tool_events"
-                  ? "tool_events"
-                  : "memory_events",
-            sourceId: source.id,
-            visibility: source.visibility,
-            text: source.content ?? source.contentPreview,
-            createdAt: source.capturedAt,
-            position
-          })
-        )
+        ...childNodes.map((child, position): LcmSourceItem => ({
+          kind: "lcm_child",
+          nodeId: child.id,
+          text: child.summaryText,
+          position
+        })),
+        ...visibleSources.map((source, position): LcmSourceItem => ({
+          kind:
+            source.metadata.sourceTable === "messages"
+              ? "message"
+              : source.metadata.sourceTable === "tool_events"
+                ? "tool_event"
+                : "memory_event",
+          sourceTable:
+            source.metadata.sourceTable === "messages"
+              ? "messages"
+              : source.metadata.sourceTable === "tool_events"
+                ? "tool_events"
+                : "memory_events",
+          sourceId: source.id,
+          visibility: source.visibility,
+          text: source.content ?? source.contentPreview,
+          createdAt: source.capturedAt,
+          position
+        }))
       ];
       return {
         ...node,

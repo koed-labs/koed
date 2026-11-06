@@ -61,7 +61,9 @@ resumable.
 _Avoid_: Session closure, fork, historical import
 
 **Conversation**:
-An AI-client interaction thread whose activity may be captured.
+An AI-client interaction thread whose activity may be captured. The AI Client
+creates and continues the interaction; Koed may capture, present, and organize
+its Memory without managing the Conversation's execution.
 _Avoid_: Thread, chat, transcript
 
 **Conversation Item Presentation**:

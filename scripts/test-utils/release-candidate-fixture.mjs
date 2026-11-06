@@ -126,6 +126,7 @@ export const candidateFixture = ({
     resolve(packageRoot, "vendor/control-plane.js"),
     `throw new Error('CANDIDATE_EXECUTED');
 export const productionComponentManifestCatalog = ${JSON.stringify(catalog)};
+export const productionNativeRuntimeCatalog = null;
 function validateManifestCatalog(value) { return value; }
 function verifyComponent(options) { return options; }
 export function runKoedServerCli(args) {

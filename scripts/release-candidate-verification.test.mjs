@@ -121,6 +121,30 @@ test("pin-only candidate verifies real npm/Desktop inventories without executing
   }
 });
 
+test("candidate verification accepts current-attempt identity and rejects a stale attempt", async () => {
+  const f = await setup();
+  try {
+    const getWorkflowRun = f.readers.getWorkflowRun;
+    f.expected.runAttempt = 2;
+    f.input.runAttempt = 2;
+    f.readers.getWorkflowRun = async (...args) => ({
+      ...(await getWorkflowRun(...args)),
+      run_attempt: 2
+    });
+
+    const result = await candidate.verifyReleaseCandidate(f.input, f.readers);
+    assert.equal(result.runAttempt, 2);
+
+    f.input.runAttempt = 1;
+    await assert.rejects(
+      candidate.verifyReleaseCandidate(f.input, f.readers),
+      /Protected candidate identity mismatch: runAttempt/
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
 for (const field of [
   "repository",
   "commit",

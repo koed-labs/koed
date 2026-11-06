@@ -6,12 +6,17 @@ export function verifyApproval(
   { actor, triggeringActor, attempt, version },
   approvals
 ) {
+  // Runner/build retries are valid attempts. The production job remains behind
+  // its protected environment gate, while candidate verification binds the
+  // reviewed build identity to this exact run attempt.
   if (
     typeof actor !== "string" ||
     !actor.trim() ||
     typeof triggeringActor !== "string" ||
     !triggeringActor.trim() ||
-    attempt !== "1" ||
+    typeof attempt !== "string" ||
+    !/^[1-9]\d*$/.test(attempt) ||
+    !Number.isSafeInteger(Number(attempt)) ||
     !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? "") ||
     !Array.isArray(approvals)
   )

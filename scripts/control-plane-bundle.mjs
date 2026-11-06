@@ -10,6 +10,10 @@ import { builtinModules } from "node:module";
 import { resolve } from "node:path";
 import { validateReleaseManifestCatalog } from "./embed-component-manifest-catalog.mjs";
 import { verifyPackagedControlPlaneCatalog } from "./verify-packaged-control-plane-catalog.mjs";
+import {
+  readProductionNativeCatalog,
+  verifyPackagedNativeCatalog
+} from "./native-runtime-pins.mjs";
 
 export const readControlPlaneCatalog = ({ version }) => {
   const path = process.env.KOED_COMPONENT_MANIFEST_CATALOG;
@@ -28,6 +32,7 @@ export const readControlPlaneCatalog = ({ version }) => {
 const createCatalogPlugin = ({
   repoRoot,
   catalog,
+  nativeCatalog,
   version,
   cataloglessDevelopment
 }) => ({
@@ -38,10 +43,17 @@ const createCatalogPlugin = ({
       namespace: "koed-control-plane"
     }));
     builder.onLoad({ filter: /.*/, namespace: "koed-control-plane" }, () => ({
-      contents: `export * from ${JSON.stringify(resolve(repoRoot, "packages/koed-server/dist/cli.js"))}; export { productionComponentManifestCatalog } from ${JSON.stringify(resolve(repoRoot, "packages/koed-server/dist/component-manifest-catalog-data.js"))};`,
+      contents: `export * from ${JSON.stringify(resolve(repoRoot, "packages/koed-server/dist/cli.js"))}; export { productionComponentManifestCatalog } from ${JSON.stringify(resolve(repoRoot, "packages/koed-server/dist/component-manifest-catalog-data.js"))}; export { productionNativeRuntimeCatalog } from ${JSON.stringify(resolve(repoRoot, "packages/koed-server/dist/native-runtime-catalog-data.mjs"))};`,
       resolveDir: repoRoot,
       loader: "js"
     }));
+    builder.onLoad(
+      { filter: /[/\\]native-runtime-catalog-data\.mjs$/ },
+      () => ({
+        contents: `export const productionNativeRuntimeCatalog = ${JSON.stringify(cataloglessDevelopment ? null : nativeCatalog)};`,
+        loader: "js"
+      })
+    );
     builder.onLoad(
       { filter: /[/\\]component-manifest-catalog-data\.js$/ },
       () => ({
@@ -125,6 +137,9 @@ export const bundleControlPlane = async ({
       "Catalog-less development packaging must not carry catalog authority."
     );
   if (!cataloglessDevelopment) validateReleaseManifestCatalog(catalog, version);
+  const nativeCatalog = cataloglessDevelopment
+    ? null
+    : readProductionNativeCatalog(repoRoot);
   mkdirSync(vendorRoot, { recursive: true });
   writeFileSync(resolve(vendorRoot, "package.json"), '{"type":"module"}\n');
   const built = await build(
@@ -133,11 +148,16 @@ export const bundleControlPlane = async ({
       vendorRoot,
       version,
       catalog,
+      nativeCatalog,
       cataloglessDevelopment
     })
   );
   assertSelfContained(built);
   assertRuntimeUsesCatalog(built, repoRoot);
+  verifyPackagedNativeCatalog({
+    modulePath: resolve(vendorRoot, "control-plane.js"),
+    expected: nativeCatalog
+  });
   if (!cataloglessDevelopment)
     verifyPackagedControlPlaneCatalog({
       modulePath: resolve(vendorRoot, "control-plane.js"),

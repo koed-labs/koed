@@ -77,6 +77,35 @@ describe("koed-server supervisor lock", () => {
     expect(readFileSync(lockPath, "utf8")).toBe("not-json");
   });
 
+  it("removes a stale lock only inside the exclusion and only if unchanged", () => {
+    const paths = pathsForTest();
+    const lockPath = resolve(paths.runDir, "koed-server.lock");
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 111, processIdentity: "crashed-supervisor" })
+    );
+    const replacement = JSON.stringify({
+      pid: 222,
+      processIdentity: "new-supervisor"
+    });
+
+    // Another supervisor replaces the stale record before the exclusion is held.
+    const result = acquireKoedServerSupervisorLock(paths, {
+      pid: 303,
+      isProcessRunning: (pid) => pid === 222,
+      resolveProcessIdentity: (pid) =>
+        pid === 222 ? "new-supervisor" : `process-${pid}`,
+      exclusive: (action) => {
+        writeFileSync(lockPath, replacement);
+        action();
+      }
+    });
+
+    expect(result).toMatchObject({ acquired: false, ownerPid: 222 });
+    expect(readFileSync(lockPath, "utf8")).toBe(replacement);
+  });
+
   it("preserves a released-shape lock while its supervisor is live", () => {
     const paths = pathsForTest();
     const lockPath = resolve(paths.runDir, "koed-server.lock");

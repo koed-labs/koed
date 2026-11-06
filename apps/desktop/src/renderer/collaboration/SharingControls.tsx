@@ -21,9 +21,7 @@ export const sharingDetailTitle = (detail: SharedMemoryRepresentation) =>
         ? "Detailed summaries"
         : "Memory Events";
 
-export const sharingDetailDescription = (
-  detail: SharedMemoryFidelityCeiling
-) =>
+export const sharingDetailDescription = (detail: SharedMemoryFidelityCeiling) =>
   detail === "lcm_rollups"
     ? "LCM Rollups"
     : detail === "lcm_leaves"

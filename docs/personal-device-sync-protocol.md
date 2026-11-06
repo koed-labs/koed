@@ -873,6 +873,25 @@ The Relay exposes an authenticated held wake request for package, membership,
 key-epoch, conflict, and tombstone availability. A wake contains no plaintext
 or authorization result and is never durable authority. Devices reconcile
 bounded mailbox and lifecycle state after startup, reconnect, or a wake.
+Source and portable-artifact outboxes persist per-row retry deadlines. Unacknowledged
+committed entries are rechecked after a bounded delay, so a full batch cannot
+starve later entries; pending publication retries and expired leases also schedule
+a local wake. Each source or artifact publication claim uses a fresh lease owner,
+so an expired attempt cannot complete or retry after another claim reclaims it.
+Committed ACK checks run concurrently within each bounded batch,
+with a 30-second lookup deadline and a fresh lease owner for each claim. Late
+lookup results cannot update an expired claim; timed-out checks are released
+for retry. Deadline and service stop abort the read-only request, including its
+response body. Source and artifact ACKs have separate limits of 10 outstanding
+operations each; slots remain occupied until both the underlying request and
+its database completion or release settle. An abort-ignoring request or hung
+database finalization can occupy its slot indefinitely, but cannot exceed its
+category's capacity or block the other category or inbox. Outstanding entries
+are excluded from new claims and due-time calculations even after their leases
+expire; saturated ACK categories are excluded entirely. Other due work remains
+eligible immediately. Slot settlement and ACK batch
+completion request reconciliation. Relay notifications remain an additional
+wake signal.
 Listening begins before the durable mailbox check, closing the check/listen
 race. Duplicate or missed wakes are harmless. Continuous interval polling is
 not a V1 synchronization path; connection recovery backoff and persisted retry

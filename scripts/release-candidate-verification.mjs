@@ -18,6 +18,7 @@ import { inspectReleasePackage } from "./inspect-release-package.mjs";
 import { validateReviewedRuntimeIdentities } from "./reviewed-build-identity-runtimes.mjs";
 import { compareVersions } from "./release-promotion-lib.mjs";
 import { verifyPackagedDesktopCatalog } from "../apps/desktop/scripts/verify-packaged-component-catalog.mjs";
+import { verifyDraftNativePins } from "./native-runtime-pins.mjs";
 
 export const sha256 = (bytes) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -27,7 +28,7 @@ export const hashFileSync = (path, algorithm = "sha256", encoding = "hex") => {
   const chunk = Buffer.allocUnsafe(1024 * 1024);
   const fd = openSync(path, "r");
   try {
-    for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0; )
+    for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0;)
       hash.update(chunk.subarray(0, read));
   } finally {
     closeSync(fd);
@@ -291,13 +292,24 @@ export const verifyReleaseCandidate = async (input, readers) => {
       JSON.stringify(identity.npm) !== JSON.stringify(expected.npm)
     )
       fail("npm release identity mismatch.");
-    const npm = inspectReleasePackage({
+    const { nativeCatalog, ...npm } = inspectReleasePackage({
       bytes: readFileSync(resolve(root, "koed-labs-server.tgz")),
       expected: expected.npm,
       version: expected.version,
       root: resolve(root, "package"),
       catalogPath
     });
+    if (
+      nativeCatalog ||
+      expected.artifacts.some(
+        (asset) => asset.name === "koed-linux-native-packages"
+      )
+    )
+      verifyDraftNativePins(nativeCatalog, {
+        root,
+        version: expected.version,
+        assets: expected.assets
+      });
     const desktop = inspectDesktop(expected, root, catalogPath);
     const registry = await readers.getRegistryVersion(
       "@koed-labs/server",
