@@ -1,10 +1,17 @@
-import type { HistoricalAdmissionDecision } from "@koed/shared";
+import {
+  AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
+  AUTOMATIC_HISTORICAL_WINDOW_DAYS,
+  type HistoricalAdmissionDecision
+} from "@koed/shared";
 
 import type { HistoricalCandidateSelection } from "./historical-ingestion-coordinator.js";
 import { MemoryApiClient, MemoryApiError } from "./index.js";
 
-export const AUTOMATIC_HISTORICAL_WINDOW_DAYS = 30;
-export const AUTOMATIC_HISTORICAL_CONVERSATION_CAP = 50;
+// Shared so Desktop can describe the same limits.
+export {
+  AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
+  AUTOMATIC_HISTORICAL_WINDOW_DAYS
+};
 
 export const resolveAutomaticHistoricalJournalBatchBytes = (
   env: NodeJS.ProcessEnv = process.env
@@ -179,6 +186,46 @@ export const transitionAutomaticHistoricalSource = async <
     "source",
     "historical_source_transition_response_missing"
   );
+};
+
+const errorCode = (error: unknown): string | undefined => {
+  if (!(error instanceof MemoryApiError)) return undefined;
+  const payload = error.payload;
+  return typeof payload === "object" &&
+    payload !== null &&
+    "code" in payload &&
+    typeof payload.code === "string"
+    ? payload.code
+    : undefined;
+};
+
+// The API refuses new sources once a run is closed, and completion
+// reconciliation closes a run whose existing sources have all finished even
+// when the coordinator still has Conversations to add. Start a new run then.
+export const isHistoricalRunClosed = (error: unknown): boolean =>
+  error instanceof MemoryApiError &&
+  error.status === 409 &&
+  errorCode(error) === "historical_import_run_not_found";
+
+export const createHistoricalSourceInOpenRun = async (
+  client: MemoryApiClient,
+  runId: string | undefined,
+  source: Record<string, unknown>
+): Promise<{ runId: string; response: Record<string, unknown> }> => {
+  const attempt = async (id: string) => ({
+    runId: id,
+    response: await client.createHistoricalImportSource({
+      ...source,
+      runId: id
+    })
+  });
+  if (!runId) return attempt(await createAutomaticHistoricalRun(client));
+  try {
+    return await attempt(runId);
+  } catch (error) {
+    if (!isHistoricalRunClosed(error)) throw error;
+    return attempt(await createAutomaticHistoricalRun(client));
+  }
 };
 
 export type HistoricalCompletionResult =

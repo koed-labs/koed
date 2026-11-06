@@ -88,6 +88,20 @@ const prompt = (value: unknown): string => {
   return value;
 };
 
+const chiefOfStaffName = (value: unknown): string => {
+  if (typeof value !== "string" || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value))
+    throw new TypeError("Chief of Staff name is invalid.");
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (
+    normalized.length < 1 ||
+    normalized.length > 80 ||
+    !/^[\p{L}\p{M}\p{N} .'’-]+$/u.test(normalized)
+  ) {
+    throw new TypeError("Chief of Staff name is invalid.");
+  }
+  return normalized;
+};
+
 export type ManagedConversationStartRequest = {
   operation: "start";
   projectId: string;
@@ -95,6 +109,7 @@ export type ManagedConversationStartRequest = {
   aiClientDriverId: SupportedAiClientDriverId;
   aiClientInstanceId: string;
   model: string;
+  chiefOfStaffName?: string;
   reasoningEffort: string | null;
   permissionMode: "supervised" | "auto_edit" | "auto" | "full_access";
   runnerKind: "local_device";
@@ -515,6 +530,9 @@ export const parseManagedConversationRequest = (
         "aiClientDriverId",
         "aiClientInstanceId",
         "model",
+        ...(Object.hasOwn(input, "chiefOfStaffName")
+          ? ["chiefOfStaffName"]
+          : []),
         "reasoningEffort",
         "permissionMode",
         "runnerKind",
@@ -548,6 +566,9 @@ export const parseManagedConversationRequest = (
         "AI Client instance id"
       ),
       model: identifier(input.model, "AI Client model"),
+      ...(input.chiefOfStaffName === undefined
+        ? {}
+        : { chiefOfStaffName: chiefOfStaffName(input.chiefOfStaffName) }),
       reasoningEffort:
         input.reasoningEffort === null
           ? null

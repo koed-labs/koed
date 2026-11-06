@@ -16,6 +16,7 @@ import { piRpcEnvironment, resolvePiExecutable } from "./pi-rpc-runner.js";
 export interface PiManagedConversationConfig {
   cwd: string;
   model: string;
+  chiefOfStaffName?: string | null;
   reasoningEffort?: string;
   permissionMode: AiClientPermissionMode;
   sessionDirectory: string;
@@ -227,6 +228,7 @@ export class PiManagedConversationSession {
           sdkEntry,
           cwd: this.config.cwd,
           model: this.config.model,
+          chiefOfStaffName: this.config.chiefOfStaffName ?? null,
           sessionDirectory,
           sessionId: this.config.sessionId,
           resumeSessionPath: this.resumeSessionPath,

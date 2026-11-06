@@ -22,11 +22,14 @@ const validPublication = (value: unknown): boolean => {
 export const refreshLocalAiRuntime = async (input: {
   fetch: typeof globalThis.fetch;
   koedHome: string;
+  driverId?: "codex" | "claude" | "pi";
 }): Promise<{ refreshed: boolean; refreshError: string | null }> => {
   const registration = readLocalRuntimeRegistration(input.koedHome);
+  const url = new URL("/v1/capabilities/refresh", registration.url);
+  if (input.driverId) url.searchParams.set("driver", input.driverId);
   const remote = await fetchBoundedJsonObject(
     input.fetch,
-    new URL("/v1/capabilities/refresh", registration.url),
+    url,
     {
       method: "POST",
       redirect: "error",

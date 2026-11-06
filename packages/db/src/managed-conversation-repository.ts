@@ -105,6 +105,7 @@ export interface ManagedConversationExecutionRecord {
   provider: string;
   aiClientInstanceId: string;
   model: string;
+  chiefOfStaffName: string | null;
   reasoningEffort: string | null;
   permissionMode: "supervised" | "auto_edit" | "auto" | "full_access";
   runnerKind: "local_device";
@@ -255,6 +256,7 @@ export interface ManagedConversationRepository {
       provider: string;
       aiClientInstanceId: string;
       model: string;
+      chiefOfStaffName?: string;
       reasoningEffort?: string | null;
       permissionMode: "supervised" | "auto_edit" | "auto" | "full_access";
       runnerKind: "local_device";
@@ -680,6 +682,7 @@ type ExecutionRow = {
   provider: string;
   ai_client_instance_id: string;
   model: string;
+  chief_of_staff_name: string | null;
   reasoning_effort: string | null;
   permission_mode: "supervised" | "auto_edit" | "auto" | "full_access";
   runner_kind: "local_device";
@@ -830,6 +833,7 @@ type DiffRow = {
 
 const EXECUTION_COLUMNS = `
   id, owner_user_id, project_id, provider, ai_client_instance_id, model,
+  chief_of_staff_name,
   reasoning_effort, permission_mode, runner_kind, state,
   state_version, execution_generation, runner_deployment_id, runner_device_id,
   runner_id, runner_lease_expires_at, logical_session_id, provider_thread_id,
@@ -892,6 +896,7 @@ const mapExecution = (
   provider: row.provider,
   aiClientInstanceId: row.ai_client_instance_id,
   model: row.model,
+  chiefOfStaffName: row.chief_of_staff_name,
   reasoningEffort: row.reasoning_effort,
   permissionMode: row.permission_mode,
   runnerKind: row.runner_kind,
@@ -1061,6 +1066,7 @@ const startDigest = (input: {
   provider: string;
   aiClientInstanceId: string;
   model: string;
+  chiefOfStaffName?: string;
   reasoningEffort: string | null;
   permissionMode: "supervised" | "auto_edit" | "auto" | "full_access";
   runnerKind: "local_device";
@@ -1080,6 +1086,9 @@ const startDigest = (input: {
       provider: input.provider,
       aiClientInstanceId: input.aiClientInstanceId,
       model: input.model,
+      ...(input.chiefOfStaffName
+        ? { chiefOfStaffName: input.chiefOfStaffName }
+        : {}),
       reasoningEffort: input.reasoningEffort,
       permissionMode: input.permissionMode,
       runnerKind: input.runnerKind,
@@ -1375,6 +1384,18 @@ export const createManagedConversationRepository = (
   return {
     async createManagedConversation(actor, input) {
       const projectId = input.projectId.trim();
+      const chiefOfStaffName = input.chiefOfStaffName
+        ?.replace(/\s+/gu, " ")
+        .trim();
+      if (
+        input.chiefOfStaffName !== undefined &&
+        (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(input.chiefOfStaffName) ||
+          !chiefOfStaffName ||
+          chiefOfStaffName.length > 80 ||
+          !/^[\p{L}\p{M}\p{N} .'’-]+$/u.test(chiefOfStaffName))
+      ) {
+        throw statusError("Chief of Staff name is invalid", 400);
+      }
       if (
         !projectId ||
         !input.provider.trim() ||
@@ -1415,6 +1436,7 @@ export const createManagedConversationRepository = (
             provider: input.provider,
             aiClientInstanceId: input.aiClientInstanceId,
             model: input.model,
+            chiefOfStaffName,
             reasoningEffort: input.reasoningEffort ?? null,
             permissionMode: input.permissionMode,
             runnerKind: input.runnerKind,
@@ -1448,6 +1470,7 @@ export const createManagedConversationRepository = (
           provider: input.provider,
           aiClientInstanceId: input.aiClientInstanceId,
           model: input.model,
+          chiefOfStaffName,
           reasoningEffort: input.reasoningEffort ?? null,
           permissionMode: input.permissionMode,
           runnerKind: input.runnerKind,
@@ -1459,9 +1482,9 @@ export const createManagedConversationRepository = (
         const executionResult = await client.query<ExecutionRow>(
           `insert into managed_conversation_executions (
              id, owner_user_id, project_id, provider, ai_client_instance_id,
-             model, reasoning_effort, permission_mode, runner_kind,
+             model, chief_of_staff_name, reasoning_effort, permission_mode, runner_kind,
              fencing_token_hash, runner_deployment_id, runner_device_id
-           ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
            returning ${EXECUTION_COLUMNS}`,
           [
             executionId,
@@ -1470,6 +1493,7 @@ export const createManagedConversationRepository = (
             input.provider,
             input.aiClientInstanceId,
             input.model,
+            chiefOfStaffName ?? null,
             input.reasoningEffort ?? null,
             input.permissionMode,
             input.runnerKind,

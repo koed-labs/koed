@@ -31,6 +31,14 @@
       "types": "./dist/durable-realtime.d.ts",
       "import": "./dist/durable-realtime.js"
     },
+    "./ai-client-connections": {
+      "types": "./dist/ai-client-connections.d.ts",
+      "import": "./dist/ai-client-connections.js"
+    },
+    "./historical-ingestion-progress": {
+      "types": "./dist/historical-ingestion-progress.d.ts",
+      "import": "./dist/historical-ingestion-progress.js"
+    },
     "./personal-desktop": {
       "types": "./dist/personal-desktop-contract.d.ts",
       "import": "./dist/personal-desktop-contract.js"
@@ -86,6 +94,14 @@
     "./personal-project-default": {
       "types": "./dist/personal-project-default.d.ts",
       "import": "./dist/personal-project-default.js"
+    },
+    "./personal-source": {
+      "types": "./dist/personal-source-contract.d.ts",
+      "import": "./dist/personal-source-contract.js"
+    },
+    "./desktop-update-contract": {
+      "types": "./dist/desktop-update-contract.d.ts",
+      "import": "./dist/desktop-update-contract.js"
     }
   },
   "files": [
@@ -101,7 +117,11 @@
   "dependencies": {
     "@noble/hashes": "2.2.0",
     "json-canonicalize": "2.0.0",
+    "proper-lockfile": "4.1.2",
     "undici": "^7.28.0",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "4.1.4"
   }
 }

@@ -7,6 +7,15 @@ healthy, authenticated, fresh, identity-matched capability snapshot. Hosted
 authority delegates deferred local execution readiness to the assigned Worker.
 Missing or unavailable owners never fall back to another AI Client.
 
+Managed starts may include an optional Chief of Staff name. The API normalizes
+and bounds it, then stores the selected name on the owner-scoped execution.
+Idempotent retries must use the same name. Recovery and resume read the stored
+value; a fork copies it into the child execution. Codex appends the name to its
+managed base instructions, Claude Code appends it to its managed preset, and Pi
+appends it through the managed session resource loader. Unnamed starts retain
+the prior instructions. External captured Conversations and background AI
+Client work do not receive this instruction.
+
 Managed Conversation endpoints use separate read and write budgets from Memory
 endpoints. The API selects each budget from the endpoint and authenticated User
 identity. Memory reads, Memory writes, and source-journal requests share their

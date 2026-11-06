@@ -28,6 +28,7 @@ import {
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
+import { verifyDisabledDesktopUpdateNotice } from "./desktop-update-notice-smoke.mjs";
 import {
   launchPackagedDesktop,
   waitForPackagedDesktopExit
@@ -1090,6 +1091,11 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     };
   };
   const pollManager = { runCommand: () => managerCommand("status") };
+
+  phaseStarted = beginPhase("private update notice state");
+  const updateNotice = await desktop.invoke("update_notice");
+  await verifyDisabledDesktopUpdateNotice(async () => updateNotice);
+  finishPhase(timings, "private update notice state", phaseStarted);
 
   phaseStarted = beginPhase("first daemon start and health");
   const start = await managerCommand("start_daemon");

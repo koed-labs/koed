@@ -1,20 +1,22 @@
 # Koed Desktop
 
+See [Desktop updates](../../docs/desktop-updates.md) for update notices and how to update.
+
 Koed Desktop is the Electron control surface for Koed.
 
 It wraps the same local `koed-server` command surface, shows service status,
-runs mandatory client-neutral core setup, optional AI Client onboarding, and health checks, and provides
+runs client-neutral core setup, AI Client onboarding, and health checks, and provides
 the local Project, Captured Session, and raw Conversation UI in one window.
 
-The main Desktop experience is Project-first. On wide windows it uses a
-persistent master-detail workspace: active and disclosed inactive local
-Projects remain in the master list while the detail pane shows the selected
-Project's Captured Sessions or a raw Conversation. Narrow windows deliberately
-switch to list → Project → Conversation drill-down, with breadcrumb controls
-returning to the previous level. Project and Captured Session names, source AI Client when available, activity,
-counts, and Conversation previews form the primary scanning hierarchy; local
-paths, Git identity, discovery provenance, and manual assignment controls sit
-in secondary disclosures.
+The main Desktop experience uses a persistent sidebar with search, pinned
+Conversations, and expandable Projects beside the Conversation pane. It includes
+captured AI Client Conversations and those started in Desktop. On narrow
+windows, the sidebar opens as a drawer. Project settings manages source rules,
+Conversation memberships, and Personal Device sync. Drag and drop moves a
+Conversation between Projects while retaining its Folder and Git Anchor
+references by default. The Conversation header shows those references as tags.
+See [Desktop UI](../../docs/desktop-ui.md) for the current interface and the
+older full-interface baseline retained for validation.
 
 Opening a Captured Session loads its Memory Events through an exact, typed
 Electron IPC operation and renders the raw Conversation inside the Desktop.
@@ -126,15 +128,42 @@ API, Postgres, and Embedding Service ports while avoiding common
 local development or Docker port collisions. First-run setup inspects package,
 runtime, model, service, Koed core integration, and final verification state
 before making changes. Core setup never selects or edits an AI Client. After
-core completion, optional onboarding offers Codex, Claude Code, and Pi as
-independent multi-select choices plus **Set up later**. Detection reports
-availability only; it never auto-selects. Each selected client gets its own
-consent prompt and setup result, so cancellation or one broken client does not
-undo core setup or affect another client. Desktop runs only incomplete stages
-in order and stops at the first failure. The model stage reports actual
-downloaded and total bytes from the pinned artifact response before checksum
-verification. Retrying re-inspects local state and resumes from the first
-incomplete stage.
+core completion, onboarding offers Codex, Claude Code, and Pi as independent
+multi-select choices. Confirmed detected AI Clients are initially selected;
+the User can change that selection. Discovery does not configure an integration.
+**Connect** authorizes Koed profile, MCP Server, and Capture Hook configuration
+for the selected AI Clients only. A queue reports each result independently;
+failed connections can be retried without rerunning successful ones. A configured
+profile that needs sign-in is shown with client-specific recovery guidance.
+At least one currently ready, authenticated AI Client is required to continue.
+
+The setup presentation uses the staged Pixelkin prototype design: a large Kin,
+real setup progress, client discovery and connection, and a final celebration.
+The renderer and expressions come from Desktop's vendored Pixelkin engine;
+no website scripts are loaded. Reduced motion and a WebGL fallback preserve
+usable status feedback. Onboarding follows the system appearance and does not
+change the persisted theme preference.
+Setup begins only after **Get Started** authorizes local installation. Desktop
+runs only incomplete stages in order and stops at the first failure. The model
+stage reports actual downloaded and total bytes before checksum verification.
+Unknown stage durations do not advance progress using a timer. Retrying
+re-inspects local state and resumes from the first incomplete stage. Reopening
+while a run is active attaches to its current snapshot without restarting it.
+
+**Let’s go** rechecks setup and AI Client readiness concurrently, saves onboarding completion,
+and enters the app. Profile-save failures remain retryable. Old chat-onboarding
+drafts enter live prerequisite inspection; saved identity and appearance are
+retained. Agent customization stays in Settings, alongside **Run setup again**.
+The onboarding transcript, mandatory agent maker, and memory demonstration are
+replaced by this staged flow. Restarting setup preserves Personal Memory,
+Projects, Conversations, and saved customization.
+
+For isolated renderer checks, `pnpm --filter @koed/desktop test:browser:v1`
+builds the validation entry and runs Electron checks, including deterministic
+bridge scenarios for setup failure/retry, client connection outcomes, completion,
+and Settings restart. These fixtures are excluded from the production entry.
+Validation artifacts are written under the repository's gitignored scratch area;
+fixture success does not establish native installation success on a clean device.
 
 Desktop verifies that the supported Codex MCP block points at the thin adapter
 with the active `KOED_HOME`, and separately checks the credential-free Capture
@@ -228,6 +257,12 @@ packaging, signing, runtime distribution, or packaged smoke support.
   for isolated validation, but installation and shell PATH editing remain
   unavailable until packaged Electron helper/fuse compatibility and mutation
   safety are validated on supported target.
+- The agent's Pixelkin comes from the Pixelkin engine in the `pixelkin-lab`
+  repository. Until that repository is public, the renderer keeps a copy in
+  `src/renderer/v1/pixelkin/vendor/`. Do not edit it by hand: change
+  `pixelkin-lab`, then run
+  `pnpm --filter @koed/desktop pixelkin:sync <path to pixelkin-lab>`. A test
+  fails if the copy differs from the commit recorded in `vendor/SOURCE.json`.
 
 ### Privacy asset management before startup
 

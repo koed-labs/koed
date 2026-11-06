@@ -161,8 +161,11 @@ export const personalSourceDeviceFixture = (
     member: (typeof members)[number],
     features: PersonalConfigurationFeature[] = ["source_context_v1"]
   ): PdsConfigurationCapabilityRecord => {
-    const advertisement =
-        createPdsConfigurationCapabilityAdvertisement(features),
+    const advertisement = createPdsConfigurationCapabilityAdvertisement(
+        features,
+        new Date(),
+        features.includes("project_kin_v1") ? hash() : undefined
+      ),
       canonicalAdvertisement = canonicalizePdsJson(advertisement);
     const unsigned = {
       protocol: PDS_PROTOCOL,

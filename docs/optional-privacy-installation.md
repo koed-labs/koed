@@ -1,10 +1,15 @@
 # Optional Privacy Filter installation
 
+For the settings navigation and related command-line and service controls, see
+[Desktop settings](desktop-settings.md).
+
 The Base Desktop app supports Personal Memory without the Privacy Filter runtime or model.
 Local Team sharing requires the Privacy Filter Service when Team collaboration is enabled.
 One installation action in Preferences or onboarding provisions both optional assets after consent.
 Team-enabled onboarding exposes the required Privacy installer before core setup can finish.
-Preferences refreshes installation status when opened and when a setup dialog opens, without interrupting an active installation.
+The redesigned Desktop exposes Privacy Filter under Settings → General → Optional tools, after appearance and device preferences. Its card opens a nested page in the right-hand settings pane. The back control returns to General, and Escape goes back one level. Installation continues when the User navigates away or closes settings; cancellation is explicit.
+
+Settings refreshes installation status when opened and when a setup page opens, without interrupting an active installation. The legacy Preferences dialog uses the same installation controller and status behavior.
 The runtime archive and model files remain separate downloads with separate integrity rules.
 
 ## Installation and readiness

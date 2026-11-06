@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readAiClientConnections } from "@koed/shared/ai-client-connections";
 import { startHeadlessRemoteLocalAiRuntime } from "../src/headless-remote-runtime.js";
 import type { LocalAiRuntimeServiceFactory } from "../src/local-runtime-server.js";
 
@@ -73,6 +74,9 @@ describe("headless remote Local AI Runtime", () => {
       );
       expect(registration).not.toContain("remote-secret");
       expect(registration).not.toContain("local-secret");
+      // Starting never connects a client: consented headless setup does, so
+      // a descriptor that outlived a removal cannot restart capture.
+      expect(readAiClientConnections(home)).toBeNull();
     } finally {
       await runtime.close();
     }

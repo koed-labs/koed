@@ -13,6 +13,8 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
 import {
+  presentationPreferencesGetChannel,
+  presentationPreferencesSetChannel,
   clipboardWriteChannel,
   collaborationCommandChannel,
   hardwareAccelerationGetChannel,
@@ -129,6 +131,11 @@ describe("desktop IPC command registry", () => {
         return { preference, resolvedDark: preference === "dark" };
       }
     );
+    const getPresentationPreferences = vi.fn(() => ({
+      graphicsAcceleration: true,
+      showMenuBar: true
+    }));
+    const setPresentationPreferences = vi.fn((value) => value);
     let hardwareAccelerationEnabled = true;
     const getHardwareAcceleration = vi.fn(async () => ({
       enabled: hardwareAccelerationEnabled,
@@ -224,6 +231,8 @@ describe("desktop IPC command registry", () => {
         writeClipboard,
         getThemePreference,
         setThemePreference,
+        getPresentationPreferences,
+        setPresentationPreferences,
         getHardwareAcceleration,
         setHardwareAcceleration,
         getLaunchAtStartup,
@@ -252,6 +261,36 @@ describe("desktop IPC command registry", () => {
       checkHandlers
     };
   };
+
+  it("isolates window preferences from inference and rejects untrusted or malformed writes", async () => {
+    const { registered, setHardwareAcceleration } = register();
+    const get = registered.get(presentationPreferencesGetChannel)!;
+    const set = registered.get(presentationPreferencesSetChannel)!;
+    expect(await get(renderer())).toEqual({
+      graphicsAcceleration: true,
+      showMenuBar: true
+    });
+    expect(
+      await set(renderer(), { graphicsAcceleration: false, showMenuBar: false })
+    ).toEqual({ graphicsAcceleration: false, showMenuBar: false });
+    expect(setHardwareAcceleration).not.toHaveBeenCalled();
+    expect(() =>
+      set(renderer("https://example.com"), {
+        graphicsAcceleration: false,
+        showMenuBar: false
+      })
+    ).toThrow("Untrusted");
+    expect(() =>
+      set(renderer(), {
+        graphicsAcceleration: false,
+        showMenuBar: false,
+        backend: true
+      })
+    ).toThrow("Invalid");
+    expect(() =>
+      set(renderer(), { graphicsAcceleration: "false", showMenuBar: true })
+    ).toThrow("Invalid");
+  });
 
   it("opens Project selection without accepting renderer filesystem authority", async () => {
     const { registered, selectProjectDirectory } = register();

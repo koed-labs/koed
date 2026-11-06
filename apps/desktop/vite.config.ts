@@ -32,18 +32,23 @@ export default defineConfig(({ mode }) => ({
   base: "./",
   root: ".",
   build: {
-    outDir: mode === "validation" ? "dist-validation" : "dist",
+    outDir:
+      mode === "validation" || mode === "v1-validation"
+        ? "dist-validation"
+        : "dist",
     emptyOutDir: true,
     rollupOptions: {
       input:
-        mode === "validation"
-          ? {
-              browserValidation: resolve(
-                import.meta.dirname,
-                "browser-validation.html"
-              )
-            }
-          : { app: resolve(import.meta.dirname, "index.html") }
+        mode === "v1-validation"
+          ? { v1: resolve(import.meta.dirname, "v1-validation.html") }
+          : mode === "validation"
+            ? {
+                browserValidation: resolve(
+                  import.meta.dirname,
+                  "browser-validation.html"
+                )
+              }
+            : { app: resolve(import.meta.dirname, "index.html") }
     }
   },
   test: {

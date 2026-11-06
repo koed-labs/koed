@@ -5,6 +5,7 @@ import { resolveKoedServerPaths } from "./paths.js";
 interface ModelOptions {
   kind: string;
   json?: boolean;
+  progressJson?: boolean;
 }
 
 export const runModelCommand = async (
@@ -14,6 +15,25 @@ export const runModelCommand = async (
 ): Promise<number> => {
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
+  let lastProgressAt = 0;
+  let lastPhase = "";
+  const progress = (event: {
+    completedBytes: number | null;
+    totalBytes: number | null;
+    phase: string;
+  }) => {
+    if (!options.progressJson) return;
+    const now = Date.now();
+    if (
+      event.phase === lastPhase &&
+      now - lastProgressAt < 250 &&
+      event.completedBytes !== event.totalBytes
+    )
+      return;
+    lastProgressAt = now;
+    lastPhase = event.phase;
+    stderr.write(`KOED_MODEL_PROGRESS ${JSON.stringify(event)}\n`);
+  };
   try {
     if (options.kind !== "embedding" && options.kind !== "privacy")
       throw new Error("--kind must be embedding or privacy.");
@@ -39,16 +59,39 @@ export const runModelCommand = async (
         const execute =
           dependencies.installPrivacyModel ??
           (await import("./privacy-model-runtime.js")).installPrivacyModel;
-        result = await execute(paths, environment);
+        const files = new Map<string, number>();
+        result = options.progressJson
+          ? await execute(paths, environment, undefined, {
+              progress: (event) => {
+                files.set(event.file ?? "current", event.transferredBytes);
+                progress({
+                  completedBytes: [...files.values()].reduce(
+                    (sum, bytes) => sum + bytes,
+                    0
+                  ),
+                  // Remaining Privacy Filter assets may not have known lengths yet.
+                  totalBytes: null,
+                  phase:
+                    event.phase === "model-verify" ? "verifying" : "downloading"
+                });
+              }
+            })
+          : await execute(paths, environment);
       }
+    } else if (operation === "status") {
+      const execute =
+        dependencies.collectModelStatus ??
+        (await import("./local-models-runtime.js")).collectLocalModelStatus;
+      result = await execute(paths, options.kind, environment);
     } else {
       const execute =
-        operation === "status"
-          ? (dependencies.collectModelStatus ??
-            (await import("./local-models-runtime.js")).collectLocalModelStatus)
-          : (dependencies.installModel ??
-            (await import("./local-models-runtime.js")).installLocalModel);
-      result = await execute(paths, options.kind, environment);
+        dependencies.installModel ??
+        (await import("./local-models-runtime.js")).installLocalModel;
+      result = options.progressJson
+        ? await execute(paths, options.kind, environment, {
+            onProgress: progress
+          })
+        : await execute(paths, options.kind, environment);
     }
     stdout.write(
       options.json
@@ -92,6 +135,7 @@ export const registerModelCommands = (
       )
       .option("--kind <kind>", "Model kind: embedding or privacy", "embedding")
       .option("--json", "Emit JSON output")
+      .option("--progress-json", "Stream model download progress to stderr")
       .action(async (options: ModelOptions) => {
         complete(await runModelCommand(operation, options, dependencies));
       });

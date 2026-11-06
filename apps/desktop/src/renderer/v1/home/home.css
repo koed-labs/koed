@@ -1,0 +1,863 @@
+.v1-home {
+  --v1-home-heat-0: var(--v1-heat-1);
+  --v1-home-heat-1: var(--v1-heat-2);
+  --v1-home-heat-2: var(--v1-heat-3);
+  --v1-home-heat-3: var(--v1-heat-4);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 28px 32px;
+  background: var(--v1-bg);
+}
+.v1-home h1 {
+  margin: 0 0 8px;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.v1-home-sub {
+  margin: 0;
+  text-wrap: balance;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--v1-muted);
+}
+
+/* A fixed height keeps the stage in place whatever each client shows. */
+.v1-home-keycaps {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 32px;
+  min-height: 136px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v1-home-keycaps li {
+  position: relative;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.v1-home-keycaps strong span {
+  font-weight: 400;
+  color: var(--v1-muted);
+}
+.v1-home-keycap {
+  width: 64px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: #fff;
+  background: var(--v1-surface);
+  box-shadow: inset 0 -6px 0 rgb(0 0 0 / 0.3);
+}
+.v1-home-keycap svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+.v1-home-keycap[data-client="codex"] {
+  background: #2f8f6b;
+}
+.v1-home-keycap[data-client="claude"] {
+  background: #d97757;
+}
+.v1-home-keycap[data-client="pi"] {
+  background: #4b4fa8;
+}
+.v1-home-keycaps li[data-state="detected"] .v1-home-keycap,
+.v1-home-keycaps li[data-state="unsure"] .v1-home-keycap {
+  opacity: 0.45;
+}
+.v1-home-keycaps li[data-state="attention"] .v1-home-keycap {
+  box-shadow:
+    inset 0 -6px 0 rgb(0 0 0 / 0.3),
+    0 0 0 3px var(--v1-heat-3);
+}
+.v1-home-pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--v1-muted);
+  background: var(--v1-surface);
+}
+/* Connected and done carry a green dot, not a green fill, so they don't
+   blur into the Codex keycap's own green. */
+.v1-home-keycaps li[data-state="connected"] .v1-home-pill:not([data-lifecycle]),
+.v1-home-keycaps li .v1-home-pill[data-lifecycle="completed"] {
+  color: var(--v1-fg2);
+  background: var(--v1-surface);
+}
+.v1-home-keycaps
+  li[data-state="connected"]
+  .v1-home-pill:not([data-lifecycle])::before,
+.v1-home-keycaps li .v1-home-pill[data-lifecycle="completed"]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--v1-heat-2);
+}
+.v1-home-keycaps li[data-state="attention"] .v1-home-pill {
+  color: var(--v1-heat-3);
+  background: color-mix(in srgb, var(--v1-heat-3) 14%, transparent);
+}
+
+.v1-home-problems {
+  width: min(600px, 100%);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--v1-border);
+  border-radius: 16px;
+  background: var(--v1-card);
+  text-align: left;
+}
+.v1-home-problems li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 16px;
+}
+.v1-home-problems li + li {
+  border-top: 1px solid var(--v1-hairline);
+}
+.v1-home-problems li > div:not(.v1-home-action) {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.v1-home-problems strong {
+  font-size: 14px;
+}
+.v1-home-problems li > div span {
+  font-size: 13px;
+  text-wrap: pretty;
+  color: var(--v1-muted);
+}
+.v1-home-problems-compact {
+  width: 100%;
+}
+.v1-home-problems-compact li {
+  padding: 10px 14px;
+}
+.v1-home-warnings {
+  width: 100%;
+}
+.v1-home-dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  align-self: flex-start;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--v1-heat-4);
+}
+.v1-home-warnings .v1-home-dot {
+  background: var(--v1-heat-3);
+}
+.v1-home-action {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+.v1-home-action button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--v1-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--v1-fg2);
+  font: inherit;
+}
+.v1-home-action .v1-home-primary {
+  border-color: transparent;
+  background: var(--v1-btn);
+  color: var(--v1-btn-fg);
+  font-weight: 600;
+}
+.v1-home-action [role="alert"] {
+  flex-basis: 100%;
+  color: var(--v1-heat-4);
+}
+
+.v1-home-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.v1-home-header h1 {
+  margin: 0;
+  font-size: 26px;
+}
+
+/* Every state is one stage: Kin stand above a caption at the bottom. The
+   stage fills the window and grows (the page scrolls) only if the caption
+   needs more room than is left. */
+.v1-home-stage {
+  position: relative;
+  flex: 1 0 auto;
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 24px 24px 28px;
+  border-radius: 28px;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      ellipse 55% 14% at 50% 90%,
+      color-mix(in srgb, var(--v1-accent) 22%, transparent),
+      transparent 70%
+    ),
+    var(--v1-rail);
+}
+.v1-home-kin {
+  all: unset;
+  position: absolute;
+  left: var(--kin-x);
+  bottom: var(--kin-y);
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  cursor: pointer;
+  transition:
+    left 900ms cubic-bezier(0.5, 1.5, 0.4, 1),
+    bottom 900ms cubic-bezier(0.5, 1.5, 0.4, 1);
+}
+.v1-home-kin[data-front] {
+  z-index: 2;
+}
+.v1-home-kin:not([data-front]) {
+  opacity: 0.8;
+}
+.v1-home-kin .v1-pixelkin {
+  transition: transform 160ms ease;
+}
+.v1-home-kin:hover {
+  opacity: 1;
+}
+.v1-home-kin:hover .v1-pixelkin {
+  transform: translateY(-4px);
+}
+.v1-home-kin:focus-visible {
+  outline: 2px solid var(--v1-accent-text);
+  outline-offset: 6px;
+  border-radius: 16px;
+}
+.v1-home-stage[data-reduced-motion] .v1-home-kin,
+.v1-home-stage[data-settling] .v1-home-kin {
+  transition: none;
+}
+.v1-home-kin-shadow {
+  width: calc(var(--kin-size) * 0.9);
+  height: calc(var(--kin-size) * 0.12);
+  margin-top: -10px;
+  border-radius: 50%;
+  /* Neutral: position and the "ago" text already say how recent it is. */
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--v1-fg) 14%, transparent),
+    transparent
+  );
+}
+.v1-home-kin,
+.v1-home-dot[data-heat] {
+  --kin-heat: var(--v1-home-heat-0);
+}
+.v1-home-kin[data-heat="1"],
+.v1-home-dot[data-heat="1"] {
+  --kin-heat: var(--v1-home-heat-1);
+}
+.v1-home-kin[data-heat="2"],
+.v1-home-dot[data-heat="2"] {
+  --kin-heat: var(--v1-home-heat-2);
+}
+.v1-home-kin[data-heat="3"],
+.v1-home-dot[data-heat="3"] {
+  --kin-heat: var(--v1-home-heat-3);
+}
+.v1-home-dot[data-heat] {
+  background: var(--kin-heat);
+}
+.v1-home-kin-label {
+  display: grid;
+  max-width: 150px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.v1-home-kin-label > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.v1-home-kin[data-front] .v1-home-kin-label {
+  font-size: 14px;
+}
+.v1-home-kin-label span {
+  color: var(--v1-muted);
+}
+.v1-home-feed {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 3;
+  pointer-events: none;
+}
+.v1-home-feed i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 16px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--v1-accent-text);
+  box-shadow: 0 0 14px var(--v1-accent);
+  opacity: 0;
+  animation: v1-home-drop 800ms cubic-bezier(0.5, 0, 0.8, 0.6) forwards;
+}
+.v1-home-feed b {
+  position: absolute;
+  left: 0;
+  top: -18px;
+  font-size: 13px;
+  color: var(--kin-heat);
+  white-space: nowrap;
+  opacity: 0;
+  animation: v1-home-float 1400ms ease 500ms forwards;
+}
+@keyframes v1-home-drop {
+  0% {
+    transform: translate(-50%, -240px) rotate(0);
+    opacity: 0;
+  }
+  15%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, 16px) rotate(220deg) scale(0.2);
+    opacity: 0;
+  }
+}
+@keyframes v1-home-float {
+  0% {
+    transform: translate(-50%, 0);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -36px);
+    opacity: 0;
+  }
+}
+
+.v1-home-caption {
+  position: relative;
+  z-index: 2;
+  width: min(460px, 100%);
+  /* At least this much room for the Kin between the keycaps and caption. */
+  margin-top: 150px;
+  text-align: center;
+}
+/* The AI Client keycaps run along the top of the stage; with no clients the
+   row is empty and takes no room. */
+.v1-home-stage-top {
+  position: relative;
+  z-index: 3;
+  flex: none;
+  width: 100%;
+  margin-bottom: auto;
+}
+.v1-home-caption[data-wide] {
+  width: min(600px, 100%);
+}
+.v1-home-caption .v1-home-problems {
+  margin-top: 20px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .v1-home-feed {
+    display: none;
+  }
+}
+
+/* A faint grain over the stage, under the Kin, breaks up the banding that
+   soft, low-contrast light shows in 8-bit colour. */
+.v1-home-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.06;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.v1-app .v1-home[data-mood="attention"] .v1-kin-spot {
+  --spot-light: var(--v1-heat-4);
+}
+.v1-home-host {
+  position: absolute;
+  left: var(--kin-x);
+  bottom: var(--kin-y);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  --kin-heat: var(--v1-accent);
+}
+
+.v1-home-caption h1 {
+  font-size: 26px;
+}
+/* Coins drop from an AI Client's keycap onto the Kin in the spotlight. Each
+   is placed by its own animation, from the layer's top-left corner. */
+.v1-home-coins {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  overflow: hidden;
+  pointer-events: none;
+}
+.v1-home-coin {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  filter: drop-shadow(0 0 6px rgb(255 209 102 / 0.55));
+}
+.v1-home-coin svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.v1-home-progress {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+.v1-home-progress-label {
+  font-size: 12px;
+  color: var(--v1-muted);
+}
+.v1-home-skip-help {
+  position: relative;
+  display: inline-block;
+}
+.v1-home-skip-help button {
+  border: 1px solid currentColor;
+  color: inherit;
+  background: transparent;
+  border-radius: 50%;
+  width: 1.25em;
+  height: 1.25em;
+  padding: 0;
+  font: inherit;
+  line-height: 1;
+  cursor: help;
+}
+.v1-home-skip-help [role="tooltip"] {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--v1-surface);
+  color: var(--v1-fg);
+  box-shadow: 0 4px 18px #0003;
+  text-align: left;
+}
+.v1-home-progress-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--v1-surface);
+}
+.v1-home-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--v1-accent), var(--v1-accent-text));
+  transition: width 600ms ease;
+}
+/* Without a total the whole track moves, so a still frame never reads as a
+   fraction done. */
+.v1-home-progress-track[data-indeterminate] span {
+  width: 100% !important;
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--v1-accent) 70%, transparent) 0 6px,
+    color-mix(in srgb, var(--v1-accent) 25%, transparent) 6px 12px
+  );
+  background-size: 17px 100%;
+  animation: v1-home-indeterminate 0.8s linear infinite;
+}
+.v1-home-keycaps small {
+  font-size: 11px;
+  color: var(--v1-faint);
+}
+.v1-home-pill {
+  white-space: nowrap;
+}
+.v1-home-keycaps li .v1-home-pill[data-lifecycle] {
+  color: var(--v1-muted);
+  background: var(--v1-surface);
+}
+.v1-home-keycaps li .v1-home-pill[data-lifecycle="running"] {
+  color: var(--v1-accent-text);
+  background: color-mix(in srgb, var(--v1-accent) 16%, transparent);
+}
+.v1-home-keycaps li .v1-home-pill[data-stuck] {
+  color: var(--v1-heat-3);
+  background: color-mix(in srgb, var(--v1-heat-3) 14%, transparent);
+}
+.v1-home-warnings {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  z-index: 5;
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  width: auto;
+  max-width: min(520px, calc(100% - 40px));
+}
+.v1-home {
+  position: relative;
+}
+.v1-home-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--v1-border);
+  border-radius: 999px;
+  background: var(--v1-card);
+  color: var(--v1-fg2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.v1-home-chip .v1-home-dot {
+  width: 7px;
+  height: 7px;
+  align-self: center;
+  margin-top: 0;
+}
+@keyframes v1-home-indeterminate {
+  to {
+    background-position: 17px 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v1-home-progress-track[data-indeterminate] span {
+    animation: none;
+  }
+}
+/* In a short window the Kin need the room more than the hatching sub line. */
+@media (max-height: 700px) {
+  .v1-home[data-mood="ingesting"] .v1-home-caption .v1-home-sub {
+    display: none;
+  }
+}
+
+/* Connect or Repair, from a keycap or the quiet stage's caption. */
+button.v1-home-pill {
+  border: 0;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--v1-accent-text);
+  background: color-mix(in srgb, var(--v1-accent) 18%, transparent);
+  cursor: pointer;
+}
+button.v1-home-pill:hover {
+  background: color-mix(in srgb, var(--v1-accent) 30%, transparent);
+}
+button.v1-home-pill[data-repair] {
+  color: var(--v1-heat-3);
+  background: color-mix(in srgb, var(--v1-heat-3) 14%, transparent);
+}
+button.v1-home-pill[data-repair]:hover {
+  background: color-mix(in srgb, var(--v1-heat-3) 24%, transparent);
+}
+.v1-home-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--v1-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.v1-home-link[data-repair] {
+  color: var(--v1-heat-3);
+}
+.v1-home-actions {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+.v1-home-primary,
+.v1-home-secondary,
+.v1-home-consent-actions button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--v1-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--v1-fg2);
+  font: inherit;
+  cursor: pointer;
+}
+.v1-home-actions .v1-home-primary,
+.v1-home-consent-actions .v1-home-primary {
+  border-color: transparent;
+  background: var(--v1-btn);
+  color: var(--v1-btn-fg);
+  font-weight: 600;
+}
+.v1-home-client-action button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+/* The consent step opens beside what was clicked: below a keycap, above the
+   caption's buttons. */
+.v1-home-consent {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 10;
+  display: grid;
+  gap: 8px;
+  width: min(320px, 80vw);
+  padding: 14px 16px;
+  border: 1px solid var(--v1-border);
+  border-radius: 14px;
+  background: var(--v1-card);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.4);
+  transform: translateX(-50%);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  color: var(--v1-muted);
+}
+.v1-home-consent strong {
+  color: var(--v1-fg);
+}
+.v1-home-actions .v1-home-consent {
+  top: auto;
+  bottom: calc(100% + 10px);
+}
+.v1-home-consent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Conversations in no Project lie on the floor as coins, flattened as if
+   seen lying down; hover or focus names one. */
+.v1-home-floor {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.v1-home-floor-coin {
+  all: unset;
+  position: absolute;
+  left: var(--coin-x);
+  bottom: var(--coin-y);
+  width: 20px;
+  height: 20px;
+  transform: translateX(-50%) scaleY(0.6);
+  transform-origin: 50% 100%;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  filter: drop-shadow(0 2px 0 rgb(0 0 0 / 0.25));
+  transition: transform 160ms ease;
+}
+.v1-home-floor-coin svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.v1-home-floor-coin[data-motion="rest"]:hover,
+.v1-home-floor-coin:focus-visible {
+  transform: translateX(-50%) translateY(-3px) scaleY(1);
+}
+/* Held or thrown, the coin stands up; in the air it tumbles end over end. */
+.v1-home-floor-coin:not([data-motion="rest"]) {
+  transform: translateX(-50%);
+  transform-origin: 50% 50%;
+  cursor: grabbing;
+  transition: none;
+}
+.v1-home-floor-coin[data-motion="flying"] svg {
+  transform: rotate(calc(var(--coin-angle, 0deg) * 0.25))
+    scaleY(cos(var(--coin-angle, 0deg)));
+}
+.v1-home-floor-coin:not([data-motion="rest"]) .v1-home-floor-tip {
+  display: none;
+}
+.v1-home-floor-coin:focus-visible {
+  outline: 2px solid var(--v1-accent-text);
+  outline-offset: 3px;
+  border-radius: 50%;
+}
+.v1-home-floor-tip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--v1-border);
+  border-radius: 10px;
+  background: var(--v1-card);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+  color: var(--v1-fg);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+}
+.v1-home-floor-coin:hover .v1-home-floor-tip,
+.v1-home-floor-coin:focus-visible .v1-home-floor-tip {
+  display: inline-flex;
+}
+.v1-home-floor-client {
+  display: inline-grid;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.v1-home-floor-client svg {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
+/* A coin held over a Kin: a ring fills over the wait, then the Kin glows and
+   says what letting go will do. */
+.v1-home-kin[data-drop] .v1-pixelkin {
+  transform: translateY(-6px) scale(1.04);
+}
+.v1-home-kin[data-drop]::before {
+  content: "";
+  position: absolute;
+  inset: -10px -14px 18px;
+  border: 2px dashed var(--v1-accent-text);
+  border-radius: 20px;
+  opacity: 0.55;
+  pointer-events: none;
+  animation: v1-home-drop-arm 500ms linear both;
+}
+.v1-home-kin[data-drop="ready"]::before {
+  border-style: solid;
+  opacity: 1;
+  background: color-mix(in srgb, var(--v1-accent-text) 14%, transparent);
+  box-shadow: 0 0 22px
+    color-mix(in srgb, var(--v1-accent-text) 45%, transparent);
+  animation: none;
+}
+@keyframes v1-home-drop-arm {
+  from {
+    opacity: 0.1;
+    transform: scale(1.12);
+  }
+  to {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+}
+.v1-home-kin-drop {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--v1-accent-text);
+  color: var(--v1-bg);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.v1-home-kin-drop:empty {
+  display: none;
+}
+/* Taken in: the coin shrinks into the Kin it was let go over. */
+.v1-home-floor-coin[data-motion="absorbed"] {
+  transform: translateX(-50%) scale(0.2);
+  opacity: 0;
+  transition:
+    transform 260ms ease-in,
+    opacity 260ms ease-in;
+  pointer-events: none;
+}
+.v1-home-floor-coin[data-motion="absorbed"] .v1-home-floor-tip {
+  display: none;
+}
+.v1-home-stage[data-reduced-motion] .v1-home-kin[data-drop]::before {
+  animation: none;
+}
+
+/* A long title is cut with an ellipsis; if the tooltip stays up it slides to
+   show the rest, then back. */
+.v1-home-floor-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.v1-home-floor-coin:hover .v1-home-floor-title[style*="--marquee"],
+.v1-home-floor-coin:focus-visible .v1-home-floor-title[style*="--marquee"] {
+  animation: v1-home-title-slide 4s ease-in-out 0.7s infinite alternate;
+}
+@keyframes v1-home-title-slide {
+  to {
+    text-indent: var(--marquee);
+  }
+}

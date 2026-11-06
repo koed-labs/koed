@@ -102,11 +102,39 @@ export function stabilizeConversationTimelineItems(
   items: DesktopConversationTimelineItem[],
   previous: StableConversationTimelineItemsState
 ): StableConversationTimelineItemsState {
+  // A page can extend the tool run at either edge. Keep the existing row key
+  // so the virtualizer's anchor and the user's disclosure state survive it.
+  const previousToolGroups = new Map<string, DesktopConversationTimelineItem>();
+  for (const row of previous.result) {
+    if (row.kind === "tool-group") {
+      for (const event of row.events) previousToolGroups.set(event.id, row);
+    }
+  }
+  // Exact keys claim first. Otherwise a split can hand a carried-over key to an
+  // earlier fragment while a later fragment still matches that key exactly.
+  const claimed = new Set<string>();
+  for (const item of items) {
+    if (previous.byId.has(item.id)) claimed.add(item.id);
+  }
   const byId = new Map<string, DesktopConversationTimelineItem>();
   const result = items.map((item) => {
-    const prior = previous.byId.get(item.id);
+    let prior = previous.byId.get(item.id);
+    if (!prior && item.kind === "tool-group") {
+      for (const event of item.events) {
+        const candidate = previousToolGroups.get(event.id);
+        if (candidate && !claimed.has(candidate.id)) {
+          prior = candidate;
+          claimed.add(candidate.id);
+          break;
+        }
+      }
+    }
     const stable =
-      prior && timelineItemContentMatches(prior, item) ? prior : item;
+      prior && timelineItemContentMatches(prior, item)
+        ? prior
+        : prior && prior.id !== item.id
+          ? { ...item, id: prior.id }
+          : item;
     byId.set(stable.id, stable);
     return stable;
   });

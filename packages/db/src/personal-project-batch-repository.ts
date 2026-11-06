@@ -44,6 +44,31 @@ export const createPersonalProjectBatchRepository = (pool: pg.Pool) => ({
         const version = { expectedVersion: project.version };
         const result = await (async () => {
           switch (change.action) {
+            case "set_details":
+            case "rename":
+              return {
+                project: await membership.updateNamedPersonalProject(
+                  actor,
+                  projectId,
+                  {
+                    ...version,
+                    name: change.name,
+                    ...(change.action === "set_details" && { kin: change.kin })
+                  }
+                )
+              };
+            case "add_back":
+              return exclusions.restorePersonalProjectSession(
+                actor,
+                projectId,
+                {
+                  ...version,
+                  sessionId: change.sessionId,
+                  exclusionId: change.exclusionId,
+                  expectedExclusionRevisionId:
+                    change.expectedExclusionRevisionId
+                }
+              );
             case "add_repository":
               return rules.addPersonalProjectRepositoryRule(actor, projectId, {
                 ...version,

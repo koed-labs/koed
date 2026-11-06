@@ -1,3 +1,4 @@
+import { modelProgressReader, type ModelProgress } from "./model-progress.js";
 import { prepareLocalExecutionFolder } from "./local-execution-folder.js";
 import {
   readProjectFolderFilter,
@@ -240,7 +241,7 @@ export interface KoedServerManagerOptions {
       timeout: number;
     },
     callback: (error: Error | null, stdout: string, stderr: string) => void
-  ) => void;
+  ) => unknown;
   spawn: (
     command: string,
     args: string[],
@@ -294,6 +295,7 @@ export interface KoedServerManager {
     set: (enabled: boolean) => Promise<HardwareAccelerationState>;
   };
   managedConversation: ManagedConversationDesktopHandler;
+  v1StateIdentity: () => Promise<{ apiOrigin: string; ownerUserId: string }>;
   managedProject: ManagedProjectDesktopHandler;
   discoverProject: (cwd: string) => Promise<unknown>;
   subscribePersonalMemory: (
@@ -1723,7 +1725,11 @@ export const createKoedServerManager = ({
     askDesktop: callLocalDesktopAsk
   };
 
-  const runJson = (args: string[], timeout = 30_000) =>
+  const runJson = (
+    args: string[],
+    timeout = 30_000,
+    onProgress?: (value: ModelProgress) => void
+  ) =>
     new Promise<unknown>((resolvePromise) => {
       if (!existsSync(cliPath)) {
         resolvePromise(missingCliPayload());
@@ -1731,7 +1737,8 @@ export const createKoedServerManager = ({
       }
 
       const invocation = createCliInvocation([...args, "--json"]);
-      execFile(
+      let settled = false;
+      const child = execFile(
         invocation.command,
         invocation.args,
         {
@@ -1740,11 +1747,16 @@ export const createKoedServerManager = ({
           timeout
         },
         (error, stdout, stderr) => {
+          settled = true;
           try {
             resolvePromise(JSON.parse(stdout));
           } catch {
             const detail =
-              stderr?.trim() ||
+              stderr
+                ?.split("\n")
+                .filter((line) => !line.startsWith("KOED_MODEL_PROGRESS "))
+                .join("\n")
+                .trim() ||
               error?.message ||
               "Koed operation returned invalid JSON.";
             resolvePromise(
@@ -1763,6 +1775,15 @@ export const createKoedServerManager = ({
           }
         }
       );
+      if (onProgress && !settled) {
+        const read = modelProgressReader((value) => {
+          if (!settled) onProgress(value);
+        });
+        (child as { stderr?: NodeJS.ReadableStream } | undefined)?.stderr?.on(
+          "data",
+          read
+        );
+      }
     });
 
   const createCollaborationTransport = () =>
@@ -1870,15 +1891,54 @@ export const createKoedServerManager = ({
       )
     );
 
-  const runModelInstallJson = async () =>
-    aggregateRequiredModels(
+  const runModelInstallJson = async (
+    onProgress?: (value: ModelProgress) => void
+  ) => {
+    const progress = new Map<string, ModelProgress>();
+    return aggregateRequiredModels(
       await Promise.all(
         requiredModelKinds.map(async (kind) => ({
           kind,
-          value: await runJson(["models", "install", "--kind", kind], 600_000)
+          value: await runJson(
+            [
+              "models",
+              "install",
+              "--kind",
+              kind,
+              ...(onProgress ? ["--progress-json"] : [])
+            ],
+            600_000,
+            onProgress
+              ? (value) => {
+                  progress.set(kind, value);
+                  const rows = [...progress.values()];
+                  const allKnown =
+                    rows.length === requiredModelKinds.length &&
+                    rows.every((row) => row.totalBytes !== null);
+                  onProgress({
+                    completedBytes: rows.reduce(
+                      (sum, row) => sum + (row.completedBytes ?? 0),
+                      0
+                    ),
+                    totalBytes: allKnown
+                      ? rows.reduce(
+                          (sum, row) => sum + (row.totalBytes ?? 0),
+                          0
+                        )
+                      : null,
+                    phase:
+                      rows.length === requiredModelKinds.length &&
+                      rows.every((row) => row.phase !== "downloading")
+                        ? "verifying"
+                        : "downloading"
+                  });
+                }
+              : undefined
+          )
         }))
       )
     );
+  };
 
   const runPackageStatusJson = () => runJson(["package", "status"], 60_000);
 
@@ -2005,32 +2065,45 @@ export const createKoedServerManager = ({
         }
       : null;
 
-  const statusWithEnrollmentReconciliation = async (): Promise<unknown> => {
-    for (let attempt = 0; ; attempt += 1) {
-      const before = lifecycle.refresh();
-      const stoppedBefore = stoppedStatusIfVerified(before);
-      if (stoppedBefore) return stoppedBefore;
-      const [statusResult, packageStatus] = await Promise.all([
-        runDesktopStatus(),
-        runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
-      ]);
-      const after = lifecycle.refresh();
-      // A different supervisor epoch invalidates a response collected earlier.
-      if (after.epoch !== before.epoch && attempt === 0) continue;
-      const stoppedAfter = stoppedStatusIfVerified(after);
-      if (stoppedAfter) return stoppedAfter;
-      const current = isRenderableKoedServerStatus(statusResult)
-        ? statusResult
-        : diagnosticStatus({
-            state: "needs_attention",
-            message: "Koed status could not be read."
-          });
-      scheduleEnrollmentReconciliation(current);
-      return {
-        ...(withPackageComponent(current, packageStatus) as object),
-        lifecycle: statusLifecycle(after)
-      };
-    }
+  const collectStatusWithEnrollmentReconciliation =
+    async (): Promise<unknown> => {
+      for (let attempt = 0; ; attempt += 1) {
+        const before = lifecycle.refresh();
+        const stoppedBefore = stoppedStatusIfVerified(before);
+        if (stoppedBefore) return stoppedBefore;
+        const [statusResult, packageStatus] = await Promise.all([
+          runDesktopStatus(),
+          runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
+        ]);
+        const after = lifecycle.refresh();
+        // A different supervisor epoch invalidates a response collected earlier.
+        if (after.epoch !== before.epoch && attempt === 0) continue;
+        const stoppedAfter = stoppedStatusIfVerified(after);
+        if (stoppedAfter) return stoppedAfter;
+        const current = isRenderableKoedServerStatus(statusResult)
+          ? statusResult
+          : diagnosticStatus({
+              state: "needs_attention",
+              message: "Koed status could not be read."
+            });
+        scheduleEnrollmentReconciliation(current);
+        return {
+          ...(withPackageComponent(current, packageStatus) as object),
+          lifecycle: statusLifecycle(after)
+        };
+      }
+    };
+
+  // Share only concurrent reads; the next request always starts a fresh probe.
+  // Setup inspection and the completion check ask for the same status together.
+  let pendingStatus: Promise<unknown> | null = null;
+  const statusWithEnrollmentReconciliation = (): Promise<unknown> => {
+    if (pendingStatus) return pendingStatus;
+    const request = collectStatusWithEnrollmentReconciliation().finally(() => {
+      if (pendingStatus === request) pendingStatus = null;
+    });
+    pendingStatus = request;
+    return request;
   };
 
   const pollUntilReady = async (
@@ -3316,6 +3389,9 @@ export const createKoedServerManager = ({
               provider: request.aiClientDriverId,
               aiClientInstanceId: request.aiClientInstanceId,
               model: request.model,
+              ...(request.chiefOfStaffName
+                ? { chiefOfStaffName: request.chiefOfStaffName }
+                : {}),
               reasoningEffort: request.reasoningEffort,
               permissionMode: request.permissionMode,
               runnerKind: request.runnerKind,
@@ -4801,6 +4877,10 @@ export const createKoedServerManager = ({
                 : "invalid_response",
               cause instanceof LocalApiRateLimitError
             );
+      const inventoryConflict =
+        boundaryError.code === "conflict" &&
+        (request.operation === "personal.projects.list" ||
+          request.operation === "personal.projects.named.list");
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -4810,17 +4890,19 @@ export const createKoedServerManager = ({
           message:
             cause instanceof LocalApiRateLimitError
               ? cause.message
-              : boundaryError.code === "conflict" &&
-                  request.operation === "personal.projects.sync"
-                ? "Project membership or its source changed. Review the current revisions again."
+              : inventoryConflict
+                ? "The conversation list changed while refreshing. Try again."
                 : boundaryError.code === "conflict" &&
-                    request.operation === "personal.sources.manage"
-                  ? "Source context or Project membership changed. Preview the correction again."
+                    request.operation === "personal.projects.sync"
+                  ? "Project membership or its source changed. Review the current revisions again."
                   : boundaryError.code === "conflict" &&
-                      request.operation === "personal.projects.manage"
-                    ? "The Project changed. Reload it and try again."
-                    : personalMemoryErrorMessage(boundaryError.code),
-          retryable: boundaryError.retryable
+                      request.operation === "personal.sources.manage"
+                    ? "Source context or Project membership changed. Preview the correction again."
+                    : boundaryError.code === "conflict" &&
+                        request.operation === "personal.projects.manage"
+                      ? "The Project changed. Reload it and try again."
+                      : personalMemoryErrorMessage(boundaryError.code),
+          retryable: inventoryConflict || boundaryError.retryable
         }
       });
     }
@@ -5581,6 +5663,7 @@ export const createKoedServerManager = ({
   const runSetupStage = async (
     stage: DesktopSetupStageId,
     onProgress: (progress: {
+      progressPhase?: ModelProgress["phase"];
       completedBytes: number | null;
       message: string;
       totalBytes: number | null;
@@ -5630,7 +5713,17 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          await runModelInstallJson(),
+          await runModelInstallJson((progress) =>
+            onProgress({
+              completedBytes: progress.completedBytes,
+              totalBytes: progress.totalBytes,
+              progressPhase: progress.phase,
+              message:
+                progress.phase === "downloading"
+                  ? "Downloading memory models…"
+                  : "Checking the download…"
+            })
+          ),
           "Required local model installation failed."
         );
       }
@@ -5865,11 +5958,13 @@ export const createKoedServerManager = ({
         resultMessage(result, `${client} integration operation failed.`)
       );
     }
+    pendingStatus = null;
     if (args[0] === "remove") return result;
     try {
       const capabilityRefresh = await refreshLocalAiRuntime({
         fetch: personalMemoryFetch,
-        koedHome: resolveKoedHome(environment)
+        koedHome: resolveKoedHome(environment),
+        driverId: args[1]
       });
       return { ...(objectValue(result) ?? {}), capabilityRefresh };
     } catch {
@@ -5881,6 +5976,9 @@ export const createKoedServerManager = ({
             "Capability refresh could not be completed; refresh after AI Client authentication."
         }
       };
+    } finally {
+      // Do not reuse a read collected while capability publication was pending.
+      pendingStatus = null;
     }
   };
 
@@ -5894,7 +5992,8 @@ export const createKoedServerManager = ({
     try {
       const refreshResult = await refreshLocalAiRuntime({
         fetch: personalMemoryFetch,
-        koedHome: resolveKoedHome(environment)
+        koedHome: resolveKoedHome(environment),
+        driverId: args[1]
       });
       capabilitiesRefreshed = refreshResult.refreshed;
       refreshError = refreshResult.refreshError;
@@ -6113,6 +6212,23 @@ export const createKoedServerManager = ({
       set: setHardwareAcceleration
     },
     managedConversation,
+    v1StateIdentity: async () => {
+      const [access, identity] = await Promise.all([
+        personalMemoryAccess(),
+        authenticatedPersonalMemoryRequest(
+          ({ apiOrigin }) => ({
+            url: new URL("/v1/managed-conversations/access", apiOrigin),
+            init: { method: "GET" }
+          }),
+          64 * 1_024
+        )
+      ]);
+      const user = objectValue(identity.user);
+      if (typeof user?.id !== "string" || !user.id) {
+        throw new PersonalMemoryBoundaryError("invalid_response", false);
+      }
+      return { apiOrigin: access.apiOrigin, ownerUserId: user.id };
+    },
     managedProject,
     discoverProject: (cwd) =>
       runJson(["project", "discover", "--cwd", cwd], 30_000),

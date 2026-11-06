@@ -1,10 +1,14 @@
 import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
 import { personalOwnerIdSchema } from "@koed/shared";
-import { createPersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
+import {
+  createPersonalSelectionConsumerRepository,
+  createPersonalInventorySelectionRepository
+} from "./personal-selection-consumer-repository.js";
 import { createPersonalProjectDefaultRepository } from "./personal-project-default-repository.js";
 import { createPersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
 import { createPersonalConfigurationRepository } from "./personal-configuration-repository.js";
 import { createPersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
+import { createPersonalConversationOrganizationRepository } from "./personal-conversation-organization-repository.js";
 import {
   effectiveProjectPathSql,
   effectiveProjectNameSql
@@ -4110,10 +4114,13 @@ export const createMemorySourceRepository = (
     ...createPersonalProjectDefaultRepository(pool),
     ...createPersonalMembershipReviewRepository(pool),
     ...createPersonalSelectionConsumerRepository(pool),
+    personalInventorySelections:
+      createPersonalInventorySelectionRepository(pool),
     ...createPersonalProjectRuleRepository(pool),
     ...createPersonalProjectBatchRepository(pool),
     ...createPersonalProjectExclusionRepository(pool),
     ...createPersonalSourceCorrectionRepository(pool),
+    ...createPersonalConversationOrganizationRepository(pool),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       resolveCapturePolicy: (actor, input, client) =>
@@ -7146,7 +7153,11 @@ export const createMemorySourceRepository = (
       const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
       // The linked-node aggregate preserves each event. Bound its lineage work
       // to the authorized page and prevent duplication across source branches.
-      const result = await pool.query<Parameters<typeof mapLcmGraphEvent>[0]>(
+      const result = await pool.query<
+        Parameters<typeof mapLcmGraphEvent>[0] & {
+          message_source_metadata: Record<string, unknown> | null;
+        }
+      >(
         `
         with cursor_order as (
           select coalesce(
@@ -7332,43 +7343,6 @@ export const createMemorySourceRepository = (
                 'policyKey', msg.presentation_policy_key,
                 'policyRevision', msg.presentation_policy_revision
               ))
-            ) || coalesce(
-              (
-                select jsonb_strip_nulls(jsonb_build_object(
-                  'approvalReviewTranscriptDisplay',
-                  ci.metadata -> 'approvalReviewTranscriptDisplay',
-                  'approvalReview',
-                  case
-                    when ci.metadata ->> 'approvalReview' = 'true'
-                      then 'true'::jsonb
-                    else null
-                  end,
-                  'clientUserMessageId',
-                  ci.metadata ->> 'clientUserMessageId',
-                  'providerTurnId',
-                  ci.external_turn_id,
-                  'providerItemId',
-                  ci.canonical_stable_item_id
-                ))
-                from conversation_items ci
-                where ci.owner_user_id = msg.owner_user_id
-                  and ci.visibility = msg.visibility
-                  and msg.idempotency_key = 'message:' || coalesce(
-                    ci.metadata ->> 'canonicalConversationItemKey',
-                    ci.canonical_item_key,
-                    ci.logical_source_id
-                  )
-                  and (
-                    ci.metadata ? 'approvalReviewTranscriptDisplay'
-                    or ci.metadata ->> 'approvalReview' = 'true'
-                    or ci.metadata ? 'clientUserMessageId'
-                    or ci.external_turn_id is not null
-                    or ci.canonical_stable_item_id is not null
-                  )
-                order by ci.created_at asc, ci.id asc
-                limit 1
-              ),
-              '{}'::jsonb
             ) as metadata
           from messages msg
           cross join cursor_order co
@@ -7680,11 +7654,62 @@ export const createMemorySourceRepository = (
           select * from visible_events
           order by order_at desc, source_sequence desc nulls last, id desc
           limit $10
+        ), selected_message_sources as materialized (
+          -- Read source metadata once for the authorized message page. A
+          -- correlated lookup here otherwise scans the journal for every
+          -- message in the Conversation, before the page limit is applied.
+          select ci.id, ci.owner_user_id, ci.visibility, ci.created_at,
+            ci.metadata, ci.external_turn_id, ci.canonical_stable_item_id,
+            ci.canonical_item_key, ci.logical_source_id
+          from conversation_items ci
+          where ci.owner_user_id = $1 and ci.visibility = 'personal'
+            and 'message:' || coalesce(
+              ci.metadata ->> 'canonicalConversationItemKey',
+              ci.canonical_item_key, ci.logical_source_id
+            ) = any((
+              select array_agg(msg.idempotency_key)
+              from selected_events selected
+              join messages msg on msg.id = selected.id
+              where selected.metadata ->> 'sourceTable' = 'messages'
+            )::text[])
+        ), selected_message_metadata as materialized (
+          select distinct on (msg.id) msg.id,
+            jsonb_strip_nulls(jsonb_build_object(
+              'approvalReviewTranscriptDisplay',
+              ci.metadata -> 'approvalReviewTranscriptDisplay',
+              'approvalReview',
+              case
+                when ci.metadata ->> 'approvalReview' = 'true'
+                  then 'true'::jsonb
+                else null
+              end,
+              'clientUserMessageId', ci.metadata ->> 'clientUserMessageId',
+              'providerTurnId', ci.external_turn_id,
+              'providerItemId', ci.canonical_stable_item_id
+            )) as metadata
+          from selected_events selected
+          join messages msg on msg.id = selected.id
+            and selected.metadata ->> 'sourceTable' = 'messages'
+          join selected_message_sources ci on ci.owner_user_id = msg.owner_user_id
+            and ci.visibility = msg.visibility
+            and msg.idempotency_key = 'message:' || coalesce(
+              ci.metadata ->> 'canonicalConversationItemKey',
+              ci.canonical_item_key, ci.logical_source_id
+            )
+          where ci.metadata ? 'approvalReviewTranscriptDisplay'
+            or ci.metadata ->> 'approvalReview' = 'true'
+            or ci.metadata ? 'clientUserMessageId'
+            or ci.external_turn_id is not null
+            or ci.canonical_stable_item_id is not null
+          order by msg.id, ci.created_at asc, ci.id asc
         )
         select
           ve.*,
+          message_source.metadata as message_source_metadata,
           coalesce(linked_node_ids.linked_node_ids, array[]::text[]) as linked_node_ids
         from selected_events ve
+        left join selected_message_metadata message_source on message_source.id = ve.id
+          and ve.metadata ->> 'sourceTable' = 'messages'
         left join lateral (
           select array_agg(mns.memory_node_id::text order by mns.source_order) as linked_node_ids
           from memory_node_sources mns
@@ -7712,7 +7737,14 @@ export const createMemorySourceRepository = (
         ]
       );
       const hydratedRows = await Promise.all(
-        result.rows.map(async (row) => {
+        result.rows.map(async ({ message_source_metadata, ...sourceRow }) => {
+          const row = {
+            ...sourceRow,
+            metadata: {
+              ...sourceRow.metadata,
+              ...message_source_metadata
+            }
+          };
           if (
             row.metadata?.sourceTable === "messages" &&
             row.content === ENCRYPTED_MESSAGE_CONTENT

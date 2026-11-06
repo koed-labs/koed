@@ -61,6 +61,9 @@ export const startHeadlessRemoteLocalAiRuntime = async ({
       "The Team Backend does not support durable Team Memory Answer tasks"
     );
   }
+  // The Local AI Runtime reads only AI Clients that consented headless setup
+  // connected. Starting never connects one: a descriptor that outlived a
+  // removal must not restart capture.
   return startLocalAiRuntime({
     environment: remoteEnvironment,
     config,

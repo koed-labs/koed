@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   aggregateState,
+  fetchHistoricalActivity,
   collectKoedServerDoctor,
   collectKoedServerStartupStatus,
   collectKoedServerStatus,
@@ -27,6 +28,12 @@ import {
   notConfigured,
   statusFromApiReady
 } from "./status.js";
+import {
+  aiClientConnectionRevision,
+  grantAiClientConnection,
+  readAiClientConnections,
+  revokeAiClientConnection
+} from "@koed/shared/ai-client-connections";
 import { resolveKoedServerPaths } from "./paths.js";
 import { repairCodexIntegration } from "./setup.js";
 const temps: string[] = [];
@@ -49,6 +56,69 @@ const response = (
     text: async () => JSON.stringify(body),
     json: async () => body
   }) as Response;
+
+describe("historical activity", () => {
+  it("sums only selected source records and searchable items across runs", async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/historical-imports")
+        return response(true, 200, { runs: [{ id: "run-1" }] });
+      return response(true, 200, {
+        run: {
+          sources: [
+            {
+              id: "a",
+              aiClient: "codex",
+              sourceSessionId: "selected",
+              rawIngestedRecordCount: 47,
+              embeddedEventCount: 8,
+              embeddingEligibleEventCount: 20
+            },
+            {
+              id: "b",
+              aiClient: "codex",
+              sourceSessionId: "other",
+              rawIngestedRecordCount: 999,
+              embeddedEventCount: 999,
+              embeddingEligibleEventCount: 999
+            }
+          ]
+        }
+      });
+    }) as unknown as typeof fetch;
+    const activity = await fetchHistoricalActivity({
+      koedHome: "/fixture",
+      apiUrl: "http://localhost:43300",
+      token: "test",
+      fetcher,
+      readFile: (path) => {
+        if (!path.includes("codex-")) throw new Error("missing");
+        return JSON.stringify({
+          selectionFrozen: true,
+          selections: [{ candidateId: "selected" }]
+        });
+      }
+    });
+    expect(activity).toEqual({
+      codex: { recordsRead: 47, embedded: 8, eligible: 20 }
+    });
+  });
+  it("omits incomplete totals when the run list reaches its bound", async () => {
+    const fetcher = vi.fn(async () =>
+      response(true, 200, {
+        runs: Array.from({ length: 20 }, (_, i) => ({ id: String(i) }))
+      })
+    ) as unknown as typeof fetch;
+    const result = await fetchHistoricalActivity({
+      koedHome: "/fixture",
+      apiUrl: "http://localhost:43300",
+      token: "test",
+      fetcher,
+      readFile: () => JSON.stringify({ selectionFrozen: true, selections: [] })
+    });
+    expect(result).toBeNull();
+  });
+});
 
 const healthyReadyPayload = {
   status: "ok",
@@ -315,6 +385,177 @@ describe("startup status", () => {
         state: "healthy",
         apiToken: { state: "needs_attention", configured: true }
       });
+    }
+  );
+
+  it("never connects AI Clients from a status check", async () => {
+    const root = tempDir();
+    writeStartupRuntime(root, "external");
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    const revokeAiClientConnection = vi.fn(() => true);
+    await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "external",
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/database",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://embedding:8000"
+      },
+      {
+        fetch: healthyStartupFetcher(),
+        spawnSync: () => spawnResult("", 0),
+        checkPid: (pid: number) => [42, 43, 44].includes(pid),
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+        revokeAiClientConnection
+      }
+    );
+
+    expect(readAiClientConnections(root)).toBeNull();
+    // Nothing was connected, so there was nothing to disconnect.
+    expect(revokeAiClientConnection).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["pi", "version failure", true, true],
+    ["pi", "list failure", true, true],
+    ["pi", "list failure", false, false],
+    ["pi", "absent", true, false],
+    ["claude", "version failure", true, true],
+    ["claude", "mcp failure", true, true],
+    ["claude", "mcp failure", false, false],
+    ["claude", "mcp exit failure", true, true],
+    ["claude", "mcp missing", true, false],
+    ["claude", "absent", true, false],
+    ["claude", "absent after reconnect", true, true],
+    ["claude", "healthy", false, false],
+    ["claude", "healthy", true, true]
+  ] as const)(
+    "keeps %s connection on %s when previously %s unless positively removed",
+    async (client, scenario, previous, expected) => {
+      const root = tempDir();
+      writeStartupRuntime(root, "external");
+      const runtime = resolve(root, "packages/mcp-server/dist");
+      const hook = resolve(runtime, "capture-hook.js");
+      const settings = resolve(root, ".claude/settings.json");
+      mkdirSync(runtime, { recursive: true });
+      mkdirSync(resolve(root, ".claude"), { recursive: true });
+      mkdirSync(resolve(root, "integrations/pi/extensions"), {
+        recursive: true
+      });
+      writeFileSync(resolve(runtime, "cli.js"), "");
+      writeFileSync(hook, "");
+      writeFileSync(resolve(root, "integrations/pi/extensions/koed.mjs"), "");
+      writeFileSync(
+        settings,
+        JSON.stringify({
+          hooks: Object.fromEntries(
+            [
+              "PreToolUse",
+              "SessionStart",
+              "UserPromptSubmit",
+              "PostToolUse",
+              "PostToolUseFailure",
+              "Stop",
+              "StopFailure",
+              "SubagentStart",
+              "SubagentStop",
+              "SessionEnd"
+            ].map((event) => [
+              event,
+              [{ hooks: [{ command: `node ${hook}` }] }]
+            ])
+          )
+        })
+      );
+      if (previous)
+        grantAiClientConnection(
+          root,
+          client,
+          aiClientConnectionRevision(root, client)
+        );
+      else revokeAiClientConnection(root, client);
+      const failure = {
+        stdout: "",
+        stderr: "",
+        status: null,
+        signal: "SIGTERM",
+        pid: 1,
+        output: [],
+        error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })
+      } as never;
+      const status = await collectKoedServerStatus(
+        {
+          HOME: root,
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          CLAUDE_SETTINGS_PATH: settings,
+          KOED_RUNTIME_MODE: "external",
+          KOED_DEPENDENCY_MODE: "external",
+          DATABASE_URL: "postgres://operator/database",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://embedding:8000"
+        },
+        {
+          fetch: healthyStartupFetcher(),
+          resolvePiExecutable: () => "/opt/pi",
+          resolveClaudeExecutable: () => "/opt/claude",
+          spawnSync: (command: string, args: string[]) => {
+            const isPi = command === "/opt/pi";
+            const isClaude = command === "/opt/claude";
+            if (
+              ((client === "pi" && isPi) ||
+                (client === "claude" && isClaude)) &&
+              ((scenario === "version failure" && args[0] === "--version") ||
+                (scenario === "list failure" && args[0] === "list") ||
+                (scenario === "mcp failure" && args[0] === "mcp"))
+            )
+              return failure;
+            if (args[0] === "--version")
+              return spawnResult(isPi ? "0.85.1" : "2.1.227 (Claude Code)");
+            if (isPi && args[0] === "list")
+              return spawnResult(
+                scenario === "absent" && client === "pi"
+                  ? ""
+                  : resolve(root, "integrations/pi")
+              );
+            if (isClaude && args[0] === "mcp") {
+              if (scenario === "absent after reconnect") {
+                // Removal and a new setup finish while this check runs.
+                revokeAiClientConnection(root, "claude");
+                grantAiClientConnection(
+                  root,
+                  "claude",
+                  aiClientConnectionRevision(root, "claude")
+                );
+              }
+              if (client === "claude" && scenario === "mcp exit failure")
+                return spawnResult("unexpected failure", 1);
+              if (client === "claude" && scenario === "mcp missing")
+                return spawnResult("MCP server not found", 1);
+              return spawnResult(
+                scenario.startsWith("absent") && client === "claude"
+                  ? "unrelated"
+                  : `Command: node\nArgs: ${resolve(runtime, "cli.js")}\nKOED_HOME=${root}`
+              );
+            }
+            return spawnResult('{"loggedIn":true}');
+          },
+          checkPid: (pid: number) => [42, 43, 44].includes(pid)
+        }
+      );
+      expect(readAiClientConnections(root)?.clients[client]?.connected).toBe(
+        expected
+      );
+      if (scenario === "healthy") {
+        expect(status.claudeCode).toMatchObject({
+          configured: true,
+          state: previous ? "healthy" : "needs_attention",
+          details: { captureConnected: previous }
+        });
+      }
     }
   );
 
@@ -3013,47 +3254,116 @@ describe("status and doctor JSON contracts", () => {
     expect(doctorEnvironments[0]?.KOED_HOME).toBe(root);
   });
 
-  it("reports a Codex KOED_HOME mismatch while signal hooks remain configured", async () => {
-    const root = tempDir();
-    mkdirSync(resolve(root, ".codex"), { recursive: true });
-    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
-    writeFileSync(
-      resolve(root, ".codex/config.toml"),
-      codexIntegrationConfig(root, resolve(root, "stale-koed-home"))
-    );
+  it.each(["home", "adapter"])(
+    "disconnects Codex for a mismatched %s",
+    async (mismatch) => {
+      const root = tempDir();
+      const otherHome = tempDir();
+      mkdirSync(resolve(root, ".codex"), { recursive: true });
+      mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+      writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+      writeFileSync(
+        resolve(root, ".codex/config.toml"),
+        mismatch === "home"
+          ? codexIntegrationConfig(root, otherHome)
+          : codexIntegrationConfig(root).replace(
+              resolve(root, "packages/mcp-server/dist/cli.js"),
+              resolve(otherHome, "cli.js")
+            )
+      );
+      grantAiClientConnection(root, "codex", 0);
 
-    const status = await collectKoedServerStatus(
-      {
-        KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        HOME: root,
-        API_HOST_PORT: "43300",
-        MEMORY_API_TOKEN: "token",
-        WORK_QUEUE_BACKEND: "local"
-      },
-      {
-        fetch: async () =>
-          response(true, 200, {
-            checks: [
-              { service: "postgres", status: "ok" },
-              { service: "postgres-version", status: "ok" },
-              { service: "migrations", status: "ok" },
-              { service: "pgvector", status: "ok" },
-              { service: "work-queue", status: "ok" },
-              { service: "embedding-service", status: "ok" },
-              { service: "embedding-model", status: "ok" }
-            ]
-          }),
-        spawnSync: () => spawnResult("", 0),
-        now: () => new Date("2026-01-01T00:00:00.000Z")
+      const status = await collectKoedServerStatus(
+        {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          HOME: root,
+          API_HOST_PORT: "43300",
+          MEMORY_API_TOKEN: "token",
+          WORK_QUEUE_BACKEND: "local"
+        },
+        {
+          fetch: async () =>
+            response(true, 200, {
+              checks: [
+                { service: "postgres", status: "ok" },
+                { service: "postgres-version", status: "ok" },
+                { service: "migrations", status: "ok" },
+                { service: "pgvector", status: "ok" },
+                { service: "work-queue", status: "ok" },
+                { service: "embedding-service", status: "ok" },
+                { service: "embedding-model", status: "ok" }
+              ]
+            }),
+          spawnSync: () => spawnResult("", 0),
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+
+      expect(status.codex.state).toBe("needs_attention");
+      expect(status.codex.message).toContain("different Local AI Runtime");
+      expect(status.codex.configured).toBe(true);
+      expect(readAiClientConnections(root)?.clients.codex?.connected).toBe(
+        false
+      );
+      expect(status.captureHook.state).toBe("healthy");
+
+      if (mismatch === "home") {
+        const otherStatus = await collectKoedServerStatus(
+          {
+            KOED_HOME: otherHome,
+            KOED_REPO_ROOT: root,
+            HOME: root,
+            WORK_QUEUE_BACKEND: "local"
+          },
+          {
+            fetch: async () => response(false, 503, {}),
+            spawnSync: () => spawnResult("", 0),
+            now: () => new Date("2026-01-01T00:00:00.000Z")
+          }
+        );
+        expect(otherStatus.codex.configured).toBe(true);
+        // Status never connects a client, even one configured for this home.
+        expect(readAiClientConnections(otherHome)).toBeNull();
       }
-    );
+    }
+  );
 
-    expect(status.codex.state).toBe("needs_attention");
-    expect(status.codex.message).toContain("different Local AI Runtime");
-    expect(status.captureHook.state).toBe("healthy");
-  });
+  it.each(["comment", "unrelated", "command"])(
+    "does not authorize Codex when adapter appears only in %s",
+    async (location) => {
+      const root = tempDir();
+      const adapter = resolve(root, "packages/mcp-server/dist/cli.js");
+      mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+      writeFileSync(adapter, "");
+      const original = `command = "node"\nargs = ["${adapter}"]`;
+      const replacement =
+        location === "comment"
+          ? `command = "node"\nargs = ["other.js"]\n# "${adapter}"`
+          : location === "unrelated"
+            ? `command = "node"\nargs = ["other.js"]\nnote = "${adapter}"`
+            : `command = "other"\nargs = ["${adapter}"]`;
+      writeFileSync(
+        resolve(root, ".codex/config.toml"),
+        codexIntegrationConfig(root).replace(original, replacement)
+      );
+      const status = await collectKoedServerStatus(
+        {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          HOME: root,
+          WORK_QUEUE_BACKEND: "local"
+        },
+        {
+          fetch: async () => response(false, 503, {}),
+          spawnSync: () => spawnResult("", 0)
+        }
+      );
+      expect(status.codex.state).toBe("needs_attention");
+      expect(status.codex.configured).toBe(true);
+      expect(readAiClientConnections(root)).toBeNull();
+    }
+  );
 
   it("rejects retired API credentials in the Codex MCP environment", async () => {
     const root = tempDir();
@@ -3089,6 +3399,8 @@ describe("status and doctor JSON contracts", () => {
 
   it("uses CODEX_HOME for isolated device diagnostics", async () => {
     const root = tempDir();
+    // Setup connected Codex; status alone never would.
+    grantAiClientConnection(root, "codex", 0);
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(codexHome, { recursive: true });
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -3181,6 +3493,8 @@ describe("status and doctor JSON contracts", () => {
 
   it("reports healthy task collection setup and detects a mismatched MCP runtime", async () => {
     const root = tempDir();
+    // Setup connected Codex; status alone never would.
+    grantAiClientConnection(root, "codex", 0);
     const dist = resolve(root, "packages/mcp-server/dist");
     const profile = resolve(root, ".codex");
     mkdirSync(dist, { recursive: true });
@@ -3219,12 +3533,26 @@ describe("status and doctor JSON contracts", () => {
     writeFileSync(config, broken);
     expect((await check()).state).toBe("needs_attention");
     expect(readFileSync(config, "utf8")).toBe(broken);
+    // The mismatch disconnected Codex. Restoring the file is not consent, so
+    // status never reconnects it; repair does.
     writeFileSync(config, original);
+    expect(await check()).toMatchObject({
+      state: "needs_attention",
+      configured: true,
+      details: { captureConnected: false }
+    });
+    grantAiClientConnection(
+      root,
+      "codex",
+      aiClientConnectionRevision(root, "codex")
+    );
     expect((await check()).state).toBe("healthy");
   });
 
   it("accepts Codex Capture Hooks whose runtime path needs quoting", async () => {
     const root = resolve(tempDir(), "koed's home");
+    // Setup connected Codex; status alone never would.
+    grantAiClientConnection(root, "codex", 0);
     const dist = resolve(root, "packages/mcp-server/dist");
     const profile = resolve(root, ".codex");
     mkdirSync(dist, { recursive: true });
@@ -3261,6 +3589,8 @@ describe("status and doctor JSON contracts", () => {
 
   it("reports healthy Codex integration when global guidance is disabled", async () => {
     const root = tempDir();
+    // Setup connected Codex; status alone never would.
+    grantAiClientConnection(root, "codex", 0);
     mkdirSync(resolve(root, ".codex"), { recursive: true });
     mkdirSync(resolve(root, "config"), { recursive: true });
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
@@ -3295,6 +3625,8 @@ describe("status and doctor JSON contracts", () => {
 
   it("honors the repo environment global guidance opt-out", async () => {
     const root = tempDir();
+    // Setup connected Codex; status alone never would.
+    grantAiClientConnection(root, "codex", 0);
     mkdirSync(resolve(root, ".codex"), { recursive: true });
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
@@ -3394,6 +3726,8 @@ describe("status and doctor JSON contracts", () => {
   });
   it("prefers running runtime state over plain-shell dependency defaults", async () => {
     const root = tempDir();
+    // Setup connected Codex; status alone never would.
+    grantAiClientConnection(root, "codex", 0);
     mkdirSync(resolve(root, "run"), { recursive: true });
     writeFileSync(
       resolve(root, ".env"),

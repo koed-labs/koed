@@ -212,6 +212,7 @@ type ExecutionRow = {
   provider: string;
   ai_client_instance_id: string;
   model: string;
+  chief_of_staff_name: string | null;
   reasoning_effort: string | null;
   permission_mode: ManagedConversationExecutionRecord["permissionMode"];
   runner_kind: ManagedConversationExecutionRecord["runnerKind"];
@@ -249,6 +250,7 @@ const FORK_COLUMNS = `
 
 const EXECUTION_COLUMNS = `
   id, owner_user_id, project_id, provider, ai_client_instance_id, model,
+  chief_of_staff_name,
   reasoning_effort, permission_mode, runner_kind, state,
   state_version, execution_generation, runner_deployment_id, runner_device_id,
   runner_id, runner_lease_expires_at, logical_session_id, provider_thread_id,
@@ -323,6 +325,7 @@ const mapExecution = (
   provider: row.provider,
   aiClientInstanceId: row.ai_client_instance_id,
   model: row.model,
+  chiefOfStaffName: row.chief_of_staff_name,
   reasoningEffort: row.reasoning_effort,
   permissionMode: row.permission_mode,
   runnerKind: row.runner_kind,
@@ -1128,9 +1131,9 @@ export const createManagedConversationForkRepository = (
       const child = await client.query<ExecutionRow>(
         `insert into managed_conversation_executions (
            id, owner_user_id, project_id, provider, ai_client_instance_id,
-           model, reasoning_effort, permission_mode, runner_kind,
+           model, chief_of_staff_name, reasoning_effort, permission_mode, runner_kind,
            fencing_token_hash, runner_deployment_id, runner_device_id
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          returning ${EXECUTION_COLUMNS}`,
         [
           childId,
@@ -1139,6 +1142,7 @@ export const createManagedConversationForkRepository = (
           parent.rows[0].provider,
           parent.rows[0].ai_client_instance_id,
           parent.rows[0].model,
+          parent.rows[0].chief_of_staff_name,
           parent.rows[0].reasoning_effort,
           parent.rows[0].permission_mode,
           parent.rows[0].runner_kind,

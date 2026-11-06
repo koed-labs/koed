@@ -147,6 +147,14 @@ export class DesktopStatusStore {
     command: DesktopCommand,
     args?: Record<string, unknown>
   ): Promise<Result> {
+    return (await this.runWithStatus<Result>(command, args)).result;
+  }
+
+  // The status belongs to this operation, never a cached successful probe.
+  async runWithStatus<Result>(
+    command: DesktopCommand,
+    args?: Record<string, unknown>
+  ): Promise<{ result: Result; status: KoedServerStatus | null }> {
     if (this.#snapshot.busyCommand) {
       throw new DesktopCommandError(
         command,
@@ -160,6 +168,7 @@ export class DesktopStatusStore {
       command !== "open_logs";
     try {
       const result = await invokeDesktop<Result>(command, args);
+      let status: KoedServerStatus | null = null;
       const capabilityRefreshFailed =
         command.startsWith("check_") &&
         result &&
@@ -171,10 +180,12 @@ export class DesktopStatusStore {
           ? (result as { status?: KoedServerStatus }).status
           : undefined;
       if (
+        !capabilityRefreshFailed &&
         checkedStatus &&
         typeof checkedStatus.ok === "boolean" &&
         typeof checkedStatus.generatedAt === "string"
       ) {
+        status = checkedStatus;
         this.#replace({
           ...this.#snapshot,
           status: checkedStatus,
@@ -182,9 +193,11 @@ export class DesktopStatusStore {
           revision: this.#snapshot.revision + 1
         });
       } else if (refreshStatus && !capabilityRefreshFailed) {
-        await this.refresh();
+        // An already-running probe may predate the configuration change.
+        if (this.#refresh) this.#stale = true;
+        status = await this.refresh();
       }
-      return result;
+      return { result, status };
     } catch (cause) {
       if (refreshStatus) await this.refresh();
       const message = cause instanceof Error ? cause.message : String(cause);

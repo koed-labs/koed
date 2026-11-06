@@ -61,7 +61,34 @@ Publication remains a separate decision.
       build. Add coverage that a full build keeps the catalog, with and without
       `KOED_COMPONENT_MANIFEST_CATALOG`.
 
+- [ ] Investigate macOS host-memory exhaustion during packaged Privacy startup
+      on a 16 GB Mac. The settings candidate tested with official v0.10.3 pins
+      passed download, model verification, synthetic filtering, and activation;
+      the automatic-provider startup was interrupted by a User restart. A later
+      CPU-only recovery hit the conservative 5 GiB process-RSS cutoff. A
+      User-approved retry with a 6.5 GiB cutoff and system-pressure guards passed
+      native service and nested-page readiness: peak aggregate RSS 6,449 MiB,
+      system memory availability at least 55%, and normal kernel pressure.
+      Measure memory by service during model loading and provider calibration
+      before attributing the original exhaustion. The CPU result does not qualify
+      automatic-provider behavior; shared RSS pages are not physical pressure.
+
 The [installation guide](docs/optional-privacy-installation.md) defines compatibility selection, filtering readiness, and CPU fallback.
+
+## Conversation inspector
+
+- [x] Make startup Project inventory resilient to concurrent capture. Inspection
+      uses a bounded owner-scoped membership snapshot and retries discarded reads
+      after membership changes. Generic selection consumers retain their
+      owner-wide fence. See [Personal inventory](docs/personal-inventory.md).
+- [ ] Hide the unavailable prompt composer for captured conversations when no
+      supported continuation action exists, so the inspector gets that space.
+      Keep the composer for Conversations that can be continued.
+- [ ] Make collapsed activity more informative using recorded tool names and
+      file/command context where available; preserve the original source and do
+      not infer successful outcomes from missing status.
+- [ ] Add unobtrusive date separators for Conversations spanning multiple days.
+      Preserve stable virtualized row keys and pagination anchors.
 
 ## Desktop Preferences design
 
@@ -308,6 +335,15 @@ children share lineage and must not count as independent corroboration.
       remains limited to 50 Conversations per supported AI Client from the last
       30 days. Keep selection controls separate from fresh-import Project assignment
       and preserve the migration cutoff for previously captured history.
+      Desktop Home should state these limits when it shows ingestion progress.
+- [ ] Add a Desktop notification when historical ingestion finishes, once
+      notification permission and platform support are verified.
+- [ ] Report ingested message counts for historical ingestion. Each importer
+      counts differently today, so Home shows finished Conversations only.
+- [ ] Stop completion reconciliation from closing an automatic historical run
+      while the coordinator still has selections to add. Providers now start a
+      new run when that happens, which works but leaves one run per batch of
+      Conversations; a run needs a record of pending selections to fix it.
 - [ ] Release the Project cutover as one coordinated change. Preserve coordinated
       product versions and integrate branch-preference behavior after that
       cutover. PDS branch preference must use verified captured observations and

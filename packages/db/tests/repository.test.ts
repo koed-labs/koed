@@ -2515,6 +2515,45 @@ describeDb("memory repository visibility", () => {
         })
       ).execution.id
     ).toBe(legacy.execution.id);
+    const namedRequest = {
+      ...input,
+      idempotencyKey: randomUUID(),
+      chiefOfStaffName: "  Ada   Lovelace  "
+    };
+    const named = await repository.createManagedConversation(
+      actor,
+      namedRequest
+    );
+    expect(named.execution.chiefOfStaffName).toBe("Ada Lovelace");
+    expect(
+      (await repository.createManagedConversation(actor, namedRequest))
+        .execution
+    ).toMatchObject({
+      id: named.execution.id,
+      chiefOfStaffName: "Ada Lovelace"
+    });
+    await expect(
+      repository.createManagedConversation(actor, {
+        ...namedRequest,
+        chiefOfStaffName: "Grace Hopper"
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repository.createManagedConversation(actor, {
+        ...namedRequest,
+        idempotencyKey: randomUUID(),
+        chiefOfStaffName: "  "
+      })
+    ).rejects.toMatchObject({ statusCode: 400 });
+    const otherOwner = await repository.createUser({
+      email: `persona-other-${randomUUID()}@example.com`
+    });
+    expect(
+      await repository.getManagedConversationExecution(
+        { userId: otherOwner.id },
+        named.execution.id
+      )
+    ).toBeNull();
   });
 
   it("admits settings atomically with an idle turn and preserves idempotency and ownership", async () => {

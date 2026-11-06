@@ -15,13 +15,15 @@ const commands = new Set([
   "doctor",
   "privacy_status",
   "privacy_install",
-  "quit"
+  "quit",
+  "update_notice"
 ]);
 type HarnessInput = {
   packaged: boolean;
   argv: string[];
   channel: EventEmitter & { connected?: boolean };
   send: (message: unknown) => void;
+  getUpdateNoticeState: () => unknown;
   invoke: (command: string) => Promise<unknown>;
   stop: () => Promise<unknown>;
   quit: () => void;
@@ -79,7 +81,10 @@ const receive = (
   state.queue = state.queue.then(async () => {
     if (state.closed) return;
     try {
-      const result = await input.invoke(request.command as string);
+      const result =
+        request.command === "update_notice"
+          ? input.getUpdateNoticeState()
+          : await input.invoke(request.command as string);
       sendResponse(input, request.id, { result: redact(result) });
       if (request.command === "quit") {
         state.closed = true;

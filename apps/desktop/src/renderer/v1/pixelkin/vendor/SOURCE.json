@@ -1,0 +1,15 @@
+{
+  "package": "@koed-labs/pixelkin",
+  "version": "1.0.0",
+  "commit": "2809f69f929ed0a206c67d18f7798c59e985da88",
+  "files": {
+    "index.js": "7acce6429fb0d1eab4a9e000396665515200ecf8c48ad57c869b5b23dd43ba60",
+    "index.d.ts": "eaf4a955946bd0c0490c809fd991c3f13192a6e37551a40b3cf22904f24f9854",
+    "kin.js": "59eaa2451551bb312f18c9855140d566777e8202766eb86ab4ea940b458af0f4",
+    "crowd-gl.js": "40e54e5ec43f3e0cd687d5ff6afff7a41d8974ef032eee2164743bd62d903a81",
+    "expressions.js": "1e7f21ac1b03aa4f5e9bd8e26f3cf39b570a87a052a1765278becff206bbd6af",
+    "accessories.js": "fc096799cbc1abef445fa961fdfba99ea6e714af6570afed10cd715f444b79f5",
+    "personalities.js": "f3c26036098b633c0f1c9016a2218066b656f93e9a03310f3c77641f19642a2c",
+    "LICENSE": "a9f03c4eaa9c03189c851ac57b71b63ead0b778cc00f32d71c2f927b9ebd9a54"
+  }
+}

@@ -1,5 +1,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import {
+  readHistoricalIngestionProgressRecord,
+  type HistoricalIngestionProgressRecord
+} from "@koed/shared";
 
 const STATE_VERSION = 1;
 
@@ -70,6 +74,8 @@ export interface HistoricalIngestionCoordinatorState {
   runCompleted: boolean;
   runId?: string;
   selections: HistoricalCandidateSelection[];
+  // Read by Koed status for Desktop; never used to decide what to process.
+  progress?: HistoricalIngestionProgressRecord;
 }
 
 export interface HistoricalIngestionCoordinatorHandle<Candidate> {
@@ -129,12 +135,14 @@ const loadState = (statePath: string): HistoricalIngestionCoordinatorState => {
     ) {
       return emptyState();
     }
+    const progress = readHistoricalIngestionProgressRecord(value.progress);
     return {
       version: STATE_VERSION,
       selectionFrozen: value.selectionFrozen,
       runCompleted: value.runCompleted === true,
       ...(typeof value.runId === "string" ? { runId: value.runId } : {}),
-      selections: value.selections
+      selections: value.selections,
+      ...(progress ? { progress } : {})
     };
   } catch {
     return emptyState();
@@ -149,6 +157,29 @@ const persistState = (
   const temporary = `${statePath}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   renameSync(temporary, statePath);
+};
+
+const safeCode = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-z0-9_.:-]+$/.test(value);
+
+// The most specific safe code for a failed pass: the error's own code, or the
+// Memory API's code for a rejected request, which would otherwise be lost
+// behind its readable message.
+export const historicalPassErrorCode = (error: unknown): string => {
+  if (error instanceof Error && safeCode(error.message)) return error.message;
+  const { payload, status } = (error ?? {}) as {
+    payload?: unknown;
+    status?: unknown;
+  };
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    "code" in payload &&
+    safeCode(payload.code)
+  )
+    return payload.code;
+  if (typeof status === "number") return `memory_api_http_${status}`;
+  return "historical_ingestion_pass_failed";
 };
 
 export const startHistoricalIngestionCoordinator = <Candidate>(input: {
@@ -172,8 +203,36 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   let requested = false;
   let discovery: Promise<void> | null = null;
   let discoveryTimer: NodeJS.Timeout | undefined;
+  let completionPending = false;
 
+  const nowIso = () => (input.now?.() ?? new Date()).toISOString();
   const save = (): void => persistState(statePath, state);
+  const record = (
+    update: Omit<HistoricalIngestionProgressRecord, "updatedAt">
+  ): void => {
+    const next = { ...state.progress, ...update, updatedAt: nowIso() };
+    // Any progress ends a run of failures.
+    if (update.lastProgressAt) delete next.failingSince;
+    state.progress = next;
+  };
+  const reportError = (code: string): void => {
+    const at = nowIso();
+    record({
+      lastErrorCode: code,
+      lastErrorAt: at,
+      failingSince: state.progress?.failingSince ?? at
+    });
+    try {
+      save();
+    } catch (error) {
+      if (input.onError) {
+        input.onError("historical_ingestion_state_persist_failed");
+      } else {
+        console.error("historical_ingestion_state_persist_failed", error);
+      }
+    }
+    input.onError?.(code);
+  };
   const schedule = (delayMs = 0): void => {
     if (stopped) return;
     requested = true;
@@ -185,22 +244,32 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     timer.unref();
   };
   const pass = async (): Promise<boolean> => {
+    if (completionPending) {
+      const completed = { ...state, runCompleted: true };
+      persistState(statePath, completed);
+      state = completed;
+      completionPending = false;
+      return false;
+    }
     if (state.runCompleted || state.selections.length === 0) return false;
     let progressed = false;
     let allTerminal = true;
     for (const current of state.selections) {
-      if (stopped) break;
+      if (stopped) return false;
       if (current.terminalState) continue;
       const candidate = candidates.get(current.candidateId);
       const processNextBatch = () =>
-        input.adapter.processNextBatch({
-          ...(candidate ? { candidate } : {}),
-          selection: current,
-          ...(state.runId ? { runId: state.runId } : {})
-        });
+        stopped
+          ? Promise.resolve(undefined)
+          : input.adapter.processNextBatch({
+              ...(candidate ? { candidate } : {}),
+              selection: current,
+              ...(state.runId ? { runId: state.runId } : {})
+            });
       const result = input.batchScheduler
         ? await input.batchScheduler.runExclusive(processNextBatch)
         : await processNextBatch();
+      if (!result) return false;
       const index = state.selections.findIndex(
         (selection) => selection.candidateId === current.candidateId
       );
@@ -211,6 +280,14 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
             : result.selection;
       }
       if (result.runId) state.runId = result.runId;
+      record({
+        lastBatchState: result.state,
+        ...(result.state === "progress" ||
+        result.state === "completed" ||
+        result.state === "skipped"
+          ? { lastProgressAt: nowIso() }
+          : {})
+      });
       if (result.diagnosticCode) input.onError?.(result.diagnosticCode);
       if (result.state === "progress") progressed = true;
       if (result.state !== "completed" && result.state !== "skipped") {
@@ -222,10 +299,14 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       // finalization may finish later and remains a downstream concern.
       if (result.state === "progress" || result.state === "waiting") break;
     }
+    if (stopped) return false;
     if (allTerminal && state.runId && input.adapter.completeRun) {
       await input.adapter.completeRun(state.runId);
-      state = { ...state, runCompleted: true };
-      save();
+      completionPending = true;
+      const completed = { ...state, runCompleted: true };
+      persistState(statePath, completed);
+      state = completed;
+      completionPending = false;
     }
     return progressed;
   };
@@ -236,12 +317,19 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       try {
         const progressed = await pass();
         if (progressed) requested = true;
+        // A pass that ran cleanly ends a run of failures even when it had
+        // nothing to import, such as while sources finish downstream.
+        if (state.progress?.failingSince) {
+          const progress = { ...state.progress };
+          delete progress.failingSince;
+          progress.recoveredAt = nowIso();
+          state.progress = progress;
+          save();
+        }
       } catch (error) {
-        input.onError?.(
-          error instanceof Error && /^[a-z0-9_.:-]+$/.test(error.message)
-            ? error.message
-            : "historical_ingestion_pass_failed"
-        );
+        // Stopping aborts work in flight; that isn't a failing pass.
+        if (stopped) return;
+        reportError(historicalPassErrorCode(error));
       }
     })().finally(() => {
       running = null;
@@ -255,10 +343,14 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
 
   const offerCandidates = (offered: readonly Candidate[]): void => {
     if (stopped) return;
+    const previousCandidates = !state.selectionFrozen
+      ? new Map(candidates)
+      : undefined;
     for (const candidate of offered) {
       candidates.set(input.adapter.candidateId(candidate), candidate);
     }
     if (!state.selectionFrozen) {
+      const previousState = state;
       state = {
         version: STATE_VERSION,
         selectionFrozen: true,
@@ -268,7 +360,17 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
           input.now?.() ?? new Date()
         )
       };
-      save();
+      record({});
+      try {
+        save();
+      } catch (error) {
+        state = previousState;
+        candidates.clear();
+        for (const [id, candidate] of previousCandidates ?? []) {
+          candidates.set(id, candidate);
+        }
+        throw error;
+      }
     }
     schedule();
   };
@@ -308,6 +410,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       .discoverCandidates(candidateIds)
       .then(offerCandidates)
       .catch((error) => {
+        if (stopped) return;
         input.onError?.(
           error instanceof Error && /^[a-z0-9_.:-]+$/.test(error.message)
             ? error.message
@@ -337,7 +440,6 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       stopped = true;
       if (timer) clearTimeout(timer);
       if (discoveryTimer) clearTimeout(discoveryTimer);
-      await discovery;
       await running;
     }
   };

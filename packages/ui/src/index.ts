@@ -24,3 +24,12 @@ export * from "./primitives/tabs.js";
 export * from "./primitives/textarea.js";
 export * from "./primitives/toast.js";
 export * from "./primitives/tooltip.js";
+
+export * from "./primitives/sidebar.js";
+export * from "./primitives/checkbox.js";
+export { Collapsible } from "@base-ui/react/collapsible";
+
+export * from "./primitives/message.js";
+export * from "./primitives/bubble.js";
+export * from "./primitives/trace.js";
+export * from "./primitives/code-block.js";

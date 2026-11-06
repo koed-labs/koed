@@ -18,6 +18,13 @@ Activity changes do not shift page boundaries. A refresh includes new captures o
 Desktop collects each raw page before it hides nested subagents or removes repeated logical Conversations.
 A parent on a later page can therefore hide its nested subagent correctly.
 
+Conversation inspection selects the authorized event page before enriching its
+messages with source metadata. It reads matching Conversation Items as one batch
+and retains the earliest matching source per message, scoped to the owning User
+and visibility. Provider item IDs, prompt correlation and Approval Activity
+display metadata remain available without scanning the source journal once for
+every message in the Conversation. Event order and pagination cursors are unchanged.
+
 The shared inventory helpers classify recorded source identities and deduplicate logical Conversations.
 Deduplication retains local source references and inclusion reasons for navigation and source management.
 Repeated views of one logical Conversation do not add their event counts together.
@@ -30,10 +37,28 @@ Local checkout discovery supplies execution and display metadata through explici
 Inventory reads do not discover checkouts, create Projects, change membership, or alter captured source assignments.
 
 Startup uses `personal.projects.named.list` to display the existing named inventory before source history finishes loading.
+The sidebar shows “Services starting…” while service readiness is pending, then
+“Loading conversations…” during the inventory read. It only shows an empty
+inventory after a successful read for the current owner. Stopped or unavailable
+services have their own status and do not appear as an empty inventory.
+The renderer subscribes to lifecycle changes before the API is ready and
+invalidates any older status read still in flight. While the API is unavailable,
+a five-second probe also picks up service readiness within the same supervisor
+epoch. Probing stops once the API is healthy; lifecycle events remain subscribed.
 The complete inventory loads concurrently through `personal.projects.list`.
 Named, Folder, and paginated source requests run independently. Source pages retain their stable sequential cursor boundary.
 Native metadata, available local Folders, and reconciliation status also start independently from source enumeration.
 Parallel Personal reads share one active API-origin status lookup.
+
+Named Project and exact Folder inspection use a private, bounded membership
+snapshot. It covers the authenticated owner, selected Conversation identities,
+source-context versions, verified source bindings, availability, Project version,
+and inclusion reasons. Incoming content and unrelated captures do not invalidate
+that snapshot. A membership or source-context change discards the partial read
+and retries from the beginning, up to three attempts. The API still checks the
+exact selection and enumerated Session IDs when reading Conversation headers.
+Generic selection consumers retain their owner-wide transaction-visibility
+fence; this inspection adapter does not change capture, sharing, or Recall.
 
 The first named result can display and open Projects while source details remain pending.
 The Sources controls report that loading state instead of treating missing details as a completed empty inventory.
@@ -43,6 +68,7 @@ An initial-read failure falls back to the complete inventory read. A source-read
 
 Transport pages remain bounded. Existing named Project and Folder views retain their 5,000-Conversation view limit.
 An unavailable or oversized view produces an error instead of a silently incomplete catalog.
+Inspection snapshots also bound inclusion reasons to 10,000 per selection.
 The source header index does not replace the source reconciliation scheduler or authorize capture, sharing, or local execution.
 
 ## Default Git Projects

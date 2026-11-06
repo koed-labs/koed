@@ -14431,6 +14431,26 @@ describe("account and access flows", () => {
     ).toMatchObject({
       artifact: { id: artifactId, providerCursorLine: 1 }
     });
+    const missingArtifact = await app.inject({
+      method: "POST",
+      url: "/v1/historical-import-sources",
+      headers: ownerHeaders,
+      payload: { runId, artifactId: randomUUID(), aiClient: "codex" }
+    });
+    const missingRun = await app.inject({
+      method: "POST",
+      url: "/v1/historical-import-sources",
+      headers: ownerHeaders,
+      payload: { runId: randomUUID(), artifactId, aiClient: "codex" }
+    });
+    expect(missingArtifact.statusCode, missingArtifact.body).toBe(409);
+    expect(jsonBody<{ code: string }>(missingArtifact).code).toBe(
+      "historical_import_artifact_unavailable"
+    );
+    expect(missingRun.statusCode, missingRun.body).toBe(409);
+    expect(jsonBody<{ code: string }>(missingRun).code).toBe(
+      "historical_import_run_not_found"
+    );
     const sourceResponse = await app.inject({
       method: "POST",
       url: "/v1/historical-import-sources",
@@ -15495,6 +15515,17 @@ describe("account and access flows", () => {
         }
       }));
     repository.explainPersonalProjectSession = explain;
+    const explainBatch = vi.fn<
+      NonNullable<typeof repository.explainPersonalProjectSessions>
+    >(async (_actor, _projectId, input) => ({
+      project: result.project,
+      explanations: input.sessionIds.map((id) => ({
+        ...result.explanation,
+        sessionId: id,
+        logicalSessionId: id
+      }))
+    }));
+    repository.explainPersonalProjectSessions = explainBatch;
     repository.excludePersonalProjectSession = exclude;
     repository.restorePersonalProjectSession = restore;
     const app = await buildServer({ repository });
@@ -15566,6 +15597,56 @@ describe("account and access flows", () => {
       });
       expect(missingRevision.statusCode).toBe(400);
       expect(restore).toHaveBeenCalledTimes(1);
+      const batchUrl = `/v1/personal/projects/${projectId}/memberships/explain-batch`;
+      const sessionIds = Array.from(
+        { length: 100 },
+        (_, i) =>
+          `00000000-0000-4000-8000-${(1000 + i).toString().padStart(12, "0")}`
+      );
+      const batchPayload = { expectedVersion: 4, sessionIds };
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: batchUrl,
+            payload: batchPayload
+          })
+        ).statusCode
+      ).toBe(401);
+      for (const payload of [
+        { ...batchPayload, ownerUserId: "foreign" },
+        { ...batchPayload, expectedVersion: 0 },
+        { ...batchPayload, sessionIds: [] },
+        { ...batchPayload, sessionIds: [sessionId, sessionId] },
+        { ...batchPayload, sessionIds: [...sessionIds, sessionId] }
+      ]) {
+        expect(
+          (
+            await app.inject({
+              method: "POST",
+              url: batchUrl,
+              headers,
+              payload
+            })
+          ).statusCode
+        ).toBe(400);
+      }
+      expect(explainBatch).not.toHaveBeenCalled();
+      const batchResponse = await app.inject({
+        method: "POST",
+        url: batchUrl,
+        headers,
+        payload: batchPayload
+      });
+      expect(batchResponse.statusCode).toBe(200);
+      expect(
+        jsonBody<{ explanations: unknown[] }>(batchResponse).explanations
+      ).toHaveLength(100);
+      expect(explainBatch).toHaveBeenCalledExactlyOnceWith(
+        { userId: ownerUserId },
+        projectId,
+        batchPayload
+      );
     } finally {
       await app.close();
     }

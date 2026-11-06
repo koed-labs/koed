@@ -10,7 +10,7 @@ import {
 import { personalSourceSelectionSql } from "./personal-selection-sql.js";
 import { personalProjectMembershipReasonsSql } from "./personal-project-rule-repository.js";
 
-/** A bounded owner-only membership version for continuous consent and
+/** An owner-only membership version for inspection, continuous consent and
  * publication enumeration. Content changes remain in the delivery journal. */
 export const personalSelectionScopeVersion = async (
   client: pg.PoolClient,
@@ -78,16 +78,22 @@ export const personalSelectionScopeVersion = async (
       new Set(result.rows.map((row) => row.id)).size > 5000)
   )
     throw selectionConsumerError(
-      "selection_review_too_large",
-      409,
-      "This selection is too large for a complete review."
+      options.scopeToInventory
+        ? "selection_inventory_too_large"
+        : "selection_review_too_large",
+      options.scopeToInventory ? 413 : 409,
+      options.scopeToInventory
+        ? "This selection is too large for a complete inventory."
+        : "This selection is too large for a complete review."
     );
   // Continuous selection consent includes later content. Fence the selected
   // identities, membership and context rather than a changing content head.
   // Read the current state in this repeatable-read transaction; journal sequence
   // allocation is neither a commit watermark nor sharing authority.
   const hash = crossIdentitySyncDigest({
-    purpose: "personal-selection-sharing-review-v1",
+    purpose: options.scopeToInventory
+      ? "personal-selection-inspection-inventory-v1"
+      : "personal-selection-sharing-review-v1",
     selection,
     projectVersion: resolved.projectVersion ?? null,
     projectDeleted: resolved.projectDeleted === true,

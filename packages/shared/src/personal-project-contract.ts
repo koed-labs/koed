@@ -12,10 +12,15 @@ import {
   personalMembershipExclusionSyncSchema
 } from "./personal-membership-contract.js";
 
-export const personalNamedProjectSchema = z
-  .object({
+import {
+  personalProjectDetailsSchema,
+  personalProjectKinSchema
+} from "./personal-project-kin.js";
+export type { PersonalProjectKin } from "./personal-project-kin.js";
+
+export const personalNamedProjectSchema = personalProjectDetailsSchema
+  .extend({
     projectId: z.uuid(),
-    name: z.string().trim().min(1).max(160),
     version: z.number().int().positive().safe(),
     headRevisionId: z.uuid(),
     deletedAt: z.string().datetime({ offset: true }).nullable(),
@@ -86,11 +91,14 @@ export type PersonalProjectMembershipExplanation = z.infer<
 >;
 
 export const personalProjectCreateSchema = z
-  .object({ name: z.string().trim().min(1).max(160) })
-  .strict();
-export const personalProjectUpdateSchema = z
   .object({
     name: z.string().trim().min(1).max(160),
+    requestId: z.uuid().optional()
+  })
+  .strict();
+export const personalProjectUpdateSchema = personalProjectDetailsSchema
+  .omit({ kin: true })
+  .extend({
     expectedVersion: z.number().int().positive().safe()
   })
   .strict();
@@ -99,6 +107,19 @@ export const personalProjectVersionSchema = z
   .strict();
 export const personalProjectAddSessionSchema = personalProjectVersionSchema
   .extend({ sessionId: z.uuid() })
+  .strict();
+export const PERSONAL_PROJECT_INSPECTION_BATCH_SIZE = 100;
+export const personalProjectExplainSessionsSchema = personalProjectVersionSchema
+  .extend({
+    sessionIds: z
+      .array(z.uuid())
+      .min(1)
+      .max(PERSONAL_PROJECT_INSPECTION_BATCH_SIZE)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        "Duplicate Conversations"
+      )
+  })
   .strict();
 export const personalProjectAddBackSchema = personalProjectAddSessionSchema
   .extend({
@@ -173,8 +194,28 @@ const projectCommandBase = {
   projectId: z.uuid(),
   expectedVersion: z.number().int().positive().safe()
 };
+const setProjectDetailsSchema = personalProjectDetailsSchema.extend({
+  action: z.literal("set_details"),
+  kin: personalProjectKinSchema
+});
+
 /** One confirmation applies the complete source draft at one reviewed Project version. */
 export const personalProjectBatchChangeSchema = z.discriminatedUnion("action", [
+  setProjectDetailsSchema,
+  z
+    .object({
+      action: z.literal("rename"),
+      name: z.string().trim().min(1).max(160)
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("add_back"),
+      sessionId: z.uuid(),
+      exclusionId: z.uuid(),
+      expectedExclusionRevisionId: z.uuid()
+    })
+    .strict(),
   z
     .object({
       action: z.literal("add_repository"),
@@ -208,6 +249,9 @@ export type PersonalProjectBatchInput = z.infer<
 >;
 
 export const personalProjectCommandSchema = z.discriminatedUnion("action", [
+  personalProjectExplainSessionsSchema
+    .extend({ action: z.literal("explain_sessions"), projectId: z.uuid() })
+    .strict(),
   personalProjectBatchInputSchema
     .extend({ action: z.literal("apply_sources"), projectId: z.uuid() })
     .strict(),
@@ -298,7 +342,11 @@ export const personalProjectCommandResultSchema = z
     membership: personalDirectMembershipSchema.optional(),
     rule: personalProjectRuleSchema.optional(),
     preview: personalProjectRulePreviewSchema.optional(),
-    explanation: personalProjectMembershipExplanationSchema.optional()
+    explanation: personalProjectMembershipExplanationSchema.optional(),
+    explanations: z
+      .array(personalProjectMembershipExplanationSchema)
+      .max(PERSONAL_PROJECT_INSPECTION_BATCH_SIZE)
+      .optional()
   })
   .strict();
 export type PersonalProjectCommand = z.infer<

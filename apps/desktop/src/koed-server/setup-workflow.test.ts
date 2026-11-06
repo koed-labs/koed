@@ -152,4 +152,41 @@ describe("desktop setup workflow", () => {
       state: "failed"
     });
   });
+  it("returns the active run on reopen without re-inspecting or restarting it", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const pause = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const inspectStage = vi.fn(async () => ({
+      complete: false,
+      message: "Needs setup"
+    }));
+    const runStage = vi.fn(async (stage: DesktopSetupStageId) => {
+      if (stage === "package") {
+        started();
+        await pause;
+      }
+      return { ok: true, message: "Done" };
+    });
+    const workflow = createDesktopSetupWorkflow({ inspectStage, runStage });
+    const firstRun = workflow.run(() => {});
+    await entered;
+    const reopened = await workflow.inspect();
+    expect(reopened).toMatchObject({
+      state: "running",
+      activeStage: "package"
+    });
+    reopened.stages[0]!.state = "complete";
+    expect((await workflow.inspect()).stages[0]!.state).toBe("running");
+    expect(inspectStage).toHaveBeenCalledTimes(6);
+    const duplicateRun = workflow.run(() => {});
+    release();
+    expect((await firstRun).state).toBe("complete");
+    expect(await duplicateRun).toEqual(await firstRun);
+    expect(runStage).toHaveBeenCalledTimes(6);
+  });
 });
