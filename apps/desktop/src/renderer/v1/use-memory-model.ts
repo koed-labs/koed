@@ -34,8 +34,14 @@ const errorText = (cause: unknown) =>
 const onboardingModelNames = {
   codex: /(?:^|\/)(?:gpt[ -])?6[ -]luna$/i,
   claude:
-    /(?:^|\/)(?:claude[ -])?(?:haiku[ -]5[.-]5|5[.-]5[ -]haiku)(?:-\d{8})?$/i
+    /(?:^|\/)(?:claude[ -])?(?:haiku[ -]5[.-]5|5[.-]5[ -]haiku)(?:-\d{8})?(?:\[1m\]| \(1m context\))?$/i
 };
+const onboardingModelLabel = (model: Parameters<typeof modelLabel>[0]) =>
+  modelLabel(model)
+    .replace(/\s*\(recommended\)$/i, "")
+    .trim() ||
+  model.model ||
+  model.id;
 
 function executionLimits(read: LocalAiClientReadModel) {
   const limits: Partial<MemoryModelInput["limits"]> = {};
@@ -118,16 +124,25 @@ export function useMemoryModel(
   const modelsFor = (id: string) =>
     read
       ? (snapshotFor(read, id)?.models.filter(
-          (m) => m.reasoningEfforts.length
+          (m) =>
+            m.reasoningEfforts.length &&
+            !(
+              connectedProviders &&
+              (m.model ?? m.id).split("/").at(-1)?.toLowerCase() === "default"
+            )
         ) ?? [])
       : [];
-  const instances =
+  const eligible =
     read?.instances.filter(
       (i) =>
-        (!connectedProviders || connectedProviders.includes(i.driverId)) &&
         statusFor(read, i.instanceId).available &&
         modelsFor(i.instanceId).length
     ) ?? [];
+  const instances = connectedProviders
+    ? connectedProviders.flatMap((provider) =>
+        eligible.filter((instance) => instance.driverId === provider)
+      )
+    : eligible;
   type Instance = (typeof instances)[number];
   const selectionFor = (
     instance: Instance,
@@ -151,14 +166,14 @@ export function useMemoryModel(
     }
     const pattern = onboardingModelNames[instance.driverId];
     const preferred = models.find((model) =>
-      [model.id, model.model, model.displayName, model.fullId].some(
+      [model.id, model.model, onboardingModelLabel(model), model.fullId].some(
         (name) => name && pattern.test(name.trim())
       )
     );
-    return selectionFor(instance, preferred ?? models[0]!, "high");
+    return selectionFor(instance, preferred ?? models[0]!);
   }
 
-  // On first run a code default is not a user choice. Ask when several clients qualify.
+  // A saved choice takes precedence over first-run suggestions.
   let initial: Selection | null = common;
   if (connectedProviders) {
     const persisted =
@@ -180,8 +195,7 @@ export function useMemoryModel(
           m.reasoningEfforts.includes(common.reasoning_effort)
       );
     if (!persisted || !reusable) {
-      const only = instances.length === 1 ? instances[0] : undefined;
-      initial = only ? startingSelection(only) : null;
+      initial = instances[0] ? startingSelection(instances[0]) : null;
     }
   }
   const choice = draft ?? initial;
@@ -230,7 +244,10 @@ export function useMemoryModel(
         connectedProviders && !instance
           ? "Choose an AI Client first"
           : "Choose a model",
-      options: models.map((m) => ({ value: m.id, label: modelLabel(m) })),
+      options: models.map((m) => ({
+        value: m.id,
+        label: connectedProviders ? onboardingModelLabel(m) : modelLabel(m)
+      })),
       onChange: (id: string) => {
         const next = models.find((m) => m.id === id);
         if (instance && next)

@@ -232,6 +232,7 @@ describe("desktop onboarding", () => {
       await click("Connect");
       expect(text()).toContain("Some introductions need another try.");
       await click("Continue");
+      await click("Set up later");
       await click("Let’s go");
       expect(complete).toHaveBeenCalledOnce();
       expect(text()).not.toContain("Local setup needs another check");
@@ -703,13 +704,19 @@ describe("desktop onboarding", () => {
     );
     expect(
       container.querySelector('[aria-label="Reasoning"]')?.textContent
-    ).toBe("High");
+    ).toBe("Medium");
     expect(save).not.toHaveBeenCalled();
     await click("Save and continue");
     expect(text()).toContain("Save failed");
     expect(text()).not.toContain("You’re all set.");
     await click("Save and continue");
     expect(text()).toContain("You’re all set.");
+    expect(save).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        model: "gpt-6-luna",
+        reasoning_effort: "medium"
+      })
+    );
     const { readModel } = await memoryApi.list();
     expect(
       readModel.settings.map((s) => [
@@ -730,10 +737,10 @@ describe("desktop onboarding", () => {
   it.each([
     {
       label: "Haiku 5.5",
-      efforts: ["medium", "high"],
+      efforts: ["high", "medium"],
       expected: "Haiku 5.5",
       id: "haiku",
-      effort: "high"
+      effort: "medium"
     },
     {
       label: "Haiku 5.5",
@@ -747,7 +754,7 @@ describe("desktop onboarding", () => {
       efforts: ["none"],
       expected: "Sonnet",
       id: "sonnet",
-      effort: "high"
+      effort: "medium"
     }
   ])(
     "uses an available Claude model and effort for $label ($efforts)",
@@ -759,6 +766,14 @@ describe("desktop onboarding", () => {
       )!;
       haiku.displayName = label;
       haiku.reasoningEfforts = efforts;
+      result.readModel.capabilitySnapshots[0]!.models.unshift({
+        ...haiku,
+        id: "default",
+        model: "default",
+        fullId: "anthropic/default",
+        displayName: "Default (recommended)",
+        reasoningEfforts: ["high", "medium"]
+      });
       vi.spyOn(memoryApi, "refresh").mockResolvedValue(result);
       const save = vi.spyOn(memoryApi, "setMemoryModel");
       const { click } = await render({
@@ -779,8 +794,11 @@ describe("desktop onboarding", () => {
     }
   );
 
-  it("waits for an explicit client choice when several models are available after a retry", async () => {
+  it("selects the first connected client after a retry even if discovery lists it last", async () => {
     const memoryApi = memoryModelFixture(() => ["codex", "pi"]);
+    const refreshed = await memoryApi.refresh();
+    refreshed.readModel.instances.reverse();
+    vi.spyOn(memoryApi, "refresh").mockResolvedValue(refreshed);
     vi.spyOn(memoryApi, "list").mockRejectedValueOnce(
       new Error("Client discovery failed")
     );
@@ -792,12 +810,20 @@ describe("desktop onboarding", () => {
     expect(text()).toContain("Client discovery failed");
     expect(text()).not.toContain("Set up later");
     await click("Try again");
-    expect(text()).toContain("Choose a connected client");
-    expect(text()).toContain("Choose an AI Client first");
-    expect(text()).toContain("Choose a model first");
+    expect(
+      container.querySelector('[aria-label="AI Client"]')?.textContent
+    ).toBe("Codex");
+    expect(
+      container.querySelector('[aria-label="Reasoning"]')?.textContent
+    ).toBe("Medium");
     await click("Save and continue");
-    expect(save).not.toHaveBeenCalled();
-    expect(text()).toContain("Choose a Memory Model.");
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "codex",
+        model: "gpt-6-luna",
+        reasoning_effort: "medium"
+      })
+    );
   });
 
   it("offers Back and Set up later when connected clients have no usable model", async () => {

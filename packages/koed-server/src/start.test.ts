@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer, type Server } from "node:net";
-import type { SpawnSyncReturns } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -30,6 +31,8 @@ import {
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
 import type { RuntimeOwner } from "./component-contract.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { setupCore } from "./setup.js";
+import { loadRepoEnv } from "./env-file.js";
 import { deviceRequestCommand } from "./personal-device-request.js";
 import {
   provisionDesktopApiToken,
@@ -2041,71 +2044,99 @@ describe("start supervisor", () => {
     expect(spawned.map((entry) => entry.command)).not.toContain("pnpm");
   });
 
-  it("provisions a Personal API Token during a source bundled-local start", async () => {
-    const root = tempDir();
-    const embeddingEntry = resolve(
-      root,
-      "apps/embedding-service/dist/index.js"
-    );
-    mkdirSync(resolve(embeddingEntry, ".."), { recursive: true });
-    writeFileSync(embeddingEntry, "");
-    const pgBin = resolve(root, "runtime/postgres/bin");
-    const llamaBin = resolve(root, "runtime/llama.cpp");
-    mkdirSync(pgBin, { recursive: true });
-    mkdirSync(llamaBin, { recursive: true });
-    for (const path of [
-      resolve(pgBin, "initdb"),
-      resolve(pgBin, "pg_ctl"),
-      resolve(pgBin, "psql"),
-      resolve(llamaBin, "llama-server")
-    ]) {
-      writeFileSync(path, "");
-      chmodSync(path, 0o755);
-    }
-    mkdirSync(resolve(root, "models"));
-    writeFileSync(
-      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
-      "model"
-    );
-    const spawned: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
-    let provisionCalls = 0;
-
-    await startKoedServer({
-      ...cleanShutdownAfterReady(),
-      environment: {
-        KOED_HOME: root,
+  it.each([
+    { launcher: "Desktop", autoPorts: "1" },
+    { launcher: "CLI", autoPorts: undefined }
+  ])(
+    "reuses the first-run API Token in core setup after a clean $launcher source start",
+    async ({ autoPorts }) => {
+      const root = tempDir();
+      const environment = {
+        HOME: root,
+        KOED_HOME: resolve(root, "home"),
         KOED_REPO_ROOT: root,
         KOED_RUNTIME_MODE: "local-personal",
         KOED_DEPENDENCY_MODE: "bundled-local",
-        KOED_TEAM_COLLABORATION_ENABLED: "false"
-      },
-      timeoutMs: 1,
-      pollIntervalMs: 1,
-      spawnSync: (_command, args) =>
-        args.includes("status")
-          ? ({ ...spawnResult(), status: 1 } as never)
-          : spawnResult(),
-      spawn: (_command, args, options) => {
-        spawned.push({ args, env: options?.env });
-        return child(spawned.length);
-      },
-      collectStatus: async () => healthyStatus(root),
-      provisionLocalApiToken: async () => {
-        provisionCalls += 1;
-        return {
-          token: "fresh-packaged-token",
-          reused: false,
-          ownerUserId: "11111111-1111-4111-8111-111111111111"
-        };
+        KOED_AUTO_PORTS: autoPorts,
+        KOED_TEAM_COLLABORATION_ENABLED: "false",
+        CODEX_CONFIG_PATH: resolve(root, "codex/config.toml")
+      };
+      createNativeResources(root);
+      createSourceDesktopDbRuntime(
+        root,
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      );
+      for (const file of [
+        ".env.example",
+        "scripts/setup-env.mjs",
+        "scripts/setup-env-lib.mjs",
+        "scripts/sync-app-env-examples.mjs",
+        "apps/api/.env.example",
+        "apps/embedding-service/.env.example",
+        "apps/worker/.env.example",
+        "apps/privacy-service/.env.example",
+        "apps/api/package.json",
+        "apps/worker/package.json",
+        "apps/privacy-service/package.json",
+        "packages/mcp-server/package.json"
+      ]) {
+        mkdirSync(resolve(root, file, ".."), { recursive: true });
+        copyFileSync(
+          resolve(import.meta.dirname, "../../..", file),
+          resolve(root, file)
+        );
       }
-    });
+      mkdirSync(resolve(environment.KOED_HOME, "models"), { recursive: true });
+      writeFileSync(
+        resolve(
+          environment.KOED_HOME,
+          "models",
+          "Qwen3-Embedding-0.6B-Q8_0.gguf"
+        ),
+        "model"
+      );
+      const spawned: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
 
-    expect(provisionCalls).toBe(1);
-    const localRuntime = spawned.find((entry) =>
-      entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
-    );
-    expect(localRuntime?.env?.MEMORY_API_TOKEN).toBe("fresh-packaged-token");
-  });
+      await startKoedServer({
+        ...cleanShutdownAfterReady(),
+        environment,
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: (command, args, options) => {
+          if (args[0] === resolve(root, "scripts/setup-env.mjs")) {
+            return spawnSync(command, args, { ...options, encoding: "utf8" });
+          }
+          return args.includes("status")
+            ? ({ ...spawnResult(), status: 1 } as never)
+            : spawnResult();
+        },
+        spawn: (_command, args, options) => {
+          spawned.push({ args, env: options?.env });
+          return child(spawned.length);
+        },
+        collectStatus: async () => healthyStatus(root)
+      });
+
+      const localRuntime = spawned.find((entry) =>
+        entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
+      );
+      expect(localRuntime?.env?.MEMORY_API_TOKEN).toMatch(/^cmt_/);
+      const result = await setupCore({ environment });
+      expect(result).toMatchObject({
+        ok: true,
+        stdout: "Reused validated local API Token."
+      });
+
+      const api = spawned.find((entry) =>
+        entry.args.includes(resolve(root, "apps/api/dist/index.js"))
+      );
+      const repoEnv = loadRepoEnv(root, environment);
+      expect(api?.env?.API_TOKEN_PEPPER).toBe(repoEnv.API_TOKEN_PEPPER);
+      expect(new URL(api?.env?.DATABASE_URL ?? "").password).toBe(
+        repoEnv.POSTGRES_PASSWORD
+      );
+    }
+  );
 
   it("cleans the API when status collection fails before dependent apps start", async () => {
     const root = tempDir();

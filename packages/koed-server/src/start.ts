@@ -57,7 +57,10 @@ import {
 } from "./local-embedding-runtime.js";
 import { startLocalPrivacyRuntime } from "./local-privacy-runtime.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
-import { ensurePackagedLocalServiceSecrets } from "./local-service-secrets.js";
+import {
+  ensurePackagedLocalServiceSecrets,
+  localServiceSecretsPath
+} from "./local-service-secrets.js";
 import {
   hasCompletePostgresOverride,
   startLocalPostgresRuntime,
@@ -1023,22 +1026,19 @@ export const startKoedServer = async ({
     };
     const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
     const startupConfig = effectiveRuntimeConfig.config;
+    const bundledPersonal =
+      startupConfig.runtimeMode === "local-personal" &&
+      startupConfig.dependencyMode === "bundled-local";
     startupPhase = "packaged local service secrets";
     environment = await initializeUnderSupervisorLock(() =>
       ensurePackagedLocalServiceSecrets(
         paths,
-        execution === "packaged" ||
-          (startupConfig.runtimeMode === "local-personal" &&
-            startupConfig.dependencyMode === "bundled-local"),
+        execution === "packaged" || bundledPersonal,
         environment
       )
     );
     mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
-    if (
-      startupConfig.runtimeMode === "local-personal" &&
-      startupConfig.dependencyMode === "bundled-local" &&
-      environment.KOED_AUTO_PORTS === undefined
-    ) {
+    if (bundledPersonal && environment.KOED_AUTO_PORTS === undefined) {
       environment = { ...environment, KOED_AUTO_PORTS: "1" };
     }
     const portAllocationEnvironment = { ...environment };
@@ -1127,7 +1127,12 @@ export const startKoedServer = async ({
         paths,
         "Prepare Koed environment",
         process.execPath,
-        [resolve(paths.repoRoot, "scripts/setup-env.mjs")],
+        [
+          resolve(paths.repoRoot, "scripts/setup-env.mjs"),
+          ...(bundledPersonal
+            ? ["--local-service-secrets", localServiceSecretsPath(paths)]
+            : [])
+        ],
         childEnv,
         spawnSync
       );

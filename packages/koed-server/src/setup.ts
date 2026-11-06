@@ -1,4 +1,8 @@
 import {
+  renderCodexBlock,
+  stripReorderedCodexBlock
+} from "./codex-config-block.mjs";
+import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
@@ -197,7 +201,6 @@ const configureCodexIntegration = ({
   const existing = existsSync(codexConfigPath)
     ? String(readFileSync(codexConfigPath, "utf8"))
     : "";
-  const withoutPrevious = stripCodexOwnershipBlock(existing);
   if (!/^[A-Za-z0-9_-]+$/.test(mcpName))
     throw new Error("MEMORY_MCP_NAME must be a TOML bare server name.");
 
@@ -220,60 +223,17 @@ const configureCodexIntegration = ({
   } else {
     nextInstructions = removeManagedCodexGuidance(existingInstructions);
   }
-  const markerStart = "# >>> koed";
-  const markerEnd = "# <<< koed";
-  const hookCommand = [
+  const config = {
     nodeCommand,
-    runtime.captureHook,
-    "--koed-home",
-    paths.koedHome,
-    "--memory-tool",
-    `mcp__${mcpName}__memory_answer`
-  ]
-    .map(tomlString)
-    .join(" ");
-  const hookEvents = [
-    ["PreToolUse", 10],
-    ["SessionStart", 10],
-    ["UserPromptSubmit", 10],
-    ["PostToolUse", 10],
-    ["Stop", 30],
-    ["SubagentStart", 10],
-    ["SubagentStop", 30]
-  ] as const;
-  const hookBlocks = hookEvents
-    .map(
-      ([eventName, timeout]) => `[[hooks.${eventName}]]
-${eventName === "PreToolUse" ? `matcher = ${tomlString(`mcp__${mcpName}__memory_answer`)}\n` : ""}[[hooks.${eventName}.hooks]]
-type = "command"
-command = ${tomlString(hookCommand)}
-timeout = ${timeout}`
-    )
-    .join("\n\n");
-  const koedBlock = `${markerStart}
-[mcp_servers.${mcpName}]
-command = ${tomlString(nodeCommand)}
-args = [${tomlString(runtime.mcpCli)}]
-enabled = true
-
-[mcp_servers.${mcpName}.tools.memory_answer]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_answer_result]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_answer_cancel]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_workspaces]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.env]
-KOED_HOME = ${tomlString(paths.koedHome)}
-
-${hookBlocks}
-${markerEnd}
-`;
+    mcpName,
+    mcpCliPath: runtime.mcpCli,
+    captureHookPath: runtime.captureHook,
+    koedHome: paths.koedHome
+  };
+  const withoutPrevious = stripCodexOwnershipBlock(
+    stripReorderedCodexBlock(existing, config)
+  );
+  const koedBlock = renderCodexBlock(config);
   mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
   writeFileSync(
     codexConfigPath,
@@ -985,7 +945,11 @@ const runSetupBootstrap = (
         ...output,
         ok: false,
         state: "needs_attention",
-        error: `Codex setup failed with exit code ${result.status ?? 1}.`,
+        error: output.stderr?.includes(
+          "Codex Koed ownership markers are duplicated or incomplete."
+        )
+          ? "Codex config.toml has incomplete or duplicate Koed markers. Review the Koed MCP Server and Capture Hook entries before retrying."
+          : `Codex setup failed with exit code ${result.status ?? 1}.`,
         action:
           "Review stdout/stderr, fix the reported client setup failure, then rerun koed setup codex --json."
       };

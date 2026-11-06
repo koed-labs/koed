@@ -3,6 +3,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import {
+  renderCodexBlock,
+  stripReorderedCodexBlock
+} from "../packages/koed-server/src/codex-config-block.mjs";
+
 const repoRoot = process.cwd();
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
@@ -113,8 +118,6 @@ const removeGuidance = (content) => {
   return `${content.slice(0, ownedStart)}${content.slice(ownedEnd)}`;
 };
 
-const markerStart = "# >>> koed";
-const markerEnd = "# <<< koed";
 const configuredKoedHome = process.env.KOED_HOME?.trim();
 const koedHome =
   !configuredKoedHome || configuredKoedHome === "~"
@@ -125,59 +128,6 @@ const koedHome =
         configuredKoedHome.startsWith("~\\")
       ? resolve(homedir(), configuredKoedHome.slice(2))
       : resolve(configuredKoedHome);
-const hookCommand = [
-  nodeCommand,
-  captureHookPath,
-  "--koed-home",
-  koedHome,
-  "--memory-tool",
-  `mcp__${mcpName}__memory_answer`
-]
-  .map((value) => JSON.stringify(value))
-  .join(" ");
-const hookEvents = [
-  ["PreToolUse", 10],
-  ["SessionStart", 10],
-  ["UserPromptSubmit", 10],
-  ["PostToolUse", 10],
-  ["Stop", 30],
-  ["SubagentStart", 10],
-  ["SubagentStop", 30]
-];
-const hookBlocks = hookEvents
-  .map(
-    ([eventName, timeout]) => `[[hooks.${eventName}]]
-${eventName === "PreToolUse" ? `matcher = ${JSON.stringify(`mcp__${mcpName}__memory_answer`)}\n` : ""}[[hooks.${eventName}.hooks]]
-type = "command"
-command = ${JSON.stringify(hookCommand)}
-timeout = ${timeout}`
-  )
-  .join("\n\n");
-const makeKoedBlock = () => `${markerStart}
-[mcp_servers.${mcpName}]
-command = "${nodeCommand}"
-args = ["${mcpCliPath}"]
-enabled = true
-
-[mcp_servers.${mcpName}.tools.memory_answer]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_answer_result]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_answer_cancel]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_workspaces]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.env]
-KOED_HOME = ${JSON.stringify(koedHome)}
-
-${hookBlocks}
-${markerEnd}
-`;
-
 const stripOwnedBlock = (content) => {
   const lines = content.split(/(?<=\n)|(?<=\r)/);
   const markers = lines.flatMap((line, index) => {
@@ -203,8 +153,11 @@ const stripOwnedBlock = (content) => {
 const existing = existsSync(codexConfigPath)
   ? readFileSync(codexConfigPath, "utf8")
   : "";
-const withoutPrevious = stripOwnedBlock(existing);
-const koedBlock = makeKoedBlock();
+const config = { nodeCommand, mcpName, mcpCliPath, captureHookPath, koedHome };
+const withoutPrevious = stripOwnedBlock(
+  mode === "remove" ? existing : stripReorderedCodexBlock(existing, config)
+);
+const koedBlock = renderCodexBlock(config);
 const existingInstructions = existsSync(codexInstructionsPath)
   ? readFileSync(codexInstructionsPath, "utf8")
   : "";

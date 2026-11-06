@@ -3,3 +3,7 @@
 ---
 
 Move Desktop Settings to the shared sidebar layout for General, AI models, Services, About, and their detail pages. Use theme-matched Koed logos in Desktop navigation and Settings. Hide the unused profile button in the sidebar. Let users choose one Memory Model during onboarding or in Settings for Memory Answers, LCM summaries, captured-session titles, and Curated Memory reviews.
+
+Fix an issue where a clean Desktop setup from a checkout could reject its own API Token during final checks.
+
+Preselect the first ready AI Client and a named Memory Model during onboarding. Prefer GPT-6 Luna for Codex and Haiku 5.5 for Claude Code with Medium reasoning. Restore recognizable Koed settings when Codex reorders its configuration during setup.

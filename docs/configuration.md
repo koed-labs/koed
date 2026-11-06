@@ -45,6 +45,11 @@ embedding context tokens and 8,192-token microbatches—to the safer 8,192-token
 context and 512-token microbatch values. Other explicit Operator overrides are
 preserved.
 
+When Desktop starts a bundled-local Personal runtime from a checkout, it fills
+missing secrets in `.env` from `KOED_HOME/config/local-service-secrets.json`.
+This lets the API and onboarding validate the same API Token on the first run.
+Existing configured values in `.env` are preserved.
+
 For server/private VPS deployments, treat `koed-server` as the application
 deployment unit and Postgres, queue backend, Embedding Service, reverse
 proxy/TLS, and backup/restore jobs as dependencies. See
