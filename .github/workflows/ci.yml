@@ -94,6 +94,9 @@ jobs:
       - name: Check ADR numbers are unique
         run: pnpm docs:adr:check
 
+      - name: Check release policy
+        run: pnpm release:check
+
       - name: Check formatting
         run: pnpm fmt:check
 

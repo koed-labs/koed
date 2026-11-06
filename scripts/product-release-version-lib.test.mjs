@@ -223,6 +223,92 @@ test("accepts the single product release-unit policy", () => {
   }
 });
 
+test("rejects ignored packages in changeset frontmatter with actionable paths", () => {
+  const root = fixture();
+  try {
+    writeText(
+      root,
+      ".changeset/desktop.md",
+      '---\n"@koed/desktop": patch\n"@koed/koed": minor\n---\nNotes\n'
+    );
+    writeText(
+      root,
+      ".changeset/api.md",
+      '---\n"@koed/api": patch\n---\nNotes\n'
+    );
+    assert.throws(
+      () => assertChangesetReleasePolicy(root),
+      (error) => {
+        assert.match(error.message, /desktop\.md.*@koed\/desktop/);
+        assert.match(error.message, /api\.md.*@koed\/api/);
+        return true;
+      }
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("accepts valid and empty changesets without scanning note bodies", () => {
+  const root = fixture();
+  try {
+    writeText(
+      root,
+      ".changeset/valid.md",
+      '---\r\n"@koed/koed": patch\r\n"@koed-labs/server": patch\r\n---\r\n@koed/desktop: patch\r\n'
+    );
+    writeText(root, ".changeset/empty.md", "---\n---\nNotes\n");
+    writeText(root, ".changeset/README.md", "Not frontmatter");
+    assert.equal(assertChangesetReleasePolicy(root), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("accepts Changesets-compatible whitespace in frontmatter", () => {
+  const root = fixture();
+  try {
+    writeText(
+      root,
+      ".changeset/spaces.md",
+      '\n  ---\n"@koed/koed": patch\n  ---\nNotes\n'
+    );
+    assert.equal(assertChangesetReleasePolicy(root), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects invalid release types before versioning", () => {
+  const root = fixture();
+  try {
+    writeText(
+      root,
+      ".changeset/broken.md",
+      '---\n"@koed/koed": typo\n---\nNotes\n'
+    );
+    assert.throws(() => assertChangesetReleasePolicy(root), /broken\.md/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects malformed changeset frontmatter", () => {
+  const root = fixture();
+  try {
+    writeText(
+      root,
+      ".changeset/broken.md",
+      '---\n"@koed/koed": [\n---\nNotes\n'
+    );
+    assert.throws(() => assertChangesetReleasePolicy(root), /broken\.md/);
+    writeText(root, ".changeset/broken.md", "missing frontmatter\n");
+    assert.throws(() => assertChangesetReleasePolicy(root), /broken\.md/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects an unclassified internal workspace package", () => {
   const root = fixture();
   try {
