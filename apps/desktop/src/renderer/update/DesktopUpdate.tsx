@@ -48,7 +48,7 @@ export function DesktopUpdatePanel({
         </>
       ) : state?.status === "checking" || update.busy ? (
         <p role="status">Checking for updates…</p>
-      ) : update.error || state?.status === "error" ? (
+      ) : state?.status === "error" ? (
         <p role="alert">
           {update.error ?? "Update status could not be checked."}
         </p>
@@ -63,6 +63,9 @@ export function DesktopUpdatePanel({
         <Button disabled={update.busy} onClick={() => void update.check()}>
           <RefreshCw aria-hidden="true" /> Check for updates
         </Button>
+      ) : null}
+      {update.error && state?.status !== "error" ? (
+        <p role="alert">{update.error}</p>
       ) : null}
       <details className="desktop-update-manual-steps">
         <summary>Update Koed manually</summary>

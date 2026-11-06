@@ -37,3 +37,19 @@ Correction verification:
 - Node v26.3.1 still warns repo engine requires >=24 <25. Reviewer report file supplied at `/var/folders/1y/rhkfw3_91qjgspflp7kkxqkh0000gn/T/acp-delegate/del_mw49pwmp_xcli.out` was unavailable (ENOENT); fixes followed the five findings stated in the request.
 
 No architecture documentation change needed: corrections alter active UI wiring and smoke verification, not service boundaries or update authority.
+
+## Review follow-up: View release failure
+
+A failed `View release` kept the latest release available but the panel's available-state branch hid `update.error`. The panel now renders the sanitized operation error alongside available-version details, exactly once; the raw rejection is never exposed. The regression test mounts `DesktopUpdatePanel` with the real `useDesktopUpdate` hook, clicks `View release`, verifies the sanitized alert and retained release details, then retries successfully and verifies the alert clears.
+
+TDD confirmed the regression first: the mounted-panel test failed because `Release page could not be opened.` was absent after the rejected action. After the panel change, focused update tests passed (8/8).
+
+Round-2 verification:
+
+- `pnpm --filter @koed/desktop test` — passed, 151 files / 1442 tests.
+- `pnpm --filter @koed/desktop test:packaged-smoke` — passed, 40 tests.
+- `pnpm --filter @koed/desktop typecheck` — passed.
+- `pnpm --filter @koed/desktop build` — passed; existing large-chunk warning and Node engine mismatch remain.
+- Targeted Prettier and `git diff --check` — passed.
+
+The supplied round-2 reviewer artifact `/var/folders/1y/rhkfw3_91jqgspflp7kkxqkh0000gn/T/acp-delegate/del_mw4ad53y_tmbe.out` was unavailable (ENOENT); fix follows the finding in the request.

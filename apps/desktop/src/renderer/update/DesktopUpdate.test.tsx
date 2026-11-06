@@ -170,6 +170,55 @@ describe("Desktop update notice", () => {
     expect(controller.error).toBeNull();
   });
 
+  it("shows a sanitized View release failure once and clears it on recovery", async () => {
+    const available: DesktopUpdateState = {
+      installedVersion: "0.10.0",
+      status: "available",
+      release: { version: "0.11.0", summary: "New release" },
+      checkedAt: "2026-11-06T00:00:00.000Z"
+    };
+    let rejectOpen!: (error: Error) => void;
+    let resolveOpen!: (state: DesktopUpdateState) => void;
+    let openCount = 0;
+    const api: DesktopUpdateApi = {
+      getState: async () => available,
+      checkForUpdates: async () => available,
+      openReleasePage: () => {
+        openCount += 1;
+        return new Promise((resolve, reject) => {
+          if (openCount === 1) rejectOpen = reject;
+          else resolveOpen = resolve;
+        });
+      },
+      subscribe: () => () => undefined
+    };
+    function PanelProbe() {
+      return <DesktopUpdatePanel update={useDesktopUpdate(api)} />;
+    }
+    await act(async () => root.render(<PanelProbe />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button")?.click();
+    });
+    await act(async () => rejectOpen(new Error("secret token in failure")));
+
+    expect(container.textContent).toContain("Version 0.11.0 is available.");
+    expect(container.textContent).toContain(
+      "Release page could not be opened."
+    );
+    expect(container.textContent).not.toContain("secret token");
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button")?.click();
+    });
+    await act(async () => resolveOpen(available));
+    expect(container.textContent).not.toContain(
+      "Release page could not be opened."
+    );
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(0);
+    expect(container.textContent).toContain("Version 0.11.0 is available.");
+  });
+
   it("shows available version and plain notes without install actions", () => {
     const html = renderToStaticMarkup(
       <DesktopUpdatePanel
