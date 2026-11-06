@@ -60,6 +60,17 @@ describe("desktop update contract", () => {
     ).toBe(false);
   });
 
+  it("rejects checkedAt timestamps with unbounded precision", () => {
+    expect(
+      desktopUpdateStateSchema.safeParse({
+        installedVersion: "0.10.0",
+        status: "current",
+        release: null,
+        checkedAt: `2026-11-06T00:00:00.${"0".repeat(100)}Z`
+      }).success
+    ).toBe(false);
+  });
+
   it("bounds version, release URL, and release notes", () => {
     expect(
       desktopUpdateStateSchema.safeParse({

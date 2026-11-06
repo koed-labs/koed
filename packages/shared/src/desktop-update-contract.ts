@@ -29,7 +29,11 @@ export const desktopUpdateStateSchema = z
       })
       .strict()
       .nullable(),
-    checkedAt: z.iso.datetime().nullable()
+    checkedAt: z
+      .string()
+      .length(24)
+      .pipe(z.iso.datetime({ precision: 3 }))
+      .nullable()
   })
   .strict()
   .refine((state) => state.status !== "available" || state.release !== null)

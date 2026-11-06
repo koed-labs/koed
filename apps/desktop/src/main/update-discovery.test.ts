@@ -121,6 +121,19 @@ describe("update discovery", () => {
     ).toBe("error");
   });
 
+  it("rejects last-page pagination without a matching next relation", async () => {
+    const fetcher = fetchForPages([[version("0.11.0")]], {
+      link: '<https://api.github.com/repos/koed-labs/koed/releases?per_page=100&page=3>; rel="last"'
+    });
+    const result = await createUpdateDiscovery({
+      eligible: true,
+      installedVersion: "0.10.0",
+      fetch: fetcher
+    }).check();
+    expect(result.status).toBe("error");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed when highest stable release lacks required assets", async () => {
     const incomplete = { ...version("0.11.0"), assets: [] };
     const fetcher = fetchForPages([[version("0.10.1")], [incomplete], []]);
@@ -165,6 +178,82 @@ describe("update discovery", () => {
       ).status
     ).toBe("error");
     expect(calls).toBeLessThanOrEqual(6);
+  });
+
+  it("isolates throwing subscribers and continues scheduled checks", async () => {
+    vi.useFakeTimers();
+    const report = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(response([]));
+    const discovery = createUpdateDiscovery({
+      eligible: true,
+      installedVersion: "0.10.0",
+      fetch: fetcher as unknown as typeof fetch,
+      random: () => 0
+    });
+    discovery.subscribe(() => {
+      throw new Error("subscriber failed");
+    });
+    discovery.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(240_000);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(720_000);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(discovery.current().status).toBe("current");
+    expect(report).toHaveBeenCalled();
+    discovery.dispose();
+    report.mockRestore();
+  });
+
+  it("rejects an individual page exceeding 2 MiB", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(`[]${" ".repeat(2 * 1024 * 1024)}`, {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+    ) as unknown as typeof fetch;
+    expect(
+      (
+        await createUpdateDiscovery({
+          eligible: true,
+          installedVersion: "0.10.0",
+          fetch: fetcher
+        }).check()
+      ).status
+    ).toBe("error");
+  });
+
+  it("stops after scanning at most 10 pages", async () => {
+    let calls = 0;
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      calls += 1;
+      const page = Number(new URL(String(input)).searchParams.get("page"));
+      const releases = Array.from({ length: 100 }, (_, index) => ({
+        tag_name: `v0.${page}.${index + 1}`,
+        draft: false,
+        prerelease: false
+      }));
+      const headers: Record<string, string> =
+        page < 10
+          ? {
+              link: `<https://api.github.com/repos/koed-labs/koed/releases?per_page=100&page=${page + 1}>; rel="next"`
+            }
+          : {};
+      return response(releases, headers);
+    }) as unknown as typeof fetch;
+    const result = await createUpdateDiscovery({
+      eligible: true,
+      installedVersion: "0.10.0",
+      fetch: fetcher
+    }).check();
+    expect(result.status).toBe("error");
+    expect(calls).toBe(10);
   });
 
   it("shares concurrent checks and suppresses stale results after disposal", async () => {

@@ -128,7 +128,7 @@ const readJson = async (
 
 const paginationNext = (link: string | null, page: number): boolean => {
   if (!link) return false;
-  const relations = new Set<string>();
+  const relations = new Map<string, number>();
   for (const part of link.split(",")) {
     const match = /^\s*<([^>]+)>;\s*rel="(next|prev|first|last)"\s*$/u.exec(
       part
@@ -151,9 +151,16 @@ const paginationNext = (link: string | null, page: number): boolean => {
       (match[2] === "last" && target < page)
     )
       throw new Error("Invalid pagination.");
-    relations.add(match[2]!);
+    relations.set(match[2]!, target);
   }
-  return relations.has("next");
+  const hasNext = relations.has("next");
+  const lastPage = relations.get("last");
+  if (
+    lastPage !== undefined &&
+    ((lastPage > page && !hasNext) || (hasNext && lastPage < page + 1))
+  )
+    throw new Error("Inconsistent pagination.");
+  return hasNext;
 };
 
 const discover = async (fetcher: typeof fetch, signal: AbortSignal) => {
@@ -225,7 +232,13 @@ export const createUpdateDiscovery = (
   const publish = (next: DesktopUpdateState) => {
     if (disposed) return;
     state = desktopUpdateStateSchema.parse(next);
-    for (const listener of listeners) listener(current());
+    for (const listener of listeners) {
+      try {
+        listener(current());
+      } catch (error) {
+        console.error("Desktop update state listener failed.", error);
+      }
+    }
   };
   const check = (): Promise<DesktopUpdateState> => {
     if (pending) return pending;
@@ -236,8 +249,8 @@ export const createUpdateDiscovery = (
       controller = new AbortController();
       const activeController = controller;
       const deadline = setTimeout(() => activeController.abort(), timeoutMs);
-      publish({ ...state, status: "checking" });
       try {
+        publish({ ...state, status: "checking" });
         const releaseData = await discover(
           options.fetch ?? globalThis.fetch,
           activeController.signal
@@ -287,7 +300,7 @@ export const createUpdateDiscovery = (
           schedule(allowedAt - Date.now());
           return;
         }
-        void check().then(() => {
+        const scheduleNext = () => {
           if (disposed) return;
           const base = failures
             ? Math.min(
@@ -302,6 +315,11 @@ export const createUpdateDiscovery = (
           schedule(
             Math.max(base * (0.8 + 0.4 * jitter), allowedAt - Date.now())
           );
+        };
+        void check().then(scheduleNext, (error: unknown) => {
+          console.error("Scheduled desktop update check failed.", error);
+          failures += 1;
+          scheduleNext();
         });
       },
       Math.min(delay, timerLimit)
