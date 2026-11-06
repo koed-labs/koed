@@ -28,12 +28,14 @@ const projects: SidebarProject[] = [
 function Harness({
   scope = "owner-a",
   data = projects,
+  reveal = null,
   servicesStarting = false,
   loading = false,
   inventoryReady = true
 }: {
   scope?: string;
   data?: SidebarProject[];
+  reveal?: { projectId: string; key: number } | null;
   servicesStarting?: boolean;
   loading?: boolean;
   inventoryReady?: boolean;
@@ -42,6 +44,7 @@ function Harness({
   return (
     <NavigationShell
       projects={data}
+      revealProject={reveal}
       servicesStarting={servicesStarting}
       loading={loading}
       inventoryReady={inventoryReady}
@@ -85,6 +88,35 @@ afterEach(async () => {
 });
 
 describe("Project sidebar interactions", () => {
+  it("expands a Project Home reveals, so its open conversation shows", async () => {
+    const second: SidebarProject = {
+      id: "second",
+      name: "Second",
+      latestAt: "2026-10-28T12:00:00Z",
+      conversations: [
+        {
+          key: "session:two",
+          aliases: ["session:two"],
+          title: "Opened from Home",
+          client: "codex",
+          latestAt: "2026-10-28T12:00:00Z",
+          route: { kind: "conversation", projectId: "second", threadId: "two" },
+          projectName: "Second"
+        }
+      ]
+    };
+    const data = [...projects, second];
+    await act(async () => root.render(<Harness data={data} />));
+    // Only the first Project starts expanded.
+    expect(container.textContent).not.toContain("Opened from Home");
+    await act(async () =>
+      root.render(
+        <Harness data={data} reveal={{ projectId: "second", key: 1 }} />
+      )
+    );
+    expect(container.textContent).toContain("Opened from Home");
+  });
+
   it("distinguishes service startup, inventory loading and an empty inventory", async () => {
     await act(async () =>
       root.render(<Harness data={[]} inventoryReady={false} />)

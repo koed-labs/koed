@@ -7,10 +7,7 @@ import {
   useSyncExternalStore
 } from "react";
 import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
-import type {
-  ManagedConversationDesktopApi,
-  ManagedConversationLaunchOptions
-} from "../../ipc/managed-conversation-protocol.js";
+import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
 import type {
   V1ConversationIntent,
   V1Profile,
@@ -22,18 +19,18 @@ import {
   sessionSelectionId
 } from "../../project-memory-ui.js";
 import { projectExecutionFolders } from "../../project-source-navigation.js";
-import { assignmentFrom } from "../views/preferences/local-ai-client-settings-helpers.js";
-import {
-  selectionForAssignment,
-  selectionForInstance,
-  type ConversationSelection
-} from "../views/personal/ConversationSettings.js";
 import {
   appendManagedConversationUpdate,
   managedConversationUpdatesSince,
   type ManagedConversationUpdateEnvelope
 } from "../state/managed-conversation-runtime.js";
 import { V1Settings, type V1SettingsTab } from "./settings.js";
+import { Home } from "./home/Home.js";
+import {
+  homeClients,
+  homeProjectEntries,
+  selectHomeView
+} from "./home/home-model.js";
 import "./app-layout.css";
 import "./app.css";
 import { ConversationPresentationContext } from "../conversation-presentation.js";
@@ -44,7 +41,6 @@ import { PersonalMemoryStore } from "../state/personal-memory.js";
 import { useManagedConversationLifecycle } from "../state/use-managed-conversation-lifecycle.js";
 import { ThemeStore } from "../state/theme.js";
 import { useDesktopStatus } from "../state/use-status.js";
-import { NewConversationComposer } from "../views/personal/NewConversationComposer.js";
 import { StoreConversation } from "../views/personal/PersonalMemoryViews.js";
 import { NavigationShell } from "./NavigationShell.js";
 import { useProjectManagement } from "./project-management/use-project-management.js";
@@ -55,7 +51,6 @@ import {
   acknowledgeLateV1Capture,
   confirmV1ProjectMembership,
   lateV1CaptureSessionId,
-  selectV1ExecutionTarget,
   useV1ProjectMembershipReconciler
 } from "./project-flow.js";
 import {
@@ -75,7 +70,8 @@ import {
   v1State
 } from "./state.js";
 import { parseAgentLook, serializeAgentLook } from "./pixelkin/agent-kin.js";
-import { DEFAULT_AGENT_LOOK, V1EmptyHero } from "./visual.js";
+import { DEFAULT_AGENT_LOOK } from "./visual.js";
+import { useDesktopUpdate } from "../update/use-desktop-update.js";
 
 const defaultStatusStore = new DesktopStatusStore();
 const defaultThemeStore = new ThemeStore();
@@ -91,24 +87,6 @@ const fallbackAgent: OnboardingAgent = {
   name: "Koed",
   look: DEFAULT_AGENT_LOOK
 };
-const launchIntent = (
-  input: Parameters<ManagedConversationDesktopApi["start"]>[0],
-  createdAt: string
-): V1ConversationIntent => ({
-  idempotencyKey: input.idempotencyKey,
-  projectId: input.projectId,
-  ...(input.contextKind ? { contextKind: input.contextKind } : {}),
-  aiClientDriverId: input.aiClientDriverId,
-  aiClientInstanceId: input.aiClientInstanceId,
-  model: input.model,
-  reasoningEffort: input.reasoningEffort,
-  permissionMode: input.permissionMode,
-  runnerKind: "local_device",
-  ...(input.chiefOfStaffName
-    ? { chiefOfStaffName: input.chiefOfStaffName }
-    : {}),
-  createdAt
-});
 const launchInput = (
   intent: V1ConversationIntent
 ): Parameters<ManagedConversationDesktopApi["start"]>[0] => ({
@@ -169,6 +147,7 @@ export function V1App({
   statusStore?: DesktopStatusStore;
   themeStore?: ThemeStore;
 }) {
+  const update = useDesktopUpdate(window.koedDesktop?.updates);
   const [profile, setProfile] = useState<V1Profile | null>(null);
   const [profileReadError, setProfileReadError] = useState<string | null>(null);
   const [profileReadRevision, setProfileReadRevision] = useState(0);
@@ -187,23 +166,9 @@ export function V1App({
   const navigation = useNavigationHistory(scopeKey);
   const { route, navigate: setRoute } = navigation;
   const [profileName, setProfileName] = useState("User");
-  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
-  const [launchPending, setLaunchPending] = useState(false);
-  const [composerGeneration, setComposerGeneration] = useState(0);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null
   );
-  const [folderChoices, setFolderChoices] = useState<Record<string, string>>(
-    {}
-  );
-  const [launchOptions, setLaunchOptions] =
-    useState<ManagedConversationLaunchOptions | null>(null);
-  const [selection, setSelection] = useState<ConversationSelection>({
-    instanceId: "",
-    model: "",
-    reasoningEffort: "",
-    permissionMode: ""
-  });
   const [realtime, setRealtime] =
     useState<ManagedConversationUpdateEnvelope | null>(null);
   const [recoveryRevision, setRecoveryRevision] = useState(0);
@@ -214,11 +179,14 @@ export function V1App({
   const [revision, setRevision] = useState(0);
   const attemptedReconcile = useRef(new Set<string>());
   const attemptedCaptures = useRef(new Set<string>());
-  const lastSelectedGeneration = useRef<number | null>(null);
   const selectedProjectIdRef = useRef<string | null>(null);
   selectedProjectIdRef.current = selectedProjectId;
   const platform = useMemo(() => createRendererPlatform(), []);
-  const { status, error: statusError } = useDesktopStatus(statusStore);
+  const {
+    status,
+    error: statusError,
+    revision: statusRevision
+  } = useDesktopStatus(statusStore);
   const serviceError =
     statusError && status?.api.state !== "healthy"
       ? "Service status is unavailable. Try again."
@@ -348,6 +316,28 @@ export function V1App({
     if (profile?.onboarding.completed && status?.api.state === "healthy")
       void loadInventory();
   }, [loadInventory, profile?.onboarding.completed, status?.api.state]);
+  // Projects appear while history is processed, so refresh them with status.
+  useEffect(() => {
+    if (!profile?.onboarding.completed || status?.api.state !== "healthy")
+      return;
+    const active = Object.values(status.historicalIngestion ?? {}).some(
+      (item) =>
+        item.lifecycle === "running" ||
+        item.lifecycle === "waiting" ||
+        item.lifecycle === "failed"
+    );
+    if (active) void loadInventory({ silent: true });
+  }, [loadInventory, profile?.onboarding.completed, status, statusRevision]);
+  // Change events can be missed while the window is in the background.
+  useEffect(() => {
+    if (status?.api.state !== "healthy") return;
+    const refresh = () => {
+      void statusStore.refresh();
+      void loadInventory({ silent: true });
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [loadInventory, statusStore, status?.api.state]);
   useEffect(() => {
     if (status?.api.state === "healthy") setError(null);
   }, [status?.api.state]);
@@ -455,79 +445,6 @@ export function V1App({
     };
   }, [store, ownerId, platform, status?.api.state, publishInventoryScope]);
 
-  useEffect(() => {
-    if (
-      !managedConversations ||
-      !profile?.onboarding.completed ||
-      status?.api.state !== "healthy"
-    )
-      return;
-    let active = true;
-    const load = async () => {
-      try {
-        const [{ options }, settings] = await Promise.all([
-          managedConversations.launchOptions(),
-          window.koedDesktop?.localAiClients?.list()
-        ]);
-        if (!active) return;
-        const assignment = settings
-          ? assignmentFrom(settings.readModel, "conversations")
-          : null;
-        setLaunchOptions(options);
-        setSelection((current) => {
-          if (lastSelectedGeneration.current !== composerGeneration) {
-            lastSelectedGeneration.current = composerGeneration;
-            return assignment
-              ? selectionForAssignment(options, assignment)
-              : selectionForInstance(
-                  options,
-                  options.instances.find((candidate) => candidate.ready)
-                    ?.instanceId ?? ""
-                );
-          }
-          const instance = options.instances.find(
-            (candidate) => candidate.instanceId === current.instanceId
-          );
-          const currentModel = instance?.models.find(
-            (model) => model.id === current.model
-          );
-          const effortValid =
-            currentModel &&
-            (current.reasoningEffort === "" ||
-              currentModel.supportedReasoningEfforts.includes(
-                current.reasoningEffort
-              ));
-          const permissionValid = instance?.capabilities.permissionModes.some(
-            (mode) =>
-              mode.mode === current.permissionMode &&
-              mode.support === "supported"
-          );
-          if (instance?.ready && currentModel && effortValid && permissionValid)
-            return current;
-          return assignment
-            ? selectionForAssignment(options, assignment)
-            : selectionForInstance(
-                options,
-                options.instances.find((candidate) => candidate.ready)
-                  ?.instanceId ?? ""
-              );
-        });
-      } catch (cause) {
-        if (active)
-          setError(cause instanceof Error ? cause.message : String(cause));
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-    };
-  }, [
-    managedConversations,
-    profile?.onboarding.completed,
-    status?.state,
-    settingsOpen,
-    composerGeneration
-  ]);
   useEffect(() => {
     if (!profile?.onboarding.completed || status?.api.state !== "healthy")
       return;
@@ -876,76 +793,7 @@ export function V1App({
     }
   }, [scopeKey, realtime, provenance, lifecycle.drafts, refreshProvenance]);
 
-  const v1ManagedConversations = useMemo<ManagedConversationDesktopApi | null>(
-    () =>
-      managedConversations && {
-        ...managedConversations,
-        start: async (input) => {
-          const presentationProjectId = selectedProjectIdRef.current;
-          const existing = (await v1State().readProvenance()).conversations[
-            input.idempotencyKey
-          ];
-          const scoped = {
-            ...input,
-            chiefOfStaffName:
-              existing?.chiefOfStaffName ?? agentRef.current.name
-          };
-          if (
-            existing &&
-            Object.entries(launchInput(existing)).some(
-              ([key, value]) =>
-                (scoped as Record<string, unknown>)[key] !== value
-            )
-          )
-            throw new Error(
-              "The pending Conversation has different launch settings."
-            );
-          if (!existing)
-            await v1State().putConversationIntent({
-              ...launchIntent(scoped, new Date().toISOString()),
-              ...(presentationProjectId ? { presentationProjectId } : {})
-            });
-          const result = await managedConversations.start(scoped);
-          await v1State().ackConversation({
-            idempotencyKey: scoped.idempotencyKey,
-            executionId: result.executionId,
-            capturedSessionId: result.conversation?.capturedSessionId
-          });
-          await refreshProvenance();
-          return result;
-        },
-        send: async (input) => {
-          const known = Object.values(
-            (await v1State().readProvenance()).conversations
-          ).find((intent) => intent.executionId === input.executionId);
-          if (!known) throw new Error("V1 Conversation provenance is missing.");
-          const initialPrompt = {
-            clientUserMessageId: input.clientUserMessageId,
-            prompt: input.prompt,
-            status: "reconciling" as const,
-            message:
-              "Koed could not confirm whether the first prompt was accepted."
-          };
-          await v1State().saveInitialPrompt({
-            idempotencyKey: known.idempotencyKey,
-            initialPrompt
-          });
-          const result = await managedConversations.send(input);
-          await v1State().saveInitialPrompt({
-            idempotencyKey: known.idempotencyKey,
-            initialPrompt: {
-              ...initialPrompt,
-              status: result.status,
-              message: result.message ?? ""
-            }
-          });
-          await refreshProvenance();
-          return result;
-        }
-      },
-    [managedConversations, refreshProvenance]
-  );
-
+  const visibleProjects = projects;
   const sidebarProjects = useMemo(
     () =>
       scopeKey && inventoryScope === scopeKey
@@ -957,22 +805,66 @@ export function V1App({
         : [],
     [projects, provenance, lifecycle.drafts, revision, scopeKey, inventoryScope]
   );
-  const activeProject = selectedProjectId
-    ? (projects.find((project) => project.id === selectedProjectId) ?? null)
-    : independentProject;
-  const folders =
-    activeProject && selectedProjectId && snapshot
-      ? projectExecutionFolders(activeProject, snapshot.inventory)
-      : [];
-  // Reuse main’s independent execution Folder for a named Project with no Folder.
-  const { selectedFolder, executionProject, executionProjectId } =
-    selectV1ExecutionTarget({
-      selectedProjectId,
-      folders,
-      selectedFolderId: folderChoices[selectedProjectId ?? ""],
-      activeProject,
-      independentProject
-    });
+  const homeEntries = useMemo(
+    () => homeProjectEntries(visibleProjects),
+    [visibleProjects]
+  );
+  const homeEntriesLoaded = Boolean(
+    snapshot && (snapshot.revision > 0 || snapshot.error)
+  );
+  // There is no Project page: a Project's Kin opens its latest conversation,
+  // and the sidebar expands that Project so the open conversation shows.
+  const [revealProject, setRevealProject] = useState<{
+    projectId: string;
+    key: number;
+  } | null>(null);
+  // Conversations in no Project lie on Home's floor as coins.
+  const looseConversations = useMemo(
+    () =>
+      (
+        sidebarProjects.find((project) => project.id === "no-project")
+          ?.conversations ?? []
+      ).map(({ key, title, latestAt, client }) => ({
+        key,
+        title,
+        latestAt,
+        client
+      })),
+    [sidebarProjects]
+  );
+  const openLooseConversation = (key: string) => {
+    const conversation = sidebarProjects
+      .find((project) => project.id === "no-project")
+      ?.conversations.find((item) => item.key === key);
+    if (!conversation) return;
+    setRoute(conversation.route);
+    setRevealProject((previous) => ({
+      projectId: "no-project",
+      key: (previous?.key ?? 0) + 1
+    }));
+  };
+  // A floor coin let go over a Project's Kin adds its conversation there.
+  const dropLooseConversation = (key: string, projectId: string) => {
+    const row = sidebarProjects
+      .find((project) => project.id === "no-project")
+      ?.conversations.find((item) => item.key === key);
+    return row && projectManagement.management
+      ? projectManagement.management.onDrop(row, projectId).then(Boolean)
+      : Promise.resolve(false);
+  };
+  const openProject = (projectId: string) => {
+    const latest = sidebarProjects
+      .find((project) => project.id === projectId)
+      ?.conversations.reduce<
+        (typeof sidebarProjects)[number]["conversations"][number] | null
+      >((newest, conversation) => (!newest || conversation.latestAt > newest.latestAt ? conversation : newest), null);
+    if (!latest) return;
+    setRoute(latest.route);
+    setRevealProject((previous) => ({
+      projectId,
+      key: (previous?.key ?? 0) + 1
+    }));
+  };
   const selectedExecution =
     route.kind === "conversation" ? route.executionId : undefined;
   const selectedIntent = Object.values(provenance.conversations).find(
@@ -1092,99 +984,6 @@ export function V1App({
       onboarding: { ...current.onboarding, completed: true, draft: undefined }
     }));
   };
-  const launchComposer = (
-    <div className="v1-launch">
-      <div className="v1-project-picker">
-        <button
-          type="button"
-          disabled={launchPending}
-          aria-expanded={projectPickerOpen}
-          aria-label="Select Project"
-          onClick={() => setProjectPickerOpen((open) => !open)}
-        >
-          {activeProject && selectedProjectId
-            ? activeProject.name
-            : "No project"}{" "}
-          ▾
-        </button>
-        {projectPickerOpen && (
-          <div role="menu" aria-label="Projects">
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setSelectedProjectId(null);
-                setProjectPickerOpen(false);
-              }}
-            >
-              No project
-            </button>
-            {projects
-              .filter((project) => project.namedProject)
-              .map((project) => (
-                <button
-                  key={project.id}
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setSelectedProjectId(project.id);
-                    setProjectPickerOpen(false);
-                  }}
-                >
-                  {project.name}
-                </button>
-              ))}
-          </div>
-        )}
-      </div>
-      <NewConversationComposer
-        key={composerGeneration}
-        onPendingChange={setLaunchPending}
-        api={v1ManagedConversations}
-        projectId={executionProjectId}
-        projectRoot={selectedFolder?.path ?? null}
-        commandProjectId={selectedFolder?.id ?? null}
-        folderPicker={{
-          folders,
-          selectedId: selectedFolder?.id ?? null,
-          onSelect: (id) => {
-            if (selectedProjectId)
-              setFolderChoices((current) => ({
-                ...current,
-                [selectedProjectId]: id
-              }));
-          },
-          ...(selectedProjectId
-            ? {}
-            : { disabledReason: "Chat uses its own Folder." })
-        }}
-        contextKind={selectedFolder ? "project" : "independent"}
-        options={launchOptions}
-        selection={selection}
-        onChange={setSelection}
-        requirePrompt
-        showContextHelp={false}
-        onStarted={(conversation, status, launch, initialPrompt) => {
-          const project = executionProject;
-          if (!project) return;
-          const routeId = lifecycle.started(
-            project,
-            conversation,
-            status,
-            launch,
-            initialPrompt
-          );
-          if (routeId) {
-            setRevision((value) => value + 1);
-            setRoute({
-              kind: "conversation",
-              executionId: routeId
-            });
-          }
-        }}
-      />
-    </div>
-  );
   if (!profile)
     return profileReadError ? (
       <main role="alert">
@@ -1227,16 +1026,20 @@ export function V1App({
       >
         <NavigationShell
           projects={sidebarProjects}
+          update={update}
+          revealProject={revealProject}
           route={route}
           scopeKey={scopeKey}
-          title={conversationThread?.name}
+          title={
+            route.kind === "home"
+              ? "Home"
+              : (conversationThread?.name ?? "Conversation")
+          }
           projectName={conversationProject?.name}
           profileName={profileName}
           onSelect={setRoute}
           onHome={() => {
             setSelectedProjectId(null);
-            setLaunchPending(false);
-            setComposerGeneration((value) => value + 1);
             setRoute({ kind: "home" });
           }}
           onSettings={() => {
@@ -1339,22 +1142,32 @@ export function V1App({
                   : "This conversation is no longer available. Choose another conversation from the sidebar."}
             </p>
           ) : (
-            <V1EmptyHero
-              agentName={agent.name}
-              look={agent.look}
-              subtitle="Your AI Client, with memory."
-              composer={launchComposer}
+            <Home
+              view={selectHomeView(
+                status,
+                homeEntriesLoaded ? homeEntries : null
+              )}
+              clients={homeClients(status)}
+              entries={homeEntries}
+              agent={agent}
+              statusStore={statusStore}
+              onOpenProject={openProject}
+              looseConversations={looseConversations}
+              onOpenConversation={openLooseConversation}
+              {...(projectManagement.management
+                ? { onDropConversation: dropLooseConversation }
+                : {})}
             />
           )}
           {projectManagement.overlays}
           {settingsOpen && (
             <V1Settings
-              agent={agent}
-              onSaveAgent={onSaveAgent}
               statusStore={statusStore}
               themeStore={themeStore}
               onClose={() => setSettingsOpen(false)}
               initialTab={settingsTab}
+              update={update}
+              version={__KOED_DESKTOP_VERSION__}
               onRestartOnboarding={async () => {
                 await saveProfile((current) => ({
                   ...current,

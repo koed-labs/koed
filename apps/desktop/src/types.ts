@@ -4,6 +4,7 @@ import type {
   AiClientCapabilityDescriptor,
   CollaborationRendererEvent,
   EmbeddingStateSnapshot,
+  HistoricalIngestionProgress,
   PersonalDesktopApi
 } from "@koed/shared";
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
@@ -17,6 +18,7 @@ import type {
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { CliInstallApi } from "./cli-install/protocol.js";
+import type { DesktopUpdateApi } from "@koed/shared/desktop-update-contract";
 
 export type ComponentState =
   | "not_configured"
@@ -94,6 +96,7 @@ export interface KoedServerStatus {
   aiClientInstances?: Record<string, AiClientReadiness>;
   aiClientFlowReadiness?: Record<string, ComponentStatus>;
   lcmSummaryService: ComponentStatus;
+  historicalIngestion?: Record<string, HistoricalIngestionProgress>;
   embeddingState?: EmbeddingStateSnapshot | null;
   personalDeviceSync?: ComponentStatus;
   upstreamBackends: ComponentStatus & {
@@ -230,6 +233,7 @@ export interface DesktopApi {
   };
   setup?: DesktopSetupApi;
   cliInstall?: CliInstallApi;
+  updates?: DesktopUpdateApi;
   status?: {
     subscribe: (listener: () => void) => () => void;
   };

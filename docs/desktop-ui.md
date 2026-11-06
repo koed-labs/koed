@@ -4,8 +4,7 @@
 
 The Personal interface starts with staged local setup and AI Client
 configuration. Setup progress comes from the real setup workflow. Failure
-preserves selections and offers a retry. Agent name and appearance are optional
-Settings choices. Running setup again preserves Personal Memory, Projects,
+preserves selections and offers a retry. Running setup again preserves Personal Memory, Projects,
 Conversations, and saved customization.
 
 The sidebar shows the current User's Project inventory, including Conversations
@@ -15,7 +14,12 @@ Conversation pane. On narrow windows, the sidebar opens as a drawer. While
 services or inventory are loading, the sidebar shows that state rather than an
 empty Conversation list.
 
-Project settings manages names, source rules, Conversation membership, and
+In **Project settings → Kin**, choose a body shape, colour, and personality. The
+Kin appears under a spotlight beside the controls. Home labels it with the Project name. Each Project starts with a
+look generated from its ID. Saving a Kin updates Home and syncs the choice to
+paired Personal devices.
+
+Project settings also manages names, source rules, Conversation membership, and
 Personal Device sync. Sync review remains available when Conversation membership
 cannot be loaded. Settings blocks edits until a complete membership review loads.
 Dragging a Conversation to a Project moves its membership
@@ -47,6 +51,105 @@ client capabilities; separate defaults for each provider are not introduced.
 A named Project without a Folder uses the existing independent-chat execution
 context. Its captured Conversation is added through the existing versioned
 Project membership commands; execution Folder identity is not rewritten.
+
+### Home
+
+Home is what the navigation rail's Koed button opens: a read-only stage over
+existing state. It adds no backend calls and never starts a Conversation;
+there is no new-chat composer. Every state uses one grey stage: the AI Client
+keycaps along its top (no row at all when there are no clients, so the stage
+closes up), then Kin in a spotlight that starts under the keycaps, above a
+caption. Without Projects to show, the Koed Kin stands alone; the stage grows,
+and the page scrolls, only when the caption needs more room than the window
+leaves.
+
+- **Attention** replaces Home only when the local API or its database is down,
+  or Koed is stopped, because Projects cannot load. Other setup problems and an
+  unhealthy Capture Hook show as a warning chip above the normal content. While
+  Koed is stopped, attention shows one Start Koed step instead of each
+  component's symptom; when the services are down it shows the same plain
+  wording and Start Koed button, with the component's own message kept as
+  hover detail. A problem
+  offers its existing setup command, keeping that command's consent step, or
+  its status message as manual guidance.
+- **Quiet stage** shows when Projects have loaded and none exist. It offers to
+  connect up to two detected AI Clients, the same step their keycaps offer.
+- **Projects** shows a Kin for each named Project with a Conversation to open, up to seven
+  on the stage with the most recent in the spotlight; the caption says how many
+  more are in the sidebar, which is the full list. The stage is laid out in
+  design units and scaled to fit the window, so Kin grow and shrink with it
+  while their labels keep a fixed size; the spotlight follows the lead Kin, and
+  the back row stays out of its beam and shows names only. There is no Project
+  page, so a Kin opens its Project's most recent conversation and the sidebar
+  expands that Project to show it highlighted, scrolling to it when the sidebar
+  is showing; a hidden sidebar stays hidden. Dragging a Kin sideways spins it,
+  as with the onboarding Kin, and it springs back to face front; a drag does
+  not open anything.
+  Counts are the stored captured events of the conversations the sidebar lists
+  for the Project; subagent conversations are not listed on their own, so they
+  are not counted either, and a Project with no listed conversation is left off
+  Home (the sidebar still lists it). Conversations in no Project lie on the
+  stage floor as golden coins, newest first and at most 16, in the gaps
+  between the front Kin; hovering or focusing one shows its title with its AI
+  Client's logo, and clicking opens it and expands "No project" in the
+  sidebar. A coin can be picked up and thrown: it flies with the flick's speed,
+  tumbling, bounces off the floor with less height each time and off the
+  stage's sides and top, slides to a stop and rests flat where it lands until
+  Home is reloaded. With reduced motion a dropped coin lands at once. A held coin
+  dragged over a Project's Kin ringed it at once; after half a second there the
+  Kin glows and says "Add to <Project>", and letting go adds the Conversation
+  to that Project through the same organization path as the sidebar's
+  drag-and-drop. The coin shrinks into the Kin, which hops, and a toast with
+  Undo clears itself after five seconds; leaving the Kin first restarts the
+  wait, and if the add fails the coin drops back to the floor and the toast
+  says why. The Projects list is read again, up to three times, when
+  the API reports that membership changed mid-read, as it does constantly while
+  history imports; only a list that keeps changing reports that it changed
+  while refreshing, with a retry.
+  Ranking uses those conversations' latest activity, then name, then id.
+  `conversation_events_changed` refreshes the summaries through
+  `PersonalMemoryStore`; a rise in a summary's count plays one coalesced
+  animation, so a missed or repeated change event never alters a count. Window
+  focus refreshes status and Projects. Re-ranking is throttled and holds while
+  the window is focused and the pointer is over the stage; the sidebar order
+  is independent. Reduced motion keeps re-ranking without movement or tile
+  drops.
+- **AI Client keycaps** list clients that are detected or configured. Their
+  health comes from the same reading as Settings: the client's integration
+  check (`status.codex`, `status.claudeCode`, `status.pi`) and its
+  `automatic_capture` readiness. A client needing attention also appears as a
+  warning offering its existing repair command. A configured client stays
+  listed when its snapshot is stale, shown as unsure; the version is shown for
+  a detected client that is not connected. A detected client's keycap offers
+  Connect (`setup_<client>`) and one needing attention offers Repair
+  (`repair_<client>`), each after the same consent step and wording as
+  Settings; while history is being read the action moves under the progress
+  pill. Keycaps offer no actions while Attention is shown, since Koed must be
+  running again first.
+
+- **Hatching** shows while any connected AI Client's automatic historical
+  ingestion is running, waiting, or retrying after a failure, from
+  `status.historicalIngestion`, and no Project has been found yet: the Koed
+  Kin stands alone in the spotlight. Once any Project exists, Home shows
+  Projects instead and keeps the progress on the keycaps and in a slim bar
+  under the caption until ingestion ends. Koed reads only connected clients,
+  so progress left from a client that is no longer connected is ignored and
+  its keycap offers Connect. Hatching states the selection limits (recent
+  history only), counts finished Conversations per client and overall
+  (completed plus skipped), and keeps the progress bar indeterminate until
+  every selection is known. Below the bar one line gives the finished count,
+  how many of those were skipped (with a short note on why), and the latest
+  recorded progress; above it, when status can read them, the records read
+  and items indexed for the selected Conversations. It shows no time estimate
+  and no completion notification. Idle or unknown ingestion never holds Home
+  here. Once a client counts as stuck, the caption says its history has
+  stalled and the warning chip reads "Check <client> history", with
+  diagnostics.
+- **Coins**: while history is processed, a rise in a client's finished
+  Conversations, records read or items indexed drops golden pixel coins from
+  that client's keycap onto the Kin in the spotlight, which hops. One update
+  drops at most three coins, the first reading drops none, and reduced motion
+  drops none.
 
 Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
 presentation and onboarding checks. The validation entry also provides sidebar

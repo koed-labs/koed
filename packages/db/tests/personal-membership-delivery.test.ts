@@ -114,7 +114,8 @@ describe.skipIf(!originUrl || !receiverUrl)(
       expect(advertise).toHaveBeenCalledWith([
         "source_context_v1",
         "project_membership_v1",
-        "project_defaults_v1"
+        "project_defaults_v1",
+        "project_kin_v1"
       ]);
 
       const externalSessionId = randomUUID();
@@ -303,9 +304,32 @@ describe.skipIf(!originUrl || !receiverUrl)(
           project.projectId
         )
       )[0]!;
+      const kin = {
+        shape: "capsule",
+        colour: "#55cca3",
+        personality: "curious"
+      } as const;
+      const customized = await originRepo.applyPersonalProjectSources(
+        origin,
+        project.projectId,
+        {
+          expectedVersion: originBefore.project.version,
+          changes: [{ action: "set_details", name, kin }]
+        }
+      );
+      await flush(originConfig);
+      expect(
+        (
+          await receiverRepo.getPersonalMembershipSyncState(
+            receiver,
+            project.projectId
+          )
+        ).project.kin
+      ).toBeUndefined();
+      features.push("project_kin_v1");
       await originRepo.updateNamedPersonalProject(origin, project.projectId, {
         name: renamed,
-        expectedVersion: originBefore.project.version
+        expectedVersion: customized.project.version
       });
       await receiverRepo.removePersonalProjectInclusion(
         receiver,
@@ -329,8 +353,8 @@ describe.skipIf(!originUrl || !receiverUrl)(
             receiver,
             project.projectId
           )
-        ).project.name
-      ).toBe(renamed);
+        ).project
+      ).toMatchObject({ name: renamed, kin });
       expect(
         (await selected(originPool, origin, project.projectId)).rows
       ).toHaveLength(0);
@@ -371,6 +395,7 @@ describe.skipIf(!originUrl || !receiverUrl)(
         receiver,
         project.projectId
       );
+      expect(beforeReplay.project.kin).toEqual(kin);
       for (const pkg of allPackets) await deliver(pkg);
       await flush(originConfig);
       await flush(receiverConfig);

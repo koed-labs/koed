@@ -1,3 +1,4 @@
+import { recordAiClientConnections } from "@koed/shared/ai-client-connections";
 import { defaultConfig, MemoryApiClient } from "./index.js";
 import { supportsTeamMemoryAnswerTasks } from "./memory-answer-task-coordinator.js";
 import {
@@ -5,6 +6,7 @@ import {
   type LocalAiRuntimeHandle,
   type LocalAiRuntimeServiceFactory
 } from "./local-runtime-server.js";
+import { resolveKoedHome } from "./local-runtime-protocol.js";
 
 export interface HeadlessRemoteRuntimeDescriptor {
   version: 1;
@@ -61,6 +63,14 @@ export const startHeadlessRemoteLocalAiRuntime = async ({
       "The Team Backend does not support durable Team Memory Answer tasks"
     );
   }
+  // The Local AI Runtime reads only connected AI Clients. In this mode the
+  // consented descriptor names them; Koed Server's status check, which records
+  // connections otherwise, does not run here.
+  recordAiClientConnections(resolveKoedHome(remoteEnvironment), {
+    codex: descriptor.harnesses.includes("codex"),
+    claude: descriptor.harnesses.includes("claude"),
+    pi: descriptor.harnesses.includes("pi")
+  });
   return startLocalAiRuntime({
     environment: remoteEnvironment,
     config,

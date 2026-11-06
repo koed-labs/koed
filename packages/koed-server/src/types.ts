@@ -1,6 +1,7 @@
 import type {
   AiClientCapabilityDescriptor,
   EmbeddingStateSnapshot,
+  HistoricalIngestionProgress,
   LocalAiClientFlowKey,
   LocalAiClientRuntimeAssignment
 } from "@koed/shared";
@@ -109,6 +110,11 @@ export interface KoedServerStatus {
     KoedAiClientFlowReadiness
   >;
   lcmSummaryService: KoedServerComponentStatus;
+  /** Automatic historical ingestion for each AI Client, from coordinator state. */
+  historicalIngestion: Record<
+    "codex" | "claude" | "pi",
+    HistoricalIngestionProgress
+  >;
   /**
    * Content-free Diagnostic Status; null when the API could not report it,
    * omitted when the deployment does not offer it.

@@ -1,8 +1,19 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
+import { createUpdateDiscovery } from "./main/update-discovery.js";
+import type { DesktopUpdateState } from "@koed/shared/desktop-update-contract";
 
-const fixture = (packaged = true, connected = true) => {
+const fixture = (
+  packaged = true,
+  connected = true,
+  getUpdateNoticeState: () => DesktopUpdateState = () => ({
+    installedVersion: "1.2.3",
+    status: "disabled",
+    release: null,
+    checkedAt: null
+  })
+) => {
   const channel = Object.assign(new EventEmitter(), { connected });
   const messages: unknown[] = [];
   const calls: string[] = [];
@@ -12,6 +23,7 @@ const fixture = (packaged = true, connected = true) => {
       argv: ["--koed-private-smoke"],
       channel,
       send: (value) => messages.push(value),
+      getUpdateNoticeState,
       invoke: async (command) => {
         calls.push(command);
         return {
@@ -81,6 +93,29 @@ describe("private packaged smoke harness", () => {
       }
     ]);
   });
+  it("reports the real disabled discovery snapshot without invoking updater or network authority", async () => {
+    const fetch = vi.fn();
+    const discovery = createUpdateDiscovery({
+      eligible: false,
+      installedVersion: "1.2.3",
+      platform: "darwin",
+      arch: "arm64",
+      fetch
+    });
+    discovery.start();
+    const f = fixture(true, true, () => discovery.current());
+    f.attach();
+    f.request("update_notice", "updates");
+    await tick();
+    expect(f.calls).toEqual([]);
+    expect(f.messages).toContainEqual({
+      type: "koed.desktop.smoke.response",
+      version: 1,
+      id: "updates",
+      result: discovery.current()
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("exposes only the shared start command and the lifecycle observation for shared-lifecycle acceptance", async () => {
     const f = fixture();
     f.attach();
@@ -117,6 +152,12 @@ describe("private packaged smoke harness", () => {
         argv: [],
         channel: f.channel,
         send: vi.fn(),
+        getUpdateNoticeState: () => ({
+          installedVersion: "1.2.3",
+          status: "disabled",
+          release: null,
+          checkedAt: null
+        }),
         invoke,
         stop: vi.fn(),
         quit: vi.fn()
@@ -136,6 +177,12 @@ describe("private packaged smoke harness", () => {
       argv: ["--koed-private-smoke"],
       channel: f.channel,
       send: (value) => f.messages.push(value),
+      getUpdateNoticeState: () => ({
+        installedVersion: "1.2.3",
+        status: "disabled",
+        release: null,
+        checkedAt: null
+      }),
       invoke,
       stop: vi.fn(),
       quit: vi.fn()

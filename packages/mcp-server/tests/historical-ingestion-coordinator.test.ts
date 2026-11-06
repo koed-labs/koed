@@ -18,6 +18,7 @@ import {
 } from "../src/codex-historical-ingestion.js";
 import {
   createHistoricalBatchScheduler,
+  historicalPassErrorCode,
   startHistoricalIngestionCoordinator,
   type HistoricalProviderAdapter
 } from "../src/historical-ingestion-coordinator.js";
@@ -277,6 +278,98 @@ describe("provider-owned historical discovery", () => {
     await coordinator.stop();
   });
 
+  it("records progress and pass failures for status readers", async () => {
+    let calls = 0;
+    const koedHome = temporaryDirectory();
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "progress-provider",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "progress-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        calls += 1;
+        if (calls === 1) return { state: "progress", selection };
+        throw new Error("historical_batch_rejected");
+      }
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 60_000,
+      now: () => new Date("2026-08-18T00:00:00.000Z")
+    });
+    coordinator.offerCandidates([{ id: "conversation" }]);
+
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().progress?.lastErrorCode).toBe(
+        "historical_batch_rejected"
+      )
+    );
+    const saved = JSON.parse(
+      readFileSync(
+        path.join(
+          koedHome,
+          "state",
+          "progress-provider-historical-ingestion.json"
+        ),
+        "utf8"
+      )
+    ) as { progress?: unknown };
+    expect(saved.progress).toEqual({
+      updatedAt: "2026-08-18T00:00:00.000Z",
+      lastBatchState: "progress",
+      lastProgressAt: "2026-08-18T00:00:00.000Z",
+      lastErrorCode: "historical_batch_rejected",
+      lastErrorAt: "2026-08-18T00:00:00.000Z",
+      failingSince: "2026-08-18T00:00:00.000Z"
+    });
+    await coordinator.stop();
+  });
+
+  it("ends a run of failures on a clean pass with nothing to import", async () => {
+    let calls = 0;
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "recovering-provider",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "recovering-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        calls += 1;
+        if (calls === 1) throw new Error("historical_batch_rejected");
+        // Waiting on downstream completion: no progress, but no failure.
+        return { state: "source_exhausted", selection };
+      }
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome: temporaryDirectory(),
+      retryMs: 1
+    });
+    coordinator.offerCandidates([{ id: "conversation" }]);
+
+    await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().progress?.failingSince).toBeUndefined()
+    );
+    expect(coordinator.snapshot().progress?.lastErrorCode).toBe(
+      "historical_batch_rejected"
+    );
+    expect(coordinator.snapshot().progress?.recoveredAt).toBeDefined();
+    await coordinator.stop();
+  });
+
   it("retries transient discovery failures before freezing the cohort", async () => {
     let discoveryAttempts = 0;
     const errors: string[] = [];
@@ -318,6 +411,30 @@ describe("provider-owned historical discovery", () => {
     expect(errors).toEqual(["historical_discovery_temporarily_unavailable"]);
     expect(coordinator.snapshot().selections).toHaveLength(1);
     await coordinator.stop();
+  });
+});
+
+describe("historical pass error codes", () => {
+  it("keeps the Memory API's code for a rejected request", () => {
+    expect(
+      historicalPassErrorCode(
+        new MemoryApiError("Request failed with 409", {
+          status: 409,
+          payload: { code: "historical_import_state_conflict" }
+        })
+      )
+    ).toBe("historical_import_state_conflict");
+    expect(
+      historicalPassErrorCode(
+        new MemoryApiError("Request failed with 400", { status: 400 })
+      )
+    ).toBe("memory_api_http_400");
+    expect(
+      historicalPassErrorCode(new Error("pi_historical_frontier_conflict"))
+    ).toBe("pi_historical_frontier_conflict");
+    expect(historicalPassErrorCode(new Error("Something broke."))).toBe(
+      "historical_ingestion_pass_failed"
+    );
   });
 });
 
@@ -764,6 +881,72 @@ describe("bounded Codex historical batch failures", () => {
     });
     expect(second.state).toBe("skipped");
     expect(client.ingestCalls).toEqual([]);
+  });
+});
+
+describe("rejected Codex historical batches", () => {
+  it("skips a Conversation whose batch the Memory API rejects as invalid", async () => {
+    const bytes = Buffer.from(
+      `${JSON.stringify({
+        timestamp: "2026-08-17T00:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "remember this" }
+      })}\n`
+    );
+    const client = new FakeHistoricalSourceClient();
+    const source = {
+      id: "source-rejected",
+      runId: "run-rejected",
+      artifactId: "artifact-rejected",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      sourceSessionId: "session-rejected",
+      sourceFingerprint: "a".repeat(64),
+      historicalCursorOffset: 0,
+      historicalCursorLine: 0,
+      registrationFrontierOffset: bytes.byteLength,
+      state: "importing"
+    };
+    client.seedSource("artifact-rejected", source, bytes);
+    client.ingestHistoricalImportBatch = async () => {
+      throw new MemoryApiError("Request failed with 400", {
+        status: 400,
+        payload: { code: "canonical_component_mismatch" }
+      });
+    };
+    const adapter = createCodexHistoricalProviderAdapter({
+      client: client as unknown as MemoryApiClient
+    });
+
+    const result = await adapter.processNextBatch({
+      selection: {
+        aiClient: "codex",
+        candidateId: "session-rejected",
+        artifactId: "artifact-rejected",
+        frontierOffset: bytes.byteLength,
+        frontierLine: 1,
+        latestActivityAt: "2026-08-17T00:00:00.000Z",
+        adapterState: { threadKind: "conversation" }
+      },
+      runId: "run-rejected"
+    });
+
+    expect(result).toMatchObject({
+      state: "skipped",
+      diagnosticCode: "canonical_component_mismatch"
+    });
+    expect(client.transitionCalls).toEqual([
+      {
+        sourceId: "source-rejected",
+        expectedState: "importing",
+        state: "failed",
+        failureReason: "canonical_component_mismatch"
+      },
+      {
+        sourceId: "source-rejected",
+        expectedState: "failed",
+        state: "skipped"
+      }
+    ]);
   });
 });
 

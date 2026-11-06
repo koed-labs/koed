@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   aggregateState,
+  fetchHistoricalActivity,
   collectKoedServerDoctor,
   collectKoedServerStartupStatus,
   collectKoedServerStatus,
@@ -49,6 +50,69 @@ const response = (
     text: async () => JSON.stringify(body),
     json: async () => body
   }) as Response;
+
+describe("historical activity", () => {
+  it("sums only selected source records and searchable items across runs", async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/historical-imports")
+        return response(true, 200, { runs: [{ id: "run-1" }] });
+      return response(true, 200, {
+        run: {
+          sources: [
+            {
+              id: "a",
+              aiClient: "codex",
+              sourceSessionId: "selected",
+              rawIngestedRecordCount: 47,
+              embeddedEventCount: 8,
+              embeddingEligibleEventCount: 20
+            },
+            {
+              id: "b",
+              aiClient: "codex",
+              sourceSessionId: "other",
+              rawIngestedRecordCount: 999,
+              embeddedEventCount: 999,
+              embeddingEligibleEventCount: 999
+            }
+          ]
+        }
+      });
+    }) as unknown as typeof fetch;
+    const activity = await fetchHistoricalActivity({
+      koedHome: "/fixture",
+      apiUrl: "http://localhost:43300",
+      token: "test",
+      fetcher,
+      readFile: (path) => {
+        if (!path.includes("codex-")) throw new Error("missing");
+        return JSON.stringify({
+          selectionFrozen: true,
+          selections: [{ candidateId: "selected" }]
+        });
+      }
+    });
+    expect(activity).toEqual({
+      codex: { recordsRead: 47, embedded: 8, eligible: 20 }
+    });
+  });
+  it("omits incomplete totals when the run list reaches its bound", async () => {
+    const fetcher = vi.fn(async () =>
+      response(true, 200, {
+        runs: Array.from({ length: 20 }, (_, i) => ({ id: String(i) }))
+      })
+    ) as unknown as typeof fetch;
+    const result = await fetchHistoricalActivity({
+      koedHome: "/fixture",
+      apiUrl: "http://localhost:43300",
+      token: "test",
+      fetcher,
+      readFile: () => JSON.stringify({ selectionFrozen: true, selections: [] })
+    });
+    expect(result).toBeNull();
+  });
+});
 
 const healthyReadyPayload = {
   status: "ok",
@@ -317,6 +381,42 @@ describe("startup status", () => {
       });
     }
   );
+
+  it("records which AI Clients are connected for the Local AI Runtime", async () => {
+    const root = tempDir();
+    writeStartupRuntime(root, "external");
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    const recordAiClientConnections = vi.fn();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "external",
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/database",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://embedding:8000"
+      },
+      {
+        fetch: healthyStartupFetcher(),
+        spawnSync: () => spawnResult("", 0),
+        checkPid: (pid: number) => [42, 43, 44].includes(pid),
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+        recordAiClientConnections
+      }
+    );
+
+    expect(recordAiClientConnections).toHaveBeenCalledWith(
+      root,
+      {
+        codex: status.codex.configured === true,
+        claude: status.claudeCode.configured === true,
+        pi: status.pi.configured === true
+      },
+      new Date("2026-01-01T00:00:00.000Z")
+    );
+  });
 
   it("keeps full external core status healthy while reporting a missing Personal API Token", async () => {
     const root = tempDir();

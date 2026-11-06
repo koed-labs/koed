@@ -14433,6 +14433,26 @@ describe("account and access flows", () => {
     ).toMatchObject({
       artifact: { id: artifactId, providerCursorLine: 1 }
     });
+    const missingArtifact = await app.inject({
+      method: "POST",
+      url: "/v1/historical-import-sources",
+      headers: ownerHeaders,
+      payload: { runId, artifactId: randomUUID(), aiClient: "codex" }
+    });
+    const missingRun = await app.inject({
+      method: "POST",
+      url: "/v1/historical-import-sources",
+      headers: ownerHeaders,
+      payload: { runId: randomUUID(), artifactId, aiClient: "codex" }
+    });
+    expect(missingArtifact.statusCode, missingArtifact.body).toBe(409);
+    expect(jsonBody<{ code: string }>(missingArtifact).code).toBe(
+      "historical_import_artifact_unavailable"
+    );
+    expect(missingRun.statusCode, missingRun.body).toBe(409);
+    expect(jsonBody<{ code: string }>(missingRun).code).toBe(
+      "historical_import_run_not_found"
+    );
     const sourceResponse = await app.inject({
       method: "POST",
       url: "/v1/historical-import-sources",

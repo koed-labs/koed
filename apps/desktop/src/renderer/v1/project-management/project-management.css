@@ -608,3 +608,39 @@ label.v1-pm-choice-row:hover {
     padding: 16px;
   }
 }
+
+.v1-pm-kin-builder {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.66fr) minmax(230px, 1fr);
+  gap: 21px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.v1-pm-kin-preview {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--v1-rail);
+}
+.v1-pm-kin-preview .v1-kin-spot {
+  --spot-x: 0px;
+  --spot-y: calc(50% - 42px);
+  --spot-size: 80px;
+  z-index: -1;
+  filter: blur(8px);
+}
+@media (max-width: 690px) {
+  .v1-pm-kin-builder {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .v1-pm-kin-preview {
+    height: 160px;
+  }
+}

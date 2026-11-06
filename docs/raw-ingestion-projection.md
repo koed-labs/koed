@@ -259,8 +259,19 @@ and segment transfer have an independent local rate-limit bucket so a large
 first discovery cannot consume the interactive Memory read/write allowance used
 by Desktop and the MCP Server.
 
+Koed reads an AI Client only while the User has connected it, meaning its
+Supported AI Client Integration is set up. Each time Koed Server checks the
+integrations (any status check, and once after startup) it records which
+clients are connected in `KOED_HOME/state/ai-client-connections.json`; a check
+that fails keeps the previous value. The Local AI Runtime rechecks that record
+every 10 seconds and starts or stops each client's Transcript Watcher and
+automatic history to match, so connecting or disconnecting needs no restart. A
+client that was never recorded is not read. A headless remote runtime records
+the harnesses its consented descriptor names, since no status check runs there. Stopping keeps the coordinator's
+state, so a client that is connected again resumes its frozen cohort.
+
 The first successful bounded full discovery cycle establishes activation and
-freezes an automatic-history cohort for each enabled supported AI Client.
+freezes an automatic-history cohort for each connected supported AI Client.
 Codex, Claude Code, and Pi each discover their own source-of-truth transcripts;
 the provider-neutral coordinators select Conversations by latest source
 activity in the inclusive previous 30 days, cap each provider cohort at the
@@ -289,7 +300,9 @@ artifact with journal start zero and an immutable `live_start_offset`. If the
 watcher registered first and the transcript advanced before discovery, the
 coordinator narrows its selection to that earlier artifact boundary. A later
 artifact boundary than the frozen selection remains a conflict because it
-would classify post-selection bytes as history. This closes the old gap where
+would classify post-selection bytes as history. The coordinator skips that
+Conversation and logs the conflict code instead of retrying it on every pass,
+so it cannot hold back newer selections. This closes the old gap where
 an unchanged baseline source existed only in watcher-local state. Local source
 paths remain transient discovery inputs and do not enter the coordinator's
 durable state or canonical identity. Unselected baseline sources retain the
@@ -304,7 +317,37 @@ A file created after activation uses a zero frontier and is live from its first
 complete record. Post-frontier ranges, including restart recovery, advance the
 durable `canonical_live` cursor independently while selected pre-frontier bytes
 advance `canonical_historical`. History can therefore be paused, skipped,
-retried, or incomplete without delaying live append capture. Before each page,
+retried, or incomplete without delaying live append capture.
+
+The automatic historical coordinator for each AI Client keeps its selection in
+`KOED_HOME/state/<client>-historical-ingestion.json`, with a `progress` record
+of when it last wrote, its last batch outcome, its last progress, and its last
+pass failure, plus when the current run of failures began (cleared by any
+progress or by a pass that runs without failing, such as while selected
+sources finish downstream, which records `recoveredAt` so status stops reporting
+the failure; stopping the runtime is not a failure). A pass failure records the most specific safe code available,
+including the Memory API's code for a rejected request, rather than a generic
+pass failure. Koed status summarises that file without starting or changing
+ingestion: Conversations count as finished only at a completed or skipped
+outcome, skipped is reported separately, and an unfinished run with no write
+for 15 minutes is reported as idle, never as resumed. Desktop Home uses this
+summary for its ingestion screen and raises a warning once a run has failed
+without progress for 10 minutes.
+
+The coordinator adds a source to its import run only when it reaches that
+Conversation, so completion reconciliation can close the run while later
+selections are still waiting. Creating a source in a closed or missing run
+returns `historical_import_run_not_found`, and the provider then starts a new
+run for that source. A run that is still open but cannot accept the artifact
+returns `historical_import_artifact_unavailable` instead, which does not start
+a run.
+
+A failure that is the same on every retry skips the Conversation rather than
+blocking every newer selection: a Codex record too large for any batch, or a
+Codex batch the Memory API rejects as invalid (a 400, whose code becomes the
+skip's failure reason and is logged).
+
+Before each page,
 Koed compares cursor offset with bounded SHA-256 first/last prefix sentinels.
 Partial trailing JSONL holds the cursor; malformed complete records, truncation,
 and sentinel-covered prefix mutation fail visibly without advancement.

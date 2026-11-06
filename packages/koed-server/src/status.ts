@@ -6,6 +6,7 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
+import { recordAiClientConnections } from "@koed/shared/ai-client-connections";
 import { resolveKoedServerConfig } from "./config.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
@@ -59,6 +60,7 @@ import {
   nodeCliInvocation,
   nodeCliProcessEnvironment,
   resolveTeamCollaborationEnabled,
+  summarizeHistoricalIngestionState,
   type AiClientCapabilityDescriptor,
   type EmbeddingStateSnapshot,
   type LocalAiClientDefault,
@@ -123,6 +125,7 @@ export interface KoedServerStatusDependencies {
   checkPid?: (pid: number) => boolean;
   delay?: (milliseconds: number) => Promise<void>;
   now?: () => Date;
+  recordAiClientConnections?: typeof recordAiClientConnections;
 }
 
 const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
@@ -138,7 +141,8 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   checkPid: isProcessRunning,
   delay: (milliseconds) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  now: () => new Date()
+  now: () => new Date(),
+  recordAiClientConnections
 });
 
 // The lifetime is exactly one collection. Rejected selections are shared too;
@@ -1152,10 +1156,18 @@ const tomlSection = (content: string, sectionName: string): string => {
   return sectionLines.join("\n");
 };
 
+// Inspecting an integration never records connections, so callers that only
+// inspect (tests, headless checks) need not supply the recorder.
 type CodexStatusDependencies = Required<
-  Omit<KoedServerStatusDependencies, "desktopRuntimeCapability" | "appRuntime">
+  Omit<
+    KoedServerStatusDependencies,
+    "desktopRuntimeCapability" | "appRuntime" | "recordAiClientConnections"
+  >
 > &
-  Pick<KoedServerStatusDependencies, "desktopRuntimeCapability" | "appRuntime">;
+  Pick<
+    KoedServerStatusDependencies,
+    "desktopRuntimeCapability" | "appRuntime" | "recordAiClientConnections"
+  >;
 
 const inspectCodexInstallation = (
   environment: NodeJS.ProcessEnv,
@@ -1882,6 +1894,142 @@ const localSynthesisReadiness = (
   }
   return current;
 };
+
+const historicalIngestionClients = ["codex", "claude", "pi"] as const;
+
+// Reads the coordinator's own state files; never starts or changes ingestion.
+export const inspectHistoricalIngestion = (
+  paths: { koedHome: string },
+  deps: Pick<
+    Required<KoedServerStatusDependencies>,
+    "existsSync" | "readFileSync" | "now"
+  >
+): KoedServerStatus["historicalIngestion"] => {
+  const now = deps.now().getTime();
+  return Object.fromEntries(
+    historicalIngestionClients.map((client) => {
+      const file = resolve(
+        paths.koedHome,
+        "state",
+        `${client}-historical-ingestion.json`
+      );
+      let value: unknown;
+      try {
+        if (deps.existsSync(file))
+          value = JSON.parse(String(deps.readFileSync(file, "utf8")));
+      } catch {
+        value = undefined;
+      }
+      return [client, summarizeHistoricalIngestionState(value, now)];
+    })
+  ) as KoedServerStatus["historicalIngestion"];
+};
+
+/** Aggregate only the frozen selection. If history exceeds the bounded query or
+ * any request fails, omit detail instead of presenting an incomplete total. */
+export async function fetchHistoricalActivity(input: {
+  koedHome: string;
+  apiUrl: string;
+  token: string;
+  fetcher: typeof globalThis.fetch;
+  readFile: (path: string) => string;
+}): Promise<Record<
+  string,
+  { recordsRead: number; embedded: number; eligible: number }
+> | null> {
+  try {
+    const selected = new Map<string, Set<string>>();
+    for (const client of historicalIngestionClients) {
+      try {
+        const state = JSON.parse(
+          input.readFile(
+            resolve(
+              input.koedHome,
+              "state",
+              `${client}-historical-ingestion.json`
+            )
+          )
+        ) as { selectionFrozen?: unknown; selections?: unknown };
+        if (state.selectionFrozen === true && Array.isArray(state.selections))
+          selected.set(
+            client,
+            new Set(
+              (state.selections as { candidateId?: unknown }[])
+                .map((selection) => selection.candidateId)
+                .filter((id): id is string => typeof id === "string")
+            )
+          );
+      } catch {
+        /* No selection for this client. */
+      }
+    }
+    if (!selected.size) return null;
+    const headers = { authorization: `Bearer ${input.token}` };
+    const listUrl = new URL("/v1/historical-imports?limit=20", input.apiUrl);
+    const list = await input.fetcher(listUrl, { headers });
+    if (!list.ok) return null;
+    const body = (await list.json()) as { runs?: { id?: unknown }[] };
+    if (
+      !Array.isArray(body.runs) ||
+      body.runs.length >= 20 ||
+      body.runs.some((run) => typeof run.id !== "string")
+    )
+      return null;
+    const totals: Record<
+      string,
+      { recordsRead: number; embedded: number; eligible: number }
+    > = {};
+    for (const client of selected.keys())
+      totals[client] = { recordsRead: 0, embedded: 0, eligible: 0 };
+    const seen = new Set<string>();
+    for (const run of body.runs) {
+      const result = await input.fetcher(
+        new URL(
+          `/v1/historical-imports/${encodeURIComponent(run.id as string)}`,
+          input.apiUrl
+        ),
+        { headers }
+      );
+      if (!result.ok) return null;
+      const detail = (await result.json()) as {
+        run?: { sources?: Record<string, unknown>[] };
+      };
+      if (!Array.isArray(detail.run?.sources)) return null;
+      for (const source of detail.run.sources) {
+        const {
+          aiClient,
+          sourceSessionId,
+          id,
+          rawIngestedRecordCount,
+          embeddedEventCount,
+          embeddingEligibleEventCount
+        } = source;
+        if (
+          typeof aiClient !== "string" ||
+          typeof sourceSessionId !== "string" ||
+          !selected.get(aiClient)?.has(sourceSessionId)
+        )
+          continue;
+        if (typeof id !== "string" || seen.has(id)) continue;
+        if (
+          ![
+            rawIngestedRecordCount,
+            embeddedEventCount,
+            embeddingEligibleEventCount
+          ].every((n) => Number.isSafeInteger(n) && Number(n) >= 0)
+        )
+          return null;
+        seen.add(id);
+        totals[aiClient]!.recordsRead += Number(rawIngestedRecordCount);
+        totals[aiClient]!.embedded += Number(embeddedEventCount);
+        totals[aiClient]!.eligible += Number(embeddingEligibleEventCount);
+      }
+    }
+    return totals;
+  } catch {
+    return null;
+  }
+}
 
 export const inspectAiClientReadiness = (input: {
   codex: KoedServerStatus["codex"];
@@ -2905,6 +3053,29 @@ export const collectKoedServerStatus = async (
       }),
     { state: "needs_attention", configured: false, detected: false }
   );
+  // The Local AI Runtime reads an AI Client only while it is connected. An
+  // inspection that failed says nothing either way, so it keeps the last value.
+  const connection = (inspected: {
+    configured?: boolean;
+    details?: unknown;
+  }) =>
+    (inspected.details as { kind?: unknown } | undefined)?.kind ===
+    "inspection_error"
+      ? undefined
+      : inspected.configured === true;
+  try {
+    deps.recordAiClientConnections(
+      paths.koedHome,
+      {
+        codex: connection(codex),
+        claude: connection(claudeCode),
+        pi: connection(pi)
+      },
+      deps.now()
+    );
+  } catch {
+    // Recording is best effort; status still reports the integrations.
+  }
   const captureHook = await inspectSafely(
     "Supported Capture Hook",
     () => inspectCaptureHook(runtimeEnvironment, paths, deps),
@@ -3109,6 +3280,27 @@ export const collectKoedServerStatus = async (
     inspectDeviceIdentity(paths, environment),
     Promise.resolve(inspectUpstreamBackends(paths, deps))
   ]);
+  const historicalIngestion = inspectHistoricalIngestion(paths, deps);
+  const historicalToken = resolveActiveIntegrationApiToken(
+    paths,
+    runtimeEnvironment,
+    repoEnv
+  );
+  const activity =
+    historicalToken && runtimeProcessRunning
+      ? await fetchHistoricalActivity({
+          koedHome: paths.koedHome,
+          apiUrl,
+          token: historicalToken.token,
+          fetcher,
+          readFile: (file) => String(deps.readFileSync(file, "utf8"))
+        })
+      : null;
+  if (activity)
+    for (const client of historicalIngestionClients) {
+      if (activity[client])
+        historicalIngestion[client].activity = activity[client];
+    }
   const statusWithoutState = {
     ok: false,
     state: "starting" as KoedServerComponentState,
@@ -3136,6 +3328,7 @@ export const collectKoedServerStatus = async (
     aiClientInstances,
     aiClientFlowReadiness,
     lcmSummaryService,
+    historicalIngestion,
     embeddingState,
     deviceIdentity,
     upstreamBackends,

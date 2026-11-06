@@ -1,3 +1,4 @@
+import { homeStatus } from "./renderer/v1/home/home-status.fixture.js";
 // Deterministic bridge used ONLY by the Vite validation entry, never the app entry.
 import type { V1Profile } from "./ipc/v1-state-protocol.js";
 import type {
@@ -37,7 +38,7 @@ export function installOnboardingValidation() {
   let resolveRun: ((snapshot: DesktopSetupSnapshot) => void) | undefined;
   let calls: { command: string; args?: Record<string, unknown> }[] = [];
   const status = {
-    ok: true,
+    ...homeStatus(),
     generatedAt: new Date().toISOString(),
     api: { state: "healthy", url: "http://fixture.invalid" },
     lifecycle: { state: "running", message: "Running" },

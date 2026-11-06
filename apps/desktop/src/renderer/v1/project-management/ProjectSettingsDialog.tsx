@@ -9,6 +9,7 @@ import {
   Laptop,
   MessageCircle,
   RefreshCw,
+  Smile,
   Settings2
 } from "lucide-react";
 import type { PersonalProjectBatchInput } from "@koed/shared";
@@ -32,8 +33,12 @@ import {
 } from "./project-settings-model.js";
 import { projectErrorMessage } from "./use-organization-review.js";
 
+import { Pixelkin } from "../pixelkin/Pixelkin.js";
+import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
+
 const pages = [
   { id: "general", name: "General", Icon: Settings2 },
+  { id: "kin", name: "Kin", Icon: Smile },
   { id: "sources", name: "Sources", Icon: GitFork },
   { id: "conversations", name: "Conversations", Icon: MessageCircle },
   { id: "sync", name: "Sync", Icon: RefreshCw }
@@ -193,6 +198,27 @@ export function ProjectSettingsDialog({
           {!draft && !error && <p role="status">Loading…</p>}
           <ProjectError error={error} />
           {panel !== "sync" && <ProjectError error={editError} />}
+          {draft && !editError && panel === "kin" && (
+            <fieldset
+              disabled={busy}
+              className="v1-pm-kin-builder"
+              aria-label="Project Kin"
+            >
+              <div
+                className="v1-pm-kin-preview"
+                role="img"
+                aria-label="Kin preview"
+              >
+                <div className="v1-kin-spot" aria-hidden="true" />
+                <Pixelkin look={draft.look} size={142} hopOnChange />
+              </div>
+              <AgentLookPicker
+                look={draft.look}
+                disabled={busy}
+                onChange={(look) => mutate((old) => ({ ...old, look }))}
+              />
+            </fieldset>
+          )}
           {draft && !editError && panel === "general" && (
             <>
               <div className="v1-pm-field">

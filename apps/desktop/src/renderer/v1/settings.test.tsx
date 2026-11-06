@@ -7,7 +7,6 @@ import type {
   StatusSnapshot
 } from "../services/desktop-commands.js";
 import type { ThemeStore, ThemeSnapshot } from "../state/theme.js";
-import { DEFAULT_AGENT_LOOK } from "./visual.js";
 import { V1Settings } from "./settings.js";
 
 (
@@ -56,15 +55,12 @@ describe("V1Settings", () => {
   });
   const render = async (
     initialTab: "general" | "agent" | "ai" | "services" = "general",
-    onSaveAgent = vi.fn(),
     overrides: Partial<ComponentProps<typeof V1Settings>> = {}
   ) => {
     await act(async () =>
       root.render(
         <V1Settings
           initialTab={initialTab}
-          agent={{ name: "Koed", look: DEFAULT_AGENT_LOOK }}
-          onSaveAgent={onSaveAgent}
           statusStore={statusStore}
           themeStore={themeStore}
           onClose={vi.fn()}
@@ -72,7 +68,6 @@ describe("V1Settings", () => {
         />
       )
     );
-    return onSaveAgent;
   };
   it("writes theme through the existing ThemeStore", async () => {
     await render();
@@ -108,7 +103,7 @@ describe("V1Settings", () => {
       })
     };
     const restart = vi.fn(async () => undefined);
-    await render("general", vi.fn(), {
+    await render("general", {
       launchAtStartup: launch,
       presentationPreferences: presentation,
       onRestartOnboarding: restart
@@ -174,7 +169,7 @@ describe("V1Settings", () => {
         throw new Error("unavailable");
       })
     };
-    await render("general", vi.fn(), { presentationPreferences: presentation });
+    await render("general", { presentationPreferences: presentation });
     const gpu = container.querySelector(
       'button[aria-label="Graphics acceleration"]'
     ) as HTMLButtonElement;
@@ -238,7 +233,7 @@ describe("V1Settings", () => {
       set: vi.fn(async () => ({ operation: "set" as const, readModel })),
       reset: vi.fn()
     };
-    await render("ai", vi.fn(), { localAiClients });
+    await render("ai", { localAiClients });
     const reasoning = container.querySelector(
       '.v1-model-reasoning button[aria-label="High"]'
     ) as HTMLButtonElement;
@@ -255,37 +250,14 @@ describe("V1Settings", () => {
       reasoning_effort: "high"
     });
   });
-  it("saves a selected agent name and look through the callback", async () => {
-    const save = await render("agent");
-    await act(async () => {
-      const input = container.querySelector(
-        'input[type="text"]'
-      ) as HTMLInputElement;
-      Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value"
-      )?.set?.call(input, "Pip");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () =>
-      (
-        container.querySelector(
-          'button[aria-label="Mint"]'
-        ) as HTMLButtonElement
-      ).click()
+  it("opens General for an old Your agent navigation entry", async () => {
+    await render("agent");
+    const selected = container.querySelector(
+      '[role="tab"][aria-selected="true"]'
     );
-    await act(async () =>
-      (
-        container.querySelector(".v1-settings-primary") as HTMLButtonElement
-      ).click()
-    );
-    expect(save).toHaveBeenCalledWith({
-      name: "Pip",
-      look: {
-        ...DEFAULT_AGENT_LOOK,
-        palette: { ...DEFAULT_AGENT_LOOK.palette, base: "#55cca3" }
-      }
-    });
+    expect(selected?.textContent).toBe("General");
+    expect(container.textContent).not.toContain("Your agent");
+    expect(container.querySelector(".v1-look-picker")).toBeNull();
   });
   it("requires explicit consent before changing an AI Client profile", async () => {
     snapshot = {
@@ -327,7 +299,7 @@ describe("V1Settings", () => {
         database: { state: "needs_attention", message: "Database unavailable" }
       } as never
     };
-    await render("services", vi.fn(), { initialPage: "health" });
+    await render("services", { initialPage: "health" });
     expect(
       container.querySelector('[aria-label="Service health"]')?.textContent
     ).toContain("APIHealthy");
@@ -459,7 +431,7 @@ describe("V1Settings", () => {
     );
   });
   it("opens command line as a nested page and returns to General on Escape", async () => {
-    await render("general", vi.fn(), { initialPage: "cli" });
+    await render("general", { initialPage: "cli" });
     expect(container.querySelector(".v1-settings-back")?.textContent).toBe(
       "General"
     );
@@ -522,7 +494,7 @@ describe("V1Settings", () => {
         pathConfigured = true;
       })
     };
-    await render("general", vi.fn(), { cliInstall: api, initialPage: "cli" });
+    await render("general", { cliInstall: api, initialPage: "cli" });
     await act(async () =>
       [...container.querySelectorAll<HTMLButtonElement>("button")]
         .find((button) => button.textContent === "Install command line")!
@@ -637,10 +609,10 @@ describe("V1Settings", () => {
         })
       )
     );
-    expect(document.activeElement?.textContent).toBe("Your agent");
+    expect(document.activeElement?.textContent).toBe("AI models");
     expect(
       container.querySelector('[role="tab"][aria-selected="true"]')?.textContent
-    ).toBe("Your agent");
+    ).toBe("AI models");
     await act(async () => root.render(null));
     expect(document.activeElement).toBe(opener);
     opener.remove();

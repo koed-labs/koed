@@ -24,6 +24,7 @@ import {
   automaticHistoricalPolicyAdmits,
   completeAutomaticHistoricalRun,
   historicalCompletionOutcome,
+  isHistoricalRunClosed,
   resolveAutomaticHistoricalJournalBatchBytes,
   selectRecentHistoricalCandidates
 } from "./automatic-historical-provider.js";
@@ -366,17 +367,27 @@ export const importSelectedClaudeHistory = async (input: {
       let source = await lookupHistoricalSource(input.client, artifact.id);
       const resumed = source !== null;
       if (!source) {
-        const run = await ensureNewRun();
-        source = objectValue<HistoricalSource>(
-          await input.client.createHistoricalImportSource({
-            runId: run.id,
+        const create = async () =>
+          input.client.createHistoricalImportSource({
+            runId: (await ensureNewRun()).id,
             artifactId: artifact.id,
             aiClient: "claude",
             detectedProject: {
               path: signal.cwd,
               cwd: signal.cwd
             }
-          }),
+          });
+        let created: Record<string, unknown>;
+        try {
+          created = await create();
+        } catch (error) {
+          // See createHistoricalSourceInOpenRun.
+          if (!isHistoricalRunClosed(error)) throw error;
+          newRun = undefined;
+          created = await create();
+        }
+        source = objectValue<HistoricalSource>(
+          created,
           "source",
           "claude_historical_source_missing"
         );

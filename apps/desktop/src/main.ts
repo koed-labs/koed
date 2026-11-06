@@ -22,6 +22,12 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
+import { registerDesktopUpdateIpc } from "./ipc/update.js";
+import {
+  createUpdateDiscovery,
+  officialInstallerDownload,
+  supportsDesktopUpdates
+} from "./main/update-discovery.js";
 import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
 import type { DesktopCommandName } from "./ipc/protocol.js";
 import {
@@ -137,6 +143,8 @@ let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
+let disposeDesktopUpdateIpc: (() => void) | null = null;
+let disposeDesktopUpdateDiscovery: (() => void) | null = null;
 let backgroundLaunchPending = false;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
 const managedPreviewController = createManagedPreviewController();
@@ -387,6 +395,37 @@ async function showPairingDeepLink(value: string): Promise<void> {
 
 const bootstrap = async () => {
   await app.whenReady();
+  const updateDiscovery = createUpdateDiscovery({
+    eligible:
+      app.isPackaged &&
+      supportsDesktopUpdates(process.platform, process.arch) &&
+      !process.argv.includes("--koed-private-smoke"),
+    installedVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch
+  });
+  disposeDesktopUpdateIpc = registerDesktopUpdateIpc({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    allowedRendererOrigins,
+    discovery: updateDiscovery,
+    openRelease: async () => {
+      const release = updateDiscovery.current().release;
+      const download = release
+        ? officialInstallerDownload(
+            release.version,
+            process.platform,
+            process.arch
+          )
+        : null;
+      if (download) await openExternal(download);
+    }
+  });
+  const updateStartTimer = setTimeout(() => updateDiscovery.start(), 45_000);
+  disposeDesktopUpdateDiscovery = () => {
+    clearTimeout(updateStartTimer);
+    updateDiscovery.dispose();
+  };
   const launchAtStartup = createLaunchAtStartupController({
     appDataPath: app.getPath("appData"),
     appIsPackaged: app.isPackaged,
@@ -678,6 +717,7 @@ const bootstrap = async () => {
         argv: process.argv,
         channel: process,
         send: (message) => process.send?.(message),
+        getUpdateNoticeState: () => updateDiscovery.current(),
         invoke: async (command) => {
           if (command === "privacy_status")
             return server.privacyInstall.getStatus();
@@ -742,6 +782,10 @@ app.on("activate", () => {
 });
 let koedServerStoppedForQuit = false;
 app.on("before-quit", (event) => {
+  disposeDesktopUpdateDiscovery?.();
+  disposeDesktopUpdateDiscovery = null;
+  disposeDesktopUpdateIpc?.();
+  disposeDesktopUpdateIpc = null;
   if (koedServerStoppedForQuit) {
     return;
   }

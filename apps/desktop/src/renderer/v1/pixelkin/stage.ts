@@ -8,6 +8,7 @@ import {
   type Kin,
   type KinMember
 } from "./vendor/index.js";
+import { KIN_SPIN_FRONT, type KinSpin } from "../onboarding/kin-spin.js";
 
 // Every Pixelkin shares one WebGL2 renderer: the renderer draws each Kin in
 // turn and the result is copied into that Kin's own 2D canvas. One context per
@@ -24,7 +25,12 @@ export type PixelkinActor = {
   rest: ReturnType<typeof kinRestFrame>;
   personality: Personality;
   expression: string;
+  // A screen-chosen mood (for example Home's states) overrides the personality.
+  pinnedExpression: string | null;
   painted: number;
+  // Turned by dragging, like the onboarding Kin; null when it can't be.
+  spin: KinSpin | null;
+  spunAt: number;
 };
 
 const TAU = Math.PI * 2;
@@ -76,7 +82,10 @@ export function createPixelkinActor(
     visible: true,
     hopAt: null,
     gaze: [0, 0],
-    painted: clock
+    pinnedExpression: null,
+    painted: clock,
+    spin: null,
+    spunAt: 0
   } as Partial<PixelkinActor> as PixelkinActor;
   setPixelkinKin(actor, kin);
   return actor;
@@ -92,6 +101,14 @@ export function setPixelkinKin(actor: PixelkinActor, kin: Kin) {
   actor.expression = actor.personality.update(0) ?? "neutral";
 }
 
+export function setPixelkinExpression(
+  actor: PixelkinActor,
+  expression: string | null
+) {
+  actor.pinnedExpression = expression;
+  wakePixelkins();
+}
+
 function aim(actor: PixelkinActor): [number, number] {
   if (!pointer || reduced()) return [0, 0];
   const rect = actor.canvas.getBoundingClientRect();
@@ -99,7 +116,8 @@ function aim(actor: PixelkinActor): [number, number] {
     dy = pointer.y - (rect.top + rect.height / 2);
   const distance = Math.hypot(dx, dy);
   if (distance < rect.width * 0.35) return [0, 0];
-  return [dx / distance, Math.max(-1, Math.min(1, dy / distance))];
+  // Screen Y grows downward; the renderer’s gaze and pitch use upward Y.
+  return [dx / distance, Math.max(-1, Math.min(1, -dy / distance))];
 }
 
 function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
@@ -112,6 +130,15 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
     if (next) actor.expression = next;
   }
   actor.painted = clock;
+  // The spin settles in real time, so it finishes even with reduced motion.
+  const now = performance.now();
+  const spin = actor.spin;
+  if (spin) {
+    spin.step(actor.spunAt ? (now - actor.spunAt) / 1000 : 0, !motion);
+    actor.spunAt = spin.active || spin.startled > 0 ? now : 0;
+  }
+  const turned = spin?.active ? spin.angle - KIN_SPIN_FRONT : 0;
+  const startled = (spin?.startled ?? 0) > 0.1;
   const hop =
     actor.hopAt === null || !motion ? -1 : (clock - actor.hopAt) / HOP;
   if (hop >= 1) actor.hopAt = null;
@@ -126,7 +153,12 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
   const breathing = motion ? Math.sin(phase) * 0.025 * IDLE : 0;
   const scale = actor.rest.visualScale;
   setKinPose(actor.member, {
-    expression: air > 0 ? "joy" : actor.expression,
+    expression:
+      air > 0
+        ? "joy"
+        : startled
+          ? "startled"
+          : (actor.pinnedExpression ?? actor.expression),
     armSwing: motion ? Math.sin(phase) * 0.035 * IDLE : 0
   });
   // Without a fixed value the renderer blinks on its own.
@@ -153,7 +185,8 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
           yaw:
             lookX * 0.31 * 1.5 +
             (motion ? Math.sin(t * 0.66) * 0.025 * IDLE : 0) +
-            TAU * air,
+            TAU * air +
+            turned,
           pitch:
             -lookY * 0.19 * 1.5 +
             (motion ? Math.sin(t * 0.81 + 1.4) * 0.014 * IDLE : 0),
@@ -198,7 +231,11 @@ function tick(now: number) {
         .sort((a, b) => a.size - b.size)
         .forEach((actor) => paint(actor, gl));
   }
-  if (!reduced() && actors.size) frame = requestAnimationFrame(tick);
+  const spinning = [...actors].some(
+    ({ spin }) => spin && (spin.active || spin.startled > 0)
+  );
+  if ((!reduced() || spinning) && actors.size)
+    frame = requestAnimationFrame(tick);
 }
 
 export function wakePixelkins() {

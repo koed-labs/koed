@@ -54,7 +54,7 @@ export type SidebarManagement = {
     row: SidebarConversation,
     action: "move" | "membership" | "context"
   ) => void;
-  onDrop: (row: SidebarConversation, projectId: string) => void;
+  onDrop: (row: SidebarConversation, projectId: string) => Promise<unknown>;
   busy?: boolean;
 };
 
@@ -82,6 +82,7 @@ export function ProjectSidebar({
   inventoryReady = true,
   error,
   onRetry,
+  reveal,
   management
 }: {
   projects: readonly SidebarProject[];
@@ -94,6 +95,9 @@ export function ProjectSidebar({
   inventoryReady?: boolean;
   error?: string | null;
   onRetry: () => void;
+  // A Project to expand, such as one whose conversation Home just opened.
+  // A new key reveals it again.
+  reveal?: { projectId: string; key: number } | null;
   management?: SidebarManagement;
 }) {
   const [query, setQuery] = useState("");
@@ -103,7 +107,10 @@ export function ProjectSidebar({
   const [now, setNow] = useState(Date.now);
   const { pins, toggle, ready, error: pinError } = useSidebarPins(scopeKey);
   const drag = useConversationDrag(
-    management?.busy ? undefined : management?.onDrop
+    management?.busy
+      ? undefined
+      : management?.onDrop &&
+          ((row, projectId) => void management.onDrop(row, projectId))
   );
   const showEmptyStates =
     inventoryReady && !loading && !servicesStarting && !error;
@@ -117,6 +124,25 @@ export function ProjectSidebar({
       setExpanded(new Set([projects[0]!.id]));
     }
   }, [projects]);
+  // Expanding the Project shows the open conversation's highlight. A hidden
+  // sidebar stays hidden; when it is showing, the row is scrolled into view.
+  useEffect(() => {
+    if (!reveal) return;
+    setExpanded((previous) =>
+      previous.has(reveal.projectId)
+        ? previous
+        : new Set(previous).add(reveal.projectId)
+    );
+    const frame = requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(
+        '.v1-navigation-sidebar [aria-current="page"]'
+      );
+      const rect = row?.getBoundingClientRect();
+      if (row && rect && rect.width > 0 && rect.right > 0)
+        row.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [reveal]);
   useEffect(() => {
     if (route.kind === "conversation" && route.projectId) {
       const id = route.projectId;

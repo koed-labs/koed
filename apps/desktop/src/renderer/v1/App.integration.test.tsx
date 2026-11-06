@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { homeStatus } from "./home/home-status.fixture.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import type { KoedServerStatus } from "../../types.js";
 import { DesktopStatusStore } from "../services/desktop-commands.js";
@@ -39,6 +40,7 @@ const localProject = {
   name: "Chats",
   localProjectId: "lp_00000000000000000000000000000001",
   path: null,
+  eventCount: 0,
   threads: []
 } as unknown as DesktopProject;
 const externalProject = {
@@ -104,8 +106,27 @@ vi.mock("../../collaboration/renderer-client.js", () => ({
 vi.mock("../state/use-status.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../state/use-status.js")>();
+  const { homeStatus: fullStatus } =
+    await import("./home/home-status.fixture.js");
+  // Each test sets only the fields it cares about; Home reads the rest, so
+  // they are filled from the Home fixture (one snapshot per status object).
+  let source: unknown;
+  let snapshot: typeof desktopStatus | null = null;
   const fixtureStore = {
-    current: () => desktopStatus,
+    current: () => {
+      if (
+        !snapshot ||
+        source !== desktopStatus.status ||
+        snapshot.error !== desktopStatus.error
+      ) {
+        source = desktopStatus.status;
+        snapshot = {
+          ...desktopStatus,
+          status: desktopStatus.status && fullStatus(desktopStatus.status)
+        };
+      }
+      return snapshot;
+    },
     subscribe: () => () => undefined
   } as unknown as DesktopStatusStore;
   return {
@@ -187,7 +208,8 @@ describe("V1App launch integration", () => {
       lifecycle: { state: "stopped", message: "Stopped" }
     } as KoedServerStatus;
     const listeners = new Set<() => void>();
-    const invoke = vi.fn(async () => structuredClone(status));
+    // Home reads the fields this test leaves out from the Home fixture.
+    const invoke = vi.fn(async () => homeStatus(structuredClone(status)));
     Object.defineProperty(window, "koedDesktop", {
       configurable: true,
       value: {
@@ -419,7 +441,7 @@ describe("V1App launch integration", () => {
       "External captured Conversation"
     );
   });
-  it("expands Projects without replacing the conversation pane and selects an existing Project for launching", async () => {
+  it("expands Projects without replacing the conversation pane", async () => {
     const namedId = uuid(30),
       requestId = uuid(31);
     const identity = {
@@ -438,6 +460,7 @@ describe("V1App launch integration", () => {
       inclusionRules: [
         { target: { kind: "folder", folder: reference }, removedAt: null }
       ],
+      eventCount: 0,
       threads: []
     } as unknown as DesktopProject;
     snapshot.projectsById.set(namedId, named);
@@ -505,27 +528,11 @@ describe("V1App launch integration", () => {
     expect(rail).toBeDefined();
     await act(async () => rail!.click());
     expect(container.querySelector(".v1-project-page")).toBeNull();
-    expect(
-      container.querySelector('[aria-label="First message"]')
-    ).not.toBeNull();
-    await act(async () =>
-      container!
-        .querySelector<HTMLButtonElement>('[aria-label="Select Project"]')!
-        .click()
-    );
-    const choice = [
-      ...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
-    ].find((button) => button.textContent === "Made here");
-    await act(async () => choice!.click());
-    expect(
-      container.querySelector('[aria-label="Select Project"]')?.textContent
-    ).toContain("Made here");
-    expect(container.textContent).toContain("koed-v1-project");
     snapshot.projectsById.delete(namedId);
     (snapshot.inventory.localFolders as unknown[]).length = 0;
   });
 
-  it("shows external captures and persists intent and first prompt before backend calls", async () => {
+  it("shows external captures and returns to Home from them", async () => {
     const calls: string[] = [];
     const state: { profile: V1Profile; provenance: V1Provenance } = {
       profile: {
@@ -684,34 +691,11 @@ describe("V1App launch integration", () => {
         .querySelector<HTMLButtonElement>('[aria-label="Koed, home"]')!
         .click()
     );
-    const projectButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Select Project"]'
+    // Home is the stage; there is no new-chat composer any more.
+    expect(container.querySelector(".v1-home")).not.toBeNull();
+    expect(container.querySelector('[aria-label="First message"]')).toBeNull();
+    expect(container.querySelector(".v1-navigation-title")?.textContent).toBe(
+      "Home"
     );
-    await act(async () => projectButton?.click());
-    expect(container.textContent).toContain("External captured Project");
-    const input = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="First message"]'
-    );
-    expect(input).not.toBeNull();
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value"
-      )!.set!;
-      setter.call(input, "Hello");
-      input!.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () =>
-      container!
-        .querySelector<HTMLButtonElement>('button[aria-label="Send"]')
-        ?.click()
-    );
-    expect(calls.slice(0, 2)).toEqual(["intent", "start"]);
-    expect(calls.indexOf("ack")).toBeLessThan(calls.indexOf("send"));
-    expect(calls.indexOf("prompt-persist")).toBeLessThan(calls.indexOf("send"));
-    expect(
-      Object.values(state.provenance.conversations)[0]?.initialPrompt
-        ?.clientUserMessageId
-    ).toBeTruthy();
   });
 });

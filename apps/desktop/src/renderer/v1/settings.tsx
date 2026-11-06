@@ -1,3 +1,4 @@
+import { aiClientHealth } from "./client-health.js";
 import {
   useEffect,
   useRef,
@@ -13,12 +14,10 @@ import {
   RefreshCw,
   RotateCw,
   Settings2,
-  ShieldCheck,
   SlidersHorizontal,
   X
 } from "lucide-react";
 import type {
-  KoedServerStatus,
   ComponentStatus,
   DesktopApi,
   DesktopLaunchAtStartupState
@@ -38,8 +37,6 @@ import type {
 } from "../services/desktop-commands.js";
 import type { ThemeStore } from "../state/theme.js";
 import { useDesktopStatus } from "../state/use-status.js";
-import { sameAgentLook } from "./pixelkin/agent-kin.js";
-import { AgentLookPicker, Pixelkin, type AgentLook } from "./visual.js";
 import { useSettingsFocus } from "./settings-focus.js";
 import "./settings.css";
 import "./settings-parity.css";
@@ -53,22 +50,26 @@ import {
   SettingsServicesOverview,
   settingsServiceComponents
 } from "./settings-services.js";
+import {
+  DesktopUpdateDot,
+  DesktopUpdatePanel
+} from "../update/DesktopUpdate.js";
+import type { DesktopUpdateController } from "../update/use-desktop-update.js";
 
-export type V1SettingsAgent = { name: string; look: AgentLook };
-export type V1SettingsTab = "general" | "agent" | "ai" | "services" | "about";
+export type V1SettingsTab = "general" | "ai" | "services" | "about";
 export type V1SettingsProps = {
-  agent: V1SettingsAgent;
-  onSaveAgent: (agent: V1SettingsAgent) => Promise<void> | void;
   statusStore: DesktopStatusStore;
   themeStore: ThemeStore;
   onClose: () => void;
-  initialTab?: V1SettingsTab;
+  initialTab?: V1SettingsTab | "agent";
   initialPage?: V1SettingsPage;
   cliInstall?: DesktopApi["cliInstall"];
   onRestartOnboarding?: () => Promise<void> | void;
   launchAtStartup?: DesktopApi["launchAtStartup"];
   presentationPreferences?: DesktopApi["presentationPreferences"];
   localAiClients?: DesktopApi["localAiClients"];
+  update?: DesktopUpdateController;
+  version?: string;
 };
 type ClientId = "codex" | "claude" | "pi";
 type Mutation =
@@ -91,19 +92,12 @@ const tabNames: readonly {
   Icon: typeof Check;
 }[] = [
   { id: "general", label: "General", Icon: SlidersHorizontal },
-  { id: "agent", label: "Your agent", Icon: ShieldCheck },
   { id: "ai", label: "AI models", Icon: Settings2 },
   { id: "services", label: "Services", Icon: Activity },
   { id: "about", label: "About", Icon: Info }
 ];
 const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
-const clientStatus = (id: ClientId, status: KoedServerStatus | null) =>
-  id === "codex"
-    ? status?.codex
-    : id === "claude"
-      ? status?.claudeCode
-      : status?.pi;
 const stateLabel = (component?: ComponentStatus | null) =>
   component?.state === "healthy"
     ? "Running"
@@ -515,8 +509,6 @@ function ConversationDefaults({ api }: { api?: DesktopApi["localAiClients"] }) {
 }
 
 export function V1Settings({
-  agent,
-  onSaveAgent,
   statusStore,
   themeStore,
   onClose,
@@ -526,17 +518,16 @@ export function V1Settings({
   onRestartOnboarding,
   launchAtStartup = window.koedDesktop?.launchAtStartup,
   presentationPreferences = window.koedDesktop?.presentationPreferences,
-  localAiClients = window.koedDesktop?.localAiClients
+  localAiClients = window.koedDesktop?.localAiClients,
+  update,
+  version
 }: V1SettingsProps) {
   const navigation = useSettingsNavigation(initialTab, initialPage);
   const { tab, page, setTab } = navigation;
-  const [draft, setDraft] = useState<V1SettingsAgent>(agent);
   const [pending, setPending] = useState<Mutation | null>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   useSettingsFocus(sheetRef, pending !== null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [agentError, setAgentError] = useState<string | null>(null);
-  const [savingAgent, setSavingAgent] = useState(false);
   const [themeError, setThemeError] = useState<string | null>(null);
   const [themeBusy, setThemeBusy] = useState(false);
   const [restartBusy, setRestartBusy] = useState(false);
@@ -551,9 +542,6 @@ export function V1Settings({
     themeStore.current,
     themeStore.current
   );
-  useEffect(() => {
-    setDraft(agent);
-  }, [agent]);
   useEffect(() => {
     void statusStore.refresh();
   }, [statusStore]);
@@ -608,23 +596,6 @@ export function V1Settings({
       setThemeError(errorText(cause));
     } finally {
       setThemeBusy(false);
-    }
-  };
-  const saveAgent = async () => {
-    const name = draft.name.trim();
-    if (!name) {
-      setAgentError("Give your agent a name.");
-      return;
-    }
-    setAgentError(null);
-    setSavingAgent(true);
-    try {
-      await onSaveAgent({ ...draft, name });
-      setDraft((current) => ({ ...current, name }));
-    } catch (cause) {
-      setAgentError(errorText(cause));
-    } finally {
-      setSavingAgent(false);
     }
   };
   const runCheck = async (id: ClientId) => {
@@ -808,6 +779,9 @@ export function V1Settings({
             >
               <item.Icon size={17} aria-hidden="true" />
               {item.label}
+              {item.id === "about" ? (
+                <DesktopUpdateDot update={update} />
+              ) : null}
             </button>
           ))}
         </nav>
@@ -898,62 +872,6 @@ export function V1Settings({
               <SettingsTools api={cliInstall} onOpen={navigation.openPage} />
             </>
           )}
-          {tab === "agent" && (
-            <>
-              <h3>Your agent</h3>
-              <p className="v1-settings-lead">
-                Your chief of staff. Its name and look appear on the home screen
-                and in replies.
-              </p>
-              <div className="v1-agent-card">
-                <div className="v1-agent-preview">
-                  <Pixelkin look={draft.look} size={112} hopOnChange />
-                  <b>{draft.name.trim() || "Koed"}</b>
-                  <span>Your chief of staff</span>
-                </div>
-                <div className="v1-agent-controls">
-                  <label className="v1-field">
-                    <span>Name</span>
-                    <input
-                      type="text"
-                      maxLength={24}
-                      value={draft.name}
-                      onChange={(event) =>
-                        setDraft((current) => ({
-                          ...current,
-                          name: event.target.value
-                        }))
-                      }
-                      placeholder="Give it a name"
-                    />
-                  </label>
-                  <AgentLookPicker
-                    look={draft.look}
-                    onChange={(look) =>
-                      setDraft((current) => ({ ...current, look }))
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="v1-settings-primary"
-                    disabled={
-                      savingAgent ||
-                      (draft.name === agent.name &&
-                        sameAgentLook(draft.look, agent.look))
-                    }
-                    onClick={() => void saveAgent()}
-                  >
-                    {savingAgent ? "Saving…" : "Save agent"}
-                  </button>
-                  {agentError && (
-                    <p className="v1-settings-error" role="alert">
-                      {agentError}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
           {tab === "ai" && (
             <>
               <h3>AI models</h3>
@@ -973,30 +891,9 @@ export function V1Settings({
               )}
               <div className="v1-client-list">
                 {clients.map(({ id, label }) => {
-                  const client = clientStatus(id, status),
-                    readiness = status?.aiClients?.[id],
-                    configured = client?.configured === true;
-                  const installed =
-                    readiness?.installed.state === "healthy" ||
-                    (id === "claude"
-                      ? status?.claudeCode?.detected
-                      : id === "pi"
-                        ? status?.pi?.detected
-                        : undefined);
-                  const auth = readiness?.authentication;
-                  const description = !status
-                    ? "Checking…"
-                    : !installed && !configured
-                      ? "Not installed"
-                      : configured && auth === "unauthenticated"
-                        ? "Sign in required"
-                        : configured && auth === "unknown"
-                          ? "Authentication unknown"
-                          : configured && client?.state === "healthy"
-                            ? "Connected"
-                            : configured
-                              ? (client?.message ?? "Needs attention")
-                              : "Not connected";
+                  const health = aiClientHealth(id, status),
+                    client = health.integration,
+                    { installed, configured, description } = health;
                   const command: Mutation = `${configured ? "repair" : "setup"}_${id}`;
                   return (
                     <div className="v1-client-card" key={id}>
@@ -1048,8 +945,8 @@ export function V1Settings({
                           </button>
                         )}
                       </div>
-                      {readiness?.version && (
-                        <p className="v1-client-version">{readiness.version}</p>
+                      {health.version && (
+                        <p className="v1-client-version">{health.version}</p>
                       )}
                     </div>
                   );
@@ -1177,6 +1074,12 @@ export function V1Settings({
                   <small>Local memory and AI Client integration</small>
                 </div>
               </div>
+              {update ? (
+                <DesktopUpdatePanel
+                  update={update}
+                  installedVersion={version}
+                />
+              ) : null}
               <div className="v1-settings-group">
                 <SettingRow
                   title="Your data"

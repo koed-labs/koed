@@ -13,6 +13,11 @@ import {
 } from "@koed/ui";
 import { ChevronLeft, ChevronRight, Folder, Settings } from "lucide-react";
 import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
+import {
+  DesktopUpdateDot,
+  DesktopUpdateNotice
+} from "../update/DesktopUpdate.js";
+import type { DesktopUpdateController } from "../update/use-desktop-update.js";
 import type {
   NavigationRoute,
   SidebarProject
@@ -25,6 +30,8 @@ type Props = {
   route: NavigationRoute;
   scopeKey: string | null;
   title?: string;
+  // A Project for the sidebar to expand; see ProjectSidebar.
+  revealProject?: { projectId: string; key: number } | null;
   projectName?: string;
   profileName: string;
   onSelect: (route: NavigationRoute) => void;
@@ -41,6 +48,7 @@ type Props = {
   error?: string | null;
   onRetry: () => void;
   management?: SidebarManagement;
+  update?: DesktopUpdateController;
 };
 export function NavigationShell(props: Props) {
   return (
@@ -131,7 +139,14 @@ function ShellContent(props: Props) {
         </SidebarHeader>
         <SidebarFooter>
           <SidebarMenu>
-            {railButton("Settings", <Settings />, props.onSettings)}
+            {railButton(
+              "Settings",
+              <>
+                <Settings />
+                <DesktopUpdateDot update={props.update} />
+              </>,
+              props.onSettings
+            )}
             {railButton(
               "Profile",
               <span className="v1-profile-badge">
@@ -162,8 +177,10 @@ function ShellContent(props: Props) {
           inventoryReady={props.inventoryReady}
           error={props.error}
           onRetry={props.onRetry}
+          reveal={props.revealProject ?? null}
           management={props.management}
         />
+        {props.update ? <DesktopUpdateNotice update={props.update} /> : null}
       </Sidebar>
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>
         <header className="v1-navigation-bar">
@@ -196,7 +213,7 @@ function ShellContent(props: Props) {
             </span>
           )}
           <span className="v1-navigation-title">
-            {props.title ?? "New conversation"}
+            {props.title ?? "Conversation"}
           </span>
         </header>
         <div className="v1-navigation-content">{props.children}</div>
