@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DesktopUpdatePanel } from "./DesktopUpdate.js";
+import { DesktopUpdateNotice, DesktopUpdatePanel } from "./DesktopUpdate.js";
 import {
   useDesktopUpdate,
   type DesktopUpdateController
@@ -201,7 +201,7 @@ describe("Desktop update notice", () => {
     });
     await act(async () => rejectOpen(new Error("secret token in failure")));
 
-    expect(container.textContent).toContain("Version 0.11.0 is available.");
+    expect(container.textContent).toContain("Koed 0.11.0 is available");
     expect(container.textContent).toContain(
       "Release page could not be opened."
     );
@@ -216,10 +216,10 @@ describe("Desktop update notice", () => {
       "Release page could not be opened."
     );
     expect(container.querySelectorAll('[role="alert"]')).toHaveLength(0);
-    expect(container.textContent).toContain("Version 0.11.0 is available.");
+    expect(container.textContent).toContain("Koed 0.11.0 is available");
   });
 
-  it("shows available version and plain notes without install actions", () => {
+  it("shows the available version without release notes or install actions", () => {
     const html = renderToStaticMarkup(
       <DesktopUpdatePanel
         update={update({
@@ -235,11 +235,11 @@ describe("Desktop update notice", () => {
     );
     expect(html).toContain("0.10.0");
     expect(html).toContain("0.11.0");
-    expect(html).toContain("Safer setup\nMore reliable.");
+    expect(html).not.toContain("Safer setup");
     expect(html).toContain("koed stop --json");
     expect(html).toContain("lifecycle.state: stopped");
     expect((html.match(/role="alert"/g) ?? []).length).toBe(0);
-    expect(html).not.toMatch(/<button[^>]*>[^<]*(download|install|restart)/i);
+    expect(html).not.toMatch(/<button[^>]*>[^<]*(install|restart)/i);
   });
 
   it("sanitizes errors and exposes no automatic recovery action", () => {
@@ -273,5 +273,64 @@ describe("Desktop update notice", () => {
       />
     );
     expect(html).toContain("up to date");
+  });
+
+  it("shows a dismissible app-wide notice that stays dismissed for that version", async () => {
+    const store = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => store.set(key, value)
+      }
+    });
+    const available = (version: string) =>
+      update({
+        installedVersion: "0.10.0",
+        status: "available",
+        release: { version, summary: "Notes" },
+        checkedAt: null
+      });
+    let details = 0;
+    await act(async () =>
+      root.render(
+        <DesktopUpdateNotice
+          update={available("0.11.0")}
+          onDetails={() => (details += 1)}
+        />
+      )
+    );
+    expect(container.textContent).toContain("Koed 0.11.0 is ready");
+    expect(container.textContent).not.toContain("Notes");
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "How to update")
+        ?.click()
+    );
+    expect(details).toBe(1);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".desktop-update-notice-close")
+        ?.click()
+    );
+    expect(container.textContent).toBe("");
+    expect(store.get("koed.desktop.update.dismissedVersion")).toBe("0.11.0");
+
+    await act(async () =>
+      root.render(
+        <DesktopUpdateNotice
+          update={available("0.12.0")}
+          onDetails={() => undefined}
+        />
+      )
+    );
+    expect(container.textContent).toContain("Koed 0.12.0 is ready");
+  });
+
+  it("shows no notice when Koed is up to date", () => {
+    const html = renderToStaticMarkup(
+      <DesktopUpdateNotice update={update(currentState)} onDetails={() => {}} />
+    );
+    expect(html).toBe("");
   });
 });

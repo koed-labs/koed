@@ -13,7 +13,10 @@ import {
 } from "@koed/ui";
 import { ChevronLeft, ChevronRight, Folder, Settings } from "lucide-react";
 import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
-import { DesktopUpdateIndicator } from "../update/DesktopUpdate.js";
+import {
+  DesktopUpdateDot,
+  DesktopUpdateNotice
+} from "../update/DesktopUpdate.js";
 import type { DesktopUpdateController } from "../update/use-desktop-update.js";
 import type {
   NavigationRoute,
@@ -137,7 +140,14 @@ function ShellContent(props: Props) {
         </SidebarHeader>
         <SidebarFooter>
           <SidebarMenu>
-            {railButton("Settings", <Settings />, props.onSettings)}
+            {railButton(
+              "Settings",
+              <>
+                <Settings />
+                <DesktopUpdateDot update={props.update} />
+              </>,
+              props.onSettings
+            )}
             {railButton(
               "Profile",
               <span className="v1-profile-badge">
@@ -171,6 +181,12 @@ function ShellContent(props: Props) {
           reveal={props.revealProject ?? null}
           management={props.management}
         />
+        {props.update && props.onOpenAbout ? (
+          <DesktopUpdateNotice
+            update={props.update}
+            onDetails={props.onOpenAbout}
+          />
+        ) : null}
       </Sidebar>
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>
         <header className="v1-navigation-bar">
@@ -205,12 +221,6 @@ function ShellContent(props: Props) {
           <span className="v1-navigation-title">
             {props.title ?? "Conversation"}
           </span>
-          {props.update && props.onOpenAbout ? (
-            <DesktopUpdateIndicator
-              update={props.update}
-              onOpen={props.onOpenAbout}
-            />
-          ) : null}
         </header>
         <div className="v1-navigation-content">{props.children}</div>
       </SidebarInset>

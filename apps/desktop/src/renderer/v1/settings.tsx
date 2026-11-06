@@ -50,7 +50,10 @@ import {
   SettingsServicesOverview,
   settingsServiceComponents
 } from "./settings-services.js";
-import { DesktopUpdatePanel } from "../update/DesktopUpdate.js";
+import {
+  DesktopUpdateDot,
+  DesktopUpdatePanel
+} from "../update/DesktopUpdate.js";
 import type { DesktopUpdateController } from "../update/use-desktop-update.js";
 
 export type V1SettingsTab = "general" | "ai" | "services" | "about";
@@ -776,6 +779,9 @@ export function V1Settings({
             >
               <item.Icon size={17} aria-hidden="true" />
               {item.label}
+              {item.id === "about" ? (
+                <DesktopUpdateDot update={update} />
+              ) : null}
             </button>
           ))}
         </nav>

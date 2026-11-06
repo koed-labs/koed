@@ -23,7 +23,8 @@ describe("App Desktop IPC wiring", () => {
     expect(app).toContain("useDesktopUpdate(window.koedDesktop?.updates)");
     expect(app).toContain("<V1Settings");
     expect(app).toContain("update={update}");
-    expect(shell).toContain("DesktopUpdateIndicator");
+    expect(shell).toContain("DesktopUpdateNotice");
+    expect(shell).toContain("DesktopUpdateDot");
     expect(settings).toContain("DesktopUpdatePanel");
   });
 

@@ -1,6 +1,6 @@
 # Desktop updates
 
-Koed Desktop currently offers a notify-only update notice for eligible packaged macOS arm64 releases. When a newer stable release is found, the main bar shows **Update available** and Preferences → About → Updates shows installed/latest versions and plain-text release notes. Use **View release** to open the official Koed GitHub releases page.
+Koed Desktop currently offers a notify-only update notice for eligible packaged macOS arm64 releases. When a newer stable release is found, a small **Update available** card appears at the bottom of the conversation sidebar on every screen, showing the installed and available versions. **Download** opens the official Koed GitHub releases page and **How to update** opens Preferences → About → Updates. Dismissing the card hides it for that version only; a dot on the Settings rail button and the About tab keeps the update discoverable. Release notes are not shown in the app; read them on the release page.
 
 Koed does not download an update, run an installer, restart, or install on quit. Update manually only after reviewing the release and confirming you can safely stop the local services.
 
