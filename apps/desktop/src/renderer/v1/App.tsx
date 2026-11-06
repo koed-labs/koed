@@ -71,6 +71,7 @@ import {
 } from "./state.js";
 import { parseAgentLook, serializeAgentLook } from "./pixelkin/agent-kin.js";
 import { DEFAULT_AGENT_LOOK } from "./visual.js";
+import { useDesktopUpdate } from "../update/use-desktop-update.js";
 
 const defaultStatusStore = new DesktopStatusStore();
 const defaultThemeStore = new ThemeStore();
@@ -146,6 +147,7 @@ export function V1App({
   statusStore?: DesktopStatusStore;
   themeStore?: ThemeStore;
 }) {
+  const update = useDesktopUpdate(window.koedDesktop?.updates);
   const [profile, setProfile] = useState<V1Profile | null>(null);
   const [profileReadError, setProfileReadError] = useState<string | null>(null);
   const [profileReadRevision, setProfileReadRevision] = useState(0);
@@ -1024,6 +1026,11 @@ export function V1App({
       >
         <NavigationShell
           projects={sidebarProjects}
+          update={update}
+          onOpenAbout={() => {
+            setSettingsTab("about");
+            setSettingsOpen(true);
+          }}
           revealProject={revealProject}
           route={route}
           scopeKey={scopeKey}
@@ -1163,6 +1170,8 @@ export function V1App({
               themeStore={themeStore}
               onClose={() => setSettingsOpen(false)}
               initialTab={settingsTab}
+              update={update}
+              version={__KOED_DESKTOP_VERSION__}
               onRestartOnboarding={async () => {
                 await saveProfile((current) => ({
                   ...current,

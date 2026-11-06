@@ -61,7 +61,6 @@ export type AppShellProps = {
   onToggleInspector: () => void;
   personalUnreadCount: number;
   scopeLine: ReactNode;
-  updateControl?: ReactNode;
   teamCollaborationEnabled: boolean;
   teams: readonly TeamRailItem[];
   routeFocusKey: string;
@@ -308,7 +307,6 @@ export function AppShell({
   onToggleInspector,
   personalUnreadCount,
   scopeLine,
-  updateControl,
   teamCollaborationEnabled,
   teams,
   routeFocusKey
@@ -487,7 +485,6 @@ export function AppShell({
             </button>
           </div>
           {scopeLine}
-          {updateControl}
           {health ? (
             <button
               aria-label={`Local health: ${

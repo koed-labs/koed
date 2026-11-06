@@ -12,6 +12,9 @@ export type DesktopUpdateController = {
   open: () => Promise<void>;
 };
 
+const checkedAtMillis = (state: DesktopUpdateState): number =>
+  state.checkedAt ? Date.parse(state.checkedAt) : 0;
+
 const unavailableState: DesktopUpdateState = {
   installedVersion: "Unknown",
   status: "disabled",
@@ -32,19 +35,30 @@ export function useDesktopUpdate(
   useEffect(() => {
     if (!api) return;
     let active = true;
-    let eventSeen = false;
+    let latestEvent: DesktopUpdateState | null = null;
+    const startedAtRevision = revision.current;
     const unsubscribe = api.subscribe((next) => {
-      eventSeen = true;
+      latestEvent = next;
       revision.current += 1;
-      if (active) setState(next);
+      if (active) {
+        setState(next);
+        setError(null);
+      }
     });
     void api
       .getState()
       .then((snapshot) => {
-        if (active && !eventSeen) setState(snapshot);
+        const isFresher =
+          !latestEvent ||
+          checkedAtMillis(snapshot) > checkedAtMillis(latestEvent);
+        if (active && isFresher) {
+          setState(snapshot);
+          setError(null);
+        }
       })
       .catch(() => {
-        if (active) setError("Update status could not be read.");
+        if (active && revision.current === startedAtRevision)
+          setError("Update status could not be read.");
       });
     return () => {
       active = false;
@@ -64,12 +78,14 @@ export function useDesktopUpdate(
             ? await api.checkForUpdates()
             : await api.openReleasePage();
         if (revision.current === startedAtRevision) setState(next);
+        setError(null);
       } catch {
-        setError(
-          operation === "check"
-            ? "Update status could not be checked."
-            : "Release page could not be opened."
-        );
+        if (revision.current === startedAtRevision)
+          setError(
+            operation === "check"
+              ? "Update status could not be checked."
+              : "Release page could not be opened."
+          );
       } finally {
         setBusy(false);
       }

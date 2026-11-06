@@ -13,6 +13,8 @@ import {
 } from "@koed/ui";
 import { ChevronLeft, ChevronRight, Folder, Settings } from "lucide-react";
 import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
+import { DesktopUpdateIndicator } from "../update/DesktopUpdate.js";
+import type { DesktopUpdateController } from "../update/use-desktop-update.js";
 import type {
   NavigationRoute,
   SidebarProject
@@ -43,6 +45,8 @@ type Props = {
   error?: string | null;
   onRetry: () => void;
   management?: SidebarManagement;
+  update?: DesktopUpdateController;
+  onOpenAbout?: () => void;
 };
 export function NavigationShell(props: Props) {
   return (
@@ -201,6 +205,12 @@ function ShellContent(props: Props) {
           <span className="v1-navigation-title">
             {props.title ?? "Conversation"}
           </span>
+          {props.update && props.onOpenAbout ? (
+            <DesktopUpdateIndicator
+              update={props.update}
+              onOpen={props.onOpenAbout}
+            />
+          ) : null}
         </header>
         <div className="v1-navigation-content">{props.children}</div>
       </SidebarInset>

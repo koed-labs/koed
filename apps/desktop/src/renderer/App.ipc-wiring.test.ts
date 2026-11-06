@@ -10,11 +10,21 @@ describe("App Desktop IPC wiring", () => {
     );
   });
 
-  it("wires update notice only through the preload bridge", () => {
-    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-    expect(source).toContain("useDesktopUpdate(window.koedDesktop?.updates)");
-    expect(source).toContain("<DesktopUpdateIndicator");
-    expect(source).toContain('onOpen={() => openPreferences("about")}');
+  it("wires update notice into the active V1 Home shell and About settings", () => {
+    const app = readFileSync(new URL("./v1/App.tsx", import.meta.url), "utf8");
+    const shell = readFileSync(
+      new URL("./v1/NavigationShell.tsx", import.meta.url),
+      "utf8"
+    );
+    const settings = readFileSync(
+      new URL("./v1/settings.tsx", import.meta.url),
+      "utf8"
+    );
+    expect(app).toContain("useDesktopUpdate(window.koedDesktop?.updates)");
+    expect(app).toContain("<V1Settings");
+    expect(app).toContain("update={update}");
+    expect(shell).toContain("DesktopUpdateIndicator");
+    expect(settings).toContain("DesktopUpdatePanel");
   });
 
   it("starts the solo interface without enabling the hidden Team interface", () => {

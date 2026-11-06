@@ -20,6 +20,25 @@
   margin: 0;
 }
 
+.desktop-update-manual-steps {
+  margin-top: 12px;
+}
+
+.desktop-update-manual-steps summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.desktop-update-manual-steps ol {
+  display: grid;
+  gap: 8px;
+  padding-left: 20px;
+}
+
+.desktop-update-manual-steps code {
+  white-space: nowrap;
+}
+
 .desktop-update-notes {
   white-space: pre-wrap;
 }

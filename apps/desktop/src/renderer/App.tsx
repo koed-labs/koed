@@ -90,8 +90,6 @@ import {
 import { PreferencesView } from "./views/preferences/index.js";
 import { DevicesModal } from "./devices/DevicesModal.js";
 import "./app.css";
-import { DesktopUpdateIndicator } from "./update/DesktopUpdate.js";
-import { useDesktopUpdate } from "./update/use-desktop-update.js";
 
 const CollaborationRoutes = lazy(async () => {
   const module = await import("./collaboration/CollaborationRoutes.js");
@@ -576,7 +574,6 @@ export function App({
   teamCollaborationEnabled = true
 }: AppProps = {}) {
   const askAvailable = Boolean(personalMemoryApi && managedConversations);
-  const update = useDesktopUpdate(window.koedDesktop?.updates);
   const activeStatusStore = statusStoreOverride ?? statusStore;
   const [navigation, dispatch] = useReducer(
     navigationReducer,
@@ -1970,7 +1967,6 @@ export function App({
         hardwareAcceleration={window.koedDesktop?.hardwareAcceleration}
         launchAtStartup={window.koedDesktop?.launchAtStartup}
         localAiClients={window.koedDesktop?.localAiClients}
-        update={update}
         onSectionChange={(section) =>
           dispatch({
             type: "replace",
@@ -2131,12 +2127,6 @@ export function App({
             : 0
         }
         scopeLine={<ScopeLine>{scopeLine}</ScopeLine>}
-        updateControl={
-          <DesktopUpdateIndicator
-            update={update}
-            onOpen={() => openPreferences("about")}
-          />
-        }
         teamCollaborationEnabled={teamCollaborationEnabled}
         teams={teamRail}
         routeFocusKey={JSON.stringify(route)}

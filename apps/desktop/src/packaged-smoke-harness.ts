@@ -23,7 +23,7 @@ type HarnessInput = {
   argv: string[];
   channel: EventEmitter & { connected?: boolean };
   send: (message: unknown) => void;
-  installedVersion: string;
+  getUpdateNoticeState: () => unknown;
   invoke: (command: string) => Promise<unknown>;
   stop: () => Promise<unknown>;
   quit: () => void;
@@ -83,12 +83,7 @@ const receive = (
     try {
       const result =
         request.command === "update_notice"
-          ? {
-              installedVersion: input.installedVersion,
-              status: "disabled",
-              release: null,
-              checkedAt: null
-            }
+          ? input.getUpdateNoticeState()
           : await input.invoke(request.command as string);
       sendResponse(input, request.id, { result: redact(result) });
       if (request.command === "quit") {

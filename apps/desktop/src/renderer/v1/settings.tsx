@@ -50,6 +50,8 @@ import {
   SettingsServicesOverview,
   settingsServiceComponents
 } from "./settings-services.js";
+import { DesktopUpdatePanel } from "../update/DesktopUpdate.js";
+import type { DesktopUpdateController } from "../update/use-desktop-update.js";
 
 export type V1SettingsTab = "general" | "ai" | "services" | "about";
 export type V1SettingsProps = {
@@ -63,6 +65,8 @@ export type V1SettingsProps = {
   launchAtStartup?: DesktopApi["launchAtStartup"];
   presentationPreferences?: DesktopApi["presentationPreferences"];
   localAiClients?: DesktopApi["localAiClients"];
+  update?: DesktopUpdateController;
+  version?: string;
 };
 type ClientId = "codex" | "claude" | "pi";
 type Mutation =
@@ -511,7 +515,9 @@ export function V1Settings({
   onRestartOnboarding,
   launchAtStartup = window.koedDesktop?.launchAtStartup,
   presentationPreferences = window.koedDesktop?.presentationPreferences,
-  localAiClients = window.koedDesktop?.localAiClients
+  localAiClients = window.koedDesktop?.localAiClients,
+  update,
+  version
 }: V1SettingsProps) {
   const navigation = useSettingsNavigation(initialTab, initialPage);
   const { tab, page, setTab } = navigation;
@@ -1062,6 +1068,12 @@ export function V1Settings({
                   <small>Local memory and AI Client integration</small>
                 </div>
               </div>
+              {update ? (
+                <DesktopUpdatePanel
+                  update={update}
+                  installedVersion={version}
+                />
+              ) : null}
               <div className="v1-settings-group">
                 <SettingRow
                   title="Your data"
