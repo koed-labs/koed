@@ -87,23 +87,6 @@ const fallbackAgent: OnboardingAgent = {
   name: "Koed",
   look: DEFAULT_AGENT_LOOK
 };
-const launchInput = (
-  intent: V1ConversationIntent
-): Parameters<ManagedConversationDesktopApi["start"]>[0] => ({
-  projectId: intent.projectId,
-  ...(intent.contextKind ? { contextKind: intent.contextKind } : {}),
-  aiClientDriverId: intent.aiClientDriverId,
-  aiClientInstanceId: intent.aiClientInstanceId,
-  model: intent.model,
-  reasoningEffort: intent.reasoningEffort,
-  permissionMode: intent.permissionMode,
-  runnerKind: "local_device",
-  ...(intent.chiefOfStaffName
-    ? { chiefOfStaffName: intent.chiefOfStaffName }
-    : {}),
-  idempotencyKey: intent.idempotencyKey
-});
-
 export const shouldShowV1Onboarding = (
   profile: V1Profile,
   backendComplete: boolean
@@ -217,7 +200,7 @@ export function V1App({
       !error
     );
   const lifecycle = useManagedConversationLifecycle({
-    api: managedConversations,
+    api: null,
     store,
     ownerId,
     revision,
@@ -565,14 +548,13 @@ export function V1App({
     },
     [store, personalMemoryApi, refreshProvenance]
   );
-  // A recorded intent is replayed with its original idempotency key after an uncertain response.
+  // Recover Project organization without replaying Conversation execution intents.
   useEffect(() => {
     if (
       !scopeKey ||
       inventoryScope !== scopeKey ||
       status?.api.state !== "healthy" ||
       !profile?.onboarding.completed ||
-      !managedConversations ||
       !store ||
       !snapshot ||
       snapshot.loading
@@ -644,67 +626,6 @@ export function V1App({
           claimed.delete(attemptKey);
         }
       }
-      for (const intent of Object.values(provenance.conversations)) {
-        if (!active) return;
-        const attemptKey = `conversation:${reconcileRevision}:${intent.idempotencyKey}:${intent.capturedSessionId ?? "pending"}`;
-        if (attemptedReconcile.current.has(attemptKey)) continue;
-        const project = projectForIntent(intent);
-        if (!project) {
-          if (active)
-            setPendingIntentError(
-              "A Conversation is pending until its local Folder is available."
-            );
-          continue;
-        }
-        attemptedReconcile.current.add(attemptKey);
-        claimed.add(attemptKey);
-        try {
-          const result = intent.executionId
-            ? await managedConversations.inspect(intent.executionId)
-            : await managedConversations.start(launchInput(intent));
-          if (!active) return;
-          if (!intent.executionId) {
-            await v1State().ackConversation({
-              idempotencyKey: intent.idempotencyKey,
-              executionId: result.executionId,
-              capturedSessionId: result.conversation?.capturedSessionId
-            });
-            await refreshProvenance();
-          } else if (
-            result.conversation?.capturedSessionId &&
-            result.conversation.capturedSessionId !== intent.capturedSessionId
-          ) {
-            await v1State().ackConversation({
-              idempotencyKey: intent.idempotencyKey,
-              executionId: result.executionId,
-              capturedSessionId: result.conversation.capturedSessionId
-            });
-            await refreshProvenance();
-          }
-          if (!lifecycle.drafts.has(result.executionId)) {
-            const conversation = result.conversation ?? {
-              executionId: result.executionId,
-              projectId: intent.projectId,
-              capturedSessionId: result.executionId,
-              threadId: result.executionId
-            };
-            lifecycle.started(
-              project,
-              conversation,
-              result.status === "ready" ? "ready" : "starting",
-              launchInput(intent),
-              intent.initialPrompt
-            );
-          }
-        } catch (cause) {
-          if (active)
-            setPendingIntentError(
-              `Conversation launch is pending: ${cause instanceof Error ? cause.message : String(cause)}`
-            );
-        } finally {
-          claimed.delete(attemptKey);
-        }
-      }
     };
     void reconcile();
     return () => {
@@ -714,12 +635,9 @@ export function V1App({
   }, [
     scopeKey,
     inventoryScope,
-    managedConversations,
     personalMemoryApi,
     store,
     snapshot?.loading,
-    projects,
-    independentProject,
     provenance,
     refreshProvenance,
     reconcileRevision,
@@ -857,7 +775,13 @@ export function V1App({
       .find((project) => project.id === projectId)
       ?.conversations.reduce<
         (typeof sidebarProjects)[number]["conversations"][number] | null
-      >((newest, conversation) => (!newest || conversation.latestAt > newest.latestAt ? conversation : newest), null);
+      >(
+        (newest, conversation) =>
+          !newest || conversation.latestAt > newest.latestAt
+            ? conversation
+            : newest,
+        null
+      );
     if (!latest) return;
     setRoute(latest.route);
     setRevealProject((previous) => ({
@@ -1117,16 +1041,10 @@ export function V1App({
                 managedConversationRevision={revision}
                 managedConversationRecoveryRevision={recoveryRevision}
                 managedConversationUpdate={realtime}
-                managedConversations={managedConversations}
-                pendingCanonicalConversation={Boolean(
-                  selectedDraft && selectedDraft.status !== "ready"
-                )}
-                managedDraft={selectedDraft}
-                onRetryManagedConversation={
-                  selectedExecution
-                    ? () => void lifecycle.retry(selectedExecution)
-                    : null
-                }
+                managedConversations={null}
+                pendingCanonicalConversation={false}
+                managedDraft={null}
+                onRetryManagedConversation={null}
                 project={conversationProject}
                 routeSessionId={conversationRouteId}
                 store={store}

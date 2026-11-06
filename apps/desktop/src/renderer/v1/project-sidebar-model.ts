@@ -152,6 +152,7 @@ export function buildProjectSidebar(
       : capturedExecutions.has(intent.executionId);
     if (alreadyShown) continue;
     const draft = drafts.get(intent.executionId);
+    if (!draft && !capturedExecutions.has(intent.executionId)) continue;
     const project = projects.find((p) => p.id === intent.presentationProjectId);
     const id = project?.id ?? "no-project";
     const group = groups.get(id) ?? {

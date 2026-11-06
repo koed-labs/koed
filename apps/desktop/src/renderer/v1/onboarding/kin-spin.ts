@@ -67,7 +67,7 @@ export class KinSpin {
       return;
     }
     // Small substeps keep the spring stable after a dropped frame.
-    for (let remaining = Math.min(dt, 0.05); remaining > 0; ) {
+    for (let remaining = Math.min(dt, 0.05); remaining > 0;) {
       const step = Math.min(remaining, 1 / 120);
       this.velocity +=
         ((this.#target - this.angle) * 100 - this.velocity * 19) * step;

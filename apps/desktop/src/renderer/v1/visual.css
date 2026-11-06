@@ -28,12 +28,7 @@
   background: var(--v1-bg);
   color: var(--v1-fg);
   font-family:
-    Geist,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+    Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 15px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;

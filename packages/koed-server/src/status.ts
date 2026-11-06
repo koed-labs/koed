@@ -3058,10 +3058,7 @@ export const collectKoedServerStatus = async (
   );
   // The Local AI Runtime reads an AI Client only while it is connected. An
   // inspection that failed says nothing either way, so it keeps the last value.
-  const connection = (inspected: {
-    configured?: boolean;
-    details?: unknown;
-  }) =>
+  const connection = (inspected: { configured?: boolean; details?: unknown }) =>
     (inspected.details as { kind?: unknown } | undefined)?.kind ===
     "inspection_error"
       ? undefined

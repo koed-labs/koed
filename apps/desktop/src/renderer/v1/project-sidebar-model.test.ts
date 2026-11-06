@@ -181,10 +181,17 @@ describe("Project sidebar inventory", () => {
     expect(groups[0]!.conversations).toHaveLength(1);
     expect(groups[0]!.conversations[0]!.route.projectId).toBe("other");
   });
-  it("replaces a pending launch with capture and retains its pin alias", () => {
+  it("hides unresolved launches and retains their pin alias after capture", () => {
     const project = named("project", []);
     const pending = buildProjectSidebar([project], [intent], new Map());
-    expect(pending[0]!.conversations[0]!.key).toBe("execution:execution");
+    expect(pending[0]!.conversations).toEqual([]);
+    expect(
+      buildProjectSidebar(
+        [],
+        [{ ...intent, presentationProjectId: undefined }],
+        new Map()
+      )
+    ).toEqual([]);
     project.threads.push(
       thread("captured", after, "pi") as DesktopProject["threads"][number]
     );
@@ -203,7 +210,7 @@ describe("Project sidebar inventory", () => {
       { ...thread("legacy", after), sessionId: undefined } as never
     ]);
     const groups = buildProjectSidebar([legacy], [intent], new Map());
-    expect(groups[0]!.conversations).toHaveLength(2);
+    expect(groups[0]!.conversations).toHaveLength(1);
     expect(groups[0]!.conversations[0]!.route.executionId).toBeUndefined();
   });
   it("searches titles and Project names and keeps pins in saved order", () => {

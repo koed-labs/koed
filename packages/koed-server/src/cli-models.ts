@@ -78,19 +78,20 @@ export const runModelCommand = async (
             })
           : await execute(paths, environment);
       }
+    } else if (operation === "status") {
+      const execute =
+        dependencies.collectModelStatus ??
+        (await import("./local-models-runtime.js")).collectLocalModelStatus;
+      result = await execute(paths, options.kind, environment);
     } else {
       const execute =
-        operation === "status"
-          ? (dependencies.collectModelStatus ??
-            (await import("./local-models-runtime.js")).collectLocalModelStatus)
-          : (dependencies.installModel ??
-            (await import("./local-models-runtime.js")).installLocalModel);
-      result =
-        operation === "install" && options.progressJson
-          ? await execute(paths, options.kind, environment, {
-              onProgress: progress
-            })
-          : await execute(paths, options.kind, environment);
+        dependencies.installModel ??
+        (await import("./local-models-runtime.js")).installLocalModel;
+      result = options.progressJson
+        ? await execute(paths, options.kind, environment, {
+            onProgress: progress
+          })
+        : await execute(paths, options.kind, environment);
     }
     stdout.write(
       options.json

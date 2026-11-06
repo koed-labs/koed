@@ -8,11 +8,19 @@ preserves selections and offers a retry. Running setup again preserves Personal 
 Conversations, and saved customization.
 
 The sidebar shows the current User's Project inventory, including Conversations
-captured from supported AI Clients and those started in Desktop. Search, pinned
+captured from supported AI Clients, including previously managed Conversations. Search, pinned
 Conversations, expandable Projects, and navigation history share the same
 Conversation pane. On narrow windows, the sidebar opens as a drawer. While
 services or inventory are loading, the sidebar shows that state rather than an
 empty Conversation list.
+
+Following [ADR 0065](adr/0065-capture-and-recall-without-managed-conversation-execution.md),
+V1 Desktop does not start, continue, or control Conversations. Users do that in
+AI Clients. Pending managed Conversation intents and prompts remain stored but
+are not replayed by V1 Desktop. Existing capture, inspection, and Project
+organization remain available. Legacy managed execution APIs and background
+workers are not retired by this UI change; descriptions of those workflows below
+are historical, not V1 Desktop capabilities.
 
 In **Project settings → Kin**, choose a body shape, colour, and personality. The
 Kin appears under a spotlight beside the controls. Home labels it with the Project name. Each Project starts with a

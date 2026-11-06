@@ -22,6 +22,7 @@ const inventoryLoad = vi.hoisted(() => ({
   calls: 0,
   load: null as null | ((options?: { silent?: boolean }) => unknown),
   durableRefresh: vi.fn(),
+  conversationProps: null as null | Record<string, unknown>,
   collaborationListener: null as
     | null
     | ((snapshot: unknown, update: Record<string, unknown>) => void)
@@ -137,7 +138,10 @@ vi.mock("../state/use-status.js", async (importOriginal) => {
   };
 });
 vi.mock("../views/personal/PersonalMemoryViews.js", () => ({
-  StoreConversation: () => <div>Conversation opened</div>
+  StoreConversation: (props: Record<string, unknown>) => {
+    inventoryLoad.conversationProps = props;
+    return <div>Conversation opened</div>;
+  }
 }));
 vi.mock("../views/personal/use-slash-command-discovery.js", () => ({
   useSlashCommandDiscovery: () => ({
@@ -196,6 +200,7 @@ describe("V1App launch integration", () => {
     desktopStatus.error = null;
     inventoryLoad.load = null;
     inventoryLoad.collaborationListener = null;
+    inventoryLoad.conversationProps = null;
     inventoryLoad.durableRefresh.mockClear();
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -532,6 +537,96 @@ describe("V1App launch integration", () => {
     (snapshot.inventory.localFolders as unknown[]).length = 0;
   });
 
+  it("preserves pending Conversation intents without launching or inspecting them", async () => {
+    const intent: V1ConversationIntent = {
+      idempotencyKey: "pending",
+      projectId: localProject.localProjectId!,
+      contextKind: "independent",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "client-1",
+      model: "model-1",
+      reasoningEffort: null,
+      permissionMode: "supervised",
+      runnerKind: "local_device",
+      initialPrompt: {
+        clientUserMessageId: uuid(5),
+        prompt: "Keep this",
+        status: "reconciling",
+        message: ""
+      },
+      createdAt: "2025-01-01T00:00:00Z"
+    };
+    const provenance: V1Provenance = {
+      schemaVersion: 1,
+      projects: {
+        [uuid(6)]: {
+          requestId: uuid(6),
+          name: "Recovery sentinel",
+          createdAt: "2025-01-01T00:00:00Z"
+        }
+      },
+      conversations: {
+        pending: intent,
+        acknowledged: {
+          ...intent,
+          idempotencyKey: "acknowledged",
+          executionId: uuid(4)
+        }
+      }
+    };
+    const start = vi.fn(async () => {
+      throw new Error("unexpected launch");
+    });
+    const inspect = vi.fn(async () => {
+      throw new Error("unexpected inspection");
+    });
+    const ackConversation = vi.fn();
+    const storedProvenance = structuredClone(provenance);
+    const readProvenance = vi.fn(async () => structuredClone(storedProvenance));
+    const createProject = vi.fn(async () => {
+      throw new Error("Recovery sentinel reached");
+    });
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        v1State: {
+          readProfile: async () => ({
+            onboarding: { selections: {}, completed: true }
+          }),
+          readIdentity: async () => ({
+            ownerId: uuid(3),
+            scopeKey: "a".repeat(64)
+          }),
+          readProvenance,
+          ackConversation
+        }
+      }
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <V1App
+          personalMemoryApi={{ createProject } as never}
+          managedConversations={{ start, inspect } as never}
+          statusStore={{ refresh: async () => undefined } as never}
+          themeStore={{ load: async () => undefined } as never}
+        />
+      )
+    );
+    await vi.waitFor(() => {
+      expect(container!.textContent).toContain("Recovery sentinel reached");
+    });
+    expect(readProvenance).toHaveBeenCalled();
+    expect(createProject).toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(inspect).not.toHaveBeenCalled();
+    expect(ackConversation).not.toHaveBeenCalled();
+    expect(storedProvenance.conversations).toEqual(provenance.conversations);
+    expect(container.textContent).toContain("External captured Project");
+  });
+
   it("shows external captures and returns to Home from them", async () => {
     const calls: string[] = [];
     const state: { profile: V1Profile; provenance: V1Provenance } = {
@@ -684,6 +779,11 @@ describe("V1App launch integration", () => {
     );
     await act(async () => captured!.click());
     expect(container.textContent).toContain("Conversation opened");
+    expect(inventoryLoad.conversationProps?.managedConversations).toBeNull();
+    expect(inventoryLoad.conversationProps?.managedDraft).toBeNull();
+    expect(
+      inventoryLoad.conversationProps?.onRetryManagedConversation
+    ).toBeNull();
     expect(container.querySelector('[aria-label="Create Project"]')).toBeNull();
     expect(container.querySelector('[aria-label^="Projects for"]')).toBeNull();
     await act(async () =>

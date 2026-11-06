@@ -141,9 +141,7 @@ const useNow = (intervalMs: number) => {
 
 // A detected client can be connected and a client needing attention
 // repaired, with the same consent step as Settings.
-const clientCommand = (
-  client: HomeClient
-): IntegrationMutationCommand | null =>
+const clientCommand = (client: HomeClient): IntegrationMutationCommand | null =>
   client.state === "detected"
     ? `setup_${client.id}`
     : client.state === "attention"
