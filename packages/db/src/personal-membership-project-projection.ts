@@ -66,13 +66,15 @@ export const projectPersonalMembershipCatalog = async (
         : root.state === "conflict"
           ? "Project needs review"
           : "Project waiting for sync";
+  const kin =
+    operation?.kind === "set_project" ? (operation.kin ?? null) : null;
   const head = personalMembershipNativeHeadId(root);
   let changed = false;
   if (!current) {
     await client.query(
-      `insert into personal_named_projects(owner_user_id,project_id,name,head_revision_id,deleted_at)
-       values($1,$2,$3,$4,case when $5::boolean then now() else null end)`,
-      [ownerUserId, projectId, name, head, deleted]
+      `insert into personal_named_projects(owner_user_id,project_id,name,head_revision_id,kin,deleted_at)
+       values($1,$2,$3,$4,$6,case when $5::boolean then now() else null end)`,
+      [ownerUserId, projectId, name, head, deleted, kin]
     );
     changed = true;
   } else if (
@@ -81,9 +83,9 @@ export const projectPersonalMembershipCatalog = async (
     Boolean(current.deleted_at) !== deleted
   ) {
     await client.query(
-      `update personal_named_projects set name=$3,head_revision_id=$4,deleted_at=case when $5::boolean then coalesce(deleted_at,now()) else null end,
+      `update personal_named_projects set name=$3,head_revision_id=$4,kin=$6,deleted_at=case when $5::boolean then coalesce(deleted_at,now()) else null end,
        version=version+1,updated_at=now() where owner_user_id=$1 and project_id=$2`,
-      [ownerUserId, projectId, name, head, deleted]
+      [ownerUserId, projectId, name, head, deleted, kin]
     );
     changed = true;
   }

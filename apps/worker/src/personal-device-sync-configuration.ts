@@ -26,6 +26,16 @@ import {
   type PdsSessionPackage
 } from "@koed/shared";
 
+function hasProjectKin(payload: PersonalConfigurationPayload) {
+  return (
+    payload.kind === "project_membership" &&
+    payload.snapshot.revisions.some(
+      ({ operation }) =>
+        operation.kind === "set_project" && operation.kin !== undefined
+    )
+  );
+}
+
 type Scope = {
   userId: string;
   groupId: string;
@@ -141,7 +151,8 @@ export const createPdsConfigurationRuntime = (
       .advertiseConfigurationCapabilities([
         "source_context_v1",
         "project_membership_v1",
-        "project_defaults_v1"
+        "project_defaults_v1",
+        "project_kin_v1"
       ]);
     advertisedAt = Date.now();
   };
@@ -215,7 +226,9 @@ export const createPdsConfigurationRuntime = (
             limit: 50
           });
         afterViewProjectIdentity = views.nextProjectIdentity ?? undefined;
-        const capabilities = await relay.configurationCapabilities();
+        const capabilities = await relay.configurationCapabilities({
+          includeExtended: true
+        });
         const requireRecipients = (feature: PersonalConfigurationFeature) =>
           requirePdsConfigurationCapability({
             ...authority,
@@ -239,7 +252,9 @@ export const createPdsConfigurationRuntime = (
         };
         let staged = 0,
           more = Boolean(views.nextProjectIdentity);
+        const supportsKin = supported("project_kin_v1");
         const stage = async (payload: PersonalConfigurationPayload) => {
+          if (!supportsKin && hasProjectKin(payload)) return;
           const record = signPersonalConfigurationRecord(
             {
               protocol: PERSONAL_CONFIGURATION_PROTOCOL,
@@ -448,6 +463,8 @@ export const createPdsConfigurationRuntime = (
               }))
             )
               throw new Error("PdsConfigurationLifecycleChangedError");
+            if (hasProjectKin(record.revision.payload))
+              requireRecipients("project_kin_v1");
             requireRecipients(
               record.revision.payload.kind === "source_context"
                 ? "source_context_v1"

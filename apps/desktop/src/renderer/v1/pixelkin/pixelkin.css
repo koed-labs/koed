@@ -69,104 +69,157 @@
   border-radius: 0 0 999px 999px;
 }
 
+/* A beam from the top of the stage that lands on the lead Kin. The layout
+   sets where (--spot-x, --spot-y) and how big (--spot-size). */
+.v1-kin-spot {
+  --spot-light: #fff0c8;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  filter: blur(14px);
+}
+.v1-kin-spot::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--spot-top, 0px) - 24px);
+  bottom: var(--spot-y);
+  left: calc(50% + var(--spot-x));
+  width: calc(var(--spot-size) * 2.2);
+  transform: translateX(-50%);
+  clip-path: polygon(40% 0, 60% 0, 100% 100%, 0 100%);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--spot-light) 2%, transparent),
+    color-mix(in srgb, var(--spot-light) 10%, transparent)
+  );
+}
+.v1-kin-spot::after {
+  content: "";
+  position: absolute;
+  bottom: calc(var(--spot-y) - var(--spot-size) * 0.2);
+  left: calc(50% + var(--spot-x));
+  width: calc(var(--spot-size) * 2.4);
+  height: calc(var(--spot-size) * 0.4);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--spot-light) 16%, transparent),
+    transparent
+  );
+}
+/* On a light stage a pale beam vanishes; a warm amber one still reads as
+   light falling on the Kin. */
+.v1-app[data-theme="light"] .v1-kin-spot,
+:root.light .v1-app .v1-kin-spot {
+  --spot-light: #e0a040;
+}
+
 .v1-look-picker {
-  align-self: stretch;
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+.v1-kin-control {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 12px;
+  box-shadow: none;
+}
+.v1-kin-control > svg {
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  color: var(--muted-foreground);
+}
+.v1-kin-control [data-slot="card-title"] {
   display: flex;
-  flex-direction: column;
-  gap: 14px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 9px;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.3;
 }
-.v1-look-picker select {
-  width: 100%;
+.v1-kin-control [data-slot="card-title"] span {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted-foreground);
 }
-.v1-kin-segment {
+.v1-kin-shapes {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
-.v1-kin-segment button,
-.v1-kin-chip,
-.v1-kin-tab {
-  all: unset;
-  box-sizing: border-box;
-  padding: 7px 10px;
-  border-radius: 10px;
-  font-size: 13px;
-  text-align: center;
-  cursor: pointer;
-  background: var(--v1-surface);
-  color: var(--v1-fg2);
+.v1-kin-shapes [data-slot="button"] {
+  justify-content: flex-start;
+  min-width: 0;
+  padding-inline: 6px;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 450;
 }
-.v1-kin-segment button:hover,
-.v1-kin-chip:hover,
-.v1-kin-tab:hover {
-  background: var(--v1-surface-hover);
+.v1-kin-shapes svg {
+  width: 14px;
+  height: 14px;
 }
-.v1-kin-segment button[aria-pressed="true"],
-.v1-kin-chip[aria-pressed="true"] {
+.v1-kin-shapes [aria-pressed="true"] {
+  border-color: var(--v1-accent);
   background: var(--v1-accent-soft);
-  box-shadow: inset 0 0 0 2px var(--v1-accent);
-  color: var(--v1-fg);
+  color: var(--v1-accent-text);
 }
-.v1-kin-tab[aria-pressed="true"] {
-  background: var(--v1-fg);
-  color: var(--v1-bg);
+.v1-kin-colours {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
-.v1-swatches {
-  gap: 8px;
-}
-.v1-swatch {
-  all: unset;
-  box-sizing: border-box;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  cursor: pointer;
-}
-.v1-swatch[aria-pressed="true"],
-.v1-swatch-custom[data-active] {
-  box-shadow:
-    0 0 0 2px var(--v1-bg),
-    0 0 0 4px var(--v1-fg);
-}
-.v1-swatch-custom {
+.v1-kin-colours .v1-kin-swatch,
+.v1-kin-colours .v1-kin-custom {
   position: relative;
-  display: grid;
-  place-items: center;
-  background: var(--v1-surface);
-  color: var(--v1-fg2);
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  padding: 3px;
 }
-.v1-swatch-custom input {
+.v1-kin-swatch::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+}
+.v1-kin-swatch[aria-pressed="true"],
+.v1-kin-custom[data-selected] {
+  border: 1px solid var(--foreground);
+}
+.v1-kin-swatch svg {
+  position: relative;
+  width: 11px;
+  height: 11px;
+  color: #121216;
+  stroke-width: 2.8;
+}
+.v1-kin-custom svg {
+  width: 12px;
+  height: 12px;
+}
+.v1-kin-custom input {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   opacity: 0;
   cursor: pointer;
 }
-.v1-swatch-custom:focus-within {
-  outline: 2px solid var(--v1-accent);
+.v1-kin-custom:focus-within {
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
-.v1-kin-disclosure {
-  border-radius: 12px;
-  background: var(--v1-surface);
-  padding: 0 12px;
-}
-.v1-kin-disclosure summary {
-  display: flex;
-  justify-content: space-between;
-  padding: 10px 0;
-  font-size: 13px;
-  cursor: pointer;
-}
-.v1-kin-disclosure summary span {
-  color: var(--v1-muted);
-}
-.v1-kin-disclosure[open] {
-  padding-bottom: 12px;
-}
-.v1-kin-disclosure .v1-options + .v1-options {
-  margin-top: 8px;
-}
-.v1-kin-disclosure .v1-kin-chip,
-.v1-kin-disclosure .v1-kin-tab {
-  background: var(--v1-surface-hover);
+.v1-kin-control [data-slot="select-trigger"] {
+  width: 100%;
 }

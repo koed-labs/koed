@@ -15102,6 +15102,7 @@ export const personalNamedProjects = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     projectId: uuid("project_id").notNull().defaultRandom(),
     name: text("name").notNull(),
+    kin: jsonb("kin").$type<import("@koed/shared").PersonalProjectKin>(),
     createRequestId: uuid("create_request_id"),
     createRequestName: text("create_request_name"),
     version: integer("version").notNull().default(1),

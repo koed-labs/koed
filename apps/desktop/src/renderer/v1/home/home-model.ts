@@ -1,3 +1,4 @@
+import type { PersonalProjectKin } from "@koed/shared";
 import type { HistoricalIngestionLifecycle } from "@koed/shared/historical-ingestion-progress";
 import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import {
@@ -285,6 +286,7 @@ export function homeClients(status: KoedServerStatus | null): HomeClient[] {
 export type HomeProjectEntry = {
   id: string;
   name: string;
+  kin?: PersonalProjectKin;
   // Stored captured events (messages and tool events) for the Project.
   eventCount: number;
   latestAt: string | null;
@@ -308,6 +310,7 @@ export const homeProjectEntries = (
         {
           id: project.id,
           name: project.name,
+          ...(project.namedProject?.kin && { kin: project.namedProject.kin }),
           // A conversation read before its counts arrive has none yet.
           eventCount: conversations.reduce(
             (sum, thread) =>

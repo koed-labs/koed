@@ -8,6 +8,8 @@ import {
 } from "../../../project-management-validation-api.js";
 import { mergeProjectSources } from "../../../project-memory-ui.js";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
+import { projectKinLook } from "../pixelkin/agent-kin.js";
+import { homeProjectEntries } from "../home/home-model.js";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -81,6 +83,116 @@ it("opens sync conflict review even when a retained exclusion blocks membership 
     expect(document.body.textContent).toContain("Project catalog");
     expect(document.body.textContent).toContain("Other name");
     expect(button("Review this choice").disabled).toBe(false);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it("previews, discards and retries a Kin edit, then restores the saved Kin for an empty Project", async () => {
+  const f = createProjectManagementValidationApi();
+  const store = new PersonalMemoryStore(f.api);
+  const { projectId } = await f.api.createProject!({ name: "Empty Project" });
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const button = (text: string) =>
+    [...document.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === text
+    )!;
+  const swatch = () =>
+    document.querySelector<HTMLButtonElement>('button[aria-label="Mint"]')!;
+  const click = (element: HTMLElement) => act(async () => element.click());
+  const personality = () =>
+    document.querySelector<HTMLButtonElement>(
+      '[role="combobox"][aria-label="Personality"]'
+    )!;
+  const save = vi
+    .fn<Parameters<typeof ProjectSettingsDialog>[0]["onSave"]>(
+      async (project, changes) => {
+        await f.api.manageProject!({
+          action: "apply_sources",
+          projectId,
+          expectedVersion: project.namedProject!.version,
+          changes
+        });
+      }
+    )
+    .mockRejectedValueOnce(new Error("Save failed"));
+  const close = vi.fn();
+  const open = async () => {
+    const projects = mergeProjectSources(await f.api.listProjects(), []);
+    await act(async () =>
+      root.render(
+        <ProjectSettingsDialog
+          api={f.api}
+          store={store}
+          projects={projects}
+          projectId={projectId}
+          onClose={close}
+          onSave={save}
+          onDelete={vi.fn()}
+        />
+      )
+    );
+    await click(button("Kin"));
+  };
+  try {
+    await open();
+    const preview = () => document.querySelector(".v1-pm-kin-preview")!;
+    const initial = projectKinLook(projectId);
+    expect(preview().textContent?.trim()).toBe("");
+    expect(
+      document.querySelector('[aria-label="Select Project"]')?.textContent
+    ).toContain("Empty Project");
+    expect(
+      preview().querySelector(".v1-pixelkin")!.getAttribute("data-kin-colour")
+    ).toBe(initial.palette.base);
+    const shape = initial.body.shape === "sphere" ? "Cube" : "Sphere";
+    await click(button(shape));
+    await click(button("Cancel"));
+    await click(button("Discard changes"));
+    expect(close).toHaveBeenCalledOnce();
+    expect(save).not.toHaveBeenCalled();
+    await act(async () => root.render(null));
+    await open();
+    expect(button("Save changes").disabled).toBe(true);
+    await click(button(shape));
+    await click(swatch());
+    await click(personality());
+    const curious = [
+      ...document.querySelectorAll<HTMLElement>('[role="option"]')
+    ].find((option) => option.textContent?.trim() === "Curious")!;
+    await click(curious);
+    await click(button("Save changes"));
+    expect(document.body.textContent).toContain("Save failed");
+    expect(
+      preview().querySelector('[data-kin-colour="#55cca3"]')
+    ).not.toBeNull();
+    await click(button("Save changes"));
+    const kin = {
+      shape: shape.toLowerCase(),
+      colour: "#55cca3",
+      personality: "curious"
+    };
+    expect(f.projects.get(projectId)!.meta.kin).toEqual(kin);
+    await act(async () => root.render(null));
+    await open();
+    expect(button("Save changes").disabled).toBe(true);
+    expect(button(shape).getAttribute("aria-pressed")).toBe("true");
+    expect(swatch().getAttribute("aria-pressed")).toBe("true");
+    expect(personality().textContent).toContain("Curious");
+    const project = f.projects.get(projectId)!.meta;
+    await f.api.manageProject!({
+      action: "add_session",
+      projectId,
+      expectedVersion: project.version,
+      sessionId: validationId(100)
+    });
+    expect(
+      homeProjectEntries(
+        mergeProjectSources(await f.api.listProjects(), [])
+      ).find((p) => p.id === projectId)?.kin
+    ).toEqual(kin);
   } finally {
     await act(async () => root.unmount());
     container.remove();

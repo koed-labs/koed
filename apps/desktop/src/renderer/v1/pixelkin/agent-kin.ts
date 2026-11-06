@@ -1,3 +1,5 @@
+import { personalProjectKinSchema } from "@koed/shared/personal-desktop";
+import type { PersonalProjectKin } from "@koed/shared";
 import {
   KIN_COLOURS,
   KIN_DEFAULTS,
@@ -14,9 +16,6 @@ import {
 export type AgentLook = Kin;
 
 export const DEFAULT_AGENT_LOOK: AgentLook = clone(KIN_DEFAULTS);
-
-// Special features and accessories are hidden in the builder for now.
-export const SHOW_LOOK_EXTRAS = false;
 
 const record = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -97,18 +96,33 @@ const projectShapes: readonly KinShape[] = [
   "capsule"
 ];
 
-// Each Project gets a stable Kin from its id until Projects can choose a look.
-export function projectKinLook(projectId: string): AgentLook {
+export function projectKinSettings(look: AgentLook): PersonalProjectKin {
+  return personalProjectKinSchema.parse({
+    shape: look.body.shape,
+    colour: look.palette.base,
+    personality: look.face.personality
+  });
+}
+
+export function projectKinLook(
+  projectId: string,
+  saved?: PersonalProjectKin
+): AgentLook {
   let hash = 2166136261;
   for (const char of projectId)
     hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
   const value = hash >>> 0;
   const look = withAgentShape(
     clone(DEFAULT_AGENT_LOOK),
-    projectShapes[value % projectShapes.length]!
+    saved?.shape ?? projectShapes[value % projectShapes.length]!
   );
   const colour = KIN_COLOURS[(value >>> 8) % KIN_COLOURS.length];
-  if (colour) editKin(look, "palette.base", colour.hex);
+  editKin(
+    look,
+    "palette.base",
+    saved?.colour ?? colour?.hex ?? look.palette.base
+  );
+  if (saved) editKin(look, "face.personality", saved.personality);
   look.seed = value % 100000;
   return look;
 }

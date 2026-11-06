@@ -3,7 +3,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopStatusStore } from "../../services/desktop-commands.js";
-import { DEFAULT_AGENT_LOOK } from "../pixelkin/agent-kin.js";
+import {
+  DEFAULT_AGENT_LOOK,
+  parseAgentLook,
+  projectKinLook
+} from "../pixelkin/agent-kin.js";
 import { Home, HOME_RERANK_MS } from "./Home.js";
 import type { HomeProjectEntry, HomeView } from "./home-model.js";
 
@@ -261,6 +265,72 @@ describe("Home", () => {
     expect(onOpenProject).not.toHaveBeenCalled();
     await act(async () => kin("koed").click());
     expect(onOpenProject.mock.calls).toEqual([["koed"]]);
+  });
+
+  it("uses the legacy profile for the solo host and the Project ID for an uncustomized Kin", async () => {
+    const oldAgent = {
+      name: "Pip",
+      look: parseAgentLook('{"shape":"tall","color":"mint"}')
+    };
+    await render({ entries: [], view: { kind: "empty", warnings: [] } });
+    expect(container.textContent).toContain("Koed");
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      agent: oldAgent
+    });
+    expect(
+      container
+        .querySelector(".v1-home-host .v1-pixelkin")
+        ?.getAttribute("data-kin-colour")
+    ).toBe(oldAgent.look.palette.base);
+    await render({
+      entries: [entry("older", "2026-11-03T09:00:00Z")],
+      agent: oldAgent
+    });
+    expect(
+      kin("older")
+        .querySelector(".v1-pixelkin")
+        ?.getAttribute("data-kin-colour")
+    ).toBe(projectKinLook("older").palette.base);
+  });
+
+  it("keeps the saved Kin and its destination together through a rename and rerank", async () => {
+    const onOpenProject = vi.fn();
+    const saved = {
+      shape: "capsule",
+      colour: "#123456",
+      personality: "sleepy"
+    } as const;
+    const a = { ...entry("a", "2026-11-03T11:00:00Z"), kin: saved };
+    const b = entry("b", "2026-11-03T09:00:00Z");
+    await render({ entries: [a, b], onOpenProject });
+    expect(front("a")).toBe(true);
+    const otherColour = kin("b")
+      .querySelector(".v1-pixelkin")!
+      .getAttribute("data-kin-colour");
+    await render({
+      entries: [
+        { ...a, name: "Renamed" },
+        { ...b, latestAt: "2026-11-03T11:59:00Z" }
+      ],
+      onOpenProject
+    });
+    await act(async () => vi.advanceTimersByTime(HOME_RERANK_MS));
+    expect(front("b")).toBe(true);
+    expect(
+      kin("Renamed").querySelector(
+        '[data-kin-shape="capsule"][data-kin-colour="#123456"]'
+      )
+    ).not.toBeNull();
+    expect(
+      kin("b").querySelector(".v1-pixelkin")!.getAttribute("data-kin-colour")
+    ).toBe(otherColour);
+    await act(async () => {
+      kin("Renamed").click();
+      kin("b").click();
+    });
+    expect(onOpenProject.mock.calls).toEqual([["a"], ["b"]]);
   });
 
   it("opens a Project from its Kin", async () => {

@@ -44,6 +44,7 @@ export const createPersonalProjectBatchRepository = (pool: pg.Pool) => ({
         const version = { expectedVersion: project.version };
         const result = await (async () => {
           switch (change.action) {
+            case "set_details":
             case "rename":
               return {
                 project: await membership.updateNamedPersonalProject(
@@ -51,7 +52,8 @@ export const createPersonalProjectBatchRepository = (pool: pg.Pool) => ({
                   projectId,
                   {
                     ...version,
-                    name: change.name
+                    name: change.name,
+                    ...(change.action === "set_details" && { kin: change.kin })
                   }
                 )
               };

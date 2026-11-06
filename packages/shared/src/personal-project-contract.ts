@@ -12,10 +12,15 @@ import {
   personalMembershipExclusionSyncSchema
 } from "./personal-membership-contract.js";
 
-export const personalNamedProjectSchema = z
-  .object({
+import {
+  personalProjectDetailsSchema,
+  personalProjectKinSchema
+} from "./personal-project-kin.js";
+export type { PersonalProjectKin } from "./personal-project-kin.js";
+
+export const personalNamedProjectSchema = personalProjectDetailsSchema
+  .extend({
     projectId: z.uuid(),
-    name: z.string().trim().min(1).max(160),
     version: z.number().int().positive().safe(),
     headRevisionId: z.uuid(),
     deletedAt: z.string().datetime({ offset: true }).nullable(),
@@ -91,9 +96,9 @@ export const personalProjectCreateSchema = z
     requestId: z.uuid().optional()
   })
   .strict();
-export const personalProjectUpdateSchema = z
-  .object({
-    name: z.string().trim().min(1).max(160),
+export const personalProjectUpdateSchema = personalProjectDetailsSchema
+  .omit({ kin: true })
+  .extend({
     expectedVersion: z.number().int().positive().safe()
   })
   .strict();
@@ -189,8 +194,14 @@ const projectCommandBase = {
   projectId: z.uuid(),
   expectedVersion: z.number().int().positive().safe()
 };
+const setProjectDetailsSchema = personalProjectDetailsSchema.extend({
+  action: z.literal("set_details"),
+  kin: personalProjectKinSchema
+});
+
 /** One confirmation applies the complete source draft at one reviewed Project version. */
 export const personalProjectBatchChangeSchema = z.discriminatedUnion("action", [
+  setProjectDetailsSchema,
   z
     .object({
       action: z.literal("rename"),

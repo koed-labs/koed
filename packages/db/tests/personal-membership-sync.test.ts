@@ -177,7 +177,13 @@ describe.skipIf(!originUrl || !receiverUrl)(
           )
         ).rows[0]!.n
       ).toBe(0);
+      const chosenKin = {
+        shape: "sphere",
+        colour: "#123456",
+        personality: "sleepy"
+      } as const;
       await originRepo.updateNamedPersonalProject(origin, empty.projectId, {
+        kin: chosenKin,
         name: "Origin offline",
         expectedVersion: empty.version
       });
@@ -286,7 +292,7 @@ describe.skipIf(!originUrl || !receiverUrl)(
         origin,
         empty.projectId,
         empty.projectId,
-        { kind: "set_project", name: "Origin reviewed" }
+        { kind: "set_project", name: "Origin reviewed", kin: chosenKin }
       );
       const catalogApplied = await originRepo.applyPersonalMembershipReview(
         origin,
@@ -295,7 +301,10 @@ describe.skipIf(!originUrl || !receiverUrl)(
         { expectedVersion: catalogReview.preview.expectedVersion }
       );
       expect(catalogApplied.state.catalog?.heads).toHaveLength(1);
-      expect(catalogApplied.state.project.name).toBe("Origin reviewed");
+      expect(catalogApplied.state.project).toMatchObject({
+        name: "Origin reviewed",
+        kin: chosenKin
+      });
       await receiverRuntime.retainVerified(
         record(
           await catalog(origin, fixture.origin, originRepo, empty.projectId),

@@ -268,7 +268,7 @@ export const retainLocalPersonalMembershipSnapshot = async (
       audit = await client.query(
         `select 1 from personal_membership_changes c where c.owner_user_id=$1 and c.revision_id=$2
          and c.project_id=$5 and c.entity_id=$5 and c.operation=$3
-         and ($3='delete_project' or c.value->>'name'=$4)
+         and ($3='delete_project' or (c.value->>'name'=$4 and c.value->'kin' is not distinct from $9::jsonb))
          and coalesce(c.value->'portableMembership'->>'projectIdentity',c.project_id::text)=$6
          and coalesce(c.value->'portableMembership'->>'entityIdentity',c.entity_id::text)=$7
          and coalesce(c.value->'portableMembership'->'replaces',to_jsonb(c.replaces))=$8::jsonb`,
@@ -280,7 +280,8 @@ export const retainLocalPersonalMembershipSnapshot = async (
           input.nativeProjectId,
           snapshot.project.projectId,
           snapshot.entityId,
-          JSON.stringify([...revision.replaces].sort())
+          JSON.stringify([...revision.replaces].sort()),
+          operation.kind === "set_project" ? (operation.kin ?? null) : null
         ]
       );
     } else if (

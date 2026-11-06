@@ -672,7 +672,7 @@ function ProjectsStage({
       onPointerLeave={() => setPointerOver(false)}
     >
       <div
-        className="v1-home-spot"
+        className="v1-kin-spot"
         aria-hidden="true"
         style={spotStyle(layout, box?.top)}
       />
@@ -719,7 +719,7 @@ function ProjectsStage({
               </span>
             )}
             <Pixelkin
-              look={projectKinLook(entry.id)}
+              look={projectKinLook(entry.id, entry.kin)}
               size={layout.placements[rank]!.size}
               expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
               hopKey={
@@ -831,7 +831,7 @@ function SoloStage({
       aria-label={label}
     >
       <div
-        className="v1-home-spot"
+        className="v1-kin-spot"
         aria-hidden="true"
         style={spotStyle(layout, box?.top)}
       />
