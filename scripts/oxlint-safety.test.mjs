@@ -160,7 +160,7 @@ test("Oxlint preserves typed scopes, suppressions, and native optional-chain che
   }
 });
 
-test("tracked JavaScript uses .mjs so parser strict-mode checks apply", () => {
+test("tracked JavaScript uses .mjs or has explicit module syntax checks", () => {
   const result = spawnSync(
     "git",
     ["ls-files", "-z", "--", "*.js", "*.jsx", "*.cjs"],
@@ -171,9 +171,26 @@ test("tracked JavaScript uses .mjs so parser strict-mode checks apply", () => {
   );
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
+  const files = result.stdout.split("\0").filter(Boolean);
+  const vendorPrefix = "apps/desktop/src/renderer/v1/pixelkin/vendor/";
+  const vendorFiles = files.filter(
+    (file) => file.startsWith(vendorPrefix) && file.endsWith(".js")
+  );
   assert.deepEqual(
-    result.stdout.split("\0").filter(Boolean),
+    files.filter((file) => !vendorFiles.includes(file)),
     [],
     "Use .mjs for JavaScript and .tsx for JSX, or explicitly review and replace the retired syntax checks."
   );
+  for (const file of vendorFiles) {
+    const check = spawnSync(
+      process.execPath,
+      ["--check", "--input-type=module"],
+      {
+        input: readFileSync(path.join(root, file)),
+        encoding: "utf8"
+      }
+    );
+    assert.ifError(check.error);
+    assert.equal(check.status, 0, `${file}: ${check.stderr}`);
+  }
 });
