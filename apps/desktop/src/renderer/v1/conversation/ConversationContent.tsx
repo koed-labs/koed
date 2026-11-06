@@ -11,7 +11,10 @@ import {
   CodeBlockActions,
   CodeBlockContent
 } from "@koed/ui";
-import { SecureMarkdown, type MarkdownPlatformAdapters } from "@koed/memory-ui";
+import {
+  SecureMarkdown,
+  type MarkdownPlatformAdapters
+} from "../../markdown/SecureMarkdown.js";
 import { AiClientLogo } from "../../views/personal/AiClientLogo.js";
 import { conversationTime, type ConversationClient } from "./presentation.js";
 

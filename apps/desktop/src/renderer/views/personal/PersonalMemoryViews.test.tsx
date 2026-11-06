@@ -382,11 +382,6 @@ describe("PersonalMemoryWorkspace", () => {
   let root: Root;
 
   beforeEach(() => {
-    (
-      globalThis as typeof globalThis & {
-        IS_REACT_ACT_ENVIRONMENT?: boolean;
-      }
-    ).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -814,11 +809,13 @@ describe("PersonalMemoryWorkspace", () => {
     expect(container.querySelector("textarea")).toBe(textarea);
     expect(textarea.value).toBe(draft);
     const id = personalFolderExecutionId(fixture.notes.reference);
-    await vi.waitFor(() =>
-      expect(managed.discoverCommands).toHaveBeenCalledWith(
-        expect.objectContaining({ projectId: id })
-      )
-    );
+    await act(async () => {
+      await vi.waitFor(() =>
+        expect(managed.discoverCommands).toHaveBeenCalledWith(
+          expect.objectContaining({ projectId: id })
+        )
+      );
+    });
     await clickText("", '[aria-label="Start Conversation"]');
     expect(managed.start).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: id, runnerKind: "local_device" })
@@ -3129,6 +3126,8 @@ describe("PersonalMemoryWorkspace", () => {
             .querySelector('[aria-label^="Model and reasoning:"]')
             ?.getAttribute("aria-label")
         ).toBe("Model and reasoning: Model without effort");
+      } else {
+        await act(async () => (triggers[2] as HTMLElement).click());
       }
       expect(managed.send).not.toHaveBeenCalled();
       expect(container.textContent).not.toContain("Changed for next message");

@@ -1,6 +1,9 @@
 import type { DesktopApi } from "../../../types.js";
 import { assignmentFrom } from "../preferences/local-ai-client-settings-helpers.js";
-import { SecureMarkdown, type MarkdownPlatformAdapters } from "@koed/memory-ui";
+import {
+  SecureMarkdown,
+  type MarkdownPlatformAdapters
+} from "../../markdown/SecureMarkdown.js";
 import type {
   PersonalDesktopApi,
   PersonalDesktopAskTurn

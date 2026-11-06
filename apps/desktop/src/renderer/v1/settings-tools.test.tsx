@@ -5,10 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { CliInstallApi } from "../../cli-install/protocol.js";
 import { SettingsTools } from "./settings-tools.js";
 
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
-
 function deferred() {
   let resolve!: () => void;
   let reject!: (error: Error) => void;

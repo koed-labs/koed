@@ -1,7 +1,10 @@
 import { FileDiff } from "@pierre/diffs/react";
 import { useMemo, useState } from "react";
 
-import { parseSourcePatch, type SourcePatchDetails } from "./source-diff.js";
+import {
+  parseSourcePatch,
+  type SourcePatchDetails
+} from "../../source-diff.js";
 
 export type SourceDiffProps = {
   className?: string;

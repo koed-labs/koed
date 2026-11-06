@@ -9,9 +9,6 @@ import type {
 import type { ThemeStore, ThemeSnapshot } from "../state/theme.js";
 import { V1Settings } from "./settings.js";
 
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 describe("V1Settings", () => {
   let container: HTMLDivElement;
   let root: Root;

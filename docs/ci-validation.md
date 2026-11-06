@@ -27,7 +27,7 @@ as do changes confined to `src/` in `apps/api`, `apps/worker`, `packages/core`,
 package inspection in `Build` cover that source. Package metadata, build
 configuration, migrations, and any other file in those packages still select the
 smoke, as does any change under Desktop, `koed-server`, `embedding-service`,
-`shared`, `ui`, or `memory-ui`. Packaging regressions from backend source
+`shared`, or `ui`. Packaging regressions from backend source
 changes that only the packaged app would expose are caught by the smoke on the
 Changesets release pull request and the weekly scheduled run. Unknown paths are treated as relevant so a newly introduced runtime area cannot
 silently bypass packaged validation.

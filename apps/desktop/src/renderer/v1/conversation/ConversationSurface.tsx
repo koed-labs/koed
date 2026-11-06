@@ -3,9 +3,9 @@ import { ArrowDown, RotateCcw } from "lucide-react";
 import { Button, Spinner, TooltipProvider } from "@koed/ui";
 import {
   VirtualizedTimeline,
-  threadSelectionKey,
   type VirtualizedTimelineHandle
-} from "@koed/memory-ui";
+} from "../../conversation/VirtualizedTimeline.js";
+import { threadSelectionKey } from "../../../project-memory-ui.js";
 import type { NativeConversationSurfaceProps } from "../../../NativeConversationSurface.js";
 import {
   approvalReviewSourceEventId,

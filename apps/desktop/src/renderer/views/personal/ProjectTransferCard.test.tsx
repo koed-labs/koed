@@ -377,7 +377,6 @@ const select = async (label: string) =>
 describe("Project header and transfer card", () => {
   let root: Root, container: HTMLDivElement;
   beforeEach(() => {
-    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);

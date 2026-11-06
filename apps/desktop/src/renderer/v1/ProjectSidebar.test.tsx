@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NavigationShell } from "./NavigationShell.js";
 import { useNavigationHistory } from "./use-navigation-history.js";
 import type { SidebarProject } from "./project-sidebar-model.js";
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
 const projects: SidebarProject[] = [
   {
     id: "project",

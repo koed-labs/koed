@@ -17,6 +17,7 @@ import {
   sessionPreview,
   sessionSelectionId,
   sortProjects,
+  threadSelectionKey,
   type DesktopProjectGroup,
   type DesktopProjectMetadata
 } from "./project-memory-ui.js";
@@ -655,4 +656,22 @@ it("keeps retired named source assignments in unresolved history and uses only t
   expect(
     result.find((project) => project.id === native.id)?.namedProject?.name
   ).toBe("Native Project");
+});
+
+describe("Desktop selection IDs", () => {
+  it("creates the same encoded Project/thread key for every UI consumer", () => {
+    expect(
+      threadSelectionKey({
+        projectId: "/Users/jedd/agents/koed",
+        id: "session:1"
+      })
+    ).toBe("%2FUsers%2Fjedd%2Fagents%2Fkoed:session%3A1");
+  });
+
+  it("prefers the stable Captured Session id at the Desktop boundary", () => {
+    expect(sessionSelectionId({ id: "thread-1", sessionId: "session-1" })).toBe(
+      "session-1"
+    );
+    expect(sessionSelectionId({ id: "thread-1" })).toBe("thread-1");
+  });
 });

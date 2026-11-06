@@ -12,9 +12,6 @@ import type { PersonalMemoryStore } from "./personal-memory.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import type { ManagedConversationRealtimeUpdate } from "./managed-conversation-runtime.js";
 
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 const executionId = "11111111-1111-4111-8111-111111111111";
 const sessionId = "22222222-2222-4222-8222-222222222222";
 const project: DesktopProject = {

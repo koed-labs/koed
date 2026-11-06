@@ -11,8 +11,6 @@ import {
 import { Home, HOME_RERANK_MS } from "./Home.js";
 import type { HomeProjectEntry, HomeView } from "./home-model.js";
 
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-
 const agent = { name: "Koed", look: DEFAULT_AGENT_LOOK };
 const projectsView: HomeView = { kind: "projects", warnings: [] };
 const entry = (

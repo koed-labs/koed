@@ -46,14 +46,17 @@ test("keeps renderer-only packages out of Electron production dependencies", () 
     "zod"
   ]);
   for (const dependency of [
-    "@koed/memory-ui",
     "@koed/ui",
+    "@legendapp/list",
+    "@pierre/diffs",
     "@xterm/addon-fit",
     "@xterm/xterm",
     "lucide-react",
     "qrcode",
     "react",
-    "react-dom"
+    "react-dom",
+    "react-markdown",
+    "remark-gfm"
   ]) {
     assert.equal(typeof manifest.devDependencies[dependency], "string");
   }

@@ -372,7 +372,14 @@ export const sessionPreview = (
   return sample;
 };
 
-export { sessionSelectionId } from "@koed/memory-ui";
+export const sessionSelectionId = (
+  session: Pick<DesktopThreadGroup, "id" | "sessionId">
+): string => session.sessionId ?? session.id;
+
+export const threadSelectionKey = (
+  thread: Pick<DesktopThreadGroup, "projectId" | "id">
+): string =>
+  `${encodeURIComponent(thread.projectId)}:${encodeURIComponent(thread.id)}`;
 
 export const projectForLocalProject = (
   projects: Iterable<DesktopProject>,
@@ -427,4 +434,3 @@ export class LatestRequestGate {
     return revision === this.revision;
   }
 }
-import { sessionSelectionId } from "@koed/memory-ui";

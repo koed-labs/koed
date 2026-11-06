@@ -52,6 +52,7 @@ export default defineConfig(({ mode }) => ({
     }
   },
   test: {
+    setupFiles: ["../../scripts/vitest-react-setup.mjs"],
     alias: {
       "@koed/mcp-server/managed-conversation-command-types": resolve(
         import.meta.dirname,
