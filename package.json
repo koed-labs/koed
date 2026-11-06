@@ -1,6 +1,6 @@
 {
   "name": "koed",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -100,6 +100,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
+    "@changesets/parse": "0.4.3",
     "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "^25.8.0",
     "@vitejs/plugin-react": "^6.0.2",
