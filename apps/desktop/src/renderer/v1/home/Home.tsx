@@ -139,6 +139,34 @@ const useNow = (intervalMs: number) => {
   return now;
 };
 
+// Closes a card opened from a button when the pointer goes down outside it or
+// Escape is pressed.
+const useDismiss = (
+  root: RefObject<HTMLElement | null>,
+  open: boolean,
+  onDismiss: () => void
+) => {
+  const dismiss = useRef(onDismiss);
+  dismiss.current = onDismiss;
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: Event) => {
+      if (
+        event instanceof KeyboardEvent
+          ? event.key === "Escape"
+          : !root.current?.contains(event.target as Node)
+      )
+        dismiss.current();
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open, root]);
+};
+
 // A detected client can be connected and a client needing attention
 // repaired, with the same consent step as Settings.
 const clientCommand = (client: HomeClient): IntegrationMutationCommand | null =>
@@ -165,26 +193,10 @@ function ClientAction({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const root = useRef<HTMLSpanElement>(null);
-  const card = open || error !== null;
-  useEffect(() => {
-    if (!card) return;
-    const close = (event: Event) => {
-      if (
-        event instanceof KeyboardEvent
-          ? event.key === "Escape"
-          : !root.current?.contains(event.target as Node)
-      ) {
-        setOpen(false);
-        setError(null);
-      }
-    };
-    document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", close);
-    return () => {
-      document.removeEventListener("pointerdown", close);
-      document.removeEventListener("keydown", close);
-    };
-  }, [card]);
+  useDismiss(root, open || error !== null, () => {
+    setOpen(false);
+    setError(null);
+  });
   if (!command) return null;
   const connect = client.state === "detected";
   const copy = integrationConsentCopy[command];
@@ -1547,6 +1559,7 @@ function IngestionProgress({
 }
 
 // Non-blocking problems stay out of the way: a chip that opens the list.
+// AI Client problems are left to their keycaps.
 function HomeWarnings({
   problems,
   statusStore
@@ -1555,9 +1568,11 @@ function HomeWarnings({
   statusStore: DesktopStatusStore;
 }) {
   const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useDismiss(root, open, () => setOpen(false));
   if (!problems.length) return null;
   return (
-    <div className="v1-home-warnings">
+    <div className="v1-home-warnings" ref={root}>
       <button
         type="button"
         className="v1-home-chip"
