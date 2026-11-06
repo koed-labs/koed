@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import parseChangeset from "@changesets/parse";
 import { parse } from "yaml";
 import { assertKoedReleaseVersion } from "../packages/koed/release-version.mjs";
 
@@ -112,6 +113,31 @@ export const assertProductPackageVersions = (root) => {
   return version;
 };
 
+const assertChangesetPackages = (root, ignored) => {
+  const directory = resolve(root, ".changeset");
+  const failures = [];
+  for (const name of readdirSync(directory)) {
+    if (!name.endsWith(".md") || name === "README.md") continue;
+    const contents = readFileSync(resolve(directory, name), "utf8");
+    let releases;
+    try {
+      releases = parseChangeset(contents).releases;
+    } catch (error) {
+      throw new Error(`Invalid changeset frontmatter: ${name}`, {
+        cause: error
+      });
+    }
+    for (const release of releases) {
+      if (ignored.has(release.name)) failures.push(`${name}: ${release.name}`);
+    }
+  }
+  if (failures.length) {
+    throw new Error(
+      `Changesets must not target ignored packages:\n- ${failures.join("\n- ")}`
+    );
+  }
+};
+
 export const assertChangesetReleasePolicy = (root) => {
   const config = readJson(root, ".changeset/config.json");
   const ignored = new Set(Array.isArray(config.ignore) ? config.ignore : []);
@@ -166,6 +192,7 @@ export const assertChangesetReleasePolicy = (root) => {
   if (ignored.has("@koed/koed")) {
     throw new Error("Changesets must not ignore the @koed/koed release unit.");
   }
+  assertChangesetPackages(root, ignored);
   return true;
 };
 
