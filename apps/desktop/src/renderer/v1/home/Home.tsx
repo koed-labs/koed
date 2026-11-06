@@ -55,6 +55,8 @@ const FEED_COALESCE_MS = 1_200;
 function useKinSpins() {
   const spins = useRef(new Map<string, KinSpin>());
   const pointer = useRef<number | null>(null);
+  const frame = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
   return (id: string) => {
     let spin = spins.current.get(id);
     if (!spin) {
@@ -65,7 +67,10 @@ function useKinSpins() {
     const end = (event: ReactPointerEvent<HTMLElement>, cancelled: boolean) => {
       if (pointer.current !== event.pointerId) return;
       pointer.current = null;
+      cancelAnimationFrame(frame.current);
       current.end(event.timeStamp, reducedMotion(), cancelled);
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+        event.currentTarget.releasePointerCapture(event.pointerId);
       wakePixelkins();
     };
     const handlers = {
@@ -75,7 +80,20 @@ function useKinSpins() {
         pointer.current = event.pointerId;
         const width = event.currentTarget.getBoundingClientRect().width;
         current.begin(event.clientX, event.timeStamp, width, current.angle);
-        event.currentTarget.setPointerCapture?.(event.pointerId);
+        const control = event.currentTarget;
+        const pointerId = event.pointerId;
+        control.setPointerCapture?.(pointerId);
+        const checkDrag = () => {
+          if (pointer.current !== pointerId) return;
+          if (current.dragging) {
+            frame.current = requestAnimationFrame(checkDrag);
+          } else {
+            pointer.current = null;
+            if (control.hasPointerCapture?.(pointerId))
+              control.releasePointerCapture(pointerId);
+          }
+        };
+        frame.current = requestAnimationFrame(checkDrag);
         wakePixelkins();
       },
       onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
@@ -85,6 +103,8 @@ function useKinSpins() {
       },
       onPointerUp: (event: ReactPointerEvent<HTMLElement>) => end(event, false),
       onPointerCancel: (event: ReactPointerEvent<HTMLElement>) =>
+        end(event, true),
+      onLostPointerCapture: (event: ReactPointerEvent<HTMLElement>) =>
         end(event, true),
       onClickCapture: (event: ReactMouseEvent<HTMLElement>) => {
         if (!current.moved) return;
@@ -702,6 +722,7 @@ function ProjectsStage({
             className="v1-home-kin"
             data-lead={rank === 0 || undefined}
             data-coin-target={rank === 0 || undefined}
+            data-coin-project={entry.id}
             data-front={front || undefined}
             data-drop-project={coinDrop ? entry.id : undefined}
             data-drop={
@@ -882,12 +903,9 @@ function SoloStage({
   );
 }
 
-// History arrives from each AI Client as golden coins, after the pellets on
-// koed.ai: they drop from that client's keycap and land on the Kin in the
-// spotlight, which hops. One update from a client drops a few coins at most.
-const COINS_PER_UPDATE = 3;
-const COIN_STAGGER_MS = 260;
+// New sidebar Conversations travel from their AI Client as golden coins.
 const COIN_FLIGHT_MS = 1_600;
+const MAX_CONCURRENT_COINS = 4;
 const COIN_ROWS = [
   "..XXXX..",
   ".XHGGGX.",
@@ -918,16 +936,14 @@ type Coin = {
   from: { x: number; y: number };
   to: { x: number; y: number };
   delay: number;
-  lands: boolean;
 };
 
-// Work a client has done so far: Conversations finished plus records read
-// and items indexed, when status reports them.
-const clientProgress = (client: HomeIngestionClient) =>
-  client.completed +
-  client.skipped +
-  (client.activity?.recordsRead ?? 0) +
-  (client.activity?.embedded ?? 0);
+export type HomeConversation = {
+  key: string;
+  aliases: readonly string[];
+  client: "codex" | "claude" | "pi" | null;
+  projectIds: readonly string[];
+};
 
 function FlyingCoin({ coin, onDone }: { coin: Coin; onDone: () => void }) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -1234,6 +1250,7 @@ function FloorCoin({
       ref={ref}
       type="button"
       className="v1-home-floor-coin"
+      data-coin-conversation={conversation.key}
       data-motion={absorbed ? "absorbed" : motion.mode}
       style={
         {
@@ -1373,75 +1390,146 @@ function FloorCoin({
   );
 }
 
-// Drops coins when a client's progress rises. The first reading is history
-// already processed, not new activity, so it drops nothing.
-function AgentCoins({
-  ingestion,
-  onLand
-}: {
-  ingestion: HomeIngestion | undefined;
-  onLand: () => void;
-}) {
+function useConversationCoins(
+  conversations: readonly HomeConversation[] | undefined,
+  scope: string | null
+) {
   const reduced = useReducedMotion();
   const layer = useRef<HTMLDivElement>(null);
-  const previous = useRef<Map<string, number> | null>(null);
+  const previous = useRef<{ scope: string; seen: Set<string> } | null>(null);
   const nextKey = useRef(0);
   const [coins, setCoins] = useState<Coin[]>([]);
+  const [, refreshTargets] = useState(0);
   useEffect(() => {
-    const totals = new Map(
-      (ingestion?.clients ?? []).map((client) => [
-        client.id,
-        clientProgress(client)
-      ])
-    );
-    const before = previous.current;
-    previous.current = totals;
     const root = layer.current?.parentElement;
-    if (!before || reduced || !layer.current || !root) return;
+    if (!root) return;
+    const observer = new MutationObserver((records) => {
+      if (
+        records.some((record) =>
+          [...record.addedNodes].some(
+            (node) =>
+              node instanceof HTMLElement &&
+              (node.matches(
+                "[data-coin-project], .v1-pixelkin, .v1-home-keycap, .v1-home-stage"
+              ) ||
+                node.querySelector(
+                  "[data-coin-project], .v1-pixelkin, .v1-home-keycap, .v1-home-stage"
+                ))
+          )
+        )
+      )
+        refreshTargets((value) => value + 1);
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  });
+  useEffect(() => {
+    if (!scope || !conversations) {
+      previous.current = null;
+      setCoins((current) => (current.length ? [] : current));
+      return;
+    }
+    if (reduced) setCoins((current) => (current.length ? [] : current));
+    const before = previous.current;
+    if (before && before.scope !== scope)
+      setCoins((current) => (current.length ? [] : current));
+    const seen = before?.scope === scope ? before.seen : new Set<string>();
+    const fresh: HomeConversation[] = [];
+    const baseline = !before || before.scope !== scope;
+    for (const conversation of conversations) {
+      const aliases = [conversation.key, ...conversation.aliases];
+      if (baseline || reduced || aliases.some((key) => seen.has(key))) {
+        for (const key of aliases) seen.add(key);
+      } else fresh.push(conversation);
+    }
+    previous.current = { scope, seen };
+    const root = layer.current?.parentElement;
+    if (baseline || reduced || !root || !layer.current) return;
     const origin = layer.current.getBoundingClientRect();
-    const target = root
-      .querySelector("[data-coin-target] .v1-pixelkin")
-      ?.getBoundingClientRect();
-    if (!target) return;
-    const to = {
-      x: target.left + target.width / 2 - origin.left,
-      y: target.top + target.height * 0.35 - origin.top
-    };
     const launched: Coin[] = [];
-    for (const [id, total] of totals) {
-      const added = total - (before.get(id) ?? total);
-      if (added <= 0) continue;
-      const keycap = root
-        .querySelector(`.v1-home-keycap[data-client="${id}"]`)
+    for (const conversation of fresh) {
+      if (
+        [conversation.key, ...conversation.aliases].some((key) => seen.has(key))
+      ) {
+        for (const key of [conversation.key, ...conversation.aliases])
+          seen.add(key);
+        continue;
+      }
+      if (!conversation.client) {
+        for (const key of [conversation.key, ...conversation.aliases])
+          seen.add(key);
+        continue;
+      }
+      const source = root
+        .querySelector(`.v1-home-keycap[data-client="${conversation.client}"]`)
         ?.getBoundingClientRect();
-      if (!keycap) continue;
-      const count = Math.min(COINS_PER_UPDATE, Math.ceil(Math.log2(added + 1)));
-      for (let index = 0; index < count; index += 1)
-        launched.push({
-          key: (nextKey.current += 1),
-          from: {
-            x: keycap.left + keycap.width / 2 - origin.left + (index - 1) * 8,
-            y: keycap.bottom - origin.top
-          },
-          to: { x: to.x + (index - 1) * 10, y: to.y },
-          delay: index * COIN_STAGGER_MS,
-          lands: index === 0
-        });
+      if (!source) continue;
+      const target = [
+        ...root.querySelectorAll<HTMLElement>("[data-coin-project]")
+      ]
+        .filter((element) =>
+          conversation.projectIds.includes(element.dataset.coinProject ?? "")
+        )
+        .sort((a, b) =>
+          (a.dataset.coinProject ?? "").localeCompare(
+            b.dataset.coinProject ?? ""
+          )
+        )[0]
+        ?.querySelector(".v1-pixelkin")
+        ?.getBoundingClientRect();
+      if (conversation.projectIds.length && !target) continue;
+      const floorCoin = !target
+        ? [...root.querySelectorAll<HTMLElement>("[data-coin-conversation]")]
+            .find(
+              (element) => element.dataset.coinConversation === conversation.key
+            )
+            ?.getBoundingClientRect()
+        : undefined;
+      const stage = root
+        .querySelector(".v1-home-stage")
+        ?.getBoundingClientRect();
+      if (!target && !stage) continue;
+      for (const key of [conversation.key, ...conversation.aliases])
+        seen.add(key);
+      launched.push({
+        key: ++nextKey.current,
+        from: {
+          x: source.left + source.width / 2 - origin.left,
+          y: source.bottom - origin.top
+        },
+        to: target
+          ? {
+              x: target.left + target.width / 2 - origin.left,
+              y: target.top + target.height * 0.35 - origin.top
+            }
+          : floorCoin
+            ? {
+                x: floorCoin.left + floorCoin.width / 2 - origin.left,
+                y: floorCoin.top + floorCoin.height / 2 - origin.top
+              }
+            : {
+                x:
+                  stage!.left +
+                  stage!.width * (0.2 + Math.random() * 0.6) -
+                  origin.left,
+                y: stage!.bottom - 80 - origin.top
+              },
+        delay: 0
+      });
     }
     if (launched.length) setCoins((current) => [...current, ...launched]);
-  }, [ingestion, reduced]);
+  });
   return (
     <div className="v1-home-coins" ref={layer} aria-hidden="true">
-      {coins.map((coin) => (
+      {coins.slice(0, MAX_CONCURRENT_COINS).map((coin) => (
         <FlyingCoin
           key={coin.key}
           coin={coin}
-          onDone={() => {
-            if (coin.lands) onLand();
+          onDone={() =>
             setCoins((current) =>
               current.filter((item) => item.key !== coin.key)
-            );
-          }}
+            )
+          }
         />
       ))}
     </div>
@@ -1605,7 +1693,9 @@ export function Home({
   onOpenProject,
   looseConversations = [],
   onOpenConversation,
-  onDropConversation
+  onDropConversation,
+  conversations,
+  conversationScope = "home"
 }: {
   view: HomeView;
   clients: readonly HomeClient[];
@@ -1614,6 +1704,8 @@ export function Home({
   statusStore: DesktopStatusStore;
   onOpenProject: (projectId: string) => void;
   looseConversations?: readonly HomeLooseConversation[];
+  conversations?: readonly HomeConversation[];
+  conversationScope?: string | null;
   onOpenConversation?: (key: string) => void;
   // Adds a floor coin's conversation to a Project; true once it is added.
   onDropConversation?: (key: string, projectId: string) => Promise<boolean>;
@@ -1633,9 +1725,10 @@ export function Home({
       document.removeEventListener("visibilitychange", refreshVisible);
     };
   }, [statusStore]);
-  // Each coin batch that lands makes the Kin in the spotlight hop.
-  const [coinHop, setCoinHop] = useState(0);
-  const landCoin = () => setCoinHop((value) => value + 1);
+  const conversationCoins = useConversationCoins(
+    conversations,
+    conversationScope
+  );
   if (view.kind === "loading")
     return (
       <section className="v1-home" aria-busy="true">
@@ -1696,7 +1789,6 @@ export function Home({
           expression={stuck.length ? "neutral" : "happy"}
           label="Reading your recent conversations"
           floorCoins={floorCoins}
-          hopKey={coinHop}
           caption={
             <>
               <h1>Hatching your Projects</h1>
@@ -1712,7 +1804,7 @@ export function Home({
             </>
           }
         />
-        <AgentCoins ingestion={view.ingestion} onLand={landCoin} />
+        {conversationCoins}
       </section>
     );
   }
@@ -1754,6 +1846,7 @@ export function Home({
             </>
           }
         />
+        {conversationCoins}
       </section>
     );
   const total = entries.reduce((sum, entry) => sum + entry.eventCount, 0);
@@ -1773,7 +1866,6 @@ export function Home({
         entries={entries}
         onOpenProject={onOpenProject}
         {...(onDropConversation ? { onDropConversation } : {})}
-        leadHopKey={coinHop}
         caption={
           <>
             <h1>Your Projects</h1>
@@ -1790,9 +1882,7 @@ export function Home({
           </>
         }
       />
-      {view.ingestion && (
-        <AgentCoins ingestion={view.ingestion} onLand={landCoin} />
-      )}
+      {conversationCoins}
     </section>
   );
 }

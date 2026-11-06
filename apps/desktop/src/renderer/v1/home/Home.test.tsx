@@ -8,6 +8,7 @@ import {
   parseAgentLook,
   projectKinLook
 } from "../pixelkin/agent-kin.js";
+import { KinSpin } from "../onboarding/kin-spin.js";
 import { Home, HOME_RERANK_MS } from "./Home.js";
 import type { HomeProjectEntry, HomeView } from "./home-model.js";
 
@@ -188,14 +189,15 @@ describe("Home", () => {
     target: Element,
     type: string,
     clientX: number,
-    clientY = 0
+    clientY = 0,
+    pointerId = 1
   ) =>
     target.dispatchEvent(
       new PointerEvent(type, {
         bubbles: true,
         button: 0,
         isPrimary: true,
-        pointerId: 1,
+        pointerId,
         clientX,
         clientY
       })
@@ -296,6 +298,55 @@ describe("Home", () => {
     expect(onOpenProject).not.toHaveBeenCalled();
     await act(async () => kin("koed").click());
     expect(onOpenProject.mock.calls).toEqual([["koed"]]);
+  });
+
+  it("accepts a new Kin drag after pointer capture is lost", async () => {
+    const onOpenProject = vi.fn();
+    await render({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      onOpenProject
+    });
+    await act(async () => {
+      pointer(kin("koed"), "pointerdown", 0);
+      pointer(kin("koed"), "lostpointercapture", 0);
+      pointer(kin("koed"), "pointerdown", 0, 0, 2);
+      pointer(kin("koed"), "pointermove", 40, 0, 2);
+      pointer(kin("koed"), "pointerup", 40, 0, 2);
+      kin("koed").click();
+    });
+    expect(onOpenProject).not.toHaveBeenCalled();
+  });
+
+  it("releases timed-out Kin capture and accepts another drag", async () => {
+    const onOpenProject = vi.fn();
+    const begin = vi.spyOn(KinSpin.prototype, "begin");
+    await render({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      onOpenProject
+    });
+    const button = kin("koed");
+    let captured = false;
+    button.setPointerCapture = () => {
+      captured = true;
+    };
+    button.hasPointerCapture = () => captured;
+    button.releasePointerCapture = () => {
+      captured = false;
+    };
+    await act(async () => pointer(button, "pointerdown", 0));
+    expect(captured).toBe(true);
+    await act(async () => {
+      (begin.mock.contexts[0] as KinSpin).step(2, false);
+      vi.advanceTimersByTime(50);
+    });
+    expect(captured).toBe(false);
+    await act(async () => {
+      pointer(button, "pointerdown", 0, 0, 2);
+      pointer(button, "pointermove", 40, 0, 2);
+      pointer(button, "pointerup", 40, 0, 2);
+      button.click();
+    });
+    expect(onOpenProject).not.toHaveBeenCalled();
   });
 
   it("uses the legacy profile for the solo host and the Project ID for an uncustomized Kin", async () => {
@@ -563,14 +614,11 @@ describe("Home", () => {
     version: null
   };
 
-  it("drops coins from a client's keycap only when its progress rises", async () => {
+  it("does not produce coins when only ingestion progress rises", async () => {
     await render({ entries: [], view: reading(2), clients: [codexClient] });
     expect(container.querySelector(".v1-home-coin")).toBeNull();
     await render({ entries: [], view: reading(4), clients: [codexClient] });
-    // happy-dom has no animations, so a coin lands as soon as it launches.
-    expect(
-      container.querySelectorAll(".v1-home-coin").length
-    ).toBeLessThanOrEqual(3);
+    expect(container.querySelector(".v1-home-coin")).toBeNull();
     await render({ entries: [], view: reading(4), clients: [codexClient] });
     expect(container.querySelector(".v1-home-coin")).toBeNull();
   });
@@ -586,7 +634,7 @@ describe("Home", () => {
     delete (HTMLElement.prototype as { animate?: unknown }).animate;
   });
 
-  it("flies a coin for each update with animations available", async () => {
+  it("flies a coin for a newly appearing sidebar Conversation, not ingestion progress", async () => {
     const animations: { onfinish: (() => void) | null; cancel: () => void }[] =
       [];
     Object.assign(HTMLElement.prototype, {
@@ -596,12 +644,278 @@ describe("Home", () => {
         return animation;
       }
     });
-    await render({ entries: [], view: reading(2), clients: [codexClient] });
-    await render({ entries: [], view: reading(9), clients: [codexClient] });
-    // Seven more: log2(8) = 3 coins, the cap.
-    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(3);
+    const existing = {
+      key: "old",
+      aliases: ["old"],
+      client: "codex" as const,
+      projectIds: []
+    };
+    const added = {
+      key: "new",
+      aliases: ["new"],
+      client: "codex" as const,
+      projectIds: []
+    };
+    await render({
+      entries: [],
+      view: reading(2),
+      clients: [codexClient],
+      conversations: [existing]
+    });
+    await render({
+      entries: [],
+      view: reading(9),
+      clients: [codexClient],
+      conversations: [existing]
+    });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(0);
+    await render({
+      entries: [],
+      view: reading(9),
+      clients: [codexClient],
+      conversations: [existing, added]
+    });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(1);
     await act(async () => animations.forEach((item) => item.onfinish?.()));
     expect(container.querySelector(".v1-home-coin")).toBeNull();
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it("queues large batches and starts queued coins as flights finish", async () => {
+    const animations: { onfinish: (() => void) | null; cancel: () => void }[] =
+      [];
+    Object.assign(HTMLElement.prototype, {
+      animate: () => {
+        const animation = { onfinish: null, cancel: () => undefined };
+        animations.push(animation);
+        return animation;
+      }
+    });
+    const props = {
+      entries: [],
+      view: reading(2),
+      clients: [codexClient],
+      conversationScope: "one"
+    };
+    await render({ ...props, conversations: [] });
+    const conversations = Array.from({ length: 12 }, (_, i) => ({
+      key: `new-${i}`,
+      aliases: [],
+      client: "codex" as const,
+      projectIds: []
+    }));
+    await render({ ...props, conversations });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(4);
+    await act(async () => animations[0]?.onfinish?.());
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(4);
+    expect(animations).toHaveLength(5);
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it("flies only one coin for aliases in the same update", async () => {
+    Object.assign(HTMLElement.prototype, {
+      animate: () => ({ onfinish: null, cancel: () => undefined })
+    });
+    const props = {
+      entries: [],
+      view: reading(2),
+      clients: [codexClient],
+      conversationScope: "one"
+    };
+    await render({ ...props, conversations: [] });
+    await render({
+      ...props,
+      conversations: [
+        { key: "first", aliases: ["shared"], client: "codex", projectIds: [] },
+        { key: "second", aliases: ["shared"], client: "codex", projectIds: [] }
+      ]
+    });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(1);
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it.each(["keycap", "kin"])(
+    "retries when %s appears last without a render",
+    async (last) => {
+      Object.assign(HTMLElement.prototype, {
+        animate: () => ({ onfinish: null, cancel: () => undefined })
+      });
+      const props = {
+        entries: [],
+        view: reading(2),
+        clients: [codexClient],
+        conversationScope: "one"
+      };
+      await render({ ...props, conversations: [] });
+      const keycap = container.querySelector<HTMLElement>(
+        '.v1-home-keycap[data-client="codex"]'
+      )!;
+      const parent = keycap.parentElement!;
+      await act(async () => keycap.remove());
+      await render({
+        ...props,
+        conversations: [
+          { key: "new", aliases: [], client: "codex", projectIds: ["project"] }
+        ]
+      });
+      const project = document.createElement("div");
+      project.dataset.coinProject = "project";
+      await act(async () => {
+        container
+          .querySelector(".v1-home-coins")!
+          .parentElement!.append(project);
+      });
+      const kin = document.createElement("div");
+      kin.className = "v1-pixelkin";
+      if (last === "keycap")
+        await act(async () => {
+          project.append(kin);
+        });
+      else
+        await act(async () => {
+          parent.append(keycap);
+        });
+      expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(0);
+      if (last === "keycap")
+        await act(async () => {
+          parent.append(keycap);
+        });
+      else
+        await act(async () => {
+          project.append(kin);
+        });
+      expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(1);
+      await act(async () => {
+        project.append(document.createElement("div"));
+      });
+      expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(1);
+      delete (HTMLElement.prototype as { animate?: unknown }).animate;
+    }
+  );
+
+  it("lands a loose Conversation at its rendered floor coin", async () => {
+    const frames: Keyframe[][] = [];
+    Object.assign(HTMLElement.prototype, {
+      animate: (keyframes: Keyframe[]) => {
+        frames.push(keyframes);
+        return { onfinish: null, cancel: () => undefined };
+      }
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const left = this.classList.contains("v1-home-floor-coin") ? 210 : 0;
+        const top = this.classList.contains("v1-home-floor-coin") ? 310 : 0;
+        const width = this.classList.contains("v1-home-stage") ? 900 : 20;
+        return {
+          left,
+          top,
+          right: left + width,
+          bottom: top + 20,
+          width,
+          height: 20,
+          x: left,
+          y: top,
+          toJSON: () => ({})
+        };
+      }
+    );
+    const props = {
+      entries: [],
+      view: { kind: "empty" as const, warnings: [] },
+      clients: [codexClient],
+      conversationScope: "one",
+      onOpenConversation: () => undefined
+    };
+    await render({ ...props, conversations: [], looseConversations: [] });
+    await render({
+      ...props,
+      conversations: [
+        { key: "new", aliases: [], client: "codex", projectIds: [] }
+      ],
+      looseConversations: [
+        { key: "new", title: "New", latestAt: "2026-11-03", client: "codex" }
+      ]
+    });
+    expect(frames[0]?.[2]?.transform).toBe(
+      "translate(220px, 320px) scale(0.9)"
+    );
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it("retries a new Conversation when its Project Kin appears later", async () => {
+    Object.assign(HTMLElement.prototype, {
+      animate: () => ({ onfinish: null, cancel: () => undefined })
+    });
+    const added = {
+      key: "new",
+      aliases: ["new"],
+      client: "codex" as const,
+      projectIds: ["project"]
+    };
+    const props = { clients: [codexClient], conversationScope: "one" };
+    await render({
+      ...props,
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      conversations: []
+    });
+    await render({
+      ...props,
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      conversations: [added]
+    });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(0);
+    await render({
+      ...props,
+      entries: [entry("project", "2026-11-03T12:00:00Z")],
+      conversations: [added]
+    });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(1);
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it("baselines hydration and scope changes, and skips missing clients", async () => {
+    Object.assign(HTMLElement.prototype, {
+      animate: () => ({ onfinish: null, cancel: () => undefined })
+    });
+    const conversation = (key: string, client: "codex" | null = "codex") => ({
+      key,
+      aliases: [key],
+      client,
+      projectIds: []
+    });
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      clients: [codexClient],
+      conversationScope: null,
+      conversations: []
+    });
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      clients: [codexClient],
+      conversationScope: "one",
+      conversations: [conversation("old")]
+    });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(0);
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      clients: [codexClient],
+      conversationScope: "one",
+      conversations: [conversation("old"), conversation("unknown", null)]
+    });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(0);
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      clients: [codexClient],
+      conversationScope: "two",
+      conversations: [conversation("other")]
+    });
+    expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(0);
     delete (HTMLElement.prototype as { animate?: unknown }).animate;
   });
 
