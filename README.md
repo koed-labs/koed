@@ -38,11 +38,13 @@ without Koed. With Koed, 12 tasks improved with captured knowledge and estimated
 
 <br/>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/koed-benchmark-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/koed-benchmark.svg">
-  <img alt="With Koed, 38 of 60 runs passed, against 7 of 60 without it. Coding time was 52% lower, coding tokens 69% lower, and cost with overhead 42% lower." src="docs/assets/koed-benchmark.svg" width="680">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/koed-benchmark-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/koed-benchmark.svg">
+    <img alt="With Koed, 38 of 60 runs passed, against 7 of 60 without it. Coding time was 52% lower, coding tokens 69% lower, and cost with overhead 42% lower." src="docs/assets/koed-benchmark.svg" width="680">
+  </picture>
+</p>
 
 ## Features
 
@@ -77,12 +79,11 @@ without Koed. With Koed, 12 tasks improved with captured knowledge and estimated
 
 ```bash
 pnpm install
-pnpm local:setup
-KOED_DEPENDENCY_MODE=bundled-local KOED_AUTO_PORTS=1 pnpm desktop:start
+pnpm desktop:start
 ```
 
-`pnpm local:setup` creates `.env`, builds the workspace, links the Homebrew
-runtime, and installs the models. Koed Desktop opens when setup is complete.
+On first launch, choose **Set up Koed** and confirm. Desktop installs the
+runtime and models it needs, then starts the local services.
 
 To stop Koed, run:
 
