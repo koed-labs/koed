@@ -108,6 +108,7 @@ export default defineConfig({
     // Ignored dependency snapshots and preview checkouts are not test sources.
     exclude: [...configDefaults.exclude, "scratch/**", ".pnpm-store/**"],
     globals: true,
+    setupFiles: [`${root}scripts/vitest-react-setup.mjs`],
     environment: "node",
     include: ["**/*.test.ts", "**/*.test.tsx"],
     testTimeout: 15_000

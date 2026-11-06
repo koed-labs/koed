@@ -12,7 +12,6 @@ const PACKAGING_ROOTS = [
   "packages/db/",
   "packages/koed-server/",
   "packages/mcp-server/",
-  "packages/memory-ui/",
   "packages/shared/",
   "packages/ui/",
   "scripts/native-runtime/"

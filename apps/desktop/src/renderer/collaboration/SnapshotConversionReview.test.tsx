@@ -12,9 +12,6 @@ import {
 import { SnapshotConversionReview } from "./SnapshotConversionReview.js";
 
 type Client = Parameters<typeof SnapshotConversionReview>[0]["client"];
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const hash = "a".repeat(64);

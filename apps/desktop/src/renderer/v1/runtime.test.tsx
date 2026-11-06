@@ -15,11 +15,9 @@ const timelineMock = vi.hoisted(() => ({
   onLoadingOlderChange: null as null | ((loading: boolean) => void),
   onAtEndChange: null as null | ((atEnd: boolean) => void)
 }));
-vi.mock("@koed/memory-ui", async (importOriginal) => {
+vi.mock("../conversation/VirtualizedTimeline.js", async () => {
   const React = await import("react");
-  const actual = await importOriginal<typeof import("@koed/memory-ui")>();
   return {
-    ...actual,
     VirtualizedTimeline: ({
       events,
       renderEvent,
@@ -55,9 +53,6 @@ vi.mock("@koed/memory-ui", async (importOriginal) => {
     }
   };
 });
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 it("retains approval risk and uses the injected clipboard adapter", async () => {
   const container = document.createElement("div");
   document.body.append(container);

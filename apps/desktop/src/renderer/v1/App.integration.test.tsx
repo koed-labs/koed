@@ -16,7 +16,6 @@ import type {
   ManagedConversationLaunchOptions
 } from "../../ipc/managed-conversation-protocol.js";
 
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const inventoryLoad = vi.hoisted(() => ({
   pending: null as Promise<unknown> | null,
   calls: 0,

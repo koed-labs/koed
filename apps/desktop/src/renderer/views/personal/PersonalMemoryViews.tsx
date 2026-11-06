@@ -51,7 +51,7 @@ import type {
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 import { PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS } from "@koed/shared/personal-desktop";
-import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
+import type { MarkdownPlatformAdapters } from "../../markdown/SecureMarkdown.js";
 import {
   BookText,
   Brain,

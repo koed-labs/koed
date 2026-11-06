@@ -23,7 +23,7 @@ import type {
   PersonalDesktopProjectMetadata,
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
-import { VirtualizedTimeline } from "@koed/memory-ui";
+import { VirtualizedTimeline } from "./renderer/conversation/VirtualizedTimeline.js";
 import { Profiler, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -346,13 +346,13 @@ const parityEvents: PersonalDesktopConversationEvent[] = [
   }),
   personalEvent(494, {
     actor: "tool",
-    content: "Read packages/memory-ui/src/SecureMarkdown.tsx",
+    content: "Read apps/desktop/src/renderer/markdown/SecureMarkdown.tsx",
     eventType: "tool_call",
     metadata: { toolName: "read_file" },
     toolDisplay: {
       kind: "file_read",
       label: "Read file",
-      preview: "packages/memory-ui/src/SecureMarkdown.tsx",
+      preview: "apps/desktop/src/renderer/markdown/SecureMarkdown.tsx",
       toolName: "read_file"
     }
   }),

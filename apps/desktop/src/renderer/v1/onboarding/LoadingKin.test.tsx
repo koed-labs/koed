@@ -13,7 +13,7 @@ vi.mock("../pixelkin/vendor/index.js", async (original) => ({
     render = engine.render;
   }
 }));
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
 describe("onboarding Kin lifecycle", () => {
   let root: Root;
   let host: HTMLDivElement;

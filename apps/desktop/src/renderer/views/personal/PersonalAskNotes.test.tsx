@@ -19,9 +19,6 @@ import { createProjectSourceFixture } from "../../../project-source-fixture.js";
 import { createManagedConversationValidationApi } from "../../../managed-conversation-validation-api.js";
 
 const adapters = { openExternal: vi.fn(), writeClipboard: vi.fn() };
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
 let root: Root;
 

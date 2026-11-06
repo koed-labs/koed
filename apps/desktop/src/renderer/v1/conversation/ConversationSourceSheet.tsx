@@ -9,7 +9,7 @@ import {
   TabsTab,
   TabsPanel
 } from "@koed/ui";
-import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
+import type { MarkdownPlatformAdapters } from "../../markdown/SecureMarkdown.js";
 import type { DesktopConversationEvent } from "../../../desktop-conversation.js";
 import type { DesktopThreadGroup } from "../../../project-memory-ui.js";
 import {

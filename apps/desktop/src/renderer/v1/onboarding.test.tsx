@@ -16,7 +16,7 @@ vi.mock("./onboarding/LoadingKin.js", () => ({
 vi.mock("./onboarding/OnboardingConfetti.js", () => ({
   OnboardingConfetti: () => <span data-testid="confetti" />
 }));
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
 function setupSnapshot(
   state: DesktopSetupSnapshot["state"] = "complete",
   runId = "inspect"

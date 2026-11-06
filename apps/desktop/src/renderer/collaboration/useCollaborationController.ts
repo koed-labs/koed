@@ -3,7 +3,7 @@ import type {
   CollaborationSelection,
   CollaborationSnapshot
 } from "@koed/shared/collaboration";
-import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
+import type { MarkdownPlatformAdapters } from "../markdown/SecureMarkdown.js";
 import {
   useCallback,
   useEffect,

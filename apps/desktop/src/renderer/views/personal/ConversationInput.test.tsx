@@ -7,10 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConversationInput } from "./ConversationInput.js";
 import type { ManagedConversationSlashCommand } from "./ai-client-slash-suggestions.js";
 
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
-
 const DUMMY_SETTINGS: ComponentProps<typeof ConversationInput>["settings"] = {
   options: null,
   selection: {

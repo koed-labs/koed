@@ -1,5 +1,19 @@
 # @koed/koed-server
 
+## 0.11.0
+
+### Minor Changes
+
+- dbbb72b: Koed now reads an AI Client's conversations only while you have connected it. A client that is detected but not connected is no longer captured or imported, and connecting or disconnecting takes effect within seconds, without a restart. Automatic history import no longer stalls: a Conversation that fails the same way on every pass is skipped and logged instead of holding back newer ones, a closed import run is replaced with a new one, failures record the Memory API's error code, and a restart no longer marks history as stuck.
+- dbbb72b: Only setting up or repairing an AI Client now connects it for capture, and only after Koed verifies the integration for the current `KOED_HOME`. Status checks no longer connect clients. Removing a client disconnects it before its integration is changed, so a removal that fails or is interrupted still stops capture, and a setup that was running when the client was removed can no longer reconnect it. Headless remote runtimes no longer reconnect clients when they start. Existing installations must connect each AI Client again, through Koed Desktop or `koed setup <client>`; no Memory is deleted.
+- 5e31d33: Add an optional Linux CUDA package to each product release. The CLI installs the CPU core by default. Use `koed runtime install --provider release --dependency-mode bundled-local --with-cuda` to add CUDA while Koed is stopped.
+- dbbb72b: Support a saved Chief of Staff name for Koed-created conversations and retry-safe Personal Project creation. Existing callers can continue without supplying either optional field.
+
+### Patch Changes
+
+- a55a62a: Avoid repeatedly polling pending Personal Device Sync outbox entries so other deliveries can make progress.
+- b7063ab: Harden release promotion against npm registry visibility delays and reduce temporary disk use during published asset verification.
+
 ## 0.10.3
 
 ### Patch Changes
