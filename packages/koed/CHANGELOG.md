@@ -1,5 +1,15 @@
 # @koed/koed
 
+## 0.11.1
+
+### Patch Changes
+
+- dbbb72b: Correct solo desktop onboarding readiness, Project chat and folder navigation, and Settings controls. Keep window graphics preferences separate from local inference settings and reuse existing service and AI-client commands.
+- dbbb72b: Add the solo V1 desktop presentation with Chief of Staff customization, local onboarding, model and reasoning selection, and new-chat and Project navigation. Preserve existing managed execution and Personal Memory integrations; imported conversations remain memory sources without appearing in the new chat history.
+- dbbb72b: Replace the desktop home composer with a Home stage; there is no new-chat composer. Every state shares one layout: AI Client keycaps above a stage where Kin stand in a spotlight that scales with the window. Projects gather around the most recently active one, a quiet stage shows before there are any, recent history processing shows as a hatching stage with its progress, and a full-screen attention state appears only when Koed cannot load Projects. Clicking a Project opens its most recent conversation. Keycaps use the same health as Settings and offer Connect or Repair, with the same consent step as Settings.
+- ebe3105: Recover idle Project Kin spins and animate newly discovered Conversations toward their Project Kin or the No Project floor.
+- dbbb72b: Introduce the V1 desktop experience with streamlined onboarding, project navigation, Home, and settings.
+
 ## 0.11.0
 
 ### Minor Changes
