@@ -14,7 +14,7 @@ const state = {
 
 describe("Desktop update preload API", () => {
   it("exposes only frozen state, check, open, and subscribe operations", async () => {
-    const invoke = vi.fn(async (_channel: string, _value: unknown) => state);
+    const invoke = vi.fn(async () => state);
     const events = { on: vi.fn(), removeListener: vi.fn() };
     const api = createDesktopUpdatePreloadApi(invoke, events);
     expect(Object.isFrozen(api)).toBe(true);
@@ -44,7 +44,7 @@ describe("Desktop update preload API", () => {
       vi.fn(async () => state),
       events
     );
-    const listener = vi.fn((_value: unknown) => undefined);
+    const listener = vi.fn(() => undefined);
     const unsubscribe = api.subscribe(listener);
     registered?.({}, state);
     registered?.({}, { ...state, status: "available" });
