@@ -56,7 +56,8 @@ Select Service health to read each reported component's state and any attention
 message. Select Embedding status to inspect model readiness, pending work,
 estimated drain time, throughput, Memory and LCM queues, Live Projection, and
 historical-import admission. These are nested pages, with no additional
-expansion step. The back button and Escape return to Services.
+expansion step. Use the back button or Escape to return to the Services overview
+for service actions. Both detail pages offer Refresh status.
 
 Embedding is up to date only when idle activity is backed by backlog telemetry.
 Missing telemetry reports unknown or unavailable progress. An unavailable

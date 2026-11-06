@@ -182,93 +182,99 @@ export function ServiceActions({
   running,
   busy,
   disabled,
-  notice,
-  updatedAt,
-  run,
-  refresh
+  run
 }: {
   running: boolean;
   busy: ServiceAction | null;
   disabled: boolean;
+  run: (action: ServiceAction) => void;
+}) {
+  return (
+    <Group title="Service actions">
+      <Row
+        title="Local services"
+        description={
+          running
+            ? "Restart the services on this device."
+            : "Start the services on this device."
+        }
+      >
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          onClick={() => run(running ? "restart" : "start")}
+        >
+          {busy === "restart"
+            ? "Restarting…"
+            : busy === "start"
+              ? "Starting…"
+              : running
+                ? "Restart Koed"
+                : "Start Koed"}
+        </Button>
+      </Row>
+      <div className="actions pad">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          onClick={() => run("doctor")}
+        >
+          <Activity />
+          {busy === "doctor" ? "Running diagnostics…" : "Run diagnostics"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          onClick={() => run("open_logs")}
+        >
+          <FileText />
+          {busy === "open_logs" ? "Opening…" : "Open logs"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          onClick={() => run("diagnostics")}
+        >
+          <Clipboard />
+          {busy === "diagnostics" ? "Copying…" : "Copy diagnostics"}
+        </Button>
+      </div>
+    </Group>
+  );
+}
+export function ServiceStatusFooter({
+  disabled,
+  notice,
+  updatedAt,
+  refresh
+}: {
+  disabled: boolean;
   notice: string | null;
   updatedAt?: string;
-  run: (action: ServiceAction) => void;
   refresh: () => void;
 }) {
   return (
-    <>
-      <Group title="Service actions">
-        <Row
-          title="Local services"
-          description={
-            running
-              ? "Restart the services on this device."
-              : "Start the services on this device."
-          }
-        >
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled}
-            onClick={() => run(running ? "restart" : "start")}
-          >
-            {busy === "restart"
-              ? "Restarting…"
-              : busy === "start"
-                ? "Starting…"
-                : running
-                  ? "Restart Koed"
-                  : "Start Koed"}
-          </Button>
-        </Row>
-        <div className="actions pad">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled}
-            onClick={() => run("doctor")}
-          >
-            <Activity />
-            {busy === "doctor" ? "Running diagnostics…" : "Run diagnostics"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled}
-            onClick={() => run("open_logs")}
-          >
-            <FileText />
-            {busy === "open_logs" ? "Opening…" : "Open logs"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled}
-            onClick={() => run("diagnostics")}
-          >
-            <Clipboard />
-            {busy === "diagnostics" ? "Copying…" : "Copy diagnostics"}
-          </Button>
-        </div>
-      </Group>
-      <div className="service-footer">
-        <span role="status">
-          {notice ??
-            (updatedAt
-              ? "Updated " + new Date(updatedAt).toLocaleTimeString()
-              : "")}
-        </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-label="Refresh status"
-          disabled={disabled}
-          onClick={refresh}
-        >
-          <RefreshCw />
-          Refresh status
-        </Button>
-      </div>
-    </>
+    <div className="service-footer">
+      <span role="status">
+        {notice ??
+          (updatedAt
+            ? "Updated " + new Date(updatedAt).toLocaleTimeString()
+            : "")}
+      </span>
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-label="Refresh status"
+        disabled={disabled}
+        onClick={refresh}
+      >
+        <RefreshCw />
+        Refresh status
+      </Button>
+    </div>
   );
 }

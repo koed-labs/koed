@@ -316,6 +316,35 @@ describe("V1Settings", () => {
       )
     ).toHaveLength(1);
   });
+  it.each(["health", "embedding"] as const)(
+    "keeps service actions on the overview when navigating into %s and back",
+    async (page) => {
+      snapshot = {
+        ...snapshot,
+        status: { embeddingState: null } as never
+      };
+      await render("services");
+      expect(container.textContent).toContain("Service actions");
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(`[data-settings-page="${page}"]`)!
+          .click()
+      );
+      expect(container.textContent).not.toContain("Service actions");
+      expect(container.textContent).not.toContain("Run diagnostics");
+      expect(
+        container.querySelector('[aria-label="Refresh status"]')
+      ).not.toBeNull();
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[aria-label="Back to Services"]')!
+          .click()
+      );
+      await vi.waitFor(() =>
+        expect(container.textContent).toContain("Service actions")
+      );
+    }
+  );
   it("bounds startup refreshes and lets manual refresh start another window", async () => {
     vi.useFakeTimers();
     snapshot = {

@@ -29,6 +29,7 @@ import {
   SettingsServicesOverview,
   settingsServiceComponents,
   ServiceActions,
+  ServiceStatusFooter,
   type ServiceAction
 } from "./settings-services.js";
 import {
@@ -200,6 +201,7 @@ export function V1Settings({
     }
   };
   const status = snapshot.status;
+  const serviceControlsDisabled = !!serviceBusy || !!snapshot.busyCommand;
   return (
     <Dialog
       open
@@ -332,14 +334,21 @@ export function V1Settings({
                 />
               )}
               {snapshot.error && <p role="alert">{snapshot.error}</p>}
-              {serviceError && <p role="alert">{serviceError}</p>}
-              <ServiceActions
-                running={status?.api?.state === "healthy"}
-                busy={serviceBusy}
-                disabled={!!serviceBusy || !!snapshot.busyCommand}
-                notice={serviceNotice}
+              {!page && (
+                <>
+                  {serviceError && <p role="alert">{serviceError}</p>}
+                  <ServiceActions
+                    running={status?.api?.state === "healthy"}
+                    busy={serviceBusy}
+                    disabled={serviceControlsDisabled}
+                    run={(action) => void runService(action)}
+                  />
+                </>
+              )}
+              <ServiceStatusFooter
+                disabled={serviceControlsDisabled}
+                notice={page ? null : serviceNotice}
                 updatedAt={status?.generatedAt}
-                run={(action) => void runService(action)}
                 refresh={() => {
                   servicesRefreshDeadline.current = null;
                   void statusStore.refresh();
