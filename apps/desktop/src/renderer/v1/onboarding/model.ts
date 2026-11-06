@@ -18,7 +18,7 @@ export const clients = [
 ] as const;
 export type OnboardingDraft = {
   version: 2;
-  step: "setup" | "clients" | "complete";
+  step: "setup" | "clients" | "memory-model" | "complete";
   selected: ClientId[];
   selectionInitialized: boolean;
   agent?: OnboardingAgent;
@@ -32,7 +32,9 @@ export function restoreOnboarding(value: unknown): OnboardingDraft {
     // Legacy drafts always re-enter setup inspection, without their chat transcript.
     step:
       draft.version === 2 &&
-      (draft.step === "clients" || draft.step === "complete")
+      (draft.step === "clients" ||
+        draft.step === "memory-model" ||
+        draft.step === "complete")
         ? draft.step
         : "setup",
     selected: Array.isArray(draft.selected)

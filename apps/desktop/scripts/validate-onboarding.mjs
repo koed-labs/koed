@@ -57,6 +57,25 @@ const run = async () => {
       });
     window.webContents.sendInputEvent({ type: "keyUp", keyCode });
   };
+  const chooseMemoryModel = async () => {
+    await waitFor(
+      "document.querySelector('[aria-label=\"AI Client\"]')?.disabled === false"
+    );
+    await evaluate(
+      "document.querySelector('[aria-label=\"AI Client\"]').focus()"
+    );
+    key("Return");
+    await waitFor(
+      "document.activeElement?.matches('[role=option][data-highlighted]')"
+    );
+    key("Return");
+    await waitFor(
+      "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Save and continue' && !b.disabled)"
+    );
+    await waitFor(
+      "document.activeElement?.getAttribute('aria-label')==='AI Client'"
+    );
+  };
   const capture = async (name) => {
     await waitFor(
       "document.querySelector('.lp-kin-scene')?.dataset.kinState === 'fallback' || document.querySelector('.lp-kin-scene')?.dataset.kinAnimating === 'false'"
@@ -116,6 +135,9 @@ const run = async () => {
           "document.body.innerText.includes('Everyone’s connected.')"
         );
         await click("Continue");
+        await chooseMemoryModel();
+        await capture(`${size}-${theme}-memory-model`);
+        await click("Save and continue");
         await waitFor("document.body.innerText.includes('You’re all set.')");
         await capture(`${size}-${theme}-complete`);
         await click("Let’s go");
@@ -189,7 +211,7 @@ const run = async () => {
         await evaluate(`(() => {
         const workspace = document.querySelector('.lp-workspace');
         const button = [...workspace.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('Retry'));
-        button.scrollIntoView({ block: 'end' });
+        button.scrollIntoView({ block: 'center' });
         const bounds = button.getBoundingClientRect();
         return workspace.scrollTop > 0 && bounds.top >= 0 && bounds.bottom <= innerHeight;
       })()`),
@@ -367,6 +389,9 @@ const run = async () => {
     await click("Connect");
     await waitFor("document.body.innerText.includes('Everyone’s connected.')");
     await click("Continue");
+    await chooseMemoryModel();
+    await click("Save and continue");
+    await waitFor("document.body.innerText.includes('You’re all set.')");
     await evaluate("window.onboardingValidation.failCompletionWrites=1");
     await click("Let’s go");
     await waitFor("document.body.innerText.includes('Profile save failed')");
@@ -401,8 +426,9 @@ const run = async () => {
     await waitFor(
       "!!document.querySelector('.v1-app') && !document.querySelector('.lp-workspace')"
     );
-    // The account menu is the normal Settings entry.
-    await evaluate("document.querySelector('.v1-account').click()");
+    await evaluate(
+      "document.querySelector('button[aria-label=\"Settings\"]').click()"
+    );
     await waitFor("document.body.innerText.includes('Settings')");
     await waitFor("document.body.innerText.includes('Run setup again')");
     await click("Run setup again");
@@ -470,6 +496,12 @@ const run = async () => {
     key("Tab");
     await waitFor("document.activeElement?.textContent.trim()==='Continue'");
     key("Return");
+    await chooseMemoryModel();
+    for (let i = 0; i < 4; i++) key("Tab");
+    await waitFor(
+      "document.activeElement?.textContent.trim()==='Save and continue'"
+    );
+    key("Return");
     await waitFor(
       "document.activeElement?.textContent.trim()==='You’re all set.'"
     );
@@ -508,6 +540,7 @@ const run = async () => {
             "clients",
             "partial",
             "retry",
+            "memory-model",
             "complete",
             "finish",
             "setup-error",

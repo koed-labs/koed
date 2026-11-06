@@ -118,7 +118,7 @@ describe("settings service pages", () => {
     expect(container.textContent).toContain("Embedding progress unknown");
     expect(container.textContent).not.toContain("Up to date");
     expect(
-      [...container.querySelectorAll(".v1-service-metrics b")].map(
+      [...container.querySelectorAll(".metrics strong")].map(
         (e) => e.textContent
       )
     ).toEqual(["1 / 2", "—", "—"]);
@@ -155,7 +155,7 @@ describe("settings service pages", () => {
     expect(container.querySelector("details")).toBeNull();
     await act(async () =>
       (
-        container.querySelector(".v1-settings-back") as HTMLButtonElement
+        container.querySelector(".page-heading .back") as HTMLButtonElement
       ).click()
     );
     expect(back).toHaveBeenCalledOnce();

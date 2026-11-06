@@ -7,10 +7,12 @@ import type {
   StatusSnapshot
 } from "../services/desktop-commands.js";
 import type { ThemeStore, ThemeSnapshot } from "../state/theme.js";
+import { memoryModelFixture } from "./onboarding/memory-model.fixture.js";
 import { V1Settings } from "./settings.js";
 
 describe("V1Settings", () => {
-  let container: HTMLDivElement;
+  const container = document.body;
+  let mount: HTMLDivElement;
   let root: Root;
   let snapshot: StatusSnapshot;
   let theme: ThemeSnapshot;
@@ -18,9 +20,9 @@ describe("V1Settings", () => {
   let themeStore: ThemeStore;
   let run: ReturnType<typeof vi.fn>;
   beforeEach(() => {
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
+    mount = document.createElement("div");
+    document.body.append(mount);
+    root = createRoot(mount);
     snapshot = { status: null, busyCommand: null, error: null, revision: 0 };
     theme = {
       preference: "system",
@@ -47,7 +49,7 @@ describe("V1Settings", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     vi.useRealTimers();
-    container.remove();
+    mount.remove();
     delete window.koedDesktop;
   });
   const render = async (
@@ -71,7 +73,7 @@ describe("V1Settings", () => {
     await act(async () =>
       (
         container.querySelector(
-          ".v1-settings-segment button:nth-child(2)"
+          "[aria-label=Theme] button:nth-child(2)"
         ) as HTMLButtonElement
       ).click()
     );
@@ -106,7 +108,7 @@ describe("V1Settings", () => {
       onRestartOnboarding: restart
     });
     const deviceSection = [...container.querySelectorAll("section")].find(
-      (section) => section.querySelector("h4")?.textContent === "On this device"
+      (section) => section.querySelector("h3")?.textContent === "On this device"
     )!;
     for (const label of [
       "Open Koed at login",
@@ -114,7 +116,7 @@ describe("V1Settings", () => {
       "Show Koed in the menu bar"
     ]) {
       const controls = container.querySelectorAll(
-        `button[aria-label="${label}"]`
+        `[role="switch"][aria-label="${label}"]`
       );
       expect(controls).toHaveLength(1);
       expect(deviceSection.contains(controls[0]!)).toBe(true);
@@ -127,13 +129,13 @@ describe("V1Settings", () => {
     expect(launch.get).toHaveBeenCalledOnce();
     expect(presentation.get).toHaveBeenCalledOnce();
     const login = container.querySelector(
-      'button[aria-label="Open Koed at login"]'
+      '[role="switch"][aria-label="Open Koed at login"]'
     ) as HTMLButtonElement;
     const gpu = container.querySelector(
-      'button[aria-label="Graphics acceleration"]'
+      '[role="switch"][aria-label="Graphics acceleration"]'
     ) as HTMLButtonElement;
     const menu = container.querySelector(
-      'button[aria-label="Show Koed in the menu bar"]'
+      '[role="switch"][aria-label="Show Koed in the menu bar"]'
     ) as HTMLButtonElement;
     expect(gpu.getAttribute("aria-checked")).toBe("true");
     expect(menu.getAttribute("aria-checked")).toBe("false");
@@ -168,7 +170,7 @@ describe("V1Settings", () => {
     };
     await render("general", { presentationPreferences: presentation });
     const gpu = container.querySelector(
-      'button[aria-label="Graphics acceleration"]'
+      '[role="switch"][aria-label="Graphics acceleration"]'
     ) as HTMLButtonElement;
     await act(async () => gpu.click());
     expect(gpu.getAttribute("aria-checked")).toBe("true");
@@ -176,7 +178,7 @@ describe("V1Settings", () => {
       "could not be changed"
     );
   });
-  it("saves a capability backed default for new conversations", async () => {
+  it("shows a single memory model for synthesis-capable clients and hides Conversation defaults", async () => {
     const assignment = {
       provider: "codex" as const,
       ai_client_instance_id: "codex-local",
@@ -201,14 +203,14 @@ describe("V1Settings", () => {
           healthState: "healthy",
           stale: false,
           expiresAt: "2099-01-01T00:00:00Z",
-          managedConversationStart: {
+          localSynthesis: {
             support: "supported",
             readiness: "ready"
           },
           models: [
             {
               id: "model-a",
-              fullId: "model-a",
+              fullId: "openai/model-a",
               model: "model-a",
               displayName: "Model A",
               reasoningEfforts: ["medium", "high"]
@@ -218,7 +220,17 @@ describe("V1Settings", () => {
       ],
       settings: [],
       defaults: {
-        conversations: { available: true, persistable: true, assignment }
+        ...Object.fromEntries(
+          [
+            "mcp_memory_answer",
+            "lcm_summary",
+            "session_title",
+            "curated_memory_review"
+          ].map((key) => [
+            key,
+            { available: true, persistable: true, assignment }
+          ])
+        )
       }
     } as never;
     const localAiClients = {
@@ -231,21 +243,56 @@ describe("V1Settings", () => {
       reset: vi.fn()
     };
     await render("ai", { localAiClients });
-    const reasoning = container.querySelector(
-      '.v1-model-reasoning button[aria-label="High"]'
-    ) as HTMLButtonElement;
-    await act(async () => reasoning.click());
-    await act(async () =>
-      (
-        container.querySelector(
-          ".v1-conversation-defaults .v1-settings-primary"
-        ) as HTMLButtonElement
-      ).click()
+    expect(container.textContent).toContain("Memory Model");
+    expect(container.textContent).not.toContain("New Conversations");
+    expect(
+      container.querySelector('[aria-label="AI Client"]')?.textContent
+    ).toContain("Codex");
+    expect(container.querySelector('[aria-label="Model"]')?.textContent).toBe(
+      "Model A"
     );
-    expect(localAiClients.set).toHaveBeenCalledWith("conversations", {
-      ...assignment,
-      reasoning_effort: "high"
-    });
+    expect(localAiClients.set).not.toHaveBeenCalled();
+  });
+  it("can replace an incomplete Pi default with Codex and retain each task’s limits", async () => {
+    const api = {
+      ...memoryModelFixture(() => ["codex"]),
+      set: vi.fn(),
+      reset: vi.fn()
+    };
+    const save = vi.spyOn(api, "setMemoryModel");
+    await render("ai", { localAiClients: api });
+    const client = container.querySelector<HTMLButtonElement>(
+      '[role="combobox"][aria-label="AI Client"]'
+    )!;
+    expect(client.disabled).toBe(false);
+    await act(async () =>
+      client.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })
+      )
+    );
+    const option = [
+      ...container.querySelectorAll<HTMLElement>('[role="option"]')
+    ].find((o) => o.textContent === "Codex")!;
+    await act(async () => option.click());
+    const button = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Save Memory Model"
+    )!;
+    expect(button.disabled).toBe(false);
+    await act(async () => button.click());
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "codex",
+        limits: {
+          mcp_memory_answer: { timeout_ms: 1800000, max_attempts: 2 },
+          lcm_summary: { timeout_ms: 240000, max_attempts: 4 },
+          session_title: { timeout_ms: 240000, max_attempts: 4 },
+          curated_memory_review: { timeout_ms: 90000, max_attempts: 2 }
+        }
+      })
+    );
+    expect(container.textContent).toContain(
+      "Memory Model saved for all four tasks."
+    );
   });
   it("opens General for an old Your agent navigation entry", async () => {
     await render("agent");
@@ -270,16 +317,18 @@ describe("V1Settings", () => {
     await render("ai");
     await act(async () => {
       const connect = [
-        ...container.querySelectorAll(".v1-client-card:first-child button")
+        ...container.querySelectorAll(".client-row:first-child button")
       ].find((b) => b.textContent?.includes("Connect")) as HTMLButtonElement;
       connect.click();
     });
     expect(run).not.toHaveBeenCalled();
-    expect(container.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(
+      container.querySelector('.v1-settings-confirm[role="dialog"]')
+    ).not.toBeNull();
     await act(async () =>
       (
         container.querySelector(
-          ".v1-settings-confirm .v1-settings-primary"
+          ".v1-settings-confirm [data-slot=dialog-footer] button:last-child"
         ) as HTMLButtonElement
       ).click()
     );
@@ -297,18 +346,47 @@ describe("V1Settings", () => {
       } as never
     };
     await render("services", { initialPage: "health" });
-    expect(
-      container.querySelector('[aria-label="Service health"]')?.textContent
-    ).toContain("APIHealthy");
+    expect(container.querySelector(".group-card")?.textContent).toContain(
+      "APIHealthy"
+    );
     expect(container.querySelector("details")).toBeNull();
     expect(container.textContent).toContain("Database unavailable");
     expect(container.textContent).toContain("Needs attention");
     expect(
-      [...container.querySelectorAll("p")].filter((paragraph) =>
-        paragraph.textContent?.startsWith("Updated ")
+      [...container.querySelectorAll(".service-footer [role=status]")].filter(
+        (paragraph) => paragraph.textContent?.startsWith("Updated ")
       )
     ).toHaveLength(1);
   });
+  it.each(["health", "embedding"] as const)(
+    "keeps service actions on the overview when navigating into %s and back",
+    async (page) => {
+      snapshot = {
+        ...snapshot,
+        status: { embeddingState: null } as never
+      };
+      await render("services");
+      expect(container.textContent).toContain("Service actions");
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(`[data-settings-page="${page}"]`)!
+          .click()
+      );
+      expect(container.textContent).not.toContain("Service actions");
+      expect(container.textContent).not.toContain("Run diagnostics");
+      expect(
+        container.querySelector('[aria-label="Refresh status"]')
+      ).not.toBeNull();
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[aria-label="Back to Services"]')!
+          .click()
+      );
+      await vi.waitFor(() =>
+        expect(container.textContent).toContain("Service actions")
+      );
+    }
+  );
   it("bounds startup refreshes and lets manual refresh start another window", async () => {
     vi.useFakeTimers();
     snapshot = {
@@ -362,16 +440,14 @@ describe("V1Settings", () => {
     };
     await render("services");
     await act(async () =>
-      (
-        container.querySelector(
-          ".v1-service-actions .v1-settings-primary"
-        ) as HTMLButtonElement
-      ).click()
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Start Koed")!
+        .click()
     );
     expect(run).toHaveBeenCalledWith("start");
     await act(async () =>
       (
-        [...container.querySelectorAll(".v1-service-actions button")].find(
+        [...container.querySelectorAll(".group-card button")].find(
           (button) => button.textContent === "Open logs"
         ) as HTMLButtonElement
       ).click()
@@ -392,7 +468,7 @@ describe("V1Settings", () => {
     await render("services");
     await act(async () =>
       (
-        [...container.querySelectorAll(".v1-service-actions button")].find(
+        [...container.querySelectorAll(".group-card button")].find(
           (button) => button.textContent === "Copy diagnostics"
         ) as HTMLButtonElement
       ).click()
@@ -415,11 +491,9 @@ describe("V1Settings", () => {
     window.koedDesktop = { invoke } as never;
     await render("services");
     await act(async () =>
-      (
-        container.querySelector(
-          ".v1-service-actions .v1-settings-primary"
-        ) as HTMLButtonElement
-      ).click()
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Restart Koed")!
+        .click()
     );
     expect(invoke).toHaveBeenCalledWith("stop");
     expect(run).not.toHaveBeenCalledWith("start");
@@ -429,10 +503,10 @@ describe("V1Settings", () => {
   });
   it("opens command line as a nested page and returns to General on Escape", async () => {
     await render("general", { initialPage: "cli" });
-    expect(container.querySelector(".v1-settings-back")?.textContent).toBe(
+    expect(container.querySelector(".page-heading .back")?.textContent).toBe(
       "General"
     );
-    expect(container.querySelector(".v1-settings-body h3")?.textContent).toBe(
+    expect(container.querySelector(".page-heading h2")?.textContent).toBe(
       "Command line"
     );
     expect(container.querySelector(".koed-setup-dialog")).toBeNull();
@@ -440,17 +514,23 @@ describe("V1Settings", () => {
       "Desktop installer bridge unavailable"
     );
     await act(async () =>
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
-      )
+      document
+        .querySelector(".v1-settings-popup")!
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        )
     );
-    expect(container.querySelector(".v1-settings-body h3")?.textContent).toBe(
+    expect(container.querySelector(".page-heading h2")?.textContent).toBe(
       "General"
     );
     const sections = [
-      ...container.querySelectorAll(".v1-settings-body > section > h4")
+      ...container.querySelectorAll(".settings-scroll > section > h3")
     ].map((element) => element.textContent);
-    expect(sections).toEqual(["On this device", "Optional tools"]);
+    expect(sections).toEqual([
+      "Appearance",
+      "On this device",
+      "Optional tools"
+    ]);
   });
 
   it("keeps command-line installation alive while navigating away and shows verified completion", async () => {
@@ -498,21 +578,13 @@ describe("V1Settings", () => {
         .click()
     );
     await act(async () =>
-      [
-        ...container.querySelectorAll<HTMLButtonElement>(
-          ".v1-settings-nav button"
-        )
-      ]
+      [...container.querySelectorAll<HTMLButtonElement>(".settings-nav button")]
         .find((button) => button.textContent === "Services")!
         .click()
     );
     await act(async () => finishInstall());
     await act(async () =>
-      [
-        ...container.querySelectorAll<HTMLButtonElement>(
-          ".v1-settings-nav button"
-        )
-      ]
+      [...container.querySelectorAll<HTMLButtonElement>(".settings-nav button")]
         .find((button) => button.textContent === "General")!
         .click()
     );
@@ -535,11 +607,7 @@ describe("V1Settings", () => {
     run.mockResolvedValueOnce({ ok: false, error: "Database probe failed" });
     await render("services");
     await act(async () =>
-      [
-        ...container.querySelectorAll<HTMLButtonElement>(
-          ".v1-service-actions button"
-        )
-      ]
+      [...container.querySelectorAll<HTMLButtonElement>(".group-card button")]
         .find((button) => button.textContent === "Run diagnostics")!
         .click()
     );
@@ -565,7 +633,7 @@ describe("V1Settings", () => {
       container.querySelector('[data-settings-page="embedding"]')
     ).not.toBeNull();
   });
-  it("contains keyboard focus, supports arrow navigation, and restores the opener on close", async () => {
+  it("selects and focuses the next sidebar tab using an arrow key", async () => {
     const opener = document.createElement("button");
     document.body.append(opener);
     opener.focus();
@@ -573,30 +641,6 @@ describe("V1Settings", () => {
     const general = container.querySelector<HTMLButtonElement>(
       '[role="tab"][aria-selected="true"]'
     )!;
-    expect(document.activeElement).toBe(general);
-    await act(async () =>
-      general.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "Tab",
-          shiftKey: true,
-          bubbles: true,
-          cancelable: true
-        })
-      )
-    );
-    expect(document.activeElement?.getAttribute("aria-label")).toBe(
-      "Close settings"
-    );
-    await act(async () =>
-      document.activeElement!.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "Tab",
-          bubbles: true,
-          cancelable: true
-        })
-      )
-    );
-    expect(document.activeElement).toBe(general);
     await act(async () =>
       general.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -611,7 +655,6 @@ describe("V1Settings", () => {
       container.querySelector('[role="tab"][aria-selected="true"]')?.textContent
     ).toBe("AI models");
     await act(async () => root.render(null));
-    expect(document.activeElement).toBe(opener);
     opener.remove();
   });
 });

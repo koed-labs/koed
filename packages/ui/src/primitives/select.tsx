@@ -123,6 +123,7 @@ function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
 function SelectPopup({
   className,
   popupClassName,
+  portalContainer,
   children,
   side = "bottom",
   sideOffset = 4,
@@ -134,6 +135,7 @@ function SelectPopup({
   ...props
 }: SelectPrimitive.Popup.Props & {
   popupClassName?: string;
+  portalContainer?: SelectPrimitive.Portal.Props["container"];
   side?: SelectPrimitive.Positioner.Props["side"];
   sideOffset?: SelectPrimitive.Positioner.Props["sideOffset"];
   align?: SelectPrimitive.Positioner.Props["align"];
@@ -143,7 +145,7 @@ function SelectPopup({
   anchor?: SelectPrimitive.Positioner.Props["anchor"];
 }) {
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={portalContainer}>
       <SelectPrimitive.Positioner
         align={align}
         alignItemWithTrigger={alignItemWithTrigger}

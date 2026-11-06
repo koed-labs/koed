@@ -1,3 +1,4 @@
+import { memoryModelFixture } from "./renderer/v1/onboarding/memory-model.fixture.js";
 import { homeStatus } from "./renderer/v1/home/home-status.fixture.js";
 // Deterministic bridge used ONLY by the Vite validation entry, never the app entry.
 import type { V1Profile } from "./ipc/v1-state-protocol.js";
@@ -152,6 +153,13 @@ export function installOnboardingValidation() {
   Object.defineProperty(window, "koedDesktop", {
     configurable: true,
     value: {
+      localAiClients: memoryModelFixture(() =>
+        clients
+          .filter(
+            (c) => status.aiClients?.[c.id]?.authentication === "authenticated"
+          )
+          .map((c) => c.id)
+      ),
       v1State: {
         readProfile: async () => structuredClone(profile),
         writeProfile: async (next: V1Profile) => {

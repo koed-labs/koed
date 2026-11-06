@@ -107,11 +107,9 @@ function Validation() {
       projects={[]}
       route={{ kind: "home" }}
       scopeKey="v1-presentation-validation"
-      profileName="Local user"
       onSelect={() => {}}
       onHome={() => setOnboarding(false)}
       onSettings={() => {}}
-      onProfile={() => {}}
       onBack={() => {}}
       onForward={() => {}}
       canGoBack={false}

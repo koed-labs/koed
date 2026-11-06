@@ -77,6 +77,11 @@ unrelated Codex settings. Koed Desktop mandatory setup runs core setup only.
 `pnpm clients:bootstrap` remains an explicit Codex-focused Local Operator
 Script for manual recovery.
 
+Codex can reorder its TOML settings and leave only Koed’s closing marker.
+During setup, Koed restores its marked section when it recognizes all of its
+generated MCP Server tables and Capture Hooks for this Koed home. If those
+entries contain custom edits, setup reports the marker error for manual review.
+
 Koed first uses a non-empty `MEMORY_CODEX_APP_SERVER_BINARY` override, then
 searches the inherited `PATH`. On macOS it also searches `~/.local/bin`,
 `/opt/homebrew/bin`, and `/usr/local/bin`, in that order. This supports packaged

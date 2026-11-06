@@ -238,6 +238,55 @@ test("Codex setup reconciles older owned configuration into task collection", as
   });
 });
 
+test("setup restores a reordered Koed profile and preserves other Codex settings", async () => {
+  await withCodexFixture(async ({ config, instructions, dist, invoke }) => {
+    await invoke();
+    const generated = readFileSync(config, "utf8").trim();
+    const originalInstructions = readFileSync(instructions, "utf8");
+    const old = generated.replaceAll(
+      dist,
+      "/old checkout/packages/mcp-server/dist"
+    );
+    const hooks = old.slice(old.indexOf("[[hooks."));
+    const tables = old
+      .slice("# >>> koed\n".length, old.indexOf("[[hooks."))
+      .trimEnd()
+      .replace("\nenabled = true", "")
+      .split("\n\n")
+      .sort();
+    const userServer = '[mcp_servers.personal]\ncommand = "my-server"';
+    const userHook =
+      '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "my-hook"';
+    const rewritten =
+      [tables[0], userServer, ...tables.slice(1), userHook, hooks].join(
+        "\n\n"
+      ) + "\n";
+    writeFileSync(config, rewritten);
+    await invoke();
+    const repaired = readFileSync(config, "utf8");
+    assert.equal(
+      repaired,
+      [userServer, userHook, generated].join("\n\n") + "\n"
+    );
+    await invoke(["--check"]);
+    await invoke();
+    assert.equal(readFileSync(config, "utf8"), repaired);
+    assert.equal(readFileSync(instructions, "utf8"), originalInstructions);
+
+    for (const ambiguous of [
+      rewritten.replace("timeout = 30", "timeout = 90"),
+      rewritten.replace(
+        "[mcp_servers.koed.env]",
+        '[mcp_servers.koed.env]\nUSER_KEY = "keep"'
+      )
+    ]) {
+      writeFileSync(config, ambiguous);
+      await assert.rejects(invoke(), /duplicated or incomplete/);
+      assert.equal(readFileSync(config, "utf8"), ambiguous);
+    }
+  });
+});
+
 test("Codex owned-block validation fails before configuration mutation", async () => {
   await withCodexFixture(async ({ config, instructions, invoke }) => {
     writeFileSync(

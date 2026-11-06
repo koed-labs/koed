@@ -37,20 +37,14 @@ describe("Desktop menu-bar status", () => {
   });
 
   it("selects platform-appropriate tray assets", () => {
-    expect(menuBarIconFilename("darwin")).toBe("koed-trayTemplate.png");
-    expect(menuBarIconFilename("linux")).toBe("koed-tray-linux.png");
-    expect(menuBarIconFilename("win32")).toBe("koed-tray-linux.png");
-  });
-
-  it("ships an RGBA Linux tray asset", () => {
-    const png = readFileSync(
-      resolve(import.meta.dirname, "../../assets/koed-tray-linux.png")
-    );
-
-    expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
-    expect(png.readUInt32BE(16)).toBe(24);
-    expect(png.readUInt32BE(20)).toBe(24);
-    expect(png[25]).toBe(6);
+    for (const dark of [true, false]) {
+      expect(menuBarIconFilename("darwin", dark)).toBe("koed-trayTemplate.png");
+      for (const platform of ["linux", "win32"] as const) {
+        expect(menuBarIconFilename(platform, dark)).toBe(
+          dark ? "logo-dark-mode.png" : "logo-light-mode.png"
+        );
+      }
+    }
   });
 
   it("includes all tray assets in packaged Desktop builds", () => {
@@ -61,8 +55,8 @@ describe("Desktop menu-bar status", () => {
 
     expect(builderConfig).toContain("assets/koed-trayTemplate.png");
     expect(builderConfig).toContain("assets/koed-trayTemplate@2x.png");
-    expect(builderConfig).toContain("assets/koed-tray-linux.png");
-    expect(builderConfig).toContain("assets/koed-tray-linux@2x.png");
+    expect(builderConfig).toContain("assets/logo-light-mode.png");
+    expect(builderConfig).toContain("assets/logo-dark-mode.png");
   });
 
   it("summarizes the six operational service checks", () => {

@@ -1,3 +1,4 @@
+import type { MemoryModelFlowKey } from "@koed/shared/ai-client-flow-defaults";
 import type {
   PersonalSelectionConsumerRepository,
   PersonalInventorySelectionRepository
@@ -1738,6 +1739,17 @@ export interface DesktopAskThreadPage {
   threads: DesktopAskThreadShellRecord[];
 }
 
+export interface SetMemoryModelInput {
+  provider: string;
+  aiClientInstanceId: string;
+  model: string;
+  reasoningEffort: string;
+  limits: Record<
+    MemoryModelFlowKey,
+    { timeout_ms: number; max_attempts: number }
+  >;
+}
+
 export interface LocalMemoryAgentSettingRecord {
   ownerUserId: string;
   flowKey: LocalMemoryAgentSettingsFlowKey;
@@ -2527,6 +2539,10 @@ export interface MemorySourceRepository
   listCurrentAiClientCapabilitySnapshots(
     actor: ActorContext
   ): Promise<AiClientCapabilitySnapshotRecord[]>;
+  setMemoryModel(
+    actor: ActorContext,
+    input: SetMemoryModelInput
+  ): Promise<void>;
   upsertLocalMemoryAgentSetting(
     actor: ActorContext,
     input: {

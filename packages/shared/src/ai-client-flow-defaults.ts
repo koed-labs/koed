@@ -1,11 +1,15 @@
 import type { SupportedAiClientDriverId } from "./ai-client-contract.js";
 
-export const localAiClientFlowKeys = [
-  "conversations",
+export const memoryModelFlowKeys = [
   "mcp_memory_answer",
   "lcm_summary",
   "session_title",
   "curated_memory_review"
+] as const;
+export type MemoryModelFlowKey = (typeof memoryModelFlowKeys)[number];
+export const localAiClientFlowKeys = [
+  "conversations",
+  ...memoryModelFlowKeys
 ] as const;
 export type LocalAiClientFlowKey = (typeof localAiClientFlowKeys)[number];
 
@@ -23,6 +27,10 @@ export interface LocalAiClientDefault {
   available: boolean;
   persistable?: boolean;
   assignment: LocalAiClientRuntimeAssignment | null;
+  executionLimits?: Pick<
+    LocalAiClientRuntimeAssignment,
+    "timeout_ms" | "max_attempts"
+  >;
   reason: string | null;
 }
 
@@ -110,12 +118,14 @@ const isProvider = (value: string): value is SupportedAiClientDriverId =>
 
 const unavailable = (
   source: "environment" | "code",
-  reason: string
+  reason: string,
+  executionLimits: NonNullable<LocalAiClientDefault["executionLimits"]>
 ): LocalAiClientDefault => ({
   source,
   available: false,
   persistable: false,
   assignment: null,
+  executionLimits,
   reason
 });
 
@@ -141,15 +151,29 @@ export const environmentDefaultFor = (
     timeoutSuffix,
     "MAX_ATTEMPTS"
   ].some((suffix) => value(suffix) !== undefined);
+  // Timeouts and retries still apply when the provider or model cannot be resolved.
+  const fallback = base ?? codeDefaultAssignmentFor(flowKey);
+  const executionLimits = {
+    timeout_ms: spec.parseTimeout(value(timeoutSuffix), fallback.timeout_ms),
+    max_attempts: spec.parseAttempts(
+      value("MAX_ATTEMPTS"),
+      fallback.max_attempts
+    )
+  };
   if (!base) {
     return unavailable(
       hasEnvironmentValue ? "environment" : "code",
-      "No documented default is available."
+      "No documented default is available.",
+      executionLimits
     );
   }
   const provider = value("PROVIDER")?.toLowerCase() ?? base.provider;
   if (!isProvider(provider)) {
-    return unavailable("environment", "Environment provider is unsupported.");
+    return unavailable(
+      "environment",
+      "Environment provider is unsupported.",
+      executionLimits
+    );
   }
   const model =
     value("MODEL") ??
@@ -157,7 +181,8 @@ export const environmentDefaultFor = (
   if (!model) {
     return unavailable(
       "environment",
-      "Selected provider requires explicit model."
+      "Selected provider requires explicit model.",
+      executionLimits
     );
   }
   const assignment: LocalAiClientRuntimeAssignment = {
@@ -170,8 +195,7 @@ export const environmentDefaultFor = (
       (provider === "claude" && model === "haiku"
         ? "none"
         : base.reasoning_effort),
-    timeout_ms: spec.parseTimeout(value(timeoutSuffix), base.timeout_ms),
-    max_attempts: spec.parseAttempts(value("MAX_ATTEMPTS"), base.max_attempts)
+    ...executionLimits
   };
   return {
     ...documentDefault(assignment),

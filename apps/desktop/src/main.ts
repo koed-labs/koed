@@ -113,11 +113,7 @@ const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   desktopManagedLocal: true,
   packagedDesktop: app.isPackaged
 });
-const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
-const menuBarIconFile = menuBarIconFilename(process.platform);
-const menuBarIconPath = menuBarIconFile
-  ? resolve(appDir, "../assets", menuBarIconFile)
-  : null;
+const desktopIconPath = resolve(appDir, "../assets/koed-icon.png");
 const devServerUrl = resolveDevServerUrl({
   appIsPackaged: app.isPackaged,
   devServerUrl: process.env.VITE_DEV_SERVER_URL
@@ -298,11 +294,18 @@ const getAppDistDir = (): string =>
     ? resolve(process.resourcesPath, "app-dist")
     : resolve(repoRoot, "apps/desktop/dist");
 
-const getDesktopIcon = () => {
-  if (!existsSync(desktopIconPath)) {
-    return undefined;
-  }
-  return nativeImage.createFromPath(desktopIconPath);
+const getMenuBarIcon = () => {
+  const file = menuBarIconFilename(
+    process.platform,
+    nativeTheme.shouldUseDarkColors
+  );
+  if (!file) return null;
+  const icon = nativeImage.createFromPath(resolve(appDir, "../assets", file));
+  if (icon.isEmpty()) return null;
+  if (process.platform !== "darwin")
+    return icon.resize({ width: 24, height: 24 });
+  icon.setTemplateImage(true);
+  return icon;
 };
 
 const registerAppProtocol = (): void => {
@@ -332,7 +335,7 @@ const createWindow = async () => {
   const window = new BrowserWindow(
     createMainWindowOptions(
       appDir,
-      existsSync(desktopIconPath) ? desktopIconPath : undefined,
+      desktopIconPath,
       desktopThemeChromeColor(nativeTheme.shouldUseDarkColors)
     )
   );
@@ -459,9 +462,8 @@ const bootstrap = async () => {
     personalDevicePairingStore
   );
   const server = koedServer;
-  const desktopIcon = getDesktopIcon();
-  if (desktopIcon && process.platform === "darwin") {
-    app.dock?.setIcon(desktopIcon);
+  if (process.platform === "darwin" && !app.isPackaged) {
+    app.dock?.setIcon(desktopIconPath);
   }
   registerAppProtocol();
   const privacyInstallBridge = server.privacyInstall;
@@ -637,13 +639,21 @@ const bootstrap = async () => {
     desktopMenuBar?.dispose();
     desktopMenuBar = null;
     if (!presentationPreferences.showMenuBar) return;
-    if (menuBarIconPath && existsSync(menuBarIconPath)) {
-      const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);
-      if (process.platform === "darwin") menuBarIcon.setTemplateImage(true);
+    const menuBarIcon = getMenuBarIcon();
+    if (menuBarIcon) {
       const tray = new Tray(menuBarIcon);
+      const updateTrayIcon = () => {
+        const icon = getMenuBarIcon();
+        if (icon) tray.setImage(icon);
+      };
+      if (process.platform !== "darwin")
+        nativeTheme.on("updated", updateTrayIcon);
       desktopMenuBar = createDesktopMenuBar<Menu>({
         tray: {
-          destroy: () => tray.destroy(),
+          destroy: () => {
+            nativeTheme.off("updated", updateTrayIcon);
+            tray.destroy();
+          },
           onClick: (listener) => {
             tray.on("click", listener);
           },

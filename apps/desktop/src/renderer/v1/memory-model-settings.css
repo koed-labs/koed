@@ -1,0 +1,36 @@
+.memory-model-settings {
+  display: grid;
+  gap: 9px;
+}
+.memory-model-settings h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.memory-model-settings p {
+  margin: 0;
+  color: var(--v1-muted);
+  font-size: 13px;
+}
+.memory-model-settings p[role="alert"] {
+  color: var(--destructive);
+}
+.memory-model-row,
+.memory-model-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 14px;
+}
+.memory-model-row {
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.memory-model-row [data-slot="select-trigger"] {
+  width: min(60%, 220px);
+  min-width: 0;
+}
+.memory-model-footer {
+  justify-content: flex-end;
+}

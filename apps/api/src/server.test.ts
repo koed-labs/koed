@@ -1,3 +1,4 @@
+import { memoryModelFlowKeys } from "@koed/shared/ai-client-flow-defaults";
 import { personalSelectionConsumerStartSchema } from "@koed/shared";
 import type {
   PersonalProjectRule,
@@ -815,6 +816,26 @@ const createFakeRepository = () => {
     string,
     LocalMemoryAgentSettingRecord
   >();
+  const upsertLocalMemoryAgentSetting: MemorySourceRepository["upsertLocalMemoryAgentSetting"] =
+    async (actor, input) => {
+      const key = `${actor.userId}:${input.flowKey}`;
+      const existing = localMemoryAgentSettings.get(key);
+      const now = new Date().toISOString();
+      const record: LocalMemoryAgentSettingRecord = {
+        ownerUserId: actor.userId,
+        flowKey: input.flowKey,
+        provider: input.provider,
+        aiClientInstanceId: input.aiClientInstanceId,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        timeoutMs: input.timeoutMs,
+        maxAttempts: input.maxAttempts,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      };
+      localMemoryAgentSettings.set(key, record);
+      return record;
+    };
   const aiClientInstances = new Map<string, AiClientInstanceRecord>();
   const aiClientCapabilitySnapshots = new Map<
     string,
@@ -4325,25 +4346,21 @@ const createFakeRepository = () => {
         .filter((setting) => setting.ownerUserId === actor.userId)
         .sort((left, right) => left.flowKey.localeCompare(right.flowKey));
     },
-    async upsertLocalMemoryAgentSetting(actor, input) {
-      const key = `${actor.userId}:${input.flowKey}`;
-      const existing = localMemoryAgentSettings.get(key);
-      const now = new Date().toISOString();
-      const record: LocalMemoryAgentSettingRecord = {
-        ownerUserId: actor.userId,
-        flowKey: input.flowKey,
-        provider: input.provider,
-        aiClientInstanceId: input.aiClientInstanceId,
-        model: input.model,
-        reasoningEffort: input.reasoningEffort,
-        timeoutMs: input.timeoutMs,
-        maxAttempts: input.maxAttempts,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now
-      };
-      localMemoryAgentSettings.set(key, record);
-      return record;
+    async setMemoryModel(actor, input) {
+      const { limits, ...selection } = input;
+      for (const flowKey of memoryModelFlowKeys) {
+        const existing = localMemoryAgentSettings.get(
+          `${actor.userId}:${flowKey}`
+        );
+        await upsertLocalMemoryAgentSetting(actor, {
+          ...selection,
+          flowKey,
+          timeoutMs: existing?.timeoutMs ?? limits[flowKey].timeout_ms,
+          maxAttempts: existing?.maxAttempts ?? limits[flowKey].max_attempts
+        });
+      }
     },
+    upsertLocalMemoryAgentSetting,
     async deleteLocalMemoryAgentSetting(actor, flowKey) {
       return localMemoryAgentSettings.delete(`${actor.userId}:${flowKey}`);
     },
@@ -18025,6 +18042,57 @@ describe("account and access flows", () => {
         authorization: `Bearer ${jsonBody<TokenResponse>(secondToken).token}`
       }
     });
+    const readSettings = async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/memory/local-agent-settings",
+        headers
+      });
+      expect(response.statusCode).toBe(200);
+      return jsonBody<{ settings: LocalMemoryAgentSettingRecord[] }>(response)
+        .settings;
+    };
+    const previous = await readSettings();
+    const memoryInput = {
+      provider: "codex",
+      ai_client_instance_id: "codex.default",
+      model: "gpt-5.4",
+      reasoning_effort: "high",
+      limits: Object.fromEntries(
+        memoryModelFlowKeys.map((key) => [
+          key,
+          { timeout_ms: 45000, max_attempts: 1 }
+        ])
+      )
+    };
+    const invalid = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/local-agent-settings/memory-model",
+      headers,
+      payload: { ...memoryInput, model: "unknown" }
+    });
+    expect(invalid.statusCode).toBe(409);
+    expect(await readSettings()).toEqual(previous);
+    const shared = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/local-agent-settings/memory-model",
+      headers,
+      payload: memoryInput
+    });
+    expect(shared.statusCode, shared.body).toBe(200);
+    const after = await readSettings();
+    expect(after.map((s) => s.flowKey).sort()).toEqual(
+      [...memoryModelFlowKeys].sort()
+    );
+    for (const row of after) {
+      const original = previous.find((s) => s.flowKey === row.flowKey);
+      expect(row).toMatchObject({
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        timeoutMs: original?.timeoutMs ?? 45000,
+        maxAttempts: original?.maxAttempts ?? 1
+      });
+    }
     await app.close();
 
     expect(instance.statusCode, instance.body).toBe(200);

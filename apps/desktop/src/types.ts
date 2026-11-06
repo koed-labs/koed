@@ -12,6 +12,7 @@ import type { DesktopThemePreference } from "./window/theme-preference.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { V1StateDesktopApi } from "./ipc/v1-state-protocol.js";
 import type {
+  MemoryModelInput,
   LocalAiClientFlowKey,
   LocalAiClientResponse
 } from "./ipc/local-ai-client-protocol.js";
@@ -190,6 +191,9 @@ export interface DesktopApi {
         timeout_ms: number;
         max_attempts: number;
       }
+    ) => Promise<LocalAiClientResponse>;
+    setMemoryModel?: (
+      input: MemoryModelInput
     ) => Promise<LocalAiClientResponse>;
     reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
   };

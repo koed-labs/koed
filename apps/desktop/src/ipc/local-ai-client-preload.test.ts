@@ -87,7 +87,8 @@ describe("Local AI Client preload bridge", () => {
       "list",
       "refresh",
       "reset",
-      "set"
+      "set",
+      "setMemoryModel"
     ]);
     expect(Object.isFrozen(api)).toBe(true);
   });

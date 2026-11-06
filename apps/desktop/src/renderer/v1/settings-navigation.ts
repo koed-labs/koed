@@ -1,16 +1,16 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { V1SettingsTab } from "./settings.js";
+import { details, type Detail, type Section } from "./settings-controls.js";
 
-export type V1SettingsPage = "privacy" | "cli" | "health" | "embedding";
-export const settingsPageParent = (page: V1SettingsPage): V1SettingsTab =>
-  page === "privacy" || page === "cli" ? "general" : "services";
+export type V1SettingsPage = Detail;
+export const settingsPageParent = (page: V1SettingsPage): Section =>
+  details[page].parent;
 
-const currentSettingsTab = (tab: V1SettingsTab | "agent"): V1SettingsTab =>
+const currentSettingsTab = (tab: Section | "agent"): Section =>
   tab === "agent" ? "general" : tab;
 
 // History belongs to this settings instance; unrelated application entries are preserved.
 export function useSettingsNavigation(
-  initialTab: V1SettingsTab | "agent",
+  initialTab: Section | "agent",
   initialPage?: V1SettingsPage
 ) {
   const owner = useId();
@@ -53,7 +53,9 @@ export function useSettingsNavigation(
     if (!body) return;
     body.scrollTop = page ? 0 : origin.current.scroll;
     const target = page
-      ? body.querySelector<HTMLButtonElement>(".v1-settings-back")
+      ? body.querySelector<HTMLButtonElement>(
+          '.page-heading [aria-label^="Back to "]'
+        )
       : body.querySelector<HTMLButtonElement>(
           `[data-settings-page="${origin.current.page}"]`
         );
@@ -75,7 +77,7 @@ export function useSettingsNavigation(
     if (history.state?.koedSettings?.owner === owner) history.back();
     else updatePage(null);
   };
-  const setTab = (next: V1SettingsTab) => {
+  const setTab = (next: Section) => {
     if (history.state?.koedSettings?.owner === owner)
       history.replaceState(historyBase.current, "");
     origin.current = { page: null, scroll: 0 };

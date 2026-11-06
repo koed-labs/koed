@@ -1,0 +1,145 @@
+.lp-client-workspace {
+  --lp-client-row-height: 75.5px;
+}
+.lp-client-panel .lp-client-intro {
+  min-height: 3.2em;
+}
+.lp-client-card.lp-memory-field {
+  display: grid;
+  grid-template-columns: 26px max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: var(--lp-client-row-height);
+  cursor: default;
+}
+.lp-memory-icon {
+  justify-self: center;
+  width: 23px;
+  height: 23px;
+  stroke-width: 1.6;
+}
+.lp-memory-label {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.lp-memory-select[data-slot="select-trigger"] {
+  justify-self: end;
+  width: min(100%, 195px);
+  min-width: 0;
+  height: 34px;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--lp-border-selected);
+  border-radius: 9px;
+  background: var(--lp-background);
+  color: var(--lp-text);
+  box-shadow: none;
+  font: 500 12px var(--lp-font);
+  cursor: pointer;
+}
+.lp-memory-select::before {
+  display: none;
+}
+.lp-memory-select:hover:not(:disabled),
+.lp-memory-select[aria-expanded="true"] {
+  border-color: var(--lp-border-hover);
+}
+.lp-memory-select [data-slot="select-value"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lp-memory-select [data-placeholder] {
+  color: var(--lp-muted);
+  font-weight: 400;
+}
+.lp-memory-select [data-slot="select-icon"] {
+  display: flex;
+  flex: none;
+  color: var(--lp-secondary);
+}
+.lp-memory-select [data-slot="select-icon"] svg {
+  width: 15px;
+  height: 15px;
+  opacity: 1;
+}
+.lp-memory-select[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.lp-memory-field[data-disabled] {
+  opacity: 0.48;
+}
+.lp-memory-field .lp-memory-select:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.lp-memory-empty {
+  min-height: calc(3 * var(--lp-client-row-height) + 20px);
+}
+/* The popup portal must not add a row to the centered onboarding grid. */
+.lp-client-workspace > [data-base-ui-portal] {
+  display: contents;
+}
+.lp-client-workspace [data-slot="select-positioner"] {
+  z-index: 5;
+}
+.lp-memory-menu {
+  width: var(--anchor-width);
+  min-width: min(168px, var(--available-width));
+  max-width: var(--available-width);
+  padding: 4px;
+  background: var(--lp-card);
+  color: var(--lp-text);
+  border: 1px solid var(--lp-border-selected);
+  border-radius: 11px;
+  box-shadow: 0 6px 20px light-dark(#2020301f, #0005);
+  font: 400 12px var(--lp-font);
+}
+.lp-memory-menu [role="listbox"] {
+  overflow-y: auto;
+  max-height: min(260px, calc(var(--available-height) - 10px));
+  padding: 0;
+  outline: none;
+}
+.lp-memory-menu [data-slot="select-item"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  font: inherit;
+  cursor: pointer;
+  outline: none;
+}
+.lp-memory-menu [data-slot="select-item-text"] {
+  grid-area: 1 / 1;
+  overflow-wrap: anywhere;
+}
+.lp-memory-menu [data-slot="select-item-indicator"] {
+  grid-area: 1 / 2;
+  display: flex;
+  color: var(--lp-accent);
+}
+.lp-memory-menu [data-slot="select-item-indicator"] svg {
+  width: 14px;
+  height: 14px;
+}
+.lp-memory-menu [data-selected] {
+  font-weight: 600;
+}
+.lp-memory-menu [data-highlighted] {
+  background: var(--lp-button);
+  color: var(--lp-text);
+}
+@media (min-width: 701px) and (max-width: 900px) {
+  .lp-client-workspace {
+    --lp-client-row-height: 71.5px;
+  }
+}

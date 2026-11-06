@@ -1,5 +1,6 @@
 appId: ai.koed.desktop
 productName: Koed
+icon: assets/icon.icns
 copyright: Copyright © 2026 Koed
 
 asar: true
@@ -8,10 +9,11 @@ afterPack: scripts/after-pack.mjs
 
 files:
   - dist-electron/**/*
+  - assets/koed-icon.png
+  - assets/logo-light-mode.png
+  - assets/logo-dark-mode.png
   - assets/koed-trayTemplate.png
   - assets/koed-trayTemplate@2x.png
-  - assets/koed-tray-linux.png
-  - assets/koed-tray-linux@2x.png
   - package.json
   - "node_modules/@koed-labs/server/package.json"
   - "node_modules/@koed-labs/server/dist/**/*"
@@ -45,7 +47,6 @@ directories:
 
 mac:
   artifactName: "Koed-${version}-${arch}.${ext}"
-  icon: assets/icon.icns
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.inherit.plist

@@ -481,6 +481,9 @@
   }
 }
 @media (max-width: 700px) {
+  .lp-client-workspace {
+    padding-bottom: 65px;
+  }
   .lp-client-screen {
     display: flex;
     gap: 0;
