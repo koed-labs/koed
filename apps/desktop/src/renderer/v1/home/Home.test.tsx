@@ -739,6 +739,102 @@ describe("Home", () => {
     });
   });
 
+  it("repairs an AI Client from the Repair link under its keycap", async () => {
+    const statusStore = new DesktopStatusStore();
+    const run = vi.spyOn(statusStore, "run").mockResolvedValue({ ok: true });
+    vi.spyOn(statusStore, "refresh").mockResolvedValue(null);
+    await render({
+      entries: [entry("koed", "2026-11-03T11:00:00Z")],
+      clients: [
+        {
+          id: "codex",
+          name: "Codex",
+          state: "attention",
+          label:
+            "Codex Koed integration points at a different Local AI Runtime.",
+          version: null
+        }
+      ],
+      statusStore,
+      view: {
+        kind: "projects",
+        warnings: [],
+        ingestion: {
+          active: true,
+          finished: 14,
+          selected: 50,
+          clients: [
+            {
+              id: "codex",
+              name: "Codex",
+              lifecycle: "waiting",
+              selected: 50,
+              completed: 14,
+              skipped: 0,
+              lastErrorCode: null,
+              stuck: false
+            }
+          ]
+        }
+      }
+    });
+    // The keycap is the only place the problem is flagged.
+    expect(container.querySelector(".v1-home-warnings")).toBeNull();
+    const repair = container.querySelector<HTMLButtonElement>(
+      '.v1-home-keycaps small button[aria-label="Repair Codex"]'
+    )!;
+    expect(repair.textContent).toBe("Repair");
+    await act(async () => repair.click());
+    expect(run).not.toHaveBeenCalled();
+    const confirm = container.querySelector<HTMLButtonElement>(
+      '.v1-home-consent[role="dialog"] .v1-home-primary'
+    )!;
+    await act(async () => confirm.click());
+    expect(run.mock.calls).toEqual([
+      ["repair_codex", { operatorConsented: true }]
+    ]);
+  });
+
+  it("closes the warnings list on an outside click or Escape", async () => {
+    await render({
+      entries: [entry("koed", "2026-11-03T11:00:00Z")],
+      view: {
+        kind: "projects",
+        warnings: [
+          {
+            id: "capture-hook",
+            title: "Capture Hook",
+            message: "Hook is quiet.",
+            action: null
+          }
+        ]
+      }
+    });
+    const chip = container.querySelector<HTMLButtonElement>(".v1-home-chip")!;
+    const list = () => container.querySelector(".v1-home-problems");
+    expect(chip.textContent).toBe("Check Capture Hook");
+    await act(async () => chip.click());
+    expect(list()).not.toBeNull();
+    // Inside the list stays open.
+    await act(async () => {
+      list()!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(list()).not.toBeNull();
+    await act(async () => {
+      document.body.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true })
+      );
+    });
+    expect(list()).toBeNull();
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => chip.click());
+    expect(list()).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(list()).toBeNull();
+  });
+
   describe("dropping a floor coin on a Kin", () => {
     const loose = {
       key: "loose",

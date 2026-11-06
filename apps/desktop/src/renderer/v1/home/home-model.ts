@@ -138,10 +138,14 @@ export function selectHomeView(
       primary: listed.find(({ action }) => action) ?? null
     };
   }
+  // An AI Client that needs attention is flagged on its own keycap, with the
+  // Repair action there, so the warnings chip leaves it out rather than
+  // offering a second, competing repair.
+  const warnings = problems.filter(({ id }) => !id.startsWith("client-"));
   const ingestion = homeIngestion(status);
   for (const client of ingestion.clients) {
     if (!client.stuck) continue;
-    problems.push({
+    warnings.push({
       id: `ingestion-${client.id}`,
       // The chip reads "Check <title>", so the title is a noun phrase.
       title: `${client.name} history`,
@@ -157,12 +161,12 @@ export function selectHomeView(
   if (ingestion.active)
     // Hatching is only for the stretch before the first Project appears.
     return projects?.length
-      ? { kind: "projects", warnings: problems, ingestion }
-      : { kind: "ingesting", warnings: problems, ingestion };
+      ? { kind: "projects", warnings, ingestion }
+      : { kind: "ingesting", warnings, ingestion };
   if (!projects) return { kind: "loading" };
   return projects.length
-    ? { kind: "projects", warnings: problems }
-    : { kind: "empty", warnings: problems };
+    ? { kind: "projects", warnings }
+    : { kind: "empty", warnings };
 }
 
 export type HomeIngestionClient = {
