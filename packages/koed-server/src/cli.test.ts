@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   existsSync,
   mkdtempSync,
@@ -756,6 +756,39 @@ describe("JSON command output", () => {
 
     expect(exitCode).toBe(2);
     expect(stderr.text()).toContain("Unknown command");
+  });
+
+  it("preserves an empty CUDA device mask when installing the release runtime", async () => {
+    const release = await import("./runtime-release.js");
+    const install = vi
+      .spyOn(release, "installReleaseRuntime")
+      .mockRejectedValue(new Error("Stop before accessing the host runtime."));
+    vi.stubEnv("CUDA_VISIBLE_DEVICES", "");
+    try {
+      await runKoedServerCli(
+        [
+          "runtime",
+          "install",
+          "--provider",
+          "release",
+          "--dependency-mode",
+          "bundled-local",
+          "--with-cuda",
+          "--json"
+        ],
+        {
+          stdout: writer().stream,
+          resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+          loadEnvironment: () => ({ CUDA_VISIBLE_DEVICES: "0" })
+        }
+      );
+      expect(
+        install.mock.calls[0]?.[1]?.environment?.CUDA_VISIBLE_DEVICES
+      ).toBe("");
+    } finally {
+      install.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("prints packaged runtime install --json", async () => {

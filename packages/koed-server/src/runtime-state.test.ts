@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { isRuntimeGenerationState } from "./runtime-state.js";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import lockfile from "proper-lockfile";
+import { describe, expect, it, vi } from "vitest";
+import {
+  isRuntimeGenerationState,
+  removeOwnedRuntimeState,
+  writeRuntimeState
+} from "./runtime-state.js";
 
 const validState = () => ({
   schemaVersion: 1,
@@ -27,4 +35,48 @@ describe("runtime generation state", () => {
   ])("rejects malformed or unbound pin state %#", (state) => {
     expect(isRuntimeGenerationState(state)).toBe(false);
   });
+});
+
+it("locks the same runtime record for publication, final ownership check and removal", () => {
+  const home = mkdtempSync(join(tmpdir(), "koed-runtime-record-"));
+  const path = join(home, "koed-server.json");
+  const previous = {
+    pid: 41,
+    startedAt: "2026-11-05T14:00:00.000Z",
+    repoRoot: home,
+    apiUrl: "http://localhost:3300",
+    services: []
+  };
+  const next = { ...previous, pid: 42, startedAt: "2026-11-05T15:00:00.000Z" };
+  const lock = vi.spyOn(lockfile, "lockSync");
+  try {
+    writeRuntimeState(path, previous);
+    expect(lock).toHaveBeenCalledWith(
+      path,
+      expect.objectContaining({ realpath: false })
+    );
+    expect(
+      removeOwnedRuntimeState(
+        path,
+        previous,
+        (file, encoding) => {
+          expect(lockfile.checkSync(path, { realpath: false })).toBe(true);
+          return readFileSync(file, encoding);
+        },
+        (file, options) => {
+          // A concurrent start cannot publish between the final read and unlink.
+          expect(() => lockfile.lockSync(path, { realpath: false })).toThrow(
+            expect.objectContaining({ code: "ELOCKED" })
+          );
+          rmSync(file, options);
+        }
+      )
+    ).toBe(true);
+    writeRuntimeState(path, next);
+    expect(removeOwnedRuntimeState(path, previous)).toBe(false);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(next);
+  } finally {
+    lock.mockRestore();
+    rmSync(home, { recursive: true, force: true });
+  }
 });

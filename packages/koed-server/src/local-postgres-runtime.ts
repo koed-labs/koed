@@ -67,6 +67,18 @@ const trim = (value: string | undefined): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
+export const hasCompletePostgresOverride = (
+  environment: NodeJS.ProcessEnv
+): boolean =>
+  Boolean(
+    trim(environment.KOED_POSTGRES_BIN_DIR) ||
+    [
+      environment.KOED_POSTGRES_INITDB_BIN,
+      environment.KOED_POSTGRES_PG_CTL_BIN,
+      environment.KOED_POSTGRES_PSQL_BIN
+    ].every(trim)
+  );
+
 const hasAnyPostgresBinary = (
   binDir: string,
   exists: typeof existsSync = existsSync
@@ -82,7 +94,11 @@ const resolvePostgresBinDir = (
   if (override) {
     return { binDir: resolve(override), artifactSource: "explicit-override" };
   }
-  const koedRuntimeDir = resolve(paths.koedHome, "runtime", "postgres", "bin");
+  const koedRuntimeDir = resolve(
+    paths.nativeSelectionRoot ?? resolve(paths.koedHome, "runtime"),
+    "postgres",
+    "bin"
+  );
   if (hasAnyPostgresBinary(koedRuntimeDir, exists)) {
     return { binDir: koedRuntimeDir, artifactSource: "koed-home-runtime" };
   }

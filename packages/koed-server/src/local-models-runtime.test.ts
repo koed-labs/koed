@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -86,6 +92,20 @@ describe("local model runtime", () => {
     const status = await collectLocalModelStatus(paths(root), "embedding", {});
 
     expect(status.state).toBe("missing");
+    expect(status.action).toContain("koed models install --kind embedding");
+  });
+
+  it("reports a dangling model link as missing", async () => {
+    const root = tempDir();
+    const current = paths(root);
+    const { modelPath } = resolveLocalModelManifest(current, "embedding", {});
+    mkdirSync(resolve(modelPath, ".."), { recursive: true });
+    symlinkSync(resolve(root, "removed-model.gguf"), modelPath);
+
+    const status = await collectLocalModelStatus(current, "embedding", {});
+
+    expect(status.state).toBe("missing");
+    expect(status.message).toContain("points to a missing file");
     expect(status.action).toContain("koed models install --kind embedding");
   });
 

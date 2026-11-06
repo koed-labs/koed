@@ -10,13 +10,7 @@ import {
 } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   assertKoedAppRuntimeAvailable,
@@ -30,7 +24,13 @@ import {
   resolveEffectiveRuntimeConfig
 } from "./effective-runtime-config.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
-import { readCurrentRuntimeOwner } from "./generation-lifecycle.js";
+import { removeOwnedRuntimeState, writeRuntimeState } from "./runtime-state.js";
+import { hasReleaseRuntime } from "./runtime-artifact-source.js";
+import {
+  readCurrentRuntimeOwner,
+  withLifecycleLock,
+  withSourceNativeStartLock
+} from "./generation-lifecycle.js";
 import {
   resolveDesktopRuntimeOwner,
   validateDesktopRuntimeCapability,
@@ -51,11 +51,15 @@ import {
   loadRepoEnv,
   resolveApiUrl
 } from "./env-file.js";
-import { startLocalEmbeddingRuntime } from "./local-embedding-runtime.js";
+import {
+  nativeLlamaServerOverride,
+  startLocalEmbeddingRuntime
+} from "./local-embedding-runtime.js";
 import { startLocalPrivacyRuntime } from "./local-privacy-runtime.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
 import { ensurePackagedLocalServiceSecrets } from "./local-service-secrets.js";
 import {
+  hasCompletePostgresOverride,
   startLocalPostgresRuntime,
   stopLocalPostgresRuntime
 } from "./local-postgres-runtime.js";
@@ -73,7 +77,8 @@ import {
 } from "./status.js";
 import {
   acquireKoedServerSupervisorLock,
-  releaseKoedServerSupervisorLock
+  releaseKoedServerSupervisorLock,
+  resolveProcessIdentity
 } from "./supervisor-lock.js";
 
 import { maintainSupervisorLog } from "./supervisor-log.js";
@@ -716,17 +721,76 @@ const waitForChildExit = (
     child.once("exit", onExit);
   });
 
+// A process group outlives its leader while any member is alive, and Linux does not
+// reuse a PID that still names a live group. Probing the group immediately before
+// each signal therefore reaches only descendants of the child Koed spawned.
+const processGroupAlive = (pid: number): boolean => {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
+  }
+};
+
+const signalProcessGroup = (pid: number, value: NodeJS.Signals): void => {
+  if (!processGroupAlive(pid)) return;
+  try {
+    process.kill(-pid, value);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+};
+
+const waitForProcessGroupExit = async (
+  pid: number,
+  timeoutMs: number
+): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (processGroupAlive(pid)) {
+    if (Date.now() >= deadline) return false;
+    await delay(Math.min(50, Math.max(1, deadline - Date.now())));
+  }
+  return true;
+};
+
 export const stopChildProcess = async (
   child: ChildProcess | undefined,
   timeoutMs = 5_000,
-  label = "managed child"
+  label = "managed child",
+  privateGroup = false
 ): Promise<void> => {
-  if (!child?.pid || child.exitCode != null || child.signalCode != null) return;
-  child.kill("SIGTERM");
-  if (await waitForChildExit(child, timeoutMs)) return;
-  child.kill("SIGKILL");
-  if (!(await waitForChildExit(child, timeoutMs))) {
-    throw new Error(`Timed out stopping ${label} process ${child.pid}.`);
+  if (!child?.pid) return;
+  const pid = child.pid;
+  const exited = () => child.exitCode != null || child.signalCode != null;
+  if (!privateGroup) {
+    if (exited()) return;
+    child.kill("SIGTERM");
+    if (await waitForChildExit(child, timeoutMs)) return;
+    child.kill("SIGKILL");
+    if (!(await waitForChildExit(child, timeoutMs)))
+      throw new Error(`Timed out stopping ${label} process ${child.pid}.`);
+    return;
+  }
+  // The group leader can exit on SIGTERM while llama-server descendants are still
+  // shutting down, or after it already exited on its own. Drain the whole group.
+  const deadline = Date.now() + timeoutMs;
+  signalProcessGroup(pid, "SIGTERM");
+  await waitForChildExit(child, timeoutMs);
+  if (
+    exited() &&
+    (await waitForProcessGroupExit(pid, Math.max(0, deadline - Date.now())))
+  )
+    return;
+  signalProcessGroup(pid, "SIGKILL");
+  if (
+    !(await waitForChildExit(child, timeoutMs)) ||
+    !(await waitForProcessGroupExit(pid, timeoutMs))
+  ) {
+    throw new Error(`Timed out stopping ${label} process group ${pid}.`);
   }
 };
 
@@ -898,7 +962,9 @@ export const startKoedServer = async ({
   assertObservedOwner(observeRuntimeLifecycle(paths));
 
   ensureKoedHome(paths);
-  const supervisorLock = acquireKoedServerSupervisorLock(paths);
+  const supervisorLock = acquireKoedServerSupervisorLock(paths, {
+    exclusive: (action) => withLifecycleLock(paths, action)
+  });
   if (!supervisorLock.acquired) {
     assertObservedOwner(observeRuntimeLifecycle(paths));
     console.log(
@@ -1122,20 +1188,6 @@ export const startKoedServer = async ({
     let runtimeStateWritten = false;
     let stopSupervisorExitMonitor: () => void = () => undefined;
     let stopCapabilityMaintenance: () => void = () => undefined;
-    const runtimeStateOwnedByCurrentProcess = (): boolean => {
-      try {
-        const runtime = JSON.parse(
-          readFileSync(paths.runtimeStatePath, "utf8")
-        ) as Partial<KoedServerRuntimeState>;
-        return (
-          runtime.pid === process.pid &&
-          runtime.startedAt === supervisorStartedAt
-        );
-      } catch {
-        return false;
-      }
-    };
-
     let deviceRequestService:
       | Awaited<ReturnType<typeof startDeviceRequestService>>
       | undefined;
@@ -1162,7 +1214,12 @@ export const startKoedServer = async ({
         ];
         for (const name of shutdownOrder) {
           try {
-            await stopChildProcess(managedChildren[name], 5_000, name);
+            await stopChildProcess(
+              managedChildren[name],
+              5_000,
+              name,
+              name === "embeddingService" && Boolean(paths.nativeSelectionRoot)
+            );
           } catch (error) {
             cleanupErrors.push(
               error instanceof Error ? error.message : String(error)
@@ -1177,7 +1234,8 @@ export const startKoedServer = async ({
             await stopChildProcess(
               nativeEmbeddingProcess,
               5_000,
-              "embeddingService"
+              "embeddingService",
+              Boolean(paths.nativeSelectionRoot)
             );
           } catch (error) {
             cleanupErrors.push(
@@ -1281,6 +1339,27 @@ export const startKoedServer = async ({
           requiredRuntime
         );
         assertKoedAppRuntimeAvailable(appRuntime, paths);
+      }
+      if (
+        useBundledLocalDependencies &&
+        hasReleaseRuntime(paths) &&
+        !(
+          hasCompletePostgresOverride(refreshedEnv) &&
+          nativeLlamaServerOverride(refreshedEnv)
+        )
+      ) {
+        const { resolveSelectedCoreForStart } =
+          await import("./runtime-release.js");
+        const admitSelection = () =>
+          resolveSelectedCoreForStart(
+            paths,
+            refreshedEnv,
+            !nativeLlamaServerOverride(refreshedEnv)
+          );
+        const selected = generationPin
+          ? admitSelection()
+          : withSourceNativeStartLock(paths, admitSelection);
+        if (selected) paths.nativeSelectionRoot = selected;
       }
       if (appRuntime.kind === "source") {
         runCommand(
@@ -1416,6 +1495,10 @@ export const startKoedServer = async ({
       manageChild("api", api);
       emitStartupMilestone("api_process_spawned");
 
+      const embeddingIdentity =
+        paths.nativeSelectionRoot && nativeEmbeddingProcess?.pid
+          ? resolveProcessIdentity(nativeEmbeddingProcess.pid)
+          : null;
       const runtime: KoedServerRuntimeState = {
         pid: process.pid,
         startedAt: supervisorStartedAt,
@@ -1428,6 +1511,11 @@ export const startKoedServer = async ({
         claudeTranscriptWatcherEnabled: config.claudeTranscriptWatcherEnabled,
         piTranscriptWatcherEnabled: config.piTranscriptWatcherEnabled,
         services: [...runtimeServices, "api"],
+        // The release-managed Embedding Service leads a private process group.
+        // koed stop signals that group only while its leader keeps this identity.
+        ...(embeddingIdentity
+          ? { processIdentities: { embeddingService: embeddingIdentity } }
+          : {}),
         processes: {
           ...(nativeEmbeddingProcess
             ? { embeddingService: nativeEmbeddingProcess.pid ?? 0 }
@@ -1439,13 +1527,7 @@ export const startKoedServer = async ({
         }
       };
       const persistRuntime = (): void => {
-        writeFileSync(
-          paths.runtimeStatePath,
-          `${JSON.stringify(runtime, null, 2)}\n`,
-          {
-            mode: 0o600
-          }
-        );
+        writeRuntimeState(paths.runtimeStatePath, runtime);
         runtimeStateWritten = true;
       };
       persistRuntime();
@@ -1651,9 +1733,6 @@ export const startKoedServer = async ({
       if (!startupReady) emitStartupMilestone("startup_failed");
       try {
         await cleanupStartedResources();
-        if (runtimeStateOwnedByCurrentProcess()) {
-          rmSync(paths.runtimeStatePath, { force: true });
-        }
       } catch (cleanupError) {
         throw new Error(
           `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
@@ -1669,8 +1748,18 @@ export const startKoedServer = async ({
       process.off("SIGTERM", shutdown);
       signal?.removeEventListener("abort", shutdown);
       managedProcessMonitor.dispose();
-      if (runtimeStateWritten && runtimeStateOwnedByCurrentProcess()) {
-        rmSync(paths.runtimeStatePath, { force: true });
+      if (runtimeStateWritten) {
+        try {
+          removeOwnedRuntimeState(paths.runtimeStatePath, {
+            pid: process.pid,
+            startedAt: supervisorStartedAt
+          });
+        } catch (error) {
+          // Release the supervisor's other resources even if this record needs cleanup.
+          console.warn(
+            `Could not clear runtime state: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
       if (sourceRuntimeLeaseAcquired) {
         try {

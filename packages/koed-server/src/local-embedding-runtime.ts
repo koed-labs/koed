@@ -57,7 +57,7 @@ const trim = (value: string | undefined): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
-const nativeLlamaServerOverride = (
+export const nativeLlamaServerOverride = (
   environment: NodeJS.ProcessEnv
 ): string | undefined => {
   const koedOverride = trim(environment.KOED_EMBEDDING_LLAMA_SERVER_BIN);
@@ -164,8 +164,7 @@ export const resolveLocalEmbeddingRuntimePaths = (
     trim(environment.EMBEDDING_SERVICE_HOST_PORT) ??
     "3800";
   const koedRuntimeLlamaServer = resolve(
-    paths.koedHome,
-    "runtime",
+    paths.nativeSelectionRoot ?? resolve(paths.koedHome, "runtime"),
     "llama.cpp",
     "llama-server"
   );
@@ -392,6 +391,8 @@ export const startLocalEmbeddingRuntime = (
   }
   const child = spawn(process.execPath, [runtime.serviceEntry], {
     cwd: runtime.appDir,
+    // The release supervisor can stop its owned llama-server descendants together.
+    ...(paths.nativeSelectionRoot ? { detached: true } : {}),
     env,
     stdio: "inherit"
   });

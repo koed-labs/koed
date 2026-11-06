@@ -81,7 +81,8 @@ import {
   cleanupGenerations,
   readCurrentGeneration,
   readCurrentDesktopGenerationOrderingEvidence,
-  readCurrentRuntimeOwner
+  readCurrentRuntimeOwner,
+  withStoppedRuntime
 } from "./generation-lifecycle.js";
 import { runComponentStatus } from "./component-commands.js";
 import * as componentStore from "./component-store.js";
@@ -96,9 +97,8 @@ const temporaryRoots: string[] = [];
 const temporaryMetadata: string[] = [];
 const owner = { kind: "standalone" as const, installationId: "lifecycle-test" };
 const pathsForTest = () => {
-  const home = mkdtempSync(
-    resolve(process.cwd(), ".koed-generation-lifecycle-")
-  );
+  mkdirSync("scratch", { recursive: true });
+  const home = mkdtempSync(resolve("scratch", "generation-lifecycle-"));
   temporaryRoots.push(home);
   return resolveKoedServerPaths({ KOED_HOME: home, KOED_REPO_ROOT: home });
 };
@@ -179,6 +179,98 @@ afterEach(() => {
 });
 
 describe("generation lifecycle", () => {
+  it("holds the stopped-runtime boundary across awaited work and releases on success or failure", async () => {
+    const paths = pathsForTest();
+    const result = await withStoppedRuntime(paths, owner, async () => {
+      await expect(
+        withStoppedRuntime(paths, owner, async () => undefined)
+      ).rejects.toThrow(/locked/);
+      await expect(pinGenerationForStart(paths, owner)).rejects.toThrow(
+        /locked/
+      );
+      return "completed";
+    });
+    expect(result).toBe("completed");
+    const path = resolve(paths.runDir, "generation-lifecycle.lock");
+    expect(existsSync(path)).toBe(false);
+    await expect(
+      withStoppedRuntime(paths, owner, () => {
+        throw new Error("operation failed");
+      })
+    ).rejects.toThrow("operation failed");
+    expect(existsSync(path)).toBe(false);
+    await expect(
+      withStoppedRuntime(paths, owner, async () => {
+        throw new Error("async operation failed");
+      })
+    ).rejects.toThrow("async operation failed");
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("protects the stopped-runtime boundary with existing owner and generation pin checks", async () => {
+    const paths = pathsForTest();
+    const generation = await stage(paths, "0.9.0");
+    await activateGeneration(paths, generation.id, owner);
+    const action = vi.fn(async () => undefined);
+    await expect(
+      withStoppedRuntime(
+        paths,
+        { ...owner, installationId: "another-installation" },
+        action
+      )
+    ).rejects.toThrow(/owner mismatch/);
+    const pin = await pinGenerationForStart(paths, owner);
+    try {
+      await expect(withStoppedRuntime(paths, owner, action)).rejects.toThrow(
+        /locked/
+      );
+    } finally {
+      await pin.release();
+    }
+    expect(action).not.toHaveBeenCalled();
+    await withStoppedRuntime(paths, owner, action);
+    expect(action).toHaveBeenCalledOnce();
+  });
+
+  it("refuses uncertain stopped state without removing stale locks or invoking work", async () => {
+    const paths = pathsForTest();
+    mkdirSync(paths.runDir, { recursive: true });
+    const supervisorPath = resolve(paths.runDir, "koed-server.lock");
+    writeFileSync(supervisorPath, "unreadable");
+    const action = vi.fn(async () => undefined);
+    await expect(withStoppedRuntime(paths, owner, action)).rejects.toThrow(
+      /recovery/
+    );
+    expect(readFileSync(supervisorPath, "utf8")).toBe("unreadable");
+    expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
+      false
+    );
+    expect(action).not.toHaveBeenCalled();
+    const path = resolve(paths.runDir, "generation-lifecycle.lock");
+    mkdirSync(path);
+    writeFileSync(resolve(path, "owner.json"), "unreadable");
+    await expect(withStoppedRuntime(paths, owner, action)).rejects.toThrow(
+      /locked/
+    );
+    expect(readFileSync(resolve(path, "owner.json"), "utf8")).toBe(
+      "unreadable"
+    );
+  });
+
+  it("does not treat a dangling selection pointer as a fresh installation", async () => {
+    const paths = pathsForTest();
+    mkdirSync(paths.componentsDir, { recursive: true });
+    symlinkSync("missing.json", resolve(paths.componentsDir, "current.json"));
+    const action = vi.fn(async () => undefined);
+    await expect(withStoppedRuntime(paths, owner, action)).rejects.toThrow(
+      /regular file/
+    );
+    expect(action).not.toHaveBeenCalled();
+    expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
+      false
+    );
+  });
+
   it("replaces an owned base-only Desktop generation after an app bundle upgrade", async () => {
     const paths = pathsForTest();
     const resourcesPath = resolve(paths.koedHome, "resources");

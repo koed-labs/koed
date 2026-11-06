@@ -1,3 +1,4 @@
+import { permitsNativeEntry } from "./native-payload-admission.js";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { canonicalArtifactBytes } from "./artifact-canonical-json.mjs";
 import { createGunzip } from "node:zlib";
@@ -20,7 +21,14 @@ import {
   writeSync
 } from "node:fs";
 import { constants as fsConstants, statSync } from "node:fs";
-import { basename, dirname, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  posix,
+  relative,
+  resolve
+} from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import type { KoedServerPaths } from "./paths.js";
@@ -1000,13 +1008,24 @@ const assertSafeParents = (destination: string, target: string): void => {
 
 const extractTarGz = async (
   archivePath: string,
-  destination: string
+  destination: string,
+  native?: {
+    kind: "core" | "cuda";
+    expandedBytes: number;
+    signal?: AbortSignal;
+  }
 ): Promise<void> => {
   if (statSync(archivePath).size > packageExtractionLimits.compressedBytes) {
     throw new Error("Package archive exceeds the compressed byte limit.");
   }
   mkdirSync(destination, { recursive: true, mode: 0o700 });
-  const stream = createReadStream(archivePath).pipe(createGunzip());
+  const input = createReadStream(archivePath, { signal: native?.signal });
+  const stream = createGunzip();
+  input.on("error", (error) => stream.destroy(error));
+  input.pipe(stream);
+  // Native library links are installed only after all regular files exist.
+  const links = new Map<string, string>();
+  let regularBytes = 0;
   let buffer: Buffer = Buffer.alloc(0);
   let pax: Record<string, string> = {};
   const seen = new Set<string>();
@@ -1090,12 +1109,37 @@ const extractTarGz = async (
         }
         const name = tarString(header, 0, 100);
         const prefix = tarString(header, 345, 155);
+        const link = pax.linkpath ?? tarString(header, 157, 100);
         const rawPath = pax.path ?? (prefix ? `${prefix}/${name}` : name);
         pax = {};
         if (Buffer.byteLength(rawPath) > packageExtractionLimits.pathBytes) {
           throw new Error(
             "Package archive path exceeds the path length limit."
           );
+        }
+        const entryMode = tarNumber(header, 100, 8);
+        if (native) {
+          const path = rawPath.replace(/\/$/, "");
+          if (
+            !(path === "koed-runtime" || path.startsWith("koed-runtime/")) ||
+            !permitsNativeEntry(
+              native.kind,
+              path.slice("koed-runtime/".length),
+              type === "5"
+            ) ||
+            path
+              .split("/")
+              .some((part) => !part || part === "." || part === "..") ||
+            path.includes("\\") ||
+            (entryMode & ~0o777) !== 0
+          )
+            throw new Error("Unsafe native archive path or mode.");
+          if (type === "0") regularBytes += size;
+          if (
+            regularBytes > native.expandedBytes ||
+            seen.size >= packageExtractionLimits.fileCount
+          )
+            throw new Error("Native archive exceeds its extraction budget.");
         }
         const target = safeResolve(destination, rawPath);
         const normalized = relative(destination, target).replaceAll("\\", "/");
@@ -1106,6 +1150,11 @@ const extractTarGz = async (
           if (size !== 0) throw new Error("Directory tar entry must be empty.");
           assertSafeParents(destination, target);
           mkdirSync(target, { recursive: true, mode: 0o755 });
+          if (native) {
+            if (entryMode !== 0o755)
+              throw new Error("Unexpected native directory mode.");
+            chmodSync(target, entryMode);
+          }
         } else if (type === "0" || type === "") {
           fileCount += 1;
           if (fileCount > packageExtractionLimits.fileCount)
@@ -1118,9 +1167,9 @@ const extractTarGz = async (
               "Package manifest exceeds the manifest size limit."
             );
           }
-          mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
           assertSafeParents(destination, target);
-          const mode = tarNumber(header, 100, 8) & 0o111 ? 0o755 : 0o644;
+          mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+          const mode = native ? entryMode : entryMode & 0o111 ? 0o755 : 0o644;
           const flags =
             fsConstants.O_CREAT |
             fsConstants.O_EXCL |
@@ -1132,7 +1181,21 @@ const extractTarGz = async (
         } else if (type === "1") {
           throw new Error("Package archives must not contain hard links.");
         } else if (type === "2") {
-          throw new Error("Package archives must not contain symbolic links.");
+          if (!native)
+            throw new Error(
+              "Package archives must not contain symbolic links."
+            );
+          if (
+            size !== 0 ||
+            !link ||
+            link.includes("\\") ||
+            link.includes("\0") ||
+            isAbsolute(link) ||
+            posix.normalize(link) !== link ||
+            Buffer.byteLength(link) > packageExtractionLimits.pathBytes
+          )
+            throw new Error("Unsafe native library link.");
+          links.set(target, link);
         } else {
           throw new Error(
             `Package archives contain unsupported tar entry type: ${type}`
@@ -1142,9 +1205,48 @@ const extractTarGz = async (
       if (ended) break;
     }
   } finally {
+    input.destroy();
+    stream.destroy();
     if (current?.fd !== undefined) closeSync(current.fd);
   }
   if (current || !ended) throw new Error("Package archive is truncated.");
+  if (native && regularBytes !== native.expandedBytes)
+    throw new Error("Native archive expanded size differs from its pin.");
+  for (const [path, link] of links) {
+    const target = resolve(dirname(path), link);
+    if (
+      !isInside(
+        resolve(
+          destination,
+          native?.kind === "cuda"
+            ? "koed-runtime/llama.cpp/cuda"
+            : "koed-runtime"
+        ),
+        target
+      ) ||
+      links.has(target)
+    )
+      throw new Error(
+        "Native library link escapes the payload or targets another link."
+      );
+    assertSafeParents(destination, target);
+    assertSafeParents(destination, path);
+    if (!lstatSync(target).isFile())
+      throw new Error("Native library link requires a regular file.");
+    symlinkSync(link, path);
+  }
+};
+
+// Caller authenticates the compressed bytes and supplies a fresh private staging directory.
+export const extractNativeArchive = (
+  kind: "core" | "cuda",
+  archive: string,
+  destination: string,
+  expandedBytes: number,
+  signal?: AbortSignal
+): Promise<void> => {
+  mkdirSync(destination, { mode: 0o700 });
+  return extractTarGz(archive, destination, { kind, expandedBytes, signal });
 };
 
 const findExtractedPackageRoot = (extractDir: string): string => {

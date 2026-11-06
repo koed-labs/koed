@@ -2,6 +2,85 @@
 
 Koed native runtime artifacts are Koed-owned tarballs consumed by packaged Desktop builds through `KOED_NATIVE_RUNTIME_SOURCE_DIR`.
 
+The Linux release-provider work reuses the existing lifecycle exclusion for
+stopped-runtime changes. See [stopped native runtime operations](stopped-native-runtime.md)
+for the internal boundary, process-state checks, and Operator recovery rules.
+
+## Linux CPU and CUDA release packages
+
+The Release workflow attaches the CPU core and the optional CUDA add-on to the
+same product release. A hosted Ubuntu 22.04 runner builds the packages with
+CUDA Toolkit 12.4 on a cache miss. A cache hit reuses the frozen archives.
+Each package keeps the runtime version of the release that built it.
+
+The release CLI contains the download URL, size, and SHA-256 checksum for each
+archive. The existing release approval covers both packages. Older clients can
+continue to download the combined Linux archive.
+
+## Linux release-provider installation
+
+The explicit CLI path targets Linux x64 with glibc 2.35 or later. It requires a
+core pin compiled into the release CLI.
+
+```bash
+koed stop
+koed runtime install --provider release --dependency-mode bundled-local --json
+koed runtime status --provider release --json
+koed start
+```
+
+For a fresh installation, install the matching Base component and embedding model
+before starting. On an unsupported host, the Homebrew alternative requires a
+supported Homebrew host and a working Homebrew installation. Its install command
+is `koed runtime install --provider homebrew --dependency-mode bundled-local`.
+
+The installer streams the pinned archive to a private staging directory and checks
+its size and digest. It requires free space for the compressed archive, expanded
+files, and a 128 MiB reserve. Existing retained payloads already occupy space.
+An intact selected core needs no download. The native extractor creates direct
+relative library links after extracting regular files and authenticates the complete
+inventory. Component extraction retains its existing link policy.
+
+Core payloads live under `runtime/native/core/<recipe-id>`. Locally composed
+selection directories link Postgres, the launcher, and CPU libraries to that payload.
+The supervisor and installer share the lifecycle exclusion. Before changing
+`runtime/native/current`, the installer checks stopped state, ownership, the
+expected selection, Postgres major version, and bounded CPU executable probes.
+The durable pointer swap selects the whole runtime. Earlier payloads and
+selections remain available for inspection. A cache-write warning leaves the
+activated selection usable. Read-only status derives its result from that selection.
+
+Use `--with-cuda` on the release install command to stage a compatible core and
+CUDA add-on together. CUDA payloads live under `runtime/native/cuda/<recipe-id>`.
+The installer checks the host before downloading CUDA, verifies the full archive
+and inventory, then runs the staged validator under the lock before switching the
+pointer. Without an installed model the result is device-only. A failed check
+preserves the active pair. A CPU execution policy continues to use CPU.
+
+With neither asset flag, a core update reuses compatible installed CUDA bytes
+without another copy or download. The installer checks the CUDA host before
+downloading the core. If that check or GPU validation fails under an `auto` or
+`cpu` policy, the error suggests `--without-cuda` for a CPU-only update. If the new core is incompatible, `auto` or
+`cpu` may select CPU alone. Forced CUDA requires the combined update. Use
+`--without-cuda` with an `auto` or `cpu` policy to remove CUDA from the selection.
+The prior payload stays available for recovery. Status reports installed and
+pinned IDs and the current execution policy without running device discovery.
+
+The compiled minimum version and native contracts apply at startup. A compatible
+older core can run while status reports the available update.
+
+The minimum comes from the reviewed
+`scripts/native-runtime/core-compatibility.linux-x64.json`, not from the core a
+release happens to build. A cache miss or rebuild therefore never strands older
+installed cores. Raise `minimumCoreVersion` only when older cores must stop starting
+and the change cannot be expressed as a contract change. Release staging refuses a
+minimum above the product version or above the staged core. An installed core with
+different native contracts cannot start. Status reports it as `incompatible`
+instead of failing. Explicit binary
+overrides retain their precedence. Install and update preserve the database and
+model files. See [stopped-runtime recovery](stopped-native-runtime.md) for stale
+locks, uncertain processes, and damaged installations.
+
 ## macOS arm64 local artifact build
 
 For local review, the builder can procure pinned upstream inputs directly from `scripts/native-runtime/sources.macos-arm64.json`:
@@ -74,8 +153,9 @@ sorted, metadata-normalized ustar/PAX gzip stream. Native archives are written
 with bounded file streaming instead of buffering the combined Linux CUDA
 payload. Provenance records the pinned source manifest or a path-independent
 verified-runtime-source marker and uses `SOURCE_DATE_EPOCH`, defaulting to the
-Unix epoch. Clean source and output paths therefore produce the same runtime
-tree, manifest, provenance, archive, and SHA-256 value. Validation recursively
+Unix epoch. Packaging the same frozen runtime and metadata in clean output
+paths produces the same archive and SHA-256 value. This does not establish
+reproducibility of fresh compilation on different hosts. Validation recursively
 inspects every Mach-O or ELF file in the runtime instead of relying on a short
 executable list. macOS validation rejects undeclared absolute loader paths,
 missing `@loader_path`/`@rpath` dependencies, and package-manager paths.
@@ -135,21 +215,6 @@ may be dispatched manually. The cache key covers payload-producing inputs;
 validation-only changes revalidate the existing payload without recompiling it.
 Ordinary CI and local setup never compile CUDA automatically.
 
-`.github/workflows/native-runtime-linux-cuda-validation.yml` is the manual
-hardware-proof path. It is restricted to the trusted default branch and a
-self-hosted runner carrying the `linux`, `x64`, and `koed-cuda` labels. The
-runner must expose an NVIDIA GPU through `nvidia-smi`, use driver 550.54.14 or
-newer, and provide the system libraries required by the pinned ONNX Runtime
-CUDA provider. The workflow refuses to rebuild an unreviewed native payload: it
-requires the independently populated recipe-keyed cache, packages and extracts
-that exact payload, and runs full loader/PostgreSQL/provider validation. It then
-proves CUDA discovery and real embedding inference from the extracted CUDA
-`llama-server`, including CPU/GPU vector agreement and observed VRAM use. A
-separately built exact Linux standalone app runtime must initialize the Privacy
-Filter CUDA provider, match CPU classification, switch providers, unload and
-reload after idle, and reject Core ML. The workflow retains the bounded JSON
-evidence for 30 days. Policy-only hosted CI never sets these hardware boxes.
-
 The release workflow independently rebuilds the macOS native runtime and
 Desktop package from the exact merged release commit. Each supported standalone
 target is built twice and must match at the package-tree, manifest, provenance,
@@ -167,7 +232,7 @@ the archive. The report attributes exact expanded bytes to PostgreSQL,
 pgvector, CPU and CUDA llama.cpp, CUDA redistributable libraries, and
 manifest/provenance files. Its component compressed values are proportional
 estimates for the solid gzip stream; the total compressed archive size is
-exact. The job rejects symlinks, special files, duplicates above policy,
+exact. The job rejects unsafe symlinks, special files, duplicates above policy,
 foreign target binaries, checkout-path leaks, and total archive growth greater
 than 5% over the immutable v0.6.2 baseline.
 

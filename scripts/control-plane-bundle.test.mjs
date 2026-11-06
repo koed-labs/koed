@@ -19,6 +19,15 @@ test("effective external control plane embeds exact catalog despite stale dist; 
   try {
     const server = resolve(root, "packages/koed-server/dist");
     mkdirSync(server, { recursive: true });
+    mkdirSync(resolve(root, "packages/koed-server/src"), { recursive: true });
+    writeFileSync(
+      resolve(root, "packages/koed-server/src/native-runtime-catalog-data.mjs"),
+      "export const productionNativeRuntimeCatalog = null;\n"
+    );
+    writeFileSync(
+      resolve(server, "native-runtime-catalog-data.mjs"),
+      'throw new Error("STALE NATIVE PINS MUST NOT EXECUTE");\n'
+    );
     writeFileSync(
       resolve(root, "package.json"),
       '{"type":"module","version":"1.2.3"}\n'

@@ -50,11 +50,10 @@ Publication remains a separate decision.
 - [ ] Bind all native reports, frozen components, and the complete embedded catalog to the final reviewed release candidate.
 - [ ] Complete signed/notarized clean-Mac launch and downloaded native-code acceptance using the final signed artifacts.
 - [ ] Complete required release CI and exact public runtime-URL installation against that candidate.
-- [ ] Find a long-term way to prove CUDA execution for each release. The
-      Release workflow no longer waits for a self-hosted `koed-cuda` GPU runner,
-      so the CUDA Privacy archive ships with CPU-fallback qualification only.
-      Options include a hosted or Blacksmith GPU runner, or making the manual
-      Trusted Linux CUDA package validation a tracked pre-publish step.
+- [ ] Define when release candidates require separate GPU qualification.
+      The hosted Linux release job checks the CUDA Privacy archive's CPU fallback.
+      Track actual CUDA execution against the candidate's digests when a
+      compatible GPU host is available.
 - [ ] Before publishing a resumed draft release, verify that its tag and target
       commit match the commit the release assets were built from.
 - [ ] Stop the MCP Server's `tsc -b --force` from recompiling the Server, which
@@ -188,6 +187,18 @@ Follow-ups:
 - [ ] Qualify supported Linux targets, the declared glibc baseline, and actual
       WSL2 on a Windows host. Container results do not establish WSL2 behavior or
       native performance. Keep CUDA reports tied to their exact candidate.
+- [ ] Qualify the packaged Linux CUDA add-on on an NVIDIA RTX A2000 (6 GB) or
+      GeForce RTX 3070 (8 GB). Run the default embedding model through the shipped
+      CLI, compare its vectors with the CPU results, and record peak VRAM, driver
+      version, GPU model, and artifact digests before claiming support at that size.
+- [ ] Stop fully rehashing release-managed native payloads (up to about 1.6 GB
+      with CUDA) on every `koed start` and `runtime status`. Keep full verification
+      for install and explicit `runtime validate`, and decide whether start and status
+      may rely on a bounded identity check instead.
+- [ ] Pass the install's phase-1 CUDA host result into staged GPU validation so
+      one `--with-cuda` install does not run `nvidia-smi` and the libcuda probe twice.
+- [ ] Share one helper for the `runtime/<name>` → `native/current/<name>` entry-link
+      check used by release-runtime detection, start, and selection admission.
 - [ ] Qualify opt-in Desktop Install CLI: launcher validity, PATH checks,
       conflict handling, repair/removal, relocation, npm coexistence, and execution
       through the bundled runtime without system Node. Preserve User state on uninstall.

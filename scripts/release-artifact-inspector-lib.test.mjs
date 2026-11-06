@@ -22,6 +22,48 @@ const permissivePolicy = {
   maxDuplicateRatio: 1,
   maxManifestBytes: Number.MAX_SAFE_INTEGER
 };
+test("CPU core budgets are explicit and independent of the historical combined archive", () => {
+  const report = {
+    source: `koed-native-core-${"a".repeat(64)}-linux-x64.tar.gz`,
+    bytes: {
+      archive: 23_000_000,
+      expandedRegularFiles: 56_000_000,
+      duplicateRatio: 0,
+      manifest: null
+    },
+    findings: {
+      unsafeSymlinks: [],
+      specialFiles: [],
+      foreignPlatformNativeFiles: [],
+      absolutePaths: [],
+      sourceCheckoutLeaks: []
+    }
+  };
+  const policy = {
+    ...permissivePolicy,
+    nativeCoreArchiveMaximum: 50_000_000,
+    nativeCoreExpandedMaximum: 100_000_000
+  };
+  assert.equal(evaluateArtifactPolicy(report, policy).ok, true);
+  assert.equal(evaluateArtifactPolicy(report, permissivePolicy).ok, false);
+  assert.equal(
+    evaluateArtifactPolicy(
+      { ...report, bytes: { ...report.bytes, archive: 50_000_001 } },
+      policy
+    ).ok,
+    false
+  );
+  assert.equal(
+    evaluateArtifactPolicy(
+      {
+        ...report,
+        bytes: { ...report.bytes, expandedRegularFiles: 100_000_001 }
+      },
+      policy
+    ).ok,
+    false
+  );
+});
 test.afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
