@@ -503,9 +503,9 @@ export const startDefaultLocalAiRuntimeServices = async (
       claude: claudeWatcherEnabled,
       pi: piWatcherEnabled
     };
-    const startCapture = (
+    const startCapture = async (
       aiClient: AiClientConnectionId
-    ): { stop(): Promise<void> } => {
+    ): Promise<{ stop(): Promise<void> }> => {
       if (aiClient === "codex") {
         const history = historicalEnabled
           ? startHistory(
@@ -516,16 +516,26 @@ export const startDefaultLocalAiRuntimeServices = async (
               })
             )
           : null;
-        const watcher = dependencies.startCodexTranscriptWatcher(
-          backgroundClient,
-          resolveCodexTranscriptWatcherConfig(environment),
-          history ?? undefined
-        );
-        return {
-          stop: async () => {
-            await Promise.all([watcher.stop(), history?.stop()]);
-          }
-        };
+        try {
+          const watcher = dependencies.startCodexTranscriptWatcher(
+            backgroundClient,
+            resolveCodexTranscriptWatcherConfig(environment),
+            history ?? undefined
+          );
+          return {
+            stop: async () => {
+              await Promise.all([watcher.stop(), history?.stop()]);
+            }
+          };
+        } catch (error) {
+          await history?.stop().catch((cleanupError) => {
+            logger.warn(
+              { err: cleanupError, aiClient },
+              "historical capture cleanup failed"
+            );
+          });
+          throw error;
+        }
       }
       const createAdapter =
         aiClient === "claude"
@@ -538,21 +548,31 @@ export const startDefaultLocalAiRuntimeServices = async (
               createAdapter({ client: backgroundClient, env: environment })
             )
           : null;
-      const watcher =
-        aiClient === "claude"
-          ? dependencies.startClaudeTranscriptWatcher(
-              backgroundClient,
-              environment
-            )
-          : dependencies.startPiTranscriptWatcher!(
-              backgroundClient,
-              environment
-            );
-      return {
-        stop: async () => {
-          await Promise.all([watcher.stop(), history?.stop()]);
-        }
-      };
+      try {
+        const watcher =
+          aiClient === "claude"
+            ? dependencies.startClaudeTranscriptWatcher(
+                backgroundClient,
+                environment
+              )
+            : dependencies.startPiTranscriptWatcher!(
+                backgroundClient,
+                environment
+              );
+        return {
+          stop: async () => {
+            await Promise.all([watcher.stop(), history?.stop()]);
+          }
+        };
+      } catch (error) {
+        await history?.stop().catch((cleanupError) => {
+          logger.warn(
+            { err: cleanupError, aiClient },
+            "historical capture cleanup failed"
+          );
+        });
+        throw error;
+      }
     };
     // Koed reads an AI Client only while the User has connected it. Koed
     // Server records connections when it checks integrations; follow that
@@ -565,7 +585,7 @@ export const startDefaultLocalAiRuntimeServices = async (
           isAiClientConnected(connections, aiClient);
         const running = captures.get(aiClient);
         if (wanted && !running) {
-          captures.set(aiClient, startCapture(aiClient));
+          captures.set(aiClient, await startCapture(aiClient));
           logger.info({ aiClient }, "AI Client capture started");
         } else if (!wanted && running) {
           captures.delete(aiClient);

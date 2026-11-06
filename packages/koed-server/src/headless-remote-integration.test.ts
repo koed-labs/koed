@@ -13,6 +13,12 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  aiClientConnectionRevision,
+  grantAiClientConnection,
+  isAiClientConnected,
+  readAiClientConnections
+} from "@koed/shared/ai-client-connections";
+import {
   HEADLESS_REMOTE_CREDENTIAL_REF,
   checkHeadlessRemoteIntegration,
   headlessRemoteIntegrationPath,
@@ -396,5 +402,59 @@ describe("headless remote integration", () => {
       ).ok
     ).toBe(false);
     expect(removeHeadlessRemoteIntegration(options).ok).toBe(false);
+  });
+
+  it("connects a harness only through consented setup and disconnects it before removal", async () => {
+    const { options, koedHome } = fixture();
+    const connected = (harness: "codex" | "claude" | "pi") =>
+      isAiClientConnected(readAiClientConnections(koedHome), harness);
+    const setupHarness = vi.fn(async () => ({ ok: true }));
+    expect(
+      (await setupHeadlessRemoteIntegration({ ...options, setupHarness })).ok
+    ).toBe(true);
+    expect(connected("codex")).toBe(true);
+    let connectedDuringRemoval: boolean | undefined;
+    const removeHarness = vi.fn(() => {
+      connectedDuringRemoval = connected("codex");
+      return { ok: false };
+    });
+    // Removal failed, yet the harness stays disconnected and the failure is
+    // reported, so a retained descriptor never restarts capture.
+    expect(
+      removeHeadlessRemoteIntegration({ ...options, removeHarness }).ok
+    ).toBe(false);
+    expect(connectedDuringRemoval).toBe(false);
+    expect(connected("codex")).toBe(false);
+  });
+
+  it("disconnects a harness even when no remote registration names it", async () => {
+    const { options, koedHome } = fixture();
+    grantAiClientConnection(koedHome, "pi", 0);
+    expect(
+      removeHeadlessRemoteIntegration({ ...options, harness: "pi" }).state
+    ).toBe("removed");
+    expect(isAiClientConnected(readAiClientConnections(koedHome), "pi")).toBe(
+      false
+    );
+  });
+
+  it("does not connect a harness removed while its setup ran", async () => {
+    const { options, koedHome } = fixture();
+    const setupHarness = vi.fn(async () => {
+      removeHeadlessRemoteIntegration({
+        ...options,
+        removeHarness: () => ({ ok: true })
+      });
+      return { ok: true };
+    });
+    const result = await setupHeadlessRemoteIntegration({
+      ...options,
+      setupHarness
+    });
+    expect(result.ok).toBe(false);
+    expect(
+      isAiClientConnected(readAiClientConnections(koedHome), "codex")
+    ).toBe(false);
+    expect(aiClientConnectionRevision(koedHome, "codex")).toBe(1);
   });
 });

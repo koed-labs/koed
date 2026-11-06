@@ -1,3 +1,8 @@
+import type { AiClientConnectionId } from "@koed/shared/ai-client-connections";
+import {
+  connectAiClientAfterSetup,
+  verifyAiClientIntegration
+} from "./ai-client-authorization.js";
 import { setupClaude } from "./claude-setup.js";
 import { setupPi } from "./pi-setup.js";
 import {
@@ -24,6 +29,25 @@ export const createDesktopStatusRpcHandler = (options: {
 }): ((message: unknown) => boolean) => {
   const dependencies = { desktopRuntimeCapability: options.capability };
   const setupOptions = { ...dependencies, environment: options.environment };
+  // Setup and repair connect the AI Client only once verified for this
+  // KOED_HOME; status checks never connect one.
+  const connect = <R extends { ok: boolean; koedHome: string }>(
+    client: AiClientConnectionId,
+    run: () => Promise<R>
+  ) =>
+    connectAiClientAfterSetup({
+      client,
+      koedHome: resolveKoedServerPaths(options.environment).koedHome,
+      run,
+      verify: (koedHome) =>
+        verifyAiClientIntegration(
+          client,
+          koedHome,
+          options.environment,
+          collectKoedServerStatus,
+          dependencies
+        )
+    });
   const actions = {
     status: (startup: boolean) =>
       startup
@@ -43,14 +67,23 @@ export const createDesktopStatusRpcHandler = (options: {
       });
     },
     "setup-core": () => setupCore(setupOptions),
-    "setup-codex": () => setupCodex(setupOptions),
-    "repair-codex": () => repairCodexIntegration(setupOptions),
+    "setup-codex": () => connect("codex", () => setupCodex(setupOptions)),
+    "repair-codex": () =>
+      connect("codex", () => repairCodexIntegration(setupOptions)),
     "setup-claude": () =>
-      setupClaude(options.environment, undefined, dependencies),
+      connect("claude", () =>
+        setupClaude(options.environment, undefined, dependencies)
+      ),
     "repair-claude": () =>
-      setupClaude(options.environment, undefined, dependencies),
-    "setup-pi": () => setupPi(options.environment, undefined, dependencies),
-    "repair-pi": () => setupPi(options.environment, undefined, dependencies)
+      connect("claude", () =>
+        setupClaude(options.environment, undefined, dependencies)
+      ),
+    "setup-pi": () =>
+      connect("pi", () =>
+        setupPi(options.environment, undefined, dependencies)
+      ),
+    "repair-pi": () =>
+      connect("pi", () => setupPi(options.environment, undefined, dependencies))
   };
   return (message) => {
     if (!message || typeof message !== "object" || Array.isArray(message))

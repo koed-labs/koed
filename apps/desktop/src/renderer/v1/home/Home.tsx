@@ -1623,8 +1623,15 @@ export function Home({
       ? { conversations: looseConversations, onOpen: onOpenConversation }
       : undefined;
   useEffect(() => {
-    const timer = window.setInterval(() => void statusStore.refresh(), 15_000);
-    return () => window.clearInterval(timer);
+    const refreshVisible = () => {
+      if (!document.hidden) void statusStore.refresh();
+    };
+    const timer = window.setInterval(refreshVisible, 15_000);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
   }, [statusStore]);
   // Each coin batch that lands makes the Kin in the spotlight hop.
   const [coinHop, setCoinHop] = useState(0);

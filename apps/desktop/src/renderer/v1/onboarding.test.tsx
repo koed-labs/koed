@@ -410,6 +410,19 @@ describe("desktop onboarding", () => {
     // Installation evidence must not make unknown capabilities ready.
     expect(text()).not.toContain("Continue");
   });
+  it("repairs a configured Codex profile that points at another runtime", async () => {
+    const status = serverStatus(["codex"], ["codex"]);
+    status.aiClients!.codex!.profile.state = "needs_attention";
+    const { click, invoke } = await render({ status });
+    await click("Next");
+    await click("Connect");
+    expect(invoke.mock.calls.map(([command]) => command)).toContain(
+      "repair_codex"
+    );
+    expect(invoke.mock.calls.map(([command]) => command)).not.toContain(
+      "setup_codex"
+    );
+  });
   it("uses the status returned by a client check without another scan", async () => {
     const ready = serverStatus(["codex"], ["codex"]);
     const { click, invoke } = await render({ status: ready });

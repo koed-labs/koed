@@ -74,13 +74,9 @@ describe("headless remote Local AI Runtime", () => {
       );
       expect(registration).not.toContain("remote-secret");
       expect(registration).not.toContain("local-secret");
-      // The consented harnesses are the connected clients in this mode, so
-      // their Transcript Watchers start without a Koed Server status check.
-      expect(readAiClientConnections(home)?.connected).toEqual({
-        codex: true,
-        claude: true,
-        pi: false
-      });
+      // Starting never connects a client: consented headless setup does, so
+      // a descriptor that outlived a removal cannot restart capture.
+      expect(readAiClientConnections(home)).toBeNull();
     } finally {
       await runtime.close();
     }

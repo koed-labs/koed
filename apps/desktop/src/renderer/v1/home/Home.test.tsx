@@ -116,6 +116,39 @@ describe("Home", () => {
     root = createRoot(container);
   });
 
+  it("pauses polling while hidden and refreshes when visible again", async () => {
+    let hidden = false;
+    vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
+    const statusStore = new DesktopStatusStore();
+    const refresh = vi.spyOn(statusStore, "refresh").mockResolvedValue(null);
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      statusStore
+    });
+    await act(async () => vi.advanceTimersByTime(15_000));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    hidden = true;
+    await act(async () =>
+      document.dispatchEvent(new Event("visibilitychange"))
+    );
+    await act(async () => vi.advanceTimersByTime(30_000));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    hidden = false;
+    await act(async () =>
+      document.dispatchEvent(new Event("visibilitychange"))
+    );
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTime(15_000));
+    expect(refresh).toHaveBeenCalledTimes(3);
+    await act(async () => root.unmount());
+    await act(async () =>
+      document.dispatchEvent(new Event("visibilitychange"))
+    );
+    expect(refresh).toHaveBeenCalledTimes(3);
+    root = createRoot(container);
+  });
+
   it("lays conversations in no Project on the floor as coins", async () => {
     const onOpenConversation = vi.fn();
     await render({
@@ -666,7 +699,8 @@ describe("Home", () => {
   it("connects a detected AI Client from its keycap after consent", async () => {
     const statusStore = new DesktopStatusStore();
     const run = vi.spyOn(statusStore, "run").mockResolvedValue({ ok: true });
-    vi.spyOn(statusStore, "refresh").mockResolvedValue(null);
+    const refresh = vi.spyOn(statusStore, "refresh").mockResolvedValue(null);
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
     await render({
       entries: [entry("koed", "2026-11-03T11:00:00Z")],
       clients: [claude],
@@ -690,6 +724,7 @@ describe("Home", () => {
     expect(run.mock.calls).toEqual([
       ["setup_claude", { operatorConsented: true }]
     ]);
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("offers to connect detected AI Clients on an empty stage", async () => {

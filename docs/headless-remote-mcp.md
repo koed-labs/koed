@@ -140,7 +140,10 @@ koed remote remove codex --consent
 koed remote logout --consent
 ```
 
-Removing a harness removes its Koed-owned integration. Logging out removes
+Consented setup connects the harness for capture. Removing a harness
+disconnects it first, then removes its Koed-owned integration. If removal
+fails, the harness stays disconnected and the failure is reported. Starting the
+headless runtime never connects a harness from the descriptor. Logging out removes
 remote authorization; neither operation deletes retained backend Memory.
 Logout immediately disables local token use. If the backend cannot confirm
 revocation, the protected credential file retains only the token and hint
