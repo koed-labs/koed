@@ -62,10 +62,12 @@ Project membership commands; execution Folder identity is not rewritten.
 
 ### Home
 
-Home is what the navigation rail's Koed button opens: a read-only stage over
-existing state. It adds no backend calls and never starts a Conversation;
-there is no new-chat composer. Every state uses one grey stage: the AI Client
-keycaps along its top (no row at all when there are no clients, so the stage
+Home is what the navigation rail's Koed button opens: a stage over existing
+state. It never starts a Conversation; there is no new-chat composer. While Home
+is mounted, it refreshes status every 15 seconds when the document is visible
+and immediately when visibility returns. Hidden documents skip Home's periodic
+refresh; other status refresh triggers remain independent. Every state uses one
+grey stage: the AI Client keycaps along its top (no row at all when there are no clients, so the stage
 closes up), then Kin in a spotlight that starts under the keycaps, above a
 caption. Without Projects to show, the Koed Kin stands alone; the stage grows,
 and the page scrolls, only when the caption needs more room than the window

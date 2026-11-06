@@ -332,6 +332,60 @@ describe("provider-owned historical discovery", () => {
     await coordinator.stop();
   });
 
+  it("reports persistence and pass failures without crashing and retries after storage recovers", async () => {
+    const koedHome = temporaryDirectory();
+    const stateDirectory = path.join(koedHome, "state");
+    const errors: string[] = [];
+    let calls = 0;
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "storage-failure-provider",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "storage-failure-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        calls += 1;
+        if (calls === 1) {
+          rmSync(stateDirectory, { recursive: true });
+          writeFileSync(stateDirectory, "not a directory");
+          throw new Error("historical_batch_rejected");
+        }
+        return { state: "completed", selection, runId: "recovered-run" };
+      },
+      completeRun: async () => undefined
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 100,
+      onError: (code) => errors.push(code)
+    });
+    coordinator.offerCandidates([{ id: "conversation" }]);
+
+    try {
+      await vi.waitFor(() => expect(errors).toHaveLength(2));
+      expect(errors).toEqual([
+        "historical_ingestion_state_persist_failed",
+        "historical_batch_rejected"
+      ]);
+      expect(coordinator.snapshot().progress?.lastErrorCode).toBe(
+        "historical_batch_rejected"
+      );
+      rmSync(stateDirectory);
+      await vi.waitFor(() =>
+        expect(coordinator.snapshot().runCompleted).toBe(true)
+      );
+      expect(calls).toBeGreaterThan(1);
+    } finally {
+      await coordinator.stop();
+    }
+  });
+
   it("ends a run of failures on a clean pass with nothing to import", async () => {
     let calls = 0;
     const adapter: HistoricalProviderAdapter<{ id: string }> = {
@@ -368,6 +422,145 @@ describe("provider-owned historical discovery", () => {
     );
     expect(coordinator.snapshot().progress?.recoveredAt).toBeDefined();
     await coordinator.stop();
+  });
+
+  it("ignores discovery that resolves after stop", async () => {
+    let resolveDiscovery!: (value: { id: string }[]) => void;
+    const discovery = new Promise<{ id: string }[]>((resolve) => {
+      resolveDiscovery = resolve;
+    });
+    const koedHome = temporaryDirectory();
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "late-discovery",
+      discoverCandidates: () => discovery,
+      candidateId: (entry) => entry.id,
+      selectCandidates: () => {
+        throw new Error("must not select");
+      },
+      processNextBatch: async () => {
+        throw new Error("must not process");
+      }
+    };
+    const errors: string[] = [];
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 10,
+      onError: (code) => errors.push(code)
+    });
+    await coordinator.stop();
+    resolveDiscovery([{ id: "late" }]);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(coordinator.snapshot().selectionFrozen).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  it("retries discovery after the initial cohort cannot be persisted", async () => {
+    const koedHome = temporaryDirectory();
+    const stateDirectory = path.join(koedHome, "state");
+    writeFileSync(stateDirectory, "blocked");
+    const errors: string[] = [];
+    let recovered = false;
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "discovery-save",
+      discoverCandidates: async () => [{ id: recovered ? "current" : "stale" }],
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "discovery-save",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        return { state: "completed", selection, runId: "run" };
+      },
+      completeRun: async () => undefined
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 10,
+      onError: (code) => errors.push(code)
+    });
+    try {
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      rmSync(stateDirectory);
+      recovered = true;
+      await vi.waitFor(() =>
+        expect(coordinator.snapshot().runCompleted).toBe(true)
+      );
+      const saved = JSON.parse(
+        readFileSync(
+          path.join(stateDirectory, "discovery-save-historical-ingestion.json"),
+          "utf8"
+        )
+      ) as { runCompleted: boolean; selections: { candidateId: string }[] };
+      expect(saved.runCompleted).toBe(true);
+      expect(
+        saved.selections.map(
+          (selection: { candidateId: string }) => selection.candidateId
+        )
+      ).toEqual(["current"]);
+    } finally {
+      await coordinator.stop();
+    }
+  });
+
+  it("retries persisting completion after storage recovers", async () => {
+    const koedHome = temporaryDirectory();
+    const stateDirectory = path.join(koedHome, "state");
+    const errors: string[] = [];
+    let completions = 0;
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "completion-save",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "completion-save",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        return { state: "completed", selection, runId: "run" };
+      },
+      async completeRun() {
+        completions++;
+        rmSync(stateDirectory, { recursive: true });
+        writeFileSync(stateDirectory, "blocked");
+      }
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 10,
+      onError: (code) => errors.push(code)
+    });
+    coordinator.offerCandidates([{ id: "conversation" }]);
+    try {
+      await vi.waitFor(() =>
+        expect(errors).toContain("historical_ingestion_state_persist_failed")
+      );
+      rmSync(stateDirectory);
+      await vi.waitFor(() => {
+        const saved = JSON.parse(
+          readFileSync(
+            path.join(
+              stateDirectory,
+              "completion-save-historical-ingestion.json"
+            ),
+            "utf8"
+          )
+        ) as { runCompleted: boolean };
+        expect(saved.runCompleted).toBe(true);
+      });
+      expect(completions).toBe(1);
+    } finally {
+      await coordinator.stop();
+    }
   });
 
   it("retries transient discovery failures before freezing the cohort", async () => {
@@ -439,6 +632,105 @@ describe("historical pass error codes", () => {
 });
 
 describe("provider-neutral historical batch scheduling", () => {
+  it("does not start a queued batch after stop", async () => {
+    const scheduler = createHistoricalBatchScheduler();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = scheduler.runExclusive(() => blocked);
+    let queued!: () => void;
+    const queuedSignal = new Promise<void>((resolve) => {
+      queued = resolve;
+    });
+    const processed: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "queued-stop",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "queued-stop",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        processed.push(selection.candidateId);
+        return { state: "completed", selection, runId: "run" };
+      }
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome: temporaryDirectory(),
+      retryMs: 60_000,
+      batchScheduler: {
+        runExclusive(operation) {
+          const result = scheduler.runExclusive(operation);
+          queued();
+          return result;
+        }
+      }
+    });
+    coordinator.offerCandidates([{ id: "queued" }]);
+    await queuedSignal;
+    const stopping = coordinator.stop();
+    release();
+    await Promise.all([first, stopping]);
+    expect(processed).toEqual([]);
+    expect(coordinator.snapshot().selections[0]?.terminalState).toBeUndefined();
+  });
+
+  it("does not complete a run when stop interrupts its selection loop", async () => {
+    let started!: () => void;
+    let release!: () => void;
+    const startedSignal = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const processed: string[] = [];
+    const completed: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "interrupted-stop",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "interrupted-stop",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        processed.push(selection.candidateId);
+        started();
+        await blocked;
+        return { state: "completed", selection, runId: "run" };
+      },
+      async completeRun(runId) {
+        completed.push(runId);
+      }
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome: temporaryDirectory(),
+      retryMs: 60_000
+    });
+    coordinator.offerCandidates([{ id: "first" }, { id: "second" }]);
+    await startedSignal;
+    const stopping = coordinator.stop();
+    release();
+    await stopping;
+    expect(processed).toEqual(["first"]);
+    expect(completed).toEqual([]);
+    expect(coordinator.snapshot()).toMatchObject({
+      runCompleted: false,
+      selections: [{ terminalState: "completed" }, { candidateId: "second" }]
+    });
+  });
+
   it("serializes complete provider operations under one shared lease", async () => {
     const scheduler = createHistoricalBatchScheduler();
     let active = 0;
@@ -885,7 +1177,12 @@ describe("bounded Codex historical batch failures", () => {
 });
 
 describe("rejected Codex historical batches", () => {
-  it("skips a Conversation whose batch the Memory API rejects as invalid", async () => {
+  it.each([
+    "observation_only_canonical_identity",
+    "canonical_identity_incomplete",
+    "canonical_component_mismatch",
+    "canonical_identity_mismatch"
+  ])("skips a batch rejected with %s", async (code) => {
     const bytes = Buffer.from(
       `${JSON.stringify({
         timestamp: "2026-08-17T00:00:01.000Z",
@@ -907,17 +1204,16 @@ describe("rejected Codex historical batches", () => {
       state: "importing"
     };
     client.seedSource("artifact-rejected", source, bytes);
-    client.ingestHistoricalImportBatch = async () => {
-      throw new MemoryApiError("Request failed with 400", {
+    vi.spyOn(client, "ingestHistoricalImportBatch").mockRejectedValue(
+      new MemoryApiError("Request failed with 400", {
         status: 400,
-        payload: { code: "canonical_component_mismatch" }
-      });
-    };
+        payload: { code }
+      })
+    );
     const adapter = createCodexHistoricalProviderAdapter({
       client: client as unknown as MemoryApiClient
     });
-
-    const result = await adapter.processNextBatch({
+    const input = {
       selection: {
         aiClient: "codex",
         candidateId: "session-rejected",
@@ -928,26 +1224,104 @@ describe("rejected Codex historical batches", () => {
         adapterState: { threadKind: "conversation" }
       },
       runId: "run-rejected"
-    });
+    };
 
-    expect(result).toMatchObject({
+    expect(await adapter.processNextBatch(input)).toMatchObject({
       state: "skipped",
-      diagnosticCode: "canonical_component_mismatch"
+      diagnosticCode: code
     });
     expect(client.transitionCalls).toEqual([
       {
         sourceId: "source-rejected",
         expectedState: "importing",
         state: "failed",
-        failureReason: "canonical_component_mismatch"
+        failureReason: code
       },
-      {
-        sourceId: "source-rejected",
-        expectedState: "failed",
-        state: "skipped"
-      }
+      { sourceId: "source-rejected", expectedState: "failed", state: "skipped" }
     ]);
+    expect(source.historicalCursorOffset).toBe(0);
+    expect(await adapter.processNextBatch(input)).toMatchObject({
+      state: "skipped"
+    });
   });
+
+  it.each([
+    ["batch with unknown code", "batch", { code: "unknown_error" }],
+    ["batch without code", "batch", {}],
+    [
+      "batch with canonical code and HTTP 500",
+      "batch",
+      { code: "canonical_identity_mismatch" },
+      500
+    ],
+    ["segment listing", "list", { code: "canonical_component_mismatch" }],
+    ["segment content", "content", { code: "canonical_component_mismatch" }]
+  ])(
+    "retries after rejection from %s",
+    async (_label, operation, payload, status = 400) => {
+      const bytes = Buffer.from(
+        `${JSON.stringify({
+          timestamp: "2026-08-17T00:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "remember this" }
+        })}\n`
+      );
+      const client = new FakeHistoricalSourceClient();
+      const source = {
+        id: "source-rejected",
+        runId: "run-rejected",
+        artifactId: "artifact-rejected",
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        sourceSessionId: "session-rejected",
+        sourceFingerprint: "a".repeat(64),
+        historicalCursorOffset: 0,
+        historicalCursorLine: 0,
+        registrationFrontierOffset: bytes.byteLength,
+        state: "importing"
+      };
+      client.seedSource("artifact-rejected", source, bytes);
+      const error = new MemoryApiError(`Request failed with ${status}`, {
+        status,
+        payload
+      });
+      const method =
+        operation === "batch"
+          ? "ingestHistoricalImportBatch"
+          : operation === "list"
+            ? "listConversationSourceSegments"
+            : "getConversationSourceSegmentContent";
+      // Restore the operation after one failure to exercise the retry path.
+      const spy = vi.spyOn(client, method).mockImplementationOnce(async () => {
+        throw error;
+      });
+      const adapter = createCodexHistoricalProviderAdapter({
+        client: client as unknown as MemoryApiClient
+      });
+
+      const input = {
+        selection: {
+          aiClient: "codex",
+          candidateId: "session-rejected",
+          artifactId: "artifact-rejected",
+          frontierOffset: bytes.byteLength,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z",
+          adapterState: { threadKind: "conversation" }
+        },
+        runId: "run-rejected"
+      };
+
+      await expect(adapter.processNextBatch(input)).rejects.toBe(error);
+      expect(client.transitionCalls).toEqual([]);
+      expect(source.state).toBe("importing");
+      expect(source.historicalCursorOffset).toBe(0);
+      spy.mockRestore();
+      expect(await adapter.processNextBatch(input)).toMatchObject({
+        state: "progress"
+      });
+      expect(source.historicalCursorOffset).toBe(bytes.byteLength);
+    }
+  );
 });
 
 describe("provider-neutral historical ingestion coordination", () => {

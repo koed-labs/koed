@@ -259,15 +259,28 @@ and segment transfer have an independent local rate-limit bucket so a large
 first discovery cannot consume the interactive Memory read/write allowance used
 by Desktop and the MCP Server.
 
-Koed reads an AI Client only while the User has connected it, meaning its
-Supported AI Client Integration is set up. Each time Koed Server checks the
-integrations (any status check, and once after startup) it records which
-clients are connected in `KOED_HOME/state/ai-client-connections.json`; a check
-that fails keeps the previous value. The Local AI Runtime rechecks that record
-every 10 seconds and starts or stops each client's Transcript Watcher and
-automatic history to match, so connecting or disconnecting needs no restart. A
-client that was never recorded is not read. A headless remote runtime records
-the harnesses its consented descriptor names, since no status check runs there. Stopping keeps the coordinator's
+Koed reads an AI Client only while the User has connected it. Only an explicit
+setup or repair connects a client, from the CLI, Koed Desktop, or consented
+headless setup, and only after the integration is verified for the current
+`KOED_HOME`. The connection is recorded in
+`KOED_HOME/state/ai-client-connections.json`. Removal disconnects the client
+before it changes the integration, so a removal that fails or is interrupted
+still leaves capture off. Status checks never connect a client. They disconnect
+one only when they positively observe that its integration is gone or now
+serves another `KOED_HOME`, and only if nothing changed the connection while
+they ran. An inspection that cannot tell changes nothing. A configured but
+unconnected client is reported as needing attention until it is connected
+again. Every write takes one per-`KOED_HOME` lock and increments the client's
+revision. A setup notes the revision before it changes the integration and
+connects the client only if no removal landed meanwhile. A stale setup or
+status check therefore cannot undo a removal. A record that is missing,
+unreadable, or in the earlier status-derived format connects nothing, so those
+clients must be set up again. The Local AI Runtime rechecks the record every 10
+seconds and starts or stops each client's Transcript Watcher and automatic
+history to match, so connecting or disconnecting needs no restart. Disconnecting
+therefore takes effect within one recheck, plus any ingestion pass already in
+progress. A headless remote runtime never connects a client when it starts;
+its descriptor alone does not restart capture after a removal. Stopping keeps the coordinator's
 state, so a client that is connected again resumes its frozen cohort.
 
 The first successful bounded full discovery cycle establishes activation and
@@ -280,8 +293,10 @@ Conversation that began earlier remains eligible when its latest activity is
 inside the window. Transient discovery failures retry without freezing an
 incomplete cohort. After restart, an incomplete frozen cohort rediscovers local
 source descriptors only to rehydrate its already selected Conversation IDs;
-rediscovery cannot add candidates or expand persisted frontiers. If a live
-watcher registered the artifact before automatic discovery, its earlier
+rediscovery cannot add candidates or expand persisted frontiers. On shutdown,
+the coordinator waits for an active ingestion pass but not outstanding
+discovery; late discovery results and errors are ignored and no retry is
+scheduled. If a live watcher registered the artifact before automatic discovery, its earlier
 immutable activation frontier narrows the frozen selection and remains
 authoritative. Provider-local
 cursor state and run completion are isolated under `KOED_HOME`, so one
@@ -327,7 +342,14 @@ progress or by a pass that runs without failing, such as while selected
 sources finish downstream, which records `recoveredAt` so status stops reporting
 the failure; stopping the runtime is not a failure). A pass failure records the most specific safe code available,
 including the Memory API's code for a rejected request, rather than a generic
-pass failure. Koed status summarises that file without starting or changing
+pass failure. Unfinished selections retry after the configured delay; a pass
+that makes progress requests another pass immediately. If recording a failure
+itself cannot be persisted, the coordinator reports
+`historical_ingestion_state_persist_failed` and still retries. A failed initial
+selection save rolls back the cohort and candidate map for fresh discovery.
+After run completion succeeds, a failed completion-state save is retried without
+repeating completion within that process; this pending state is not durable
+across restart. Koed status summarises that file without starting or changing
 ingestion: Conversations count as finished only at a completed or skipped
 outcome, skipped is reported separately, and an unfinished run with no write
 for 15 minutes is reported as idle, never as resumed. Desktop Home uses this
@@ -342,10 +364,13 @@ run for that source. A run that is still open but cannot accept the artifact
 returns `historical_import_artifact_unavailable` instead, which does not start
 a run.
 
-A failure that is the same on every retry skips the Conversation rather than
-blocking every newer selection: a Codex record too large for any batch, or a
-Codex batch the Memory API rejects as invalid (a 400, whose code becomes the
-skip's failure reason and is logged).
+A Codex record too large for any batch skips the Conversation rather than
+blocking newer selections. A Codex batch-ingestion request also skips it when
+the Memory API returns HTTP 400 with one of `observation_only_canonical_identity`,
+`canonical_identity_incomplete`, `canonical_component_mismatch`, or
+`canonical_identity_mismatch`. The code is recorded as the failure reason and
+logged. Other errors, including other 400 responses and errors fetching source
+segments or content, propagate for retry.
 
 Before each page,
 Koed compares cursor offset with bounded SHA-256 first/last prefix sentinels.

@@ -360,15 +360,9 @@ describe("homeClients", () => {
         label: "The transcript watcher stopped."
       })
     ]);
-    expect(selectHomeView(status, [])).toMatchObject({
-      kind: "empty",
-      warnings: [
-        {
-          id: "client-claude",
-          action: { command: "repair_claude", requiresConsent: true }
-        }
-      ]
-    });
+    // The keycap carries the Repair action, so the warnings chip doesn't
+    // offer a second one.
+    expect(selectHomeView(status, [])).toEqual({ kind: "empty", warnings: [] });
   });
 });
 

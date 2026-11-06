@@ -6,7 +6,12 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
-import { recordAiClientConnections } from "@koed/shared/ai-client-connections";
+import {
+  readAiClientConnections,
+  revokeAiClientConnection,
+  type AiClientConnectionId,
+  type AiClientConnectionsRecord
+} from "@koed/shared/ai-client-connections";
 import { resolveKoedServerConfig } from "./config.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
@@ -125,7 +130,8 @@ export interface KoedServerStatusDependencies {
   checkPid?: (pid: number) => boolean;
   delay?: (milliseconds: number) => Promise<void>;
   now?: () => Date;
-  recordAiClientConnections?: typeof recordAiClientConnections;
+  /** Status only ever disconnects; connecting needs an explicit setup. */
+  revokeAiClientConnection?: typeof revokeAiClientConnection;
 }
 
 const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
@@ -142,8 +148,43 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   delay: (milliseconds) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
   now: () => new Date(),
-  recordAiClientConnections
+  revokeAiClientConnection
 });
+
+const captureConnectionNames: Record<AiClientConnectionId, string> = {
+  codex: "Codex",
+  claude: "Claude Code",
+  pi: "Pi"
+};
+
+// A configured integration is not consent: Koed reads the client's
+// conversations only once setup or repair has connected it. A configured but
+// unconnected client needs attention so the User can reconnect it.
+const captureConnectionStatus = <
+  Component extends { configured?: boolean; details?: unknown }
+>(
+  id: AiClientConnectionId,
+  component: Component,
+  connections: AiClientConnectionsRecord | null
+): Component => {
+  const captureConnected = connections?.clients[id]?.connected === true;
+  const details = {
+    ...((component.details as Record<string, unknown> | undefined) ?? {}),
+    captureConnected
+  };
+  if (captureConnected || component.configured !== true)
+    return { ...component, details };
+  const state = (component as { state?: unknown }).state;
+  if (state !== "healthy") return { ...component, details };
+  const name = captureConnectionNames[id];
+  return {
+    ...component,
+    state: "needs_attention",
+    message: `${name} is set up, but Koed is not reading its conversations until you connect it.`,
+    action: `Connect ${name} again in Koed Desktop, or run \`koed setup ${id}\`.`,
+    details
+  };
+};
 
 // The lifetime is exactly one collection. Rejected selections are shared too;
 // a later poll creates a fresh scope and revalidates the disk.
@@ -262,7 +303,8 @@ export const inspectPi = (
     return {
       ...notConfigured(
         "Pi is not installed or could not be started.",
-        `Install Pi ${MINIMUM_PI_VERSION} or newer, then set up Pi integration.`
+        `Install Pi ${MINIMUM_PI_VERSION} or newer, then set up Pi integration.`,
+        { inspectionState: "unknown" }
       ),
       configured: false,
       detected: detectedFromConfig
@@ -526,7 +568,8 @@ export const inspectClaudeCode = async (
     return {
       ...notConfigured(
         "Claude Code is not installed or could not be started.",
-        `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then set up its integration.`
+        `Install Claude Code ${MINIMUM_CLAUDE_CODE_VERSION} or newer, then set up its integration.`,
+        { inspectionState: "unknown" }
       ),
       configured: false,
       detected: detectedFromConfig
@@ -606,6 +649,29 @@ export const inspectClaudeCode = async (
   }
   const mcpConfigured = !mcp.error && mcp.status === 0;
   const captureConfigured = missingHooks.length === 0;
+  const mcpAbsent =
+    !mcp.error &&
+    mcp.status !== 0 &&
+    /(?:not found|does not exist|no .*mcp|unknown .*server|not configured)/i.test(
+      `${mcp.stdout ?? ""}\n${mcp.stderr ?? ""}`
+    );
+  if (!mcpConfigured && !mcpAbsent && captureConfigured) {
+    return {
+      ...needsAttention(
+        "Claude Code's MCP configuration could not be verified.",
+        "Check again. If this persists, run `claude mcp get` in your terminal to diagnose the configuration.",
+        {
+          executable,
+          version: versionText,
+          settingsPath,
+          mcpName,
+          inspectionState: "unknown"
+        }
+      ),
+      configured: false,
+      detected: true
+    };
+  }
   if (!mcpConfigured || !captureConfigured) {
     return {
       ...notConfigured(
@@ -675,7 +741,12 @@ const withFetchTimeout = (
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await fetcher(url, { ...init, signal: controller.signal });
+      return await fetcher(url, {
+        ...init,
+        signal: init?.signal
+          ? AbortSignal.any([controller.signal, init.signal])
+          : controller.signal
+      });
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
         throw new Error(
@@ -1159,17 +1230,17 @@ const tomlSection = (content: string, sectionName: string): string => {
   return sectionLines.join("\n");
 };
 
-// Inspecting an integration never records connections, so callers that only
-// inspect (tests, headless checks) need not supply the recorder.
+// Inspecting an integration never changes connections, so callers that only
+// inspect (tests, headless checks) need not supply the revoker.
 type CodexStatusDependencies = Required<
   Omit<
     KoedServerStatusDependencies,
-    "desktopRuntimeCapability" | "appRuntime" | "recordAiClientConnections"
+    "desktopRuntimeCapability" | "appRuntime" | "revokeAiClientConnection"
   >
 > &
   Pick<
     KoedServerStatusDependencies,
-    "desktopRuntimeCapability" | "appRuntime" | "recordAiClientConnections"
+    "desktopRuntimeCapability" | "appRuntime" | "revokeAiClientConnection"
   >;
 
 const inspectCodexInstallation = (
@@ -1259,7 +1330,25 @@ export const inspectCodex = async (
   } catch {
     return authenticatedRuntimeUnavailable();
   }
-  const hasExpectedAdapter = mcpBlock.includes(JSON.stringify(runtime.mcpCli));
+  const assignments = (key: string) =>
+    mcpBlock
+      .split(/\r?\n/)
+      .filter((line) => new RegExp(`^\\s*${key}\\s*=`).test(line));
+  const matchesAssignment = (key: string, value: string) => {
+    const lines = assignments(key);
+    if (lines.length !== 1) return false;
+    const assignment = lines[0]!.trim();
+    const expected = `${key} = ${value}`;
+    return (
+      assignment.startsWith(expected) &&
+      /^(?:\s*(?:#.*)?)$/.test(assignment.slice(expected.length))
+    );
+  };
+  const hasExpectedAdapter =
+    matchesAssignment(
+      "command",
+      JSON.stringify(environment.MEMORY_NODE_COMMAND ?? "node")
+    ) && matchesAssignment("args", `[${JSON.stringify(runtime.mcpCli)}]`);
   const containsRetiredCredentials =
     tomlStringValue(mcpEnvBlock, "MEMORY_API_URL") !== null ||
     tomlStringValue(mcpEnvBlock, "MEMORY_API_TOKEN") !== null;
@@ -1272,7 +1361,8 @@ export const inspectCodex = async (
           configuredKoedHome: configuredKoedHome ?? null,
           expectedKoedHome: paths.koedHome,
           expectedMcpAdapter: runtime.mcpCli,
-          codexConfigPath
+          codexConfigPath,
+          currentHomeAuthorized: false
         }
       ),
       configured: true
@@ -1940,6 +2030,27 @@ export async function fetchHistoricalActivity(input: {
   string,
   { recordsRead: number; embedded: number; eligible: number }
 > | null> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      lookupHistoricalActivity(input, controller.signal),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          resolve(null);
+        }, 2000);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function lookupHistoricalActivity(
+  input: Parameters<typeof fetchHistoricalActivity>[0],
+  signal: AbortSignal
+): ReturnType<typeof fetchHistoricalActivity> {
   try {
     const selected = new Map<string, Set<string>>();
     for (const client of historicalIngestionClients) {
@@ -1969,9 +2080,10 @@ export async function fetchHistoricalActivity(input: {
     if (!selected.size) return null;
     const headers = { authorization: `Bearer ${input.token}` };
     const listUrl = new URL("/v1/historical-imports?limit=20", input.apiUrl);
-    const list = await input.fetcher(listUrl, { headers });
-    if (!list.ok) return null;
+    const list = await input.fetcher(listUrl, { headers, signal });
+    if (signal.aborted || !list.ok) return null;
     const body = (await list.json()) as { runs?: { id?: unknown }[] };
+    if (signal.aborted) return null;
     if (
       !Array.isArray(body.runs) ||
       body.runs.length >= 20 ||
@@ -1991,13 +2103,13 @@ export async function fetchHistoricalActivity(input: {
           `/v1/historical-imports/${encodeURIComponent(run.id as string)}`,
           input.apiUrl
         ),
-        { headers }
+        { headers, signal }
       );
-      if (!result.ok) return null;
+      if (signal.aborted || !result.ok) return null;
       const detail = (await result.json()) as {
         run?: { sources?: Record<string, unknown>[] };
       };
-      if (!Array.isArray(detail.run?.sources)) return null;
+      if (signal.aborted || !Array.isArray(detail.run?.sources)) return null;
       for (const source of detail.run.sources) {
         const {
           aiClient,
@@ -3025,6 +3137,9 @@ export const collectKoedServerStatus = async (
     serverConfig.runtimeMode,
     deps
   );
+  // Connections observed before inspecting, so a disconnection below never
+  // undoes a setup that finished while this check ran.
+  const connectionsBefore = readAiClientConnections(paths.koedHome);
   const codex = await inspectSafely(
     "Codex",
     () =>
@@ -3056,26 +3171,54 @@ export const collectKoedServerStatus = async (
       }),
     { state: "needs_attention", configured: false, detected: false }
   );
-  // The Local AI Runtime reads an AI Client only while it is connected. An
-  // inspection that failed says nothing either way, so it keeps the last value.
-  const connection = (inspected: { configured?: boolean; details?: unknown }) =>
-    (inspected.details as { kind?: unknown } | undefined)?.kind ===
-    "inspection_error"
+  // Status never connects an AI Client. When it positively sees that a
+  // connected client's integration is gone or now serves another KOED_HOME,
+  // it disconnects the client; an inspection that could not tell changes
+  // nothing.
+  const observedConnection = (inspected: {
+    configured?: boolean;
+    details?: unknown;
+  }) => {
+    const details = inspected.details as
+      | {
+          kind?: unknown;
+          inspectionState?: unknown;
+          currentHomeAuthorized?: unknown;
+        }
+      | undefined;
+    if (details?.currentHomeAuthorized === false) return false;
+    return details?.kind === "inspection_error" ||
+      details?.inspectionState === "unknown"
       ? undefined
       : inspected.configured === true;
-  try {
-    deps.recordAiClientConnections(
-      paths.koedHome,
-      {
-        codex: connection(codex),
-        claude: connection(claudeCode),
-        pi: connection(pi)
-      },
-      deps.now()
-    );
-  } catch {
-    // Recording is best effort; status still reports the integrations.
+  };
+  const inspectedClients = { codex, claude: claudeCode, pi };
+  for (const id of Object.keys(inspectedClients) as AiClientConnectionId[]) {
+    const before = connectionsBefore?.clients[id];
+    if (
+      before?.connected === true &&
+      observedConnection(inspectedClients[id]) === false
+    ) {
+      try {
+        deps.revokeAiClientConnection(paths.koedHome, id, {
+          ifRevision: before.revision,
+          now: deps.now()
+        });
+      } catch {
+        // The next status check retries; status still reports the client.
+      }
+    }
   }
+  const connections = readAiClientConnections(paths.koedHome);
+  const withCaptureConnection = <
+    Component extends { configured?: boolean; details?: unknown }
+  >(
+    id: AiClientConnectionId,
+    component: Component
+  ) => captureConnectionStatus(id, component, connections);
+  const codexStatus = withCaptureConnection("codex", codex);
+  const claudeCodeStatus = withCaptureConnection("claude", claudeCode);
+  const piStatus = withCaptureConnection("pi", pi);
   const captureHook = await inspectSafely(
     "Supported Capture Hook",
     () => inspectCaptureHook(runtimeEnvironment, paths, deps),
@@ -3258,9 +3401,9 @@ export const collectKoedServerStatus = async (
   const readinessInput = {
     localAiClientInstances,
     localAiClientRegistryError,
-    codex,
-    claudeCode,
-    pi,
+    codex: codexStatus,
+    claudeCode: claudeCodeStatus,
+    pi: piStatus,
     codexTranscriptWatcher,
     claudeTranscriptWatcher,
     piTranscriptWatcher,
@@ -3321,9 +3464,9 @@ export const collectKoedServerStatus = async (
     codexTranscriptWatcher,
     claudeTranscriptWatcher,
     piTranscriptWatcher,
-    codex,
-    claudeCode,
-    pi,
+    codex: codexStatus,
+    claudeCode: claudeCodeStatus,
+    pi: piStatus,
     aiClients,
     aiClientInstances,
     aiClientFlowReadiness,

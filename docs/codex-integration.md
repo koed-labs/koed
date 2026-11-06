@@ -197,6 +197,15 @@ and stops before the API. Developer and local-personal runtime modes enable it
 by default. External runtime mode does not run a Local AI Runtime or Transcript
 Watcher; user-local capture belongs on the User's local `koed-server`.
 
+Capture is authorized for the current `KOED_HOME` only by `koed setup codex`,
+`koed repair codex`, or the equivalent Koed Desktop action. Each one connects
+Codex only after verifying that Codex's managed MCP command and arguments match
+this runtime. Status checks never authorize capture. When a status check sees
+the Codex integration moved to another Koed home, it disconnects Codex in the
+previous home; restoring the configuration does not reconnect it until setup or
+repair runs again. `koed remove codex` disconnects Codex before it edits the
+configuration.
+
 By default, the watcher scans `CODEX_HOME/sessions` (`~/.codex/sessions` when
 `CODEX_HOME` is unset). `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces that default
 with a platform path-delimited list of explicit transcript roots. Filesystem

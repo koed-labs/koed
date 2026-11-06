@@ -1,5 +1,10 @@
 import { createServer } from "node:net";
-import { recordAiClientConnections } from "@koed/shared/ai-client-connections";
+import {
+  aiClientConnectionRevision,
+  grantAiClientConnection,
+  revokeAiClientConnection,
+  type AiClientConnectionId
+} from "@koed/shared/ai-client-connections";
 import {
   ensureDeviceIdentity,
   readSourceFolderObservation,
@@ -40,12 +45,25 @@ const tempHome = (): string => {
   return root;
 };
 
-// The runtime reads only AI Clients Koed Server has recorded as connected.
+// The runtime reads only AI Clients that setup connected.
+const setConnections = (
+  home: string,
+  connected: Partial<Record<AiClientConnectionId, boolean>>
+) => {
+  for (const [id, value] of Object.entries(connected) as [
+    AiClientConnectionId,
+    boolean
+  ][]) {
+    if (value)
+      grantAiClientConnection(home, id, aiClientConnectionRevision(home, id));
+    else revokeAiClientConnection(home, id);
+  }
+};
 const connectedHome = (
-  connected: Parameters<typeof recordAiClientConnections>[1]
+  connected: Partial<Record<AiClientConnectionId, boolean>>
 ): string => {
   const home = tempHome();
-  recordAiClientConnections(home, connected);
+  setConnections(home, connected);
   return home;
 };
 
@@ -566,6 +584,102 @@ describe("Local AI Runtime", () => {
       env: environment
     });
     await services.close();
+  });
+
+  it("propagates initial watcher failure even when historical discovery stalls", async () => {
+    let finishDiscovery!: (candidates: never[]) => void;
+    const discovery = new Promise<never[]>((resolve) => {
+      finishDiscovery = resolve;
+    });
+    const failure = new Error("watcher failed");
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(),
+      startClaudeTranscriptWatcher: vi.fn(() => {
+        throw failure;
+      }),
+      createClaudeHistoricalProviderAdapter: vi.fn(() => ({
+        aiClient: "claude",
+        discoverCandidates: () => discovery,
+        candidateId: (candidate: { id: string }) => candidate.id,
+        selectCandidates: () => [],
+        processNextBatch: vi.fn()
+      })),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const apiClient = new MemoryApiClient({
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token"
+    });
+    let settled = false;
+    const startup = startDefaultLocalAiRuntimeServices(
+      { apiClient, environment: {}, koedHome: connectedHome({ claude: true }) },
+      dependencies
+    ).catch((error: unknown) => {
+      settled = true;
+      return error;
+    });
+    try {
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 500 });
+      expect(await startup).toBe(failure);
+    } finally {
+      finishDiscovery([]);
+    }
+  });
+
+  it("retries capture without waiting for stalled historical discovery", async () => {
+    vi.useFakeTimers();
+    let finishDiscovery!: (candidates: never[]) => void;
+    const discovery = new Promise<never[]>((resolve) => {
+      finishDiscovery = resolve;
+    });
+    const discoverCandidates = vi
+      .fn()
+      .mockReturnValueOnce(discovery)
+      .mockResolvedValue([]);
+    const watcherStop = vi.fn(async () => undefined);
+    const startWatcher = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("watcher failed");
+      })
+      .mockReturnValue({ stop: watcherStop });
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(),
+      startClaudeTranscriptWatcher: startWatcher,
+      createClaudeHistoricalProviderAdapter: vi.fn(() => ({
+        aiClient: "claude",
+        discoverCandidates,
+        candidateId: (candidate: { id: string }) => candidate.id,
+        selectCandidates: () => [],
+        processNextBatch: vi.fn()
+      })),
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const apiClient = new MemoryApiClient({
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token"
+    });
+    const home = connectedHome({ claude: false });
+    const services = await startDefaultLocalAiRuntimeServices(
+      { apiClient, environment: {}, koedHome: home },
+      dependencies
+    );
+    try {
+      setConnections(home, { claude: true });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(startWatcher).toHaveBeenCalledTimes(2);
+      expect(discoverCandidates).toHaveBeenCalledTimes(2);
+    } finally {
+      finishDiscovery([]);
+      await services.close();
+    }
+    expect(watcherStop).toHaveBeenCalledTimes(1);
   });
 
   it("reads only the AI Clients the User has connected", async () => {

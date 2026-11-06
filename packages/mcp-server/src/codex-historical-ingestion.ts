@@ -464,7 +464,7 @@ const importNextBatch = async (input: {
   source: HistoricalSource;
   selection: HistoricalCandidateSelection;
   config: CodexHistoricalIngestionConfig;
-}): Promise<boolean> => {
+}): Promise<boolean | string> => {
   const frontier = input.source.registrationFrontierOffset;
   if (input.source.historicalCursorOffset >= frontier) return false;
   const response = await input.client.listConversationSourceSegments(
@@ -513,22 +513,43 @@ const importNextBatch = async (input: {
     .map((item) => item.eventTime)
     .filter((value): value is string => typeof value === "string")
     .sort();
-  await input.client.ingestHistoricalImportBatch(input.source.id, {
-    expectedSourceOffset: input.source.historicalCursorOffset,
-    sourceOffset: input.source.historicalCursorOffset + batch.bytesConsumed,
-    sourceLine: batch.sourceLine,
-    segmentIndex: segment.segmentIndex,
-    lastVerifiedDigest: segment.plaintextDigest,
-    parserState: batch.parserState,
-    malformedRecordCount: batch.malformedRecordCount,
-    ...(eventTimes[0]
-      ? {
-          sourceEventFrom: eventTimes[0],
-          sourceEventTo: eventTimes.at(-1)
-        }
-      : {}),
-    items: batch.items
-  });
+  try {
+    await input.client.ingestHistoricalImportBatch(input.source.id, {
+      expectedSourceOffset: input.source.historicalCursorOffset,
+      sourceOffset: input.source.historicalCursorOffset + batch.bytesConsumed,
+      sourceLine: batch.sourceLine,
+      segmentIndex: segment.segmentIndex,
+      lastVerifiedDigest: segment.plaintextDigest,
+      parserState: batch.parserState,
+      malformedRecordCount: batch.malformedRecordCount,
+      ...(eventTimes[0]
+        ? {
+            sourceEventFrom: eventTimes[0],
+            sourceEventTo: eventTimes.at(-1)
+          }
+        : {}),
+      items: batch.items
+    });
+  } catch (error) {
+    if (error instanceof MemoryApiError && error.status === 400) {
+      const payload = error.payload;
+      const code =
+        typeof payload === "object" && payload !== null && "code" in payload
+          ? payload.code
+          : undefined;
+      if (
+        typeof code === "string" &&
+        [
+          "observation_only_canonical_identity",
+          "canonical_identity_incomplete",
+          "canonical_component_mismatch",
+          "canonical_identity_mismatch"
+        ].includes(code)
+      )
+        return code;
+    }
+    throw error;
+  }
   return true;
 };
 
@@ -544,21 +565,6 @@ const importNextBatch = async (input: {
 const isUnrepresentableRecordError = (error: unknown): boolean =>
   error instanceof Error &&
   error.message === "historical_record_exceeds_batch_limit";
-
-// The Memory API rejecting a batch as invalid (400) is just as permanent: the
-// same records are sent on every retry. Skip the Conversation, keeping the
-// API's code as the reason, rather than block every newer selection.
-const rejectedBatchReason = (error: unknown): string | null => {
-  if (!(error instanceof MemoryApiError) || error.status !== 400) return null;
-  const payload = error.payload;
-  const code =
-    typeof payload === "object" && payload !== null && "code" in payload
-      ? payload.code
-      : undefined;
-  return typeof code === "string" && /^[a-z0-9_.:-]{1,128}$/.test(code)
-    ? code
-    : "historical_batch_rejected";
-};
 
 const skipUnimportableSource = async (
   client: MemoryApiClient,
@@ -794,7 +800,7 @@ export const createCodexHistoricalProviderAdapter = (input: {
             runId: activeRunId
           };
         }
-        let progressed: boolean;
+        let progressed: boolean | string;
         try {
           progressed = await importNextBatch({
             client: input.client,
@@ -803,19 +809,25 @@ export const createCodexHistoricalProviderAdapter = (input: {
             config
           });
         } catch (error) {
-          const reason = isUnrepresentableRecordError(error)
-            ? "historical_record_exceeds_batch_limit"
-            : rejectedBatchReason(error);
-          if (!reason) throw error;
-          await skipUnimportableSource(input.client, source, reason);
+          if (!isUnrepresentableRecordError(error)) throw error;
+          await skipUnimportableSource(
+            input.client,
+            source,
+            "historical_record_exceeds_batch_limit"
+          );
+          return {
+            state: "skipped",
+            selection: currentSelection,
+            runId: activeRunId
+          };
+        }
+        if (typeof progressed === "string") {
+          await skipUnimportableSource(input.client, source, progressed);
           return {
             state: "skipped",
             selection: currentSelection,
             runId: activeRunId,
-            // Logged, so a skipped Conversation is never silent.
-            ...(reason === "historical_record_exceeds_batch_limit"
-              ? {}
-              : { diagnosticCode: reason })
+            diagnosticCode: progressed
           };
         }
         if (progressed) {

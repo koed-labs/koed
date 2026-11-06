@@ -203,6 +203,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   let requested = false;
   let discovery: Promise<void> | null = null;
   let discoveryTimer: NodeJS.Timeout | undefined;
+  let completionPending = false;
 
   const nowIso = () => (input.now?.() ?? new Date()).toISOString();
   const save = (): void => persistState(statePath, state);
@@ -221,7 +222,15 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       lastErrorAt: at,
       failingSince: state.progress?.failingSince ?? at
     });
-    save();
+    try {
+      save();
+    } catch (error) {
+      if (input.onError) {
+        input.onError("historical_ingestion_state_persist_failed");
+      } else {
+        console.error("historical_ingestion_state_persist_failed", error);
+      }
+    }
     input.onError?.(code);
   };
   const schedule = (delayMs = 0): void => {
@@ -235,22 +244,32 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
     timer.unref();
   };
   const pass = async (): Promise<boolean> => {
+    if (completionPending) {
+      const completed = { ...state, runCompleted: true };
+      persistState(statePath, completed);
+      state = completed;
+      completionPending = false;
+      return false;
+    }
     if (state.runCompleted || state.selections.length === 0) return false;
     let progressed = false;
     let allTerminal = true;
     for (const current of state.selections) {
-      if (stopped) break;
+      if (stopped) return false;
       if (current.terminalState) continue;
       const candidate = candidates.get(current.candidateId);
       const processNextBatch = () =>
-        input.adapter.processNextBatch({
-          ...(candidate ? { candidate } : {}),
-          selection: current,
-          ...(state.runId ? { runId: state.runId } : {})
-        });
+        stopped
+          ? Promise.resolve(undefined)
+          : input.adapter.processNextBatch({
+              ...(candidate ? { candidate } : {}),
+              selection: current,
+              ...(state.runId ? { runId: state.runId } : {})
+            });
       const result = input.batchScheduler
         ? await input.batchScheduler.runExclusive(processNextBatch)
         : await processNextBatch();
+      if (!result) return false;
       const index = state.selections.findIndex(
         (selection) => selection.candidateId === current.candidateId
       );
@@ -280,10 +299,14 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       // finalization may finish later and remains a downstream concern.
       if (result.state === "progress" || result.state === "waiting") break;
     }
+    if (stopped) return false;
     if (allTerminal && state.runId && input.adapter.completeRun) {
       await input.adapter.completeRun(state.runId);
-      state = { ...state, runCompleted: true };
-      save();
+      completionPending = true;
+      const completed = { ...state, runCompleted: true };
+      persistState(statePath, completed);
+      state = completed;
+      completionPending = false;
     }
     return progressed;
   };
@@ -320,10 +343,14 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
 
   const offerCandidates = (offered: readonly Candidate[]): void => {
     if (stopped) return;
+    const previousCandidates = !state.selectionFrozen
+      ? new Map(candidates)
+      : undefined;
     for (const candidate of offered) {
       candidates.set(input.adapter.candidateId(candidate), candidate);
     }
     if (!state.selectionFrozen) {
+      const previousState = state;
       state = {
         version: STATE_VERSION,
         selectionFrozen: true,
@@ -334,7 +361,16 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
         )
       };
       record({});
-      save();
+      try {
+        save();
+      } catch (error) {
+        state = previousState;
+        candidates.clear();
+        for (const [id, candidate] of previousCandidates ?? []) {
+          candidates.set(id, candidate);
+        }
+        throw error;
+      }
     }
     schedule();
   };
@@ -374,6 +410,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       .discoverCandidates(candidateIds)
       .then(offerCandidates)
       .catch((error) => {
+        if (stopped) return;
         input.onError?.(
           error instanceof Error && /^[a-z0-9_.:-]+$/.test(error.message)
             ? error.message
@@ -403,7 +440,6 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       stopped = true;
       if (timer) clearTimeout(timer);
       if (discoveryTimer) clearTimeout(discoveryTimer);
-      await discovery;
       await running;
     }
   };

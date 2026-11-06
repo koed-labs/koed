@@ -1,3 +1,9 @@
+import type { AiClientConnectionId } from "@koed/shared/ai-client-connections";
+import {
+  connectAiClientAfterSetup,
+  disconnectAiClientThenRemove,
+  verifyAiClientIntegration
+} from "./ai-client-authorization.js";
 import type { KoedServerCliDependencies } from "./cli-contract.js";
 import type {
   IntegrationOptions,
@@ -22,11 +28,24 @@ export const runIntegrationCommand = async (
     removePiIntegration,
     removeCodexIntegrationFn,
     repairCodex,
+    resolvePaths,
     stdout,
     stderr
   } = createCliServiceContext(dependencies);
   const subcommand = options.client;
   const wantsJson = options.json;
+  const koedHome = () => resolvePaths(process.env).koedHome;
+  const connectAfter = <R extends { ok: boolean; koedHome: string }>(
+    client: AiClientConnectionId,
+    run: () => Promise<R>
+  ) =>
+    connectAiClientAfterSetup({
+      client,
+      koedHome: koedHome(),
+      run,
+      verify: (home) =>
+        verifyAiClientIntegration(client, home, process.env, collectStatus)
+    });
   try {
     if (command === "setup" && subcommand === "core") {
       const result = await setupCoreIntegration();
@@ -61,19 +80,22 @@ export const runIntegrationCommand = async (
           "Legacy recall flags are deprecated; select delivery_mode on memory_answer instead.\n"
         );
       }
-      const result = await setup({
-        environment: {
-          ...process.env,
-          ...(withoutGuidance || withGuidance
-            ? {
-                KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: String(withGuidance)
-              }
-            : {}),
-          ...(deferredRecall || blockingRecall
-            ? { KOED_CODEX_STOP_DELIVERY: deferredRecall ? "1" : "0" }
-            : {})
-        }
-      });
+      const result = await connectAfter("codex", () =>
+        setup({
+          environment: {
+            ...process.env,
+            ...(withoutGuidance || withGuidance
+              ? {
+                  KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED:
+                    String(withGuidance)
+                }
+              : {}),
+            ...(deferredRecall || blockingRecall
+              ? { KOED_CODEX_STOP_DELIVERY: deferredRecall ? "1" : "0" }
+              : {})
+          }
+        })
+      );
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -87,7 +109,7 @@ export const runIntegrationCommand = async (
     }
 
     if (command === "setup" && subcommand === "pi") {
-      const result = await setupPiIntegration();
+      const result = await connectAfter("pi", () => setupPiIntegration());
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -103,11 +125,13 @@ export const runIntegrationCommand = async (
     }
 
     if (command === "setup" && subcommand === "claude") {
-      const result = await (options.backgroundRecall
-        ? setupClaudeIntegration(undefined, undefined, {
-            backgroundRecall: true
-          })
-        : setupClaudeIntegration());
+      const result = await connectAfter("claude", () =>
+        options.backgroundRecall
+          ? setupClaudeIntegration(undefined, undefined, {
+              backgroundRecall: true
+            })
+          : setupClaudeIntegration()
+      );
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -125,7 +149,7 @@ export const runIntegrationCommand = async (
     }
 
     if (command === "repair" && subcommand === "codex") {
-      const result = await repairCodex();
+      const result = await connectAfter("codex", () => repairCodex());
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -166,11 +190,11 @@ export const runIntegrationCommand = async (
     if (command === "repair" && subcommand) {
       const result =
         subcommand === "codex"
-          ? await repairCodex()
+          ? await connectAfter("codex", () => repairCodex())
           : subcommand === "claude"
-            ? await setupClaudeIntegration()
+            ? await connectAfter("claude", () => setupClaudeIntegration())
             : subcommand === "pi"
-              ? await setupPiIntegration()
+              ? await connectAfter("pi", () => setupPiIntegration())
               : null;
       if (!result)
         throw new Error("repair client must be codex, claude, or pi.");
@@ -183,16 +207,23 @@ export const runIntegrationCommand = async (
     }
 
     if (command === "remove" && subcommand) {
-      const result =
-        subcommand === "codex"
-          ? removeCodexIntegrationFn()
-          : subcommand === "claude"
-            ? removeClaudeIntegration()
-            : subcommand === "pi"
-              ? removePiIntegration()
-              : null;
-      if (!result)
+      if (
+        subcommand !== "codex" &&
+        subcommand !== "claude" &&
+        subcommand !== "pi"
+      )
         throw new Error("remove client must be codex, claude, or pi.");
+      // Disconnect first: capture stops even if removal fails or is cut short.
+      const result = disconnectAiClientThenRemove({
+        client: subcommand,
+        koedHome: koedHome(),
+        remove: () =>
+          subcommand === "codex"
+            ? removeCodexIntegrationFn()
+            : subcommand === "claude"
+              ? removeClaudeIntegration()
+              : removePiIntegration()
+      });
       if (wantsJson) printJson(stdout, result);
       else
         stdout.write(

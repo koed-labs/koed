@@ -1099,6 +1099,50 @@ describe("SetupChecklist", () => {
     ).toBe("ReadyNeeds attentionUnknownUnsupported");
   });
 
+  it("shows capability readiness for a configured Codex profile needing repair", async () => {
+    const status = statusWithClientProfiles({
+      codex: "healthy",
+      claude: "not_configured",
+      pi: "not_configured"
+    });
+    status.aiClients!.codex!.profile.state = "needs_attention";
+    status.aiClients!.codex!.capabilities = [
+      {
+        id: "mcp_recall",
+        support: "unsupported",
+        readiness: "unknown",
+        diagnostics: []
+      }
+    ];
+    window.koedDesktop = {
+      invoke: async <T = unknown,>(command: string): Promise<T> =>
+        (command === "status" ? status : { ok: true }) as T,
+      setup: {
+        inspect: async () => completeSetupFixture(),
+        run: async () => completeSetupFixture(),
+        subscribe: () => () => undefined
+      }
+    };
+    await act(async () => {
+      root.render(
+        <SetupChecklist
+          onComplete={vi.fn()}
+          showTrustGuide={false}
+          statusStore={new DesktopStatusStore()}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Continue")!
+        .click()
+    );
+    expect(
+      container.querySelector('[aria-label="MCP Recall: Unsupported"]')
+    ).toBeTruthy();
+  });
+
   it("keeps one client's failure isolated from the rest of the queue", async () => {
     const status = {
       ...statusFixture("healthy"),
