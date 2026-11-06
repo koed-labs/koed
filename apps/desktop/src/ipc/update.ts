@@ -18,7 +18,7 @@ interface UpdateIpcOptions {
   getMainWindow(): {
     isDestroyed(): boolean;
     webContents: {
-      mainFrame: unknown;
+      mainFrame: { url: string };
       isDestroyed(): boolean;
       send(channel: string, value: unknown): void;
     };
@@ -32,33 +32,30 @@ export const registerDesktopUpdateIpc = (
   options: UpdateIpcOptions
 ): (() => void) => {
   let active = true;
-  const isAuthorized = (event: any): boolean => {
-    const window = options.getMainWindow();
-    if (!window || window.isDestroyed() || window.webContents.isDestroyed())
-      return false;
-    if (
-      event.sender !== window.webContents ||
-      event.senderFrame !== window.webContents.mainFrame
-    )
-      return false;
+  const isTrustedMainWindow = (
+    window: NonNullable<ReturnType<UpdateIpcOptions["getMainWindow"]>>
+  ): boolean => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return false;
     try {
       return options.allowedRendererOrigins.has(
-        desktopRendererOrigin(event.senderFrame.url)
+        desktopRendererOrigin(window.webContents.mainFrame.url)
       );
     } catch {
       return false;
     }
   };
+  const isAuthorized = (event: any): boolean => {
+    const window = options.getMainWindow();
+    if (!window || !isTrustedMainWindow(window)) return false;
+    return (
+      event.sender === window.webContents &&
+      event.senderFrame === window.webContents.mainFrame
+    );
+  };
   const unsubscribe = options.discovery.subscribe((state) => {
     const parsed = desktopUpdateStateSchema.safeParse(state);
     const window = options.getMainWindow();
-    if (
-      active &&
-      parsed.success &&
-      window &&
-      !window.isDestroyed() &&
-      !window.webContents.isDestroyed()
-    ) {
+    if (active && parsed.success && window && isTrustedMainWindow(window)) {
       window.webContents.send(desktopUpdateEventChannel, parsed.data);
     }
   });

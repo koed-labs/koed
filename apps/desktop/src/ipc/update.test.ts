@@ -89,12 +89,25 @@ describe("Desktop update IPC", () => {
       ).rejects.toThrow();
     await reject({ ...h.event, sender: {} });
     await reject({ ...h.event, senderFrame: { url: "koed://app/child" } });
-    await reject({
-      ...h.event,
-      senderFrame: { url: "https://foreign.example" }
-    });
+    h.discovery.current.mockClear();
+    h.discovery.check.mockClear();
+    h.openRelease.mockClear();
+    h.event.senderFrame.url = "https://foreign.example/";
+    await reject(h.event);
+    expect(h.discovery.current).not.toHaveBeenCalled();
+    expect(h.discovery.check).not.toHaveBeenCalled();
+    expect(h.openRelease).not.toHaveBeenCalled();
     h.window.isDestroyed.mockReturnValue(true);
     await reject(h.event);
+  });
+
+  it("does not broadcast updates when the active main frame has an untrusted origin", () => {
+    const h = createHarness();
+    const sendCount = h.window.webContents.send.mock.calls.length;
+    h.event.senderFrame.url = "https://foreign.example/";
+    const publish = h.discovery.subscribe.mock.calls[0]?.[0];
+    publish?.(state);
+    expect(h.window.webContents.send).toHaveBeenCalledTimes(sendCount);
   });
 
   it("sanitizes opener failures and disposes only its subscription and handler once", async () => {
