@@ -708,6 +708,7 @@ const bootstrap = async () => {
         argv: process.argv,
         channel: process,
         send: (message) => process.send?.(message),
+        installedVersion: app.getVersion(),
         invoke: async (command) => {
           if (command === "privacy_status")
             return server.privacyInstall.getStatus();

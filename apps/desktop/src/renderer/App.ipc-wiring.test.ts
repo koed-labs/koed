@@ -10,6 +10,13 @@ describe("App Desktop IPC wiring", () => {
     );
   });
 
+  it("wires update notice only through the preload bridge", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    expect(source).toContain("useDesktopUpdate(window.koedDesktop?.updates)");
+    expect(source).toContain("<DesktopUpdateIndicator");
+    expect(source).toContain('onOpen={() => openPreferences("about")}');
+  });
+
   it("starts the solo interface without enabling the hidden Team interface", () => {
     const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
 

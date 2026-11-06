@@ -37,6 +37,8 @@ import type { CollaborationRendererClient } from "../../../collaboration/rendere
 import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import type { DesktopApi } from "../../../types.js";
+import type { DesktopUpdateController } from "../../update/use-desktop-update.js";
+import { DesktopUpdatePanel } from "../../update/DesktopUpdate.js";
 import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
 import { AiClientStatusDialog } from "./AiClientStatusDialog.js";
 import { EmbeddingStateDetails } from "./EmbeddingStateDetails.js";
@@ -90,6 +92,7 @@ export type PreferencesViewProps = {
   onSectionChange?: (section: PreferencesSection) => void;
   onThemeChange: (theme: DesktopThemePreference) => void;
   statusStore: DesktopStatusStore;
+  update?: DesktopUpdateController;
   teamCollaborationEnabled?: boolean;
   theme: DesktopThemePreference;
   version: string;
@@ -575,8 +578,9 @@ function AboutSection({
     "React and Electron — open-source software",
     "Base UI and Lucide — open-source interface components"
   ],
+  update,
   version
-}: Pick<PreferencesViewProps, "acknowledgements" | "version">) {
+}: Pick<PreferencesViewProps, "acknowledgements" | "update" | "version">) {
   return (
     <div className="koed-preference-section">
       <dl className="koed-about-list">
@@ -589,6 +593,7 @@ function AboutSection({
           <dd>Apache License 2.0</dd>
         </div>
       </dl>
+      {update ? <DesktopUpdatePanel update={update} /> : null}
       <section aria-labelledby="koed-acknowledgements-title">
         <h2 id="koed-acknowledgements-title">Acknowledgements</h2>
         <ul>
@@ -1177,6 +1182,7 @@ export function PreferencesView({
   onSectionChange,
   onThemeChange,
   statusStore,
+  update,
   teamCollaborationEnabled = true,
   theme,
   version
@@ -1256,6 +1262,7 @@ export function PreferencesView({
           {section === "about" ? (
             <AboutSection
               acknowledgements={acknowledgements}
+              update={update}
               version={version}
             />
           ) : null}

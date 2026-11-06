@@ -12,6 +12,7 @@ const fixture = (packaged = true, connected = true) => {
       argv: ["--koed-private-smoke"],
       channel,
       send: (value) => messages.push(value),
+      installedVersion: "1.2.3",
       invoke: async (command) => {
         calls.push(command);
         return {
@@ -81,6 +82,24 @@ describe("private packaged smoke harness", () => {
       }
     ]);
   });
+  it("reports disabled update notice in private smoke without invoking update authority", async () => {
+    const f = fixture();
+    f.attach();
+    f.request("update_notice", "updates");
+    await tick();
+    expect(f.calls).toEqual([]);
+    expect(f.messages).toContainEqual({
+      type: "koed.desktop.smoke.response",
+      version: 1,
+      id: "updates",
+      result: {
+        installedVersion: "1.2.3",
+        status: "disabled",
+        release: null,
+        checkedAt: null
+      }
+    });
+  });
   it("exposes only the shared start command and the lifecycle observation for shared-lifecycle acceptance", async () => {
     const f = fixture();
     f.attach();
@@ -117,6 +136,7 @@ describe("private packaged smoke harness", () => {
         argv: [],
         channel: f.channel,
         send: vi.fn(),
+        installedVersion: "1.2.3",
         invoke,
         stop: vi.fn(),
         quit: vi.fn()
@@ -136,6 +156,7 @@ describe("private packaged smoke harness", () => {
       argv: ["--koed-private-smoke"],
       channel: f.channel,
       send: (value) => f.messages.push(value),
+      installedVersion: "1.2.3",
       invoke,
       stop: vi.fn(),
       quit: vi.fn()

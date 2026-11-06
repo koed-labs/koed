@@ -1,0 +1,25 @@
+.desktop-update-indicator {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  color: var(--foreground);
+  background: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+
+.desktop-update-panel {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  max-width: 42rem;
+}
+
+.desktop-update-panel h2,
+.desktop-update-panel p {
+  margin: 0;
+}
+
+.desktop-update-notes {
+  white-space: pre-wrap;
+}

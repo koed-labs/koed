@@ -1,5 +1,7 @@
 # Koed Desktop
 
+See [Desktop updates](../../docs/desktop-updates.md) for update notices and safe manual-update steps.
+
 Koed Desktop is the Electron control surface for Koed.
 
 It wraps the same local `koed-server` command surface, shows service status,
