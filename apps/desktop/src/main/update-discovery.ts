@@ -227,10 +227,10 @@ const discover = async (fetcher: typeof fetch, signal: AbortSignal) => {
     }
     if (
       expectedLastPage !== undefined &&
-      expectedLastPage > page &&
-      !pagination.hasNext
+      ((expectedLastPage > page && !pagination.hasNext) ||
+        (pagination.hasNext && page >= expectedLastPage))
     )
-      throw new Error("Incomplete pagination.");
+      throw new Error("Inconsistent pagination.");
     if (!pagination.hasNext && entries.length < pageSize)
       return highest?.release ?? null;
   }

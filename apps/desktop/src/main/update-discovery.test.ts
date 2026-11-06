@@ -153,6 +153,27 @@ describe("update discovery", () => {
     expect(firstPageFetcher).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects a next page beyond the previously advertised last page", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const page = Number(new URL(String(input)).searchParams.get("page"));
+      if (page === 1) {
+        return response([version("0.11.0")], {
+          link: '<https://api.github.com/repos/koed-labs/koed/releases?per_page=100&page=2>; rel="next", <https://api.github.com/repos/koed-labs/koed/releases?per_page=100&page=2>; rel="last"'
+        });
+      }
+      return response([version("0.12.0")], {
+        link: '<https://api.github.com/repos/koed-labs/koed/releases?per_page=100&page=3>; rel="next"'
+      });
+    }) as unknown as typeof fetch;
+    const result = await createUpdateDiscovery({
+      eligible: true,
+      installedVersion: "0.10.0",
+      fetch: fetcher
+    }).check();
+    expect(result.status).toBe("error");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("cancels streaming bodies for rejected HTTP and content-type responses", async () => {
     for (const rejectedResponse of [
       { status: 503, contentType: "application/json" },
