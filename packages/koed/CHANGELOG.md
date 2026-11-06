@@ -1,5 +1,11 @@
 # @koed/koed
 
+## 0.11.0
+
+### Minor Changes
+
+- dbbb72b: Add a notify-only Desktop update notice: an app-wide sidebar card and About panel that download the official installer for the running platform.
+
 ## 0.10.3
 
 ## 0.10.2
@@ -162,6 +168,7 @@
   the artifact policy check for the Electron runtime dependencies.
 - 34d39b0: Show Embedding Service status under Preferences → Services in Koed Desktop: backlog, throughput, drain estimate, queue counts, Projection backlog, and historical import admission. `koed status` now includes this snapshot as `embeddingState`.
 - b078fac: Keep historical Projection moving during real use.
+
   - A single turn larger than the historical batch row or byte cap is now
     projected by itself, instead of blocking every later imported turn.
   - Live rows that are only waiting for an open agent turn to finish no longer
