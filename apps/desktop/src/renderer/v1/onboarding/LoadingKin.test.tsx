@@ -132,6 +132,38 @@ describe("onboarding Kin lifecycle", () => {
       host.querySelector(".lp-kin-scene")?.getAttribute("data-kin-animating")
     ).toBe("false");
   });
+  it("releases a timed-out stationary pointer and accepts another press", async () => {
+    const { paint } = await render();
+    const button = host.querySelector("button")!;
+    let captured: number | null = null;
+    button.setPointerCapture = (id) => {
+      captured = id;
+    };
+    button.hasPointerCapture = (id) => captured === id;
+    button.releasePointerCapture = () => {
+      captured = null;
+    };
+    await paint(100);
+    const down = new PointerEvent("pointerdown", {
+      pointerId: 1,
+      isPrimary: true,
+      button: 0
+    });
+    Object.defineProperty(down, "timeStamp", { value: 100 });
+    button.dispatchEvent(down);
+    expect(button.dataset.dragging).toBe("true");
+    await paint(2200);
+    expect(button.dataset.dragging).toBe("false");
+    expect(captured).toBeNull();
+    button.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        pointerId: 2,
+        isPrimary: true,
+        button: 0
+      })
+    );
+    expect(captured).toBe(2);
+  });
   it("shows the CSS fallback when WebGL2 is unavailable", async () => {
     const { frames } = await render(false, true, false);
     expect(

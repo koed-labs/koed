@@ -145,6 +145,7 @@ export function V1App({
   const scopeKeyRef = useRef<string | null>(null);
   scopeKeyRef.current = scopeKey;
   const [provenance, setProvenance] = useState<V1Provenance>(emptyProvenance);
+  const [provenanceScope, setProvenanceScope] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const navigation = useNavigationHistory(scopeKey);
   const { route, navigate: setRoute } = navigation;
@@ -363,6 +364,7 @@ export function V1App({
           setOwnerId(identity.ownerId);
           setScopeKey(identity.scopeKey);
           setProvenance(emptyProvenance);
+          setProvenanceScope(null);
           setRealtime(null);
           setIndependentProject(null);
           setSelectedProjectId(null);
@@ -377,6 +379,7 @@ export function V1App({
         )
           return;
         setProvenance(value);
+        setProvenanceScope(identity.scopeKey);
       } catch (cause) {
         if (active && currentGeneration === generation)
           setError(cause instanceof Error ? cause.message : String(cause));
@@ -736,6 +739,32 @@ export function V1App({
     projectId: string;
     key: number;
   } | null>(null);
+  const homeConversations = useMemo(() => {
+    const conversations = new Map<
+      string,
+      {
+        key: string;
+        aliases: string[];
+        client: "codex" | "claude" | "pi" | null;
+        projectIds: string[];
+      }
+    >();
+    for (const project of sidebarProjects) {
+      for (const row of project.conversations) {
+        const conversation = conversations.get(row.key) ?? {
+          key: row.key,
+          aliases: [],
+          client: row.client,
+          projectIds: []
+        };
+        conversation.aliases.push(...row.aliases);
+        if (project.id !== "no-project")
+          conversation.projectIds.push(project.id);
+        conversations.set(row.key, conversation);
+      }
+    }
+    return [...conversations.values()];
+  }, [sidebarProjects]);
   // Conversations in no Project lie on Home's floor as coins.
   const looseConversations = useMemo(
     () =>
@@ -1071,6 +1100,10 @@ export function V1App({
               statusStore={statusStore}
               onOpenProject={openProject}
               looseConversations={looseConversations}
+              conversations={homeConversations}
+              conversationScope={
+                inventoryReady && provenanceScope === scopeKey ? scopeKey : null
+              }
               onOpenConversation={openLooseConversation}
               {...(projectManagement.management
                 ? { onDropConversation: dropLooseConversation }
