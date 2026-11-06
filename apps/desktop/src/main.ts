@@ -22,6 +22,11 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
+import { registerDesktopUpdateIpc } from "./ipc/update.js";
+import {
+  createUpdateDiscovery,
+  officialReleasePage
+} from "./main/update-discovery.js";
 import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
 import type { DesktopCommandName } from "./ipc/protocol.js";
 import {
@@ -137,6 +142,8 @@ let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
+let disposeDesktopUpdateIpc: (() => void) | null = null;
+let disposeDesktopUpdateDiscovery: (() => void) | null = null;
 let backgroundLaunchPending = false;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
 const managedPreviewController = createManagedPreviewController();
@@ -387,6 +394,29 @@ async function showPairingDeepLink(value: string): Promise<void> {
 
 const bootstrap = async () => {
   await app.whenReady();
+  const updateDiscovery = createUpdateDiscovery({
+    eligible:
+      app.isPackaged &&
+      process.platform === "darwin" &&
+      process.arch === "arm64" &&
+      !process.argv.includes("--koed-private-smoke"),
+    installedVersion: app.getVersion()
+  });
+  disposeDesktopUpdateIpc = registerDesktopUpdateIpc({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    allowedRendererOrigins,
+    discovery: updateDiscovery,
+    openRelease: async () => {
+      const release = updateDiscovery.current().release;
+      if (release) await openExternal(officialReleasePage(release.version));
+    }
+  });
+  const updateStartTimer = setTimeout(() => updateDiscovery.start(), 45_000);
+  disposeDesktopUpdateDiscovery = () => {
+    clearTimeout(updateStartTimer);
+    updateDiscovery.dispose();
+  };
   const launchAtStartup = createLaunchAtStartupController({
     appDataPath: app.getPath("appData"),
     appIsPackaged: app.isPackaged,
@@ -742,6 +772,10 @@ app.on("activate", () => {
 });
 let koedServerStoppedForQuit = false;
 app.on("before-quit", (event) => {
+  disposeDesktopUpdateDiscovery?.();
+  disposeDesktopUpdateDiscovery = null;
+  disposeDesktopUpdateIpc?.();
+  disposeDesktopUpdateIpc = null;
   if (koedServerStoppedForQuit) {
     return;
   }

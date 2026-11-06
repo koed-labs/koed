@@ -20,6 +20,7 @@ import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
 import { createManagedProjectPreloadApi } from "./ipc/managed-project-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
+import { createDesktopUpdatePreloadApi } from "./ipc/update-preload.js";
 import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import {
   cliInstallCommandChannel,
@@ -53,6 +54,14 @@ contextBridge.exposeInMainWorld("koedDesktop", {
   },
   v1State: createV1StatePreloadApi((channel, value) =>
     ipcRenderer.invoke(channel, value)
+  ),
+  updates: createDesktopUpdatePreloadApi(
+    (channel, value) => ipcRenderer.invoke(channel, value),
+    {
+      on: (channel, listener) => ipcRenderer.on(channel, listener),
+      removeListener: (channel, listener) =>
+        ipcRenderer.removeListener(channel, listener)
+    }
   ),
   personalMemory: createPersonalMemoryPreloadApi(
     (channel, value) => ipcRenderer.invoke(channel, value),
