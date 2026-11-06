@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createUpdateDiscovery,
-  officialReleasePage
+  officialInstallerDownload,
+  officialReleasePage,
+  supportsDesktopUpdates
 } from "./update-discovery.js";
 
 const version = (value: string) => ({
@@ -52,10 +54,40 @@ const fetchForPages = (
 afterEach(() => vi.useRealTimers());
 
 describe("update discovery", () => {
+  it("resolves the official installer download for the running platform", () => {
+    expect(officialInstallerDownload("0.10.3", "darwin", "arm64")).toBe(
+      "https://github.com/koed-labs/koed/releases/download/v0.10.3/Koed-0.10.3-arm64.dmg"
+    );
+    expect(officialInstallerDownload("0.10.3", "darwin", "x64")).toBeNull();
+    expect(officialInstallerDownload("0.10.3", "win32", "x64")).toBeNull();
+    expect(officialInstallerDownload("0.10.3", "constructor", "")).toBeNull();
+    expect(supportsDesktopUpdates("darwin", "arm64")).toBe(true);
+    expect(supportsDesktopUpdates("linux", "x64")).toBe(false);
+    expect(() =>
+      officialInstallerDownload("../x", "darwin", "arm64")
+    ).toThrow();
+  });
+
+  it("stays disabled on platforms without a published installer", async () => {
+    const fetcher = vi.fn();
+    const discovery = createUpdateDiscovery({
+      eligible: true,
+      platform: "linux",
+      arch: "x64",
+      installedVersion: "0.10.0",
+      fetch: fetcher as unknown as typeof fetch
+    });
+    expect((await discovery.check()).status).toBe("disabled");
+    expect(fetcher).not.toHaveBeenCalled();
+    discovery.dispose();
+  });
+
   it("never schedules or checks in ineligible builds", async () => {
     const fetcher = vi.fn();
     const discovery = createUpdateDiscovery({
       eligible: false,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher as unknown as typeof fetch
     });
@@ -74,6 +106,8 @@ describe("update discovery", () => {
     ]);
     const discovery = createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher
     });
@@ -92,6 +126,8 @@ describe("update discovery", () => {
       (
         await createUpdateDiscovery({
           eligible: true,
+          platform: "darwin",
+          arch: "arm64",
           installedVersion: "0.10.0",
           fetch: malicious
         }).check()
@@ -114,6 +150,8 @@ describe("update discovery", () => {
       (
         await createUpdateDiscovery({
           eligible: true,
+          platform: "darwin",
+          arch: "arm64",
           installedVersion: "0.10.0",
           fetch: fetchRedirect
         }).check()
@@ -127,6 +165,8 @@ describe("update discovery", () => {
     });
     const result = await createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher
     }).check();
@@ -146,6 +186,8 @@ describe("update discovery", () => {
     }) as unknown as typeof fetch;
     const result = await createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: firstPageFetcher
     }).check();
@@ -167,6 +209,8 @@ describe("update discovery", () => {
     }) as unknown as typeof fetch;
     const result = await createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher
     }).check();
@@ -197,6 +241,8 @@ describe("update discovery", () => {
       ) as unknown as typeof fetch;
       const result = await createUpdateDiscovery({
         eligible: true,
+        platform: "darwin",
+        arch: "arm64",
         installedVersion: "0.10.0",
         fetch: fetcher
       }).check();
@@ -210,6 +256,8 @@ describe("update discovery", () => {
     const fetcher = fetchForPages([[version("0.10.1")], [incomplete], []]);
     const result = await createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher
     }).check();
@@ -243,6 +291,8 @@ describe("update discovery", () => {
       (
         await createUpdateDiscovery({
           eligible: true,
+          platform: "darwin",
+          arch: "arm64",
           installedVersion: "0.10.0",
           fetch: fetcher
         }).check()
@@ -261,6 +311,8 @@ describe("update discovery", () => {
       .mockResolvedValueOnce(response([]));
     const discovery = createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher as unknown as typeof fetch,
       random: () => 0
@@ -293,6 +345,8 @@ describe("update discovery", () => {
       (
         await createUpdateDiscovery({
           eligible: true,
+          platform: "darwin",
+          arch: "arm64",
           installedVersion: "0.10.0",
           fetch: fetcher
         }).check()
@@ -320,6 +374,8 @@ describe("update discovery", () => {
     }) as unknown as typeof fetch;
     const result = await createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher
     }).check();
@@ -337,6 +393,8 @@ describe("update discovery", () => {
     ) as unknown as typeof fetch;
     const discovery = createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher
     });
@@ -364,6 +422,8 @@ describe("update discovery", () => {
     ) as unknown as typeof fetch;
     const discovery = createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher
     });
@@ -378,6 +438,8 @@ describe("update discovery", () => {
     const fetcher = vi.fn(async () => response([])) as unknown as typeof fetch;
     const discovery = createUpdateDiscovery({
       eligible: true,
+      platform: "darwin",
+      arch: "arm64",
       installedVersion: "0.10.0",
       fetch: fetcher
     });

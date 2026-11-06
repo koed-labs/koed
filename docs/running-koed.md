@@ -1,6 +1,6 @@
 # Running Koed
 
-See [Desktop updates](desktop-updates.md) for update notices and safe manual-update steps.
+See [Desktop updates](desktop-updates.md) for update notices and how to update.
 
 ## Headless Remote Integration
 

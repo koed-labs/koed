@@ -1027,10 +1027,6 @@ export function V1App({
         <NavigationShell
           projects={sidebarProjects}
           update={update}
-          onOpenAbout={() => {
-            setSettingsTab("about");
-            setSettingsOpen(true);
-          }}
           revealProject={revealProject}
           route={route}
           scopeKey={scopeKey}

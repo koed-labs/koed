@@ -170,7 +170,7 @@ describe("Desktop update notice", () => {
     expect(controller.error).toBeNull();
   });
 
-  it("shows a sanitized View release failure once and clears it on recovery", async () => {
+  it("shows a sanitized Download failure once and clears it on recovery", async () => {
     const available: DesktopUpdateState = {
       installedVersion: "0.10.0",
       status: "available",
@@ -203,7 +203,7 @@ describe("Desktop update notice", () => {
 
     expect(container.textContent).toContain("Koed 0.11.0 is available");
     expect(container.textContent).toContain(
-      "Release page could not be opened."
+      "The download could not be opened."
     );
     expect(container.textContent).not.toContain("secret token");
     expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1);
@@ -213,7 +213,7 @@ describe("Desktop update notice", () => {
     });
     await act(async () => resolveOpen(available));
     expect(container.textContent).not.toContain(
-      "Release page could not be opened."
+      "The download could not be opened."
     );
     expect(container.querySelectorAll('[role="alert"]')).toHaveLength(0);
     expect(container.textContent).toContain("Koed 0.11.0 is available");
@@ -236,8 +236,9 @@ describe("Desktop update notice", () => {
     expect(html).toContain("0.10.0");
     expect(html).toContain("0.11.0");
     expect(html).not.toContain("Safer setup");
-    expect(html).toContain("koed stop --json");
-    expect(html).toContain("lifecycle.state: stopped");
+    expect(html).toContain("Download 0.11.0");
+    expect(html).not.toContain("koed stop");
+    expect(html).not.toContain("How to update");
     expect((html.match(/role="alert"/g) ?? []).length).toBe(0);
     expect(html).not.toMatch(/<button[^>]*>[^<]*(install|restart)/i);
   });
@@ -291,12 +292,16 @@ describe("Desktop update notice", () => {
         release: { version, summary: "Notes" },
         checkedAt: null
       });
-    let details = 0;
+    let opened = 0;
     await act(async () =>
       root.render(
         <DesktopUpdateNotice
-          update={available("0.11.0")}
-          onDetails={() => (details += 1)}
+          update={{
+            ...available("0.11.0"),
+            open: async () => {
+              opened += 1;
+            }
+          }}
         />
       )
     );
@@ -304,10 +309,10 @@ describe("Desktop update notice", () => {
     expect(container.textContent).not.toContain("Notes");
     await act(async () =>
       [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "How to update")
+        .find((button) => button.textContent?.trim() === "Download")
         ?.click()
     );
-    expect(details).toBe(1);
+    expect(opened).toBe(1);
     await act(async () =>
       container
         .querySelector<HTMLButtonElement>(".desktop-update-notice-close")
@@ -317,19 +322,14 @@ describe("Desktop update notice", () => {
     expect(store.get("koed.desktop.update.dismissedVersion")).toBe("0.11.0");
 
     await act(async () =>
-      root.render(
-        <DesktopUpdateNotice
-          update={available("0.12.0")}
-          onDetails={() => undefined}
-        />
-      )
+      root.render(<DesktopUpdateNotice update={available("0.12.0")} />)
     );
     expect(container.textContent).toContain("Koed 0.12.0 is ready");
   });
 
   it("shows no notice when Koed is up to date", () => {
     const html = renderToStaticMarkup(
-      <DesktopUpdateNotice update={update(currentState)} onDetails={() => {}} />
+      <DesktopUpdateNotice update={update(currentState)} />
     );
     expect(html).toBe("");
   });

@@ -49,7 +49,6 @@ type Props = {
   onRetry: () => void;
   management?: SidebarManagement;
   update?: DesktopUpdateController;
-  onOpenAbout?: () => void;
 };
 export function NavigationShell(props: Props) {
   return (
@@ -181,12 +180,7 @@ function ShellContent(props: Props) {
           reveal={props.revealProject ?? null}
           management={props.management}
         />
-        {props.update && props.onOpenAbout ? (
-          <DesktopUpdateNotice
-            update={props.update}
-            onDetails={props.onOpenAbout}
-          />
-        ) : null}
+        {props.update ? <DesktopUpdateNotice update={props.update} /> : null}
       </Sidebar>
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>
         <header className="v1-navigation-bar">

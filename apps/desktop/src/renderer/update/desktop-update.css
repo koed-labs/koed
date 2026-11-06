@@ -64,7 +64,6 @@
 }
 .desktop-update-notice .desktop-update-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
   margin-top: 4px;
 }
 .desktop-update-notice .desktop-update-button {
@@ -160,28 +159,6 @@
 }
 .desktop-update-available .desktop-update-actions {
   margin-top: 4px;
-}
-
-.desktop-update-manual-steps {
-  font-size: 13px;
-  color: var(--v1-muted);
-}
-.desktop-update-manual-steps summary {
-  cursor: pointer;
-  color: var(--v1-fg2);
-  font-weight: 500;
-}
-.desktop-update-manual-steps > p {
-  margin: 8px 0 0;
-}
-.desktop-update-manual-steps ol {
-  display: grid;
-  gap: 6px;
-  margin: 8px 0 0;
-  padding-left: 20px;
-}
-.desktop-update-manual-steps code {
-  white-space: nowrap;
 }
 
 .v1-nav-rail .v1-nav-rail-button {

@@ -84,7 +84,7 @@ export function useDesktopUpdate(
           setError(
             operation === "check"
               ? "Update status could not be checked."
-              : "Release page could not be opened."
+              : "The download could not be opened."
           );
       } finally {
         setBusy(false);

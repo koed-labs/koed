@@ -1,6 +1,6 @@
 # Koed Desktop
 
-See [Desktop updates](../../docs/desktop-updates.md) for update notices and safe manual-update steps.
+See [Desktop updates](../../docs/desktop-updates.md) for update notices and how to update.
 
 Koed Desktop is the Electron control surface for Koed.
 

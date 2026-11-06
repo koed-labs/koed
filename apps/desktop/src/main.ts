@@ -25,7 +25,8 @@ import { registerDesktopCommandHandlers } from "./ipc/commands.js";
 import { registerDesktopUpdateIpc } from "./ipc/update.js";
 import {
   createUpdateDiscovery,
-  officialReleasePage
+  officialInstallerDownload,
+  supportsDesktopUpdates
 } from "./main/update-discovery.js";
 import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
 import type { DesktopCommandName } from "./ipc/protocol.js";
@@ -397,10 +398,11 @@ const bootstrap = async () => {
   const updateDiscovery = createUpdateDiscovery({
     eligible:
       app.isPackaged &&
-      process.platform === "darwin" &&
-      process.arch === "arm64" &&
+      supportsDesktopUpdates(process.platform, process.arch) &&
       !process.argv.includes("--koed-private-smoke"),
-    installedVersion: app.getVersion()
+    installedVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch
   });
   disposeDesktopUpdateIpc = registerDesktopUpdateIpc({
     ipcMain,
@@ -409,7 +411,14 @@ const bootstrap = async () => {
     discovery: updateDiscovery,
     openRelease: async () => {
       const release = updateDiscovery.current().release;
-      if (release) await openExternal(officialReleasePage(release.version));
+      const download = release
+        ? officialInstallerDownload(
+            release.version,
+            process.platform,
+            process.arch
+          )
+        : null;
+      if (download) await openExternal(download);
     }
   });
   const updateStartTimer = setTimeout(() => updateDiscovery.start(), 45_000);

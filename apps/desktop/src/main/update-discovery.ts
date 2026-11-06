@@ -8,6 +8,8 @@ import {
 export interface DiscoveryOptions {
   eligible: boolean;
   installedVersion: string;
+  platform: string;
+  arch: string;
   fetch?: typeof globalThis.fetch;
   random?: () => number;
 }
@@ -32,6 +34,41 @@ const pageUrl = (page: number) => `${apiUrl}?per_page=${pageSize}&page=${page}`;
 
 export const officialReleasePage = (version: string): string =>
   `https://github.com/koed-labs/koed/releases/tag/v${versionSchema.parse(version)}`;
+
+// Release assets published for each supported Desktop platform. Platforms
+// without an entry receive no update notices.
+const platformAssets: Readonly<
+  Record<string, { installer: (version: string) => string; checksum: string }>
+> = {
+  "darwin-arm64": {
+    installer: (version) => `Koed-${version}-arm64.dmg`,
+    checksum: "koed-desktop-macos-arm64.sha256"
+  }
+};
+
+const assetsFor = (platform: string, arch: string) =>
+  Object.hasOwn(platformAssets, `${platform}-${arch}`)
+    ? platformAssets[`${platform}-${arch}`]
+    : undefined;
+
+export const supportsDesktopUpdates = (
+  platform: string,
+  arch: string
+): boolean => assetsFor(platform, arch) !== undefined;
+
+const releaseDownload = (version: string, name: string): string =>
+  `https://github.com/koed-labs/koed/releases/download/v${version}/${name}`;
+
+/** The official installer download for this platform, or null if unsupported. */
+export const officialInstallerDownload = (
+  version: string,
+  platform: string,
+  arch: string
+): string | null => {
+  const assets = assetsFor(platform, arch);
+  const parsed = versionSchema.parse(version);
+  return assets ? releaseDownload(parsed, assets.installer(parsed)) : null;
+};
 
 const isNewer = (left: string, right: string): boolean => {
   const a = left.split(".").map(BigInt);
@@ -58,11 +95,12 @@ const assetSchema = z.object({
   browser_download_url: z.string()
 });
 
-const verifyAssets = (assets: unknown[], version: string) => {
-  for (const name of [
-    `Koed-${version}-arm64.dmg`,
-    "koed-desktop-macos-arm64.sha256"
-  ]) {
+const verifyAssets = (
+  assets: unknown[],
+  version: string,
+  required: readonly string[]
+) => {
+  for (const name of required) {
     const matches = assets.filter(
       (asset) =>
         typeof asset === "object" &&
@@ -73,8 +111,7 @@ const verifyAssets = (assets: unknown[], version: string) => {
     if (matches.length !== 1)
       throw new Error("Supported manual release artifact missing.");
     const parsed = assetSchema.parse(matches[0]);
-    const expected = `https://github.com/koed-labs/koed/releases/download/v${version}/${name}`;
-    if (parsed.browser_download_url !== expected)
+    if (parsed.browser_download_url !== releaseDownload(version, name))
       throw new Error("Invalid release artifact destination.");
   }
 };
@@ -240,8 +277,10 @@ const discover = async (fetcher: typeof fetch, signal: AbortSignal) => {
 export const createUpdateDiscovery = (
   options: DiscoveryOptions
 ): DesktopUpdateDiscovery => {
+  const platformAssetNames = assetsFor(options.platform, options.arch);
   const enabled =
     options.eligible &&
+    platformAssetNames !== undefined &&
     versionSchema.safeParse(options.installedVersion).success;
   const initial = desktopUpdateStateSchema.parse({
     installedVersion: options.installedVersion,
@@ -294,7 +333,10 @@ export const createUpdateDiscovery = (
           if (result.html_url !== officialReleasePage(version))
             throw new Error("Invalid official release page.");
           if (isNewer(version, options.installedVersion)) {
-            verifyAssets(result.assets, version);
+            verifyAssets(result.assets, version, [
+              platformAssetNames!.installer(version),
+              platformAssetNames!.checksum
+            ]);
             release = { version, summary: result.body?.slice(0, 4_000) ?? "" };
           }
         }

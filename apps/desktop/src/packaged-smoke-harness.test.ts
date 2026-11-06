@@ -98,6 +98,8 @@ describe("private packaged smoke harness", () => {
     const discovery = createUpdateDiscovery({
       eligible: false,
       installedVersion: "1.2.3",
+      platform: "darwin",
+      arch: "arm64",
       fetch
     });
     discovery.start();

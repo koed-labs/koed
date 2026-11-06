@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { ArrowUpCircle, ExternalLink, RefreshCw, X } from "lucide-react";
+import { ArrowUpCircle, Download, RefreshCw, X } from "lucide-react";
 import type { DesktopUpdateController } from "./use-desktop-update.js";
 import "./desktop-update.css";
 
@@ -39,11 +39,9 @@ export function DesktopUpdateDot({
  * dismissible per version.
  */
 export function DesktopUpdateNotice({
-  update,
-  onDetails
+  update
 }: {
   update: DesktopUpdateController;
-  onDetails: () => void;
 }) {
   const version = availableUpdateVersion(update);
   const [dismissed, setDismissed] = useState(readDismissedVersion);
@@ -82,18 +80,11 @@ export function DesktopUpdateNotice({
       <div className="desktop-update-actions">
         <button
           type="button"
-          className="desktop-update-button"
-          onClick={onDetails}
-        >
-          How to update
-        </button>
-        <button
-          type="button"
           className="desktop-update-button desktop-update-button-primary"
           disabled={update.busy}
           onClick={() => void update.open()}
         >
-          Download
+          <Download aria-hidden="true" /> Download
         </button>
       </div>
     </section>
@@ -131,10 +122,7 @@ export function DesktopUpdatePanel({
       {version ? (
         <div className="desktop-update-available">
           <p className="desktop-update-headline">Koed {version} is available</p>
-          <p>
-            You have {installed}. Updating means stopping Koed for a moment, so
-            AI Clients can't recall memory until it's running again.
-          </p>
+          <p>You have {installed}.</p>
           <div className="desktop-update-actions">
             <button
               type="button"
@@ -142,7 +130,7 @@ export function DesktopUpdatePanel({
               disabled={update.busy}
               onClick={() => void update.open()}
             >
-              <ExternalLink aria-hidden="true" /> Download {version}
+              <Download aria-hidden="true" /> Download {version}
             </button>
             <button
               type="button"
@@ -175,32 +163,6 @@ export function DesktopUpdatePanel({
       {update.error && state?.status !== "error" ? (
         <p role="alert">{update.error}</p>
       ) : null}
-      <details className="desktop-update-manual-steps" open={Boolean(version)}>
-        <summary>How to update Koed</summary>
-        <p>
-          Koed doesn't install updates itself. Download the new version from the
-          release page, then:
-        </p>
-        <ol>
-          <li>Pause AI Client and CLI activity.</li>
-          <li>
-            For each Koed home, use its existing Desktop CLI launcher to run{" "}
-            <code>koed stop --json</code>.
-          </li>
-          <li>
-            Continue only when output reports <code>ok: true</code> and a status
-            check reports <code>lifecycle.state: stopped</code>.
-          </li>
-          <li>
-            If home or service ownership is unclear, stop; do not terminate
-            processes or replace files.
-          </li>
-          <li>
-            Install the macOS arm64 release. Preserve homes, configuration, and
-            models.
-          </li>
-        </ol>
-      </details>
     </section>
   );
 }
