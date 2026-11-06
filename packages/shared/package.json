@@ -98,6 +98,10 @@
     "./personal-source": {
       "types": "./dist/personal-source-contract.d.ts",
       "import": "./dist/personal-source-contract.js"
+    },
+    "./desktop-update-contract": {
+      "types": "./dist/desktop-update-contract.d.ts",
+      "import": "./dist/desktop-update-contract.js"
     }
   },
   "files": [

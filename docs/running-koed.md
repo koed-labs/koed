@@ -1,5 +1,7 @@
 # Running Koed
 
+See [Desktop updates](desktop-updates.md) for update notices and how to update.
+
 ## Headless Remote Integration
 
 An AI Client can use an existing backend without Electron or local database,
