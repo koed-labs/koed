@@ -123,6 +123,68 @@ afterEach(() => {
 });
 
 describe("Codex setup wrapper", () => {
+  it.each(["success", "bootstrap", "core", "registration"])(
+    "preserves core verification when Codex setup ends with %s",
+    async (outcome) => {
+      const root = tempDir();
+      const verificationPath = resolve(root, "run/last-verification.json");
+      mkdirSync(resolve(root, "run"), { recursive: true });
+      const verification = JSON.stringify({
+        ok: outcome !== "success",
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        message: "Previous core verification"
+      });
+      writeFileSync(verificationPath, verification);
+
+      const result = await runSetupCodex({
+        environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
+        spawnSync: () => spawnResult(outcome === "bootstrap" ? 1 : 0),
+        provisionLocalApiToken: async () => {
+          if (outcome === "core") throw new Error("Core setup failed");
+          return { token: "core-token", reused: true, ownerUserId: "owner" };
+        },
+        registerAiClient: () => outcome !== "registration"
+      });
+
+      expect(result.ok).toBe(outcome === "success");
+      expect(readFileSync(verificationPath, "utf8")).toBe(verification);
+    }
+  );
+
+  it.each([true, false])(
+    "preserves core verification after Codex repair (success: %s)",
+    async (success) => {
+      const root = tempDir();
+      writeMcpRuntimeArtifacts(root);
+      mkdirSync(resolve(root, "config"), { recursive: true });
+      mkdirSync(resolve(root, "run"), { recursive: true });
+      writeFileSync(
+        resolve(root, "config/local-app-credential.json"),
+        JSON.stringify({ apiToken: "desktop_token" })
+      );
+      const verificationPath = resolve(root, "run/last-verification.json");
+      const verification = JSON.stringify({
+        ok: !success,
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        message: "Previous core verification"
+      });
+      writeFileSync(verificationPath, verification);
+
+      const result = await repairCodexIntegration({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          CODEX_HOME: resolve(root, "codex")
+        },
+        resolveCodexExecutable: () => process.execPath,
+        registerAiClient: () => success
+      });
+
+      expect(result.ok).toBe(success);
+      expect(readFileSync(verificationPath, "utf8")).toBe(verification);
+    }
+  );
+
   it("removes only valid Koed-owned Codex block and preserves unrelated profile", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "codex");
@@ -1193,14 +1255,9 @@ describe("Codex setup wrapper", () => {
     expect(readFileSync(codexConfigPath, "utf8")).toContain(
       '[mcp_servers.koed.tools.memory_workspaces]\napproval_mode = "approve"'
     );
-    expect(
-      JSON.parse(
-        readFileSync(resolve(root, "run/last-verification.json"), "utf8")
-      )
-    ).toMatchObject({
-      ok: true,
-      checkedAt: "2026-01-01T00:00:00.000Z"
-    });
+    expect(() =>
+      readFileSync(resolve(root, "run/last-verification.json"), "utf8")
+    ).toThrow();
   });
 
   it("leaves Codex profile untouched when executable is missing", async () => {

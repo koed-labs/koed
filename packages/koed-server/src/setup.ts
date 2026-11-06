@@ -633,7 +633,6 @@ const configureCodexProfile = (
       action:
         "Restart Codex and trust updated hooks if prompted. New sessions will be captured after Codex reloads this config."
     };
-    writeSetupVerification(paths, repaired, writeFileSync);
     return repaired;
   } catch (error) {
     const failures = [error instanceof Error ? error.message : String(error)];
@@ -687,7 +686,6 @@ const configureCodexProfile = (
       action:
         "Review the reported failure, fix the Codex integration artifacts, then run the Codex-specific repair action again."
     };
-    writeSetupVerification(paths, failed, writeFileSync);
     return failed;
   }
 };
@@ -993,27 +991,6 @@ const runSetupBootstrap = (
       };
 };
 
-const writeSetupVerification = (
-  paths: KoedServerPaths,
-  result: { ok: boolean; checkedAt: string; error?: string },
-  writeFileSync: typeof nodeWriteFileSync,
-  successMessage = "Koed core setup completed."
-): void => {
-  writeFileSync(
-    paths.lastVerificationPath,
-    `${JSON.stringify(
-      {
-        ok: result.ok,
-        checkedAt: result.checkedAt,
-        message: result.ok ? successMessage : result.error
-      },
-      null,
-      2
-    )}\n`,
-    { mode: 0o600 }
-  );
-};
-
 export const setupCore = async (
   options: KoedServerSetupOptions = {}
 ): Promise<KoedServerSetupCoreResult> => {
@@ -1102,16 +1079,7 @@ export const setupCodex = async (
 ): Promise<KoedServerSetupCodexResult> => {
   const core = await setupCore(options);
   const writeFileSync = options.writeFileSync ?? nodeWriteFileSync;
-  if (!core.ok) {
-    const paths = resolveKoedServerPaths(options.environment ?? process.env);
-    writeSetupVerification(
-      paths,
-      core,
-      writeFileSync,
-      "Codex setup completed."
-    );
-    return core;
-  }
+  if (!core.ok) return core;
   const environment = options.environment ?? process.env;
   const paths = resolveKoedServerPaths(environment);
   if (
@@ -1173,10 +1141,7 @@ export const setupCodex = async (
     });
   }
   const prepared = prepareSetupCodex(environment, options);
-  if (!prepared.ok) {
-    writeSetupVerification(prepared.paths, prepared.result, writeFileSync);
-    return prepared.result;
-  }
+  if (!prepared.ok) return prepared.result;
   const { context } = prepared;
   try {
     assertAiClientRegistryWritable(context.childEnv);
@@ -1191,12 +1156,6 @@ export const setupCodex = async (
       error: error instanceof Error ? error.message : String(error),
       action: "Fix malformed AI Client registry, then rerun Codex setup."
     };
-    writeSetupVerification(
-      context.paths,
-      failed,
-      writeFileSync,
-      "Codex setup completed."
-    );
     return failed;
   }
   let codexExecutablePath: string;
@@ -1216,12 +1175,6 @@ export const setupCodex = async (
       action:
         "Install Codex or set MEMORY_CODEX_APP_SERVER_BINARY, then rerun Codex setup."
     };
-    writeSetupVerification(
-      context.paths,
-      failed,
-      writeFileSync,
-      "Codex setup completed."
-    );
     return failed;
   }
   persistSetupApiToken(context);
@@ -1251,20 +1204,8 @@ export const setupCodex = async (
         action:
           "Fix the Codex-specific registration, then rerun koed setup codex --json."
       };
-      writeSetupVerification(
-        context.paths,
-        failed,
-        writeFileSync,
-        "Codex setup completed."
-      );
       return failed;
     }
   }
-  writeSetupVerification(
-    context.paths,
-    result,
-    writeFileSync,
-    "Codex setup completed."
-  );
   return result;
 };

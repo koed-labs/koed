@@ -30,6 +30,8 @@ export const persistDoctorVerification = (
   paths: ReturnType<typeof resolveKoedServerPaths>,
   doctor: KoedServerDoctorResult
 ): void => {
+  // This record gates Desktop's local setup. AI Client setup/repair must not
+  // replace the core diagnostic result with an individual client's outcome.
   mkdirSync(resolve(paths.lastVerificationPath, ".."), {
     recursive: true,
     mode: 0o700

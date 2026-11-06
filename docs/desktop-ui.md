@@ -7,6 +7,13 @@ configuration. Setup progress comes from the real setup workflow. Failure
 preserves selections and offers a retry. Running setup again preserves Personal Memory, Projects,
 Conversations, and saved customization.
 
+Local setup verification records the core `doctor` result. Codex setup and
+repair report their own results without replacing that record. A failed Codex
+connection therefore does not send an otherwise ready installation back through
+local setup; setup can finish when at least one AI Client is ready and signed in.
+For an installation affected by an older failed Codex verification record,
+rerunning the final local verification refreshes that record.
+
 The sidebar shows the current User's Project inventory, including Conversations
 captured from supported AI Clients, including previously managed Conversations. Search, pinned
 Conversations, expandable Projects, and navigation history share the same

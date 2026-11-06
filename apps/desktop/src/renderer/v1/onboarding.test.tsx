@@ -218,6 +218,25 @@ describe("desktop onboarding", () => {
     expect(text()).toContain("Your Koed is ready.");
     expect(setup.run).not.toHaveBeenCalled();
   });
+  it.each(["codex", "claude", "pi"])(
+    "allows final completion with another ready client after %s fails",
+    async (failedClient) => {
+      const { click, invoke, complete } = await render();
+      const original = invoke.getMockImplementation()!;
+      invoke.mockImplementation(async (command) =>
+        command === `setup_${failedClient}`
+          ? { ok: false, message: `${failedClient} setup failed.` }
+          : original(command)
+      );
+      await click("Next");
+      await click("Connect");
+      expect(text()).toContain("Some introductions need another try.");
+      await click("Continue");
+      await click("Let’s go");
+      expect(complete).toHaveBeenCalledOnce();
+      expect(text()).not.toContain("Local setup needs another check");
+    }
+  );
   it("uses byte progress and ignores out-of-order and retired run events", async () => {
     const { emit } = await render({ snapshot: setupSnapshot("ready") });
     const running = setupSnapshot("running", "active");
