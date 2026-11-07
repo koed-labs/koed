@@ -16,17 +16,20 @@ import {
 import { runDbMigrations } from "../src/migrate.js";
 import { createPeerOnlineFloorRepository } from "../src/peer-online-floor-repository.js";
 import { createPeerOnlineMembershipRepository } from "../src/peer-online-membership-repository.js";
+import { declarePeerOnlineRestoreQuarantine } from "../src/peer-online-restore-quarantine.js";
 import {
   bindPeerOnlineGroupOwner,
   createPeerOnlineCheckpointReceiver
 } from "../src/peer-online-receiver.js";
 
 const url = process.env.PEER_ONLINE_MEMBERSHIP_TEST_DATABASE_URL;
-const membershipDomain = "koed/peer-online-membership/v1";
+const membershipDomain = "koed/peer-online-membership/v2";
 const encoded = (n: number) => Buffer.alloc(32, n).toString("base64url");
+const spki = (key: KeyObject) =>
+  key.export({ type: "spki", format: "der" }).toString("base64url");
 const spkiHash = (key: KeyObject) =>
   createHash("sha256")
-    .update(key.export({ type: "spki", format: "der" }))
+    .update(Buffer.from(spki(key), "base64url"))
     .digest("base64url");
 
 function device(deviceId: string, transport: number) {
@@ -39,6 +42,7 @@ function device(deviceId: string, transport: number) {
     member: {
       deviceId,
       signingPublicKey: signing.publicKey.export({ format: "jwk" }).x!,
+      encryptionSpki: spki(encryption.publicKey),
       encryptionSpkiSha256: spkiHash(encryption.publicKey),
       transportSpkiSha256: encoded(transport)
     }
@@ -76,6 +80,26 @@ const item = (n: number, content = `message ${n}`) =>
     sourceHash: `hash-${n}-${content}`
   }) satisfies PeerOnlineSessionSnapshotItem;
 
+type TestSessionContext = {
+  peerDeviceId: string;
+  membershipRevision: string;
+};
+type Receiver = ReturnType<typeof createPeerOnlineCheckpointReceiver>;
+type ReceiverInput = Parameters<Receiver["receive"]>[0];
+type ReceiverResult = Awaited<ReturnType<Receiver["receive"]>>;
+
+function receiveWithSessionContext(
+  receiver: Receiver,
+  input: ReceiverInput,
+  sessionContext: TestSessionContext | undefined
+): Promise<ReceiverResult> {
+  const receive = receiver.receive as unknown as (
+    input: ReceiverInput,
+    sessionContext?: TestSessionContext
+  ) => Promise<ReceiverResult>;
+  return receive(input, sessionContext);
+}
+
 describe.skipIf(!url)("peer online checkpoint receiver", () => {
   const name = `koed_receiver_${randomUUID().replaceAll("-", "")}`;
   const admin = new pg.Pool({ connectionString: url });
@@ -99,6 +123,7 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     const owner = randomUUID();
     const a = device("a", 1);
     const b = device("b", 2);
+    const c = device("c", 3);
     const genesis = decision(
       {
         protocol: membershipDomain,
@@ -114,13 +139,26 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     expect((await membership.initialize(anchor, genesis.json)).status).toBe(
       "accepted"
     );
-    const add = decision(
+    const addB = decision(
       {
         protocol: membershipDomain,
         groupId,
         parentHash: genesis.hash,
         authorDeviceId: "a",
         body: { kind: "add", target: b.member }
+      },
+      a.signing.privateKey
+    );
+    expect((await membership.append(anchor, addB.json)).status).toBe(
+      "accepted"
+    );
+    const add = decision(
+      {
+        protocol: membershipDomain,
+        groupId,
+        parentHash: addB.hash,
+        authorDeviceId: "a",
+        body: { kind: "add", target: c.member }
       },
       a.signing.privateKey
     );
@@ -144,7 +182,7 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     const authority = {
       groupId,
       head: add.hash,
-      members: [a.member, b.member].map(
+      members: [a.member, b.member, c.member].map(
         ({ deviceId, encryptionSpkiSha256 }) => ({
           deviceId,
           encryptionSpkiSha256
@@ -153,34 +191,76 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     };
     const recipients = [
       { deviceId: "a", publicKey: a.encryption.publicKey },
-      { deviceId: "b", publicKey: b.encryption.publicKey }
+      { deviceId: "b", publicKey: b.encryption.publicKey },
+      { deviceId: "c", publicKey: c.encryption.publicKey }
     ];
     const seal = (
       sequence: string,
       predecessorHash: string | null,
       items: PeerOnlineSessionSnapshotItem[],
-      sourceSession = source
-    ) =>
-      sealPeerOnlineCheckpoint({
+      sourceSession = source,
+      membershipHeadHash = add.hash,
+      members = authority.members
+    ) => {
+      const activeDeviceIds = new Set(members.map((member) => member.deviceId));
+      return sealPeerOnlineCheckpoint({
         context: {
           ...identity,
-          membershipHeadHash: add.hash,
+          membershipHeadHash,
           bindingHash: binding.bindingHash,
           sequence,
           predecessorHash
         },
         snapshot: { sourceSession, items },
-        authority,
-        recipients,
+        authority: { ...authority, head: membershipHeadHash, members },
+        recipients: recipients.filter((recipient) =>
+          activeDeviceIds.has(recipient.deviceId)
+        ),
         signingKey: a.signing.privateKey
       });
+    };
     const receiver = createPeerOnlineCheckpointReceiver(pool, {
       anchor,
       deviceId: "b",
       encryptionPrivateKey: b.encryption.privateKey
     });
-    const receive = (sealed: { envelope: string; payload: Buffer }) =>
-      receiver.receive({ bindingJson: binding.json, ...sealed });
+    const defaultContext = {
+      peerDeviceId: "a",
+      membershipRevision: add.hash
+    };
+    const receive = (
+      sealed: { envelope: string; payload: Buffer },
+      sessionContext: TestSessionContext | undefined = defaultContext
+    ) =>
+      receiveWithSessionContext(
+        receiver,
+        { bindingJson: binding.json, ...sealed },
+        sessionContext
+      );
+    const createMemberAdd = (
+      next: ReturnType<typeof device>,
+      parentHash = add.hash
+    ) =>
+      decision(
+        {
+          protocol: membershipDomain,
+          groupId,
+          parentHash,
+          authorDeviceId: "a",
+          body: { kind: "add", target: next.member }
+        },
+        a.signing.privateKey
+      );
+    const appendMember = async (
+      next: ReturnType<typeof device>,
+      parentHash = add.hash
+    ) => {
+      const record = createMemberAdd(next, parentHash);
+      expect((await membership.append(anchor, record.json)).status).toBe(
+        "accepted"
+      );
+      return record;
+    };
     const replicaItems = async () =>
       (
         await pool.query<{ raw_json: { content: string } }>(
@@ -200,13 +280,18 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     return {
       a,
       b,
+      c,
       anchor,
       add,
+      defaultContext,
+      authority,
       owner,
       binding,
       membership,
       seal,
       receive,
+      appendMember,
+      createMemberAdd,
       receiver,
       replicaItems,
       receipts
@@ -244,6 +329,217 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
         [f.binding.sessionKey]
       )
     ).rejects.toThrow(/read-only/);
+  });
+
+  it("accepts a checkpoint from an active transport peer distinct from its signed origin", async () => {
+    const f = await fixture();
+    const first = f.seal("0", null, [item(0)]);
+    const result = await f.receive(first, {
+      peerDeviceId: "c",
+      membershipRevision: f.add.hash
+    });
+    expect(result.status).toBe("accepted");
+    expect(await f.receipts()).toEqual(["0"]);
+    expect(await f.replicaItems()).toEqual(["message 0"]);
+  });
+
+  it("fences a checkpoint when the membership head changes after authentication", async () => {
+    const f = await fixture();
+    const first = f.seal("0", null, [item(0)]);
+    const context = {
+      peerDeviceId: "a",
+      membershipRevision: f.add.hash
+    };
+    await f.appendMember(device("d", 4));
+    expect(await f.receive(first, context)).toEqual({ status: "fenced" });
+    expect(await f.receipts()).toEqual([]);
+    expect(await f.replicaItems()).toEqual([]);
+  });
+
+  it("fences an inactive or unknown transport peer before writing", async () => {
+    const f = await fixture();
+    const first = f.seal("0", null, [item(0)]);
+    expect(
+      await f.receive(first, {
+        peerDeviceId: "unknown",
+        membershipRevision: f.add.hash
+      })
+    ).toEqual({ status: "fenced" });
+    expect(await f.receipts()).toEqual([]);
+    expect(await f.replicaItems()).toEqual([]);
+  });
+
+  it("fences a revoked transport peer at the current membership revision", async () => {
+    const f = await fixture();
+    const revocation = decision(
+      {
+        protocol: membershipDomain,
+        groupId: f.anchor.groupId,
+        parentHash: f.add.hash,
+        authorDeviceId: "a",
+        body: { kind: "revoke", targetDeviceId: "c" }
+      },
+      f.a.signing.privateKey
+    );
+    expect((await f.membership.append(f.anchor, revocation.json)).status).toBe(
+      "accepted"
+    );
+    const currentMembers = f.authority.members.filter(
+      (member) => member.deviceId !== "c"
+    );
+    const first = f.seal(
+      "0",
+      null,
+      [item(0)],
+      undefined,
+      revocation.hash,
+      currentMembers
+    );
+    expect(
+      await f.receive(first, {
+        peerDeviceId: "c",
+        membershipRevision: revocation.hash
+      })
+    ).toEqual({ status: "fenced" });
+    expect(await f.receipts()).toEqual([]);
+    expect(await f.replicaItems()).toEqual([]);
+  });
+
+  it("fences checkpoint receipt when membership evidence has a sibling fork", async () => {
+    const f = await fixture();
+    await f.appendMember(device("d", 4));
+    await f.appendMember(device("e", 5));
+    const first = f.seal("0", null, [item(0)]);
+    expect(
+      await f.receive(first, {
+        peerDeviceId: "a",
+        membershipRevision: f.add.hash
+      })
+    ).toEqual({ status: "fenced" });
+    expect(await f.receipts()).toEqual([]);
+    expect(await f.replicaItems()).toEqual([]);
+  });
+
+  it("fences checkpoint receipt when membership is incomplete", async () => {
+    const f = await fixture();
+    let parent = f.add.hash;
+    for (let index = 0; index < 125; index++) {
+      const record = await f.appendMember(
+        device(`limit-${index}`, index + 4),
+        parent
+      );
+      parent = record.hash;
+    }
+    const overflow = device("overflow", 999);
+    const attempt = {
+      attemptId: randomUUID(),
+      expectedHead: parent,
+      approverDeviceId: "a",
+      target: overflow.member,
+      expiresAt: new Date(Date.now() + 60_000)
+    };
+    await f.membership.createAdmissionAttempt(f.anchor, attempt);
+    const authorization = {
+      ...attempt,
+      groupId: f.anchor.groupId,
+      transcriptHash: "verified"
+    } as import("../src/peer-online-membership-repository.js").VerifiedPeerAdmissionAuthorization;
+    const overflowRecord = f.createMemberAdd(overflow, parent);
+    expect(
+      (await f.membership.admit(f.anchor, authorization, overflowRecord.json))
+        .status
+    ).toBe("limit");
+    expect((await f.membership.load(f.anchor)).incomplete).toBe(true);
+    const first = f.seal("0", null, [item(0)]);
+    expect(
+      await f.receive(first, {
+        peerDeviceId: "a",
+        membershipRevision: parent
+      })
+    ).toEqual({ status: "fenced" });
+    expect(await f.receipts()).toEqual([]);
+    expect(await f.replicaItems()).toEqual([]);
+  }, 120_000);
+
+  it("does not trust a session context embedded in wire input", async () => {
+    const f = await fixture();
+    const first = f.seal("0", null, [item(0)]);
+    const input = {
+      bindingJson: f.binding.json,
+      ...first,
+      sessionContext: {
+        peerDeviceId: "a",
+        membershipRevision: f.add.hash
+      }
+    } as ReceiverInput;
+    expect(
+      await receiveWithSessionContext(f.receiver, input, undefined)
+    ).toEqual({ status: "fenced" });
+    expect(await f.receipts()).toEqual([]);
+    expect(await f.replicaItems()).toEqual([]);
+  });
+
+  it("fences a duplicate receipt when its session revision has gone stale", async () => {
+    const f = await fixture();
+    const first = f.seal("0", null, [item(0)]);
+    const context = {
+      peerDeviceId: "a",
+      membershipRevision: f.add.hash
+    };
+    expect((await f.receive(first, context)).status).toBe("accepted");
+    await f.appendMember(device("d", 4));
+    expect(await f.receive(first, context)).toEqual({ status: "fenced" });
+    expect(await f.receipts()).toEqual(["0"]);
+    expect(await f.replicaItems()).toEqual(["message 0"]);
+  });
+
+  it("rejects a new checkpoint while restore-quarantined without writes", async () => {
+    const f = await fixture();
+    const first = f.seal("0", null, [item(0)]);
+    await declarePeerOnlineRestoreQuarantine(
+      pool,
+      f.anchor,
+      "restore detected"
+    );
+    await expect(f.receive(first)).rejects.toThrow(
+      "peer online group quarantined after restore"
+    );
+    expect(await f.receipts()).toEqual([]);
+    expect(await f.replicaItems()).toEqual([]);
+  });
+
+  it("rejects a duplicate checkpoint while restore-quarantined without another ACK", async () => {
+    const f = await fixture();
+    const first = f.seal("0", null, [item(0)]);
+    expect((await f.receive(first)).status).toBe("accepted");
+    const beforeItems = await f.replicaItems();
+    await declarePeerOnlineRestoreQuarantine(
+      pool,
+      f.anchor,
+      "restore detected"
+    );
+    await expect(f.receive(first)).rejects.toThrow(
+      "peer online group quarantined after restore"
+    );
+    expect(await f.receipts()).toEqual(["0"]);
+    expect(await f.replicaItems()).toEqual(beforeItems);
+  });
+
+  it("blocks group-owner binding while restore-quarantined", async () => {
+    const f = await fixture({ bindOwner: false });
+    await declarePeerOnlineRestoreQuarantine(
+      pool,
+      f.anchor,
+      "restore detected"
+    );
+    await expect(
+      bindPeerOnlineGroupOwner(pool, f.anchor, f.owner)
+    ).rejects.toThrow("peer online group quarantined after restore");
+    const owners = await pool.query(
+      "select 1 from peer_online_group_owners where group_id=$1",
+      [f.anchor.groupId]
+    );
+    expect(owners.rowCount).toBe(0);
   });
 
   it("keeps an out-of-order checkpoint pending until its predecessor commits", async () => {
@@ -284,11 +580,14 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     payload[payload.length - 2] ^= 1;
     expect(
       (
-        await f.receiver.receive({
-          bindingJson: f.binding.json,
-          envelope: sealed.envelope,
-          payload
-        })
+        await f.receiver.receive(
+          {
+            bindingJson: f.binding.json,
+            envelope: sealed.envelope,
+            payload
+          },
+          f.defaultContext
+        )
       ).status
     ).toBe("invalid");
     expect(await f.receipts()).toEqual([]);
@@ -303,7 +602,10 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     });
     const sealed = f.seal("0", null, [item(0)]);
     expect(
-      await self.receive({ bindingJson: f.binding.json, ...sealed })
+      await self.receive(
+        { bindingJson: f.binding.json, ...sealed },
+        { peerDeviceId: "b", membershipRevision: f.add.hash }
+      )
     ).toEqual({ status: "invalid" });
     expect(await f.receipts()).toEqual([]);
   });
@@ -360,7 +662,9 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
         await createPeerOnlineFloorRepository(pool).acceptDeletion(
           f.anchor,
           f.binding.json,
-          deletion
+          deletion,
+          "b",
+          f.defaultContext
         )
       ).status
     ).toBe("accepted");

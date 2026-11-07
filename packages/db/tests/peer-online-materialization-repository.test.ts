@@ -22,6 +22,52 @@ describe.skipIf(!url)("peer online materialization", () => {
     if (created) await admin.query(`drop database "${name}" with (force)`);
     await admin.end();
   });
+  it("rejects direct materialization while restore-quarantined", async () => {
+    const owner = randomUUID();
+    const group = randomUUID();
+    const key = randomUUID();
+    await pool.query("insert into users(id,email) values ($1,$2)", [
+      owner,
+      `${owner}@test.invalid`
+    ]);
+    await pool.query(
+      "insert into peer_online_membership_groups values ($1,'genesis',1,false,false,null)",
+      [group]
+    );
+    await pool.query(
+      "insert into peer_online_restore_quarantines(group_id,genesis_hash,reason) values($1,'genesis','restore detected')",
+      [group]
+    );
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await expect(
+        materializePeerOnlineCheckpoint(pool, client, {
+          ownerUserId: owner,
+          groupId: group,
+          sessionKey: key,
+          bindingHash: "binding",
+          checkpointSequence: "0",
+          checkpointHash: "hash",
+          sourceSession: {
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            externalSessionId: key
+          },
+          items: []
+        })
+      ).rejects.toThrow("peer online group quarantined after restore");
+      await client.query("rollback");
+    } finally {
+      client.release();
+    }
+    const replicas = await pool.query(
+      "select 1 from peer_online_replicas where group_id=$1",
+      [group]
+    );
+    expect(replicas.rowCount).toBe(0);
+  });
+
   it("atomically creates a read-only replica and source items", async () => {
     const owner = randomUUID(),
       group = randomUUID(),
@@ -178,7 +224,7 @@ describe.skipIf(!url)("peer online materialization", () => {
       ).toBe(2);
       await client.query("begin");
       await client.query(
-        "update peer_online_sessions set deletion_hash='deleted' where group_id=$1 and session_key=$2",
+        "update peer_online_sessions set deletion_hash='deleted',deletion='{}' where group_id=$1 and session_key=$2",
         [group, key]
       );
       await expect(

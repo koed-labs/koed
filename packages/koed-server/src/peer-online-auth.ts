@@ -10,13 +10,13 @@ import {
   type KeyObject
 } from "node:crypto";
 import type { TLSSocket } from "node:tls";
+import type {
+  PeerOnlineAuthMember,
+  PeerOnlineAuthMembershipSnapshot
+} from "@koed/shared";
 import { PEER_ONLINE_ALPN } from "./peer-online-tls.js";
 
-export interface PeerOnlineAuthMember {
-  deviceId: string;
-  signingPublicKey: string;
-  transportSpkiSha256: string;
-}
+export type { PeerOnlineAuthMember } from "@koed/shared";
 
 export interface PeerOnlineAuthOptions {
   role: "client" | "server";
@@ -35,11 +35,7 @@ export interface PeerOnlineAuthOptions {
     localDeviceId: string,
     peerDeviceId: string,
     signal: AbortSignal
-  ) => Promise<{
-    revision: string;
-    local: PeerOnlineAuthMember;
-    peer: PeerOnlineAuthMember;
-  } | null>;
+  ) => Promise<PeerOnlineAuthMembershipSnapshot | null>;
 }
 
 const used = new WeakSet<TLSSocket>();

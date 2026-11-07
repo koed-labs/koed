@@ -5,8 +5,11 @@ import * as schema from "./schema.js";
 
 const { Pool } = pg;
 
+export const MAX_CONNECTION_TIMEOUT_MILLIS = 2_147_483_647;
+
 export interface DbConfig {
   connectionString?: string;
+  connectionTimeoutMillis?: number;
   onPoolError?: (error: Error) => void;
 }
 
@@ -14,8 +17,19 @@ export type DbPool = pg.Pool;
 export type KoedDb = NodePgDatabase<typeof schema>;
 
 export const createDbPool = (config: DbConfig = {}): pg.Pool => {
+  const connectionTimeoutMillis = config.connectionTimeoutMillis;
+  if (
+    connectionTimeoutMillis !== undefined &&
+    (!Number.isInteger(connectionTimeoutMillis) ||
+      connectionTimeoutMillis <= 0 ||
+      connectionTimeoutMillis > MAX_CONNECTION_TIMEOUT_MILLIS)
+  )
+    throw new Error(
+      `connectionTimeoutMillis must be an integer from 1 to ${MAX_CONNECTION_TIMEOUT_MILLIS}`
+    );
   const pool = new Pool({
-    connectionString: config.connectionString ?? env("DATABASE_URL")
+    connectionString: config.connectionString ?? env("DATABASE_URL"),
+    connectionTimeoutMillis
   });
   const reportedErrors = new WeakSet<object>();
   const reportError = (error: Error) => {

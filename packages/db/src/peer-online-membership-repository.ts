@@ -1,4 +1,9 @@
 import type pg from "pg";
+import { assertPeerOnlineNotQuarantined } from "./peer-online-restore-quarantine.js";
+import {
+  cancellablePeerOnlineTransaction,
+  throwIfPeerOnlineAborted
+} from "./peer-online-cancellable-transaction.js";
 import {
   applyPeerMembership,
   canonicalizePdsJson,
@@ -50,8 +55,11 @@ type AttemptRow = {
 export async function transaction<T>(
   pool: pg.Pool,
   groupId: string,
-  run: (client: pg.PoolClient) => Promise<T>
+  run: (client: pg.PoolClient) => Promise<T>,
+  signal?: AbortSignal
 ): Promise<T> {
+  if (signal)
+    return cancellablePeerOnlineTransaction(pool, groupId, run, signal);
   const client = await pool.connect();
   try {
     await client.query("begin isolation level read committed");
@@ -72,9 +80,11 @@ export async function transaction<T>(
 
 export async function replay(
   client: pg.PoolClient,
-  anchor: PeerMembershipAnchor
+  anchor: PeerMembershipAnchor,
+  signal?: AbortSignal
 ): Promise<PeerMembershipState> {
   const { groupId } = anchor;
+  throwIfPeerOnlineAborted(signal);
   const group = (
     await client.query<Group>(
       `select genesis_hash = $2 as anchor_matches, record_count, conflict, incomplete,
@@ -83,6 +93,7 @@ export async function replay(
       [groupId, anchor.genesisHash]
     )
   ).rows[0];
+  throwIfPeerOnlineAborted(signal);
   if (!group) throw new Error("peer membership group not found");
   if (!group.anchor_matches) throw new Error("peer membership anchor mismatch");
   const corrupt = () => {
@@ -109,6 +120,7 @@ export async function replay(
       [groupId]
     )
   ).rows;
+  throwIfPeerOnlineAborted(signal);
   if (
     metadata.length !== group.record_count ||
     metadata.some((row, i) => row.position !== i)
@@ -124,6 +136,7 @@ export async function replay(
       [groupId]
     )
   ).rows;
+  throwIfPeerOnlineAborted(signal);
   if (rows.some((row) => row.hash === null || row.json === null))
     return bounds();
   if (
@@ -137,6 +150,7 @@ export async function replay(
     return corrupt();
   let state = init.state;
   for (const row of rows.slice(1)) {
+    throwIfPeerOnlineAborted(signal);
     const result = applyPeerMembership(state, row.json);
     if (result.status !== "accepted") return corrupt();
     state = result.state;
@@ -151,6 +165,7 @@ export async function replay(
         [groupId]
       )
     ).rows[0]?.evidence;
+    throwIfPeerOnlineAborted(signal);
     if (limit == null) return bounds();
     const result = applyPeerMembership(state, limit);
     if (
@@ -163,6 +178,7 @@ export async function replay(
   const view = inspectPeerMembership(state);
   if (view.conflict !== group.conflict || view.incomplete !== group.incomplete)
     return corrupt();
+  throwIfPeerOnlineAborted(signal);
   return state;
 }
 
@@ -197,6 +213,7 @@ export function createPeerOnlineMembershipRepository(pool: pg.Pool) {
           if (!existing.rows[0]!.anchor_matches)
             return { status: "invalid" as const, reason: "anchor mismatch" };
           await replay(client, anchor);
+          await assertPeerOnlineNotQuarantined(client, anchor);
           return { status: "duplicate" as const };
         }
         await client.query(
@@ -214,6 +231,7 @@ export function createPeerOnlineMembershipRepository(pool: pg.Pool) {
       const { groupId } = anchor;
       return transaction(pool, groupId, async (client) => {
         const state = await replay(client, anchor);
+        await assertPeerOnlineNotQuarantined(client, anchor);
         const result = applyPeerMembership(state, json);
         const view = inspectPeerMembership(result.state);
         if (result.status === "accepted") {
@@ -260,7 +278,9 @@ export function createPeerOnlineMembershipRepository(pool: pg.Pool) {
       )
         throw new Error("invalid admission attempt");
       return transaction(pool, anchor.groupId, async (client) => {
-        const view = inspectPeerMembership(await replay(client, anchor));
+        const state = await replay(client, anchor);
+        await assertPeerOnlineNotQuarantined(client, anchor);
+        const view = inspectPeerMembership(state);
         if (
           view.head !== attempt.expectedHead ||
           !view.members.some((m) => m.deviceId === attempt.approverDeviceId)
@@ -306,6 +326,7 @@ export function createPeerOnlineMembershipRepository(pool: pg.Pool) {
     ) {
       return transaction(pool, anchor.groupId, async (client) => {
         const state = await replay(client, anchor);
+        await assertPeerOnlineNotQuarantined(client, anchor);
         const row = (
           await client.query<AttemptRow>(
             `select *, expires_at > clock_timestamp() as valid_now from peer_online_admission_attempts where group_id=$1 and attempt_id=$2 for update`,

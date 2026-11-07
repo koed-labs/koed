@@ -13,7 +13,7 @@ import {
  * identities and evidence must not be merged by device ID or fingerprint. This
  * validator does not implement transport, persistence, pairing, fencing, or sync.
  */
-export const PEER_MEMBERSHIP_PROTOCOL = "koed/peer-online-membership/v1";
+export const PEER_MEMBERSHIP_PROTOCOL = "koed/peer-online-membership/v2";
 const MAX_RECORD_BYTES = 16384;
 const MAX_RECORDS = 1024;
 const MAX_MEMBERS = 128;
@@ -28,6 +28,7 @@ const memberSchema = z
   .object({
     deviceId: identifier,
     signingPublicKey: encoded(32),
+    encryptionSpki: z.string().min(1),
     encryptionSpkiSha256: encoded(32),
     transportSpkiSha256: encoded(32)
   })
@@ -56,6 +57,15 @@ const recordSchema = z
 type RecordValue = z.infer<typeof recordSchema>;
 export type PeerMembershipMember = z.infer<typeof memberSchema>;
 export type PeerMembershipAnchor = { groupId: string; genesisHash: string };
+export type PeerOnlineAuthMember = Pick<
+  PeerMembershipMember,
+  "deviceId" | "signingPublicKey" | "transportSpkiSha256"
+>;
+export type PeerOnlineAuthMembershipSnapshot = {
+  revision: string;
+  local: PeerOnlineAuthMember;
+  peer: PeerOnlineAuthMember;
+};
 type Snapshot = {
   active: Map<string, PeerMembershipMember>;
   used: Map<string, PeerMembershipMember>;
@@ -154,6 +164,23 @@ export function isValidPeerEd25519PublicKey(value: string): boolean {
   }
   return result[0] === 0n && mod(result[1] - result[2]) === 0n;
 }
+function validEncryptionSpki(member: PeerMembershipMember): boolean {
+  try {
+    if (!/^[A-Za-z0-9_-]+$/.test(member.encryptionSpki)) return false;
+    const der = Buffer.from(member.encryptionSpki, "base64url");
+    if (der.toString("base64url") !== member.encryptionSpki) return false;
+    const key = createPublicKey({ key: der, type: "spki", format: "der" });
+    if (key.asymmetricKeyType !== "x25519") return false;
+    const canonicalDer = key.export({ type: "spki", format: "der" });
+    return (
+      canonicalDer.equals(der) &&
+      createHash("sha256").update(canonicalDer).digest("base64url") ===
+        member.encryptionSpkiSha256
+    );
+  } catch {
+    return false;
+  }
+}
 function memberFingerprints(member: PeerMembershipMember): string[] {
   const signingSpki = createPublicKey({
     key: { kty: "OKP", crv: "Ed25519", x: member.signingPublicKey },
@@ -171,6 +198,7 @@ function validMember(
 ): boolean {
   if (
     !isValidPeerEd25519PublicKey(member.signingPublicKey) ||
+    !validEncryptionSpki(member) ||
     used.has(member.deviceId)
   )
     return false;

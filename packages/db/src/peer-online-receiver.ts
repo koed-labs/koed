@@ -8,8 +8,13 @@ import {
   type PeerMembershipAnchor
 } from "@koed/shared";
 import { acceptPeerOnlineCheckpointInTransaction } from "./peer-online-floor-repository.js";
+import {
+  isPeerOnlineSessionCurrent,
+  type PeerOnlineSessionContext
+} from "./peer-online-session-fence.js";
 import { materializePeerOnlineCheckpoint } from "./peer-online-materialization-repository.js";
 import { replay, transaction } from "./peer-online-membership-repository.js";
+import { assertPeerOnlineNotQuarantined } from "./peer-online-restore-quarantine.js";
 import type { ConversationItemInput } from "./types.js";
 
 export type PeerOnlineCheckpointAck = {
@@ -44,6 +49,7 @@ export async function bindPeerOnlineGroupOwner(
   ownerUserId: string
 ): Promise<void> {
   await transaction(pool, anchor.groupId, async (client) => {
+    await assertPeerOnlineNotQuarantined(client, anchor);
     const group = await client.query<{ genesis_hash: string }>(
       "select genesis_hash from peer_online_membership_groups where group_id=$1",
       [anchor.groupId]
@@ -70,8 +76,8 @@ export async function bindPeerOnlineGroupOwner(
  * decrypts the payload for this device, validates the snapshot plaintext and
  * materializes the read-only replica. Any failure rolls back the receipt too.
  *
- * The caller must already have authenticated the connection to an active
- * member; this function independently authenticates the origin producer.
+ * The caller passes trusted transport-session context separately from the
+ * wire input; this function independently authenticates the origin producer.
  */
 export function createPeerOnlineCheckpointReceiver(
   pool: pg.Pool,
@@ -79,11 +85,14 @@ export function createPeerOnlineCheckpointReceiver(
 ) {
   const { anchor } = local;
   return {
-    async receive(input: {
-      bindingJson: string;
-      envelope: string;
-      payload: Uint8Array;
-    }): Promise<PeerOnlineReceiveResult> {
+    async receive(
+      input: {
+        bindingJson: string;
+        envelope: string;
+        payload: Uint8Array;
+      },
+      sessionContext: PeerOnlineSessionContext | undefined
+    ): Promise<PeerOnlineReceiveResult> {
       try {
         return await transaction(pool, anchor.groupId, async (client) => {
           const owner = (
@@ -94,10 +103,11 @@ export function createPeerOnlineCheckpointReceiver(
           ).rows[0]?.owner_user_id;
           if (!owner) return { status: "fenced" as const };
           const state = await replay(client, anchor);
+          await assertPeerOnlineNotQuarantined(client, anchor);
           const view = inspectPeerMembership(state);
           if (
             !view.head ||
-            !view.members.some((member) => member.deviceId === local.deviceId)
+            !isPeerOnlineSessionCurrent(state, local.deviceId, sessionContext)
           )
             return { status: "fenced" as const };
 
@@ -107,7 +117,9 @@ export function createPeerOnlineCheckpointReceiver(
             state,
             input.bindingJson,
             input.envelope,
-            input.payload
+            input.payload,
+            local.deviceId,
+            sessionContext
           );
           if (accepted.status === "duplicate") {
             const replica = (

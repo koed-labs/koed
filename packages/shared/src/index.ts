@@ -2074,5 +2074,7 @@ export type {
   PeerMembershipAnchor,
   PeerMembershipMember,
   PeerMembershipResult,
-  PeerMembershipState
+  PeerMembershipState,
+  PeerOnlineAuthMember,
+  PeerOnlineAuthMembershipSnapshot
 } from "./peer-online-membership.js";

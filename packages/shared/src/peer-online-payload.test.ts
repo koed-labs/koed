@@ -6,7 +6,8 @@ import {
 } from "node:crypto";
 import {
   initializePeerMembership,
-  applyPeerMembership
+  applyPeerMembership,
+  PEER_MEMBERSHIP_PROTOCOL
 } from "./peer-online-membership.js";
 import { derivePeerSessionKey } from "./peer-online-deletion.js";
 import { signPeerOnlineCheckpoint } from "./peer-online-checkpoint.js";
@@ -34,15 +35,18 @@ const recipients = [
   { deviceId: "a", publicKey: a.publicKey },
   { deviceId: "b", publicKey: b.publicKey }
 ];
-const protocol = "koed/peer-online-membership/v1";
+const protocol = PEER_MEMBERSHIP_PROTOCOL;
 const fullMember = (
   deviceId: string,
   key: typeof signer.publicKey,
-  encryptionSpkiSha256: string
+  encryptionKey: typeof a.publicKey
 ) => ({
   deviceId,
   signingPublicKey: key.export({ format: "jwk" }).x!,
-  encryptionSpkiSha256,
+  encryptionSpki: encryptionKey
+    .export({ type: "spki", format: "der" })
+    .toString("base64url"),
+  encryptionSpkiSha256: fingerprint(encryptionKey),
   transportSpkiSha256: fingerprint(generateKeyPairSync("ed25519").publicKey)
 });
 const decision = (parentHash: string | null, body: object) => {
@@ -70,11 +74,7 @@ const decision = (parentHash: string | null, body: object) => {
 };
 const genesis = decision(null, {
   kind: "genesis",
-  initialMember: fullMember(
-    "a",
-    signer.publicKey,
-    members[0]!.encryptionSpkiSha256
-  )
+  initialMember: fullMember("a", signer.publicKey, a.publicKey)
 });
 const initial = initializePeerMembership(
   { groupId: "group", genesisHash: genesis.hash },
@@ -83,7 +83,7 @@ const initial = initializePeerMembership(
 if (initial.status !== "accepted") throw new Error("invalid fixture genesis");
 const addition = decision(genesis.hash, {
   kind: "add",
-  target: fullMember("b", attacker.publicKey, members[1]!.encryptionSpkiSha256)
+  target: fullMember("b", attacker.publicKey, b.publicKey)
 });
 const added = applyPeerMembership(initial.state, addition.json);
 if (added.status !== "accepted") throw new Error("invalid fixture addition");
@@ -315,11 +315,7 @@ describe("peer-online payload encryption", () => {
       body: {
         kind: "genesis",
         initialMember: {
-          ...fullMember(
-            "a",
-            signer.publicKey,
-            members[0]!.encryptionSpkiSha256
-          ),
+          ...fullMember("a", signer.publicKey, a.publicKey),
           signingPublicKey: weak.toString("base64url")
         }
       }

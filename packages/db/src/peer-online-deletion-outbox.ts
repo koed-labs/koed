@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import type pg from "pg";
+import { parseCanonicalPdsJson } from "@koed/shared";
 import {
   inspectPeerMembership,
   lookupHistoricalPeerMember,
@@ -7,6 +9,7 @@ import {
   type PeerMembershipState
 } from "@koed/shared";
 import { replay, transaction } from "./peer-online-membership-repository.js";
+import { assertPeerOnlineNotQuarantined } from "./peer-online-restore-quarantine.js";
 
 /**
  * Internal, trusted boundary: caller must establish that the local session and
@@ -37,7 +40,7 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
           owner_user_id: string;
           local_session_id: string;
         }>(
-          "select owner_user_id,local_session_id from peer_online_deletion_outbox where group_id=$1 and session_key=$2",
+          "select owner_user_id,local_session_id from peer_online_deletion_outbox where group_id=$1 and session_key=$2 for update",
           [groupId, sessionKey]
         );
         if (
@@ -61,6 +64,7 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
     async pending(anchor: PeerMembershipAnchor) {
       return transaction(pool, anchor.groupId, async (client) => {
         const state = await replay(client, anchor);
+        await assertPeerOnlineNotQuarantined(client, anchor);
         const result = await client.query<{
           session_key: string;
           owner_user_id: string;
@@ -79,23 +83,30 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
         );
         return result.rows.map(
           ({ binding_hash, deletion, deletion_hash, ...row }) => {
-            const checked =
-              row.prepared_deletion &&
-              validateDeletion(
-                state,
-                anchor,
-                row.binding,
-                binding_hash,
-                row.prepared_deletion
-              );
+            const checked = row.prepared_deletion
+              ? validateDeletion(
+                  state,
+                  anchor,
+                  row.binding,
+                  binding_hash,
+                  row.prepared_deletion
+                )
+              : undefined;
+            const preparedIdentity = row.prepared_deletion
+              ? deletionIdentity(row.prepared_deletion)
+              : undefined;
+            const floor =
+              deletion && deletion_hash
+                ? verifiedFloor(deletion, deletion_hash)
+                : undefined;
             return {
               ...row,
               prepared_deletion:
-                checked &&
-                checked.status === "accepted" &&
+                checked?.status === "accepted" &&
                 checked.sessionKey === row.session_key &&
-                checked.eventHash === deletion_hash &&
-                row.prepared_deletion === deletion
+                preparedIdentity !== undefined &&
+                floor !== undefined &&
+                sameDeletionIdentity(preparedIdentity, floor.identity)
                   ? row.prepared_deletion
                   : null
             };
@@ -110,14 +121,32 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
     ) {
       return transaction(pool, anchor.groupId, async (client) => {
         const state = await replay(client, anchor);
+        await assertPeerOnlineNotQuarantined(client, anchor);
         const row = (
-          await client.query<{ binding: string; binding_hash: string }>(
-            `select s.binding,s.binding_hash from peer_online_sessions s join peer_online_deletion_outbox o using(group_id,session_key)
-           where s.group_id=$1 and s.session_key=$2 for update of s,o`,
+          await client.query<{
+            binding: string;
+            binding_hash: string;
+            deletion: string | null;
+            deletion_hash: string | null;
+          }>(
+            `select binding,binding_hash,deletion,deletion_hash
+             from peer_online_sessions where group_id=$1 and session_key=$2 for update`,
             [anchor.groupId, sessionKey]
           )
         ).rows[0];
         if (!row) return { status: "invalid" as const };
+        const outbox = (
+          await client.query<{
+            prepared_deletion: string | null;
+            owner_user_id: string;
+            local_session_id: string;
+          }>(
+            `select prepared_deletion,owner_user_id,local_session_id
+             from peer_online_deletion_outbox where group_id=$1 and session_key=$2 for update`,
+            [anchor.groupId, sessionKey]
+          )
+        ).rows[0];
+        if (!outbox) return { status: "invalid" as const };
         const result = validateDeletion(
           state,
           anchor,
@@ -125,20 +154,111 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
           row.binding_hash,
           deletion
         );
-        if (result.status !== "accepted" || result.sessionKey !== sessionKey)
+        const nextIdentity = deletionIdentity(deletion);
+        const floor =
+          row.deletion && row.deletion_hash
+            ? verifiedFloor(row.deletion, row.deletion_hash)
+            : undefined;
+        const previousPrepared = outbox.prepared_deletion
+          ? deletionIdentity(outbox.prepared_deletion)
+          : undefined;
+        if (
+          result.status !== "accepted" ||
+          result.sessionKey !== sessionKey ||
+          !nextIdentity ||
+          ((row.deletion !== null || row.deletion_hash !== null) && !floor) ||
+          (floor && !sameDeletionIdentity(nextIdentity, floor.identity)) ||
+          (outbox.prepared_deletion !== null && !previousPrepared) ||
+          (previousPrepared &&
+            !sameDeletionIdentity(nextIdentity, previousPrepared))
+        )
           return { status: "invalid" as const };
         await client.query(
           "update peer_online_deletion_outbox set prepared_deletion=$3 where group_id=$1 and session_key=$2",
           [anchor.groupId, sessionKey, deletion]
         );
-        await client.query(
-          "update peer_online_sessions set deletion_hash=$3, deletion=$4 where group_id=$1 and session_key=$2",
-          [anchor.groupId, sessionKey, result.eventHash, deletion]
-        );
+        if (!floor)
+          await client.query(
+            "update peer_online_sessions set deletion_hash=$3, deletion=$4 where group_id=$1 and session_key=$2",
+            [anchor.groupId, sessionKey, result.eventHash, deletion]
+          );
         return { status: "prepared" as const };
       });
     }
   };
+}
+
+const deletionDomain = "koed/peer-online-deletion/v1/record\n";
+
+type DeletionIdentity = {
+  groupId: string;
+  originDeviceId: string;
+  originSessionId: string;
+  sessionKey: string;
+  eventId: string;
+};
+
+function deletionIdentity(json: string): DeletionIdentity | undefined {
+  if (typeof json !== "string" || Buffer.byteLength(json) > 16384)
+    return undefined;
+  try {
+    const parsed: unknown = parseCanonicalPdsJson(json);
+    if (!parsed || typeof parsed !== "object" || !("unsigned" in parsed))
+      return undefined;
+    const value = parsed.unsigned;
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !("protocol" in value) ||
+      value.protocol !== "koed/peer-online-deletion/v1" ||
+      !("groupId" in value) ||
+      typeof value.groupId !== "string" ||
+      !("originDeviceId" in value) ||
+      typeof value.originDeviceId !== "string" ||
+      !("originSessionId" in value) ||
+      typeof value.originSessionId !== "string" ||
+      !("sessionKey" in value) ||
+      typeof value.sessionKey !== "string" ||
+      !("eventId" in value) ||
+      typeof value.eventId !== "string"
+    )
+      return undefined;
+    return {
+      groupId: value.groupId,
+      originDeviceId: value.originDeviceId,
+      originSessionId: value.originSessionId,
+      sessionKey: value.sessionKey,
+      eventId: value.eventId
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function verifiedFloor(json: string, expectedHash: string) {
+  try {
+    const identity = deletionIdentity(json);
+    const hash = createHash("sha256")
+      .update(deletionDomain)
+      .update(json)
+      .digest("base64url");
+    return identity && hash === expectedHash ? { identity } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameDeletionIdentity(
+  left: DeletionIdentity,
+  right: DeletionIdentity
+): boolean {
+  return (
+    left.groupId === right.groupId &&
+    left.originDeviceId === right.originDeviceId &&
+    left.originSessionId === right.originSessionId &&
+    left.sessionKey === right.sessionKey &&
+    left.eventId === right.eventId
+  );
 }
 
 function validateDeletion(

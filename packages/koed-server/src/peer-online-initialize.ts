@@ -67,11 +67,16 @@ function memberFor(
     format: "der",
     type: "spki"
   });
+  const encryptionSpki = Buffer.from(
+    publicIdentity.encryptionPublicKey,
+    "base64"
+  );
   return {
     deviceId: publicIdentity.deviceId,
     signingPublicKey: signing.export({ format: "jwk" }).x!,
+    encryptionSpki: encryptionSpki.toString("base64url"),
     encryptionSpkiSha256: createHash("sha256")
-      .update(Buffer.from(publicIdentity.encryptionPublicKey, "base64"))
+      .update(encryptionSpki)
       .digest("base64url"),
     transportSpkiSha256: certificate.spkiPin
   };

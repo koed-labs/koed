@@ -11,6 +11,11 @@ import {
 } from "@koed/shared";
 import { hideSession } from "./peer-online-deletion-outbox.js";
 import { replay, transaction } from "./peer-online-membership-repository.js";
+import { assertPeerOnlineNotQuarantined } from "./peer-online-restore-quarantine.js";
+import {
+  isPeerOnlineSessionCurrent,
+  type PeerOnlineSessionContext
+} from "./peer-online-session-fence.js";
 
 const checkpointDomain = "koed/peer-online-checkpoint/v1/record\n";
 const sessionCheckpointLimit = 16;
@@ -52,10 +57,15 @@ export function createPeerOnlineFloorRepository(pool: pg.Pool) {
     async acceptDeletion(
       anchor: PeerMembershipAnchor,
       bindingJson: string,
-      deletionJson: string
+      deletionJson: string,
+      localDeviceId: string,
+      sessionContext: PeerOnlineSessionContext | undefined
     ) {
       return transaction(pool, anchor.groupId, async (client) => {
         const state = await replay(client, anchor);
+        await assertPeerOnlineNotQuarantined(client, anchor);
+        if (!isPeerOnlineSessionCurrent(state, localDeviceId, sessionContext))
+          return { status: "fenced" as const };
         const view = inspectPeerMembership(state);
         const result = validatePeerOnlineDeletion(bindingJson, deletionJson, {
           historicalOriginKey: (group, id) =>
@@ -120,17 +130,22 @@ export function createPeerOnlineFloorRepository(pool: pg.Pool) {
       anchor: PeerMembershipAnchor,
       bindingJson: string,
       envelope: string,
-      payload: Uint8Array
+      payload: Uint8Array,
+      localDeviceId: string,
+      sessionContext: PeerOnlineSessionContext | undefined
     ) {
       return transaction(pool, anchor.groupId, async (client) => {
         const state = await replay(client, anchor);
+        await assertPeerOnlineNotQuarantined(client, anchor);
         const result = await acceptPeerOnlineCheckpointInTransaction(
           client,
           anchor,
           state,
           bindingJson,
           envelope,
-          payload
+          payload,
+          localDeviceId,
+          sessionContext
         );
         return result.status === "accepted"
           ? { status: result.status, hash: result.hash }
@@ -149,8 +164,13 @@ export async function acceptPeerOnlineCheckpointInTransaction(
   state: PeerMembershipState,
   bindingJson: string,
   envelope: string,
-  payload: Uint8Array
+  payload: Uint8Array,
+  localDeviceId: string,
+  sessionContext: PeerOnlineSessionContext | undefined
 ) {
+  await assertPeerOnlineNotQuarantined(client, anchor);
+  if (!isPeerOnlineSessionCurrent(state, localDeviceId, sessionContext))
+    return { status: "fenced" as const };
   const view = inspectPeerMembership(state);
   const binding = validatePeerOnlineBinding(bindingJson, (group, id) =>
     group === anchor.groupId ? historicalKey(state, id) : undefined

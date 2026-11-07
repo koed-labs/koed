@@ -10,12 +10,23 @@ import { runDbMigrations } from "../src/migrate.js";
 import { createPeerOnlineMembershipRepository } from "../src/peer-online-membership-repository.js";
 import { createPeerOnlineFloorRepository } from "../src/peer-online-floor-repository.js";
 import { createPeerOnlineDeletionOutbox } from "../src/peer-online-deletion-outbox.js";
+import { declarePeerOnlineRestoreQuarantine } from "../src/peer-online-restore-quarantine.js";
 
 const url = process.env.PEER_ONLINE_MEMBERSHIP_TEST_DATABASE_URL;
-const membership = "koed/peer-online-membership/v1";
+const membership = "koed/peer-online-membership/v2";
 const bindingDomain = "koed/peer-online-session-binding/v1";
 const deletionDomain = "koed/peer-online-deletion/v1";
 const encoded = (n: number) => Buffer.alloc(32, n).toString("base64url");
+const encryptionIdentity = () => {
+  const der = generateKeyPairSync("x25519").publicKey.export({
+    type: "spki",
+    format: "der"
+  });
+  return {
+    encryptionSpki: der.toString("base64url"),
+    encryptionSpkiSha256: createHash("sha256").update(der).digest("base64url")
+  };
+};
 const signed = (
   domain: string,
   unsigned: object,
@@ -29,6 +40,32 @@ const signed = (
       key
     ).toString("base64url")
   });
+
+type TestSessionContext = {
+  peerDeviceId: string;
+  membershipRevision: string;
+};
+type FloorRepository = ReturnType<typeof createPeerOnlineFloorRepository>;
+type ContextAwareFloorRepository = {
+  acceptDeletion: (
+    anchor: Parameters<FloorRepository["acceptDeletion"]>[0],
+    bindingJson: string,
+    deletionJson: string,
+    localDeviceId: string,
+    sessionContext: TestSessionContext
+  ) => ReturnType<FloorRepository["acceptDeletion"]>;
+  acceptCheckpoint: (
+    anchor: Parameters<FloorRepository["acceptCheckpoint"]>[0],
+    bindingJson: string,
+    envelope: string,
+    payload: Uint8Array,
+    localDeviceId: string,
+    sessionContext: TestSessionContext
+  ) => ReturnType<FloorRepository["acceptCheckpoint"]>;
+};
+
+const withSessionContext = (repo: FloorRepository) =>
+  repo as unknown as ContextAwareFloorRepository;
 
 describe.skipIf(!url)("peer online local deletion outbox", () => {
   const name = `koed_outbox_${randomUUID().replaceAll("-", "")}`;
@@ -51,11 +88,12 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     const keys = generateKeyPairSync("ed25519"),
       groupId = randomUUID(),
       owner = randomUUID(),
-      localSessionId = randomUUID();
+      localSessionId = randomUUID(),
+      encryption = encryptionIdentity();
     const member = {
       deviceId: "origin",
       signingPublicKey: keys.publicKey.export({ format: "jwk" }).x!,
-      encryptionSpkiSha256: encoded(1),
+      ...encryption,
       transportSpkiSha256: encoded(2)
     };
     const genesisUnsigned = {
@@ -113,15 +151,19 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     );
     expect(
       (
-        await createPeerOnlineFloorRepository(pool).acceptCheckpoint(
+        await withSessionContext(
+          createPeerOnlineFloorRepository(pool)
+        ).acceptCheckpoint(
           anchor,
           binding,
           checkpoint.envelope,
-          checkpoint.payload
+          checkpoint.payload,
+          "origin",
+          { peerDeviceId: "origin", membershipRevision: genesisHash }
         )
       ).status
     ).toBe("accepted");
-    const deletion = (head: string) =>
+    const deletion = (head: string, eventId = encoded(5)) =>
       signed(
         deletionDomain,
         {
@@ -130,7 +172,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
           sessionKey,
           authorDeviceId: "origin",
           membershipHeadHash: head,
-          eventId: encoded(5)
+          eventId
         },
         keys.privateKey
       );
@@ -157,7 +199,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
         target: {
           deviceId: "other",
           signingPublicKey: next.publicKey.export({ format: "jwk" }).x!,
-          encryptionSpkiSha256: encoded(10),
+          ...encryptionIdentity(),
           transportSpkiSha256: encoded(11)
         }
       }
@@ -188,6 +230,9 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     expect((await repo.prepare(f.anchor, f.sessionKey, old)).status).toBe(
       "prepared"
     );
+    const oldHash = createHash("sha256")
+      .update(`${deletionDomain}/record\n${old}`)
+      .digest("base64url");
     const head = await advance(f);
     const current = f.deletion(head);
     expect((await repo.prepare(f.anchor, f.sessionKey, current)).status).toBe(
@@ -199,33 +244,57 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
         [f.anchor.groupId, f.sessionKey]
       )
     ).rows[0];
-    expect(row.deletion).toBe(current);
+    expect(row.deletion).toBe(old);
     expect(row.prepared_deletion).toBe(current);
-    expect(row.deletion_hash).toBe(
-      createHash("sha256")
-        .update(`${deletionDomain}/record\n${current}`)
-        .digest("base64url")
-    );
+    expect(row.deletion_hash).toBe(oldHash);
+    expect((await repo.pending(f.anchor))[0]!.prepared_deletion).toBe(current);
     expect(
       (
-        await createPeerOnlineFloorRepository(pool).acceptDeletion(
-          f.anchor,
-          f.binding,
-          current
-        )
+        await withSessionContext(
+          createPeerOnlineFloorRepository(pool)
+        ).acceptDeletion(f.anchor, f.binding, current, "origin", {
+          peerDeviceId: "other",
+          membershipRevision: head
+        })
       ).status
-    ).toBe("duplicate");
+    ).toBe("deleted");
+    expect(
+      (
+        await withSessionContext(
+          createPeerOnlineFloorRepository(pool)
+        ).acceptDeletion(f.anchor, f.binding, current, "origin", {
+          peerDeviceId: "other",
+          membershipRevision: f.anchor.genesisHash
+        })
+      ).status
+    ).toBe("fenced");
+    expect(
+      (
+        await pool.query<{ deletion: string | null }>(
+          "select deletion from peer_online_sessions where group_id=$1 and session_key=$2",
+          [f.anchor.groupId, f.sessionKey]
+        )
+      ).rows[0]?.deletion
+    ).toBe(old); // A committed deletion floor is terminal; reprepare changes only the outbox.
   });
   it("reconciles a previously received deletion floor when preparing", async () => {
     const f = await fixture(),
       repo = createPeerOnlineDeletionOutbox(pool);
     const old = f.deletion(f.anchor.genesisHash);
+    const oldHash = createHash("sha256")
+      .update(`${deletionDomain}/record\n${old}`)
+      .digest("base64url");
     expect(
       (
         await createPeerOnlineFloorRepository(pool).acceptDeletion(
           f.anchor,
           f.binding,
-          old
+          old,
+          "origin",
+          {
+            peerDeviceId: "origin",
+            membershipRevision: f.anchor.genesisHash
+          }
         )
       ).status
     ).toBe("accepted");
@@ -242,12 +311,65 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     );
     const row = (
       await pool.query<Record<string, unknown>>(
+        "select s.deletion,s.deletion_hash,o.prepared_deletion from peer_online_sessions s join peer_online_deletion_outbox o using(group_id,session_key) where s.group_id=$1 and s.session_key=$2",
+        [f.anchor.groupId, f.sessionKey]
+      )
+    ).rows[0];
+    expect(row.deletion).toBe(old);
+    expect(row.deletion_hash).toBe(oldHash);
+    expect(row.prepared_deletion).toBe(current);
+    expect((await repo.pending(f.anchor))[0]!.prepared_deletion).toBe(current);
+  });
+  it("rejects a corrupted existing floor without preparing a record", async () => {
+    const f = await fixture(),
+      repo = createPeerOnlineDeletionOutbox(pool),
+      deletion = f.deletion(f.anchor.genesisHash);
+    await repo.request(
+      f.anchor.groupId,
+      f.sessionKey,
+      f.owner,
+      f.localSessionId
+    );
+    await pool.query(
+      "update peer_online_sessions set deletion_hash='wrong-hash',deletion=$3 where group_id=$1 and session_key=$2",
+      [f.anchor.groupId, f.sessionKey, deletion]
+    );
+    expect(await repo.prepare(f.anchor, f.sessionKey, deletion)).toEqual({
+      status: "invalid"
+    });
+    const prepared = await pool.query<{
+      prepared_deletion: string | null;
+    }>(
+      "select prepared_deletion from peer_online_deletion_outbox where group_id=$1 and session_key=$2",
+      [f.anchor.groupId, f.sessionKey]
+    );
+    expect(prepared.rows[0]?.prepared_deletion).toBeNull();
+  });
+  it("rejects a different logical deletion for an existing floor", async () => {
+    const f = await fixture(),
+      repo = createPeerOnlineDeletionOutbox(pool);
+    await repo.request(
+      f.anchor.groupId,
+      f.sessionKey,
+      f.owner,
+      f.localSessionId
+    );
+    const original = f.deletion(f.anchor.genesisHash);
+    expect((await repo.prepare(f.anchor, f.sessionKey, original)).status).toBe(
+      "prepared"
+    );
+    const different = f.deletion(f.anchor.genesisHash, encoded(6));
+    expect(await repo.prepare(f.anchor, f.sessionKey, different)).toEqual({
+      status: "invalid"
+    });
+    const row = (
+      await pool.query<Record<string, unknown>>(
         "select s.deletion,o.prepared_deletion from peer_online_sessions s join peer_online_deletion_outbox o using(group_id,session_key) where s.group_id=$1 and s.session_key=$2",
         [f.anchor.groupId, f.sessionKey]
       )
     ).rows[0];
-    expect(row.deletion).toBe(current);
-    expect(row.prepared_deletion).toBe(current);
+    expect(row.deletion).toBe(original);
+    expect(row.prepared_deletion).toBe(original);
   });
   it("does not return a prepared record after membership changes until reprepared", async () => {
     const f = await fixture(),
@@ -315,7 +437,12 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
           f.anchor,
           f.binding,
           f.checkpoint.envelope,
-          f.checkpoint.payload
+          f.checkpoint.payload,
+          "origin",
+          {
+            peerDeviceId: "origin",
+            membershipRevision: f.anchor.genesisHash
+          }
         )
       ).status
     ).toBe("deleted");
@@ -330,6 +457,70 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
       ).status
     ).toBe("pending");
   });
+  it("withholds a prepared deletion while restore-quarantined", async () => {
+    const f = await fixture();
+    const repo = createPeerOnlineDeletionOutbox(pool);
+    await repo.request(
+      f.anchor.groupId,
+      f.sessionKey,
+      f.owner,
+      f.localSessionId
+    );
+    const deletion = f.deletion(f.anchor.genesisHash);
+    expect((await repo.prepare(f.anchor, f.sessionKey, deletion)).status).toBe(
+      "prepared"
+    );
+    await declarePeerOnlineRestoreQuarantine(
+      pool,
+      f.anchor,
+      "restore detected"
+    );
+    await expect(repo.pending(f.anchor)).rejects.toThrow(
+      "peer online group quarantined after restore"
+    );
+  });
+
+  it("allows local deletion intent but blocks send eligibility while quarantined", async () => {
+    const f = await fixture();
+    const repo = createPeerOnlineDeletionOutbox(pool);
+    await pool.query(
+      "insert into memory_events(owner_user_id,visibility,event_type,capture_method,session_id) values($1,'personal','captured','api',$2)",
+      [f.owner, f.localSessionId]
+    );
+    await declarePeerOnlineRestoreQuarantine(
+      pool,
+      f.anchor,
+      "restore detected"
+    );
+    expect(
+      (
+        await repo.request(
+          f.anchor.groupId,
+          f.sessionKey,
+          f.owner,
+          f.localSessionId
+        )
+      ).status
+    ).toBe("pending");
+    const visibility = await pool.query<Record<string, unknown>>(
+      "select s.personal_deleted_at as session_deleted,e.personal_deleted_at as event_deleted from sessions s join memory_events e on e.session_id=s.id where s.id=$1",
+      [f.localSessionId]
+    );
+    expect(visibility.rows[0]?.session_deleted).toBeInstanceOf(Date);
+    expect(visibility.rows[0]?.event_deleted).toBeInstanceOf(Date);
+    await expect(repo.pending(f.anchor)).rejects.toThrow(
+      "peer online group quarantined after restore"
+    );
+    await expect(
+      repo.prepare(f.anchor, f.sessionKey, f.deletion(f.anchor.genesisHash))
+    ).rejects.toThrow("peer online group quarantined after restore");
+    const outbox = await pool.query<{ prepared_deletion: string | null }>(
+      "select prepared_deletion from peer_online_deletion_outbox where group_id=$1 and session_key=$2",
+      [f.anchor.groupId, f.sessionKey]
+    );
+    expect(outbox.rows[0]?.prepared_deletion).toBeNull();
+  });
+
   it("rejects a different owner and rolls back on outbox failure", async () => {
     const f = await fixture(),
       repo = createPeerOnlineDeletionOutbox(pool);
@@ -378,7 +569,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     const target = {
       deviceId: "other",
       signingPublicKey: next.publicKey.export({ format: "jwk" }).x!,
-      encryptionSpkiSha256: encoded(10),
+      ...encryptionIdentity(),
       transportSpkiSha256: encoded(11)
     };
     const unsigned = {
@@ -508,7 +699,12 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
         f.anchor,
         f.binding,
         f.checkpoint.envelope,
-        f.checkpoint.payload
+        f.checkpoint.payload,
+        "origin",
+        {
+          peerDeviceId: "origin",
+          membershipRevision: f.anchor.genesisHash
+        }
       )
     ]);
     expect(results[0].status).toBe("pending");

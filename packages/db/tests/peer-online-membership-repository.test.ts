@@ -1,19 +1,30 @@
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { canonicalizePdsJson } from "@koed/shared";
+import { canonicalizePdsJson, type PeerMembershipAnchor } from "@koed/shared";
+import {
+  createPeerOnlineAuthMembershipLookup,
+  createPeerOnlineMembershipRepository,
+  type PeerOnlineAuthMembershipLookup
+} from "../src/index.js";
 import { runDbMigrations } from "../src/migrate.js";
-import { createPeerOnlineMembershipRepository } from "../src/index.js";
+import { bindPeerOnlineGroupOwner } from "../src/peer-online-receiver.js";
+import { declarePeerOnlineRestoreQuarantine } from "../src/peer-online-restore-quarantine.js";
 
 const url = process.env.PEER_ONLINE_MEMBERSHIP_TEST_DATABASE_URL;
-const protocol = "koed/peer-online-membership/v1";
+const protocol = "koed/peer-online-membership/v2";
 function device(deviceId: string) {
   const keys = generateKeyPairSync("ed25519");
+  const encryption = generateKeyPairSync("x25519");
+  const encryptionSpki = encryption.publicKey
+    .export({ type: "spki", format: "der" })
+    .toString("base64url");
   return {
     deviceId,
     signingPublicKey: keys.publicKey.export({ format: "jwk" }).x!,
+    encryptionSpki,
     encryptionSpkiSha256: createHash("sha256")
-      .update(`encryption:${deviceId}`)
+      .update(Buffer.from(encryptionSpki, "base64url"))
       .digest("base64url"),
     transportSpkiSha256: createHash("sha256")
       .update(`transport:${deviceId}`)
@@ -52,16 +63,81 @@ function record(
 const member = (d: ReturnType<typeof device>) => ({
   deviceId: d.deviceId,
   signingPublicKey: d.signingPublicKey,
+  encryptionSpki: d.encryptionSpki,
   encryptionSpkiSha256: d.encryptionSpkiSha256,
   transportSpkiSha256: d.transportSpkiSha256
 });
+
+async function createOwnerUser(pool: pg.Pool): Promise<string> {
+  const result = await pool.query<{ id: string }>(
+    "insert into users (email, display_name) values ($1, $2) returning id",
+    [`peer-online-owner-${randomUUID()}@example.com`, "Peer Online Owner"]
+  );
+  return result.rows[0]!.id;
+}
+
+async function createActiveMembershipFixture(
+  pool: pg.Pool,
+  { bindOwner = true }: { bindOwner?: boolean } = {}
+) {
+  const groupId = randomUUID();
+  const local = device("local");
+  const peer = device("peer");
+  const genesis = record(
+    local,
+    null,
+    { kind: "genesis", initialMember: member(local) },
+    groupId
+  );
+  const addition = record(
+    local,
+    genesis.hash,
+    { kind: "add", target: member(peer) },
+    groupId
+  );
+  const anchor = { groupId, genesisHash: genesis.hash };
+  const repo = createPeerOnlineMembershipRepository(pool);
+  await repo.initialize(anchor, genesis.json);
+  await repo.append(anchor, addition.json);
+  const ownerUserId = await createOwnerUser(pool);
+  if (bindOwner) await bindPeerOnlineGroupOwner(pool, anchor, ownerUserId);
+  return { anchor, local, peer, ownerUserId, repo, head: addition.hash };
+}
+
+function createAuthMembershipLookup(
+  pool: pg.Pool,
+  anchor: PeerMembershipAnchor,
+  expectedOwnerUserId: string
+): PeerOnlineAuthMembershipLookup {
+  return createPeerOnlineAuthMembershipLookup(pool, {
+    anchor,
+    expectedOwnerUserId
+  });
+}
+
+async function waitForCondition(
+  condition: () => Promise<boolean>,
+  description: string
+): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${description}`);
+}
 
 describe.skipIf(!url)("durable peer membership", () => {
   const name = `koed_peer_${randomUUID().replaceAll("-", "")}`;
   const admin = new pg.Pool({ connectionString: url });
   const target = new URL(url ?? "postgresql://localhost/postgres");
   target.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: target.toString() });
+  const pool = new pg.Pool({
+    connectionString: target.toString(),
+    application_name: name,
+    max: 3,
+    connectionTimeoutMillis: 5000
+  });
   let created = false;
   beforeAll(async () => {
     await admin.query(`create database "${name}"`);
@@ -73,6 +149,63 @@ describe.skipIf(!url)("durable peer membership", () => {
     if (created) await admin.query(`drop database "${name}" with (force)`);
     await admin.end();
   });
+  it("blocks membership mutations while restore-quarantined but keeps reads available", async () => {
+    const groupId = randomUUID();
+    const a = device("a");
+    const b = device("b");
+    const genesis = record(
+      a,
+      null,
+      { kind: "genesis", initialMember: member(a) },
+      groupId
+    );
+    const add = record(
+      a,
+      genesis.hash,
+      { kind: "add", target: member(b) },
+      groupId
+    );
+    const anchor = { groupId, genesisHash: genesis.hash };
+    const repo = createPeerOnlineMembershipRepository(pool);
+    await repo.initialize(anchor, genesis.json);
+    const attempt = {
+      attemptId: randomUUID(),
+      expectedHead: genesis.hash,
+      approverDeviceId: a.deviceId,
+      target: member(b),
+      expiresAt: new Date(Date.now() + 60000)
+    };
+    await repo.createAdmissionAttempt(anchor, attempt);
+    await declarePeerOnlineRestoreQuarantine(pool, anchor, "restore detected");
+    const authorization = {
+      ...attempt,
+      groupId,
+      transcriptHash: "verified-transcript"
+    } as import("../src/peer-online-membership-repository.js").VerifiedPeerAdmissionAuthorization;
+
+    await expect(repo.initialize(anchor, genesis.json)).rejects.toThrow(
+      "peer online group quarantined after restore"
+    );
+    await expect(repo.append(anchor, add.json)).rejects.toThrow(
+      "peer online group quarantined after restore"
+    );
+    await expect(
+      repo.createAdmissionAttempt(anchor, {
+        ...attempt,
+        attemptId: randomUUID()
+      })
+    ).rejects.toThrow("peer online group quarantined after restore");
+    await expect(repo.admit(anchor, authorization, add.json)).rejects.toThrow(
+      "peer online group quarantined after restore"
+    );
+    expect((await repo.load(anchor)).records).toHaveLength(1);
+    const attempts = await pool.query(
+      "select attempt_id from peer_online_admission_attempts where group_id=$1",
+      [groupId]
+    );
+    expect(attempts.rowCount).toBe(1);
+  });
+
   it("atomically admits once and returns the same outcome after a lost response", async () => {
     const groupId = randomUUID(),
       a = device("a"),
@@ -736,5 +869,381 @@ describe.skipIf(!url)("durable peer membership", () => {
     expect(view.incomplete).toBe(true);
     expect(view.members).toEqual([]);
     expect(view.limitEvidence).toBe(overflow.json);
+    const ownerUserId = await createOwnerUser(pool);
+    await bindPeerOnlineGroupOwner(pool, anchor, ownerUserId);
+    const lookup = createAuthMembershipLookup(pool, anchor, ownerUserId);
+    const actual = await lookup(
+      groupId,
+      "a",
+      "overflow",
+      new AbortController().signal
+    );
+    expect(actual).toBeNull();
   }, 120000);
+
+  it("returns the current active membership snapshot for local and peer devices", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const actual = await lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      new AbortController().signal
+    );
+
+    expect(actual).toEqual({
+      revision: fixture.head,
+      local: {
+        deviceId: fixture.local.deviceId,
+        signingPublicKey: fixture.local.signingPublicKey,
+        transportSpkiSha256: fixture.local.transportSpkiSha256
+      },
+      peer: {
+        deviceId: fixture.peer.deviceId,
+        signingPublicKey: fixture.peer.signingPublicKey,
+        transportSpkiSha256: fixture.peer.transportSpkiSha256
+      }
+    });
+  });
+
+  it("returns null when the requested group differs from the trusted anchor", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const actual = await lookup(
+      randomUUID(),
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      new AbortController().signal
+    );
+    expect(actual).toBeNull();
+  });
+
+  it("returns null when the trusted genesis hash does not match persisted state", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      { ...fixture.anchor, genesisHash: "wrong-genesis" },
+      fixture.ownerUserId
+    );
+    const actual = await lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      new AbortController().signal
+    );
+    expect(actual).toBeNull();
+  });
+
+  it("returns null when the requested local device is unknown", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const actual = await lookup(
+      fixture.anchor.groupId,
+      "unknown-local",
+      fixture.peer.deviceId,
+      new AbortController().signal
+    );
+    expect(actual).toBeNull();
+  });
+
+  it("returns null when the requested peer is not an active member", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const actual = await lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      "unknown-peer",
+      new AbortController().signal
+    );
+    expect(actual).toBeNull();
+  });
+
+  it.each(["local", "peer"] as const)(
+    "returns null when the %s membership is revoked",
+    async (revokedDevice) => {
+      const fixture = await createActiveMembershipFixture(pool);
+      const target = revokedDevice === "local" ? fixture.local : fixture.peer;
+      const signer = revokedDevice === "local" ? fixture.peer : fixture.local;
+      const revocation = record(
+        signer,
+        fixture.head,
+        { kind: "revoke", targetDeviceId: target.deviceId },
+        fixture.anchor.groupId
+      );
+      await fixture.repo.append(fixture.anchor, revocation.json);
+      const lookup = createAuthMembershipLookup(
+        pool,
+        fixture.anchor,
+        fixture.ownerUserId
+      );
+      const actual = await lookup(
+        fixture.anchor.groupId,
+        fixture.local.deviceId,
+        fixture.peer.deviceId,
+        new AbortController().signal
+      );
+      expect(actual).toBeNull();
+    }
+  );
+
+  it("returns null when membership evidence contains a sibling fork", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const left = record(
+      fixture.local,
+      fixture.head,
+      { kind: "add", target: member(device("left")) },
+      fixture.anchor.groupId
+    );
+    const right = record(
+      fixture.local,
+      fixture.head,
+      { kind: "add", target: member(device("right")) },
+      fixture.anchor.groupId
+    );
+    await fixture.repo.append(fixture.anchor, left.json);
+    await fixture.repo.append(fixture.anchor, right.json);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const actual = await lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      new AbortController().signal
+    );
+    expect(actual).toBeNull();
+  });
+
+  it("returns null when the trusted owner differs from the database binding", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      randomUUID()
+    );
+    const actual = await lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      new AbortController().signal
+    );
+    expect(actual).toBeNull();
+  });
+
+  it("returns null when the owner binding is missing", async () => {
+    const fixture = await createActiveMembershipFixture(pool, {
+      bindOwner: false
+    });
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    await expect(
+      lookup(
+        fixture.anchor.groupId,
+        fixture.local.deviceId,
+        fixture.peer.deviceId,
+        new AbortController().signal
+      )
+    ).resolves.toBeNull();
+  });
+
+  it("returns null when the group is restore-quarantined", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    await declarePeerOnlineRestoreQuarantine(
+      pool,
+      fixture.anchor,
+      "restore detected"
+    );
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const actual = await lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      new AbortController().signal
+    );
+    expect(actual).toBeNull();
+  });
+
+  it("requires a bounded pool connection timeout", async () => {
+    const unboundedPool = new pg.Pool({ connectionString: target.toString() });
+    try {
+      expect(() =>
+        createPeerOnlineAuthMembershipLookup(unboundedPool, {
+          anchor: { groupId: randomUUID(), genesisHash: "test-genesis" },
+          expectedOwnerUserId: randomUUID()
+        })
+      ).toThrow("from 1 to 10000");
+    } finally {
+      await unboundedPool.end();
+    }
+  });
+
+  it("rejects an already-aborted lookup before acquiring a client", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const controller = new AbortController();
+    const reason = new DOMException("lookup cancelled", "AbortError");
+    controller.abort(reason);
+    await expect(
+      lookup(
+        fixture.anchor.groupId,
+        fixture.local.deviceId,
+        fixture.peer.deviceId,
+        controller.signal
+      )
+    ).rejects.toBe(reason);
+    expect(pool.waitingCount).toBe(0);
+  });
+
+  it("aborts promptly while waiting to acquire a pool client", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const held = await Promise.all(
+      Array.from({ length: pool.options.max ?? 3 }, () => pool.connect())
+    );
+    const controller = new AbortController();
+    const reason = new DOMException("lookup cancelled", "AbortError");
+    const pending = lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      controller.signal
+    );
+    try {
+      await waitForCondition(
+        async () => pool.waitingCount === 1,
+        "pool client acquisition"
+      );
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+    } finally {
+      if (!controller.signal.aborted) controller.abort(reason);
+      held.forEach((client) => client.release());
+      void pending.catch(() => undefined);
+    }
+    await waitForCondition(
+      async () => pool.waitingCount === 0,
+      "aborted pool waiter to drain"
+    );
+    const recovered = await pool.connect();
+    recovered.release();
+  });
+
+  it("destroys its client when aborted while waiting on the advisory lock", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const blocker = await pool.connect();
+    await blocker.query("begin");
+    await blocker.query(
+      "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`koed:peer-online-membership:${fixture.anchor.groupId}`]
+    );
+    const controller = new AbortController();
+    const reason = new DOMException("lookup cancelled", "AbortError");
+    const pending = lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      controller.signal
+    );
+    try {
+      await waitForCondition(async () => {
+        const result = await pool.query<{ count: string }>(
+          `select count(*)::text as count from pg_stat_activity
+           where application_name=$1 and wait_event_type='Lock'
+             and query like '%pg_advisory_xact_lock%'`,
+          [name]
+        );
+        return Number(result.rows[0]!.count) > 0;
+      }, "peer-online advisory lock wait");
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+    } finally {
+      if (!controller.signal.aborted) controller.abort(reason);
+      await blocker.query("rollback");
+      blocker.release();
+      void pending.catch(() => undefined);
+    }
+    const recovered = await pool.connect();
+    recovered.release();
+  });
+
+  it("destroys its client when aborted during the membership row query", async () => {
+    const fixture = await createActiveMembershipFixture(pool);
+    const lookup = createAuthMembershipLookup(
+      pool,
+      fixture.anchor,
+      fixture.ownerUserId
+    );
+    const blocker = await pool.connect();
+    await blocker.query("begin");
+    await blocker.query(
+      "select group_id from peer_online_membership_groups where group_id=$1 for update",
+      [fixture.anchor.groupId]
+    );
+    const controller = new AbortController();
+    const reason = new DOMException("lookup cancelled", "AbortError");
+    const pending = lookup(
+      fixture.anchor.groupId,
+      fixture.local.deviceId,
+      fixture.peer.deviceId,
+      controller.signal
+    );
+    try {
+      await waitForCondition(async () => {
+        const result = await pool.query<{ count: string }>(
+          `select count(*)::text as count from pg_stat_activity
+           where application_name=$1 and wait_event_type='Lock'
+             and query like '%peer_online_membership_groups%'`,
+          [name]
+        );
+        return Number(result.rows[0]!.count) > 0;
+      }, "peer-online membership row lock wait");
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+    } finally {
+      if (!controller.signal.aborted) controller.abort(reason);
+      await blocker.query("rollback");
+      blocker.release();
+      void pending.catch(() => undefined);
+    }
+    const recovered = await pool.connect();
+    recovered.release();
+  });
 });

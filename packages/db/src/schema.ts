@@ -73,6 +73,20 @@ export const peerOnlineMembershipGroups = pgTable(
 );
 
 // Immutable: the one local owner User whose Personal Memory a group syncs.
+export const peerOnlineRestoreQuarantines = pgTable(
+  "peer_online_restore_quarantines",
+  {
+    groupId: text("group_id")
+      .primaryKey()
+      .references(() => peerOnlineMembershipGroups.groupId),
+    genesisHash: text("genesis_hash").notNull(),
+    reason: text("reason").notNull(),
+    declaredAt: timestamp("declared_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  }
+);
+
 export const peerOnlineGroupOwners = pgTable("peer_online_group_owners", {
   groupId: text("group_id")
     .primaryKey()

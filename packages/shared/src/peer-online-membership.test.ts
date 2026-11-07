@@ -16,27 +16,24 @@ import {
   lookupHistoricalPeerMember
 } from "./peer-online-membership.js";
 
-const protocol = "koed/peer-online-membership/v1";
+const protocol = "koed/peer-online-membership/v2";
 function device(deviceId: string) {
   const keys = generateKeyPairSync("ed25519");
+  const encryptionKeys = generateKeyPairSync("x25519");
   const publicKey = keys.publicKey.export({ format: "jwk" }).x!;
-  const fingerprint = (kind: "x25519" | "ed25519") =>
+  const encryptionSpki = encryptionKeys.publicKey
+    .export({ type: "spki", format: "der" })
+    .toString("base64url");
+  const fingerprint = (key: KeyObject) =>
     createHash("sha256")
-      .update(
-        (kind === "x25519"
-          ? generateKeyPairSync("x25519")
-          : generateKeyPairSync("ed25519")
-        ).publicKey.export({
-          type: "spki",
-          format: "der"
-        })
-      )
+      .update(key.export({ type: "spki", format: "der" }))
       .digest("base64url");
   return {
     deviceId,
     signingPublicKey: publicKey,
-    encryptionSpkiSha256: fingerprint("x25519"),
-    transportSpkiSha256: fingerprint("ed25519"),
+    encryptionSpki,
+    encryptionSpkiSha256: fingerprint(encryptionKeys.publicKey),
+    transportSpkiSha256: fingerprint(generateKeyPairSync("ed25519").publicKey),
     privateKey: keys.privateKey
   };
 }
@@ -72,6 +69,7 @@ function member(d: ReturnType<typeof device>) {
   return {
     deviceId: d.deviceId,
     signingPublicKey: d.signingPublicKey,
+    encryptionSpki: d.encryptionSpki,
     encryptionSpkiSha256: d.encryptionSpkiSha256,
     transportSpkiSha256: d.transportSpkiSha256
   };
@@ -93,6 +91,187 @@ function setup() {
 }
 
 describe("peer-online membership", () => {
+  it("commits full canonical X25519 SPKI in genesis, admissions, and snapshots", () => {
+    const { a, b, c, genesis, state } = setup();
+    expect(parseRecord(genesis.json).unsigned.protocol).toBe(protocol);
+    expect(inspectPeerMembership(state).members).toEqual([member(a)]);
+    const add = record(a, genesis.hash, { kind: "add", target: member(b) });
+    const result = applyPeerMembership(state, add.json);
+    expect(result.status).toBe("accepted");
+    expect(inspectPeerMembership(result.state).members).toEqual([
+      member(a),
+      member(b)
+    ]);
+    expect(lookupHistoricalPeerMember(result.state, "b")).toEqual({
+      status: "found",
+      member: member(b)
+    });
+    expect(
+      parseRecord(inspectPeerMembership(result.state).records[1]!.json).unsigned
+        .body.target.encryptionSpki
+    ).toBe(b.encryptionSpki);
+    const replayedGenesis = initializePeerMembership(
+      { groupId: "group", genesisHash: genesis.hash },
+      genesis.json
+    );
+    expect(replayedGenesis.status).toBe("accepted");
+    if (replayedGenesis.status !== "accepted") return;
+    const replayedAdmission = applyPeerMembership(
+      replayedGenesis.state,
+      inspectPeerMembership(result.state).records[1]!.json
+    );
+    expect(replayedAdmission.status).toBe("accepted");
+    expect(inspectPeerMembership(replayedAdmission.state).members).toEqual([
+      member(a),
+      member(b)
+    ]);
+    const substituted = parseRecord(add.json);
+    substituted.unsigned.body.target.encryptionSpki = c.encryptionSpki;
+    substituted.unsigned.body.target.encryptionSpkiSha256 =
+      c.encryptionSpkiSha256;
+    expect(
+      applyPeerMembership(state, canonicalizePdsJson(substituted)).status
+    ).toBe("invalid");
+  });
+  it("rejects malformed, non-X25519, noncanonical, and mismatched encryption SPKI", () => {
+    const { a, b, genesis, state } = setup();
+    const der = Buffer.from(b.encryptionSpki, "base64url");
+    const otherAlgorithm = generateKeyPairSync("ed25519")
+      .publicKey.export({ type: "spki", format: "der" })
+      .toString("base64url");
+    const noncanonicalDerBytes = Buffer.concat([
+      der.subarray(0, 1),
+      Buffer.from([0x81, der[1]!]),
+      der.subarray(2)
+    ]);
+    expect(
+      createPublicKey({
+        key: noncanonicalDerBytes,
+        type: "spki",
+        format: "der"
+      }).export({ type: "spki", format: "der" })
+    ).not.toEqual(noncanonicalDerBytes);
+    const noncanonicalDer = noncanonicalDerBytes.toString("base64url");
+    const alphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const lastCharacter = b.encryptionSpki.at(-1)!;
+    const lastIndex = alphabet.indexOf(lastCharacter);
+    const invalidTrailingBits =
+      b.encryptionSpki.slice(0, -1) + alphabet[lastIndex ^ 1];
+    const changedDigest = createHash("sha256")
+      .update("different key")
+      .digest("base64url");
+    for (const target of [
+      { ...member(b), encryptionSpki: "not base64url!" },
+      { ...member(b), encryptionSpki: otherAlgorithm },
+      { ...member(b), encryptionSpki: `${b.encryptionSpki}="` },
+      { ...member(b), encryptionSpki: invalidTrailingBits },
+      {
+        ...member(b),
+        encryptionSpki: der.subarray(0, -1).toString("base64url")
+      },
+      { ...member(b), encryptionSpki: noncanonicalDer },
+      { ...member(b), encryptionSpkiSha256: changedDigest }
+    ]) {
+      expect(
+        applyPeerMembership(
+          state,
+          record(a, genesis.hash, { kind: "add", target }).json
+        ).status
+      ).toBe("invalid");
+    }
+  });
+  it("rejects v1 records and v2 membership without a full encryption key", () => {
+    const { a, b, genesis, state } = setup();
+    const v1Protocol = "koed/peer-online-membership/v1";
+    const legacyMember = {
+      deviceId: a.deviceId,
+      signingPublicKey: a.signingPublicKey,
+      encryptionSpkiSha256: a.encryptionSpkiSha256,
+      transportSpkiSha256: a.transportSpkiSha256
+    };
+    const v1UnsignedRecords = [
+      {
+        protocol: v1Protocol,
+        groupId: "group",
+        parentHash: null,
+        authorDeviceId: a.deviceId,
+        body: { kind: "genesis", initialMember: legacyMember }
+      },
+      {
+        protocol: v1Protocol,
+        groupId: "group",
+        parentHash: null,
+        authorDeviceId: a.deviceId,
+        body: { kind: "genesis", initialMember: member(a) }
+      }
+    ];
+    for (const unsigned of v1UnsignedRecords) {
+      const v1Json = canonicalizePdsJson({
+        unsigned,
+        signature: sign(
+          null,
+          Buffer.from(
+            `${v1Protocol}/decision\n${canonicalizePdsJson(unsigned)}`
+          ),
+          a.privateKey
+        ).toString("base64url")
+      });
+      const v1Hash = createHash("sha256")
+        .update(`${v1Protocol}/record\n${canonicalizePdsJson(unsigned)}`)
+        .digest("base64url");
+      expect(
+        initializePeerMembership(
+          { groupId: "group", genesisHash: v1Hash },
+          v1Json
+        ).status
+      ).toBe("invalid");
+    }
+
+    const v2Unsigned = {
+      protocol,
+      groupId: "group",
+      parentHash: null,
+      authorDeviceId: a.deviceId,
+      body: { kind: "genesis", initialMember: legacyMember }
+    };
+    const v2Json = canonicalizePdsJson({
+      unsigned: v2Unsigned,
+      signature: sign(
+        null,
+        Buffer.from(`${protocol}/decision\n${canonicalizePdsJson(v2Unsigned)}`),
+        a.privateKey
+      ).toString("base64url")
+    });
+    const v2Hash = createHash("sha256")
+      .update(`${protocol}/record\n${canonicalizePdsJson(v2Unsigned)}`)
+      .digest("base64url");
+    expect(
+      initializePeerMembership(
+        { groupId: "group", genesisHash: v2Hash },
+        v2Json
+      ).status
+    ).toBe("invalid");
+
+    const v1AddUnsigned = {
+      protocol: v1Protocol,
+      groupId: "group",
+      parentHash: genesis.hash,
+      authorDeviceId: a.deviceId,
+      body: { kind: "add", target: member(b) }
+    };
+    const v1AddJson = canonicalizePdsJson({
+      unsigned: v1AddUnsigned,
+      signature: sign(
+        null,
+        Buffer.from(
+          `${v1Protocol}/decision\n${canonicalizePdsJson(v1AddUnsigned)}`
+        ),
+        a.privateKey
+      ).toString("base64url")
+    });
+    expect(applyPeerMembership(state, v1AddJson).status).toBe("invalid");
+  });
   it("anchors genesis and applies signed changes idempotently", () => {
     const { a, b, genesis, state } = setup();
     const add = record(a, genesis.hash, { kind: "add", target: member(b) });
@@ -237,7 +416,11 @@ describe("peer-online membership", () => {
       "invalid"
     );
     for (const altered of [
-      { ...target, encryptionSpkiSha256: a.encryptionSpkiSha256 },
+      {
+        ...target,
+        encryptionSpki: a.encryptionSpki,
+        encryptionSpkiSha256: a.encryptionSpkiSha256
+      },
       { ...target, transportSpkiSha256: a.transportSpkiSha256 },
       { ...target, transportSpkiSha256: target.encryptionSpkiSha256 },
       {
@@ -278,18 +461,29 @@ describe("peer-online membership", () => {
       b.encryptionSpkiSha256,
       b.transportSpkiSha256
     ]) {
-      for (const role of ["encryptionSpkiSha256", "transportSpkiSha256"]) {
-        expect(
-          applyPeerMembership(
-            two.state,
-            record(a, revoked.hash, {
-              kind: "add",
-              target: { ...target, [role]: key }
-            }).json
-          ).status
-        ).toBe("invalid");
-      }
+      expect(
+        applyPeerMembership(
+          two.state,
+          record(a, revoked.hash, {
+            kind: "add",
+            target: { ...target, transportSpkiSha256: key }
+          }).json
+        ).status
+      ).toBe("invalid");
     }
+    expect(
+      applyPeerMembership(
+        two.state,
+        record(a, revoked.hash, {
+          kind: "add",
+          target: {
+            ...target,
+            encryptionSpki: b.encryptionSpki,
+            encryptionSpkiSha256: b.encryptionSpkiSha256
+          }
+        }).json
+      ).status
+    ).toBe("invalid");
     expect(
       applyPeerMembership(
         two.state,
@@ -433,7 +627,11 @@ describe("peer-online membership", () => {
     const first = record(a, genesis.hash, { kind: "add", target: member(b) });
     for (const target of [
       { ...member(c), deviceId: b.deviceId },
-      { ...member(c), encryptionSpkiSha256: b.encryptionSpkiSha256 }
+      {
+        ...member(c),
+        encryptionSpki: b.encryptionSpki,
+        encryptionSpkiSha256: b.encryptionSpkiSha256
+      }
     ]) {
       const sibling = record(a, genesis.hash, { kind: "add", target });
       for (const [left, right] of [
@@ -466,7 +664,10 @@ describe("peer-online membership", () => {
 });
 
 type MutableRecord = {
-  unsigned: { body: { target: Record<string, string | undefined> } };
+  unsigned: {
+    protocol: string;
+    body: { target: Record<string, string | undefined> };
+  };
   signature: string;
 };
 

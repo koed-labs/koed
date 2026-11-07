@@ -1,5 +1,6 @@
 export { createAuditRepository } from "./audit-repository.js";
 export { createPeerOnlineFloorRepository } from "./peer-online-floor-repository.js";
+export type { PeerOnlineSessionContext } from "./peer-online-session-fence.js";
 export {
   createSelectionSharingReconciliation,
   type SelectionSharingInventoryReader
@@ -284,6 +285,11 @@ export {
   type PersonalDeviceSyncRelayRepository
 } from "./personal-device-sync-relay-repository.js";
 export { createPeerOnlineMembershipRepository } from "./peer-online-membership-repository.js";
+export {
+  createPeerOnlineAuthMembershipLookup,
+  type CreatePeerOnlineAuthMembershipLookupOptions,
+  type PeerOnlineAuthMembershipLookup
+} from "./peer-online-auth-membership-lookup.js";
 export {
   createPersonalDeviceSyncLifecycleRepository,
   type PersonalDeviceSyncLifecycleRepository

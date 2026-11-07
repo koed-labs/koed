@@ -73,6 +73,8 @@ resource-limited history as current. The current bounded membership implementati
 retains the first authenticated limit-triggering record but does not validate or
 retain subsequent evidence after that limit. A limit therefore requires an explicit
 operator-visible pause; it is not a complete audit of later forks or revocations.
+Membership v2 requires canonical X25519 SubjectPublicKeyInfo DER and a matching
+SHA-256 digest; this validates key format, not key possession or history freshness.
 A genesis anchor alone cannot detect rollback to an older, internally consistent
 database snapshot. Do not authorize sync after restore or rollback without an
 independent freshness mechanism or authenticated reconciliation that detects it.
@@ -137,7 +139,9 @@ lock it:
 1. requires an immutable group-to-owner binding (`peer_online_group_owners`) whose
    group matches the trusted genesis anchor; otherwise it reports `fenced`;
 2. replays membership and reports `fenced` unless the head is current, conflict-free
-   and complete and the receiving device is still an active member;
+   and complete, both the receiving device and authenticated transport peer are
+   active, and the trusted session revision exactly matches that local head. The
+   session context is supplied separately from wire JSON;
 3. applies the floor repository checks (origin signature at the current head,
    immutable binding, deletion floors, predecessor chain, quotas) and records the
    receipt;
@@ -167,20 +171,41 @@ Accepting a received deletion now also marks an already-materialized replica Ses
 and its derived Recall rows deleted, in the same transaction that records the
 permanent floor. Later checkpoints for that Session report `deleted`.
 
-An authenticated member session hands its socket to one bounded framed message
-channel and exposes the membership revision it authenticated against. The channel
-grants no authorization: each durable commit must recheck membership as above.
+A future authenticated member session hands its socket to one bounded framed
+message channel and supplies the trusted transport peer ID and membership revision
+that it authenticated against as an internal `PeerOnlineSessionContext`. This
+context is passed separately from decoded wire JSON; the protocol adds no
+`sessionContext` field. Floor APIs receive the trusted local device ID separately;
+the receiver uses its configured local ID. The context grants no authorization by
+itself: each floor/receiver commit checks it under the same-group transaction
+against a complete, conflict-free replay, the current local head, active local
+and transport-peer devices, and a clear restore quarantine. An absent, stale or
+invalid context returns `fenced` before receipt/duplicate lookup, deletion-floor
+writes or materialization. The signed checkpoint/deletion origin is still
+validated independently and is never replaced by the transport peer. The fence
+relies on the same-group advisory lock and cooperating peer-online writers only;
+it does not protect against unrelated writers or database rollback. These APIs
+remain unintegrated with production transport.
 
 An unintegrated local deletion outbox transaction records a permanent unsigned
 intent, removes stored checkpoint payloads, and marks the owner's personal Session
 and existing derived rows deleted. The intent also blocks future floor-repository
 checkpoint acceptance. The caller must establish the local-to-peer Session
 association; this repository does not establish or authenticate it. Preparing a
-signed deletion requires current membership, replaces the canonical signed floor,
-and retains the pending intent. Pending enumeration revalidates the prepared record
-against current membership under the group lock and withholds stale records until
-re-prepared. Membership can change after enumeration, so delivery must recheck the
-fence at its own sensitive boundary. No transmission, peer acknowledgement, or
+signed deletion requires current membership and stores a separate sendable
+preparation for the same permanent deletion identity; a newer membership head may
+require re-preparing its signature, but cannot rewrite the original deletion floor.
+Pending enumeration revalidates the prepared record against current membership
+under the group lock and withholds stale records until re-prepared. Membership
+can change after enumeration, so delivery must recheck the fence at its own
+sensitive boundary.
+
+Migration 0057 backfills existing deletion floors by clearing their checkpoint
+cursor and deleting their checkpoint rows. Database triggers make deletion floors
+and checkpoint records immutable, prevent changing or deleting a floor, and block
+new checkpoint rows after a floor exists. Re-preparation can update only the
+sendable signed representation for the same deletion identity; it does not replace
+the permanent floor. No transmission, peer acknowledgement, or
 pending-intent removal is implemented. Local visibility changes do not fence
 non-cooperating writers or guarantee every read path honors deletion.
 The repository assumes cooperating database writers; direct database writes can
@@ -194,6 +219,46 @@ inspection, graph, and Recall reads must honor the same floor, including archive
 paths. Existing PDS floors and locks do not provide these guarantees. Integration
 of local deletion, signing, delivery, and authenticated ACK semantics remains
 unimplemented.
+
+### Explicit restore quarantine
+
+Migration 0058 adds a durable, one-way per-group restore-quarantine declaration.
+Database triggers reject ordinary `UPDATE`, `DELETE`, and `TRUNCATE` of the
+latch; privileged DDL remains outside this application-level guarantee.
+Declaration requires an existing membership group and matching genesis anchor,
+serializes through that group's advisory transaction lock, and is idempotent.
+Cooperating membership writes, owner binding, floor acceptance, receiver
+acceptance/duplicate results, direct materialization, and outbox send-eligibility
+(`pending`/`prepare`) must fail closed while quarantined. Local deletion requests
+remain allowed to hide the local replica and preserve intent, but quarantine
+prevents that intent from becoming sendable.
+
+This is an explicit post-restore or rollback-suspicion action only. The database
+cannot detect a coherent rollback, and a restore to a backup predating the
+declaration loses the latch. Quarantine reason and time are diagnostic only, not
+freshness evidence. There is no Local Operator Scripts command, automatic restore
+workflow, trusted-peer reconciliation, clear, or force-resume in this gate.
+The per-group advisory lock serializes cooperating peer-online repository operations only;
+arbitrary Capture/Recall writers and their lock order are outside this guarantee.
+This does not authenticate a peer session, wire a network receiver, or enable
+production sync.
+
+### Current membership-auth snapshot lookup
+
+The DB package now exposes `createPeerOnlineAuthMembershipLookup` for future auth
+integration. Given a trusted genesis anchor and expected local owner ID, it reads
+the persisted owner binding, restore-quarantine latch, and active membership head
+under the same per-group lock. It returns `{revision, local, peer}` with only the
+active device IDs, signing public keys, and transport SPKI pins. `revision` is
+this database's local snapshot, not global freshness evidence.
+
+The lookup requires a pool with `connectionTimeoutMillis` between 1 and 10,000 ms,
+uses a 5-second lock timeout and 10-second statement timeout, and honors abort by
+rejecting promptly and destroying an active client. A cancelled pool waiter may
+remain queued until its bounded connection timeout. No production auth caller or
+transport is wired to this API. The snapshot does not authenticate a TLS session,
+provide pairing proof, establish an acknowledgement, or demonstrate sync between
+installations. Keep peer sync disabled until the release gate below is met.
 
 ## Release gate
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,6 +49,21 @@ describe("peer online initialization", () => {
     const first = await initializePeerOnline({
       ...options,
       authorizeFreshInstallation: async () => true
+    });
+    const member = first.membership.members.find(
+      (candidate) =>
+        candidate.deviceId === first.identity.publicIdentity.deviceId
+    );
+    expect(member).toBeDefined();
+    const encryptionSpki = Buffer.from(
+      first.identity.publicIdentity.encryptionPublicKey,
+      "base64"
+    );
+    expect(member).toMatchObject({
+      encryptionSpki: encryptionSpki.toString("base64url"),
+      encryptionSpkiSha256: createHash("sha256")
+        .update(encryptionSpki)
+        .digest("base64url")
     });
     const second = await loadPeerOnline(options);
     expect(second.identity.publicIdentity).toEqual(

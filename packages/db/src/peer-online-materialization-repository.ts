@@ -56,6 +56,12 @@ export async function materializePeerOnlineCheckpoint(
   input: Input,
   options: Omit<ConversationItemRepositoryOptions, "transactionClient"> = {}
 ) {
+  const quarantine = await client.query(
+    "select 1 from peer_online_restore_quarantines where group_id=$1",
+    [input.groupId]
+  );
+  if (quarantine.rowCount)
+    throw new Error("peer online group quarantined after restore");
   if (
     input.items.length > 10000 ||
     input.items.some(
