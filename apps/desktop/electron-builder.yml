@@ -45,6 +45,13 @@ extraResources:
 directories:
   output: release
 
+linux:
+  icon: assets/koed-icon.png
+  category: Development
+  artifactName: "Koed-${version}-${arch}.${ext}"
+  target:
+    - AppImage
+
 mac:
   artifactName: "Koed-${version}-${arch}.${ext}"
   hardenedRuntime: true

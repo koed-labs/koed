@@ -12,8 +12,39 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   writeDesktopReleaseChecksum,
-  resolveDesktopReleaseApp
+  resolveDesktopReleaseApp,
+  writeLinuxDesktopReleaseChecksum,
+  verifyLinuxDesktopReleaseChecksum
 } from "./desktop-release-checksum.mjs";
+test("Linux checksum names and verifies exact AppImage; rejects tampering and ambiguity", (t) => {
+  const root = fixture(t);
+  const options = { releaseVersion: "1.2.3", releaseDirectory: root };
+  const asset = join(root, "Koed-1.2.3-x86_64.AppImage");
+  assert.throws(() => writeLinuxDesktopReleaseChecksum(options));
+  assert.throws(
+    () =>
+      writeLinuxDesktopReleaseChecksum({
+        ...options,
+        releaseVersion: "../bad"
+      }),
+    /version/i
+  );
+  writeFileSync(asset, "appimage");
+  const checksum = writeLinuxDesktopReleaseChecksum(options);
+  assert.equal(
+    readFileSync(checksum, "utf8"),
+    `${createHash("sha256").update("appimage").digest("hex")}  Koed-1.2.3-x86_64.AppImage\n`
+  );
+  assert.doesNotThrow(() => verifyLinuxDesktopReleaseChecksum(options));
+  const original = readFileSync(checksum, "utf8");
+  writeFileSync(checksum, original + original);
+  assert.throws(() => verifyLinuxDesktopReleaseChecksum(options));
+  writeFileSync(checksum, original.replace("Koed-1.2.3", "Koed-1.2.4"));
+  assert.throws(() => verifyLinuxDesktopReleaseChecksum(options));
+  writeFileSync(checksum, original);
+  writeFileSync(asset, "tampered");
+  assert.throws(() => verifyLinuxDesktopReleaseChecksum(options));
+});
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "koed-checksum-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

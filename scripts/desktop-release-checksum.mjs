@@ -22,6 +22,38 @@ export function writeDesktopReleaseChecksum({
   return path;
 }
 
+function linuxChecksumPaths({ releaseVersion, releaseDirectory }) {
+  assertKoedReleaseVersion(releaseVersion);
+  const name = `Koed-${releaseVersion}-x86_64.AppImage`;
+  return {
+    name,
+    asset: resolve(releaseDirectory, name),
+    checksum: resolve(releaseDirectory, "koed-desktop-linux-x64.sha256")
+  };
+}
+
+function linuxChecksumLine(paths) {
+  if (!statSync(paths.asset).isFile())
+    throw new Error("AppImage must be a regular file.");
+  const hash = createHash("sha256")
+    .update(readFileSync(paths.asset))
+    .digest("hex");
+  return `${hash}  ${paths.name}\n`;
+}
+
+export function writeLinuxDesktopReleaseChecksum(options) {
+  const paths = linuxChecksumPaths(options);
+  writeFileSync(paths.checksum, linuxChecksumLine(paths));
+  return paths.checksum;
+}
+
+export function verifyLinuxDesktopReleaseChecksum(options) {
+  const paths = linuxChecksumPaths(options);
+  if (readFileSync(paths.checksum, "utf8") !== linuxChecksumLine(paths)) {
+    throw new Error("Invalid Linux AppImage checksum or asset.");
+  }
+}
+
 export function resolveDesktopReleaseApp(releaseDirectory) {
   const candidates = ["mac-arm64", "mac"]
     .map((layout) => resolve(releaseDirectory, layout, "Koed.app"))
@@ -47,9 +79,18 @@ if (
         releaseDirectory: directory,
         releaseVersion: version
       });
+    } else if (
+      ["checksum-linux", "verify-linux"].includes(mode) &&
+      directory &&
+      version &&
+      process.argv.length === 5
+    ) {
+      const options = { releaseDirectory: directory, releaseVersion: version };
+      if (mode === "checksum-linux") writeLinuxDesktopReleaseChecksum(options);
+      else verifyLinuxDesktopReleaseChecksum(options);
     } else
       throw new Error(
-        "Usage: desktop-release-checksum.mjs app|checksum <release-directory> [version]"
+        "Usage: desktop-release-checksum.mjs app|checksum|checksum-linux|verify-linux <release-directory> [version]"
       );
   } catch (error) {
     console.error(error.message);
