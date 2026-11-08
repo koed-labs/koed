@@ -2,7 +2,7 @@
 
 The release workflow keeps GitHub releases as drafts until `scripts/release-promotion-adapter.mjs` completes every verification. Automated asset jobs run only when the release is absent or remains a draft; reruns skip asset acquisition and promotion for already published releases.
 
-Component admission uses [versioned manifest catalogs](component-manifest-catalog.md). Before merge, the stack must be pin-only: no component KMS, hosted signer, signer roots, signature sidecars or component-signing OIDC dependency. Frozen component builds precede complete catalog generation, then standalone/npm and Desktop packaging. Promotion verifies that catalog against every frozen archive and the effective packed npm and Desktop control planes before publication. Native Personal/Team and signed/notarized clean-Mac acceptance remain gates, not prerequisites for retaining obsolete signing code. Source cleanup neither authorizes nor requires live cloud or repository-variable changes.
+Component admission uses [versioned manifest catalogs](component-manifest-catalog.md). Before merge, the stack must be pin-only: no component KMS, hosted signer, signer roots, signature sidecars or component-signing OIDC dependency. Frozen component builds precede complete catalog generation, then standalone/npm and Desktop packaging. Promotion verifies that catalog against every frozen archive and the effective packed npm and Desktop control planes before publication. Native Personal/Team, Linux Desktop, and signed/notarized clean-Mac acceptance remain gates, not prerequisites for retaining obsolete signing code. Source cleanup neither authorizes nor requires live cloud or repository-variable changes.
 
 ## Read-only candidate verification
 
@@ -15,9 +15,10 @@ their assets solely to tokens with write access; the verifier still makes only G
 requests. Do not provide publication or signing credentials to this job.
 
 The workflow retains frozen catalog/components, app-runtime/npm outputs, native
-runtime assets, release metadata and final Desktop ZIP/DMG bytes as immutable
-Actions artifacts for 30 days. `reviewed-release-identity` hashes those outputs,
-not the mutable release draft, and emits `reviewed-build.json`. Downstream jobs
+runtime assets, release metadata, final macOS Desktop ZIP/DMG bytes and Linux
+Desktop AppImage/checksum bytes as immutable Actions artifacts for 30 days.
+`reviewed-release-identity` hashes those outputs, not the mutable release draft,
+and emits `reviewed-build.json`. Downstream jobs
 receive its artifact ID, Actions artifact digest and exact JSON SHA-256 through
 job outputs. Verification also binds repository, reviewed commit, workflow path,
 run ID/attempt and product version, and rechecks artifact origin/expiry through
@@ -45,9 +46,16 @@ authenticated by this comparison.
 Verification compares exact remote asset bytes with protected hashes; checks the
 complete Base/Privacy × Linux x64 glibc/macOS arm64 tuple matrix, canonical
 manifests and archive/file inventories; and statically inspects actual npm
-name/version/bin/SRI/inventory and effective npm/Desktop catalog pins. Candidate
-modules are parsed, never imported or executed. Desktop inspection extracts
-`app.asar` from the Desktop ZIP. On PR #421 alone, the Desktop workflow produces
+name/version/bin/SRI/inventory and effective npm/macOS Desktop catalog pins. Candidate
+modules are parsed, never imported or executed. macOS Desktop inspection extracts
+`app.asar` from the Desktop ZIP. Linux Desktop verification currently fails
+closed with `Linux Desktop inspection unavailable; refusing candidate.`; the
+experimental SquashFS inspector is not an authorized substitute. Consequently,
+a candidate containing the required Linux assets cannot pass promotion until
+independent inspection of the actual AppImage is implemented and verified. Do
+not bypass this gate or treat AppImage extraction smoke as candidate inspection.
+
+On PR #421 alone, the Desktop workflow produces
 **unsigned** artifacts; hashing them is not code signing or notarization. The
 #428 signing layer must retain the final signed ZIP and DMG after sealing and
 inspection. Neither hash verification nor signing replaces signed/notarized
