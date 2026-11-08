@@ -101,9 +101,10 @@ installation applies it durably and removes or hides the corresponding source an
 derived Recall data before acknowledging. Retain deletion evidence or equivalent
 floors for the life of the group so delayed checkpoints cannot resurrect deleted
 Memory. Offline devices remain pending until they acknowledge; revocation does not
-prove that a device deleted data. Authorization across concurrent deletion and
-membership decisions, acknowledgement requirements, and durable transaction
-ordering require a reviewed specification before enabling the profile.
+prove that a device deleted data. ADR 0067 defines the recipient roster, signed
+acknowledgement, retry and completion semantics; authorization across concurrent
+deletion and membership decisions and durable transaction ordering still require
+review before enabling the profile.
 
 ## Gated persistence foundation
 
@@ -208,19 +209,43 @@ cursor and deleting their checkpoint rows. Database triggers make deletion floor
 and checkpoint records immutable, prevent changing or deleting a floor, and block
 new checkpoint rows after a floor exists. Re-preparation can update only the
 sendable signed representation for the same deletion identity; it does not replace
-the permanent floor. No transmission, peer acknowledgement, or
-pending-intent removal is implemented. Local visibility changes do not fence
+the permanent floor. Local visibility changes do not fence
 non-cooperating writers or guarantee every read path honors deletion.
 The repository assumes cooperating database writers; direct database writes can
 change or erase floors and bindings. It does not protect against database rollback.
 Do not expose it as peer sync until those boundaries are enforced and reviewed.
 
+### Deletion recipients and acknowledgement
+
+Migration 0059 adds a per-deletion recipient roster, following ADR 0067. A local
+deletion request records the requesting device and, under the group lock, adds
+every other active member as a pending recipient. Accepted membership appends and
+admissions reconcile every roster in the same transaction: new members are added
+as pending recipients, and a pending recipient that is no longer active becomes
+`revoked_unconfirmed`. A conflicted or incomplete membership view changes nothing.
+Database triggers reject deleting roster rows and changing an acknowledged row.
+
+Receivers correlate deletions by identity. Accepting a deletion, or a deletion with
+the same identity signed at another head, returns the identity, the retained floor
+hash and the current head, which the caller signs into a
+`koed/peer-online-deletion-ack/v1` record after commit. The outbox verifies an
+acknowledgement against the recipient's historical key, requires that it names the
+local floor's identity and a rostered recipient, and records it once. Delivery
+enumeration per recipient honours capped, jittered backoff unless a new session
+requests immediate delivery. Completion is reported per deletion as `pending`,
+`complete`, `complete_unconfirmed` (some recipients revoked without
+acknowledging), or `roster_unknown` for intent recorded before the roster existed;
+completion stops retries only. Any active member may re-sign a stored floor at the
+current head and serve it. Delivery enumeration, attempts and acknowledgements
+fail closed while restore-quarantined. No transport sends or relays these records
+yet.
+
 Integration requires a single lock order spanning membership, owner, and session
 locks; atomic deletion and source visibility changes; and fencing every capture,
 checkpoint, Projection, embedding, LCM, publication, and replay writer. All source,
 inspection, graph, and Recall reads must honor the same floor, including archived
-paths. Existing PDS floors and locks do not provide these guarantees. Integration
-of local deletion, signing, delivery, and authenticated ACK semantics remains
+paths. Existing PDS floors and locks do not provide these guarantees. Transport
+integration of deletion delivery, relay and acknowledgement remains
 unimplemented.
 
 ### Explicit restore quarantine

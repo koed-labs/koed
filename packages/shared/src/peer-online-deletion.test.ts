@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { canonicalizePdsJson } from "./personal-device-sync-jcs.js";
 import {
   derivePeerSessionKey,
-  validatePeerOnlineDeletion
+  peerOnlineDeletionIdentity,
+  samePeerOnlineDeletionIdentity,
+  signPeerOnlineDeletion,
+  signPeerOnlineDeletionAck,
+  validatePeerOnlineDeletion,
+  validatePeerOnlineDeletionAck
 } from "./peer-online-deletion.js";
 
 const origin = generateKeyPairSync("ed25519");
@@ -188,5 +193,129 @@ describe("peer-online deletion records", () => {
         currentAuthorKey: () => "bad"
       }).status
     ).toBe("invalid");
+  });
+});
+
+describe("peer-online deletion identity and re-authoring", () => {
+  it("keeps identity across a re-authored record at another head", () => {
+    const { binding, deletion } = fixtures();
+    const original = canonicalizePdsJson(deletion);
+    const identity = peerOnlineDeletionIdentity(original)!;
+    expect(identity).toEqual({
+      ...tuple,
+      sessionKey: derivePeerSessionKey(tuple),
+      eventId: encoded(4)
+    });
+    const newHead = encoded(9);
+    const reauthored = signPeerOnlineDeletion(
+      { identity, authorDeviceId: "origin", membershipHeadHash: newHead },
+      origin.privateKey
+    );
+    expect(reauthored).not.toBe(original);
+    expect(
+      samePeerOnlineDeletionIdentity(
+        identity,
+        peerOnlineDeletionIdentity(reauthored)!
+      )
+    ).toBe(true);
+    const result = validatePeerOnlineDeletion(
+      canonicalizePdsJson(binding),
+      reauthored,
+      {
+        ...boundary,
+        currentAuthorKey: (groupId, membershipHeadHash, deviceId) =>
+          groupId === "group" &&
+          membershipHeadHash === newHead &&
+          deviceId === "origin"
+            ? originKey
+            : undefined
+      }
+    );
+    expect(result.status).toBe("accepted");
+    if (result.status === "accepted") expect(result.identity).toEqual(identity);
+  });
+  it("distinguishes identities and rejects malformed records", () => {
+    const identity = peerOnlineDeletionIdentity(
+      canonicalizePdsJson(fixtures().deletion)
+    )!;
+    expect(
+      samePeerOnlineDeletionIdentity(identity, {
+        ...identity,
+        eventId: encoded(5)
+      })
+    ).toBe(false);
+    expect(peerOnlineDeletionIdentity("{}")).toBeUndefined();
+    expect(peerOnlineDeletionIdentity("x".repeat(20000))).toBeUndefined();
+  });
+});
+
+describe("peer-online deletion acknowledgements", () => {
+  const recipient = generateKeyPairSync("ed25519");
+  const recipientKey = recipient.publicKey.export({ format: "jwk" }).x!;
+  const lookup = (groupId: string, deviceId: string) =>
+    groupId === "group" && deviceId === "recipient" ? recipientKey : undefined;
+  const fields = () => ({
+    identity: peerOnlineDeletionIdentity(
+      canonicalizePdsJson(fixtures().deletion)
+    )!,
+    recipientDeviceId: "recipient",
+    appliedFloorHash: encoded(7),
+    membershipHeadHash: head
+  });
+  it("round-trips a signed acknowledgement", () => {
+    const { ack, ackHash } = signPeerOnlineDeletionAck(
+      fields(),
+      recipient.privateKey
+    );
+    expect(validatePeerOnlineDeletionAck(ack, lookup)).toEqual({
+      status: "accepted",
+      ackHash,
+      ...fields()
+    });
+  });
+  it("rejects a wrong signer, unknown recipient, tampering and extra fields", () => {
+    const { ack } = signPeerOnlineDeletionAck(fields(), outsider.privateKey);
+    expect(validatePeerOnlineDeletionAck(ack, lookup).status).toBe("invalid");
+    const good = signPeerOnlineDeletionAck(fields(), recipient.privateKey).ack;
+    expect(validatePeerOnlineDeletionAck(good, () => undefined).status).toBe(
+      "invalid"
+    );
+    const parsed = JSON.parse(good) as {
+      unsigned: Record<string, string>;
+      signature: string;
+    };
+    expect(
+      validatePeerOnlineDeletionAck(
+        canonicalizePdsJson({
+          ...parsed,
+          unsigned: { ...parsed.unsigned, eventId: encoded(8) }
+        }),
+        lookup
+      ).status
+    ).toBe("invalid");
+    expect(
+      validatePeerOnlineDeletionAck(
+        canonicalizePdsJson({
+          ...parsed,
+          unsigned: { ...parsed.unsigned, extra: "x" }
+        }),
+        lookup
+      ).status
+    ).toBe("invalid");
+    expect(validatePeerOnlineDeletionAck("{}", lookup).status).toBe("invalid");
+  });
+  it("rejects an acknowledgement whose session key does not match its tuple", () => {
+    const f = fields();
+    expect(() =>
+      signPeerOnlineDeletionAck(
+        { ...f, identity: { ...f.identity, sessionKey: encoded(6) } },
+        recipient.privateKey
+      )
+    ).not.toThrow();
+    const { ack } = signPeerOnlineDeletionAck(
+      { ...f, identity: { ...f.identity, sessionKey: encoded(6) } },
+      recipient.privateKey
+    );
+    expect(validatePeerOnlineDeletionAck(ack, lookup).status).toBe("invalid");
   });
 });

@@ -1,4 +1,10 @@
-import { createHash, createPublicKey, verify } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  sign,
+  verify,
+  type KeyObject
+} from "node:crypto";
 import { z } from "zod";
 import {
   canonicalizePdsJson,
@@ -314,4 +320,138 @@ export function validatePeerOnlineDeletion(
   } catch {
     return invalid;
   }
+}
+
+const DELETION_ACK = "koed/peer-online-deletion-ack/v1";
+const ackSchema = z
+  .object({
+    unsigned: z
+      .object({
+        protocol: z.literal(DELETION_ACK),
+        ...tupleFields,
+        sessionKey: encoded(32),
+        eventId: encoded(32),
+        recipientDeviceId: id,
+        appliedFloorHash: encoded(32),
+        membershipHeadHash: encoded(32)
+      })
+      .strict(),
+    signature: encoded(64)
+  })
+  .strict();
+export type PeerDeletionAckFields = {
+  identity: PeerDeletionIdentity;
+  recipientDeviceId: string;
+  appliedFloorHash: string;
+  membershipHeadHash: string;
+};
+
+/** Signs a deletion acknowledgement. Emit only after the floor and hiding committed. */
+export function signPeerOnlineDeletionAck(
+  fields: PeerDeletionAckFields,
+  privateKey: KeyObject
+): { ack: string; ackHash: string } {
+  const unsigned = ackSchema.shape.unsigned.parse({
+    protocol: DELETION_ACK,
+    ...fields.identity,
+    recipientDeviceId: fields.recipientDeviceId,
+    appliedFloorHash: fields.appliedFloorHash,
+    membershipHeadHash: fields.membershipHeadHash
+  });
+  const ack = canonicalizePdsJson({
+    unsigned,
+    signature: sign(
+      null,
+      Buffer.from(`${DELETION_ACK}\n${canonicalizePdsJson(unsigned)}`),
+      privateKey
+    ).toString("base64url")
+  });
+  return { ack, ackHash: ackHash(ack) };
+}
+
+const ackHash = (json: string) =>
+  createHash("sha256")
+    .update(`${DELETION_ACK}/record\n${json}`)
+    .digest("base64url");
+
+/**
+ * Verifies a deletion acknowledgement against the recipient's historical
+ * signing key, so evidence signed before revocation stays valid. It does not
+ * check roster membership, persistence or that the recipient still holds data.
+ */
+export function validatePeerOnlineDeletionAck(
+  json: string,
+  historicalRecipientKey: (
+    groupId: string,
+    deviceId: string
+  ) => string | undefined
+):
+  | ({ status: "accepted"; ackHash: string } & PeerDeletionAckFields)
+  | {
+      status: "invalid";
+    } {
+  const invalid = { status: "invalid" } as const;
+  if (
+    typeof json !== "string" ||
+    Buffer.byteLength(json) > MAX_BYTES ||
+    typeof historicalRecipientKey !== "function"
+  )
+    return invalid;
+  try {
+    const record = ackSchema.parse(parseCanonicalPdsJson(json));
+    const a = record.unsigned;
+    const identity = {
+      groupId: a.groupId,
+      originDeviceId: a.originDeviceId,
+      originSessionId: a.originSessionId
+    };
+    if (
+      derivePeerSessionKey(identity) !== a.sessionKey ||
+      !verifyRecord(
+        DELETION_ACK,
+        record,
+        historicalRecipientKey(a.groupId, a.recipientDeviceId)
+      )
+    )
+      return invalid;
+    return {
+      status: "accepted",
+      ackHash: ackHash(json),
+      identity: { ...identity, sessionKey: a.sessionKey, eventId: a.eventId },
+      recipientDeviceId: a.recipientDeviceId,
+      appliedFloorHash: a.appliedFloorHash,
+      membershipHeadHash: a.membershipHeadHash
+    };
+  } catch {
+    return invalid;
+  }
+}
+
+/**
+ * Signs a deletion record for an existing deletion identity at the given head.
+ * Any active member holding the floor may author it; validation still requires
+ * the author to be active at the receiver's current head.
+ */
+export function signPeerOnlineDeletion(
+  fields: {
+    identity: PeerDeletionIdentity;
+    authorDeviceId: string;
+    membershipHeadHash: string;
+  },
+  privateKey: KeyObject
+): string {
+  const unsigned = deletionSchema.shape.unsigned.parse({
+    protocol: DELETION,
+    ...fields.identity,
+    authorDeviceId: fields.authorDeviceId,
+    membershipHeadHash: fields.membershipHeadHash
+  });
+  return canonicalizePdsJson({
+    unsigned,
+    signature: sign(
+      null,
+      Buffer.from(`${DELETION}\n${canonicalizePdsJson(unsigned)}`),
+      privateKey
+    ).toString("base64url")
+  });
 }

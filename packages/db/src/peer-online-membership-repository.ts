@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { reconcilePeerOnlineDeletionRecipients } from "./peer-online-deletion-roster.js";
 import { assertPeerOnlineNotQuarantined } from "./peer-online-restore-quarantine.js";
 import {
   cancellablePeerOnlineTransaction,
@@ -258,6 +259,12 @@ export function createPeerOnlineMembershipRepository(pool: pg.Pool) {
             ]
           );
         }
+        if (result.status === "accepted")
+          await reconcilePeerOnlineDeletionRecipients(
+            client,
+            groupId,
+            result.state
+          );
         if (result.status === "pending")
           return { status: result.status, missingParent: result.missingParent };
         if (result.status === "invalid" || result.status === "limit")
@@ -421,6 +428,11 @@ export function createPeerOnlineMembershipRepository(pool: pg.Pool) {
         );
         if (consumed.rowCount !== 1)
           throw new Error("expired or stale admission attempt");
+        await reconcilePeerOnlineDeletionRecipients(
+          client,
+          anchor.groupId,
+          result.state
+        );
         return { status: "historical_receipt" as const, hash: evidence.hash };
       });
     },

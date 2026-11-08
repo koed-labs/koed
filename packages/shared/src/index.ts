@@ -2027,8 +2027,11 @@ export {
   derivePeerSessionKey,
   peerOnlineDeletionIdentity,
   samePeerOnlineDeletionIdentity,
+  signPeerOnlineDeletion,
+  signPeerOnlineDeletionAck,
   validatePeerOnlineBinding,
-  validatePeerOnlineDeletion
+  validatePeerOnlineDeletion,
+  validatePeerOnlineDeletionAck
 } from "./peer-online-deletion.js";
 export {
   signPeerOnlineCheckpoint,
@@ -2063,6 +2066,7 @@ export {
   signPeerOnlineBinding
 } from "./peer-online-producer.js";
 export type {
+  PeerDeletionAckFields,
   PeerDeletionIdentity,
   PeerSessionIdentity
 } from "./peer-online-deletion.js";

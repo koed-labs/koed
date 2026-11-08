@@ -93,14 +93,16 @@ export function createPeerOnlineFloorRepository(pool: pg.Pool) {
             existing.deletion === null
               ? undefined
               : peerOnlineDeletionIdentity(existing.deletion);
-          return {
-            status:
-              existing.deletion_hash === result.eventHash ||
-              (floor !== undefined &&
-                samePeerOnlineDeletionIdentity(floor, result.identity))
-                ? ("duplicate" as const)
-                : ("deleted" as const)
-          };
+          return existing.deletion_hash === result.eventHash ||
+            (floor !== undefined &&
+              samePeerOnlineDeletionIdentity(floor, result.identity))
+            ? {
+                status: "duplicate" as const,
+                identity: result.identity,
+                floorHash: existing.deletion_hash,
+                membershipHeadHash: view.head!
+              }
+            : { status: "deleted" as const };
         }
         await client.query(
           `insert into peer_online_sessions (group_id,session_key,binding_hash,binding,deletion_hash,deletion) values ($1,$2,$3,$4,$5,$6)
@@ -135,7 +137,60 @@ export function createPeerOnlineFloorRepository(pool: pg.Pool) {
             replica.owner_user_id,
             replica.local_session_id
           );
-        return { status: "accepted" as const };
+        return {
+          status: "accepted" as const,
+          identity: result.identity,
+          floorHash: result.eventHash,
+          membershipHeadHash: view.head!
+        };
+      });
+    },
+    /**
+     * Every retained deletion floor in the group, for serving to peers. A floor
+     * whose record is stale at the current head must be re-signed with
+     * `signPeerOnlineDeletion` by an active member before sending.
+     */
+    async deletionFloors(anchor: PeerMembershipAnchor) {
+      return transaction(pool, anchor.groupId, async (client) => {
+        const state = await replay(client, anchor);
+        await assertPeerOnlineNotQuarantined(client, anchor);
+        const view = inspectPeerMembership(state);
+        const rows = await client.query<{
+          session_key: string;
+          binding: string;
+          deletion: string;
+          deletion_hash: string;
+        }>(
+          `select session_key,binding,deletion,deletion_hash from peer_online_sessions
+           where group_id=$1 and deletion is not null and deletion_hash is not null
+           order by session_key`,
+          [anchor.groupId]
+        );
+        return rows.rows.flatMap((row) => {
+          const identity = peerOnlineDeletionIdentity(row.deletion);
+          if (!identity) return [];
+          const current =
+            view.head !== null &&
+            validatePeerOnlineDeletion(row.binding, row.deletion, {
+              historicalOriginKey: (group, id) =>
+                group === anchor.groupId ? historicalKey(state, id) : undefined,
+              currentAuthorKey: (group, head, id) =>
+                group === anchor.groupId && head === view.head
+                  ? view.members.find((m) => m.deviceId === id)
+                      ?.signingPublicKey
+                  : undefined
+            }).status === "accepted";
+          return [
+            {
+              sessionKey: row.session_key,
+              binding: row.binding,
+              identity,
+              floorHash: row.deletion_hash,
+              deletion: current ? row.deletion : null,
+              membershipHeadHash: view.head
+            }
+          ];
+        });
       });
     },
     async acceptCheckpoint(

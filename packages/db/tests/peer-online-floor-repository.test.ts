@@ -10,7 +10,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   canonicalizePdsJson,
   derivePeerSessionKey,
-  signPeerOnlineCheckpoint
+  peerOnlineDeletionIdentity,
+  signPeerOnlineCheckpoint,
+  signPeerOnlineDeletion
 } from "@koed/shared";
 import { runDbMigrations } from "../src/migrate.js";
 import { createPeerOnlineMembershipRepository } from "../src/peer-online-membership-repository.js";
@@ -880,9 +882,26 @@ describe.skipIf(!url)("peer online durable floor and checkpoint", () => {
   it("treats a re-prepared deletion with the same identity as a duplicate", async () => {
     const f = await fixture(),
       repo = createPeerOnlineFloorRepository(pool);
-    expect(
-      (await repo.acceptDeletion(f.anchor, f.binding, f.deletion)).status
-    ).toBe("accepted");
+    const originalHash = createHash("sha256")
+      .update(`${deletionDomain}/record\n${f.deletion}`)
+      .digest("base64url");
+    expect(await repo.acceptDeletion(f.anchor, f.binding, f.deletion)).toEqual({
+      status: "accepted",
+      identity: peerOnlineDeletionIdentity(f.deletion),
+      floorHash: originalHash,
+      membershipHeadHash: f.genesisHash
+    });
+    const raw = createRawPeerOnlineFloorRepository(pool);
+    expect(await raw.deletionFloors(f.anchor)).toEqual([
+      {
+        sessionKey: f.sessionKey,
+        binding: f.binding,
+        identity: peerOnlineDeletionIdentity(f.deletion),
+        floorHash: originalHash,
+        deletion: f.deletion,
+        membershipHeadHash: f.genesisHash
+      }
+    ]);
     const second = generateKeyPairSync("ed25519");
     const unsigned = {
       protocol: membershipDomain,
@@ -948,11 +967,26 @@ describe.skipIf(!url)("peer online durable floor and checkpoint", () => {
         )
       ).rows[0];
     const before = await floor();
+    // The stored record is stale at the new head, so it must be re-signed.
+    const [served] = await raw.deletionFloors(f.anchor);
+    expect(served!.deletion).toBeNull();
+    expect(served!.membershipHeadHash).toBe(head);
+    const reauthored = signPeerOnlineDeletion(
+      {
+        identity: served!.identity,
+        authorDeviceId: "other",
+        membershipHeadHash: head
+      },
+      second.privateKey
+    );
+    expect(await accept(reauthored)).toEqual({
+      status: "duplicate",
+      identity: served!.identity,
+      floorHash: originalHash,
+      membershipHeadHash: head
+    });
     expect(
       (await accept(at(encoded(5), "origin", f.keys.privateKey))).status
-    ).toBe("duplicate");
-    expect(
-      (await accept(at(encoded(5), "other", second.privateKey))).status
     ).toBe("duplicate");
     expect(
       (await accept(at(encoded(6), "origin", f.keys.privateKey))).status

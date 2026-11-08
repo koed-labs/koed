@@ -10,7 +10,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   canonicalizePdsJson,
   derivePeerSessionKey,
-  signPeerOnlineCheckpoint
+  peerOnlineDeletionIdentity,
+  signPeerOnlineCheckpoint,
+  signPeerOnlineDeletionAck
 } from "@koed/shared";
 import { runDbMigrations } from "../src/migrate.js";
 import { createPeerOnlineMembershipRepository } from "../src/peer-online-membership-repository.js";
@@ -223,10 +225,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     const f = await fixture(),
       repo = createPeerOnlineDeletionOutbox(pool);
     await repo.request(
-      f.anchor.groupId,
+      f.anchor,
       f.sessionKey,
       f.owner,
-      f.localSessionId
+      f.localSessionId,
+      "origin"
     );
     const old = f.deletion(f.anchor.genesisHash);
     expect((await repo.prepare(f.anchor, f.sessionKey, old)).status).toBe(
@@ -303,10 +306,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
       ).status
     ).toBe("accepted");
     await repo.request(
-      f.anchor.groupId,
+      f.anchor,
       f.sessionKey,
       f.owner,
-      f.localSessionId
+      f.localSessionId,
+      "origin"
     );
     const head = await advance(f),
       current = f.deletion(head);
@@ -331,10 +335,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
       repo = createPeerOnlineDeletionOutbox(pool),
       deletion = f.deletion(f.anchor.genesisHash);
     await repo.request(
-      f.anchor.groupId,
+      f.anchor,
       f.sessionKey,
       f.owner,
-      f.localSessionId
+      f.localSessionId,
+      "origin"
     );
     await pool.query(
       "update peer_online_sessions set deletion_hash='wrong-hash',deletion=$3 where group_id=$1 and session_key=$2",
@@ -355,10 +360,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     const f = await fixture(),
       repo = createPeerOnlineDeletionOutbox(pool);
     await repo.request(
-      f.anchor.groupId,
+      f.anchor,
       f.sessionKey,
       f.owner,
-      f.localSessionId
+      f.localSessionId,
+      "origin"
     );
     const original = f.deletion(f.anchor.genesisHash);
     expect((await repo.prepare(f.anchor, f.sessionKey, original)).status).toBe(
@@ -383,10 +389,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     const f = await fixture(),
       repo = createPeerOnlineDeletionOutbox(pool);
     await repo.request(
-      f.anchor.groupId,
+      f.anchor,
       f.sessionKey,
       f.owner,
-      f.localSessionId
+      f.localSessionId,
+      "origin"
     );
     const old = f.deletion(f.anchor.genesisHash);
     await repo.prepare(f.anchor, f.sessionKey, old);
@@ -410,10 +417,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     expect(
       (
         await repo.request(
-          f.anchor.groupId,
+          f.anchor,
           f.sessionKey,
           f.owner,
-          f.localSessionId
+          f.localSessionId,
+          "origin"
         )
       ).status
     ).toBe("pending");
@@ -457,10 +465,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     expect(
       (
         await repo.request(
-          f.anchor.groupId,
+          f.anchor,
           f.sessionKey,
           f.owner,
-          f.localSessionId
+          f.localSessionId,
+          "origin"
         )
       ).status
     ).toBe("pending");
@@ -469,10 +478,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     const f = await fixture();
     const repo = createPeerOnlineDeletionOutbox(pool);
     await repo.request(
-      f.anchor.groupId,
+      f.anchor,
       f.sessionKey,
       f.owner,
-      f.localSessionId
+      f.localSessionId,
+      "origin"
     );
     const deletion = f.deletion(f.anchor.genesisHash);
     expect((await repo.prepare(f.anchor, f.sessionKey, deletion)).status).toBe(
@@ -503,10 +513,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     expect(
       (
         await repo.request(
-          f.anchor.groupId,
+          f.anchor,
           f.sessionKey,
           f.owner,
-          f.localSessionId
+          f.localSessionId,
+          "origin"
         )
       ).status
     ).toBe("pending");
@@ -535,10 +546,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     expect(
       (
         await repo.request(
-          f.anchor.groupId,
+          f.anchor,
           f.sessionKey,
           randomUUID(),
-          f.localSessionId
+          f.localSessionId,
+          "origin"
         )
       ).status
     ).toBe("invalid");
@@ -547,7 +559,13 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     );
     try {
       await expect(
-        repo.request(f.anchor.groupId, f.sessionKey, f.owner, f.localSessionId)
+        repo.request(
+          f.anchor,
+          f.sessionKey,
+          f.owner,
+          f.localSessionId,
+          "origin"
+        )
       ).rejects.toThrow();
     } finally {
       await pool.query(
@@ -568,10 +586,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     const f = await fixture(),
       repo = createPeerOnlineDeletionOutbox(pool);
     await repo.request(
-      f.anchor.groupId,
+      f.anchor,
       f.sessionKey,
       f.owner,
-      f.localSessionId
+      f.localSessionId,
+      "origin"
     );
     const next = generateKeyPairSync("ed25519");
     const target = {
@@ -621,7 +640,13 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     );
     try {
       await expect(
-        repo.request(f.anchor.groupId, f.sessionKey, f.owner, f.localSessionId)
+        repo.request(
+          f.anchor,
+          f.sessionKey,
+          f.owner,
+          f.localSessionId,
+          "origin"
+        )
       ).rejects.toThrow();
     } finally {
       await pool.query(
@@ -660,10 +685,11 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
         [event.rows[0]!.id]
       );
       const request = createPeerOnlineDeletionOutbox(worker).request(
-        f.anchor.groupId,
+        f.anchor,
         f.sessionKey,
         f.owner,
-        f.localSessionId
+        f.localSessionId,
+        "origin"
       );
       const failed = expect(request).rejects.toThrow();
       let pid: number | undefined;
@@ -702,7 +728,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
       repo = createPeerOnlineDeletionOutbox(pool),
       floor = createPeerOnlineFloorRepository(pool);
     const results = await Promise.all([
-      repo.request(f.anchor.groupId, f.sessionKey, f.owner, f.localSessionId),
+      repo.request(f.anchor, f.sessionKey, f.owner, f.localSessionId, "origin"),
       floor.acceptCheckpoint(
         f.anchor,
         f.binding,
@@ -727,5 +753,266 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
       ).status
     ).toBe("prepared");
     expect(await repo.pending(f.anchor)).toHaveLength(1);
+  });
+  describe("recipient roster and acknowledgement", () => {
+    type Fixture = Awaited<ReturnType<typeof fixture>>;
+    const memberships = createPeerOnlineMembershipRepository(pool);
+    async function change(f: Fixture, body: object) {
+      const parentHash = (await memberships.load(f.anchor)).head!;
+      const unsigned = {
+        protocol: membership,
+        groupId: f.anchor.groupId,
+        parentHash,
+        authorDeviceId: "origin",
+        body
+      };
+      expect(
+        (
+          await memberships.append(
+            f.anchor,
+            signed(`${membership}/decision`, unsigned, f.keys.privateKey)
+          )
+        ).status
+      ).toBe("accepted");
+      return createHash("sha256")
+        .update(`${membership}/record\n${canonicalizePdsJson(unsigned)}`)
+        .digest("base64url");
+    }
+    async function add(f: Fixture, deviceId: string) {
+      const key = generateKeyPairSync("ed25519");
+      const head = await change(f, {
+        kind: "add",
+        target: {
+          deviceId,
+          signingPublicKey: key.publicKey.export({ format: "jwk" }).x!,
+          ...encryptionIdentity(),
+          transportSpkiSha256: encoded(deviceId.charCodeAt(0))
+        }
+      });
+      return { key: key.privateKey, head };
+    }
+    const revoke = (f: Fixture, deviceId: string) =>
+      change(f, { kind: "revoke", targetDeviceId: deviceId });
+    const ackFrom = (
+      f: Fixture,
+      recipientDeviceId: string,
+      key: KeyObject,
+      head: string,
+      eventId = encoded(5)
+    ) =>
+      signPeerOnlineDeletionAck(
+        {
+          identity: peerOnlineDeletionIdentity(f.deletion(head, eventId))!,
+          recipientDeviceId,
+          appliedFloorHash: encoded(30),
+          membershipHeadHash: head
+        },
+        key
+      ).ack;
+    const roster = async (f: Fixture) =>
+      (
+        await pool.query<{
+          recipient_device_id: string;
+          added_reason: string;
+          state: string;
+        }>(
+          "select recipient_device_id,added_reason,state from peer_online_deletion_recipients where group_id=$1 and session_key=$2 order by recipient_device_id",
+          [f.anchor.groupId, f.sessionKey]
+        )
+      ).rows;
+    async function requested(f: Fixture, head: string) {
+      const repo = createPeerOnlineDeletionOutbox(pool);
+      expect(
+        (
+          await repo.request(
+            f.anchor,
+            f.sessionKey,
+            f.owner,
+            f.localSessionId,
+            "origin"
+          )
+        ).status
+      ).toBe("pending");
+      expect(
+        (await repo.prepare(f.anchor, f.sessionKey, f.deletion(head))).status
+      ).toBe("prepared");
+      return repo;
+    }
+
+    it("snapshots other active members and completes after their acknowledgement", async () => {
+      const f = await fixture();
+      const b = await add(f, "b");
+      const repo = await requested(f, b.head);
+      expect(await roster(f)).toEqual([
+        {
+          recipient_device_id: "b",
+          added_reason: "member_at_request",
+          state: "pending"
+        }
+      ]);
+      expect(await repo.status(f.anchor)).toEqual([
+        {
+          sessionKey: f.sessionKey,
+          state: "pending",
+          recipients: { pending: 1, acked: 0, revokedUnconfirmed: 0 }
+        }
+      ]);
+      const due = await repo.due(f.anchor, "b");
+      expect(due).toHaveLength(1);
+      expect(due[0]!.prepared_deletion).toBe(f.deletion(b.head));
+      expect(await repo.due(f.anchor, "origin")).toHaveLength(0);
+
+      const ack = ackFrom(f, "b", b.key, b.head);
+      expect((await repo.recordAck(f.anchor, ack)).status).toBe("acknowledged");
+      expect((await repo.recordAck(f.anchor, ack)).status).toBe("duplicate");
+      expect((await repo.status(f.anchor))[0]!.state).toBe("complete");
+      expect(await repo.due(f.anchor, "b", { immediate: true })).toHaveLength(
+        0
+      );
+    });
+
+    it("rejects acknowledgements with the wrong signer, identity or recipient", async () => {
+      const f = await fixture();
+      const b = await add(f, "b");
+      const repo = await requested(f, b.head);
+      const outsider = generateKeyPairSync("ed25519").privateKey;
+      expect(
+        (await repo.recordAck(f.anchor, ackFrom(f, "b", outsider, b.head)))
+          .status
+      ).toBe("invalid");
+      expect(
+        (
+          await repo.recordAck(
+            f.anchor,
+            ackFrom(f, "b", b.key, b.head, encoded(6))
+          )
+        ).status
+      ).toBe("invalid");
+      expect(
+        (
+          await repo.recordAck(
+            f.anchor,
+            ackFrom(f, "origin", f.keys.privateKey, b.head)
+          )
+        ).status
+      ).toBe("invalid");
+      expect((await repo.recordAck(f.anchor, "{}")).status).toBe("invalid");
+      expect((await repo.status(f.anchor))[0]!.recipients.pending).toBe(1);
+    });
+
+    it("adds later admissions and keeps revoked recipients unconfirmed", async () => {
+      const f = await fixture();
+      const b = await add(f, "b");
+      const repo = await requested(f, b.head);
+      const c = await add(f, "c");
+      const afterRevoke = await revoke(f, "b");
+      expect(await roster(f)).toEqual([
+        {
+          recipient_device_id: "b",
+          added_reason: "member_at_request",
+          state: "revoked_unconfirmed"
+        },
+        {
+          recipient_device_id: "c",
+          added_reason: "admitted_later",
+          state: "pending"
+        }
+      ]);
+      expect(await repo.due(f.anchor, "b", { immediate: true })).toHaveLength(
+        0
+      );
+      expect(
+        (await repo.recordAck(f.anchor, ackFrom(f, "c", c.key, afterRevoke)))
+          .status
+      ).toBe("acknowledged");
+      expect(await repo.status(f.anchor)).toEqual([
+        {
+          sessionKey: f.sessionKey,
+          state: "complete_unconfirmed",
+          recipients: { pending: 0, acked: 1, revokedUnconfirmed: 1 }
+        }
+      ]);
+      // Evidence signed by b before revocation is still verifiable.
+      expect(
+        (await repo.recordAck(f.anchor, ackFrom(f, "b", b.key, b.head))).status
+      ).toBe("acknowledged");
+      expect((await repo.status(f.anchor))[0]!.state).toBe("complete");
+    });
+
+    it("completes immediately when no other member exists", async () => {
+      const f = await fixture();
+      const repo = await requested(f, f.anchor.genesisHash);
+      expect(await repo.status(f.anchor)).toEqual([
+        {
+          sessionKey: f.sessionKey,
+          state: "complete",
+          recipients: { pending: 0, acked: 0, revokedUnconfirmed: 0 }
+        }
+      ]);
+    });
+
+    it("backs off attempts while a new session can send immediately", async () => {
+      const f = await fixture();
+      const b = await add(f, "b");
+      const repo = await requested(f, b.head);
+      expect(
+        (await repo.recordAttempt(f.anchor, f.sessionKey, "b")).status
+      ).toBe("scheduled");
+      const next = (
+        await pool.query<{ attempts: number; delay: number }>(
+          "select attempts, extract(epoch from next_attempt_at - now())::float as delay from peer_online_deletion_recipients where group_id=$1 and recipient_device_id='b'",
+          [f.anchor.groupId]
+        )
+      ).rows[0]!;
+      expect(next.attempts).toBe(1);
+      expect(next.delay).toBeGreaterThan(22);
+      expect(next.delay).toBeLessThanOrEqual(30);
+      expect(await repo.due(f.anchor, "b")).toHaveLength(0);
+      expect(await repo.due(f.anchor, "b", { immediate: true })).toHaveLength(
+        1
+      );
+      expect(
+        (await repo.recordAttempt(f.anchor, f.sessionKey, "nobody")).status
+      ).toBe("ignored");
+    });
+
+    it("rejects changing an acknowledgement or removing roster rows", async () => {
+      const f = await fixture();
+      const b = await add(f, "b");
+      const repo = await requested(f, b.head);
+      await repo.recordAck(f.anchor, ackFrom(f, "b", b.key, b.head));
+      await expect(
+        pool.query(
+          "update peer_online_deletion_recipients set attempts=attempts+1 where group_id=$1",
+          [f.anchor.groupId]
+        )
+      ).rejects.toThrow("acknowledgement is immutable");
+      await expect(
+        pool.query(
+          "delete from peer_online_deletion_recipients where group_id=$1",
+          [f.anchor.groupId]
+        )
+      ).rejects.toThrow("retained for the life of the group");
+      await expect(
+        pool.query(
+          "update peer_online_deletion_recipients set state='pending', ack=null, ack_hash=null, acked_at=null where group_id=$1",
+          [f.anchor.groupId]
+        )
+      ).rejects.toThrow("acknowledgement is immutable");
+    });
+
+    it("blocks delivery and acknowledgement while restore-quarantined", async () => {
+      const f = await fixture();
+      const b = await add(f, "b");
+      const repo = await requested(f, b.head);
+      await declarePeerOnlineRestoreQuarantine(pool, f.anchor, "restore");
+      await expect(repo.due(f.anchor, "b")).rejects.toThrow("quarantined");
+      await expect(
+        repo.recordAck(f.anchor, ackFrom(f, "b", b.key, b.head))
+      ).rejects.toThrow("quarantined");
+      await expect(
+        repo.recordAttempt(f.anchor, f.sessionKey, "b")
+      ).rejects.toThrow("quarantined");
+    });
   });
 });

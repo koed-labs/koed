@@ -177,6 +177,7 @@ export const peerOnlineDeletionOutbox = pgTable(
     ownerUserId: uuid("owner_user_id").notNull(),
     localSessionId: uuid("local_session_id").notNull(),
     preparedDeletion: text("prepared_deletion"),
+    localDeviceId: text("local_device_id"),
     createdAt: now()
   },
   (table) => [
@@ -193,6 +194,49 @@ export const peerOnlineDeletionOutbox = pgTable(
       foreignColumns: [sessions.id, sessions.ownerUserId]
     }),
     unique().on(table.ownerUserId, table.localSessionId)
+  ]
+);
+
+export const peerOnlineDeletionRecipients = pgTable(
+  "peer_online_deletion_recipients",
+  {
+    groupId: text("group_id").notNull(),
+    sessionKey: text("session_key").notNull(),
+    recipientDeviceId: text("recipient_device_id").notNull(),
+    addedReason: text("added_reason").notNull(),
+    state: text("state").notNull().default("pending"),
+    ack: text("ack"),
+    ackHash: text("ack_hash"),
+    ackedAt: timestamp("acked_at", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.groupId, table.sessionKey, table.recipientDeviceId]
+    }),
+    foreignKey({
+      columns: [table.groupId, table.sessionKey],
+      foreignColumns: [
+        peerOnlineDeletionOutbox.groupId,
+        peerOnlineDeletionOutbox.sessionKey
+      ]
+    }),
+    check(
+      "peer_online_deletion_recipients_added_reason_check",
+      sql`${table.addedReason} in ('member_at_request', 'admitted_later')`
+    ),
+    check(
+      "peer_online_deletion_recipients_state_check",
+      sql`(${table.state} = 'acked' and ${table.ack} is not null and ${table.ackHash} is not null and ${table.ackedAt} is not null) or (${table.state} in ('pending', 'revoked_unconfirmed') and ${table.ack} is null and ${table.ackHash} is null and ${table.ackedAt} is null)`
+    ),
+    check(
+      "peer_online_deletion_recipients_attempts_check",
+      sql`${table.attempts} >= 0`
+    )
   ]
 );
 

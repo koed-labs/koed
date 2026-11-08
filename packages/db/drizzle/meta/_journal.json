@@ -414,6 +414,13 @@
       "when": 1793865476953,
       "tag": "0058_peer_online_restore_quarantine",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1794170378893,
+      "tag": "0059_peer_online_deletion_recipients",
+      "breakpoints": true
     }
   ]
 }
