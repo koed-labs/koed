@@ -1,4 +1,10 @@
-import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomUUID,
+  sign,
+  type KeyObject
+} from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -24,11 +30,7 @@ const encryptionIdentity = () => {
     encryptionSpkiSha256: createHash("sha256").update(der).digest("base64url")
   };
 };
-const signed = (
-  domain: string,
-  unsigned: object,
-  key: ReturnType<typeof generateKeyPairSync>["privateKey"]
-) =>
+const signed = (domain: string, unsigned: object, key: KeyObject) =>
   canonicalizePdsJson({
     unsigned,
     signature: sign(

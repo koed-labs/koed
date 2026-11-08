@@ -189,7 +189,7 @@ describe.skipIf(!url)("peer online materialization", () => {
             "select checkpoint_sequence from peer_online_sessions where group_id=$1 and session_key=$2",
             [group, key]
           )
-        ).rows[0].checkpoint_sequence
+        ).rows[0]!.checkpoint_sequence
       ).toBe("0");
       await client.query("begin");
       await client.query(
@@ -220,7 +220,7 @@ describe.skipIf(!url)("peer online materialization", () => {
             "select count(*)::integer as count from peer_online_source_items where group_id=$1 and session_key=$2",
             [group, key]
           )
-        ).rows[0].count
+        ).rows[0]!.count
       ).toBe(2);
       await client.query("begin");
       await client.query(

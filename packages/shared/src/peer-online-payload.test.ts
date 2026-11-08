@@ -233,19 +233,21 @@ describe("peer-online payload encryption", () => {
     for (const field of ["ciphertext", "tag", "nonce"]) {
       const copy = structuredClone(object);
       const bytes = Buffer.from(String(copy[field]), "base64url");
-      bytes[0] ^= 1;
+      expect(bytes.length).toBeGreaterThan(0);
+      bytes[0] = bytes[0]! ^ 1;
       copy[field] = bytes.toString("base64url");
       expect(decrypt(Buffer.from(canonicalizePdsJson(copy)))).toBeUndefined();
     }
     const wrapped = structuredClone(object);
     const wrapBytes = Buffer.from(
-      wrapped.recipients[1].ciphertext,
+      wrapped.recipients[1]!.ciphertext,
       "base64url"
     );
-    wrapBytes[0] ^= 1;
-    wrapped.recipients[1].ciphertext = wrapBytes.toString("base64url");
+    expect(wrapBytes.length).toBeGreaterThan(0);
+    wrapBytes[0] = wrapBytes[0]! ^ 1;
+    wrapped.recipients[1]!.ciphertext = wrapBytes.toString("base64url");
     expect(decrypt(Buffer.from(canonicalizePdsJson(wrapped)))).toBeUndefined();
-    object.recipients[0].deviceId = "other";
+    object.recipients[0]!.deviceId = "other";
     expect(decrypt(Buffer.from(canonicalizePdsJson(object)))).toBeUndefined();
     expect(decrypt(Buffer.from("{}"))).toBeUndefined();
     expect(

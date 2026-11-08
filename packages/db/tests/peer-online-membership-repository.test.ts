@@ -275,7 +275,7 @@ describe.skipIf(!url)("durable peer membership", () => {
           "select count(*)::int as count from peer_online_admission_attempts where group_id=$1",
           [groupId]
         )
-      ).rows[0].count
+      ).rows[0]!.count
     ).toBe(2);
     expect(
       await createPeerOnlineMembershipRepository(pool).admit(

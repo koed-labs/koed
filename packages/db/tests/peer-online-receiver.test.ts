@@ -577,7 +577,8 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     const f = await fixture();
     const sealed = f.seal("0", null, [item(0)]);
     const payload = Buffer.from(sealed.payload);
-    payload[payload.length - 2] ^= 1;
+    expect(payload.length).toBeGreaterThanOrEqual(2);
+    payload[payload.length - 2] = payload[payload.length - 2]! ^ 1;
     expect(
       (
         await f.receiver.receive(

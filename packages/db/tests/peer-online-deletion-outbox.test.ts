@@ -1,4 +1,10 @@
-import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomUUID,
+  sign,
+  type KeyObject
+} from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -27,11 +33,7 @@ const encryptionIdentity = () => {
     encryptionSpkiSha256: createHash("sha256").update(der).digest("base64url")
   };
 };
-const signed = (
-  domain: string,
-  unsigned: object,
-  key: ReturnType<typeof generateKeyPairSync>["privateKey"]
-) =>
+const signed = (domain: string, unsigned: object, key: KeyObject) =>
   canonicalizePdsJson({
     unsigned,
     signature: sign(
@@ -244,6 +246,8 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
         [f.anchor.groupId, f.sessionKey]
       )
     ).rows[0];
+    expect(row).toBeDefined();
+    if (!row) throw new Error("Expected deletion outbox row");
     expect(row.deletion).toBe(old);
     expect(row.prepared_deletion).toBe(current);
     expect(row.deletion_hash).toBe(oldHash);
@@ -315,6 +319,8 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
         [f.anchor.groupId, f.sessionKey]
       )
     ).rows[0];
+    expect(row).toBeDefined();
+    if (!row) throw new Error("Expected deletion outbox row");
     expect(row.deletion).toBe(old);
     expect(row.deletion_hash).toBe(oldHash);
     expect(row.prepared_deletion).toBe(current);
@@ -368,6 +374,8 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
         [f.anchor.groupId, f.sessionKey]
       )
     ).rows[0];
+    expect(row).toBeDefined();
+    if (!row) throw new Error("Expected deletion outbox row");
     expect(row.deletion).toBe(original);
     expect(row.prepared_deletion).toBe(original);
   });
@@ -413,8 +421,8 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
       "select s.personal_deleted_at as session_deleted,e.personal_deleted_at as event_deleted from sessions s join memory_events e on e.session_id=s.id where s.id=$1",
       [f.localSessionId]
     );
-    expect(visible.rows[0].session_deleted).toBeInstanceOf(Date);
-    expect(visible.rows[0].event_deleted).toBeInstanceOf(Date);
+    expect(visible.rows[0]!.session_deleted).toBeInstanceOf(Date);
+    expect(visible.rows[0]!.event_deleted).toBeInstanceOf(Date);
     expect(
       (
         await pool.query<Record<string, unknown>>(
@@ -552,7 +560,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
           "select personal_deleted_at from sessions where id=$1",
           [f.localSessionId]
         )
-      ).rows[0].personal_deleted_at
+      ).rows[0]!.personal_deleted_at
     ).toBeNull();
     expect(await repo.pending(f.anchor)).toHaveLength(0);
   });
@@ -627,7 +635,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
           "select personal_deleted_at from sessions where id=$1",
           [f.localSessionId]
         )
-      ).rows[0].personal_deleted_at
+      ).rows[0]!.personal_deleted_at
     ).toBeNull();
   });
   it("rolls back intent and visibility when its database connection dies mid-transaction", async () => {
@@ -681,7 +689,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
             "select personal_deleted_at from sessions where id=$1",
             [f.localSessionId]
           )
-        ).rows[0].personal_deleted_at
+        ).rows[0]!.personal_deleted_at
       ).toBeNull();
     } finally {
       await blocker.query("rollback");
