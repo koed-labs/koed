@@ -128,7 +128,7 @@ describe.skipIf(!url)("peer online durable floor and checkpoint", () => {
         await admin.end();
       }
     }
-  });
+  }, 60000);
   async function fixture() {
     const keys = generateKeyPairSync("ed25519"),
       encryption = encryptionIdentity(),

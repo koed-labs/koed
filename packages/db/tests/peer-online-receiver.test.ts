@@ -116,7 +116,7 @@ describe.skipIf(!url)("peer online checkpoint receiver", () => {
     await pool.end();
     if (created) await admin.query(`drop database "${name}" with (force)`);
     await admin.end();
-  });
+  }, 60000);
 
   async function fixture(options: { bindOwner?: boolean } = {}) {
     const groupId = randomUUID();

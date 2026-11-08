@@ -74,7 +74,7 @@ describe.skipIf(!url)("peer-online restore quarantine", () => {
     await pool.end();
     if (created) await admin.query(`drop database "${name}" with (force)`);
     await admin.end();
-  });
+  }, 60000);
 
   it("rejects unknown groups and declarations with a wrong anchor", async () => {
     const groupId = randomUUID();

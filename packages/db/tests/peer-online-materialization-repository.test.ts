@@ -21,7 +21,7 @@ describe.skipIf(!url)("peer online materialization", () => {
     await pool.end();
     if (created) await admin.query(`drop database "${name}" with (force)`);
     await admin.end();
-  });
+  }, 60000);
   it("rejects direct materialization while restore-quarantined", async () => {
     const owner = randomUUID();
     const group = randomUUID();

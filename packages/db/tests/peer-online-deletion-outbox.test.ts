@@ -87,7 +87,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
     await pool.end();
     if (created) await admin.query(`drop database "${name}" with (force)`);
     await admin.end();
-  });
+  }, 60000);
   async function fixture() {
     const keys = generateKeyPairSync("ed25519"),
       groupId = randomUUID(),

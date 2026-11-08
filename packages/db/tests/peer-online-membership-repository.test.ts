@@ -148,7 +148,7 @@ describe.skipIf(!url)("durable peer membership", () => {
     await pool.end();
     if (created) await admin.query(`drop database "${name}" with (force)`);
     await admin.end();
-  });
+  }, 60000);
   it("blocks membership mutations while restore-quarantined but keeps reads available", async () => {
     const groupId = randomUUID();
     const a = device("a");

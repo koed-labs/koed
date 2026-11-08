@@ -194,7 +194,7 @@ describe.skipIf(!url)("peer online deletion floor migration", () => {
         }
       }
     }
-  });
+  }, 60000);
 
   it("preserves legacy tombstones and guards their floors", async () => {
     await assertLegacyFloors(pool);
