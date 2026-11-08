@@ -877,6 +877,88 @@ describe.skipIf(!url)("peer online durable floor and checkpoint", () => {
       (await repo.acceptDeletion(f.anchor, f.binding, f.deletion)).status
     ).toBe("fenced");
   });
+  it("treats a re-prepared deletion with the same identity as a duplicate", async () => {
+    const f = await fixture(),
+      repo = createPeerOnlineFloorRepository(pool);
+    expect(
+      (await repo.acceptDeletion(f.anchor, f.binding, f.deletion)).status
+    ).toBe("accepted");
+    const second = generateKeyPairSync("ed25519");
+    const unsigned = {
+      protocol: membershipDomain,
+      groupId: f.anchor.groupId,
+      parentHash: f.genesisHash,
+      authorDeviceId: "origin",
+      body: {
+        kind: "add",
+        target: {
+          deviceId: "other",
+          signingPublicKey: second.publicKey.export({ format: "jwk" }).x!,
+          ...encryptionIdentity(),
+          transportSpkiSha256: encoded(12)
+        }
+      }
+    };
+    const head = createHash("sha256")
+      .update(`${membershipDomain}/record\n${canonicalizePdsJson(unsigned)}`)
+      .digest("base64url");
+    expect(
+      (
+        await createPeerOnlineMembershipRepository(pool).append(
+          f.anchor,
+          canonicalizePdsJson({
+            unsigned,
+            signature: sign(
+              null,
+              Buffer.from(
+                `${membershipDomain}/decision\n${canonicalizePdsJson(unsigned)}`
+              ),
+              f.keys.privateKey
+            ).toString("base64url")
+          })
+        )
+      ).status
+    ).toBe("accepted");
+    const at = (eventId: string, author: string, key: KeyObject) =>
+      signed(
+        deletionDomain,
+        {
+          protocol: deletionDomain,
+          ...f.identity,
+          sessionKey: f.sessionKey,
+          authorDeviceId: author,
+          membershipHeadHash: head,
+          eventId
+        },
+        key
+      );
+    const contextual = withSessionContext(
+      createRawPeerOnlineFloorRepository(pool)
+    );
+    const accept = (deletion: string) =>
+      contextual.acceptDeletion(f.anchor, f.binding, deletion, "origin", {
+        peerDeviceId: "other",
+        membershipRevision: head
+      });
+    const floor = async () =>
+      (
+        await pool.query<{ deletion_hash: string; deletion: string }>(
+          "select deletion_hash,deletion from peer_online_sessions where group_id=$1 and session_key=$2",
+          [f.anchor.groupId, f.sessionKey]
+        )
+      ).rows[0];
+    const before = await floor();
+    expect(
+      (await accept(at(encoded(5), "origin", f.keys.privateKey))).status
+    ).toBe("duplicate");
+    expect(
+      (await accept(at(encoded(5), "other", second.privateKey))).status
+    ).toBe("duplicate");
+    expect(
+      (await accept(at(encoded(6), "origin", f.keys.privateKey))).status
+    ).toBe("deleted");
+    expect(await floor()).toEqual(before);
+  });
   it("enforces chain order and recognizes exact duplicates", async () => {
     const f = await fixture(),
       repo = createPeerOnlineFloorRepository(pool),

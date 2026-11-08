@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import type pg from "pg";
-import { parseCanonicalPdsJson } from "@koed/shared";
 import {
   inspectPeerMembership,
+  peerOnlineDeletionIdentity,
+  samePeerOnlineDeletionIdentity,
   lookupHistoricalPeerMember,
   validatePeerOnlineDeletion,
   type PeerMembershipAnchor,
@@ -93,7 +94,7 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
                 )
               : undefined;
             const preparedIdentity = row.prepared_deletion
-              ? deletionIdentity(row.prepared_deletion)
+              ? peerOnlineDeletionIdentity(row.prepared_deletion)
               : undefined;
             const floor =
               deletion && deletion_hash
@@ -106,7 +107,7 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
                 checked.sessionKey === row.session_key &&
                 preparedIdentity !== undefined &&
                 floor !== undefined &&
-                sameDeletionIdentity(preparedIdentity, floor.identity)
+                samePeerOnlineDeletionIdentity(preparedIdentity, floor.identity)
                   ? row.prepared_deletion
                   : null
             };
@@ -154,23 +155,24 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
           row.binding_hash,
           deletion
         );
-        const nextIdentity = deletionIdentity(deletion);
+        const nextIdentity = peerOnlineDeletionIdentity(deletion);
         const floor =
           row.deletion && row.deletion_hash
             ? verifiedFloor(row.deletion, row.deletion_hash)
             : undefined;
         const previousPrepared = outbox.prepared_deletion
-          ? deletionIdentity(outbox.prepared_deletion)
+          ? peerOnlineDeletionIdentity(outbox.prepared_deletion)
           : undefined;
         if (
           result.status !== "accepted" ||
           result.sessionKey !== sessionKey ||
           !nextIdentity ||
           ((row.deletion !== null || row.deletion_hash !== null) && !floor) ||
-          (floor && !sameDeletionIdentity(nextIdentity, floor.identity)) ||
+          (floor &&
+            !samePeerOnlineDeletionIdentity(nextIdentity, floor.identity)) ||
           (outbox.prepared_deletion !== null && !previousPrepared) ||
           (previousPrepared &&
-            !sameDeletionIdentity(nextIdentity, previousPrepared))
+            !samePeerOnlineDeletionIdentity(nextIdentity, previousPrepared))
         )
           return { status: "invalid" as const };
         await client.query(
@@ -190,54 +192,9 @@ export function createPeerOnlineDeletionOutbox(pool: pg.Pool) {
 
 const deletionDomain = "koed/peer-online-deletion/v1/record\n";
 
-type DeletionIdentity = {
-  groupId: string;
-  originDeviceId: string;
-  originSessionId: string;
-  sessionKey: string;
-  eventId: string;
-};
-
-function deletionIdentity(json: string): DeletionIdentity | undefined {
-  if (typeof json !== "string" || Buffer.byteLength(json) > 16384)
-    return undefined;
-  try {
-    const parsed: unknown = parseCanonicalPdsJson(json);
-    if (!parsed || typeof parsed !== "object" || !("unsigned" in parsed))
-      return undefined;
-    const value = parsed.unsigned;
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !("protocol" in value) ||
-      value.protocol !== "koed/peer-online-deletion/v1" ||
-      !("groupId" in value) ||
-      typeof value.groupId !== "string" ||
-      !("originDeviceId" in value) ||
-      typeof value.originDeviceId !== "string" ||
-      !("originSessionId" in value) ||
-      typeof value.originSessionId !== "string" ||
-      !("sessionKey" in value) ||
-      typeof value.sessionKey !== "string" ||
-      !("eventId" in value) ||
-      typeof value.eventId !== "string"
-    )
-      return undefined;
-    return {
-      groupId: value.groupId,
-      originDeviceId: value.originDeviceId,
-      originSessionId: value.originSessionId,
-      sessionKey: value.sessionKey,
-      eventId: value.eventId
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 function verifiedFloor(json: string, expectedHash: string) {
   try {
-    const identity = deletionIdentity(json);
+    const identity = peerOnlineDeletionIdentity(json);
     const hash = createHash("sha256")
       .update(deletionDomain)
       .update(json)
@@ -246,19 +203,6 @@ function verifiedFloor(json: string, expectedHash: string) {
   } catch {
     return undefined;
   }
-}
-
-function sameDeletionIdentity(
-  left: DeletionIdentity,
-  right: DeletionIdentity
-): boolean {
-  return (
-    left.groupId === right.groupId &&
-    left.originDeviceId === right.originDeviceId &&
-    left.originSessionId === right.originSessionId &&
-    left.sessionKey === right.sessionKey &&
-    left.eventId === right.eventId
-  );
 }
 
 function validateDeletion(

@@ -261,7 +261,7 @@ describe.skipIf(!url)("peer online local deletion outbox", () => {
           membershipRevision: head
         })
       ).status
-    ).toBe("deleted");
+    ).toBe("duplicate");
     expect(
       (
         await withSessionContext(

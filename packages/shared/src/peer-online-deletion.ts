@@ -49,6 +49,53 @@ const deletionSchema = z
   })
   .strict();
 export type PeerSessionIdentity = z.infer<typeof tupleSchema>;
+/** Stable identity of a group-wide deletion, independent of its author, head and signature. */
+export type PeerDeletionIdentity = PeerSessionIdentity & {
+  sessionKey: string;
+  eventId: string;
+};
+
+/**
+ * Parses the identity of a structurally valid deletion record without verifying
+ * its signature. Callers must only use it on records already validated or stored
+ * as a verified floor.
+ */
+export function peerOnlineDeletionIdentity(
+  deletionJson: string
+): PeerDeletionIdentity | undefined {
+  if (
+    typeof deletionJson !== "string" ||
+    Buffer.byteLength(deletionJson) > MAX_BYTES
+  )
+    return undefined;
+  try {
+    const d = deletionSchema.parse(
+      parseCanonicalPdsJson(deletionJson)
+    ).unsigned;
+    return {
+      groupId: d.groupId,
+      originDeviceId: d.originDeviceId,
+      originSessionId: d.originSessionId,
+      sessionKey: d.sessionKey,
+      eventId: d.eventId
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function samePeerOnlineDeletionIdentity(
+  left: PeerDeletionIdentity,
+  right: PeerDeletionIdentity
+): boolean {
+  return (
+    left.groupId === right.groupId &&
+    left.originDeviceId === right.originDeviceId &&
+    left.originSessionId === right.originSessionId &&
+    left.sessionKey === right.sessionKey &&
+    left.eventId === right.eventId
+  );
+}
 /** Trusted integration boundary; both lookups must be backed by authenticated identity and membership state. */
 export type PeerDeletionAuthorization = {
   /** Return the authenticated origin identity key, including for a revoked origin. */
@@ -197,6 +244,7 @@ export function validatePeerOnlineDeletion(
       sessionKey: string;
       eventHash: string;
       bindingHash: string;
+      identity: PeerDeletionIdentity;
     }
   | { status: "invalid" } {
   const invalid = { status: "invalid" } as const;
@@ -260,7 +308,8 @@ export function validatePeerOnlineDeletion(
       status: "accepted",
       sessionKey: d.sessionKey,
       eventHash,
-      bindingHash
+      bindingHash,
+      identity: { ...identity, sessionKey: d.sessionKey, eventId: d.eventId }
     };
   } catch {
     return invalid;

@@ -169,7 +169,10 @@ version and external Session ID.
 
 Accepting a received deletion now also marks an already-materialized replica Session
 and its derived Recall rows deleted, in the same transaction that records the
-permanent floor. Later checkpoints for that Session report `deleted`.
+permanent floor. Later checkpoints for that Session report `deleted`. A deletion
+with the same identity (group, origin, Session key and event ID) re-prepared at a
+newer membership head reports `duplicate` and leaves the original floor
+unchanged; a deletion with a different identity reports `deleted`.
 
 A future authenticated member session hands its socket to one bounded framed
 message channel and supplies the trusted transport peer ID and membership revision

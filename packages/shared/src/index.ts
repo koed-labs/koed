@@ -2025,6 +2025,8 @@ export type {
 export { transferredSelectionSharingScopeSchema } from "./selection-sharing-journal.js";
 export {
   derivePeerSessionKey,
+  peerOnlineDeletionIdentity,
+  samePeerOnlineDeletionIdentity,
   validatePeerOnlineBinding,
   validatePeerOnlineDeletion
 } from "./peer-online-deletion.js";
@@ -2060,7 +2062,10 @@ export {
   sealPeerOnlineCheckpoint,
   signPeerOnlineBinding
 } from "./peer-online-producer.js";
-export type { PeerSessionIdentity } from "./peer-online-deletion.js";
+export type {
+  PeerDeletionIdentity,
+  PeerSessionIdentity
+} from "./peer-online-deletion.js";
 
 export {
   PEER_MEMBERSHIP_PROTOCOL,

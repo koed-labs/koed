@@ -4,6 +4,8 @@ import {
   inspectPeerMembership,
   lookupHistoricalPeerMember,
   validatePeerOnlineBinding,
+  peerOnlineDeletionIdentity,
+  samePeerOnlineDeletionIdentity,
   validatePeerOnlineDeletion,
   verifyPeerOnlineCheckpoint,
   type PeerMembershipAnchor,
@@ -25,6 +27,7 @@ const groupByteLimit = 128 * 1024 * 1024;
 type Session = {
   binding_hash: string;
   deletion_hash: string | null;
+  deletion: string | null;
   checkpoint_sequence: string | null;
   checkpoint_hash: string | null;
 };
@@ -44,7 +47,7 @@ async function session(
 ): Promise<Session | undefined> {
   return (
     await client.query<Session>(
-      "select binding_hash, deletion_hash, checkpoint_sequence, checkpoint_hash from peer_online_sessions where group_id=$1 and session_key=$2 for update",
+      "select binding_hash, deletion_hash, deletion, checkpoint_sequence, checkpoint_hash from peer_online_sessions where group_id=$1 and session_key=$2 for update",
       [groupId, key]
     )
   ).rows[0];
@@ -83,13 +86,22 @@ export function createPeerOnlineFloorRepository(pool: pg.Pool) {
         );
         if (existing && existing.binding_hash !== result.bindingHash)
           return { status: "invalid" as const };
-        if (existing?.deletion_hash)
+        if (existing?.deletion_hash) {
+          // A deletion re-prepared at a newer membership head keeps its identity
+          // but not its event hash. The original floor is never replaced.
+          const floor =
+            existing.deletion === null
+              ? undefined
+              : peerOnlineDeletionIdentity(existing.deletion);
           return {
             status:
-              existing.deletion_hash === result.eventHash
+              existing.deletion_hash === result.eventHash ||
+              (floor !== undefined &&
+                samePeerOnlineDeletionIdentity(floor, result.identity))
                 ? ("duplicate" as const)
                 : ("deleted" as const)
           };
+        }
         await client.query(
           `insert into peer_online_sessions (group_id,session_key,binding_hash,binding,deletion_hash,deletion) values ($1,$2,$3,$4,$5,$6)
           on conflict (group_id,session_key) do update set deletion_hash=excluded.deletion_hash,deletion=excluded.deletion`,
