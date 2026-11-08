@@ -47,6 +47,17 @@ export function writeLinuxDesktopReleaseChecksum(options) {
   return paths.checksum;
 }
 
+export function verifyLinuxDesktopReleaseSize(options) {
+  const paths = linuxChecksumPaths(options);
+  const stat = statSync(paths.asset);
+  // Provisional safety ceiling matches the protected candidate verifier limit;
+  // it is not an empirical Linux release size baseline.
+  if (!stat.isFile() || stat.size === 0 || stat.size > 4 * 1024 ** 3)
+    throw new Error(
+      "Linux AppImage exceeds provisional 4 GiB ceiling or is not a nonempty regular file."
+    );
+}
+
 export function verifyLinuxDesktopReleaseChecksum(options) {
   const paths = linuxChecksumPaths(options);
   if (readFileSync(paths.checksum, "utf8") !== linuxChecksumLine(paths)) {
@@ -80,17 +91,19 @@ if (
         releaseVersion: version
       });
     } else if (
-      ["checksum-linux", "verify-linux"].includes(mode) &&
+      ["checksum-linux", "verify-linux", "size-linux"].includes(mode) &&
       directory &&
       version &&
       process.argv.length === 5
     ) {
       const options = { releaseDirectory: directory, releaseVersion: version };
       if (mode === "checksum-linux") writeLinuxDesktopReleaseChecksum(options);
-      else verifyLinuxDesktopReleaseChecksum(options);
+      else if (mode === "verify-linux")
+        verifyLinuxDesktopReleaseChecksum(options);
+      else verifyLinuxDesktopReleaseSize(options);
     } else
       throw new Error(
-        "Usage: desktop-release-checksum.mjs app|checksum|checksum-linux|verify-linux <release-directory> [version]"
+        "Usage: desktop-release-checksum.mjs app|checksum|checksum-linux|verify-linux|size-linux <release-directory> [version]"
       );
   } catch (error) {
     console.error(error.message);

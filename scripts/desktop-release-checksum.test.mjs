@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import process from "node:process";
 import {
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
+  truncateSync,
   mkdirSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,6 +47,22 @@ test("Linux checksum names and verifies exact AppImage; rejects tampering and am
   writeFileSync(checksum, original);
   writeFileSync(asset, "tampered");
   assert.throws(() => verifyLinuxDesktopReleaseChecksum(options));
+});
+test("Linux provisional size gate accepts 4 GiB and rejects larger or missing images", (t) => {
+  const root = fixture(t);
+  const asset = join(root, "Koed-1.2.3-x86_64.AppImage");
+  const run = () =>
+    spawnSync(
+      process.execPath,
+      ["scripts/desktop-release-checksum.mjs", "size-linux", root, "1.2.3"],
+      { encoding: "utf8" }
+    );
+  assert.notEqual(run().status, 0);
+  writeFileSync(asset, "x");
+  truncateSync(asset, 4_294_967_296);
+  assert.equal(run().status, 0);
+  truncateSync(asset, 4_294_967_297);
+  assert.notEqual(run().status, 0);
 });
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "koed-checksum-"));

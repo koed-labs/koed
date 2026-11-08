@@ -99,6 +99,8 @@ test("Linux release builds and smokes verified runtime and retains exact final a
   const upload = steps.findIndex((s) =>
     s.run?.includes("ensure-release-assets.mjs")
   );
+  const sizeGate = steps.findIndex((s) => s.run?.includes("size-linux"));
+  assert.ok(sizeGate >= 0 && sizeGate < retained);
   assert.ok(retained >= 0 && upload > retained);
   assert.match(steps[retained].with.path, /Koed-.*-x86_64\.AppImage/);
   assert.match(steps[retained].with.path, /koed-desktop-linux-x64\.sha256/);

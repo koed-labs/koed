@@ -823,6 +823,7 @@ jobs:
             const inventory = inventoryDesktopPayload(root, exclusions.packages);
             if (inventory.privacyFiles.length) throw new Error("Linux Desktop contains Privacy-only payload.");
           '
+          node scripts/desktop-release-checksum.mjs size-linux apps/desktop/release "${{ needs.release.outputs.version }}"
           du -h apps/desktop/release/linux-unpacked/resources/* "apps/desktop/release/Koed-${{ needs.release.outputs.version }}-x86_64.AppImage" | tee -a "${GITHUB_STEP_SUMMARY}"
       - name: Retain final Linux Desktop bytes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
