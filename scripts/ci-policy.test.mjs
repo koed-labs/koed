@@ -438,6 +438,17 @@ test("push, manual, scheduled, and Linux dispatch policies are explicit", () => 
   );
 });
 
+test("Linux smoke clears stale output, verifies checksum, and gates direct FUSE launch", () => {
+  const ci = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const job = ci
+    .split("  native-runtime-linux-x64:")[1]
+    .split("  ci-required:")[0];
+  assert.match(
+    job,
+    /rm -rf[^\n]*linux-unpacked[\s\S]*desktop:package:linux:release[\s\S]*verify-linux[\s\S]*--appimage-direct/
+  );
+});
+
 test("Linux smoke is required for app and full validation", () => {
   for (const policy of [
     { run_app_smoke: "true", run_full_validation: "false" },

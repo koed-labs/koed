@@ -119,6 +119,91 @@ test("AppImage extraction uses supplied image and removes owned directory on fai
   }
 });
 
+test("direct AppImage mode rejects root, unavailable FUSE, and conflicting options", () => {
+  assert.throws(() => parseArgs(["--appimage-direct"]), /requires --appimage/);
+  assert.throws(
+    () =>
+      parseArgs([
+        "--appimage",
+        "image",
+        "--appimage-direct",
+        "--missing-assets"
+      ]),
+    /missing-assets/
+  );
+  assert.equal(typeof smokeLib.assertDirectAppImagePrerequisites, "function");
+  assert.throws(
+    () =>
+      smokeLib.assertDirectAppImagePrerequisites({
+        platform: "linux",
+        uid: 0,
+        fuseAvailable: true
+      }),
+    /non-root/
+  );
+  assert.throws(
+    () =>
+      smokeLib.assertDirectAppImagePrerequisites({
+        platform: "linux",
+        uid: 1000,
+        fuseAvailable: false
+      }),
+    /FUSE/
+  );
+  assert.doesNotThrow(() =>
+    smokeLib.assertDirectAppImagePrerequisites({
+      platform: "linux",
+      uid: 1000,
+      fuseAvailable: true
+    })
+  );
+});
+
+test("direct GUI uses exact AppImage and strips extraction fallback environment", () => {
+  assert.equal(typeof smokeApp.smokeGuiExecutable, "function");
+  assert.equal(
+    smokeApp.smokeGuiExecutable({
+      executable: "/tmp/extracted/koed",
+      guiExecutable: "/tmp/Koed.AppImage"
+    }),
+    "/tmp/Koed.AppImage"
+  );
+  const original = process.env.APPIMAGE_EXTRACT_AND_RUN;
+  try {
+    process.env.APPIMAGE_EXTRACT_AND_RUN = "1";
+    assert.equal(
+      createSmokeEnv("/tmp/koed-home").APPIMAGE_EXTRACT_AND_RUN,
+      undefined
+    );
+  } finally {
+    if (original === undefined) delete process.env.APPIMAGE_EXTRACT_AND_RUN;
+    else process.env.APPIMAGE_EXTRACT_AND_RUN = original;
+  }
+});
+
+test("AppImage extraction discards large stdout and bounds error diagnostics", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "appimage-output-"));
+  const image = resolve(root, "image");
+  try {
+    writeFileSync(
+      image,
+      "#!/bin/sh\nyes x | head -c 2000000\nmkdir -p squashfs-root\n"
+    );
+    chmodSync(image, 0o755);
+    await smokeLib.withExtractedAppImage(image, async (path) =>
+      assert.equal(existsSync(path), true)
+    );
+    writeFileSync(image, "#!/bin/sh\nyes x | head -c 2000000 >&2\nexit 1\n");
+    await assert.rejects(
+      smokeLib.withExtractedAppImage(image, async () => {}),
+      (error) =>
+        /extraction failed/.test(error.message) && error.message.length < 20000
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("extracted AppImage layout uses only its own executable and rejects overrides", () => {
   const root = mkdtempSync(resolve(tmpdir(), "appimage-layout-"));
   try {

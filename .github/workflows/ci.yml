@@ -632,6 +632,8 @@ jobs:
         env:
           KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ github.workspace }}/dist/native-runtime/linux-x64/koed-runtime
         run: |
+          rm -rf apps/desktop/release/linux-unpacked
+          rm -f apps/desktop/release/Koed-*.AppImage apps/desktop/release/koed-desktop-linux-x64.sha256
           pnpm build
           pnpm desktop:package:linux:release
 
@@ -643,11 +645,13 @@ jobs:
           set -euo pipefail
           version=$(node -p "require('./apps/desktop/package.json').version")
           image="${GITHUB_WORKSPACE}/apps/desktop/release/Koed-${version}-x86_64.AppImage"
-          test -f "$image"
+          node scripts/desktop-release-checksum.mjs verify-linux apps/desktop/release "$version"
           cd apps/desktop
           xvfb-run -a node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-linux-smoke-diagnostics"
+          node ../../scripts/desktop-release-checksum.mjs verify-linux release "$version"
           xvfb-run -a node scripts/smoke-packaged-desktop-app.mjs --json --appimage "$image" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-linux-smoke-diagnostics"
-          echo 'Direct non-root FUSE AppImage launch remains unverified; release acceptance is blocked.' >> "$GITHUB_STEP_SUMMARY"
+          node ../../scripts/desktop-release-checksum.mjs verify-linux release "$version"
+          xvfb-run -a node scripts/smoke-packaged-desktop-app.mjs --json --appimage "$image" --appimage-direct --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-linux-smoke-diagnostics"
 
       - name: Upload Linux Desktop smoke diagnostics
         if: failure() && (needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true')

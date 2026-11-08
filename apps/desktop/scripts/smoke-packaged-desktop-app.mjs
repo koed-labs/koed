@@ -3,6 +3,8 @@
 import { listPackage } from "@electron/asar";
 import {
   cpSync,
+  accessSync,
+  constants,
   readdirSync,
   existsSync,
   readFileSync,
@@ -26,7 +28,8 @@ import {
   smokeExecutionPlan,
   withSmokeFailureDiagnostics,
   withPackagedNativeAssetsMasked,
-  withExtractedAppImage
+  withExtractedAppImage,
+  assertDirectAppImagePrerequisites
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
 import { verifyDisabledDesktopUpdateNotice } from "./desktop-update-notice-smoke.mjs";
@@ -76,6 +79,10 @@ export const parseArgs = (argv) => {
     }
     if (value === "--skip-renderer-faults") {
       options.skipRendererFaults = true;
+      continue;
+    }
+    if (value === "--appimage-direct") {
+      options.appImageDirect = true;
       continue;
     }
     if (value === "--appimage") {
@@ -137,6 +144,10 @@ export const parseArgs = (argv) => {
   if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs <= 0) {
     throw new Error("--poll-interval-ms must be a positive integer.");
   }
+  if (options.appImageDirect && !options.appImage)
+    throw new Error("--appimage-direct requires --appimage.");
+  if (options.appImageDirect && options.missingAssets)
+    throw new Error("--appimage-direct conflicts with --missing-assets.");
   if (options.appImage && options.build)
     throw new Error("--appimage conflicts with --build.");
   if (options.maskNativeAssets && !options.missingAssets) {
@@ -150,7 +161,8 @@ const usage = `Usage: pnpm desktop:package:smoke -- [options]
 Options:
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
-  --appimage <path>         Extract and smoke this exact trusted AppImage (not FUSE launch)
+  --appimage <path>         Extract and smoke this exact trusted AppImage
+  --appimage-direct         Launch AppImage GUI through FUSE (requires --appimage)
   --missing-assets          Expect packaged native runtime assets to be missing
   --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
   --skip-renderer-faults    Skip renderer fault injection when the local display cannot expose CDP targets
@@ -372,6 +384,10 @@ export const createSmokeEnv = (koedHome, extraEnv = {}) => {
     "KOED_EXTERNAL_PRIVACY_SERVICE_URL"
   ])
     delete env[key];
+  delete env.APPIMAGE_EXTRACT_AND_RUN;
+  delete env.APPIMAGE;
+  delete env.APPDIR;
+  delete env.ARGV0;
   delete env.KOED_REPO_ROOT;
   delete env.KOED_SERVER_CLI;
   delete env.KOED_PACKAGED_RESOURCES_PATH;
@@ -1398,6 +1414,9 @@ const prepareTeamSmokeHome = async (layout, koedHome, options) => {
   await seedTeamSmokeDesktopGeneration(layout, koedHome);
 };
 
+export const smokeGuiExecutable = (layout) =>
+  layout.guiExecutable ?? layout.executable;
+
 const smokeTeamFailClosed = async (layout, options, daemonPids) => {
   const koedHome = createSmokeHome("koed-desktop-team-smoke-");
   let desktop;
@@ -1406,7 +1425,7 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
       async () => {
         await prepareTeamSmokeHome(layout, koedHome, options);
         desktop = launchPackagedDesktop({
-          executable: layout.executable,
+          executable: smokeGuiExecutable(layout),
           env: createSmokeEnv(koedHome, {
             KOED_TEAM_COLLABORATION_ENABLED: "true"
           }),
@@ -1472,8 +1491,22 @@ const run = async (extractedRoot) => {
   if (options.appImage && !extractedRoot) {
     if (process.platform !== "linux")
       throw new Error("AppImage smoke requires Linux.");
+    if (options.appImageDirect) {
+      let fuseAvailable = false;
+      try {
+        accessSync("/dev/fuse", constants.R_OK | constants.W_OK);
+        fuseAvailable = true;
+      } catch {
+        /* Report missing or inaccessible FUSE below. */
+      }
+      assertDirectAppImagePrerequisites({
+        platform: process.platform,
+        uid: process.getuid?.(),
+        fuseAvailable
+      });
+    }
     console.error(
-      `[packaged-smoke] extracted AppImage: ${options.appImage}; direct FUSE launch not tested`
+      `[packaged-smoke] ${options.appImageDirect ? "direct FUSE" : "extracted"} AppImage: ${options.appImage}`
     );
     return withExtractedAppImage(options.appImage, run);
   }
@@ -1487,6 +1520,8 @@ const run = async (extractedRoot) => {
     "package surface verification",
     async () => {
       const packagedLayout = resolvePackagedLayout(extractedRoot);
+      if (options.appImageDirect)
+        packagedLayout.guiExecutable = options.appImage;
       assertPackagedJsSurface(packagedLayout);
       return packagedLayout;
     }
@@ -1552,7 +1587,7 @@ const run = async (extractedRoot) => {
           if (validationBuild.status !== 0)
             throw new Error("Renderer validation build failed");
           return smokePackagedRendererFaults({
-            executable: layout.executable,
+            executable: smokeGuiExecutable(layout),
             env: createSmokeEnv(koedHome, {
               ELECTRON_RUN_AS_NODE: undefined
             }),
@@ -1560,7 +1595,7 @@ const run = async (extractedRoot) => {
           });
         });
     desktop = launchPackagedDesktop({
-      executable: layout.executable,
+      executable: smokeGuiExecutable(layout),
       env: createSmokeEnv(koedHome),
       koedHome,
       timeoutMs: options.timeoutMs

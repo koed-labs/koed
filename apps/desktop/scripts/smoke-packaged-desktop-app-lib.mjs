@@ -13,7 +13,7 @@ import {
   clearTimeout as clearTimer
 } from "node:timers";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 
 // Authenticated lifecycle selection rejects symlink ancestors (including /var and /tmp on macOS).
@@ -24,17 +24,45 @@ export const withExtractedAppImage = async (image, work) => {
   if (!existsSync(image)) throw new Error(`AppImage is missing at ${image}`);
   const home = createSmokeHome("koed-appimage-extract-");
   try {
-    const result = spawnSync(image, ["--appimage-extract"], {
-      cwd: home,
-      encoding: "utf8"
+    await new Promise((resolveExtraction, rejectExtraction) => {
+      const child = spawn(image, ["--appimage-extract"], {
+        cwd: home,
+        stdio: ["ignore", "ignore", "pipe"]
+      });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr = (stderr + chunk.toString()).slice(-16_384);
+      });
+      child.once("error", rejectExtraction);
+      child.once("close", (code, signal) => {
+        if (code === 0) resolveExtraction();
+        else
+          rejectExtraction(
+            new Error(
+              `AppImage extraction failed (${signal ?? code}): ${stderr}`
+            )
+          );
+      });
     });
-    if (result.error) throw result.error;
-    if (result.status !== 0)
-      throw new Error(`AppImage extraction failed: ${result.stderr}`);
     return await work(resolve(home, "squashfs-root"));
   } finally {
     removeSmokeHome(home);
   }
+};
+
+export const assertDirectAppImagePrerequisites = ({
+  platform,
+  uid,
+  fuseAvailable
+}) => {
+  if (platform !== "linux")
+    throw new Error("Direct AppImage smoke requires Linux.");
+  if (!Number.isInteger(uid) || uid === 0)
+    throw new Error("Direct AppImage smoke requires a non-root user.");
+  if (!fuseAvailable)
+    throw new Error(
+      "Direct AppImage smoke requires accessible FUSE at /dev/fuse."
+    );
 };
 
 export const withSmokeFailureDiagnostics = async (work, preserve) => {
