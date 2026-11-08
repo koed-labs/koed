@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import process from "node:process";
 import {
+  chmodSync,
+  cpSync,
   mkdtempSync,
   mkdirSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
   readFileSync
 } from "node:fs";
@@ -150,3 +154,69 @@ test(
     assert.match(result.stderr, /validation failed/i);
   }
 );
+
+test("release guard validates native source and rejects a differing staged copy", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "koed-linux-release-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, "source");
+  const staged = join(root, "staged");
+  for (const dir of [source, staged]) {
+    mkdirSync(join(dir, "postgres/bin"), { recursive: true });
+    writeFileSync(join(dir, "postgres/bin/postgres"), "native", {
+      mode: 0o755
+    });
+    symlinkSync("bin/postgres", join(dir, "postgres/link"));
+  }
+  writeFileSync(
+    join(staged, "desktop-bundle-manifest.json"),
+    JSON.stringify({ target: { platform: "linux", architecture: "x64" } })
+  );
+  mkdirSync(join(staged, "node_modules/debug/src"), { recursive: true });
+  const module = await import("./validate-linux-release.mjs");
+  const validated = [];
+  const options = {
+    runtimeRoot: staged,
+    platform: "linux",
+    arch: "x64",
+    nativeRuntimeSource: source,
+    runValidator: (_command, args) => {
+      validated.push(realpathSync(args[2]));
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          packagedProvider: { skipped: false, ok: true }
+        }),
+        stderr: ""
+      };
+    }
+  };
+  assert.doesNotThrow(() => module.validateLinuxRelease(options));
+  assert.deepEqual(validated, [realpathSync(source)]);
+  for (const [damage, pattern] of [
+    [
+      () => writeFileSync(join(staged, "postgres/bin/postgres"), "evil"),
+      /file differs/
+    ],
+    [
+      () => chmodSync(join(staged, "postgres/bin/postgres"), 0o644),
+      /file differs/
+    ],
+    [() => rmSync(join(staged, "postgres/link")), /missing/],
+    [
+      () => {
+        rmSync(join(staged, "postgres/link"));
+        symlinkSync("../elsewhere", join(staged, "postgres/link"));
+      },
+      /symlink differs/
+    ]
+  ]) {
+    rmSync(join(staged, "postgres"), { recursive: true, force: true });
+    cpSync(join(source, "postgres"), join(staged, "postgres"), {
+      recursive: true,
+      verbatimSymlinks: true
+    });
+    damage();
+    assert.throws(() => module.validateLinuxRelease(options), pattern);
+  }
+});

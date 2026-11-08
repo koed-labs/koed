@@ -1,11 +1,82 @@
 #!/usr/bin/env node
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
 import console from "node:console";
+
+const fileSha256 = (path) => {
+  const hash = createHash("sha256");
+  const chunk = Buffer.allocUnsafe(1024 * 1024);
+  const fd = openSync(path, "r");
+  try {
+    for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0;)
+      hash.update(chunk.subarray(0, read));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
+};
+
+// Desktop staging copies the validated native runtime verbatim into its own
+// runtime, alongside the bundled server node_modules. Require every source
+// entry to be present unchanged, so the AppImage cannot carry a native runtime
+// that differs from the validated one.
+export function assertStagedNativeRuntimeMatches({ source, staged }) {
+  const mismatches = [];
+  const visit = (relative) => {
+    const from = lstatSync(join(source, relative));
+    let to;
+    try {
+      to = lstatSync(join(staged, relative));
+    } catch {
+      mismatches.push(`missing: ${relative}`);
+      return;
+    }
+    if (from.isSymbolicLink()) {
+      if (
+        !to.isSymbolicLink() ||
+        readlinkSync(join(source, relative)) !==
+          readlinkSync(join(staged, relative))
+      )
+        mismatches.push(`symlink differs: ${relative}`);
+    } else if (from.isDirectory()) {
+      if (!to.isDirectory()) mismatches.push(`not a directory: ${relative}`);
+      else
+        for (const name of readdirSync(join(source, relative)).sort())
+          visit(join(relative, name));
+    } else if (from.isFile()) {
+      if (
+        !to.isFile() ||
+        (from.mode & 0o777) !== (to.mode & 0o777) ||
+        from.size !== to.size ||
+        fileSha256(join(source, relative)) !==
+          fileSha256(join(staged, relative))
+      )
+        mismatches.push(`file differs: ${relative}`);
+    } else mismatches.push(`unsupported entry: ${relative}`);
+  };
+  for (const name of readdirSync(source).sort()) visit(name);
+  if (mismatches.length)
+    throw new Error(
+      `Staged Desktop runtime differs from validated native runtime:\n${mismatches.slice(0, 20).join("\n")}`
+    );
+}
 
 export function validateLinuxRelease({
   runtimeRoot: root,
@@ -36,10 +107,13 @@ export function validateLinuxRelease({
     import.meta.dirname,
     "../../../scripts/native-runtime/validate-runtime.mjs"
   );
+  // Validate the native runtime source itself; Desktop's staged runtime also
+  // holds bundled JS node_modules that the native content policy does not cover.
+  const source = resolve(nativeRuntimeSource);
   const resources = mkdtempSync(resolve(tmpdir(), "koed-linux-release-"));
   try {
     const staged = resolve(resources, "koed-runtime");
-    symlinkSync(runtimeRoot, staged, "dir");
+    symlinkSync(source, staged, "dir");
     const result = runValidator(
       process.execPath,
       [validator, "--runtime-root", staged, "--platform", "linux", "--json"],
@@ -62,6 +136,7 @@ export function validateLinuxRelease({
         `Linux native runtime validation failed: ${result.stdout}`
       );
     }
+    assertStagedNativeRuntimeMatches({ source, staged: runtimeRoot });
   } finally {
     rmSync(resources, { recursive: true, force: true });
   }
