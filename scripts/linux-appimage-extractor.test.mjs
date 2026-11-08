@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -32,6 +35,16 @@ function fixture(kind) {
     writeFileSync(resolve(root, "resources/app.asar"), Buffer.alloc(1025));
   if (kind === "fifo")
     execFileSync("mkfifo", [resolve(root, "resources/app.asar")]);
+  if (kind === "hardlink") {
+    writeFileSync(resolve(root, "resources/app.asar"), "asar bytes\0");
+    linkSync(resolve(root, "resources/app.asar"), resolve(root, "other"));
+  }
+  if (kind === "parent-symlink") {
+    rmSync(resolve(root, "resources"), { recursive: true });
+    mkdirSync(resolve(root, "elsewhere"));
+    writeFileSync(resolve(root, "elsewhere/app.asar"), "asar bytes\0");
+    symlinkSync("elsewhere", resolve(root, "resources"));
+  }
   execFileSync("docker", [
     "run",
     "--rm",
@@ -83,7 +96,105 @@ test("rejects missing or unsafe trusted image references", () => {
   }
 });
 
-for (const kind of ["regular", "missing", "symlink", "fifo", "oversize"]) {
+test("requires digest matching the candidate snapshot", integration, () => {
+  const { dir, candidate } = fixture("regular");
+  try {
+    for (const expectedSha256 of [undefined, "0".repeat(64)]) {
+      assert.throws(
+        () =>
+          extractAppImageAsar({ imagePath: candidate, image, expectedSha256 }),
+        /digest/i
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "uses digest-bound snapshot when original changes before Docker starts",
+  integration,
+  () => {
+    const { dir, candidate } = fixture("regular");
+    const digest = createHash("sha256")
+      .update(readFileSync(candidate))
+      .digest("hex");
+    const docker = execFileSync("which", ["docker"], {
+      encoding: "utf8"
+    }).trim();
+    const bin = resolve(dir, "bin");
+    mkdirSync(bin);
+    const wrapper = resolve(bin, "docker");
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nif [ "$1" = run ]; then printf corrupted > "${candidate}"; fi\nexec "${docker}" "$@"\n`
+    );
+    chmodSync(wrapper, 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      assert.throws(
+        () =>
+          extractAppImageAsar({
+            imagePath: candidate,
+            image,
+            expectedSha256: digest
+          }),
+        /cannot verify SquashFS directory uniqueness/
+      );
+      assert.equal(readFileSync(candidate, "utf8"), "corrupted");
+    } finally {
+      process.env.PATH = path;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+);
+
+test("reports Docker cleanup failure", integration, () => {
+  const { dir, candidate } = fixture("regular");
+  const docker = execFileSync("which", ["docker"], { encoding: "utf8" }).trim();
+  const bin = resolve(dir, "bin");
+  mkdirSync(bin);
+  const wrapper = resolve(bin, "docker");
+  writeFileSync(
+    wrapper,
+    `#!/bin/sh\nif [ "$1" = rm ]; then "${docker}" "$@" >/dev/null 2>&1; exit 42; fi\nexec "${docker}" "$@"\n`
+  );
+  chmodSync(wrapper, 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    assert.throws(
+      () =>
+        extractAppImageAsar({
+          imagePath: candidate,
+          image,
+          expectedSha256: createHash("sha256")
+            .update(readFileSync(candidate))
+            .digest("hex")
+        }),
+      (error) =>
+        error instanceof AggregateError &&
+        /cleanup/i.test(error.message) &&
+        error.errors.some((cause) =>
+          /cannot verify SquashFS directory uniqueness/.test(cause.message)
+        )
+    );
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const kind of [
+  "regular",
+  "missing",
+  "symlink",
+  "fifo",
+  "oversize",
+  "hardlink",
+  "parent-symlink"
+]) {
   test(`static extraction handles ${kind} ASAR`, integration, () => {
     const { dir, candidate } = fixture(kind);
     try {
@@ -91,10 +202,13 @@ for (const kind of ["regular", "missing", "symlink", "fifo", "oversize"]) {
         extractAppImageAsar({
           imagePath: candidate,
           image,
+          expectedSha256: createHash("sha256")
+            .update(readFileSync(candidate))
+            .digest("hex"),
           maxAsarBytes: 1024
         });
-      if (kind === "regular")
-        assert.deepEqual(run(), Buffer.from("asar bytes\0"));
+      if (kind === "regular" || kind === "hardlink")
+        assert.throws(run, /cannot verify SquashFS directory uniqueness/);
       else assert.throws(run);
     } finally {
       rmSync(dir, { recursive: true, force: true });
