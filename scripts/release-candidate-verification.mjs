@@ -94,6 +94,21 @@ export const validateReviewedBuildIdentity = (expected) => {
       expected.desktop.asarEntry !== "Koed.app/Contents/Resources/app.asar")
   )
     fail("Invalid protected Desktop identity.");
+  if (expected.linuxDesktop !== undefined) {
+    const linux = expected.linuxDesktop;
+    if (
+      !linux ||
+      linux.asset !== `Koed-${expected.version}-x86_64.AppImage` ||
+      linux.checksum !== "koed-desktop-linux-x64.sha256" ||
+      linux.asarEntry !== "resources/app.asar" ||
+      !expected.assets.some((asset) => asset.name === linux.asset) ||
+      !expected.assets.some((asset) => asset.name === linux.checksum) ||
+      expected.artifacts.filter(
+        (artifact) => artifact.name === "koed-desktop-linux-final-assets"
+      ).length !== 1
+    )
+      fail("Invalid protected Linux Desktop identity.");
+  }
   return expected;
 };
 

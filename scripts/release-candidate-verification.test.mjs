@@ -121,6 +121,63 @@ test("pin-only candidate verifies real npm/Desktop inventories without executing
   }
 });
 
+test("protected Linux Desktop identity must bind exact assets and retained artifact", async () => {
+  const f = await setup();
+  try {
+    const image = "Koed-1.2.3-x86_64.AppImage";
+    const checksum = "koed-desktop-linux-x64.sha256";
+    f.expected.linuxDesktop = {
+      asset: image,
+      checksum,
+      asarEntry: "resources/app.asar"
+    };
+    assert.throws(
+      () => candidate.validateReviewedBuildIdentity(f.expected),
+      /Linux Desktop identity/
+    );
+    f.expected.assets.push(
+      { name: image, sha256: "a".repeat(64) },
+      { name: checksum, sha256: "b".repeat(64) }
+    );
+    assert.throws(
+      () => candidate.validateReviewedBuildIdentity(f.expected),
+      /Linux Desktop identity/
+    );
+    f.expected.artifacts.push({
+      id: 4,
+      name: "koed-desktop-linux-final-assets",
+      digest: `sha256:${"c".repeat(64)}`
+    });
+    assert.doesNotThrow(() =>
+      candidate.validateReviewedBuildIdentity(f.expected)
+    );
+    for (const [field, value] of [
+      ["asset", "Koed-1.2.4-x86_64.AppImage"],
+      ["checksum", "other.sha256"],
+      ["asarEntry", "../resources/app.asar"]
+    ]) {
+      const original = f.expected.linuxDesktop[field];
+      f.expected.linuxDesktop[field] = value;
+      assert.throws(
+        () => candidate.validateReviewedBuildIdentity(f.expected),
+        /Linux Desktop identity/
+      );
+      f.expected.linuxDesktop[field] = original;
+    }
+    f.expected.artifacts.push({
+      id: 5,
+      name: "koed-desktop-linux-final-assets",
+      digest: `sha256:${"d".repeat(64)}`
+    });
+    assert.throws(
+      () => candidate.validateReviewedBuildIdentity(f.expected),
+      /Linux Desktop identity/
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("candidate with Linux Desktop identity fails closed until independent inspection is available", async () => {
   const f = await setup();
   try {
@@ -131,7 +188,7 @@ test("candidate with Linux Desktop identity fails closed until independent inspe
     };
     await assert.rejects(
       candidate.verifyReleaseCandidate(f.input, f.readers),
-      /Linux Desktop inspection unavailable/
+      /Invalid protected Linux Desktop identity/
     );
   } finally {
     f.cleanup();

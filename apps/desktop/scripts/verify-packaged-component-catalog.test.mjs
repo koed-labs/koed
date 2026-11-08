@@ -13,7 +13,10 @@ import process from "node:process";
 import { test } from "node:test";
 import { requiredComponentIdentities } from "../../../scripts/component-manifest-catalog.mjs";
 import afterPack from "./after-pack.mjs";
-import { verifyPackagedDesktopCatalog } from "./verify-packaged-component-catalog.mjs";
+import {
+  verifyPackagedDesktopCatalog,
+  verifyPackagedAsarCatalog
+} from "./verify-packaged-component-catalog.mjs";
 import { createAsarFixture } from "../../../scripts/test-utils/create-asar-fixture.mjs";
 
 test("Desktop inspects trusted asar catalog, not catalog-less runtime copy", async () => {
@@ -57,6 +60,11 @@ test("Desktop inspects trusted asar catalog, not catalog-less runtime copy", asy
       resolve(resources, "app.asar")
     );
     verifyPackagedDesktopCatalog({ appPath, catalogPath, version: "1.2.3" });
+    verifyPackagedAsarCatalog({
+      asarPath: resolve(resources, "app.asar"),
+      catalogPath,
+      version: "1.2.3"
+    });
     for (const decoy of [
       '// "./component-manifest-catalog-data.js"\nexport const store = null;',
       'import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js"; export const store = null;'

@@ -7,8 +7,8 @@ import { verifyPackagedControlPlaneCatalog } from "../../../scripts/verify-packa
 
 import { assertPackagedCatalogConsumer } from "../../../scripts/static-catalog-binding.mjs";
 
-export const verifyPackagedDesktopCatalog = ({
-  appPath,
+export const verifyPackagedAsarCatalog = ({
+  asarPath,
   catalogPath,
   version
 }) => {
@@ -16,7 +16,6 @@ export const verifyPackagedDesktopCatalog = ({
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(resolve(scratch, "desktop-catalog-inspection-"));
   try {
-    const asarPath = resolve(appPath, "Contents/Resources/app.asar");
     uncache(asarPath);
     const prefix = "node_modules/@koed-labs/server/dist/";
     const store = extractFile(asarPath, `${prefix}component-store.js`).toString(
@@ -37,6 +36,17 @@ export const verifyPackagedDesktopCatalog = ({
     rmSync(root, { recursive: true, force: true });
   }
 };
+
+export const verifyPackagedDesktopCatalog = ({
+  appPath,
+  catalogPath,
+  version
+}) =>
+  verifyPackagedAsarCatalog({
+    asarPath: resolve(appPath, "Contents/Resources/app.asar"),
+    catalogPath,
+    version
+  });
 
 if (
   process.argv[1] &&
