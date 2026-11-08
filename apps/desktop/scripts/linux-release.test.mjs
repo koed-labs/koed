@@ -26,6 +26,7 @@ test("Linux release config targets x64 AppImage with explicit artifact name", ()
   );
   assert.ok(config.linux.target.includes("AppImage"));
   assert.equal(config.linux.artifactName, "Koed-${version}-${arch}.${ext}");
+  assert.equal(config.linux.executableName, "koed");
   const pkg = JSON.parse(readFileSync(join(desktop, "package.json"), "utf8"));
   assert.match(pkg.scripts["package:linux:release"], /--linux AppImage --x64/);
 });
