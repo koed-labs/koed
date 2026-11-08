@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   truncateSync,
@@ -380,6 +381,105 @@ describe("generation lifecycle", () => {
       ).rejects.toThrow("Desktop bundle generation identity mismatch");
     }
   );
+
+  it("keeps an AppImage privacy generation across per-launch remounts", async () => {
+    const paths = pathsForTest();
+    const productVersion = "0.8.1";
+    const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
+    const fixture = await componentFixture(
+      { component: "privacy", productVersion, target },
+      undefined,
+      { bytes: goldenComponentArchive }
+    );
+    temporaryRoots.push(fixture.root);
+    fixtureRuntime.value = fixture.input.runtime;
+    // The AppImage runtime mounts the same image at a new path per launch.
+    const image = resolve(paths.koedHome, "Koed-0.8.1-x86_64.AppImage");
+    writeFileSync(image, "image");
+    const mount = (name: string) => {
+      const appDir = resolve(paths.koedHome, name);
+      const runtimeRoot = resolve(appDir, "resources", "koed-runtime");
+      mkdirSync(runtimeRoot, { recursive: true });
+      writeFileSync(
+        resolve(runtimeRoot, "desktop-bundle-manifest.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          productVersion,
+          component: "base",
+          target,
+          files: []
+        })
+      );
+      vi.stubEnv("APPIMAGE", image);
+      vi.stubEnv("APPDIR", appDir);
+      return verifyDesktopRuntimeBundle(resolve(appDir, "resources"));
+    };
+    try {
+      const first = mount(".mount_KoedAAAA");
+      expect(first.installationPath).toBe(realpathSync(image));
+      const privacy = await stageComponent(
+        paths,
+        {
+          kind: "offline",
+          archivePath: fixture.input.archivePath,
+          manifestPath: metadataFile(paths, fixture.input.manifestBytes)
+        },
+        {
+          expectedComponent: "privacy",
+          expectedVersion: productVersion,
+          target,
+          runtime: fixture.input.runtime
+        }
+      );
+      const owner = resolveDesktopRuntimeOwner(first, paths.koedHome);
+      const generation = await stageDesktopPrivacyGeneration(paths, {
+        resourcesPath: first.resourcesPath,
+        bundleDigest: first.bundleDigest,
+        productVersion,
+        privacy,
+        owner
+      });
+      await activateGeneration(paths, generation.id, owner);
+      const firstPin = await pinDesktopBundleGenerationForStart(paths, first);
+      expect(firstPin.generation.id).toBe(generation.id);
+      await firstPin.release();
+
+      // Relaunch: the previous mount is gone and resources live elsewhere.
+      rmSync(resolve(paths.koedHome, ".mount_KoedAAAA"), {
+        recursive: true,
+        force: true
+      });
+      const second = mount(".mount_KoedBBBB");
+      expect(second.resourcesPath).not.toBe(first.resourcesPath);
+      expect(resolveDesktopRuntimeOwner(second, paths.koedHome)).toEqual(owner);
+      expect(
+        readCurrentDesktopGenerationOrderingEvidence(paths, second).id
+      ).toBe(generation.id);
+      expect((await readCurrentGeneration(paths)).base.root).toBe(
+        resolve(second.resourcesPath, "koed-runtime")
+      );
+      const secondPin = await pinDesktopBundleGenerationForStart(paths, second);
+      expect(secondPin.generation.id).toBe(generation.id);
+      expect(secondPin.generation.privacy?.kind).toBe(
+        "manifest-pinned-component"
+      );
+      await secondPin.release();
+
+      // A different AppImage is a different installation.
+      const other = resolve(paths.koedHome, "Other.AppImage");
+      writeFileSync(other, "other");
+      vi.stubEnv("APPIMAGE", other);
+      const foreign = verifyDesktopRuntimeBundle(second.resourcesPath);
+      expect(() =>
+        readCurrentDesktopGenerationOrderingEvidence(paths, foreign)
+      ).toThrow("runtime owner mismatch");
+      await expect(readCurrentGeneration(paths)).rejects.toThrow(
+        "not the running AppImage"
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("keeps active manifest-pinned privacy generation when pinning unchanged Desktop bundle", async () => {
     const paths = pathsForTest();

@@ -11,6 +11,7 @@ import {
   realpathSync
 } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import process from "node:process";
 import type { RuntimeOwner } from "./component-contract.js";
 
 export interface DesktopRuntimeManifest {
@@ -29,7 +30,15 @@ export interface DesktopRuntimeManifest {
 }
 
 export interface DesktopRuntimeCapability {
+  /** Where the verified bundle currently lives; may be a per-launch mount. */
   readonly resourcesPath: string;
+  /**
+   * Stable identity of the installation across launches. Equals
+   * resourcesPath except under an AppImage, whose resources are mounted at a
+   * new random path on every launch; there it is the AppImage file itself.
+   * Ownership and persisted generation records use this, never the mount.
+   */
+  readonly installationPath: string;
   readonly productVersion: string;
   readonly bundleDigest: string;
   readonly manifest: DesktopRuntimeManifest;
@@ -83,8 +92,71 @@ const regularFile = (path: string): Buffer => {
   }
 };
 
+const isWithin = (root: string, path: string): boolean => {
+  const rel = relative(root, path);
+  return (
+    rel === "" ||
+    (!!rel && !rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel))
+  );
+};
+
+// The AppImage runtime sets APPIMAGE (the image file) and APPDIR (its mount).
+// Only resources verified inside that mount adopt the image as their identity;
+// bundle contents are still verified at the actual mounted path every time.
+export function resolveDesktopInstallationPath(
+  actualResources: string,
+  environment: NodeJS.ProcessEnv = process.env
+): string {
+  const image = environment.APPIMAGE?.trim();
+  const mount = environment.APPDIR?.trim();
+  if (!image || !mount || !isAbsolute(image) || !isAbsolute(mount))
+    return actualResources;
+  let actualMount: string;
+  let actualImage: string;
+  try {
+    actualMount = realpathSync.native(mount);
+    actualImage = realpathSync.native(image);
+  } catch {
+    return actualResources;
+  }
+  if (
+    !isWithin(actualMount, actualResources) ||
+    !lstatSync(actualImage).isFile()
+  )
+    return actualResources;
+  return actualImage;
+}
+
+/**
+ * Resolve a persisted installation path to the resources of the running
+ * installation. Directories are used as-is; an AppImage identity resolves only
+ * for the AppImage this process was launched from, to its current mount.
+ */
+export function resolveDesktopInstallationResources(
+  installationPath: string,
+  environment: NodeJS.ProcessEnv = process.env
+): string {
+  if (!isAbsolute(installationPath))
+    throw new Error("Desktop installation path is invalid");
+  if (lstatSync(installationPath, { throwIfNoEntry: false })?.isDirectory())
+    return installationPath;
+  const mount = environment.APPDIR?.trim();
+  if (!mount || !isAbsolute(mount))
+    throw new Error("Desktop installation is not the running AppImage");
+  const resources = resolve(realpathSync.native(mount), "resources");
+  if (
+    resolveDesktopInstallationPath(
+      realpathSync.native(resources),
+      environment
+    ) !== installationPath
+  )
+    throw new Error("Desktop installation is not the running AppImage");
+  return resources;
+}
+
 export function verifyDesktopRuntimeBundle(
-  resourcesPath: string
+  resourcesPath: string,
+  environment: NodeJS.ProcessEnv = process.env
 ): DesktopRuntimeCapability {
   const actualResources = realpathSync.native(resolve(resourcesPath));
   const runtimeRoot = resolve(actualResources, "koed-runtime");
@@ -159,6 +231,10 @@ export function verifyDesktopRuntimeBundle(
   });
   const capability = Object.freeze({
     resourcesPath: actualResources,
+    installationPath: resolveDesktopInstallationPath(
+      actualResources,
+      environment
+    ),
     productVersion: record.productVersion,
     bundleDigest: hash(canonicalJson(record)),
     manifest: verifiedManifest,
@@ -197,5 +273,5 @@ export function resolveDesktopRuntimeOwner(
   if (!validateDesktopRuntimeCapability(capability)) {
     throw new Error("validated private Desktop runtime capability is required");
   }
-  return deriveDesktopRuntimeOwner(koedHome, capability.resourcesPath);
+  return deriveDesktopRuntimeOwner(koedHome, capability.installationPath);
 }

@@ -33,7 +33,10 @@ import type { KoedServerPaths } from "./paths.js";
 import { acquireDirectoryLock } from "./directory-lock.js";
 import { extractVerifiedPackageArchive } from "./package-runtime.js";
 import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
-import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
+import {
+  resolveDesktopInstallationResources,
+  verifyDesktopRuntimeBundle
+} from "./desktop-runtime-capability.js";
 import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js";
 import {
   lookupManifestPin,
@@ -872,8 +875,13 @@ const readDesktopPrivacyGeneration = async (
   )
     throw new Error("stored Desktop privacy generation record is invalid");
   validateOwner(record.owner);
-  const bundle = verifyDesktopRuntimeBundle(record.resourcesPath);
+  // Records hold the stable installation path; verify the bundle where that
+  // installation currently lives (an AppImage remounts on every launch).
+  const bundle = verifyDesktopRuntimeBundle(
+    resolveDesktopInstallationResources(record.resourcesPath)
+  );
   if (
+    bundle.installationPath !== record.resourcesPath ||
     bundle.productVersion !== record.productVersion ||
     bundle.bundleDigest !== record.bundleDigest
   )
@@ -903,7 +911,7 @@ const readDesktopPrivacyGeneration = async (
     kind: "desktop-bundle-with-privacy",
     productVersion: bundle.productVersion,
     owner: record.owner,
-    resourcesPath: bundle.resourcesPath,
+    resourcesPath: bundle.installationPath,
     bundleDigest: bundle.bundleDigest,
     privacy: {
       root: relative(paths.koedHome, privacy.root),
@@ -962,7 +970,7 @@ export async function stageDesktopPrivacyGeneration(
     kind: "desktop-bundle-with-privacy",
     productVersion: bundle.productVersion,
     owner: input.owner,
-    resourcesPath: bundle.resourcesPath,
+    resourcesPath: bundle.installationPath,
     bundleDigest: bundle.bundleDigest,
     privacy: {
       root: relative(paths.koedHome, privacy.root),

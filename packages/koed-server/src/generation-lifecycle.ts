@@ -321,7 +321,8 @@ const persistDesktopBundleRecord = (
     productVersion: generation.productVersion,
     owner: generation.owner,
     bundleDigest: capability.bundleDigest,
-    resourcesPath: capability.resourcesPath
+    // Stable installation identity; see DesktopRuntimeCapability.
+    resourcesPath: capability.installationPath
   };
   try {
     writeFileSync(path, `${JSON.stringify(record)}\n`, {
@@ -365,7 +366,7 @@ const readDesktopBundleGenerationById = async (
     record.id !== generation.id ||
     record.productVersion !== generation.productVersion ||
     record.bundleDigest !== capability.bundleDigest ||
-    record.resourcesPath !== capability.resourcesPath ||
+    record.resourcesPath !== capability.installationPath ||
     !isRecord(record.owner) ||
     record.owner.kind !== generation.owner.kind ||
     record.owner.installationId !== generation.owner.installationId
@@ -575,7 +576,7 @@ export function readCurrentDesktopGenerationOrderingEvidence(
     readGenerationOrderingEvidence(paths, id);
   if (
     evidence.kind === "desktop-generation-ordering-evidence" &&
-    evidence.resourcesPath !== capability.resourcesPath
+    evidence.resourcesPath !== capability.installationPath
   )
     throw new Error("runtime owner mismatch");
   assertOwner(evidence, resolveDesktopRuntimeOwner(capability, paths.koedHome));

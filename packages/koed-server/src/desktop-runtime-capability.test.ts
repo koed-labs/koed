@@ -2,6 +2,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -10,6 +11,7 @@ import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  resolveDesktopInstallationResources,
   validateDesktopRuntimeCapability,
   verifyDesktopRuntimeBundle
 } from "./desktop-runtime-capability.js";
@@ -117,6 +119,71 @@ describe("private Desktop runtime bundle capability", () => {
     writeFileSync(resolve(resourcesPath, "koed-runtime/asset.bin"), "tampered");
     expect(() => verifyDesktopRuntimeBundle(resourcesPath)).toThrow(
       "Desktop runtime bundle file digest mismatch"
+    );
+  });
+});
+
+describe("Desktop installation identity", () => {
+  const appImage = () => {
+    const root = realpathSync(temp());
+    const image = resolve(root, "Koed.AppImage");
+    writeFileSync(image, "image");
+    const appDir = resolve(root, ".mount_KoedXXXX");
+    const resources = resolve(appDir, "resources");
+    bundle(resources);
+    return { root, image, appDir, resources };
+  };
+
+  it("uses the resources path outside an AppImage", () => {
+    const resourcesPath = realpathSync(temp());
+    bundle(resourcesPath);
+    expect(verifyDesktopRuntimeBundle(resourcesPath, {}).installationPath).toBe(
+      resourcesPath
+    );
+    expect(resolveDesktopInstallationResources(resourcesPath, {})).toBe(
+      resourcesPath
+    );
+  });
+
+  it("uses the AppImage file only for resources inside its own mount", () => {
+    const { root, image, appDir, resources } = appImage();
+    const env = { APPIMAGE: image, APPDIR: appDir };
+    expect(verifyDesktopRuntimeBundle(resources, env).installationPath).toBe(
+      image
+    );
+    expect(resolveDesktopInstallationResources(image, env)).toBe(resources);
+    const outside = resolve(root, "elsewhere");
+    bundle(outside);
+    expect(verifyDesktopRuntimeBundle(outside, env).installationPath).toBe(
+      outside
+    );
+    for (const partial of [
+      { APPIMAGE: image },
+      { APPDIR: appDir },
+      { APPIMAGE: "relative.AppImage", APPDIR: appDir },
+      { APPIMAGE: appDir, APPDIR: appDir },
+      { APPIMAGE: resolve(root, "missing.AppImage"), APPDIR: appDir }
+    ])
+      expect(
+        verifyDesktopRuntimeBundle(resources, partial).installationPath
+      ).toBe(resources);
+  });
+
+  it("resolves an AppImage identity only for the running AppImage", () => {
+    const { root, image, appDir } = appImage();
+    const other = resolve(root, "Other.AppImage");
+    writeFileSync(other, "other");
+    expect(() =>
+      resolveDesktopInstallationResources(image, {
+        APPIMAGE: other,
+        APPDIR: appDir
+      })
+    ).toThrow("not the running AppImage");
+    expect(() => resolveDesktopInstallationResources(image, {})).toThrow(
+      "not the running AppImage"
+    );
+    expect(() => resolveDesktopInstallationResources("relative", {})).toThrow(
+      "installation path is invalid"
     );
   });
 });
