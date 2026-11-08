@@ -22,6 +22,7 @@ typedef struct { sqfs_inode_generic_t *inode; unsigned depth; int resources; } p
 typedef struct {
     sqfs_meta_reader_t *dirs, *inodes;
     const sqfs_super_t *super;
+    sqfs_u64 dir_end;
     pending *queue;
     unsigned count, next, entries, inode_count;
     unsigned char *seen, *ref_used;
@@ -55,11 +56,17 @@ static int scan(walk *w, pending dir) {
     sqfs_u32 inum;
     sqfs_u64 ref;
     char previous[257] = "";
-    int rc;
     if (sqfs_readdir_state_init(&state, w->super, dir.inode) ||
         state.init.block < w->super->directory_table_start ||
-        state.init.block >= w->super->bytes_used) return -1;
-    while ((rc = sqfs_meta_reader_readdir(w->dirs, &state, &entry, &inum, &ref)) == 0) {
+        state.init.block >= w->dir_end || state.init.size < 3) return -1;
+    size_t remaining = state.init.size - 3;
+    while (remaining) {
+        size_t header = state.entries == 0 ? 12 : 0;
+        if (remaining < header + 9 ||
+            sqfs_meta_reader_readdir(w->dirs, &state, &entry, &inum, &ref) != 0) goto bad;
+        size_t used = header + 8 + (size_t)entry->size + 1;
+        if (used > remaining) goto bad;
+        remaining -= used;
         sqfs_inode_generic_t *inode = NULL;
         size_t n = (size_t)entry->size + 1;
         if (++w->entries > MAX_ENTRIES || n > 256 || memchr(entry->name, 0, n) ||
@@ -94,10 +101,41 @@ static int scan(walk *w, pending dir) {
         } else sqfs_free(inode);
         sqfs_free(entry); entry = NULL;
     }
-    return rc > 0 ? 0 : -1;
+    return state.entries == 0 ? 0 : -1;
 bad:
     sqfs_free(entry);
     return -1;
+}
+
+/* Indexed tables store pointers to metadata blocks preceding their indexes. */
+static int table_boundary(sqfs_file_t *file, const sqfs_super_t *s,
+                          sqfs_u64 index, sqfs_u64 bytes, sqfs_u64 *end) {
+    sqfs_u64 blocks = (bytes + 8191) / 8192;
+    if (!blocks || blocks > 100000 || index < s->directory_table_start ||
+        index > s->bytes_used || blocks > (s->bytes_used - index) / 8) return -1;
+    for (sqfs_u64 i = 0; i < blocks; i++) {
+        unsigned char raw[8];
+        sqfs_u64 ptr = 0;
+        if (file->read_at(file, index + i * 8, raw, sizeof(raw))) return -1;
+        for (int j = 7; j >= 0; j--) ptr = (ptr << 8) | raw[j];
+        if (ptr <= s->directory_table_start || ptr >= index) return -1;
+        if (ptr < *end) *end = ptr;
+    }
+    return 0;
+}
+
+static int directory_end(sqfs_file_t *file, const sqfs_super_t *s, sqfs_u64 *end) {
+    *end = s->bytes_used;
+    if (!s->id_count || table_boundary(file, s, s->id_table_start,
+                                       (sqfs_u64)s->id_count * 4, end)) return -1;
+    if (s->fragment_entry_count) {
+        if (table_boundary(file, s, s->fragment_table_start,
+                           (sqfs_u64)s->fragment_entry_count * 16, end)) return -1;
+    } else if (s->fragment_table_start != UINT64_MAX) return -1;
+    if (s->export_table_start != UINT64_MAX &&
+        table_boundary(file, s, s->export_table_start,
+                       (sqfs_u64)s->inode_count * 8, end)) return -1;
+    return *end > s->directory_table_start ? 0 : -1;
 }
 
 static int inspect(const char *path, unsigned long limit) {
@@ -119,7 +157,8 @@ static int inspect(const char *path, unsigned long limit) {
         super.directory_table_start >= super.bytes_used ||
         sqfs_compressor_config_init(&cfg, super.compression_id, super.block_size, SQFS_COMP_FLAG_UNCOMPRESS) ||
         sqfs_compressor_create(&cfg, &cmp)) goto done;
-    dirs = sqfs_meta_reader_create(file, cmp, super.directory_table_start, super.bytes_used);
+    if (directory_end(file, &super, &w.dir_end)) goto done;
+    dirs = sqfs_meta_reader_create(file, cmp, super.directory_table_start, w.dir_end);
     inodes = sqfs_meta_reader_create(file, cmp, super.inode_table_start, super.directory_table_start);
     w.dirs = dirs; w.inodes = inodes; w.super = &super;
     w.inode_count = super.inode_count;

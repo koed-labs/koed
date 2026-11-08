@@ -181,6 +181,11 @@ test(
       rejects(result);
       result = run(["/work/fs", "5"]);
       rejects(result);
+      mkdirSync(resolve(root, "empty"));
+      make();
+      result = run(["/work/fs", "1024"]);
+      assert.equal(result.status, 0, result.stderr.toString());
+      rmSync(resolve(root, "empty"), { recursive: true });
       linkSync(resolve(root, "resources/app.asar"), resolve(root, "other"));
       make();
       result = run(["/work/fs", "1024"]);
@@ -217,6 +222,47 @@ test(
       assert.equal(fs.readUInt32LE(appPos - 16), 0);
       const inodeStart = Number(fs.readBigUInt64LE(64));
       const rootNumber = fs.readUInt32LE(inodeStart + 2 + Number(rootRef) + 12);
+      const resourcesPos = fs.indexOf(Buffer.from("resources"));
+      assert.notEqual(resourcesPos, -1);
+      const resourcesInode = inodeStart + 2 + fs.readUInt16LE(resourcesPos - 8);
+      assert.equal(fs.readUInt16LE(resourcesInode), 1);
+      const dirSizeOffset = resourcesInode + 24;
+      const trailing = Buffer.from(fs);
+      trailing.writeUInt16LE(fs.readUInt16LE(dirSizeOffset) + 1, dirSizeOffset);
+      writeFileSync(resolve(dir, "fs"), trailing);
+      rejects(run(["/work/fs", "1024"]));
+      for (const size of [3 + 11, 3 + 12 + 7, 3 + 12 + 8]) {
+        const incomplete = Buffer.from(fs);
+        incomplete.writeUInt16LE(size, dirSizeOffset);
+        writeFileSync(resolve(dir, "fs"), incomplete);
+        rejects(run(["/work/fs", "1024"]));
+      }
+      const dirStart = Number(fs.readBigUInt64LE(72));
+      const pointers = [48, 80, 88]
+        .map((offset) => fs.readBigUInt64LE(offset))
+        .filter((index) => index !== 0xffffffffffffffffn)
+        .map((index) => Number(fs.readBigUInt64LE(Number(index))));
+      const dirEnd = Math.min(...pointers);
+      assert.ok(dirEnd > dirStart);
+      const forgedStart = Buffer.from(fs);
+      forgedStart.writeUInt32LE(
+        dirEnd - dirStart,
+        inodeStart + 2 + Number(rootRef) + 16
+      );
+      writeFileSync(resolve(dir, "fs"), forgedStart);
+      rejects(run(["/work/fs", "1024"]));
+      const crossBoundary = Buffer.from(fs);
+      assert.ok(dirEnd - dirStart < 8192);
+      crossBoundary.writeUInt16LE(0x8000 | (dirEnd - dirStart - 1), dirStart);
+      writeFileSync(resolve(dir, "fs"), crossBoundary);
+      rejects(run(["/work/fs", "1024"]));
+      const countMismatch = Buffer.from(fs);
+      countMismatch.writeUInt32LE(
+        fs.readUInt32LE(appPos - 20) + 1,
+        appPos - 20
+      );
+      writeFileSync(resolve(dir, "fs"), countMismatch);
+      rejects(run(["/work/fs", "1024"]));
       const headerBase = fs.readUInt32LE(appPos - 12);
       const rootAlias = Buffer.from(fs);
       rootAlias.writeUInt16LE(Number(rootRef), appPos - 8);
