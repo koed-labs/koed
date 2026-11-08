@@ -2,6 +2,32 @@
 
 See [Desktop updates](desktop-updates.md) for update notices and how to update.
 
+## Linux x64 Desktop release candidate
+
+Linux Desktop release packaging targets x86-64 with glibc 2.35 or newer. The
+native runtime is built on Ubuntu 22.04; a full Linux Desktop release rehearsal,
+including direct FUSE launch, has not yet been verified. Do not treat this as a
+published or supported distribution until release qualification succeeds.
+
+For a qualified candidate, verify `koed-desktop-linux-x64.sha256` alongside the
+versioned AppImage before running it. A graphical session and Electron's Linux
+system libraries are required. Direct AppImage launch also needs FUSE 2 and
+access to `/dev/fuse`:
+
+```bash
+sha256sum --check koed-desktop-linux-x64.sha256
+chmod +x Koed-<version>-x86_64.AppImage
+./Koed-<version>-x86_64.AppImage
+```
+
+Replace `<version>` with the actual release version. Where FUSE is unavailable,
+AppImage extraction (`--appimage-extract`) can be used to inspect or run the
+extracted `squashfs-root/AppRun`; extraction still requires a graphical session
+and compatible libraries. This fallback and distribution-specific prerequisites
+must be verified on the target machine. On first run Desktop sets up its local
+runtime under `KOED_HOME` and provisions required models; see
+[Native Runtime Assets](native-runtime-assets.md) for runtime details.
+
 ## Headless Remote Integration
 
 An AI Client can use an existing backend without Electron or local database,

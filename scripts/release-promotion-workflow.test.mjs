@@ -91,6 +91,27 @@ test("reviewed identity comes from immutable build artifacts, not candidate draf
   );
 });
 
+test("Linux final artifacts are mandatory for identity and publication", () => {
+  const { jobs } = parse(release);
+  const identity = jobs["reviewed-release-identity"];
+  const publication = jobs["publish-release"];
+  assert.ok(identity.needs.includes("linux-desktop-release-assets"));
+  assert.ok(publication.needs.includes("linux-desktop-release-assets"));
+  assert.ok(
+    identity.steps.some((step) =>
+      step.run?.includes('"koed-desktop-linux-final-assets"')
+    )
+  );
+  const required = publication.steps.find(
+    (step) => step.name === "Verify required release assets"
+  );
+  assert.match(required.run, /Koed-\$\{VERSION\}-x86_64\.AppImage/);
+  assert.match(required.run, /koed-desktop-linux-x64\.sha256/);
+  assert.ok(
+    jobs["verify-release-candidate"].needs.includes("reviewed-release-identity")
+  );
+});
+
 test("desktop recovery is absent or fails closed until its source is authenticated", () => {
   const path = resolve(root, ".github/workflows/release-desktop-assets.yml");
   if (!existsSync(path)) return;

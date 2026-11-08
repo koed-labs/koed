@@ -131,6 +131,15 @@ test("release workflow dispatches full CI for the generated version branch", () 
   );
 });
 
+test("manual Linux native validation also selects Desktop smoke", () => {
+  const result = evaluateCiPolicy({
+    eventName: "workflow_dispatch",
+    event: { inputs: { build_native_runtime_linux_x64: "true" } }
+  });
+  assert.equal(result.run_linux_native, "true");
+  assert.equal(result.run_app_smoke, "true");
+});
+
 test("unknown paths fail closed into packaged validation", () => {
   assert.equal(fileAffectsPackaging("new-runtime-area/config.json"), true);
 });

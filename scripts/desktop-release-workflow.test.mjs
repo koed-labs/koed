@@ -67,6 +67,43 @@ test("trust, smoke, composition, hashes precede immutable release upload", () =>
     /koed-desktop-macos-arm64\.sha256/
   );
 });
+test("Linux release builds and smokes verified runtime and retains exact final assets", () => {
+  const linux = jobs["linux-desktop-release-assets"];
+  assert.ok(linux, "missing Linux Desktop release job");
+  assert.equal(linux["runs-on"], "ubuntu-22.04");
+  for (const dependency of [
+    "release",
+    "component-manifest-catalog",
+    "native-runtime-linux-x64-release-assets",
+    "linux-native-packages"
+  ])
+    assert.ok(linux.needs.includes(dependency));
+  const steps = linux.steps;
+  const commands = steps.map((s) => s.run ?? "").join("\n");
+  assert.ok(
+    steps.some((s) => s.with?.name === "koed-native-runtime-linux-x64")
+  );
+  assert.match(
+    commands,
+    /koed-native-runtime-linux-x64-\$\{version\}\.tar\.gz/
+  );
+  assert.match(commands, /sha256sum --check/);
+  assert.match(commands, /native-runtime:validate/);
+  assert.match(commands, /verify-frozen-component-assets/);
+  assert.match(commands, /desktop:package:linux:release/);
+  assert.match(commands, /--appimage-direct/);
+  assert.match(commands, /verify-linux/);
+  const retained = steps.findIndex(
+    (s) => s.with?.name === "koed-desktop-linux-final-assets"
+  );
+  const upload = steps.findIndex((s) =>
+    s.run?.includes("ensure-release-assets.mjs")
+  );
+  assert.ok(retained >= 0 && upload > retained);
+  assert.match(steps[retained].with.path, /Koed-.*-x86_64\.AppImage/);
+  assert.match(steps[retained].with.path, /koed-desktop-linux-x64\.sha256/);
+});
+
 test("manual and alternate recovery signers removed", () => {
   assert.equal(
     existsSync(".github/workflows/release-desktop-assets.yml"),
