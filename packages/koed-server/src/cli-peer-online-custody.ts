@@ -2,7 +2,6 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { createPdsApplicationSecretStore } from "@koed/shared";
 import { parsePeerOnlineIdentity } from "./peer-online-identity.js";
-import { loadPeerOnlineCertificate } from "./peer-online-certificate.js";
 
 function exists(path: string): boolean {
   try {
@@ -83,6 +82,9 @@ async function inspectCertificate(root: string): Promise<boolean> {
     "peer-online-certificate",
     "peer-online-certificate"
   );
+  // Loaded on demand so ordinary CLI startup never requires X.509 support.
+  const { loadPeerOnlineCertificate } =
+    await import("./peer-online-certificate.js");
   await loadPeerOnlineCertificate({
     read: () => Promise.resolve(value),
     create: () => Promise.reject(new Error("Read-only inspection."))
