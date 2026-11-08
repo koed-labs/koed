@@ -1,10 +1,16 @@
 # Static AppImage ASAR extraction: blocked
 
-`scripts/linux-appimage-extractor.mjs` exports `extractAppImageAsar({ imagePath, image, expectedSha256, maxAsarBytes })`. **It currently never returns ASAR bytes. Do not use it as a release gate.** It fails closed even for valid archives: selected-path `unsquashfs` extraction does not prove that SquashFS directories have unique names or that the ASAR is not hardlinked. No independent SquashFS directory and inode validator has been implemented. In particular, no crafted duplicate-directory-entry fixture has been constructed or validated; duplicate safety is not solved.
+`scripts/linux-appimage-extractor.mjs` exports `extractAppImageAsar({ imagePath, image, expectedSha256, maxAsarBytes })`. **It currently never returns ASAR bytes. Do not use it as a release gate.** It fails closed even for valid archives: selected-path `unsquashfs` extraction does not prove that SquashFS directories have unique names or that the ASAR is not hardlinked. An experimental standalone validator exists but is not integrated or independently reviewed; duplicate and hardlink safety are not established for production.
 
 The caller supplies an independently verified lowercase SHA-256 digest and a trusted, locally provisioned Docker image containing `/bin/sh`, `unsquashfs`, `wc` and `cat`; image-reference validation is syntactic, not a trust or provenance check. The helper copies candidate bytes into a private snapshot, checks its digest, and inspects and mounts that snapshot. The caller must protect the snapshot directory from other processes running as the same user, and Docker daemon and supplied image are trusted. Docker never pulls an image. Container and snapshot cleanup failures are reported; a failed Docker cleanup may require manual removal of the named `koed-extract-*` container.
 
 The experimental extraction runs as non-root, with no network, dropped capabilities, no privilege escalation, read-only root and candidate, bounded memory, processes, temporary storage, output and time. Missing, symlink, FIFO and oversized fixtures are rejected. Hardlinks and even regular fixtures are rejected at the unresolved uniqueness check, rather than accepted as safe.
+
+## Experimental raw SquashFS helper
+
+`scripts/linux-squashfs-helper.c` accepts a standalone raw SquashFS file and an output-byte limit, not an AppImage or offset. It walks directory entries with libsquashfs, rejects unsorted or duplicate names and repeated inode numbers, and reads the selected inode with the same library. It caps input at 4 GiB, entries and inode numbers at 100,000, depth at 64 and output at 128 MiB. It conservatively rejects all reachable hardlinks. It requires external isolation, a trusted immutable input, a timeout and memory limits; it is not connected to the existing extractor.
+
+For experimental tests, use an Ubuntu 24.04 linux/amd64 image with `gcc`, `libc6-dev`, `libsquashfs-dev` and `squashfs-tools`, and run `KOED_SQUASHFS_DEV_IMAGE=<local-image> node --test scripts/linux-squashfs-helper.test.mjs`. Tests compile the helper and use synthetic raw filesystems; they include a modified duplicate entry. The image is not pinned for production. Independent security review, adversarial inode-reference and cycle tests, compression variants, safe bounded AppImage offset handling, trusted image provisioning and real release testing remain necessary before considering integration. The production fail-closed gate must remain in place.
 
 ## Fixture findings
 
