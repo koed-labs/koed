@@ -788,7 +788,10 @@ jobs:
           pnpm build
           pnpm desktop:package:linux:release
           node scripts/verify-frozen-component-assets.mjs release-components "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}"
-          node --input-type=module -e 'import { verifyPackagedAsarCatalog } from "./apps/desktop/scripts/verify-packaged-component-catalog.mjs"; verifyPackagedAsarCatalog({asarPath: "apps/desktop/release/linux-unpacked/resources/app.asar", catalogPath: process.env.KOED_COMPONENT_MANIFEST_CATALOG, version: process.argv[1]})' "${{ needs.release.outputs.version }}"
+          node scripts/desktop-release-checksum.mjs verify-linux apps/desktop/release "${{ needs.release.outputs.version }}"
+          # Trusted-build evidence (ADR 0068): extract the ASAR from the final
+          # AppImage, verify its catalog and record hashes for candidate binding.
+          node scripts/linux-desktop-build-evidence.mjs apps/desktop/release "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}" | tee -a "${GITHUB_STEP_SUMMARY}"
       - name: Smoke Linux Desktop and exact AppImage
         env:
           KOED_EMBEDDING_ACCELERATION: cpu
@@ -832,6 +835,7 @@ jobs:
           path: |
             apps/desktop/release/Koed-${{ needs.release.outputs.version }}-x86_64.AppImage
             apps/desktop/release/koed-desktop-linux-x64.sha256
+            apps/desktop/release/koed-desktop-linux-x64.evidence.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -841,7 +845,8 @@ jobs:
         run: |
           node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
             "apps/desktop/release/Koed-${{ needs.release.outputs.version }}-x86_64.AppImage" \
-            apps/desktop/release/koed-desktop-linux-x64.sha256
+            apps/desktop/release/koed-desktop-linux-x64.sha256 \
+            apps/desktop/release/koed-desktop-linux-x64.evidence.json
 
   signed-desktop-release-assets:
     name: Signed Desktop release assets
@@ -1293,7 +1298,8 @@ jobs:
             "Koed-${VERSION}-arm64.zip" \
             'koed-desktop-macos-arm64.sha256' \
             "Koed-${VERSION}-x86_64.AppImage" \
-            'koed-desktop-linux-x64.sha256'; do
+            'koed-desktop-linux-x64.sha256' \
+            'koed-desktop-linux-x64.evidence.json'; do
             if ! asset_present "${pattern}"; then
               echo "Missing required release asset: ${pattern}" >&2
               exit 1

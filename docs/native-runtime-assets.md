@@ -19,8 +19,9 @@ Packaged Desktop never silently falls back to source-checkout `vendor` paths. De
 The Linux x64 Desktop release job stages the versioned Linux native runtime
 archive after checking its SHA-256 sidecar and validating the extracted tree.
 The runtime build targets glibc 2.35 or newer; this is not evidence that Desktop
-has passed release rehearsal on every distribution. Desktop publication remains
-blocked while Linux candidate inspection is unavailable. See
+has passed release rehearsal on every distribution. Candidate verification
+binds the AppImage to evidence recorded by the reviewed build
+([ADR 0068](adr/0068-linux-appimage-trusted-build-evidence.md)). See
 [Running Koed](running-koed.md#linux-x64-desktop-release-candidate) for candidate
 launch prerequisites and qualification status.
 

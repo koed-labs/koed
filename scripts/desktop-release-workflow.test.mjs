@@ -104,6 +104,21 @@ test("Linux release builds and smokes verified runtime and retains exact final a
   assert.ok(retained >= 0 && upload > retained);
   assert.match(steps[retained].with.path, /Koed-.*-x86_64\.AppImage/);
   assert.match(steps[retained].with.path, /koed-desktop-linux-x64\.sha256/);
+  // Trusted-build evidence (ADR 0068) comes from the final AppImage, never
+  // the unpacked directory, and is retained and published with it.
+  const evidence = steps.findIndex((s) =>
+    s.run?.includes("linux-desktop-build-evidence.mjs")
+  );
+  const packaged = steps.findIndex((s) =>
+    s.run?.includes("desktop:package:linux:release")
+  );
+  assert.ok(evidence >= packaged && evidence < retained);
+  assert.doesNotMatch(steps[evidence].run, /linux-unpacked\/resources/);
+  assert.match(
+    steps[retained].with.path,
+    /koed-desktop-linux-x64\.evidence\.json/
+  );
+  assert.match(steps[upload].run, /koed-desktop-linux-x64\.evidence\.json/);
 });
 
 test("manual and alternate recovery signers removed", () => {

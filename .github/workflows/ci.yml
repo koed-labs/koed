@@ -637,6 +637,20 @@ jobs:
           pnpm build
           pnpm desktop:package:linux:release
 
+      # Unsigned, unreleased CI build for manual testing only; release
+      # publication uses the protected release workflow instead.
+      - name: Upload unreleased Linux AppImage for manual testing
+        if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-linux-x64-appimage-unreleased
+          path: |
+            apps/desktop/release/Koed-*-x86_64.AppImage
+            apps/desktop/release/koed-desktop-linux-x64.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
       - name: Run Linux directory and extracted AppImage smoke
         if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
         env:

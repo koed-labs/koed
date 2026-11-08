@@ -16,7 +16,7 @@ requests. Do not provide publication or signing credentials to this job.
 
 The workflow retains frozen catalog/components, app-runtime/npm outputs, native
 runtime assets, release metadata, final macOS Desktop ZIP/DMG bytes and Linux
-Desktop AppImage/checksum bytes as immutable Actions artifacts for 30 days.
+Desktop AppImage/checksum/build-evidence bytes as immutable Actions artifacts for 30 days.
 `reviewed-release-identity` hashes those outputs, not the mutable release draft,
 and emits `reviewed-build.json`. Downstream jobs
 receive its artifact ID, Actions artifact digest and exact JSON SHA-256 through
@@ -48,12 +48,17 @@ complete Base/Privacy × Linux x64 glibc/macOS arm64 tuple matrix, canonical
 manifests and archive/file inventories; and statically inspects actual npm
 name/version/bin/SRI/inventory and effective npm/macOS Desktop catalog pins. Candidate
 modules are parsed, never imported or executed. macOS Desktop inspection extracts
-`app.asar` from the Desktop ZIP. Linux Desktop verification currently fails
-closed with `Linux Desktop inspection unavailable; refusing candidate.`; the
-experimental SquashFS inspector is not an authorized substitute. Consequently,
-a candidate containing the required Linux assets cannot pass promotion until
-independent inspection of the actual AppImage is implemented and verified. Do
-not bypass this gate or treat AppImage extraction smoke as candidate inspection.
+`app.asar` from the Desktop ZIP. Linux Desktop verification uses
+[trusted-build evidence](adr/0068-linux-appimage-trusted-build-evidence.md). The
+reviewed release build extracts `resources/app.asar` from the final AppImage it
+produced, verifies the embedded catalog and records
+`koed-desktop-linux-x64.evidence.json`. The verifier never parses or executes
+the AppImage. It requires the AppImage, checksum and evidence bytes to match the
+protected identity. The evidence must name the reviewed repository, commit, run
+and version, and must record the protected AppImage and catalog hashes. A
+candidate with an AppImage or evidence asset but no protected Linux identity is
+rejected. Linux assurance therefore depends on the integrity of the reviewed
+build job, unlike the independently inspected macOS ZIP.
 
 On PR #421 alone, the Desktop workflow produces
 **unsigned** artifacts; hashing them is not code signing or notarization. The

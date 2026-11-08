@@ -134,7 +134,8 @@ const createIdentity = (fixture, input) => {
     const source =
       name === "component-manifest-hashes.json"
         ? "koed-component-catalog"
-        : name.endsWith(".AppImage") || name === "koed-desktop-linux-x64.sha256"
+        : name.endsWith(".AppImage") ||
+            name.startsWith("koed-desktop-linux-x64.")
           ? "koed-desktop-linux-final-assets"
           : "koed-server-app-runtime-linux-x64";
     copyFileSync(
@@ -157,6 +158,10 @@ test("createReviewedBuildIdentity binds approved outputs to the current attempt 
       resolve(f.assetsDir, "koed-desktop-linux-x64.sha256"),
       "checksum"
     );
+    writeFileSync(
+      resolve(f.assetsDir, "koed-desktop-linux-x64.evidence.json"),
+      "{}"
+    );
     const firstAttempt = createIdentity(f, buildInput(f));
     const retryInput = buildInput(f);
     retryInput.runAttempt = 2;
@@ -170,6 +175,7 @@ test("createReviewedBuildIdentity binds approved outputs to the current attempt 
     assert.deepEqual(retriedBuild.linuxDesktop, {
       asset: "Koed-1.2.3-x86_64.AppImage",
       checksum: "koed-desktop-linux-x64.sha256",
+      evidence: "koed-desktop-linux-x64.evidence.json",
       asarEntry: "resources/app.asar"
     });
   } finally {
@@ -201,7 +207,8 @@ for (const damage of [
   "linux-artifact-commit",
   "missing-appimage",
   "duplicate-appimage",
-  "missing-checksum"
+  "missing-checksum",
+  "missing-evidence"
 ])
   test(`createReviewedBuildIdentity rejects ${damage}`, () => {
     const f = candidateFixture();
@@ -211,8 +218,13 @@ for (const damage of [
       writeFileSync(zip, "protected zip");
       const image = resolve(f.assetsDir, "Koed-1.2.3-x86_64.AppImage");
       const checksum = resolve(f.assetsDir, "koed-desktop-linux-x64.sha256");
+      const evidence = resolve(
+        f.assetsDir,
+        "koed-desktop-linux-x64.evidence.json"
+      );
       writeFileSync(image, "image");
       writeFileSync(checksum, "checksum");
+      writeFileSync(evidence, "{}");
       const linuxArtifact = input.artifacts.find(
         (a) => a.name === "koed-desktop-linux-final-assets"
       );
@@ -230,6 +242,7 @@ for (const damage of [
           "other"
         );
       if (damage === "missing-checksum") rmSync(checksum);
+      if (damage === "missing-evidence") rmSync(evidence);
       if (damage === "repository") input.repository = "not-a-repository";
       if (damage === "commit") input.commit = "f".repeat(40);
       if (damage === "run") input.runId = 43;
