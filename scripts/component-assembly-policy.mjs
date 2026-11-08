@@ -206,6 +206,8 @@ export const sourceAuditExclusion = (packageName, file) => {
     return "type-level JSON Schema utility distribution; no runtime module consumers in component graph";
   if (packageName === "bullmq" && file.startsWith("dist/esm/"))
     return "BullMQ package has no exports map; Node main selects dist/cjs/index.js, while dist/esm is bundler-only module output";
+  if (packageName === "tsyringe" && /^dist\/(?:esm5|esm2015)\//.test(file))
+    return "tsyringe package has no exports map; Node main selects dist/cjs/index.js, while dist/esm5 and dist/esm2015 are bundler-only module output";
   if (packageName === "json-canonicalize" && /^(?:esm5|esm2015)\//.test(file))
     return "unselected bundler module entrypoint; Node main selects bundles";
   if (packageName === "ts-algebra" && file.startsWith("lib/"))
