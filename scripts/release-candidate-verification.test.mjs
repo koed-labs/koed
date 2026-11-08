@@ -121,6 +121,37 @@ test("pin-only candidate verifies real npm/Desktop inventories without executing
   }
 });
 
+test("candidate with Linux Desktop identity fails closed until independent inspection is available", async () => {
+  const f = await setup();
+  try {
+    f.expected.linuxDesktop = {
+      asset: "Koed-1.2.3-x86_64.AppImage",
+      checksum: "koed-desktop-linux-x64.sha256",
+      asarEntry: "resources/app.asar"
+    };
+    await assert.rejects(
+      candidate.verifyReleaseCandidate(f.input, f.readers),
+      /Linux Desktop inspection unavailable/
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("candidate with uninspected AppImage asset fails closed even without Linux identity", async () => {
+  const f = await setup();
+  try {
+    f.contents.set("Koed-1.2.3-x86_64.AppImage", Buffer.from("untrusted"));
+    rehash(f);
+    await assert.rejects(
+      candidate.verifyReleaseCandidate(f.input, f.readers),
+      /Linux Desktop inspection unavailable/
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("candidate verification accepts current-attempt identity and rejects a stale attempt", async () => {
   const f = await setup();
   try {

@@ -14,6 +14,7 @@ const sourceNames = [
   "koed-server-app-runtime-linux-x64",
   "koed-server-app-runtime-macos-arm64",
   "koed-desktop-final-assets",
+  "koed-desktop-linux-final-assets",
   "koed-native-runtime-linux-x64",
   "koed-linux-native-packages",
   "koed-release-metadata"
@@ -116,6 +117,30 @@ export const createReviewedBuildIdentity = ({
   );
   if (desktop.length !== 1)
     throw new Error("One final Desktop ZIP is required.");
+  const images = assets.filter((asset) =>
+    /^Koed-.*-x86_64\.AppImage$/.test(asset.name)
+  );
+  const checksum = assets.filter(
+    (asset) => asset.name === "koed-desktop-linux-x64.sha256"
+  );
+  if (
+    images.length !== 1 ||
+    images[0].name !== `Koed-${version}-x86_64.AppImage` ||
+    checksum.length !== 1
+  )
+    throw new Error(
+      "One version-matched Linux AppImage and checksum are required."
+    );
+  const linuxFiles = readdirSync(
+    resolve(root, "koed-desktop-linux-final-assets")
+  );
+  if (
+    !linuxFiles.includes(images[0].name) ||
+    !linuxFiles.includes(checksum[0].name)
+  )
+    throw new Error(
+      "Linux AppImage and checksum must belong to the final artifact."
+    );
   return validateReviewedBuildIdentity({
     schemaVersion: 1,
     repository,
@@ -131,6 +156,11 @@ export const createReviewedBuildIdentity = ({
     desktop: {
       asset: desktop[0].name,
       asarEntry: "Koed.app/Contents/Resources/app.asar"
+    },
+    linuxDesktop: {
+      asset: images[0].name,
+      checksum: checksum[0].name,
+      asarEntry: "resources/app.asar"
     }
   });
 };

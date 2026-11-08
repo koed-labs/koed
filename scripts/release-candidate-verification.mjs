@@ -257,6 +257,11 @@ export const verifyReleaseCandidate = async (input, readers) => {
   const original = JSON.stringify(input);
   const snapshot = structuredClone(input);
   const expected = validateReviewedBuildIdentity(snapshot.expected);
+  if (
+    expected.linuxDesktop !== undefined ||
+    expected.assets.some((asset) => /\.AppImage$/i.test(asset.name))
+  )
+    fail("Linux Desktop inspection unavailable; refusing candidate.");
   for (const field of [
     "repository",
     "commit",

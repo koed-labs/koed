@@ -46,6 +46,7 @@ test("public inventory excludes nested catalog components and includes staged si
       "koed-server-app-runtime-linux-x64",
       "koed-server-app-runtime-macos-arm64",
       "koed-desktop-final-assets",
+      "koed-desktop-linux-final-assets",
       "koed-native-runtime-linux-x64",
       "koed-linux-native-packages",
       "koed-release-metadata"
@@ -105,6 +106,7 @@ const approvedNames = [
   "koed-server-app-runtime-linux-x64",
   "koed-server-app-runtime-macos-arm64",
   "koed-desktop-final-assets",
+  "koed-desktop-linux-final-assets",
   "koed-native-runtime-linux-x64",
   "koed-linux-native-packages",
   "koed-release-metadata"
@@ -132,7 +134,9 @@ const createIdentity = (fixture, input) => {
     const source =
       name === "component-manifest-hashes.json"
         ? "koed-component-catalog"
-        : "koed-server-app-runtime-linux-x64";
+        : name.endsWith(".AppImage") || name === "koed-desktop-linux-x64.sha256"
+          ? "koed-desktop-linux-final-assets"
+          : "koed-server-app-runtime-linux-x64";
     copyFileSync(
       resolve(fixture.assetsDir, name),
       resolve(input.root, source, name)
@@ -148,6 +152,11 @@ test("createReviewedBuildIdentity binds approved outputs to the current attempt 
       resolve(f.assetsDir, "Koed-1.2.3-arm64.zip"),
       "protected zip"
     );
+    writeFileSync(resolve(f.assetsDir, "Koed-1.2.3-x86_64.AppImage"), "image");
+    writeFileSync(
+      resolve(f.assetsDir, "koed-desktop-linux-x64.sha256"),
+      "checksum"
+    );
     const firstAttempt = createIdentity(f, buildInput(f));
     const retryInput = buildInput(f);
     retryInput.runAttempt = 2;
@@ -158,6 +167,11 @@ test("createReviewedBuildIdentity binds approved outputs to the current attempt 
     assert.deepEqual(retriedBuild.runtimeIdentities, runtimeIdentities);
     assert.equal(retriedBuild.artifacts.length, approvedNames.length);
     assert.deepEqual(retriedBuild.npm, f.identity.npm);
+    assert.deepEqual(retriedBuild.linuxDesktop, {
+      asset: "Koed-1.2.3-x86_64.AppImage",
+      checksum: "koed-desktop-linux-x64.sha256",
+      asarEntry: "resources/app.asar"
+    });
   } finally {
     f.cleanup();
   }
@@ -180,7 +194,14 @@ for (const damage of [
   "npm-inventory",
   "npm-bytes",
   "missing-zip",
-  "duplicate-zip"
+  "duplicate-zip",
+  "missing-linux-artifact",
+  "duplicate-linux-artifact",
+  "linux-artifact-run",
+  "linux-artifact-commit",
+  "missing-appimage",
+  "duplicate-appimage",
+  "missing-checksum"
 ])
   test(`createReviewedBuildIdentity rejects ${damage}`, () => {
     const f = candidateFixture();
@@ -188,6 +209,27 @@ for (const damage of [
       const input = buildInput(f);
       const zip = resolve(f.assetsDir, "Koed-1.2.3-arm64.zip");
       writeFileSync(zip, "protected zip");
+      const image = resolve(f.assetsDir, "Koed-1.2.3-x86_64.AppImage");
+      const checksum = resolve(f.assetsDir, "koed-desktop-linux-x64.sha256");
+      writeFileSync(image, "image");
+      writeFileSync(checksum, "checksum");
+      const linuxArtifact = input.artifacts.find(
+        (a) => a.name === "koed-desktop-linux-final-assets"
+      );
+      if (damage === "missing-linux-artifact")
+        input.artifacts = input.artifacts.filter((a) => a !== linuxArtifact);
+      if (damage === "duplicate-linux-artifact")
+        input.artifacts.push({ ...linuxArtifact });
+      if (damage === "linux-artifact-run") linuxArtifact.workflow_run.id = 43;
+      if (damage === "linux-artifact-commit")
+        linuxArtifact.workflow_run.head_sha = "f".repeat(40);
+      if (damage === "missing-appimage") rmSync(image);
+      if (damage === "duplicate-appimage")
+        writeFileSync(
+          resolve(f.assetsDir, "Koed-other-x86_64.AppImage"),
+          "other"
+        );
+      if (damage === "missing-checksum") rmSync(checksum);
       if (damage === "repository") input.repository = "not-a-repository";
       if (damage === "commit") input.commit = "f".repeat(40);
       if (damage === "run") input.runId = 43;
@@ -215,7 +257,10 @@ for (const damage of [
           JSON.stringify(value)
         );
       }
-      assert.throws(() => createIdentity(f, input), /identity|artifact|ZIP/i);
+      assert.throws(
+        () => createIdentity(f, input),
+        /identity|artifact|ZIP|AppImage|checksum/i
+      );
     } finally {
       f.cleanup();
     }
