@@ -66,6 +66,9 @@ export const boundedMap = async (values, concurrency, map) => {
   return results;
 };
 
+const canonicalPath = (path) =>
+  existsSync(path) ? realpathSync(path) : resolve(path);
+
 const parseMissingLinuxDependencies = (output) =>
   output
     .split("\n")
@@ -76,7 +79,7 @@ const parseMissingLinuxDependencies = (output) =>
     });
 
 export const linuxLoaderIssues = ({ file, output, runtimeRoot }) => {
-  const cudaRoot = resolve(runtimeRoot, "llama.cpp", "cuda");
+  const cudaRoot = resolve(canonicalPath(runtimeRoot), "llama.cpp", "cuda");
   const normalizedFile = resolve(file);
   const isCudaPayload =
     normalizedFile === cudaRoot || normalizedFile.startsWith(`${cudaRoot}/`);
@@ -94,8 +97,8 @@ export const linuxLoaderEnvironment = ({
   environment = process.env
 }) => {
   const normalizedFile = resolve(file);
-  const postgresRoot = resolve(runtimeRoot, "postgres");
-  const llamaRoot = resolve(runtimeRoot, "llama.cpp");
+  const postgresRoot = resolve(canonicalPath(runtimeRoot), "postgres");
+  const llamaRoot = resolve(canonicalPath(runtimeRoot), "llama.cpp");
   const libraryDirectories = [];
 
   if (normalizedFile.startsWith(`${postgresRoot}/`)) {
@@ -126,9 +129,6 @@ const parseMacDependencies = (output) =>
 const isSystemMacDependency = (dependency) =>
   dependency.startsWith("/usr/lib/") ||
   dependency.startsWith("/System/Library/");
-
-const canonicalPath = (path) =>
-  existsSync(path) ? realpathSync(path) : resolve(path);
 
 export const macLoaderIssues = ({
   file,

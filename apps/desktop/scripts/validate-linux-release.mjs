@@ -3,9 +3,16 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
-try {
-  const runtimeRoot = resolve(process.argv[2] ?? ".koed-runtime");
+export function validateLinuxRelease({
+  runtimeRoot: root,
+  platform = process.platform,
+  arch = process.arch,
+  nativeRuntimeSource = process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR,
+  runValidator = spawnSync
+}) {
+  const runtimeRoot = resolve(root ?? ".koed-runtime");
   const manifest = JSON.parse(
     readFileSync(resolve(runtimeRoot, "desktop-bundle-manifest.json"), "utf8")
   );
@@ -15,12 +22,12 @@ try {
   ) {
     throw new Error("Release requires a staged Linux x64 runtime.");
   }
-  if (!process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR?.trim()) {
+  if (!nativeRuntimeSource?.trim()) {
     throw new Error(
       "Release requires KOED_NATIVE_RUNTIME_SOURCE_DIR with native assets."
     );
   }
-  if (process.platform !== "linux" || process.arch !== "x64") {
+  if (platform !== "linux" || arch !== "x64") {
     throw new Error("Release validation requires a Linux x64 host.");
   }
   const validator = resolve(
@@ -31,7 +38,7 @@ try {
   try {
     const staged = resolve(resources, "koed-runtime");
     symlinkSync(runtimeRoot, staged, "dir");
-    const result = spawnSync(
+    const result = runValidator(
       process.execPath,
       [validator, "--runtime-root", staged, "--platform", "linux", "--json"],
       {
@@ -56,7 +63,16 @@ try {
   } finally {
     rmSync(resources, { recursive: true, force: true });
   }
-} catch (error) {
-  console.error(error.message);
-  process.exitCode = 1;
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  try {
+    validateLinuxRelease({ runtimeRoot: process.argv[2] });
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }
