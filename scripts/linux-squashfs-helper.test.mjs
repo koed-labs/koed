@@ -181,6 +181,23 @@ test(
       rejects(result);
       result = run(["/work/fs", "5"]);
       rejects(result);
+      docker([
+        "--entrypoint",
+        "mksquashfs",
+        image,
+        "/work/root",
+        "/work/fs",
+        "-noappend",
+        "-processors",
+        "1",
+        "-xattrs-add",
+        "user.test=fixture"
+      ]);
+      assert.notEqual(
+        readFileSync(resolve(dir, "fs")).readBigUInt64LE(56),
+        0xffffffffffffffffn
+      );
+      rejects(run(["/work/fs", "1024"]));
       mkdirSync(resolve(root, "empty"));
       make();
       result = run(["/work/fs", "1024"]);
@@ -204,6 +221,25 @@ test(
       const appPos = fs.indexOf(Buffer.from("app.asar"));
       assert.notEqual(appPos, -1);
       assert.equal(fs.indexOf(Buffer.from("app.asar"), appPos + 1), -1);
+      const xattrLayout = Buffer.from(fs);
+      xattrLayout.writeBigUInt64LE(fs.readBigUInt64LE(48), 56);
+      writeFileSync(resolve(dir, "fs"), xattrLayout);
+      rejects(run(["/work/fs", "1024"]));
+      const overlap = Buffer.from(fs);
+      const idIndex = Number(fs.readBigUInt64LE(48));
+      const fragmentIndex = Number(fs.readBigUInt64LE(80));
+      assert.notEqual(fragmentIndex, -1);
+      overlap.writeBigUInt64LE(fs.readBigUInt64LE(fragmentIndex), idIndex);
+      writeFileSync(resolve(dir, "fs"), overlap);
+      rejects(run(["/work/fs", "1024"]));
+      const forgedIndex = Buffer.from(fs);
+      forgedIndex.writeBigUInt64LE(fs.readBigUInt64LE(idIndex) + 1n, idIndex);
+      writeFileSync(resolve(dir, "fs"), forgedIndex);
+      rejects(run(["/work/fs", "1024"]));
+      const badBlock = Buffer.from(fs);
+      badBlock.writeUInt16LE(0x8000, Number(fs.readBigUInt64LE(idIndex)));
+      writeFileSync(resolve(dir, "fs"), badBlock);
+      rejects(run(["/work/fs", "1024"]));
       const wrongNumber = Buffer.from(fs);
       wrongNumber.writeInt16LE(
         wrongNumber.readInt16LE(appPos - 6) + 1,
