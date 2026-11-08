@@ -20,7 +20,7 @@ typedef struct { sqfs_inode_generic_t *inode; unsigned depth; int resources; } p
 typedef struct {
     sqfs_dir_reader_t *reader;
     pending *queue;
-    unsigned count, next, entries;
+    unsigned count, next, entries, inode_count;
     unsigned char *seen;
     sqfs_inode_generic_t *target;
 } walk;
@@ -41,7 +41,12 @@ static int scan(walk *w, pending dir) {
         memcpy(previous, name, n + 1);
         if (sqfs_dir_reader_get_inode(w->reader, &inode)) goto bad;
         unsigned id = inode->base.inode_number;
-        if (!id || id > MAX_ENTRIES || w->seen[id]) { sqfs_free(inode); goto bad; }
+        unsigned type = inode->base.type;
+        /* Directory entries encode the basic form even for extended inodes. */
+        if (type >= SQFS_INODE_EXT_DIR && type <= SQFS_INODE_EXT_SOCKET) type -= 7;
+        if (entry->type != type || !id || id > w->inode_count || w->seen[id]) {
+            sqfs_free(inode); goto bad;
+        }
         w->seen[id] = 1;
         int isdir = inode->base.type == SQFS_INODE_DIR || inode->base.type == SQFS_INODE_EXT_DIR;
         int isfile = inode->base.type == SQFS_INODE_FILE || inode->base.type == SQFS_INODE_EXT_FILE;
@@ -82,13 +87,14 @@ static int inspect(const char *path, unsigned long limit) {
         sqfs_compressor_create(&cfg, &cmp)) goto done;
     reader = sqfs_dir_reader_create(&super, cmp, file, 0);
     w.reader = reader;
+    w.inode_count = super.inode_count;
     w.queue = calloc(MAX_ENTRIES, sizeof(*w.queue));
     w.seen = calloc(MAX_ENTRIES + 1, 1);
     if (!reader || !w.queue || !w.seen || sqfs_dir_reader_get_root_inode(reader, &w.queue[0].inode)) goto done;
     w.count = 1;
     if ((w.queue[0].inode->base.type != SQFS_INODE_DIR &&
          w.queue[0].inode->base.type != SQFS_INODE_EXT_DIR) ||
-        !w.queue[0].inode->base.inode_number || w.queue[0].inode->base.inode_number > MAX_ENTRIES) goto done;
+        !w.queue[0].inode->base.inode_number || w.queue[0].inode->base.inode_number > w.inode_count) goto done;
     w.seen[w.queue[0].inode->base.inode_number] = 1;
     while (w.next < w.count) {
         pending p = w.queue[w.next++];
@@ -118,7 +124,10 @@ done:
 
 int main(int argc, char **argv) {
     char *end;
-    if (argc != 3 || argv[2][0] < '1' || argv[2][0] > '9') return 1;
+    if (argc != 3 || argv[2][0] < '1' || argv[2][0] > '9') {
+        fputs("SquashFS inspection failed.\n", stderr);
+        return 1;
+    }
     errno = 0;
     unsigned long limit = strtoul(argv[2], &end, 10);
     if (errno || *end || !limit || limit > MAX_OUTPUT || inspect(argv[1], limit)) {
