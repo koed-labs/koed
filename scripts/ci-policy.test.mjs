@@ -438,6 +438,19 @@ test("push, manual, scheduled, and Linux dispatch policies are explicit", () => 
   );
 });
 
+test("Linux smoke is required for app and full validation", () => {
+  for (const policy of [
+    { run_app_smoke: "true", run_full_validation: "false" },
+    { run_app_smoke: "false", run_full_validation: "true" }
+  ]) {
+    const evaluation = evaluateRequiredJobs({
+      policy: { ...policy, run_linux_native: "false" },
+      results: {}
+    });
+    assert.equal(evaluation.expected.native_runtime_linux_x64, true);
+  }
+});
+
 test("stable required result accepts only policy-correct success and skips", () => {
   const baseResults = {
     changes: "success",
@@ -505,7 +518,8 @@ test("stable required result accepts only policy-correct success and skips", () 
       },
       results: {
         ...baseResults,
-        release_candidate_validation: "success"
+        release_candidate_validation: "success",
+        native_runtime_linux_x64: "success"
       }
     }).ok,
     true

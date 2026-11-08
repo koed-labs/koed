@@ -9,7 +9,10 @@ export const evaluateRequiredJobs = ({ policy, results }) => {
     build: true,
     relevant_packaged_smoke: policy.run_app_smoke === "true",
     release_candidate_validation: policy.run_full_validation === "true",
-    native_runtime_linux_x64: policy.run_linux_native === "true"
+    native_runtime_linux_x64:
+      policy.run_linux_native === "true" ||
+      policy.run_app_smoke === "true" ||
+      policy.run_full_validation === "true"
   };
   const errors = [];
   for (const [job, required] of Object.entries(expected)) {

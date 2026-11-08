@@ -25,7 +25,8 @@ import {
   createSmokeHome,
   smokeExecutionPlan,
   withSmokeFailureDiagnostics,
-  withPackagedNativeAssetsMasked
+  withPackagedNativeAssetsMasked,
+  withExtractedAppImage
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
 import { verifyDisabledDesktopUpdateNotice } from "./desktop-update-notice-smoke.mjs";
@@ -77,6 +78,16 @@ export const parseArgs = (argv) => {
       options.skipRendererFaults = true;
       continue;
     }
+    if (value === "--appimage") {
+      if (options.appImage)
+        throw new Error("--appimage may only be supplied once.");
+      const path = argv[index + 1]?.trim();
+      if (!path || path.startsWith("--"))
+        throw new Error("--appimage requires a path.");
+      options.appImage = resolve(path);
+      index += 1;
+      continue;
+    }
     if (value === "--embedding-model-source") {
       const source = argv[index + 1]?.trim();
       if (!source) {
@@ -126,6 +137,8 @@ export const parseArgs = (argv) => {
   if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs <= 0) {
     throw new Error("--poll-interval-ms must be a positive integer.");
   }
+  if (options.appImage && options.build)
+    throw new Error("--appimage conflicts with --build.");
   if (options.maskNativeAssets && !options.missingAssets) {
     throw new Error("--mask-native-assets requires --missing-assets.");
   }
@@ -137,6 +150,7 @@ const usage = `Usage: pnpm desktop:package:smoke -- [options]
 Options:
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
+  --appimage <path>         Extract and smoke this exact trusted AppImage (not FUSE launch)
   --missing-assets          Expect packaged native runtime assets to be missing
   --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
   --skip-renderer-faults    Skip renderer fault injection when the local display cannot expose CDP targets
@@ -231,7 +245,7 @@ const pickExecutable = (appRoot) => {
   throw new Error(`Could not find packaged app executable under ${appRoot}`);
 };
 
-const resolvePackagedLayout = () => {
+export const resolvePackagedLayout = (extractedRoot) => {
   const explicitAppPath =
     process.env.KOED_DESKTOP_PACKAGE_SMOKE_APP_PATH?.trim();
   const explicitResourcesPath =
@@ -239,7 +253,17 @@ const resolvePackagedLayout = () => {
   const explicitExecutable =
     process.env.KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE?.trim();
   const explicitRunner = process.env.KOED_DESKTOP_PACKAGE_SMOKE_RUNNER?.trim();
+  if (
+    extractedRoot &&
+    (explicitAppPath ||
+      explicitResourcesPath ||
+      explicitExecutable ||
+      explicitRunner)
+  ) {
+    throw new Error("AppImage mode conflicts with packaged layout overrides.");
+  }
   const appPath =
+    extractedRoot ??
     explicitAppPath ??
     (process.platform === "darwin"
       ? resolve(desktopRoot, "release", "mac", "Koed.app")
@@ -253,14 +277,16 @@ const resolvePackagedLayout = () => {
   }
   const resourcesPath =
     explicitResourcesPath ??
-    (process.platform === "darwin"
+    (!extractedRoot && process.platform === "darwin"
       ? resolve(appPath, "Contents", "Resources")
       : resolve(appPath, "resources"));
   const executable =
     explicitExecutable ??
-    (process.platform === "darwin"
-      ? resolve(appPath, "Contents", "MacOS", "Koed")
-      : pickExecutable(appPath));
+    (extractedRoot
+      ? resolve(appPath, "koed")
+      : process.platform === "darwin"
+        ? resolve(appPath, "Contents", "MacOS", "Koed")
+        : pickExecutable(appPath));
   const runner =
     explicitRunner ??
     resolve(
@@ -335,6 +361,17 @@ export const createSmokeEnv = (koedHome, extraEnv = {}) => {
     MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "false",
     ...extraEnv
   };
+  for (const key of [
+    "DATABASE_URL",
+    "REDIS_URL",
+    "EMBEDDING_SERVICE_URL",
+    "PRIVACY_SERVICE_URL",
+    "KOED_EXTERNAL_DATABASE_URL",
+    "KOED_EXTERNAL_REDIS_URL",
+    "KOED_EXTERNAL_EMBEDDING_SERVICE_URL",
+    "KOED_EXTERNAL_PRIVACY_SERVICE_URL"
+  ])
+    delete env[key];
   delete env.KOED_REPO_ROOT;
   delete env.KOED_SERVER_CLI;
   delete env.KOED_PACKAGED_RESOURCES_PATH;
@@ -1426,11 +1463,19 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
   }
 };
 
-const run = async () => {
+const run = async (extractedRoot) => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     console.log(usage);
     return;
+  }
+  if (options.appImage && !extractedRoot) {
+    if (process.platform !== "linux")
+      throw new Error("AppImage smoke requires Linux.");
+    console.error(
+      `[packaged-smoke] extracted AppImage: ${options.appImage}; direct FUSE launch not tested`
+    );
+    return withExtractedAppImage(options.appImage, run);
   }
   const timings = {};
   const totalStartedAt = beginPhase("complete smoke");
@@ -1441,7 +1486,7 @@ const run = async () => {
     timings,
     "package surface verification",
     async () => {
-      const packagedLayout = resolvePackagedLayout();
+      const packagedLayout = resolvePackagedLayout(extractedRoot);
       assertPackagedJsSurface(packagedLayout);
       return packagedLayout;
     }

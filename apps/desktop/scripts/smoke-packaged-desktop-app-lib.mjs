@@ -13,11 +13,29 @@ import {
   clearTimeout as clearTimer
 } from "node:timers";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 
 // Authenticated lifecycle selection rejects symlink ancestors (including /var and /tmp on macOS).
 export const createSmokeHome = (prefix, root = tmpdir()) =>
   realpathSync(mkdtempSync(resolve(root, prefix)));
+
+export const withExtractedAppImage = async (image, work) => {
+  if (!existsSync(image)) throw new Error(`AppImage is missing at ${image}`);
+  const home = createSmokeHome("koed-appimage-extract-");
+  try {
+    const result = spawnSync(image, ["--appimage-extract"], {
+      cwd: home,
+      encoding: "utf8"
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0)
+      throw new Error(`AppImage extraction failed: ${result.stderr}`);
+    return await work(resolve(home, "squashfs-root"));
+  } finally {
+    removeSmokeHome(home);
+  }
+};
 
 export const withSmokeFailureDiagnostics = async (work, preserve) => {
   try {

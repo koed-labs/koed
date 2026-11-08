@@ -24,6 +24,7 @@ import {
   withSmokeFailureDiagnostics,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
+import * as smokeLib from "./smoke-packaged-desktop-app-lib.mjs";
 import {
   createSmokeEnv,
   assertNoSourceCheckoutResolution,
@@ -32,6 +33,7 @@ import {
   parseArgs,
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
+import * as smokeApp from "./smoke-packaged-desktop-app.mjs";
 
 test("failure diagnostics read failing home before cleanup and retain original cause", async () => {
   const home = createSmokeHome("koed-team-diagnostics-test-");
@@ -72,6 +74,73 @@ test("diagnostics failure does not replace original smoke failure", async () => 
   );
 });
 
+test("AppImage mode requires exactly one explicit path and rejects build", () => {
+  assert.equal(
+    parseArgs(["--appimage", "./Koed.AppImage"]).appImage,
+    resolve("./Koed.AppImage")
+  );
+  assert.throws(() => parseArgs(["--appimage"]), /requires a path/);
+  assert.throws(
+    () => parseArgs(["--appimage", "a", "--appimage", "b"]),
+    /once/
+  );
+  assert.throws(() => parseArgs(["--appimage", "a", "--build"]), /--build/);
+});
+
+test("AppImage extraction uses supplied image and removes owned directory on failure", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "appimage-test-"));
+  const image = resolve(root, "Koed.AppImage");
+  writeFileSync(
+    image,
+    "#!/bin/sh\nmkdir -p squashfs-root/resources\ntouch squashfs-root/koed\nchmod +x squashfs-root/koed\n"
+  );
+  chmodSync(image, 0o755);
+  let extracted;
+  try {
+    assert.equal(typeof smokeLib.withExtractedAppImage, "function");
+    await assert.rejects(
+      smokeLib.withExtractedAppImage(image, async (path) => {
+        extracted = path;
+        assert.equal(existsSync(resolve(path, "koed")), true);
+        throw new Error("test failure");
+      }),
+      /test failure/
+    );
+    assert.equal(existsSync(extracted), false);
+    await assert.rejects(
+      smokeLib.withExtractedAppImage(
+        resolve(root, "missing.AppImage"),
+        async () => {}
+      ),
+      /missing/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("extracted AppImage layout uses only its own executable and rejects overrides", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "appimage-layout-"));
+  try {
+    mkdirSync(resolve(root, "resources"));
+    assert.equal(typeof smokeApp.resolvePackagedLayout, "function");
+    const layout = smokeApp.resolvePackagedLayout(root);
+    assert.equal(layout.executable, resolve(root, "koed"));
+    assert.equal(layout.resourcesPath, resolve(root, "resources"));
+    const previous = process.env.KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE;
+    try {
+      process.env.KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE = "/elsewhere/koed";
+      assert.throws(() => smokeApp.resolvePackagedLayout(root), /conflicts/);
+    } finally {
+      if (previous === undefined)
+        delete process.env.KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE;
+      else process.env.KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE = previous;
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("packaged smoke defaults health polling to five seconds", () => {
   assert.equal(parseArgs([]).pollIntervalMs, 5_000);
   assert.equal(parseArgs(["--poll-interval-ms", "2000"]).pollIntervalMs, 2_000);
@@ -105,6 +174,33 @@ test("packaged smoke verifies host proof beneath a private parent outside its pr
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("packaged smoke ignores inherited external service endpoints", () => {
+  const keys = [
+    "DATABASE_URL",
+    "REDIS_URL",
+    "KOED_EXTERNAL_DATABASE_URL",
+    "KOED_EXTERNAL_REDIS_URL",
+    "EMBEDDING_SERVICE_URL",
+    "PRIVACY_SERVICE_URL",
+    "KOED_EXTERNAL_EMBEDDING_SERVICE_URL",
+    "KOED_EXTERNAL_PRIVACY_SERVICE_URL"
+  ];
+  const previous = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]])
+  );
+  try {
+    for (const key of keys) process.env[key] = "host-service";
+    const env = createSmokeEnv("/tmp/private-smoke-home");
+    assert.equal(env.KOED_HOME, "/tmp/private-smoke-home");
+    for (const key of keys) assert.equal(env[key], undefined, key);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
   }
 });
 
