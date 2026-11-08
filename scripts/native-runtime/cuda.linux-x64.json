@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "1.0.0",
+  "target": {
+    "platform": "linux",
+    "architecture": "x64",
+    "libc": { "family": "glibc", "minimumVersion": "2.35" }
+  },
+  "contracts": { "layout": 1, "embedding": 1 },
+  "llamaCpp": {
+    "version": "b10514",
+    "revision": "7221e24f579efbb5fd2a2ced1fffaef1aff2fe0d",
+    "url": "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b10514.tar.gz",
+    "sha256": "95493d301a03abac5e7afd308280fe0413f9b426dba5033ce0386846ad6a709f"
+  },
+  "cuda": {
+    "toolkitVersion": "12.4",
+    "minimumDriverLinux": "550.54.14",
+    "architectures": [75, 80, 86, 89, 90]
+  }
+}

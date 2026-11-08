@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { verifyPackagedControlPlaneCatalog } from "./verify-packaged-control-plane-catalog.mjs";
 import { assertReleasePackageBindings } from "./inspect-release-package-bindings.mjs";
+import { readPackagedNativeCatalog } from "./native-runtime-pins.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const text = (header, start, size) =>
@@ -177,6 +178,9 @@ export const inspectReleasePackage = ({
     version
   });
   return {
+    nativeCatalog: readPackagedNativeCatalog(
+      resolve(root, "vendor/control-plane.js")
+    ),
     integrity,
     inventorySha256: expected.inventorySha256,
     bytes: bytes.length

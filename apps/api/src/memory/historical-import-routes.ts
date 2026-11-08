@@ -249,6 +249,15 @@ const registerGetRunRoute = (
   );
 };
 
+// Matches the run states that accept new sources.
+const openRunStates = new Set([
+  "discovered",
+  "eligible",
+  "queued",
+  "importing",
+  "paused"
+]);
+
 const registerCreateSourceRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
@@ -260,10 +269,27 @@ const registerCreateSourceRoute = (
       requireLocalImportSurface(context);
       const user = await context.auth.authenticate(request);
       const input = createHistoricalImportSourceSchema.parse(request.body);
-      const source = await context
-        .requireRepository()
-        .createHistoricalImportSource({ userId: user.id }, input);
+      const repository = context.requireRepository();
+      const source = await repository.createHistoricalImportSource(
+        { userId: user.id },
+        input
+      );
       if (!source) {
+        // An open run means the artifact was the problem; a missing or closed
+        // run tells the caller to start a new one.
+        const run = await repository.getHistoricalImportRun(
+          { userId: user.id },
+          input.runId
+        );
+        if (run && openRunStates.has(run.state)) {
+          throw Object.assign(
+            new Error("Historical import artifact is not available"),
+            {
+              statusCode: 409,
+              code: "historical_import_artifact_unavailable"
+            }
+          );
+        }
         throw Object.assign(new Error("Historical import run not found"), {
           statusCode: 409,
           code: "historical_import_run_not_found"

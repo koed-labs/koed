@@ -104,3 +104,8 @@ export {
 export const setupCommandChannel = "koed:setup:command";
 export const setupProgressEventChannel = "koed:setup:progress";
 export const desktopStatusChangedChannel = "koed:status:changed";
+
+export const presentationPreferencesGetChannel =
+  "koed:presentation-preferences:get";
+export const presentationPreferencesSetChannel =
+  "koed:presentation-preferences:set";

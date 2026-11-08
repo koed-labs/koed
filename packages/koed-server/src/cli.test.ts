@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   existsSync,
   mkdtempSync,
@@ -32,6 +32,33 @@ const writer = () => {
   };
 };
 
+// Setup connects the AI Client in this KOED_HOME after verifying it.
+const integrationHome = mkdtempSync(resolve(tmpdir(), "koed-cli-integration-"));
+const verifiedIntegrationDependencies = {
+  collectStatus: async () => ({
+    ...status,
+    koedHome: integrationHome,
+    codex: {
+      state: "healthy" as const,
+      configured: true,
+      details: { configuredKoedHome: integrationHome, mcpAdapter: "/adapter" }
+    }
+  }),
+  resolvePaths: () => resolveKoedServerPaths({ KOED_HOME: integrationHome })
+};
+afterAll(() => rmSync(integrationHome, { recursive: true, force: true }));
+
+// No automatic history has run for any AI Client.
+const noHistoricalIngestion = {
+  lifecycle: "unknown",
+  selected: null,
+  completed: 0,
+  skipped: 0,
+  updatedAt: null,
+  lastErrorCode: null,
+  failingSince: null
+} as const;
+
 const status: KoedServerStatus = {
   ok: true,
   state: "healthy",
@@ -46,6 +73,11 @@ const status: KoedServerStatus = {
   embeddingService: { state: "healthy" },
   privacyService: { state: "healthy" },
   localAiRuntime: { state: "healthy" },
+  historicalIngestion: {
+    codex: noHistoricalIngestion,
+    claude: noHistoricalIngestion,
+    pi: noHistoricalIngestion
+  },
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },
@@ -756,6 +788,39 @@ describe("JSON command output", () => {
 
     expect(exitCode).toBe(2);
     expect(stderr.text()).toContain("Unknown command");
+  });
+
+  it("preserves an empty CUDA device mask when installing the release runtime", async () => {
+    const release = await import("./runtime-release.js");
+    const install = vi
+      .spyOn(release, "installReleaseRuntime")
+      .mockRejectedValue(new Error("Stop before accessing the host runtime."));
+    vi.stubEnv("CUDA_VISIBLE_DEVICES", "");
+    try {
+      await runKoedServerCli(
+        [
+          "runtime",
+          "install",
+          "--provider",
+          "release",
+          "--dependency-mode",
+          "bundled-local",
+          "--with-cuda",
+          "--json"
+        ],
+        {
+          stdout: writer().stream,
+          resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+          loadEnvironment: () => ({ CUDA_VISIBLE_DEVICES: "0" })
+        }
+      );
+      expect(
+        install.mock.calls[0]?.[1]?.environment?.CUDA_VISIBLE_DEVICES
+      ).toBe("");
+    } finally {
+      install.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("prints packaged runtime install --json", async () => {
@@ -1749,13 +1814,14 @@ describe("JSON command output", () => {
     let completed = false;
     const exitCode = await runKoedServerCli(["setup", "codex", "--json"], {
       stdout: stdout.stream,
+      ...verifiedIntegrationDependencies,
       setupCodex: async () => {
         await Promise.resolve();
         completed = true;
         return {
           ok: true,
           state: "healthy",
-          koedHome: "/tmp/koed",
+          koedHome: integrationHome,
           apiUrl: "http://localhost:3300",
           checkedAt: "2026-01-01T00:00:00.000Z",
           command: "codex setup"
@@ -1773,10 +1839,11 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["setup", "claude", "--json"], {
       stdout: stdout.stream,
+      ...verifiedIntegrationDependencies,
       setupClaude: async () => ({
         ok: true,
         state: "healthy",
-        koedHome: "/tmp/koed",
+        koedHome: integrationHome,
         checkedAt: "2026-01-01T00:00:00.000Z",
         command: "claude mcp add --scope user koed",
         settingsPath: "/tmp/.claude/settings.json"
@@ -1797,12 +1864,13 @@ describe("JSON command output", () => {
       ["setup", "claude", "--background-recall", "--json"],
       {
         stdout: stdout.stream,
+        ...verifiedIntegrationDependencies,
         setupClaude: async (_environment, _spawn, options) => {
           consent = options;
           return {
             ok: true,
             state: "healthy",
-            koedHome: "/tmp/koed",
+            koedHome: integrationHome,
             checkedAt: "2026-01-01T00:00:00.000Z",
             command: "claude mcp add",
             settingsPath: "/tmp/isolated/settings.json",
@@ -1857,7 +1925,7 @@ describe("JSON command output", () => {
     const result = {
       ok: true,
       state: "healthy" as const,
-      koedHome: "/tmp/koed",
+      koedHome: integrationHome,
       checkedAt: "2026-01-01T00:00:00.000Z",
       command: "client operation"
     };
@@ -1878,6 +1946,7 @@ describe("JSON command output", () => {
       expect(
         await runKoedServerCli(["repair", client, "--json"], {
           stdout: repairOutput.stream,
+          ...verifiedIntegrationDependencies,
           ...(repairKey ? { repairCodex: () => result } : {}),
           ...(client === "claude" ? { setupClaude: () => result } : {}),
           ...(client === "pi" ? { setupPi: () => result } : {})
@@ -1888,6 +1957,7 @@ describe("JSON command output", () => {
       expect(
         await runKoedServerCli(["remove", client, "--json"], {
           stdout: removeOutput.stream,
+          ...verifiedIntegrationDependencies,
           ...(client === "codex" ? { removeCodex: () => result } : {}),
           ...(client === "claude" ? { removeClaude: () => result } : {}),
           ...(client === "pi" ? { removePi: () => result } : {})
@@ -1957,10 +2027,11 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["repair", "codex", "--json"], {
       stdout: stdout.stream,
+      ...verifiedIntegrationDependencies,
       repairCodex: async () => ({
         ok: true,
         state: "healthy",
-        koedHome: "/tmp/koed",
+        koedHome: integrationHome,
         apiUrl: "http://localhost:43300",
         checkedAt: "2026-01-01T00:00:00.000Z",
         command: "node scripts/configure-codex.mjs"
@@ -1982,13 +2053,14 @@ describe("JSON command output", () => {
       ["setup", "codex", "--without-memory-guidance", "--json"],
       {
         stdout: stdout.stream,
+        ...verifiedIntegrationDependencies,
         setupCodex: async (options = {}) => {
           configuredValue =
             options.environment?.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED;
           return {
             ok: true,
             state: "healthy",
-            koedHome: "/tmp/koed",
+            koedHome: integrationHome,
             apiUrl: "http://localhost:3300",
             checkedAt: "2026-01-01T00:00:00.000Z",
             command: "node scripts/clients-bootstrap.mjs"
@@ -2016,12 +2088,13 @@ describe("JSON command output", () => {
         {
           stdout: stdout.stream,
           stderr: stderr.stream,
+          ...verifiedIntegrationDependencies,
           setupCodex: async (options = {}) => {
             configuredValue = options.environment?.KOED_CODEX_STOP_DELIVERY;
             return {
               ok: true,
               state: "healthy",
-              koedHome: "/tmp/koed",
+              koedHome: integrationHome,
               apiUrl: "http://localhost:3300",
               checkedAt: "2026-01-01T00:00:00.000Z",
               command: "node scripts/clients-bootstrap.mjs"

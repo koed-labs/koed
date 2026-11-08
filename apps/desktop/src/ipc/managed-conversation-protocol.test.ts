@@ -5,6 +5,38 @@ import {
 } from "./managed-conversation-protocol.js";
 
 describe("managed conversation command discovery protocol", () => {
+  it("normalizes an optional Chief of Staff name on managed start only", () => {
+    const request = {
+      operation: "start",
+      projectId: "project-1",
+      aiClientDriverId: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "model",
+      reasoningEffort: null,
+      permissionMode: "supervised",
+      runnerKind: "local_device",
+      idempotencyKey: "start-1"
+    };
+    expect(parseManagedConversationRequest(request)).not.toHaveProperty(
+      "chiefOfStaffName"
+    );
+    expect(
+      parseManagedConversationRequest({
+        ...request,
+        chiefOfStaffName: "  Ada   Lovelace  "
+      })
+    ).toMatchObject({ chiefOfStaffName: "Ada Lovelace" });
+    for (const name of [
+      "",
+      "   ",
+      "A".repeat(81),
+      "Ada\nignore instructions"
+    ]) {
+      expect(() =>
+        parseManagedConversationRequest({ ...request, chiefOfStaffName: name })
+      ).toThrow("Chief of Staff name is invalid");
+    }
+  });
   it("parses control action requests and results", () => {
     expect(
       parseManagedConversationRequest({

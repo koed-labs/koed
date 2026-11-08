@@ -141,6 +141,38 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
     await admin.end();
   });
 
+  it("replays an optional Project creation request through the API", async () => {
+    const actor = await owner();
+    const app = Fastify();
+    registerPersonalProjectRoutes(app, {
+      requireRepository: () => repo,
+      auth: { authenticate: async () => ({ id: actor.userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      }
+    } as unknown as ApiRouteContext);
+    try {
+      const requestId = randomUUID();
+      const create = (name: string) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/personal/projects",
+          payload: { name, requestId }
+        });
+      const first = await create("API recovery");
+      expect(first.statusCode).toBe(201);
+      const replay = await create("API recovery");
+      expect(replay.statusCode).toBe(201);
+      expect(replay.json().project.projectId).toBe(
+        first.json().project.projectId
+      );
+      expect((await create("Different")).statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("demonstrates two checkouts, later capture, rename, rule removal, restart, explicit inclusion and deletion through real API and Desktop inventories", async () => {
     const actor = await owner();
     await capture(actor);
@@ -191,6 +223,16 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
           (p) => p.namedProject?.projectId === projectId
         )?.threads
       ).toHaveLength(2);
+      const kin = { shape: "cube", colour: "#55cca3", personality: "curious" };
+      const saved = await app.inject({
+        method: "POST",
+        url: `/v1/personal/projects/${projectId}/sources`,
+        payload: {
+          expectedVersion: projects[0]!.version,
+          changes: [{ action: "set_details", name: projects[0]!.name, kin }]
+        }
+      });
+      expect(saved.statusCode, saved.body).toBe(200);
       expect(
         (
           await app.inject({
@@ -198,7 +240,7 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
             url: `/v1/personal/projects/${projectId}`,
             payload: {
               name: "Koed work",
-              expectedVersion: projects[0]!.version
+              expectedVersion: saved.json().project.version
             }
           })
         ).statusCode
@@ -233,6 +275,7 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
       let named = (await inventory()).projects.find(
         (p) => p.namedProject?.projectId === projectId
       )!;
+      expect(named.namedProject?.kin).toEqual(kin);
       expect(named.threads).toHaveLength(0);
       expect(named.inclusionRules).toHaveLength(0);
       expect(await repo.listNamedPersonalProjects(actor)).toHaveLength(1);

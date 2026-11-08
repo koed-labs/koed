@@ -20,6 +20,7 @@
     "apps/desktop/dist-types/**",
     "apps/desktop/release/**",
     "apps/desktop/.koed-runtime/**",
+    "apps/desktop/src/renderer/v1/pixelkin/vendor/**",
     "**/coverage/**",
     "**/target/**",
     "node_modules/**",
@@ -210,6 +211,8 @@
       "files": [
         "apps/api/src/**/*.ts",
         "apps/worker/src/**/*.ts",
+        "apps/desktop/src/{project-memory-ui,source-diff}.ts",
+        "apps/desktop/src/renderer/collaboration/chatTimelineRows.ts",
         "packages/*/src/**/*.ts"
       ],
       "rules": {
@@ -241,6 +244,8 @@
     {
       "files": [
         "apps/api/src/server.test.ts",
+        "apps/desktop/src/{project-memory-ui,source-diff}.{test,spec}.ts",
+        "apps/desktop/src/renderer/collaboration/chatTimelineRows.{test,spec}.ts",
         "packages/*/src/**/*.test.ts",
         "packages/*/src/**/*.spec.ts",
         "packages/*/tests/**/*.test.ts",

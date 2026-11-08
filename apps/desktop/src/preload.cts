@@ -1,3 +1,8 @@
+import {
+  presentationPreferencesGetChannel,
+  presentationPreferencesSetChannel
+} from "./ipc/protocol.js";
+import type { PresentationPreferences } from "./window/presentation-preferences.js";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   CollaborationCommandResult,
@@ -10,10 +15,12 @@ import {
   collaborationRendererEventSchema
 } from "@koed/shared/collaboration";
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
+import { createV1StatePreloadApi } from "./ipc/v1-state-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
 import { createManagedProjectPreloadApi } from "./ipc/managed-project-preload.js";
 import { createPersonalDevicePairingPreloadApi } from "./ipc/personal-device-pairing-preload.js";
+import { createDesktopUpdatePreloadApi } from "./ipc/update-preload.js";
 import { desktopFeatureFlagsFromEnvironment } from "./ipc/desktop-feature-flags.js";
 import {
   cliInstallCommandChannel,
@@ -45,6 +52,17 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     }
     return ipcRenderer.invoke(invokeChannel, command, args);
   },
+  v1State: createV1StatePreloadApi((channel, value) =>
+    ipcRenderer.invoke(channel, value)
+  ),
+  updates: createDesktopUpdatePreloadApi(
+    (channel, value) => ipcRenderer.invoke(channel, value),
+    {
+      on: (channel, listener) => ipcRenderer.on(channel, listener),
+      removeListener: (channel, listener) =>
+        ipcRenderer.removeListener(channel, listener)
+    }
+  ),
   personalMemory: createPersonalMemoryPreloadApi(
     (channel, value) => ipcRenderer.invoke(channel, value),
     {
@@ -83,6 +101,12 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     get: () => ipcRenderer.invoke(themePreferenceGetChannel),
     set: (preference: "light" | "dark" | "system") =>
       ipcRenderer.invoke(themePreferenceSetChannel, preference)
+  }),
+  presentationPreferences: Object.freeze({
+    get: (): Promise<PresentationPreferences> =>
+      ipcRenderer.invoke(presentationPreferencesGetChannel),
+    set: (value: PresentationPreferences): Promise<PresentationPreferences> =>
+      ipcRenderer.invoke(presentationPreferencesSetChannel, value)
   }),
   hardwareAcceleration: Object.freeze({
     get: () => ipcRenderer.invoke(hardwareAccelerationGetChannel),

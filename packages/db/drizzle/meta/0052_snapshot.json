@@ -1,6 +1,6 @@
 {
-  "id": "d4f31551-cb01-471a-bb5a-b4e63f3211eb",
-  "prevId": "d164f22f-1e81-4c8a-9cb7-9aa6c2f284e5",
+  "id": "9f6f08e9-6750-45fe-a8e7-106412e85cc0",
+  "prevId": "af07e2cf-5b74-4cf6-9055-e66a99685264",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -15796,6 +15796,12 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "chief_of_staff_name": {
+          "name": "chief_of_staff_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -15880,6 +15886,10 @@
         "managed_conversation_executions_ai_client_instance_check": {
           "name": "managed_conversation_executions_ai_client_instance_check",
           "value": "char_length(\"managed_conversation_executions\".\"ai_client_instance_id\") <= 128\n        and \"managed_conversation_executions\".\"ai_client_instance_id\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'"
+        },
+        "managed_conversation_executions_chief_of_staff_name_check": {
+          "name": "managed_conversation_executions_chief_of_staff_name_check",
+          "value": "\"chief_of_staff_name\" IS NULL OR (char_length(\"chief_of_staff_name\") BETWEEN 1 AND 80 AND \"chief_of_staff_name\" = btrim(\"chief_of_staff_name\") AND \"chief_of_staff_name\" !~ '[[:cntrl:]]')"
         },
         "managed_conversation_executions_generation_check": {
           "name": "managed_conversation_executions_generation_check",
@@ -25065,195 +25075,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.peer_online_admission_attempts": {
-      "name": "peer_online_admission_attempts",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "attempt_id": {
-          "name": "attempt_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_head": {
-          "name": "expected_head",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approver_device_id": {
-          "name": "approver_device_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_json": {
-          "name": "target_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "transcript_hash": {
-          "name": "transcript_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome_hash": {
-          "name": "outcome_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome_json": {
-          "name": "outcome_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_admission_attempts_group_id_peer_online_membership_groups_group_id_fk": {
-          "name": "peer_online_admission_attempts_group_id_peer_online_membership_groups_group_id_fk",
-          "tableFrom": "peer_online_admission_attempts",
-          "tableTo": "peer_online_membership_groups",
-          "columnsFrom": ["group_id"],
-          "columnsTo": ["group_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_admission_attempts_group_id_attempt_id_pk": {
-          "name": "peer_online_admission_attempts_group_id_attempt_id_pk",
-          "columns": ["group_id", "attempt_id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_membership_evidence": {
-      "name": "peer_online_membership_evidence",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "position": {
-          "name": "position",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "hash": {
-          "name": "hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "json": {
-          "name": "json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_membership_evidence_group_id_peer_online_membership_groups_group_id_fk": {
-          "name": "peer_online_membership_evidence_group_id_peer_online_membership_groups_group_id_fk",
-          "tableFrom": "peer_online_membership_evidence",
-          "tableTo": "peer_online_membership_groups",
-          "columnsFrom": ["group_id"],
-          "columnsTo": ["group_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_membership_evidence_group_id_position_pk": {
-          "name": "peer_online_membership_evidence_group_id_position_pk",
-          "columns": ["group_id", "position"]
-        }
-      },
-      "uniqueConstraints": {
-        "peer_online_membership_evidence_group_id_hash_unique": {
-          "name": "peer_online_membership_evidence_group_id_hash_unique",
-          "nullsNotDistinct": false,
-          "columns": ["group_id", "hash"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_membership_groups": {
-      "name": "peer_online_membership_groups",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "genesis_hash": {
-          "name": "genesis_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "record_count": {
-          "name": "record_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "conflict": {
-          "name": "conflict",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "incomplete": {
-          "name": "incomplete",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "limit_evidence": {
-          "name": "limit_evidence",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.pending_share_operations": {
       "name": "pending_share_operations",
       "schema": "",
@@ -28790,6 +28611,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "create_request_id": {
+          "name": "create_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "create_request_name": {
+          "name": "create_request_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -28810,6 +28643,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "personal_named_projects_owner_create_request_uidx": {
+          "name": "personal_named_projects_owner_create_request_uidx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "create_request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"personal_named_projects\".\"create_request_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -28842,6 +28697,10 @@
         "personal_named_projects_version_check": {
           "name": "personal_named_projects_version_check",
           "value": "\"personal_named_projects\".\"version\">0"
+        },
+        "personal_named_projects_create_request_pair_check": {
+          "name": "personal_named_projects_create_request_pair_check",
+          "value": "(\"personal_named_projects\".\"create_request_id\" is null) = (\"personal_named_projects\".\"create_request_name\" is null)"
         }
       },
       "isRLSEnabled": false

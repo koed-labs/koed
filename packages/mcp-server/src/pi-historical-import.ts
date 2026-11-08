@@ -27,7 +27,7 @@ import {
   automaticHistoricalPolicyAdmits,
   completeAutomaticHistoricalRun,
   completeAutomaticHistoricalSource,
-  createAutomaticHistoricalRun,
+  createHistoricalSourceInOpenRun,
   historicalObjectValue,
   resolveAutomaticHistoricalJournalBatchBytes,
   selectRecentHistoricalCandidates,
@@ -708,16 +708,37 @@ export const createPiHistoricalProviderAdapter = (input: {
         };
       }
       if (!source) {
-        const artifact = await registerPiHistoricalTranscriptSource(
-          input.client,
-          selectionSignal(candidate),
-          env,
-          {
-            frontierOffset: currentSelection.frontierOffset,
-            frontierLine: currentSelection.frontierLine,
-            maxBytesPerPass: maxJournalBytesPerPass
-          }
-        );
+        let artifact: Awaited<
+          ReturnType<typeof registerPiHistoricalTranscriptSource>
+        >;
+        try {
+          artifact = await registerPiHistoricalTranscriptSource(
+            input.client,
+            selectionSignal(candidate),
+            env,
+            {
+              frontierOffset: currentSelection.frontierOffset,
+              frontierLine: currentSelection.frontierLine,
+              maxBytesPerPass: maxJournalBytesPerPass
+            }
+          );
+        } catch (error) {
+          // Live capture started after this Conversation was selected. Its
+          // history stays a conflict (post-selection bytes are never history),
+          // but the Conversation is skipped so it can't hold back every newer
+          // selection on every pass.
+          if (
+            !(error instanceof Error) ||
+            error.message !== "pi_historical_frontier_conflict"
+          )
+            throw error;
+          return {
+            state: "skipped",
+            selection: currentSelection,
+            ...(runId ? { runId } : {}),
+            diagnosticCode: error.message
+          };
+        }
         currentSelection = {
           ...currentSelection,
           artifactId: artifact.id,
@@ -736,16 +757,16 @@ export const createPiHistoricalProviderAdapter = (input: {
       source ??= await lookupHistoricalSource(input.client, artifactId);
       let activeRunId = source?.runId ?? runId;
       if (!source) {
-        activeRunId ??= await createAutomaticHistoricalRun(input.client);
-        await input.client.createHistoricalImportSource({
-          runId: activeRunId,
-          artifactId,
-          aiClient: "pi",
-          detectedProject: {
-            path: candidate.cwd,
-            cwd: candidate.cwd
-          }
-        });
+        activeRunId = (
+          await createHistoricalSourceInOpenRun(input.client, activeRunId, {
+            artifactId,
+            aiClient: "pi",
+            detectedProject: {
+              path: candidate.cwd,
+              cwd: candidate.cwd
+            }
+          })
+        ).runId;
         return {
           state: "progress",
           selection: currentSelection,

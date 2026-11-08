@@ -50,11 +50,10 @@ Publication remains a separate decision.
 - [ ] Bind all native reports, frozen components, and the complete embedded catalog to the final reviewed release candidate.
 - [ ] Complete signed/notarized clean-Mac launch and downloaded native-code acceptance using the final signed artifacts.
 - [ ] Complete required release CI and exact public runtime-URL installation against that candidate.
-- [ ] Find a long-term way to prove CUDA execution for each release. The
-      Release workflow no longer waits for a self-hosted `koed-cuda` GPU runner,
-      so the CUDA Privacy archive ships with CPU-fallback qualification only.
-      Options include a hosted or Blacksmith GPU runner, or making the manual
-      Trusted Linux CUDA package validation a tracked pre-publish step.
+- [ ] Define when release candidates require separate GPU qualification.
+      The hosted Linux release job checks the CUDA Privacy archive's CPU fallback.
+      Track actual CUDA execution against the candidate's digests when a
+      compatible GPU host is available.
 - [ ] Before publishing a resumed draft release, verify that its tag and target
       commit match the commit the release assets were built from.
 - [ ] Stop the MCP Server's `tsc -b --force` from recompiling the Server, which
@@ -62,7 +61,34 @@ Publication remains a separate decision.
       build. Add coverage that a full build keeps the catalog, with and without
       `KOED_COMPONENT_MANIFEST_CATALOG`.
 
+- [ ] Investigate macOS host-memory exhaustion during packaged Privacy startup
+      on a 16 GB Mac. The settings candidate tested with official v0.10.3 pins
+      passed download, model verification, synthetic filtering, and activation;
+      the automatic-provider startup was interrupted by a User restart. A later
+      CPU-only recovery hit the conservative 5 GiB process-RSS cutoff. A
+      User-approved retry with a 6.5 GiB cutoff and system-pressure guards passed
+      native service and nested-page readiness: peak aggregate RSS 6,449 MiB,
+      system memory availability at least 55%, and normal kernel pressure.
+      Measure memory by service during model loading and provider calibration
+      before attributing the original exhaustion. The CPU result does not qualify
+      automatic-provider behavior; shared RSS pages are not physical pressure.
+
 The [installation guide](docs/optional-privacy-installation.md) defines compatibility selection, filtering readiness, and CPU fallback.
+
+## Conversation inspector
+
+- [x] Make startup Project inventory resilient to concurrent capture. Inspection
+      uses a bounded owner-scoped membership snapshot and retries discarded reads
+      after membership changes. Generic selection consumers retain their
+      owner-wide fence. See [Personal inventory](docs/personal-inventory.md).
+- [ ] Hide the unavailable prompt composer for captured conversations when no
+      supported continuation action exists, so the inspector gets that space.
+      Keep the composer for Conversations that can be continued.
+- [ ] Make collapsed activity more informative using recorded tool names and
+      file/command context where available; preserve the original source and do
+      not infer successful outcomes from missing status.
+- [ ] Add unobtrusive date separators for Conversations spanning multiple days.
+      Preserve stable virtualized row keys and pagination anchors.
 
 ## Desktop Preferences design
 
@@ -188,6 +214,18 @@ Follow-ups:
 - [ ] Qualify supported Linux targets, the declared glibc baseline, and actual
       WSL2 on a Windows host. Container results do not establish WSL2 behavior or
       native performance. Keep CUDA reports tied to their exact candidate.
+- [ ] Qualify the packaged Linux CUDA add-on on an NVIDIA RTX A2000 (6 GB) or
+      GeForce RTX 3070 (8 GB). Run the default embedding model through the shipped
+      CLI, compare its vectors with the CPU results, and record peak VRAM, driver
+      version, GPU model, and artifact digests before claiming support at that size.
+- [ ] Stop fully rehashing release-managed native payloads (up to about 1.6 GB
+      with CUDA) on every `koed start` and `runtime status`. Keep full verification
+      for install and explicit `runtime validate`, and decide whether start and status
+      may rely on a bounded identity check instead.
+- [ ] Pass the install's phase-1 CUDA host result into staged GPU validation so
+      one `--with-cuda` install does not run `nvidia-smi` and the libcuda probe twice.
+- [ ] Share one helper for the `runtime/<name>` → `native/current/<name>` entry-link
+      check used by release-runtime detection, start, and selection admission.
 - [ ] Qualify opt-in Desktop Install CLI: launcher validity, PATH checks,
       conflict handling, repair/removal, relocation, npm coexistence, and execution
       through the bundled runtime without system Node. Preserve User state on uninstall.
@@ -297,6 +335,15 @@ children share lineage and must not count as independent corroboration.
       remains limited to 50 Conversations per supported AI Client from the last
       30 days. Keep selection controls separate from fresh-import Project assignment
       and preserve the migration cutoff for previously captured history.
+      Desktop Home should state these limits when it shows ingestion progress.
+- [ ] Add a Desktop notification when historical ingestion finishes, once
+      notification permission and platform support are verified.
+- [ ] Report ingested message counts for historical ingestion. Each importer
+      counts differently today, so Home shows finished Conversations only.
+- [ ] Stop completion reconciliation from closing an automatic historical run
+      while the coordinator still has selections to add. Providers now start a
+      new run when that happens, which works but leaves one run per batch of
+      Conversations; a run needs a record of pending selections to fix it.
 - [ ] Release the Project cutover as one coordinated change. Preserve coordinated
       product versions and integrate branch-preference behavior after that
       cutover. PDS branch preference must use verified captured observations and

@@ -101,7 +101,7 @@ installation applies it durably and removes or hides the corresponding source an
 derived Recall data before acknowledging. Retain deletion evidence or equivalent
 floors for the life of the group so delayed checkpoints cannot resurrect deleted
 Memory. Offline devices remain pending until they acknowledge; revocation does not
-prove that a device deleted data. ADR 0067 defines the recipient roster, signed
+prove that a device deleted data. ADR 0068 defines the recipient roster, signed
 acknowledgement, retry and completion semantics; authorization across concurrent
 deletion and membership decisions and durable transaction ordering still require
 review before enabling the profile.
@@ -204,7 +204,7 @@ under the group lock and withholds stale records until re-prepared. Membership
 can change after enumeration, so delivery must recheck the fence at its own
 sensitive boundary.
 
-Migration 0057 backfills existing deletion floors by clearing their checkpoint
+Migration 0061 backfills existing deletion floors by clearing their checkpoint
 cursor and deleting their checkpoint rows. Database triggers make deletion floors
 and checkpoint records immutable, prevent changing or deleting a floor, and block
 new checkpoint rows after a floor exists. Re-preparation can update only the
@@ -217,7 +217,7 @@ Do not expose it as peer sync until those boundaries are enforced and reviewed.
 
 ### Deletion recipients and acknowledgement
 
-Migration 0059 adds a per-deletion recipient roster, following ADR 0067. A local
+Migration 0063 adds a per-deletion recipient roster, following ADR 0068. A local
 deletion request records the requesting device and, under the group lock, adds
 every other active member as a pending recipient. Accepted membership appends and
 admissions reconcile every roster in the same transaction: new members are added
@@ -250,7 +250,7 @@ unimplemented.
 
 ### Explicit restore quarantine
 
-Migration 0058 adds a durable, one-way per-group restore-quarantine declaration.
+Migration 0062 adds a durable, one-way per-group restore-quarantine declaration.
 Database triggers reject ordinary `UPDATE`, `DELETE`, and `TRUNCATE` of the
 latch; privileged DDL remains outside this application-level guarantee.
 Declaration requires an existing membership group and matching genesis anchor,

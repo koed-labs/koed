@@ -165,6 +165,10 @@ let reviewed: SourceContext | null = null;
 const manageSource: NonNullable<
   PersonalDesktopApi["manageSourceContext"]
 > = async (input) => {
+  if (input.action === "organize")
+    throw new Error(
+      "Use the Project management validation fixture for organization changes."
+    );
   if (input.action === "get") return { context };
   if (input.action === "apply") {
     if (!reviewed) throw new Error("Preview required");

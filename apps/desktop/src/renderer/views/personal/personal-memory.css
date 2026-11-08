@@ -1107,29 +1107,35 @@ button.personal-project-details-folder:hover {
 }
 
 .personal-conversation-body,
-.personal-conversation-body * {
+.personal-conversation-body *,
+.v1-nav-scroll {
   scrollbar-color: var(--border) transparent;
   scrollbar-width: thin;
 }
 
 @supports selector(::-webkit-scrollbar) {
   .personal-conversation-body,
-  .personal-conversation-body * {
+  .personal-conversation-body *,
+  .v1-nav-scroll {
     scrollbar-color: auto;
     scrollbar-width: auto;
   }
 
-  .personal-conversation-body ::-webkit-scrollbar {
+  .personal-conversation-body ::-webkit-scrollbar,
+  .v1-nav-scroll::-webkit-scrollbar {
     height: 10px;
     width: 10px;
   }
 
   .personal-conversation-body ::-webkit-scrollbar-track,
-  .personal-conversation-body ::-webkit-scrollbar-corner {
+  .personal-conversation-body ::-webkit-scrollbar-corner,
+  .v1-nav-scroll::-webkit-scrollbar-track,
+  .v1-nav-scroll::-webkit-scrollbar-corner {
     background: transparent;
   }
 
-  .personal-conversation-body ::-webkit-scrollbar-thumb {
+  .personal-conversation-body ::-webkit-scrollbar-thumb,
+  .v1-nav-scroll::-webkit-scrollbar-thumb {
     background: var(--border);
     background-clip: padding-box;
     border: 3px solid transparent;
@@ -1137,11 +1143,13 @@ button.personal-project-details-folder:hover {
     min-height: 32px;
   }
 
-  .personal-conversation-body ::-webkit-scrollbar-thumb:hover {
+  .personal-conversation-body ::-webkit-scrollbar-thumb:hover,
+  .v1-nav-scroll::-webkit-scrollbar-thumb:hover {
     background-color: var(--muted-foreground);
   }
 
-  .personal-conversation-body ::-webkit-scrollbar-button {
+  .personal-conversation-body ::-webkit-scrollbar-button,
+  .v1-nav-scroll::-webkit-scrollbar-button {
     display: none;
   }
 }

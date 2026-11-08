@@ -1,0 +1,40 @@
+.v1-launch {
+  width: 100%;
+}
+.v1-launch .personal-new-conversation-composer {
+  width: 100%;
+}
+.v1-launch .personal-managed-meta-row {
+  display: none;
+}
+.v1-project-picker {
+  position: relative;
+  margin-bottom: 0.6rem;
+}
+.v1-project-picker > button {
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.5rem;
+  color: inherit;
+  background: transparent;
+}
+.v1-project-picker [role="menu"] {
+  position: absolute;
+  z-index: 20;
+  bottom: 100%;
+  left: 0;
+  display: grid;
+  min-width: 13rem;
+  padding: 0.35rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 0.65rem;
+  background: var(--v1-card);
+  box-shadow: 0 0.8rem 2rem #0002;
+}
+.v1-project-picker [role="menu"] button {
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  border-radius: 0.4rem;
+}
+.v1-project-picker [role="menu"] button:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}

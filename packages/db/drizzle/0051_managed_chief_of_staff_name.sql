@@ -1,0 +1,2 @@
+ALTER TABLE "managed_conversation_executions" ADD COLUMN "chief_of_staff_name" text;--> statement-breakpoint
+ALTER TABLE "managed_conversation_executions" ADD CONSTRAINT "managed_conversation_executions_chief_of_staff_name_check" CHECK ("chief_of_staff_name" IS NULL OR (char_length("chief_of_staff_name") BETWEEN 1 AND 80 AND "chief_of_staff_name" = btrim("chief_of_staff_name") AND "chief_of_staff_name" !~ '[[:cntrl:]]'));--> statement-breakpoint

@@ -173,7 +173,7 @@ describe.skipIf(!url)("peer online deletion floor migration", () => {
   beforeAll(async () => {
     await admin.query(`create database "${name}"`);
     created = true;
-    const baseline = await createMigrationBaseline("0056_smooth_ultimates");
+    const baseline = await createMigrationBaseline("0060_smooth_ultimates");
     disposeBaseline = baseline.dispose;
     await baseline.apply(pool);
     await seedLegacyRows(pool);

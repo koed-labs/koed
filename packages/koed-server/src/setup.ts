@@ -1,4 +1,8 @@
 import {
+  renderCodexBlock,
+  stripReorderedCodexBlock
+} from "./codex-config-block.mjs";
+import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
@@ -197,7 +201,6 @@ const configureCodexIntegration = ({
   const existing = existsSync(codexConfigPath)
     ? String(readFileSync(codexConfigPath, "utf8"))
     : "";
-  const withoutPrevious = stripCodexOwnershipBlock(existing);
   if (!/^[A-Za-z0-9_-]+$/.test(mcpName))
     throw new Error("MEMORY_MCP_NAME must be a TOML bare server name.");
 
@@ -220,60 +223,17 @@ const configureCodexIntegration = ({
   } else {
     nextInstructions = removeManagedCodexGuidance(existingInstructions);
   }
-  const markerStart = "# >>> koed";
-  const markerEnd = "# <<< koed";
-  const hookCommand = [
+  const config = {
     nodeCommand,
-    runtime.captureHook,
-    "--koed-home",
-    paths.koedHome,
-    "--memory-tool",
-    `mcp__${mcpName}__memory_answer`
-  ]
-    .map(tomlString)
-    .join(" ");
-  const hookEvents = [
-    ["PreToolUse", 10],
-    ["SessionStart", 10],
-    ["UserPromptSubmit", 10],
-    ["PostToolUse", 10],
-    ["Stop", 30],
-    ["SubagentStart", 10],
-    ["SubagentStop", 30]
-  ] as const;
-  const hookBlocks = hookEvents
-    .map(
-      ([eventName, timeout]) => `[[hooks.${eventName}]]
-${eventName === "PreToolUse" ? `matcher = ${tomlString(`mcp__${mcpName}__memory_answer`)}\n` : ""}[[hooks.${eventName}.hooks]]
-type = "command"
-command = ${tomlString(hookCommand)}
-timeout = ${timeout}`
-    )
-    .join("\n\n");
-  const koedBlock = `${markerStart}
-[mcp_servers.${mcpName}]
-command = ${tomlString(nodeCommand)}
-args = [${tomlString(runtime.mcpCli)}]
-enabled = true
-
-[mcp_servers.${mcpName}.tools.memory_answer]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_answer_result]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_answer_cancel]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.tools.memory_workspaces]
-approval_mode = "approve"
-
-[mcp_servers.${mcpName}.env]
-KOED_HOME = ${tomlString(paths.koedHome)}
-
-${hookBlocks}
-${markerEnd}
-`;
+    mcpName,
+    mcpCliPath: runtime.mcpCli,
+    captureHookPath: runtime.captureHook,
+    koedHome: paths.koedHome
+  };
+  const withoutPrevious = stripCodexOwnershipBlock(
+    stripReorderedCodexBlock(existing, config)
+  );
+  const koedBlock = renderCodexBlock(config);
   mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
   writeFileSync(
     codexConfigPath,
@@ -633,7 +593,6 @@ const configureCodexProfile = (
       action:
         "Restart Codex and trust updated hooks if prompted. New sessions will be captured after Codex reloads this config."
     };
-    writeSetupVerification(paths, repaired, writeFileSync);
     return repaired;
   } catch (error) {
     const failures = [error instanceof Error ? error.message : String(error)];
@@ -687,7 +646,6 @@ const configureCodexProfile = (
       action:
         "Review the reported failure, fix the Codex integration artifacts, then run the Codex-specific repair action again."
     };
-    writeSetupVerification(paths, failed, writeFileSync);
     return failed;
   }
 };
@@ -987,31 +945,14 @@ const runSetupBootstrap = (
         ...output,
         ok: false,
         state: "needs_attention",
-        error: `Codex setup failed with exit code ${result.status ?? 1}.`,
+        error: output.stderr?.includes(
+          "Codex Koed ownership markers are duplicated or incomplete."
+        )
+          ? "Codex config.toml has incomplete or duplicate Koed markers. Review the Koed MCP Server and Capture Hook entries before retrying."
+          : `Codex setup failed with exit code ${result.status ?? 1}.`,
         action:
           "Review stdout/stderr, fix the reported client setup failure, then rerun koed setup codex --json."
       };
-};
-
-const writeSetupVerification = (
-  paths: KoedServerPaths,
-  result: { ok: boolean; checkedAt: string; error?: string },
-  writeFileSync: typeof nodeWriteFileSync,
-  successMessage = "Koed core setup completed."
-): void => {
-  writeFileSync(
-    paths.lastVerificationPath,
-    `${JSON.stringify(
-      {
-        ok: result.ok,
-        checkedAt: result.checkedAt,
-        message: result.ok ? successMessage : result.error
-      },
-      null,
-      2
-    )}\n`,
-    { mode: 0o600 }
-  );
 };
 
 export const setupCore = async (
@@ -1102,16 +1043,7 @@ export const setupCodex = async (
 ): Promise<KoedServerSetupCodexResult> => {
   const core = await setupCore(options);
   const writeFileSync = options.writeFileSync ?? nodeWriteFileSync;
-  if (!core.ok) {
-    const paths = resolveKoedServerPaths(options.environment ?? process.env);
-    writeSetupVerification(
-      paths,
-      core,
-      writeFileSync,
-      "Codex setup completed."
-    );
-    return core;
-  }
+  if (!core.ok) return core;
   const environment = options.environment ?? process.env;
   const paths = resolveKoedServerPaths(environment);
   if (
@@ -1173,10 +1105,7 @@ export const setupCodex = async (
     });
   }
   const prepared = prepareSetupCodex(environment, options);
-  if (!prepared.ok) {
-    writeSetupVerification(prepared.paths, prepared.result, writeFileSync);
-    return prepared.result;
-  }
+  if (!prepared.ok) return prepared.result;
   const { context } = prepared;
   try {
     assertAiClientRegistryWritable(context.childEnv);
@@ -1191,12 +1120,6 @@ export const setupCodex = async (
       error: error instanceof Error ? error.message : String(error),
       action: "Fix malformed AI Client registry, then rerun Codex setup."
     };
-    writeSetupVerification(
-      context.paths,
-      failed,
-      writeFileSync,
-      "Codex setup completed."
-    );
     return failed;
   }
   let codexExecutablePath: string;
@@ -1216,12 +1139,6 @@ export const setupCodex = async (
       action:
         "Install Codex or set MEMORY_CODEX_APP_SERVER_BINARY, then rerun Codex setup."
     };
-    writeSetupVerification(
-      context.paths,
-      failed,
-      writeFileSync,
-      "Codex setup completed."
-    );
     return failed;
   }
   persistSetupApiToken(context);
@@ -1251,20 +1168,8 @@ export const setupCodex = async (
         action:
           "Fix the Codex-specific registration, then rerun koed setup codex --json."
       };
-      writeSetupVerification(
-        context.paths,
-        failed,
-        writeFileSync,
-        "Codex setup completed."
-      );
       return failed;
     }
   }
-  writeSetupVerification(
-    context.paths,
-    result,
-    writeFileSync,
-    "Codex setup completed."
-  );
   return result;
 };

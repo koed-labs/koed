@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="263" viewBox="0 0 680 263" role="img" aria-labelledby="t d">
+<title id="t">Koed benchmark results</title>
+<desc id="d">With Koed, 38 of 60 runs passed, against 7 of 60 without it. Coding time was 52% lower, coding tokens 69% lower, and cost with overhead 42% lower.</desc>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;fill:#1F2328}.h{font-size:15px;font-weight:600}.l{font-size:14px}.s{font-size:13px}.m{fill:#59636E}.b{font-weight:600}</style>
+<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#EAEEF2"/><rect width="2" height="6" fill="#7C8694"/></pattern></defs>
+<text x="0" y="16" class="h">Runs passed</text>
+<text x="158" y="16" class="s m">out of 60</text>
+<text x="680" y="16" class="h" text-anchor="end">5.4x more</text>
+<text x="0" y="45" class="l">Without Koed</text>
+<rect x="158" y="30" width="372" height="20" rx="4" fill="#EAEEF2"/>
+<path d="M158 30h39.40a4 4 0 0 1 4 4v12a4 4 0 0 1 -4 4h-39.40z" fill="url(#hatch)"/>
+<text x="680" y="45" class="l" text-anchor="end">7 <tspan class="m">(11.7%)</tspan></text>
+<text x="0" y="77" class="l">With Koed</text>
+<rect x="158" y="62" width="372" height="20" rx="4" fill="#EAEEF2"/>
+<path d="M158 62h231.60a4 4 0 0 1 4 4v12a4 4 0 0 1 -4 4h-231.60z" fill="#3083FF"/>
+<text x="680" y="77" class="l" text-anchor="end">38 <tspan class="m">(63.3%)</tspan></text>
+<text x="0" y="116" class="h">Resources used</text>
+<text x="0" y="145" class="l">Coding time</text>
+<path d="M158 130h174.83a4 4 0 0 1 4 4v12a4 4 0 0 1 -4 4h-174.83z" fill="#3083FF"/>
+<path d="M338.8296810898611 130h187.17a4 4 0 0 1 4 4v12a4 4 0 0 1 -4 4h-187.17z" fill="url(#hatch)"/>
+<text x="680" y="145" class="l" text-anchor="end"><tspan class="b">52% less</tspan></text>
+<text x="0" y="177" class="l">Coding tokens</text>
+<path d="M158 162h112.33a4 4 0 0 1 4 4v12a4 4 0 0 1 -4 4h-112.33z" fill="#3083FF"/>
+<path d="M276.33489123322033 162h249.67a4 4 0 0 1 4 4v12a4 4 0 0 1 -4 4h-249.67z" fill="url(#hatch)"/>
+<text x="680" y="177" class="l" text-anchor="end"><tspan class="b">69% less</tspan></text>
+<text x="0" y="209" class="l">Cost with overhead</text>
+<path d="M158 194h210.41a4 4 0 0 1 4 4v12a4 4 0 0 1 -4 4h-210.41z" fill="#3083FF"/>
+<path d="M374.40573191597605 194h151.59a4 4 0 0 1 4 4v12a4 4 0 0 1 -4 4h-151.59z" fill="url(#hatch)"/>
+<text x="680" y="209" class="l" text-anchor="end"><tspan class="b">42% less</tspan></text>
+<text x="0" y="240" class="s m">20 selected Terminal-Bench 4 tasks, 3 runs each, on GPT-6 Luna. Koed had earlier successful</text>
+<text x="0" y="257" class="s m">sessions for these tasks. Costs are API-equivalent estimates.</text>
+</svg>

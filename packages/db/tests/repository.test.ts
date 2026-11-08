@@ -2515,6 +2515,45 @@ describeDb("memory repository visibility", () => {
         })
       ).execution.id
     ).toBe(legacy.execution.id);
+    const namedRequest = {
+      ...input,
+      idempotencyKey: randomUUID(),
+      chiefOfStaffName: "  Ada   Lovelace  "
+    };
+    const named = await repository.createManagedConversation(
+      actor,
+      namedRequest
+    );
+    expect(named.execution.chiefOfStaffName).toBe("Ada Lovelace");
+    expect(
+      (await repository.createManagedConversation(actor, namedRequest))
+        .execution
+    ).toMatchObject({
+      id: named.execution.id,
+      chiefOfStaffName: "Ada Lovelace"
+    });
+    await expect(
+      repository.createManagedConversation(actor, {
+        ...namedRequest,
+        chiefOfStaffName: "Grace Hopper"
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repository.createManagedConversation(actor, {
+        ...namedRequest,
+        idempotencyKey: randomUUID(),
+        chiefOfStaffName: "  "
+      })
+    ).rejects.toMatchObject({ statusCode: 400 });
+    const otherOwner = await repository.createUser({
+      email: `persona-other-${randomUUID()}@example.com`
+    });
+    expect(
+      await repository.getManagedConversationExecution(
+        { userId: otherOwner.id },
+        named.execution.id
+      )
+    ).toBeNull();
   });
 
   it("admits settings atomically with an idle turn and preserves idempotency and ownership", async () => {
@@ -26619,6 +26658,45 @@ describeDb("memory repository visibility", () => {
     expect(
       await repo.listLocalMemoryAgentSettings({ userId: alice.id })
     ).toHaveLength(3);
+    expect(await repo.listLocalMemoryAgentSettings({ userId: bob.id })).toEqual(
+      []
+    );
+    const actor = { userId: alice.id };
+    const conversation = await repo.upsertLocalMemoryAgentSetting(actor, {
+      flowKey: "conversations",
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "chat",
+      reasoningEffort: "low",
+      timeoutMs: 120000,
+      maxAttempts: 2
+    });
+    const limits = { timeout_ms: 60000, max_attempts: 1 };
+    await repo.setMemoryModel(actor, {
+      provider: "claude",
+      aiClientInstanceId: "claude.work",
+      model: "sonnet",
+      reasoningEffort: "high",
+      limits: {
+        mcp_memory_answer: limits,
+        lcm_summary: limits,
+        session_title: limits,
+        curated_memory_review: limits
+      }
+    });
+    const settings = await repo.listLocalMemoryAgentSettings(actor);
+    expect(settings).toHaveLength(5);
+    expect(settings).toContainEqual(conversation);
+    expect(
+      settings
+        .filter((s) => s.flowKey !== "conversations")
+        .map((s) => [s.flowKey, s.model, s.timeoutMs, s.maxAttempts])
+    ).toEqual([
+      ["curated_memory_review", "sonnet", 150000, 3],
+      ["lcm_summary", "sonnet", 90000, 4],
+      ["mcp_memory_answer", "sonnet", 120000, 2],
+      ["session_title", "sonnet", 60000, 1]
+    ]);
     expect(await repo.listLocalMemoryAgentSettings({ userId: bob.id })).toEqual(
       []
     );

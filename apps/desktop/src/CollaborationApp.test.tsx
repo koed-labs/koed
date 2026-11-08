@@ -50,11 +50,9 @@ import { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 import { DraftStore } from "./renderer/state/drafts.js";
 import type { KoedServerStatus } from "./types.js";
 
-vi.mock("@koed/memory-ui", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@koed/memory-ui")>();
+vi.mock("./renderer/collaboration/ChatTimeline.js", async () => {
   const { useEffect } = await import("react");
   return {
-    ...actual,
     ChatTimeline: ({
       ariaLabel,
       className,
@@ -139,24 +137,27 @@ vi.mock("@koed/memory-ui", async (importOriginal) => {
           ))}
         </div>
       );
-    },
-    VirtualizedTimeline: ({
-      ariaLabel,
-      className,
-      events,
-      renderEvent
-    }: {
-      ariaLabel?: string;
-      className?: string;
-      events: { id: string }[];
-      renderEvent: (event: { id: string }) => ReactNode;
-    }) => (
-      <div role="list" aria-label={ariaLabel} className={className}>
-        {events.map((event) => renderEvent(event))}
-      </div>
-    )
+    }
   };
 });
+
+vi.mock("./renderer/conversation/VirtualizedTimeline.js", () => ({
+  VirtualizedTimeline: ({
+    ariaLabel,
+    className,
+    events,
+    renderEvent
+  }: {
+    ariaLabel?: string;
+    className?: string;
+    events: { id: string }[];
+    renderEvent: (event: { id: string }) => ReactNode;
+  }) => (
+    <div role="list" aria-label={ariaLabel} className={className}>
+      {events.map((event) => renderEvent(event))}
+    </div>
+  )
+}));
 
 const uuid = (suffix: number) =>
   `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
@@ -1397,9 +1398,6 @@ describe("CollaborationApp", () => {
   let root: Root;
 
   beforeEach(() => {
-    (
-      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-    ).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     container.style.height = "900px";
     document.body.append(container);
@@ -1417,9 +1415,6 @@ describe("CollaborationApp", () => {
     delete window.koedDesktop;
     vi.restoreAllMocks();
     vi.useRealTimers();
-    (
-      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-    ).IS_REACT_ACT_ENVIRONMENT = false;
   });
 
   const render = async (
@@ -5433,6 +5428,7 @@ describe("CollaborationApp", () => {
   });
 
   it("shows a Workspace exclusion as pending until acknowledged and then clears the Team preview", async () => {
+    vi.useFakeTimers();
     const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
     const active = activatedOwnedShare();
     let current: OwnedShareItem = active;
@@ -5526,10 +5522,8 @@ describe("CollaborationApp", () => {
       summary: { ...active.summary, workspaceExclusion: exclusion }
     };
     delivery = { ...queued, state: "acknowledged", exclusion };
-    await vi.waitFor(
-      () => expect(document.body.textContent).toContain("All sharing routes"),
-      { timeout: 6000 }
-    );
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(document.body.textContent).toContain("All sharing routes");
     expect(document.body.textContent).toContain("Excluded");
     expect(document.body.querySelector(".collab-share-preview")).toBeNull();
     expect(
@@ -5603,11 +5597,8 @@ describe("CollaborationApp", () => {
       state: "acknowledged",
       exclusion: restored
     };
-    await vi.waitFor(
-      () =>
-        expect(document.body.textContent).not.toContain("All sharing routes"),
-      { timeout: 6000 }
-    );
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(document.body.textContent).not.toContain("All sharing routes");
     expect(document.body.textContent).toContain(
       "Workspace content unavailable"
     );
@@ -7510,6 +7501,7 @@ pnpm test
     });
   });
   it("keeps continuous rule creation pending until its exact Team receipt arrives", async () => {
+    vi.useFakeTimers();
     const snapshot = baseSnapshot();
     const client = createClient(snapshot);
     let delivery: SharingRuleDelivery | null = null;
@@ -7620,10 +7612,8 @@ pnpm test
       state: "acknowledged",
       creation: { pendingShareId, sourceRevision: 12 }
     };
-    await vi.waitFor(
-      () => expect(document.body.textContent).toContain("Sharing accepted"),
-      { timeout: 4000 }
-    );
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(document.body.textContent).toContain("Sharing accepted");
     expect(client.listSharingRuleDeliveries).toHaveBeenCalledWith({
       mutationId: queued.intent.mutationId
     });

@@ -11,27 +11,55 @@ export const PERSONAL_CONFIGURATION_PROTOCOL =
 export const PDS_CONFIGURATION_CAPABILITY_TTL_MS = 180_000;
 export const PDS_CONFIGURATION_CAPABILITY_PATH =
   "/v1/personal-device-sync/relay/configuration-capabilities";
-export const personalConfigurationFeatureSchema = z.enum([
+// Older receivers validate this exact vocabulary and reject the whole record
+// when a new flag appears. They must always be able to read the base view.
+const baseFeatures = [
   "source_context_v1",
   "project_membership_v1",
   "project_defaults_v1"
+] as const;
+export const personalConfigurationFeatureSchema = z.enum([
+  ...baseFeatures,
+  "project_kin_v1"
 ]);
 export type PersonalConfigurationFeature = z.infer<
   typeof personalConfigurationFeatureSchema
 >;
+export const basePdsConfigurationFeatures = (
+  features: PersonalConfigurationFeature[]
+) =>
+  features.filter((feature) => baseFeatures.some((base) => base === feature));
+
+export const pdsConfigurationFeaturesSchema = z
+  .array(personalConfigurationFeatureSchema)
+  .min(1)
+  .max(personalConfigurationFeatureSchema.options.length)
+  .refine(
+    (features) => new Set(features).size === features.length,
+    "Configuration capabilities must be distinct"
+  );
 export const pdsConfigurationCapabilityAdvertisementSchema = z
   .object({
     protocol: z.literal(PERSONAL_CONFIGURATION_PROTOCOL),
-    features: z.array(personalConfigurationFeatureSchema).min(1).max(3),
+    features: pdsConfigurationFeaturesSchema,
+    baseNonce: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{43}$/u)
+      .optional(),
     advertisedAt: z.iso.datetime({ offset: true }),
     expiresAt: z.iso.datetime({ offset: true })
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (new Set(value.features).size !== value.features.length)
+    if (
+      (value.baseNonce !== undefined) !==
+      (basePdsConfigurationFeatures(value.features).length !==
+        value.features.length)
+    )
       ctx.addIssue({
         code: "custom",
-        message: "Configuration capabilities must be distinct"
+        message:
+          "Only an extended advertisement must reference its signed base refresh"
       });
     if (
       new Date(value.expiresAt).getTime() -
@@ -55,11 +83,13 @@ export type PdsConfigurationCapabilityRecord = z.infer<
 >;
 export const createPdsConfigurationCapabilityAdvertisement = (
   features: PersonalConfigurationFeature[],
-  now = new Date()
+  now = new Date(),
+  baseNonce?: string
 ) =>
   pdsConfigurationCapabilityAdvertisementSchema.parse({
     protocol: PERSONAL_CONFIGURATION_PROTOCOL,
     features,
+    ...(baseNonce !== undefined && { baseNonce }),
     advertisedAt: now.toISOString(),
     expiresAt: new Date(
       now.getTime() + PDS_CONFIGURATION_CAPABILITY_TTL_MS

@@ -141,15 +141,17 @@ const connect = (url) =>
     });
   });
 
-const waitFor = async (
+export const waitFor = async (
   evaluate,
   expression,
   label,
-  diagnosticExpression = undefined
+  diagnosticExpression = undefined,
+  { timeoutMs = 5000, now = Date.now, delayImpl = delay } = {}
 ) => {
   let last;
   let lastError;
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
     try {
       last = await evaluate(expression);
       if (last) return last;
@@ -160,7 +162,7 @@ const waitFor = async (
       // useful timeout diagnostic.
       lastError = error;
     }
-    await delay(25);
+    await delayImpl(Math.min(25, Math.max(0, deadline - now())));
   }
   let diagnostic = "";
   if (diagnosticExpression) {
@@ -297,12 +299,16 @@ export const smokePackagedRendererFaults = async ({
     console.error("[packaged-renderer] setup surface started");
     await waitFor(
       evaluate,
-      `document.querySelector('.koed-setup-card h1')?.textContent?.trim() === 'Set up Koed'`,
+      `[...document.querySelectorAll('.lp-workspace button')].some((button) => button.textContent?.trim() === 'Get Started' && !button.disabled)`,
       "setup surface",
       `(() => ({
         title: document.querySelector('h1')?.textContent ?? null,
-        body: document.body.innerText.slice(0, 1000)
-      }))()`
+        body: document.body.innerText.slice(0, 1000),
+        buttons: [...document.querySelectorAll('.lp-workspace button')].map(button => ({ text: button.textContent?.trim(), disabled: button.disabled }))
+      }))()`,
+      // Cold package/model/status inspection can exceed a normal UI transition.
+      // Keep the exact enabled-control assertion, with a bounded startup budget.
+      { timeoutMs: 30_000 }
     );
     console.error("[packaged-renderer] setup surface finished");
     const openProductChannel = async (suffix = "") => {

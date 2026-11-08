@@ -6,6 +6,7 @@ import type { HistoricalAdmissionDecision } from "@koed/shared";
 import {
   completeAutomaticHistoricalRun,
   completeAutomaticHistoricalSource,
+  createHistoricalSourceInOpenRun,
   type HistoricalCompletionResult
 } from "./automatic-historical-provider.js";
 import {
@@ -202,19 +203,6 @@ const rawAdmission = async (
     return response as HistoricalAdmissionDecision;
   }
   throw new Error("historical_admission_response_invalid");
-};
-
-const transitionRunToImporting = async (
-  client: MemoryApiClient,
-  runId: string
-): Promise<void> => {
-  for (const [expectedState, state] of [
-    ["discovered", "eligible"],
-    ["eligible", "queued"],
-    ["queued", "importing"]
-  ] as const) {
-    await client.transitionHistoricalImportRun(runId, { expectedState, state });
-  }
 };
 
 const transitionSourceOneStep = async (
@@ -476,7 +464,7 @@ const importNextBatch = async (input: {
   source: HistoricalSource;
   selection: HistoricalCandidateSelection;
   config: CodexHistoricalIngestionConfig;
-}): Promise<boolean> => {
+}): Promise<boolean | string> => {
   const frontier = input.source.registrationFrontierOffset;
   if (input.source.historicalCursorOffset >= frontier) return false;
   const response = await input.client.listConversationSourceSegments(
@@ -525,33 +513,44 @@ const importNextBatch = async (input: {
     .map((item) => item.eventTime)
     .filter((value): value is string => typeof value === "string")
     .sort();
-  await input.client.ingestHistoricalImportBatch(input.source.id, {
-    expectedSourceOffset: input.source.historicalCursorOffset,
-    sourceOffset: input.source.historicalCursorOffset + batch.bytesConsumed,
-    sourceLine: batch.sourceLine,
-    segmentIndex: segment.segmentIndex,
-    lastVerifiedDigest: segment.plaintextDigest,
-    parserState: batch.parserState,
-    malformedRecordCount: batch.malformedRecordCount,
-    ...(eventTimes[0]
-      ? {
-          sourceEventFrom: eventTimes[0],
-          sourceEventTo: eventTimes.at(-1)
-        }
-      : {}),
-    items: batch.items
-  });
+  try {
+    await input.client.ingestHistoricalImportBatch(input.source.id, {
+      expectedSourceOffset: input.source.historicalCursorOffset,
+      sourceOffset: input.source.historicalCursorOffset + batch.bytesConsumed,
+      sourceLine: batch.sourceLine,
+      segmentIndex: segment.segmentIndex,
+      lastVerifiedDigest: segment.plaintextDigest,
+      parserState: batch.parserState,
+      malformedRecordCount: batch.malformedRecordCount,
+      ...(eventTimes[0]
+        ? {
+            sourceEventFrom: eventTimes[0],
+            sourceEventTo: eventTimes.at(-1)
+          }
+        : {}),
+      items: batch.items
+    });
+  } catch (error) {
+    if (error instanceof MemoryApiError && error.status === 400) {
+      const payload = error.payload;
+      const code =
+        typeof payload === "object" && payload !== null && "code" in payload
+          ? payload.code
+          : undefined;
+      if (
+        typeof code === "string" &&
+        [
+          "observation_only_canonical_identity",
+          "canonical_identity_incomplete",
+          "canonical_component_mismatch",
+          "canonical_identity_mismatch"
+        ].includes(code)
+      )
+        return code;
+    }
+    throw error;
+  }
   return true;
-};
-
-const createRun = async (client: MemoryApiClient): Promise<string> => {
-  const run = objectValue<{ id: string }>(
-    await client.createHistoricalImportRun(),
-    "run",
-    "historical_run_response_missing"
-  );
-  await transitionRunToImporting(client, run.id);
-  return run.id;
 };
 
 // A single complete JSONL record that itself exceeds maxBatchRows/
@@ -567,15 +566,16 @@ const isUnrepresentableRecordError = (error: unknown): boolean =>
   error instanceof Error &&
   error.message === "historical_record_exceeds_batch_limit";
 
-const skipUnrepresentableSource = async (
+const skipUnimportableSource = async (
   client: MemoryApiClient,
-  source: HistoricalSource
+  source: HistoricalSource,
+  failureReason: string
 ): Promise<void> => {
   try {
     await client.transitionHistoricalImportSource(source.id, {
       expectedState: "importing",
       state: "failed",
-      failureReason: "historical_record_exceeds_batch_limit"
+      failureReason
     });
   } catch (error) {
     if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
@@ -712,10 +712,10 @@ export const createCodexHistoricalProviderAdapter = (input: {
         const source = await lookupSource(input.client, artifactId);
         let activeRunId = source?.runId ?? runId;
         if (!source) {
-          if (!activeRunId) activeRunId = await createRun(input.client);
-          objectValue<HistoricalSource>(
-            await input.client.createHistoricalImportSource({
-              runId: activeRunId,
+          const created = await createHistoricalSourceInOpenRun(
+            input.client,
+            activeRunId,
+            {
               artifactId,
               aiClient: "codex",
               detectedProject: {
@@ -734,10 +734,14 @@ export const createCodexHistoricalProviderAdapter = (input: {
                     }
                   : {})
               }
-            }),
+            }
+          );
+          objectValue<HistoricalSource>(
+            created.response,
             "source",
             "historical_source_response_missing"
           );
+          activeRunId = created.runId;
           return {
             state: "progress",
             selection: currentSelection,
@@ -796,7 +800,7 @@ export const createCodexHistoricalProviderAdapter = (input: {
             runId: activeRunId
           };
         }
-        let progressed: boolean;
+        let progressed: boolean | string;
         try {
           progressed = await importNextBatch({
             client: input.client,
@@ -806,11 +810,24 @@ export const createCodexHistoricalProviderAdapter = (input: {
           });
         } catch (error) {
           if (!isUnrepresentableRecordError(error)) throw error;
-          await skipUnrepresentableSource(input.client, source);
+          await skipUnimportableSource(
+            input.client,
+            source,
+            "historical_record_exceeds_batch_limit"
+          );
           return {
             state: "skipped",
             selection: currentSelection,
             runId: activeRunId
+          };
+        }
+        if (typeof progressed === "string") {
+          await skipUnimportableSource(input.client, source, progressed);
+          return {
+            state: "skipped",
+            selection: currentSelection,
+            runId: activeRunId,
+            diagnosticCode: progressed
           };
         }
         if (progressed) {

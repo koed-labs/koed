@@ -161,6 +161,16 @@ export {
   type HistoricalImportBatchConfig
 } from "./historical-admission.js";
 export {
+  AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
+  AUTOMATIC_HISTORICAL_WINDOW_DAYS,
+  HISTORICAL_INGESTION_STALE_MS,
+  readHistoricalIngestionProgressRecord,
+  summarizeHistoricalIngestionState,
+  type HistoricalIngestionLifecycle,
+  type HistoricalIngestionProgress,
+  type HistoricalIngestionProgressRecord
+} from "./historical-ingestion-progress.js";
+export {
   conversationPresentationDecisionSchema,
   conversationPresentationModeSchema,
   conversationPresentationPolicyKey,

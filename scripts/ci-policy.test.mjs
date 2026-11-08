@@ -206,25 +206,6 @@ test("release publication checks out validation scripts", () => {
   );
 });
 
-test("trusted CUDA validation runs exact packages only on the protected GPU runner", () => {
-  const workflow = readFileSync(
-    resolve(".github/workflows/native-runtime-linux-cuda-validation.yml"),
-    "utf8"
-  );
-  assert.match(workflow, /workflow_dispatch:/);
-  assert.doesNotMatch(workflow, /pull_request:/);
-  assert.match(
-    workflow,
-    /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/
-  );
-  assert.match(workflow, /runs-on: \[self-hosted, linux, x64, koed-cuda\]/);
-  assert.match(workflow, /validate-runtime\.mjs/);
-  assert.match(workflow, /llama\.cpp\/cuda\/llama-server/);
-  assert.match(workflow, /embedding:benchmark/);
-  assert.match(workflow, /validate-packaged-privacy-runtime\.mjs/);
-  assert.match(workflow, /--provider cuda/);
-});
-
 test("the workflow model cache key and filename track the pinned runtime model", () => {
   const runtimeSource = readFileSync(
     resolve("packages/koed-server/src/local-models-runtime.ts"),

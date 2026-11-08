@@ -28,6 +28,8 @@ import {
   ManagedConversationSourceReplicaPendingError,
   assertManagedConversationExecutionOwner,
   createManagedConversationService,
+  managedCodexBaseInstructions,
+  managedClaudeSystemPromptAppend,
   managedCodexRuntimeEnvironment,
   managedConversationTokenUsageInput,
   managedClaudeRuntimeHome,
@@ -43,6 +45,21 @@ import {
   createGitExecutionCheckoutDriver,
   type GitExecutionCheckoutDriver
 } from "@koed/shared/execution-checkout";
+
+describe("Managed provider identity instructions", () => {
+  it("adds the persisted name to Codex and Claude launch configuration", () => {
+    for (const build of [
+      managedCodexBaseInstructions,
+      managedClaudeSystemPromptAppend
+    ]) {
+      const unnamed = build(null);
+      expect(unnamed).not.toContain("Chief of Staff");
+      expect(build("Ada Lovelace")).toBe(
+        `${unnamed} In this Koed-created Conversation, your Chief of Staff name is "Ada Lovelace". Use it when referring to yourself.`
+      );
+    }
+  });
+});
 
 describe("Managed Conversation token usage", () => {
   it("records the current provider context and cumulative processed count once per command", () => {
@@ -255,6 +272,7 @@ const terminalExecutionFixture = (input: {
     provider: "codex",
     aiClientInstanceId: "codex.default",
     model: "gpt-test",
+    chiefOfStaffName: null,
     reasoningEffort: "low",
     permissionMode: "supervised",
     runnerKind: "local_device",

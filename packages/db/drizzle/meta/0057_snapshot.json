@@ -1,6 +1,6 @@
 {
-  "id": "d18a308c-01b6-42a7-8342-463ea3fd8f82",
-  "prevId": "b2545e10-1d5a-4349-92fc-93cd4dd9b349",
+  "id": "e055f7fa-2a90-4477-9eeb-878777b6c870",
+  "prevId": "d4f31551-cb01-471a-bb5a-b4e63f3211eb",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -15796,6 +15796,12 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "chief_of_staff_name": {
+          "name": "chief_of_staff_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -15880,6 +15886,10 @@
         "managed_conversation_executions_ai_client_instance_check": {
           "name": "managed_conversation_executions_ai_client_instance_check",
           "value": "char_length(\"managed_conversation_executions\".\"ai_client_instance_id\") <= 128\n        and \"managed_conversation_executions\".\"ai_client_instance_id\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'"
+        },
+        "managed_conversation_executions_chief_of_staff_name_check": {
+          "name": "managed_conversation_executions_chief_of_staff_name_check",
+          "value": "\"chief_of_staff_name\" IS NULL OR (char_length(\"chief_of_staff_name\") BETWEEN 1 AND 80 AND \"chief_of_staff_name\" = btrim(\"chief_of_staff_name\") AND \"chief_of_staff_name\" !~ '[[:cntrl:]]')"
         },
         "managed_conversation_executions_generation_check": {
           "name": "managed_conversation_executions_generation_check",
@@ -25065,633 +25075,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.peer_online_admission_attempts": {
-      "name": "peer_online_admission_attempts",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "attempt_id": {
-          "name": "attempt_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_head": {
-          "name": "expected_head",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approver_device_id": {
-          "name": "approver_device_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_json": {
-          "name": "target_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "transcript_hash": {
-          "name": "transcript_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome_hash": {
-          "name": "outcome_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome_json": {
-          "name": "outcome_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_admission_attempts_group_id_peer_online_membership_groups_group_id_fk": {
-          "name": "peer_online_admission_attempts_group_id_peer_online_membership_groups_group_id_fk",
-          "tableFrom": "peer_online_admission_attempts",
-          "tableTo": "peer_online_membership_groups",
-          "columnsFrom": ["group_id"],
-          "columnsTo": ["group_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_admission_attempts_group_id_attempt_id_pk": {
-          "name": "peer_online_admission_attempts_group_id_attempt_id_pk",
-          "columns": ["group_id", "attempt_id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_checkpoints": {
-      "name": "peer_online_checkpoints",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_key": {
-          "name": "session_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sequence": {
-          "name": "sequence",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "hash": {
-          "name": "hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "envelope": {
-          "name": "envelope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "payload": {
-          "name": "payload",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_checkpoints_group_id_session_key_peer_online_sessions_group_id_session_key_fk": {
-          "name": "peer_online_checkpoints_group_id_session_key_peer_online_sessions_group_id_session_key_fk",
-          "tableFrom": "peer_online_checkpoints",
-          "tableTo": "peer_online_sessions",
-          "columnsFrom": ["group_id", "session_key"],
-          "columnsTo": ["group_id", "session_key"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_checkpoints_group_id_session_key_sequence_pk": {
-          "name": "peer_online_checkpoints_group_id_session_key_sequence_pk",
-          "columns": ["group_id", "session_key", "sequence"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_deletion_outbox": {
-      "name": "peer_online_deletion_outbox",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_key": {
-          "name": "session_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "local_session_id": {
-          "name": "local_session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prepared_deletion": {
-          "name": "prepared_deletion",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_deletion_outbox_group_id_session_key_peer_online_sessions_group_id_session_key_fk": {
-          "name": "peer_online_deletion_outbox_group_id_session_key_peer_online_sessions_group_id_session_key_fk",
-          "tableFrom": "peer_online_deletion_outbox",
-          "tableTo": "peer_online_sessions",
-          "columnsFrom": ["group_id", "session_key"],
-          "columnsTo": ["group_id", "session_key"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "peer_online_deletion_outbox_local_session_id_owner_user_id_sessions_id_owner_user_id_fk": {
-          "name": "peer_online_deletion_outbox_local_session_id_owner_user_id_sessions_id_owner_user_id_fk",
-          "tableFrom": "peer_online_deletion_outbox",
-          "tableTo": "sessions",
-          "columnsFrom": ["local_session_id", "owner_user_id"],
-          "columnsTo": ["id", "owner_user_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_deletion_outbox_group_id_session_key_pk": {
-          "name": "peer_online_deletion_outbox_group_id_session_key_pk",
-          "columns": ["group_id", "session_key"]
-        }
-      },
-      "uniqueConstraints": {
-        "peer_online_deletion_outbox_owner_user_id_local_session_id_unique": {
-          "name": "peer_online_deletion_outbox_owner_user_id_local_session_id_unique",
-          "nullsNotDistinct": false,
-          "columns": ["owner_user_id", "local_session_id"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_group_owners": {
-      "name": "peer_online_group_owners",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_group_owners_group_id_peer_online_membership_groups_group_id_fk": {
-          "name": "peer_online_group_owners_group_id_peer_online_membership_groups_group_id_fk",
-          "tableFrom": "peer_online_group_owners",
-          "tableTo": "peer_online_membership_groups",
-          "columnsFrom": ["group_id"],
-          "columnsTo": ["group_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "peer_online_group_owners_owner_user_id_users_id_fk": {
-          "name": "peer_online_group_owners_owner_user_id_users_id_fk",
-          "tableFrom": "peer_online_group_owners",
-          "tableTo": "users",
-          "columnsFrom": ["owner_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_membership_evidence": {
-      "name": "peer_online_membership_evidence",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "position": {
-          "name": "position",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "hash": {
-          "name": "hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "json": {
-          "name": "json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_membership_evidence_group_id_peer_online_membership_groups_group_id_fk": {
-          "name": "peer_online_membership_evidence_group_id_peer_online_membership_groups_group_id_fk",
-          "tableFrom": "peer_online_membership_evidence",
-          "tableTo": "peer_online_membership_groups",
-          "columnsFrom": ["group_id"],
-          "columnsTo": ["group_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_membership_evidence_group_id_position_pk": {
-          "name": "peer_online_membership_evidence_group_id_position_pk",
-          "columns": ["group_id", "position"]
-        }
-      },
-      "uniqueConstraints": {
-        "peer_online_membership_evidence_group_id_hash_unique": {
-          "name": "peer_online_membership_evidence_group_id_hash_unique",
-          "nullsNotDistinct": false,
-          "columns": ["group_id", "hash"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_membership_groups": {
-      "name": "peer_online_membership_groups",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "genesis_hash": {
-          "name": "genesis_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "record_count": {
-          "name": "record_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "conflict": {
-          "name": "conflict",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "incomplete": {
-          "name": "incomplete",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "limit_evidence": {
-          "name": "limit_evidence",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_replicas": {
-      "name": "peer_online_replicas",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_key": {
-          "name": "session_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "binding_hash": {
-          "name": "binding_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "local_session_id": {
-          "name": "local_session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_sequence": {
-          "name": "checkpoint_sequence",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_hash": {
-          "name": "checkpoint_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "item_count": {
-          "name": "item_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_replicas_group_id_session_key_peer_online_sessions_group_id_session_key_fk": {
-          "name": "peer_online_replicas_group_id_session_key_peer_online_sessions_group_id_session_key_fk",
-          "tableFrom": "peer_online_replicas",
-          "tableTo": "peer_online_sessions",
-          "columnsFrom": ["group_id", "session_key"],
-          "columnsTo": ["group_id", "session_key"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "peer_online_replicas_local_session_id_owner_user_id_sessions_id_owner_user_id_fk": {
-          "name": "peer_online_replicas_local_session_id_owner_user_id_sessions_id_owner_user_id_fk",
-          "tableFrom": "peer_online_replicas",
-          "tableTo": "sessions",
-          "columnsFrom": ["local_session_id", "owner_user_id"],
-          "columnsTo": ["id", "owner_user_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_replicas_group_id_session_key_pk": {
-          "name": "peer_online_replicas_group_id_session_key_pk",
-          "columns": ["group_id", "session_key"]
-        }
-      },
-      "uniqueConstraints": {
-        "peer_online_replicas_local_session_id_unique": {
-          "name": "peer_online_replicas_local_session_id_unique",
-          "nullsNotDistinct": false,
-          "columns": ["local_session_id"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "peer_online_replicas_item_count_check": {
-          "name": "peer_online_replicas_item_count_check",
-          "value": "\"peer_online_replicas\".\"item_count\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.peer_online_sessions": {
-      "name": "peer_online_sessions",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_key": {
-          "name": "session_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "binding_hash": {
-          "name": "binding_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "binding": {
-          "name": "binding",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "deletion_hash": {
-          "name": "deletion_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deletion": {
-          "name": "deletion",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "checkpoint_sequence": {
-          "name": "checkpoint_sequence",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "checkpoint_hash": {
-          "name": "checkpoint_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_sessions_group_id_peer_online_membership_groups_group_id_fk": {
-          "name": "peer_online_sessions_group_id_peer_online_membership_groups_group_id_fk",
-          "tableFrom": "peer_online_sessions",
-          "tableTo": "peer_online_membership_groups",
-          "columnsFrom": ["group_id"],
-          "columnsTo": ["group_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_sessions_group_id_session_key_pk": {
-          "name": "peer_online_sessions_group_id_session_key_pk",
-          "columns": ["group_id", "session_key"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_source_items": {
-      "name": "peer_online_source_items",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_key": {
-          "name": "session_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_ordinal": {
-          "name": "source_ordinal",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_digest": {
-          "name": "source_digest",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "conversation_item_id": {
-          "name": "conversation_item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_source_items_conversation_item_id_conversation_items_id_fk": {
-          "name": "peer_online_source_items_conversation_item_id_conversation_items_id_fk",
-          "tableFrom": "peer_online_source_items",
-          "tableTo": "conversation_items",
-          "columnsFrom": ["conversation_item_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "peer_online_source_items_group_id_session_key_peer_online_replicas_group_id_session_key_fk": {
-          "name": "peer_online_source_items_group_id_session_key_peer_online_replicas_group_id_session_key_fk",
-          "tableFrom": "peer_online_source_items",
-          "tableTo": "peer_online_replicas",
-          "columnsFrom": ["group_id", "session_key"],
-          "columnsTo": ["group_id", "session_key"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_source_items_group_id_session_key_source_ordinal_pk": {
-          "name": "peer_online_source_items_group_id_session_key_source_ordinal_pk",
-          "columns": ["group_id", "session_key", "source_ordinal"]
-        }
-      },
-      "uniqueConstraints": {
-        "peer_online_source_items_conversation_item_id_unique": {
-          "name": "peer_online_source_items_conversation_item_id_unique",
-          "nullsNotDistinct": false,
-          "columns": ["conversation_item_id"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "peer_online_source_items_ordinal_check": {
-          "name": "peer_online_source_items_ordinal_check",
-          "value": "\"peer_online_source_items\".\"source_ordinal\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.pending_share_operations": {
       "name": "pending_share_operations",
       "schema": "",
@@ -29196,6 +28579,24 @@
           "primaryKey": false,
           "notNull": true
         },
+        "kin": {
+          "name": "kin",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "create_request_id": {
+          "name": "create_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "create_request_name": {
+          "name": "create_request_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -29251,6 +28652,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "personal_named_projects_owner_create_request_uidx": {
+          "name": "personal_named_projects_owner_create_request_uidx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "create_request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"personal_named_projects\".\"create_request_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -29280,6 +28703,10 @@
         "personal_named_projects_version_check": {
           "name": "personal_named_projects_version_check",
           "value": "\"personal_named_projects\".\"version\">0"
+        },
+        "personal_named_projects_create_request_pair_check": {
+          "name": "personal_named_projects_create_request_pair_check",
+          "value": "(\"personal_named_projects\".\"create_request_id\" is null) = (\"personal_named_projects\".\"create_request_name\" is null)"
         }
       },
       "isRLSEnabled": false
@@ -46676,6 +46103,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "extended_record": {
+          "name": "extended_record",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -47433,6 +46866,335 @@
           "value": "\"pds_relay_transports\".\"chunk_count\" ~ '^(0|[1-9][0-9]*)$' and \"pds_relay_transports\".\"plaintext_byte_count\" ~ '^(0|[1-9][0-9]*)$' and \"pds_relay_transports\".\"ciphertext_bytes\" ~ '^(0|[1-9][0-9]*)$'"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.peer_online_membership_groups": {
+      "name": "peer_online_membership_groups",
+      "schema": "",
+      "columns": {
+        "group_id": {
+          "name": "group_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "genesis_hash": {
+          "name": "genesis_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "record_count": {
+          "name": "record_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conflict": {
+          "name": "conflict",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "incomplete": {
+          "name": "incomplete",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "limit_evidence": {
+          "name": "limit_evidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.peer_online_admission_attempts": {
+      "name": "peer_online_admission_attempts",
+      "schema": "",
+      "columns": {
+        "group_id": {
+          "name": "group_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expected_head": {
+          "name": "expected_head",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approver_device_id": {
+          "name": "approver_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_json": {
+          "name": "target_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "transcript_hash": {
+          "name": "transcript_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outcome_hash": {
+          "name": "outcome_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outcome_json": {
+          "name": "outcome_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "peer_online_admission_attempts_group_id_peer_online_membership_groups_group_id_fk": {
+          "name": "peer_online_admission_attempts_group_id_peer_online_membership_groups_group_id_fk",
+          "tableFrom": "peer_online_admission_attempts",
+          "tableTo": "peer_online_membership_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["group_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "peer_online_admission_attempts_group_id_attempt_id_pk": {
+          "name": "peer_online_admission_attempts_group_id_attempt_id_pk",
+          "columns": ["group_id", "attempt_id"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.peer_online_membership_evidence": {
+      "name": "peer_online_membership_evidence",
+      "schema": "",
+      "columns": {
+        "group_id": {
+          "name": "group_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hash": {
+          "name": "hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "json": {
+          "name": "json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "peer_online_membership_evidence_group_id_peer_online_membership_groups_group_id_fk": {
+          "name": "peer_online_membership_evidence_group_id_peer_online_membership_groups_group_id_fk",
+          "tableFrom": "peer_online_membership_evidence",
+          "tableTo": "peer_online_membership_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["group_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "peer_online_membership_evidence_group_id_position_pk": {
+          "name": "peer_online_membership_evidence_group_id_position_pk",
+          "columns": ["group_id", "position"]
+        }
+      },
+      "uniqueConstraints": {
+        "peer_online_membership_evidence_group_id_hash_unique": {
+          "name": "peer_online_membership_evidence_group_id_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": ["group_id", "hash"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.peer_online_sessions": {
+      "name": "peer_online_sessions",
+      "schema": "",
+      "columns": {
+        "group_id": {
+          "name": "group_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_key": {
+          "name": "session_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_hash": {
+          "name": "binding_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding": {
+          "name": "binding",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deletion_hash": {
+          "name": "deletion_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deletion": {
+          "name": "deletion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "checkpoint_sequence": {
+          "name": "checkpoint_sequence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "checkpoint_hash": {
+          "name": "checkpoint_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "peer_online_sessions_group_id_peer_online_membership_groups_group_id_fk": {
+          "name": "peer_online_sessions_group_id_peer_online_membership_groups_group_id_fk",
+          "tableFrom": "peer_online_sessions",
+          "tableTo": "peer_online_membership_groups",
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["group_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "peer_online_sessions_group_id_session_key_pk": {
+          "name": "peer_online_sessions_group_id_session_key_pk",
+          "columns": ["group_id", "session_key"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.peer_online_checkpoints": {
+      "name": "peer_online_checkpoints",
+      "schema": "",
+      "columns": {
+        "group_id": {
+          "name": "group_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_key": {
+          "name": "session_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hash": {
+          "name": "hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "envelope": {
+          "name": "envelope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "peer_online_checkpoints_group_id_session_key_peer_online_sessions_group_id_session_key_fk": {
+          "name": "peer_online_checkpoints_group_id_session_key_peer_online_sessions_group_id_session_key_fk",
+          "tableFrom": "peer_online_checkpoints",
+          "tableTo": "peer_online_sessions",
+          "columnsFrom": ["group_id", "session_key"],
+          "columnsTo": ["group_id", "session_key"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "peer_online_checkpoints_group_id_session_key_sequence_pk": {
+          "name": "peer_online_checkpoints_group_id_session_key_sequence_pk",
+          "columns": ["group_id", "session_key", "sequence"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

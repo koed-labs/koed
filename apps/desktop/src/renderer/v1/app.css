@@ -1,0 +1,80 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  min-height: 0;
+}
+body {
+  overflow: hidden;
+}
+.desktop-starting {
+  display: grid;
+  place-items: center;
+  height: 100%;
+}
+.v1-app button {
+  cursor: pointer;
+}
+.v1-app button:disabled {
+  cursor: default;
+}
+.v1-app .v1-runtime-input {
+  position: relative;
+  flex-shrink: 0;
+  width: min(100%, 880px);
+  margin: 0 auto;
+  padding: 12px 24px 24px;
+}
+.v1-app .v1-runtime-input > [role="status"] {
+  font-size: 12px;
+  color: var(--v1-muted);
+  margin: 4px 10px;
+}
+.v1-app .v1-permission-popover {
+  position: absolute;
+  bottom: calc(100% - 12px);
+  left: 24px;
+  z-index: 30;
+  width: 280px;
+  padding: 6px;
+  border: 1px solid var(--v1-border);
+  border-radius: 14px;
+  background: var(--v1-card);
+  box-shadow: var(--v1-shadow);
+}
+.v1-app .v1-permission-popover button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--v1-fg);
+  padding: 10px;
+  text-align: left;
+}
+.v1-app .v1-permission-popover button:hover {
+  background: var(--v1-surface-hover);
+}
+.v1-app .v1-permission-popover small {
+  font-size: 12px;
+  color: var(--v1-muted);
+}
+.v1-app .v1-conversation-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  /* The timeline host is a grid item, not a flex container. Bound the list
+     to its height so long transcripts scroll instead of being clipped. */
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.v1-app .v1-conversation-scroll {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  padding: 0 24px 24px;
+}

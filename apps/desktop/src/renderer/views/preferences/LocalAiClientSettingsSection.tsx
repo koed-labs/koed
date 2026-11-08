@@ -136,23 +136,25 @@ export function LocalAiClientSettingsSection({
           last known results. {settings.refreshError}
         </p>
       ) : null}
-      {flows.map((flow) => (
-        <FlowSettingsFieldset
-          key={flow.key}
-          flow={flow}
-          readModel={settings.readModel!}
-          draft={
-            settings.drafts[flow.key] === undefined
-              ? assignmentFrom(settings.readModel!, flow.key)
-              : (settings.drafts[flow.key] ?? null)
-          }
-          state={settings.flowStates[flow.key]}
-          search={settings.deferredSearch}
-          updateDraft={settings.updateDraft}
-          save={settings.save}
-          reset={settings.reset}
-        />
-      ))}
+      {flows
+        .filter((flow) => flow.key !== "conversations")
+        .map((flow) => (
+          <FlowSettingsFieldset
+            key={flow.key}
+            flow={flow}
+            readModel={settings.readModel!}
+            draft={
+              settings.drafts[flow.key] === undefined
+                ? assignmentFrom(settings.readModel!, flow.key)
+                : (settings.drafts[flow.key] ?? null)
+            }
+            state={settings.flowStates[flow.key]}
+            search={settings.deferredSearch}
+            updateDraft={settings.updateDraft}
+            save={settings.save}
+            reset={settings.reset}
+          />
+        ))}
     </div>
   );
 }

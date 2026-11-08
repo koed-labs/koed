@@ -1,5 +1,5 @@
 {
-  "id": "d164f22f-1e81-4c8a-9cb7-9aa6c2f284e5",
+  "id": "af07e2cf-5b74-4cf6-9055-e66a99685264",
   "prevId": "2b93e8b8-ea28-45a2-bf20-0bd653fc0ae1",
   "version": "7",
   "dialect": "postgresql",
@@ -15796,6 +15796,12 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "chief_of_staff_name": {
+          "name": "chief_of_staff_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -15880,6 +15886,10 @@
         "managed_conversation_executions_ai_client_instance_check": {
           "name": "managed_conversation_executions_ai_client_instance_check",
           "value": "char_length(\"managed_conversation_executions\".\"ai_client_instance_id\") <= 128\n        and \"managed_conversation_executions\".\"ai_client_instance_id\" ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'"
+        },
+        "managed_conversation_executions_chief_of_staff_name_check": {
+          "name": "managed_conversation_executions_chief_of_staff_name_check",
+          "value": "\"chief_of_staff_name\" IS NULL OR (char_length(\"chief_of_staff_name\") BETWEEN 1 AND 80 AND \"chief_of_staff_name\" = btrim(\"chief_of_staff_name\") AND \"chief_of_staff_name\" !~ '[[:cntrl:]]')"
         },
         "managed_conversation_executions_generation_check": {
           "name": "managed_conversation_executions_generation_check",
@@ -25063,113 +25073,6 @@
           "value": "\"pds_worker_heartbeats\".\"capability\" in ('source_publication','receiver_materialization')"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.peer_online_membership_evidence": {
-      "name": "peer_online_membership_evidence",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "position": {
-          "name": "position",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "hash": {
-          "name": "hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "json": {
-          "name": "json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "peer_online_membership_evidence_group_id_peer_online_membership_groups_group_id_fk": {
-          "name": "peer_online_membership_evidence_group_id_peer_online_membership_groups_group_id_fk",
-          "tableFrom": "peer_online_membership_evidence",
-          "tableTo": "peer_online_membership_groups",
-          "columnsFrom": ["group_id"],
-          "columnsTo": ["group_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "peer_online_membership_evidence_group_id_position_pk": {
-          "name": "peer_online_membership_evidence_group_id_position_pk",
-          "columns": ["group_id", "position"]
-        }
-      },
-      "uniqueConstraints": {
-        "peer_online_membership_evidence_group_id_hash_unique": {
-          "name": "peer_online_membership_evidence_group_id_hash_unique",
-          "nullsNotDistinct": false,
-          "columns": ["group_id", "hash"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer_online_membership_groups": {
-      "name": "peer_online_membership_groups",
-      "schema": "",
-      "columns": {
-        "group_id": {
-          "name": "group_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "genesis_hash": {
-          "name": "genesis_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "record_count": {
-          "name": "record_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "conflict": {
-          "name": "conflict",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "incomplete": {
-          "name": "incomplete",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "limit_evidence": {
-          "name": "limit_evidence",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.pending_share_operations": {

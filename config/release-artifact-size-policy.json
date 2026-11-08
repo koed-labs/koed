@@ -4,5 +4,9 @@
   "maxManifestBytes": 8388608,
   "standaloneReductionMinimum": 0.5,
   "desktopReductionMinimum": 0.2,
-  "nativeRuntimeGrowthMaximum": 0.05
+  "nativeRuntimeGrowthMaximum": 0.05,
+  "nativeCoreArchiveMaximum": 50000000,
+  "nativeCoreExpandedMaximum": 100000000,
+  "nativeCudaArchiveMaximum": 750000000,
+  "nativeCudaExpandedMaximum": 1600000000
 }

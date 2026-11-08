@@ -17,7 +17,8 @@ import {
   personalProjectVersionSchema,
   personalProjectRuleInputSchema,
   personalProjectAddBackSchema,
-  personalProjectAddSessionSchema
+  personalProjectAddSessionSchema,
+  personalProjectExplainSessionsSchema
 } from "@koed/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import { listSelectedPersonalThreads } from "./personal-selection-inventory.js";
@@ -115,6 +116,19 @@ export const registerPersonalProjectRoutes = (
         projectId,
         reviewId,
         personalMembershipReviewApplySchema.parse(request.body)
+      );
+    }
+  );
+  app.post(
+    "/v1/personal/projects/:projectId/memberships/explain-batch",
+    { preHandler: read },
+    async (request) => {
+      const user = await authenticate(request),
+        { projectId } = projectParams.parse(request.params);
+      return requireRepository().explainPersonalProjectSessions(
+        { userId: user.id },
+        projectId,
+        personalProjectExplainSessionsSchema.parse(request.body)
       );
     }
   );

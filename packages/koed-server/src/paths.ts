@@ -9,6 +9,8 @@ import {
 
 export interface KoedServerPaths {
   koedHome: string;
+  /** Verified once while the supervisor holds the lifecycle exclusion. */
+  nativeSelectionRoot?: string;
   configDir: string;
   logsDir: string;
   runDir: string;

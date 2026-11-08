@@ -1186,6 +1186,22 @@ const claudeAuthenticationUnavailableDiscovery = (
   };
 };
 
+// The SDK often puts the model version in its description and a context size in its label.
+function claudeModelLabel(model: ModelInfo): string {
+  const version = /^([A-Za-z]+) \d+(?:\.\d+)*(?=\s|$)/.exec(
+    model.description ?? ""
+  );
+  const family = version?.[1];
+  if (!family) return model.displayName;
+  if (
+    model.displayName !== family &&
+    !model.displayName.startsWith(family + " (")
+  ) {
+    return model.displayName;
+  }
+  return version[0] + model.displayName.slice(family.length);
+}
+
 const claudeDriver: AiClientDriver = {
   id: "claude",
   displayName: "Claude Code",
@@ -1212,7 +1228,7 @@ const claudeDriver: AiClientDriver = {
           id: model.value,
           provider: "anthropic",
           model: model.value,
-          displayName: model.displayName,
+          displayName: claudeModelLabel(model),
           supportedReasoningEfforts: claudeSupportedReasoningEfforts(model)
         })
       );

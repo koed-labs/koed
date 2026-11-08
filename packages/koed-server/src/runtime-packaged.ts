@@ -19,7 +19,10 @@ import {
 } from "node:child_process";
 import { dirname, relative, resolve } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
-import { resolvePackagedKoedRuntimeRoot } from "./runtime-artifact-source.js";
+import {
+  assertNoReleaseRuntime,
+  resolvePackagedKoedRuntimeRoot
+} from "./runtime-artifact-source.js";
 import type { RuntimeInstallState } from "./runtime-homebrew.js";
 
 export interface PackagedRuntimeAssetManifestEntry {
@@ -770,6 +773,7 @@ export const installPackagedRuntime = (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: PackagedRuntimeDependencies = {}
 ): PackagedRuntimeInstallResult => {
+  assertNoReleaseRuntime(paths);
   const root = resolvePackagedKoedRuntimeRoot(environment);
   const platform = dependencies.platform ?? process.platform;
   const architecture = dependencies.architecture ?? process.arch;

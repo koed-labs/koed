@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { personalProjectDetailsSchema } from "./personal-project-kin.js";
 import {
   personalIdentifierSchema,
   personalSourceReferenceSchema
@@ -103,12 +104,7 @@ export const personalMembershipReviewInputSchema = z
     expectedVersion,
     expectedHeads: z.array(personalIdentifierSchema).min(1).max(1024),
     change: z.discriminatedUnion("kind", [
-      z
-        .object({
-          kind: z.literal("set_project"),
-          name: z.string().trim().min(1).max(160)
-        })
-        .strict(),
+      personalProjectDetailsSchema.extend({ kind: z.literal("set_project") }),
       z.object({ kind: z.literal("delete_project") }).strict(),
       z
         .object({

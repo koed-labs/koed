@@ -14,6 +14,9 @@ importers:
       '@changesets/cli':
         specifier: ^2.31.0
         version: 2.31.0(@types/node@25.8.0)
+      '@changesets/parse':
+        specifier: 0.4.3
+        version: 0.4.3
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
@@ -167,12 +170,15 @@ importers:
       '@koed/api':
         specifier: workspace:*
         version: link:../api
-      '@koed/memory-ui':
-        specifier: workspace:*
-        version: link:../../packages/memory-ui
       '@koed/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@legendapp/list':
+        specifier: 3.0.0-beta.44
+        version: 3.0.0-beta.44(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      '@pierre/diffs':
+        specifier: ^1.2.5
+        version: 1.2.7(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@tailwindcss/vite':
         specifier: ^4.3.0
         version: 4.3.0(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.1)(yaml@2.9.0))
@@ -221,6 +227,12 @@ importers:
       react-dom:
         specifier: 19.2.6
         version: 19.2.6(react@19.2.6)
+      react-markdown:
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@19.2.16)(react@19.2.6)
+      remark-gfm:
+        specifier: ^4.0.1
+        version: 4.0.1
 
   apps/embedding-service:
     dependencies:
@@ -439,43 +451,6 @@ importers:
         specifier: ^0.28.0
         version: 0.28.0
 
-  packages/memory-ui:
-    dependencies:
-      '@legendapp/list':
-        specifier: 3.0.0-beta.44
-        version: 3.0.0-beta.44(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@pierre/diffs':
-        specifier: ^1.2.5
-        version: 1.2.7(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      react-markdown:
-        specifier: ^10.1.0
-        version: 10.1.0(@types/react@19.2.16)(react@19.2.6)
-      remark-gfm:
-        specifier: ^4.0.1
-        version: 4.0.1
-    devDependencies:
-      '@types/react':
-        specifier: ~19.2.14
-        version: 19.2.16
-      '@types/react-dom':
-        specifier: ~19.2.3
-        version: 19.2.3(@types/react@19.2.16)
-      happy-dom:
-        specifier: ^20.9.0
-        version: 20.10.1
-      react:
-        specifier: 19.2.6
-        version: 19.2.6
-      react-dom:
-        specifier: 19.2.6
-        version: 19.2.6(react@19.2.6)
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.6
-        version: 4.1.6(@types/node@25.8.0)(happy-dom@20.10.1)(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.1)(yaml@2.9.0))
-
   packages/shared:
     dependencies:
       '@noble/hashes':
@@ -484,12 +459,19 @@ importers:
       json-canonicalize:
         specifier: 2.0.0
         version: 2.0.0
+      proper-lockfile:
+        specifier: 4.1.2
+        version: 4.1.2
       undici:
         specifier: ^7.28.0
         version: 7.28.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      '@types/proper-lockfile':
+        specifier: 4.1.4
+        version: 4.1.4
 
   packages/ui:
     dependencies:

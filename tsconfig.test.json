@@ -3,6 +3,7 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "noEmit": true,
+    "allowJs": true,
     "types": ["node", "vite/client", "vitest/globals"]
   },
   "include": [

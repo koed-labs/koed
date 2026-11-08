@@ -4,18 +4,22 @@ import type {
   AiClientCapabilityDescriptor,
   CollaborationRendererEvent,
   EmbeddingStateSnapshot,
+  HistoricalIngestionProgress,
   PersonalDesktopApi
 } from "@koed/shared";
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "./window/theme-preference.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
+import type { V1StateDesktopApi } from "./ipc/v1-state-protocol.js";
 import type {
+  MemoryModelInput,
   LocalAiClientFlowKey,
   LocalAiClientResponse
 } from "./ipc/local-ai-client-protocol.js";
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { CliInstallApi } from "./cli-install/protocol.js";
+import type { DesktopUpdateApi } from "@koed/shared/desktop-update-contract";
 
 export type ComponentState =
   | "not_configured"
@@ -93,6 +97,7 @@ export interface KoedServerStatus {
   aiClientInstances?: Record<string, AiClientReadiness>;
   aiClientFlowReadiness?: Record<string, ComponentStatus>;
   lcmSummaryService: ComponentStatus;
+  historicalIngestion?: Record<string, HistoricalIngestionProgress>;
   embeddingState?: EmbeddingStateSnapshot | null;
   personalDeviceSync?: ComponentStatus;
   upstreamBackends: ComponentStatus & {
@@ -128,6 +133,7 @@ export type DesktopSetupStageState =
   | "failed";
 
 export interface DesktopSetupStage {
+  progressPhase?: "downloading" | "verifying" | "complete";
   completedBytes: number | null;
   detectedAiClients?: readonly string[];
   id: DesktopSetupStageId;
@@ -171,6 +177,7 @@ export interface DesktopApi {
   ) => Promise<T>;
   personalMemory?: PersonalDesktopApi;
   managedConversations?: ManagedConversationDesktopApi;
+  v1State?: V1StateDesktopApi;
   localAiClients?: {
     list: () => Promise<LocalAiClientResponse>;
     refresh: () => Promise<LocalAiClientResponse>;
@@ -184,6 +191,9 @@ export interface DesktopApi {
         timeout_ms: number;
         max_attempts: number;
       }
+    ) => Promise<LocalAiClientResponse>;
+    setMemoryModel?: (
+      input: MemoryModelInput
     ) => Promise<LocalAiClientResponse>;
     reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
   };
@@ -204,6 +214,13 @@ export interface DesktopApi {
       preference: DesktopThemePreference
     ) => Promise<{ preference: DesktopThemePreference; resolvedDark: boolean }>;
   };
+  presentationPreferences?: {
+    get: () => Promise<{ graphicsAcceleration: boolean; showMenuBar: boolean }>;
+    set: (value: {
+      graphicsAcceleration: boolean;
+      showMenuBar: boolean;
+    }) => Promise<{ graphicsAcceleration: boolean; showMenuBar: boolean }>;
+  };
   hardwareAcceleration?: {
     get: () => Promise<{
       enabled: boolean;
@@ -220,6 +237,7 @@ export interface DesktopApi {
   };
   setup?: DesktopSetupApi;
   cliInstall?: CliInstallApi;
+  updates?: DesktopUpdateApi;
   status?: {
     subscribe: (listener: () => void) => () => void;
   };

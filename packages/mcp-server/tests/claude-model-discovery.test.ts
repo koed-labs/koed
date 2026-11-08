@@ -29,7 +29,16 @@ fi
   sdk.query.mockReturnValue({
     supportedModels: async () => [
       { value: "sonnet", displayName: "Sonnet 5.5", description: "Sonnet" },
-      { value: "opus", displayName: "Opus 5.5", description: "Opus" }
+      {
+        value: "opus[1m]",
+        displayName: "Opus (1M context)",
+        description: "Opus 5 with 1M context · Best for complex tasks"
+      },
+      {
+        value: "haiku",
+        displayName: "Haiku",
+        description: "Haiku 5.5 · Fastest for quick answers"
+      }
     ],
     close
   });
@@ -46,9 +55,14 @@ fi
         displayName: "Sonnet 5.5"
       }),
       expect.objectContaining({
-        id: "opus",
-        model: "opus",
-        displayName: "Opus 5.5"
+        id: "opus[1m]",
+        model: "opus[1m]",
+        displayName: "Opus 5 (1M context)"
+      }),
+      expect.objectContaining({
+        id: "haiku",
+        model: "haiku",
+        displayName: "Haiku 5.5"
       })
     ]);
     expect(close).toHaveBeenCalledOnce();

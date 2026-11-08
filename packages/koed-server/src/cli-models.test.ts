@@ -14,6 +14,46 @@ const output = () => {
 };
 
 describe("model command compatibility", () => {
+  it("streams real model progress separately from the final JSON result", async () => {
+    const stdout = output();
+    const stderr = output();
+    const code = await runKoedServerCli(
+      ["models", "install", "--kind", "embedding", "--json", "--progress-json"],
+      {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        resolvePaths: () => ({ repoRoot: "/fixture" }) as never,
+        loadEnvironment: () => ({}),
+        installModel: async (_paths, _kind, _environment, dependencies) => {
+          dependencies?.onProgress?.({
+            phase: "downloading",
+            completedBytes: 50,
+            totalBytes: 100
+          });
+          dependencies?.onProgress?.({
+            phase: "verifying",
+            completedBytes: 100,
+            totalBytes: 100
+          });
+          return { ok: true, state: "installed", message: "Ready" } as never;
+        }
+      }
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({ ok: true });
+    expect(
+      stderr
+        .text()
+        .split("\n")
+        .filter(Boolean)
+        .map((line): unknown =>
+          JSON.parse(line.replace("KOED_MODEL_PROGRESS ", ""))
+        )
+    ).toEqual([
+      { phase: "downloading", completedBytes: 50, totalBytes: 100 },
+      { phase: "verifying", completedBytes: 100, totalBytes: 100 }
+    ]);
+  });
   it.each(["embedding", "privacy"])(
     "reports %s checksum mismatches as failures",
     async (kind) => {

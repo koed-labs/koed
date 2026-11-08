@@ -1,6 +1,7 @@
 import {
   check,
   index,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -152,6 +153,11 @@ export const pdsConfigurationCapabilities = pgTable(
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
     deviceId: text("device_id").notNull(),
     canonicalAdvertisement: text("canonical_advertisement").notNull(),
+    extendedRecord: jsonb("extended_record").$type<{
+      baseProof: string;
+      canonicalAdvertisement: string;
+      canonicalRequestProof: string;
+    }>(),
     canonicalRequestProof: text("canonical_request_proof").notNull(),
     advertisedAt: timestamp("advertised_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),

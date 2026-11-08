@@ -1,0 +1,225 @@
+.v1-pixelkin {
+  display: block;
+  flex: none;
+  image-rendering: pixelated;
+}
+/* Shown when WebGL2 is unavailable, so the agent still has a body and face. */
+.v1-pixelkin-fallback {
+  position: relative;
+}
+.v1-pixelkin-fallback::before {
+  content: "";
+  position: absolute;
+  inset: 14% 10% 10%;
+  border-radius: 12%;
+  background: var(--v1-kin);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.55);
+}
+.v1-pixelkin-fallback[data-kin-shape="roundedBox"]::before {
+  border-radius: 26%;
+}
+.v1-pixelkin-fallback[data-kin-shape="sphere"]::before {
+  border-radius: 50%;
+}
+.v1-pixelkin-fallback[data-kin-shape="capsule"]::before {
+  inset: 8% 20% 8%;
+  border-radius: 999px;
+}
+.v1-pixelkin-fallback i {
+  position: absolute;
+  top: 36%;
+  width: 16%;
+  height: 20%;
+  border-radius: 50%;
+  background: radial-gradient(circle, #05070a 0 42%, #fff 46%);
+}
+.v1-pixelkin-fallback i:first-child {
+  left: 30%;
+}
+.v1-pixelkin-fallback i:nth-child(2) {
+  right: 30%;
+}
+.v1-pixelkin-fallback b {
+  position: absolute;
+  top: 62%;
+  left: 50%;
+  width: 18%;
+  height: 4%;
+  min-height: 2px;
+  border-radius: 999px;
+  background: #05070a;
+  transform: translateX(-50%);
+}
+.v1-pixelkin-fallback[data-expression="surprised"] i {
+  top: 32%;
+  width: 18%;
+  height: 22%;
+  background: radial-gradient(circle, #05070a 0 26%, #fff 30%);
+}
+.v1-pixelkin-fallback[data-expression="surprised"] b {
+  top: 60%;
+  width: 12%;
+  height: 14%;
+  border-radius: 50%;
+}
+.v1-pixelkin-fallback[data-expression="happy"] b {
+  top: 58%;
+  width: 24%;
+  height: 12%;
+  border-radius: 0 0 999px 999px;
+}
+
+/* A beam from the top of the stage that lands on the lead Kin. The layout
+   sets where (--spot-x, --spot-y) and how big (--spot-size). */
+.v1-kin-spot {
+  --spot-light: #fff0c8;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  filter: blur(14px);
+}
+.v1-kin-spot::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--spot-top, 0px) - 24px);
+  bottom: var(--spot-y);
+  left: calc(50% + var(--spot-x));
+  width: calc(var(--spot-size) * 2.2);
+  transform: translateX(-50%);
+  clip-path: polygon(40% 0, 60% 0, 100% 100%, 0 100%);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--spot-light) 2%, transparent),
+    color-mix(in srgb, var(--spot-light) 10%, transparent)
+  );
+}
+.v1-kin-spot::after {
+  content: "";
+  position: absolute;
+  bottom: calc(var(--spot-y) - var(--spot-size) * 0.2);
+  left: calc(50% + var(--spot-x));
+  width: calc(var(--spot-size) * 2.4);
+  height: calc(var(--spot-size) * 0.4);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--spot-light) 16%, transparent),
+    transparent
+  );
+}
+/* On a light stage a pale beam vanishes; a warm amber one still reads as
+   light falling on the Kin. */
+.v1-app[data-theme="light"] .v1-kin-spot,
+:root.light .v1-app .v1-kin-spot {
+  --spot-light: #e0a040;
+}
+
+.v1-look-picker {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+.v1-kin-control {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 12px;
+  box-shadow: none;
+}
+.v1-kin-control > svg {
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  color: var(--muted-foreground);
+}
+.v1-kin-control [data-slot="card-title"] {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 9px;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.3;
+}
+.v1-kin-control [data-slot="card-title"] span {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.v1-kin-shapes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.v1-kin-shapes [data-slot="button"] {
+  justify-content: flex-start;
+  min-width: 0;
+  padding-inline: 6px;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 450;
+}
+.v1-kin-shapes svg {
+  width: 14px;
+  height: 14px;
+}
+.v1-kin-shapes [aria-pressed="true"] {
+  border-color: var(--v1-accent);
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
+}
+.v1-kin-colours {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.v1-kin-colours .v1-kin-swatch,
+.v1-kin-colours .v1-kin-custom {
+  position: relative;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  padding: 3px;
+}
+.v1-kin-swatch::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+}
+.v1-kin-swatch[aria-pressed="true"],
+.v1-kin-custom[data-selected] {
+  border: 1px solid var(--foreground);
+}
+.v1-kin-swatch svg {
+  position: relative;
+  width: 11px;
+  height: 11px;
+  color: #121216;
+  stroke-width: 2.8;
+}
+.v1-kin-custom svg {
+  width: 12px;
+  height: 12px;
+}
+.v1-kin-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.v1-kin-custom:focus-within {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.v1-kin-control [data-slot="select-trigger"] {
+  width: 100%;
+}

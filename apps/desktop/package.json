@@ -1,7 +1,7 @@
 {
   "name": "@koed/desktop",
   "productName": "Koed",
-  "version": "0.10.3",
+  "version": "0.11.1",
   "description": "Electron control surface for Koed local personal installs.",
   "author": "Koed",
   "private": true,
@@ -29,10 +29,12 @@
     "pretypecheck": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed-labs/server build",
-    "test:packaged-smoke": "node --test scripts/smoke-packaged-desktop-app-lib.test.mjs scripts/smoke-packaged-doctor.test.mjs scripts/packaged-desktop-lifecycle.test.mjs",
+    "test:packaged-smoke": "node --test scripts/smoke-packaged-desktop-app-lib.test.mjs scripts/smoke-packaged-doctor.test.mjs scripts/packaged-desktop-lifecycle.test.mjs scripts/desktop-update-notice-smoke.test.mjs",
     "test": "pnpm test:packaged-smoke && node --test scripts/desktop-artifact-report-lib.test.mjs scripts/smoke-packaged-renderer-faults.test.mjs scripts/desktop-bundle-manifest.test.mjs scripts/prepare-macos-signing.test.mjs scripts/verify-macos-package.test.mjs scripts/sign-macos-runtime.test.mjs scripts/packaged-shared-lifecycle.test.mjs scripts/verify-packaged-component-catalog.test.mjs && vitest run --passWithNoTests",
     "test:browser": "pnpm build && pnpm build:validation && electron scripts/validate-project-workspace.mjs && electron scripts/validate-projects-default.mjs && electron scripts/validate-project-transfer.mjs && electron scripts/validate-conversation-cards.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs",
-    "build:validation": "vite build --mode validation"
+    "build:validation": "vite build --mode validation",
+    "pixelkin:sync": "node scripts/sync-pixelkin.mjs",
+    "test:browser:v1": "vite build --mode v1-validation && electron scripts/validate-v1-ui.mjs && electron scripts/validate-onboarding.mjs"
   },
   "dependencies": {
     "@koed-labs/server": "workspace:*",
@@ -45,8 +47,9 @@
     "@electron/asar": "^3.4.1",
     "@electron/osx-sign": "1.3.3",
     "@koed/api": "workspace:*",
-    "@koed/memory-ui": "workspace:*",
     "@koed/ui": "workspace:*",
+    "@legendapp/list": "3.0.0-beta.44",
+    "@pierre/diffs": "^1.2.5",
     "@tailwindcss/vite": "^4.3.0",
     "@types/qrcode": "1.5.5",
     "@types/react": "~19.2.14",
@@ -62,6 +65,8 @@
     "lucide-react": "^0.564.0",
     "qrcode": "1.5.4",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   }
 }

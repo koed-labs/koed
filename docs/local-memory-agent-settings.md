@@ -5,7 +5,7 @@ memory and evidence but does not run LLM synthesis.
 
 ## Flows
 
-Agent Configuration includes five configurable assignments:
+The runtime recognizes five flow assignments:
 
 - Conversations: defaults for new Conversations within Projects.
 - MCP Memory Answer: durable Personal tasks, each using a fresh isolated worker.
@@ -31,9 +31,7 @@ Conversation settings resolve in this order:
 2. `KOED_CONVERSATIONS_*` environment defaults.
 3. Code defaults.
 
-Desktop applies this assignment when it opens a Project conversation composer.
-Users can change the agent, model, and reasoning effort before starting a Conversation.
-Existing Conversations retain their settings. Conversation defaults require a current capability snapshot that reports support for starting managed Conversations.
+Managed Conversation clients can use the existing Conversation assignment. It requires a current capability snapshot that reports support for starting managed Conversations. Desktop Settings exposes the four Local Synthesis flows.
 Permission modes retain the selected AI Client defaults.
 
 Memory Answer settings resolve in this order:
@@ -61,13 +59,14 @@ enabled instance state, current capability snapshot, selected model, and
 explicitly reported reasoning effort. Stale, unhealthy, unauthenticated, or
 mismatched assignments fail closed; environment defaults are used only when no
 persisted assignment exists. Settings or capability API failures never silently
-fall back. Desktop exposes `conversations`, `mcp_memory_answer` (Memory Answer),
-`lcm_summary`, `session_title`, and `curated_memory_review`; `manual_memory_answer`
-is intentionally hidden. Reset is an explicit DELETE for one flow assignment.
-The Desktop surface for these selectors is **Preferences → AI Clients**, which is
-configuration rather than diagnostics; **Preferences → Advanced Diagnostics**
-retains only Operator diagnostics and integration setup, check, repair, and
-removal actions.
+fall back. Desktop **Settings → AI models → Memory Model** applies one provider,
+instance, model, and reasoning level to `mcp_memory_answer`, `lcm_summary`,
+`session_title`, and `curated_memory_review`. The authenticated
+`PUT /v1/memory/local-agent-settings/memory-model` operation validates Local
+Synthesis capabilities and writes all four owner-scoped rows in one database
+statement. Existing rows keep their timeout and retry settings. New rows use the
+effective limits supplied by Desktop for each task. The existing per-flow API
+also supports explicit overrides and DELETE resets.
 The read model includes documented defaults so a missing assignment can be
 identified without changing persisted state.
 

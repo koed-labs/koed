@@ -37,6 +37,9 @@
       "@koed/shared/personal-local-folders": [
         "./packages/shared/src/personal-local-folders.ts"
       ],
+      "@koed/shared/ai-client-connections": [
+        "./packages/shared/src/ai-client-connections.ts"
+      ],
       "@koed/shared/ai-client-contract": [
         "./packages/shared/src/ai-client-contract.ts"
       ],

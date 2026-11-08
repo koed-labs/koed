@@ -1,10 +1,9 @@
+import { ChatTimeline, type ChatTimelineVisibleRange } from "./ChatTimeline.js";
 import {
-  ChatTimeline,
   SecureMarkdown,
-  type ChatMessageRow,
-  type ChatTimelineVisibleRange,
   type MarkdownPlatformAdapters
-} from "@koed/memory-ui";
+} from "../markdown/SecureMarkdown.js";
+import type { ChatMessageRow } from "./chatTimelineRows.js";
 import type {
   CollaborationMessage,
   CollaborationMessagePage,

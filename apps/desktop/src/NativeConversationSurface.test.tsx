@@ -15,57 +15,56 @@ const { recordMemoryEventFrameRender } = vi.hoisted(() => ({
   recordMemoryEventFrameRender: vi.fn()
 }));
 
-vi.mock("@koed/memory-ui", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@koed/memory-ui")>();
-  return {
-    ...actual,
-    MemoryEventFrame: ({
-      actions,
-      children,
-      className,
-      header,
-      metadata
-    }: {
-      actions?: ReactNode;
-      children: ReactNode;
-      className?: string;
-      header: ReactNode;
-      metadata?: ReactNode;
-    }) => {
-      recordMemoryEventFrameRender(className);
-      return (
-        <article className={className}>
-          <header>{header}</header>
-          {actions}
-          {children}
-          <footer>{metadata}</footer>
-        </article>
-      );
-    },
-    VirtualizedTimeline: ({
-      events,
-      hasOlderEvents,
-      onLoadOlder,
-      renderEvent
-    }: {
-      events: DesktopConversationTimelineItem[];
-      hasOlderEvents: boolean;
-      onLoadOlder: () => Promise<void> | void;
-      renderEvent: (event: DesktopConversationTimelineItem) => ReactNode;
-    }) => (
-      <div data-testid="timeline">
-        {events.map((event) => (
-          <div key={event.id}>{renderEvent(event)}</div>
-        ))}
-        {hasOlderEvents ? (
-          <button type="button" onClick={() => void onLoadOlder()}>
-            Load older test page
-          </button>
-        ) : null}
-      </div>
-    )
-  };
-});
+vi.mock("./renderer/conversation/MemoryPresentation.js", () => ({
+  MemoryEventFrame: ({
+    actions,
+    children,
+    className,
+    header,
+    metadata
+  }: {
+    actions?: ReactNode;
+    children: ReactNode;
+    className?: string;
+    header: ReactNode;
+    metadata?: ReactNode;
+  }) => {
+    recordMemoryEventFrameRender(className);
+    return (
+      <article className={className}>
+        <header>{header}</header>
+        {actions}
+        {children}
+        <footer>{metadata}</footer>
+      </article>
+    );
+  }
+}));
+
+vi.mock("./renderer/conversation/VirtualizedTimeline.js", () => ({
+  VirtualizedTimeline: ({
+    events,
+    hasOlderEvents,
+    onLoadOlder,
+    renderEvent
+  }: {
+    events: DesktopConversationTimelineItem[];
+    hasOlderEvents: boolean;
+    onLoadOlder: () => Promise<void> | void;
+    renderEvent: (event: DesktopConversationTimelineItem) => ReactNode;
+  }) => (
+    <div data-testid="timeline">
+      {events.map((event) => (
+        <div key={event.id}>{renderEvent(event)}</div>
+      ))}
+      {hasOlderEvents ? (
+        <button type="button" onClick={() => void onLoadOlder()}>
+          Load older test page
+        </button>
+      ) : null}
+    </div>
+  )
+}));
 
 const markdownAdapters = {
   openExternal: vi.fn(async () => undefined),

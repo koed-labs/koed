@@ -1,12 +1,13 @@
 import {
   MemoryEventFrame,
-  SecureMarkdown,
-  SourceDiff,
-  VirtualizedTimeline,
-  threadSelectionKey,
-  type MarkdownPlatformAdapters,
   type MemoryPresentationScope
-} from "@koed/memory-ui";
+} from "./renderer/conversation/MemoryPresentation.js";
+import {
+  SecureMarkdown,
+  type MarkdownPlatformAdapters
+} from "./renderer/markdown/SecureMarkdown.js";
+import { SourceDiff } from "./renderer/conversation/SourceDiff.js";
+import { VirtualizedTimeline } from "./renderer/conversation/VirtualizedTimeline.js";
 import {
   Fragment,
   memo,
@@ -33,7 +34,10 @@ import {
   type DesktopConversationTimelineItem,
   type StableConversationTimelineItemsState
 } from "./desktop-conversation.js";
-import type { DesktopThreadGroup } from "./project-memory-ui.js";
+import {
+  threadSelectionKey,
+  type DesktopThreadGroup
+} from "./project-memory-ui.js";
 import "./renderer/views/personal/personal-memory.css";
 
 const initialEventLimit = 50;
@@ -537,6 +541,7 @@ export function ConversationTimeline({
       events={timelineItems}
       hasNewerEvents={hasNewerEvents}
       hasOlderEvents={hasOlderEvents}
+      olderPageKey={events[0]?.id}
       onLoadNewer={onLoadNewer}
       onLoadOlder={onLoadOlder}
       renderEvent={renderEvent}
@@ -670,6 +675,7 @@ function ConversationPresentation({
         className="native-timeline-scroll"
         events={timelineItems}
         hasOlderEvents={model.hasOlderEvents}
+        olderPageKey={model.events[0]?.id}
         onLoadOlder={onLoadOlder}
         renderEvent={renderEvent}
         threadKey={threadSelectionKey(thread)}

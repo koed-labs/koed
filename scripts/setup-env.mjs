@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgs } from "node:util";
 import {
   migrateLegacyEmbeddingAccelerationDefaults,
   parseEnv,
@@ -53,40 +54,74 @@ const configuredOrExampleValue = (key, fallback) => {
   return usableEnvValue(fromExample) ? fromExample : fallback;
 };
 
-const generatedPostgresPassword = randomBytes(32).toString("base64url");
-const postgresPassword = configuredOrExampleValue(
-  "POSTGRES_PASSWORD",
-  generatedPostgresPassword
-);
-const postgresDatabaseUrl =
-  `postgres://${encodeURIComponent(configuredOrExampleValue("POSTGRES_USER", "koed"))}` +
-  `:${encodeURIComponent(postgresPassword)}` +
-  `@localhost:${configuredOrExampleValue("POSTGRES_HOST_PORT", "15432")}` +
-  `/${encodeURIComponent(configuredOrExampleValue("POSTGRES_DB", "koed"))}`;
+const { values } = parseArgs({
+  options: { "local-service-secrets": { type: "string" } }
+});
+const secretsPath = values["local-service-secrets"];
+const managedSecrets = secretsPath
+  ? JSON.parse(readFileSync(secretsPath, "utf8"))
+  : undefined;
+const secretEntry = (
+  envName,
+  size = 32,
+  encoding = "base64url",
+  name = envName
+) => {
+  if (managedSecrets === undefined) {
+    return [envName, randomBytes(size).toString(encoding)];
+  }
+  const value = managedSecrets[name];
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.trim() !== value ||
+    /[\r\n\0#]|^["'`]/.test(value)
+  ) {
+    throw new Error(`Invalid .env value for local service secret: ${name}`);
+  }
+  return [envName, value];
+};
 
 const generatedValues = new Map([
-  ["POSTGRES_PASSWORD", generatedPostgresPassword],
-  ["DATABASE_URL", postgresDatabaseUrl],
-  ["API_DATA_ENCRYPTION_KEY", randomBytes(32).toString("base64")],
-  [
-    "OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY",
-    randomBytes(32).toString("base64")
-  ],
-  ["API_TEAM_MEMORY_DATA_ENCRYPTION_KEY", randomBytes(32).toString("base64")],
-  ["API_TOKEN_PEPPER", randomBytes(48).toString("base64url")],
-  [
+  secretEntry("POSTGRES_PASSWORD"),
+  secretEntry("API_DATA_ENCRYPTION_KEY", 32, "base64"),
+  secretEntry("OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY", 32, "base64"),
+  secretEntry(
+    "API_TEAM_MEMORY_DATA_ENCRYPTION_KEY",
+    32,
+    "base64",
+    "TEAM_MEMORY_DATA_ENCRYPTION_KEY"
+  ),
+  secretEntry("API_TOKEN_PEPPER", 48),
+  secretEntry(
     "API_COLLABORATION_LOCAL_BROKER_SECRET",
-    randomBytes(48).toString("base64url")
-  ],
-  [
+    48,
+    "base64url",
+    "COLLABORATION_LOCAL_BROKER_SECRET"
+  ),
+  secretEntry(
     "API_COLLABORATION_REALTIME_CURSOR_SECRET",
-    randomBytes(48).toString("base64url")
-  ],
-  ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")],
-  ["PRIVACY_SERVICE_TOKEN", randomBytes(32).toString("base64url")],
-  ["PRIVACY_RUNTIME_CONTROL_TOKEN", randomBytes(32).toString("base64url")],
-  ["KOED_OPS_METRICS_TOKEN", randomBytes(32).toString("base64url")]
+    48,
+    "base64url",
+    "COLLABORATION_REALTIME_CURSOR_SECRET"
+  ),
+  secretEntry("EMBEDDING_SERVICE_TOKEN"),
+  secretEntry("PRIVACY_SERVICE_TOKEN"),
+  secretEntry("PRIVACY_RUNTIME_CONTROL_TOKEN"),
+  secretEntry("KOED_OPS_METRICS_TOKEN")
 ]);
+
+const postgresPassword = configuredOrExampleValue(
+  "POSTGRES_PASSWORD",
+  generatedValues.get("POSTGRES_PASSWORD")
+);
+generatedValues.set(
+  "DATABASE_URL",
+  `postgres://${encodeURIComponent(configuredOrExampleValue("POSTGRES_USER", "koed"))}` +
+    `:${encodeURIComponent(postgresPassword)}` +
+    `@localhost:${configuredOrExampleValue("POSTGRES_HOST_PORT", "15432")}` +
+    `/${encodeURIComponent(configuredOrExampleValue("POSTGRES_DB", "koed"))}`
+);
 
 const rendered = renderSetupEnv({ example, existing, generatedValues });
 

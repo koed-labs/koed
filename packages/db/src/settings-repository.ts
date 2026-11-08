@@ -1,3 +1,4 @@
+import { memoryModelFlowKeys } from "@koed/shared/ai-client-flow-defaults";
 import { readPersonalCaptureTarget } from "./personal-capture-target-state.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";
@@ -12,6 +13,7 @@ import {
 } from "./schema.js";
 import type {
   ActorContext,
+  SetMemoryModelInput,
   AiClientCapabilitySnapshotDiagnosticRecord,
   AiClientCapabilitySnapshotRecord,
   AiClientInstanceRecord,
@@ -352,6 +354,31 @@ export const createSettingsRepository = (db: KoedDb) => ({
       .orderBy(asc(localMemoryAgentSettings.flowKey));
 
     return rows.map(mapLocalMemoryAgentSettingRecord);
+  },
+
+  async setMemoryModel(
+    actor: ActorContext,
+    { limits, ...model }: SetMemoryModelInput
+  ): Promise<void> {
+    // One write across all four flows. Existing per-flow execution limits belong to the operator.
+    await db
+      .insert(localMemoryAgentSettings)
+      .values(
+        memoryModelFlowKeys.map((flowKey) => ({
+          ownerUserId: actor.userId,
+          flowKey,
+          ...model,
+          timeoutMs: limits[flowKey].timeout_ms,
+          maxAttempts: limits[flowKey].max_attempts
+        }))
+      )
+      .onConflictDoUpdate({
+        target: [
+          localMemoryAgentSettings.ownerUserId,
+          localMemoryAgentSettings.flowKey
+        ],
+        set: { ...model, updatedAt: sql`now()` }
+      });
   },
 
   async upsertLocalMemoryAgentSetting(

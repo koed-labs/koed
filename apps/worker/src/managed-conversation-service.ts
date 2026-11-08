@@ -539,6 +539,19 @@ const promptFileMentionsFrom = (
   });
 };
 
+export const managedChiefOfStaffInstruction = (name: string | null): string =>
+  name
+    ? ` In this Koed-created Conversation, your Chief of Staff name is ${JSON.stringify(name)}. Use it when referring to yourself.`
+    : "";
+
+export const managedCodexBaseInstructions = (name: string | null): string =>
+  "You are Codex, an AI coding agent working with the user in the selected Project." +
+  managedChiefOfStaffInstruction(name);
+
+export const managedClaudeSystemPromptAppend = (name: string | null): string =>
+  "You are Claude Code working with the user in the selected Koed Project." +
+  managedChiefOfStaffInstruction(name);
+
 export const createManagedConversationService = (options: {
   repository: MemorySourceRepository;
   apiUrl: string;
@@ -1491,8 +1504,9 @@ export const createManagedConversationService = (options: {
         cwd: override?.projectPath ?? binding.projectPath,
         env: { ...runtimeEnvironment, KOED_HOME: options.koedHome },
         clientName: "koed-server-managed-conversation",
-        baseInstructions:
-          "You are Codex, an AI coding agent working with the user in the selected Project.",
+        baseInstructions: managedCodexBaseInstructions(
+          execution.chiefOfStaffName
+        ),
         approvalPolicy: permission.approvalPolicy,
         sandboxMode: permission.sandboxMode,
         approvalsReviewer: permission.approvalsReviewer,
@@ -1799,8 +1813,7 @@ export const createManagedConversationService = (options: {
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
-        append:
-          "You are Claude Code working with the user in the selected Koed Project."
+        append: managedClaudeSystemPromptAppend(execution.chiefOfStaffName)
       },
       maxTurns: 100,
       ...(override?.resumeSessionId
@@ -1841,6 +1854,7 @@ export const createManagedConversationService = (options: {
     return new PiManagedConversationSession({
       cwd: binding.projectPath,
       model: execution.model,
+      chiefOfStaffName: execution.chiefOfStaffName,
       ...(execution.reasoningEffort
         ? { reasoningEffort: execution.reasoningEffort }
         : {}),

@@ -1,5 +1,21 @@
 # @koed/koed
 
+## 0.11.1
+
+### Patch Changes
+
+- dbbb72b: Correct solo desktop onboarding readiness, Project chat and folder navigation, and Settings controls. Keep window graphics preferences separate from local inference settings and reuse existing service and AI-client commands.
+- dbbb72b: Add the solo V1 desktop presentation with Chief of Staff customization, local onboarding, model and reasoning selection, and new-chat and Project navigation. Preserve existing managed execution and Personal Memory integrations; imported conversations remain memory sources without appearing in the new chat history.
+- dbbb72b: Replace the desktop home composer with a Home stage; there is no new-chat composer. Every state shares one layout: AI Client keycaps above a stage where Kin stand in a spotlight that scales with the window. Projects gather around the most recently active one, a quiet stage shows before there are any, recent history processing shows as a hatching stage with its progress, and a full-screen attention state appears only when Koed cannot load Projects. Clicking a Project opens its most recent conversation. Keycaps use the same health as Settings and offer Connect or Repair, with the same consent step as Settings.
+- ebe3105: Recover idle Project Kin spins and animate newly discovered Conversations toward their Project Kin or the No Project floor.
+- dbbb72b: Introduce the V1 desktop experience with streamlined onboarding, project navigation, Home, and settings.
+
+## 0.11.0
+
+### Minor Changes
+
+- dbbb72b: Add a notify-only Desktop update notice: an app-wide sidebar card and About panel that download the official installer for the running platform.
+
 ## 0.10.3
 
 ## 0.10.2
@@ -162,6 +178,7 @@
   the artifact policy check for the Electron runtime dependencies.
 - 34d39b0: Show Embedding Service status under Preferences → Services in Koed Desktop: backlog, throughput, drain estimate, queue counts, Projection backlog, and historical import admission. `koed status` now includes this snapshot as `embeddingState`.
 - b078fac: Keep historical Projection moving during real use.
+
   - A single turn larger than the historical batch row or byte cap is now
     projected by itself, instead of blocking every later imported turn.
   - Live rows that are only waiting for an open agent turn to finish no longer

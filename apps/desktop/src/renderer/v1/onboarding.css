@@ -1,0 +1,699 @@
+.lp-workspace {
+  color-scheme: light;
+  --lp-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --lp-background: light-dark(#f0f0f4, #1c1c1f);
+  --lp-text: light-dark(#1c1c1e, #f2f2f5);
+  --lp-secondary: light-dark(#63636d, #b1b1bc);
+  --lp-muted: light-dark(#73737e, #a0a0ad);
+  --lp-accent: light-dark(#35353b, #dedee7);
+  --lp-button: light-dark(#dddde5, #38383f);
+  --lp-button-hover: light-dark(#d1d1dc, #47474f);
+  --lp-card: light-dark(#e6e6ec, #27272d);
+  --lp-card-selected: light-dark(#e6e6ec, #2c2c33);
+  --lp-border: light-dark(#dcdce4, #393941);
+  --lp-border-selected: light-dark(#bdbdc9, #61616d);
+  --lp-border-hover: light-dark(#9b9ba9, #858594);
+  --lp-track: light-dark(#dcdce4, #3b3b44);
+  --lp-success: light-dark(#248544, #4cdc7b);
+  --lp-success-border: light-dark(#9ac6a8, #466b52);
+  --lp-error: light-dark(#a62d3b, #f3a0a8);
+  --lp-error-surface: light-dark(#f5e3e6, #38262c);
+  --lp-error-border: light-dark(#d9a1aa, #89515e);
+  height: 100svh;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 28px 24px 48px;
+  display: grid;
+  place-items: center;
+  align-items: safe center;
+  background: var(--lp-background);
+  color: var(--lp-text);
+  font-family: var(--lp-font);
+  position: relative;
+  isolation: isolate;
+}
+
+@media (prefers-color-scheme: dark) {
+  .lp-workspace {
+    color-scheme: dark;
+  }
+}
+
+.lp-loader {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  z-index: 1;
+}
+.lp-celebration {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.lp-kin-area {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.lp-kin-stage {
+  width: min(500px, 100%);
+  height: clamp(260px, 50svh, 400px);
+  position: relative;
+}
+.lp-kin-button {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  position: relative;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.lp-kin-button {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.lp-kin-button[data-dragging="true"] {
+  cursor: grabbing;
+}
+.lp-kin-button:disabled {
+  cursor: default;
+}
+.lp-kin-button:focus-visible {
+  outline: 2px solid var(--lp-accent);
+  outline-offset: 4px;
+  border-radius: 24px;
+}
+.lp-kin-scene {
+  position: absolute;
+  inset: 0;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+}
+.lp-kin-scene canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.lp-kin-scene::before {
+  content: "";
+  position: absolute;
+  top: 87%;
+  left: 29%;
+  width: 42%;
+  height: 4%;
+  border-radius: 50%;
+  background: #000;
+  filter: blur(12px);
+  opacity: var(--kin-shadow-opacity, 0.3);
+  transform: scaleX(var(--kin-shadow-scale, 1));
+  z-index: -1;
+}
+
+.lp-message-window {
+  width: 100%;
+  height: 64px;
+  margin: 8px 0 0;
+  overflow: hidden;
+  display: grid;
+  align-items: center;
+  text-align: center;
+  font-size: clamp(20px, 3.3vw, 27px);
+  font-weight: 400;
+  line-height: 1.25;
+  letter-spacing: -0.035em;
+  outline: none;
+}
+.lp-scrolling-message {
+  display: block;
+  animation: lp-message-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes lp-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lp-progress-stack {
+  width: min(340px, 100%);
+  margin-top: 22px;
+}
+.lp-progress-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 9px;
+  font-size: 11px;
+  color: var(--lp-secondary);
+}
+.lp-progress-label > span:last-child {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--lp-accent);
+}
+.lp-progress-track {
+  height: 4px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--lp-track);
+}
+.lp-progress-track i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left;
+  border-radius: inherit;
+  background: var(--lp-accent);
+  transition: transform 0.35s linear;
+}
+.lp-setup-error-detail {
+  max-width: 310px;
+  margin: 0;
+  color: var(--lp-error);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+.lp-setup-error .lp-progress-track i {
+  background: var(--lp-error);
+}
+.lp-setup-error .lp-progress-label > span {
+  color: var(--lp-error);
+}
+
+.lp-primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  min-height: 40px;
+  padding: 10px 19px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--lp-button);
+  color: var(--lp-text);
+  font: 500 12px var(--lp-font);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    opacity 0.15s,
+    transform 0.15s;
+}
+.lp-primary-button:hover:not(:disabled) {
+  background: var(--lp-button-hover);
+}
+.lp-primary-button:active:not(:disabled),
+.lp-text-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.lp-primary-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.lp-next-button {
+  margin-top: 28px;
+  min-width: 122px;
+  animation: lp-message-in 0.4s ease-out both;
+}
+.lp-finish-button {
+  margin-top: 14px;
+}
+.lp-finish-button:disabled {
+  opacity: 0.75;
+}
+.lp-workspace button:focus-visible,
+.lp-workspace input:focus-visible {
+  outline: 2px solid var(--lp-accent);
+  outline-offset: 4px;
+}
+
+/* A persistent companion on the left; the next step arrives beside it. */
+.lp-client-screen {
+  width: min(970px, 100%);
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1fr);
+  gap: 48px;
+  align-items: center;
+}
+.lp-client-screen .lp-kin-stage {
+  width: 100%;
+  height: 350px;
+}
+.lp-kin-caption {
+  text-align: center;
+  margin-top: 8px;
+}
+.lp-kin-caption p {
+  margin: 0 0 8px;
+  color: var(--lp-secondary);
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: -0.025em;
+  animation: lp-message-in 0.45s ease-out;
+}
+.lp-client-panel {
+  width: 100%;
+  min-width: 0;
+  animation: lp-client-enter 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes lp-client-enter {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.lp-client-panel h1 {
+  margin: 0 0 9px;
+  font-size: clamp(25px, 3vw, 31px);
+  line-height: 1.15;
+  font-weight: 500;
+  letter-spacing: -0.045em;
+  outline: none;
+}
+.lp-client-intro {
+  min-height: 37px;
+  margin: 0 0 23px;
+  max-width: 380px;
+  color: var(--lp-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.lp-client-list {
+  display: grid;
+  gap: 10px;
+}
+.lp-client-card {
+  display: block;
+  border: 1px solid var(--lp-border);
+  border-radius: 16px;
+  background: var(--lp-card);
+  padding: 18px 16px;
+  cursor: pointer;
+  transition:
+    border-color 0.3s,
+    background 0.3s,
+    opacity 0.3s;
+}
+.lp-client-card.is-selected {
+  border-color: var(--lp-border-selected);
+  background: var(--lp-card-selected);
+}
+.lp-client-card:hover:not(.is-searching):not(.is-locked) {
+  border-color: var(--lp-border-hover);
+}
+.lp-client-card.is-searching {
+  opacity: 0.48;
+  cursor: default;
+}
+.lp-client-card.is-locked {
+  cursor: default;
+}
+.lp-client-card.is-success {
+  border-color: var(--lp-success-border);
+}
+.lp-client-card.is-error {
+  background: var(--lp-error-surface);
+  border-color: var(--lp-error-border);
+}
+.lp-client-card.is-error .lp-client-name small {
+  color: var(--lp-error);
+}
+.lp-client-card:has(input:focus-visible) {
+  outline: 2px solid var(--lp-accent);
+  outline-offset: 3px;
+}
+.lp-client-card-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.lp-client-icon {
+  display: block;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  background: var(--lp-text);
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+}
+.lp-client-icon-pi {
+  width: 30px;
+  height: 30px;
+  margin-inline: -2px;
+}
+.lp-client-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.lp-client-name strong {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.lp-client-name small {
+  font-size: 10px;
+  color: var(--lp-muted);
+}
+.lp-client-card input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--lp-accent);
+  cursor: pointer;
+  margin: 0 0 0 auto;
+}
+.lp-client-card input:disabled {
+  cursor: default;
+}
+.lp-connection-result {
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  color: var(--lp-accent);
+}
+.lp-connection-result.is-success {
+  color: var(--lp-success);
+}
+.lp-connection-result.is-error {
+  color: var(--lp-error);
+}
+.lp-connection-result.is-skipped {
+  color: var(--lp-muted);
+}
+.lp-spinner {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: lp-spin 0.7s linear infinite;
+}
+@keyframes lp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.lp-connect-button {
+  min-width: 126px;
+  gap: 9px;
+}
+.lp-connect-button[aria-busy="true"] {
+  opacity: 1;
+  cursor: wait;
+}
+.lp-client-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 24px;
+}
+.lp-client-actions .lp-text-button {
+  margin-right: auto;
+}
+.lp-text-button {
+  border: 0;
+  background: none;
+  color: var(--lp-secondary);
+  padding: 10px 0;
+  font: 12px var(--lp-font);
+  cursor: pointer;
+}
+.lp-text-button:hover:not(:disabled) {
+  color: var(--lp-text);
+}
+.lp-text-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@media (max-width: 900px) and (min-width: 701px) {
+  .lp-client-screen {
+    grid-template-columns: minmax(210px, 0.75fr) minmax(0, 1fr);
+    gap: 24px;
+  }
+  .lp-client-screen .lp-kin-stage {
+    height: 290px;
+  }
+  .lp-kin-caption p {
+    font-size: 15px;
+  }
+  .lp-client-workspace {
+    padding: 22px;
+  }
+  .lp-client-panel h1 {
+    font-size: 25px;
+  }
+  .lp-client-intro {
+    font-size: 11px;
+    margin-bottom: 17px;
+  }
+  .lp-client-card {
+    padding: 16px 13px;
+  }
+}
+@media (max-width: 700px) {
+  .lp-client-workspace {
+    padding-bottom: 65px;
+  }
+  .lp-client-screen {
+    display: flex;
+    gap: 0;
+    width: min(430px, 100%);
+  }
+  .lp-client-screen .lp-kin-stage {
+    height: 240px;
+    width: min(350px, 100%);
+  }
+  .lp-kin-caption {
+    margin: 0 0 32px;
+  }
+  .lp-kin-caption p {
+    font-size: 17px;
+  }
+  .lp-client-panel h1 {
+    font-size: 28px;
+  }
+  .lp-client-intro {
+    margin-bottom: 20px;
+  }
+}
+
+.lp-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.lp-kin-fallback {
+  width: 190px;
+  height: 210px;
+  border-radius: 60px;
+  background: linear-gradient(#d7c70d, #6238f2);
+  box-shadow: inset -20px -20px 0 #0002;
+  position: relative;
+}
+.lp-kin-fallback i {
+  position: absolute;
+  top: 70px;
+  left: 52px;
+  width: 12px;
+  height: 18px;
+  border-radius: 50%;
+  background: #17151e;
+}
+.lp-kin-fallback i + i {
+  left: 118px;
+}
+.lp-kin-fallback b {
+  position: absolute;
+  top: 106px;
+  left: 66px;
+  width: 56px;
+  height: 30px;
+  border: 6px solid #17151e;
+  border-top: 0;
+  border-radius: 0 0 60px 60px;
+}
+.lp-kin-scene[data-kin-mood="sad"] .lp-kin-fallback b {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 520px) {
+  .lp-workspace {
+    padding-inline: 22px;
+  }
+  .lp-kin-stage {
+    height: min(370px, 92vw, 50svh);
+  }
+  .lp-message-window {
+    font-size: 22px;
+  }
+}
+@media (max-height: 700px) {
+  .lp-setup-error .lp-kin-stage {
+    height: 42svh;
+    min-height: 180px;
+  }
+}
+@media (max-height: 550px) and (min-width: 521px) {
+  .lp-workspace {
+    padding-block: 12px 24px;
+  }
+  .lp-kin-stage {
+    height: 48svh;
+    min-height: 180px;
+  }
+  .lp-message-window {
+    height: 52px;
+    margin-top: 0;
+    font-size: 22px;
+  }
+  .lp-progress-stack {
+    margin-top: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lp-workspace *,
+  .lp-workspace *::before,
+  .lp-workspace *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+@media (prefers-contrast: more) {
+  .lp-progress-label {
+    color: var(--lp-text);
+  }
+  .lp-progress-track {
+    background: var(--lp-border-hover);
+  }
+}
+
+/* Electron production additions: native dragging, consent, and live recovery. */
+.lp-window-drag {
+  position: absolute;
+  inset: 0 180px auto 0;
+  height: 44px;
+  -webkit-app-region: drag;
+}
+.lp-workspace button,
+.lp-workspace input {
+  -webkit-app-region: no-drag;
+}
+.lp-workspace .lp-live-detail {
+  max-width: 340px;
+  margin: 12px 0 0;
+  color: var(--lp-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.lp-workspace .lp-error {
+  max-width: 440px;
+  color: var(--lp-error);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.lp-client-panel .lp-error {
+  text-align: left;
+}
+.lp-client-details {
+  margin: 6px 0 0 38px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--lp-error);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.lp-client-details summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--lp-secondary);
+}
+.lp-client-details summary:hover {
+  color: var(--lp-text);
+}
+.lp-client-details summary:focus-visible {
+  outline: 2px solid var(--lp-accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.lp-client-details p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+.lp-client-actions {
+  flex-wrap: wrap;
+}
+.lp-progress-track.is-indeterminate {
+  position: relative;
+}
+.lp-progress-track.is-indeterminate::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--lp-stage-start);
+  width: var(--lp-stage-size);
+  opacity: 0.5;
+  background: linear-gradient(
+    90deg,
+    transparent 20%,
+    var(--lp-accent) 50%,
+    transparent 80%
+  );
+  background-size: 200% 100%;
+  animation: lp-progress-sweep 1.3s linear infinite;
+}
+@keyframes lp-progress-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.lp-progress-detail {
+  margin: 10px 0 0;
+  text-align: center;
+  color: var(--lp-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}

@@ -1,3 +1,4 @@
+import { ConversationPresentationContext } from "../../conversation-presentation.js";
 import {
   Button,
   DropdownMenu,
@@ -50,7 +51,7 @@ import type {
   PersonalDesktopProjectThread
 } from "@koed/shared/personal-desktop";
 import { PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS } from "@koed/shared/personal-desktop";
-import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
+import type { MarkdownPlatformAdapters } from "../../markdown/SecureMarkdown.js";
 import {
   BookText,
   Brain,
@@ -1353,7 +1354,7 @@ function ProjectDetail({
   );
 }
 
-function StoreConversation({
+export function StoreConversation({
   authorizeManagedConversationTransfer,
   managedConversationRevision,
   managedConversationRecoveryRevision,
@@ -1386,6 +1387,8 @@ function StoreConversation({
   store: PersonalMemoryStore;
   thread: PersonalDesktopProjectThread;
 }) {
+  const presentation = useContext(ConversationPresentationContext);
+  const Surface = presentation.Surface ?? NativeConversationSurface;
   const initialCanonicalConversation =
     managedDraft?.conversation.executionId &&
     managedDraft.conversation.capturedSessionId !==
@@ -1756,7 +1759,7 @@ function StoreConversation({
     <div className="personal-conversation-shell">
       <div className="personal-conversation-body">
         <div className="personal-conversation-timeline">
-          <NativeConversationSurface
+          <Surface
             markdownAdapters={markdownAdapters}
             model={model}
             onInspectEvent={
@@ -2254,6 +2257,8 @@ function ManagedConversationComposer({
     } | null
   ) => void;
 }) {
+  const presentation = useContext(ConversationPresentationContext);
+  const Input = presentation.Input ?? ConversationInput;
   const [draft, setDraft] = useState("");
   const [draftReady, setDraftReady] = useState(false);
   const [draftError, setDraftError] = useState("");
@@ -3179,7 +3184,7 @@ function ManagedConversationComposer({
           Retry
         </button>
       ) : null}
-      <ConversationInput
+      <Input
         action={{
           kind: promptActive ? "interrupt" : "send",
           label: promptActive ? "Interrupt active turn" : "Send prompt",
@@ -3300,7 +3305,7 @@ function ManagedConversationComposer({
           {settingsError}
         </p>
       )}
-      {resolvedConversation.executionId ? (
+      {resolvedConversation.executionId && !presentation.compact ? (
         <div className="personal-managed-meta-row">
           <ManagedConversationUsage
             model={usage?.model ?? initialSelection?.model ?? null}

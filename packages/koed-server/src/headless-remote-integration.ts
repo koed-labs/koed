@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  grantAiClientConnection,
+  revokeAiClientConnection
+} from "@koed/shared/ai-client-connections";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -17,6 +21,7 @@ import {
   removeClaude,
   setupClaude
 } from "./claude-setup.js";
+import { noteAiClientConnectionRevision } from "./ai-client-authorization.js";
 import { resolveCodexExecutablePath } from "./ai-client-registry.js";
 import { resolveKoedServerConfig } from "./config.js";
 import { resolveKoedServerPaths } from "./paths.js";
@@ -238,7 +243,9 @@ const inspectHarness = async (
     checkPid: isProcessRunning,
     delay: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    now: () => new Date()
+    now: () => new Date(),
+    // Checking a harness never changes whether it is connected.
+    revokeAiClientConnection: () => false
   };
   const profile = await (harness === "codex"
     ? inspectCodex(
@@ -293,6 +300,10 @@ export const setupHeadlessRemoteIntegration = async (
       );
     }
     if (options.signal?.aborted) return result(options.harness, "cancelled");
+    const koedHome = resolveKoedServerPaths(environment).koedHome;
+    // Noted before the integration changes, so a removal that lands while
+    // this setup runs keeps the AI Client disconnected.
+    const revision = noteAiClientConnectionRevision(koedHome, options.harness);
     const childEnvironment = harnessEnvironment(environment, descriptor);
     const configured = await (options.setupHarness
       ? options.setupHarness(options.harness, childEnvironment)
@@ -314,6 +325,14 @@ export const setupHeadlessRemoteIntegration = async (
       );
     }
     writeHeadlessRemoteIntegration(environment, descriptor);
+    // Consented setup is what connects the AI Client; the Local AI Runtime
+    // never connects one from the descriptor.
+    if (!grantAiClientConnection(koedHome, options.harness, revision))
+      return result(
+        options.harness,
+        "needs_attention",
+        "The AI Client changed while setup ran; capture stays off. Set it up again to connect it."
+      );
     return result(options.harness, "configured");
   } catch {
     return result(
@@ -373,10 +392,29 @@ export const removeHeadlessRemoteIntegration = (
   const denied = approved(options);
   if (denied) return denied;
   const environment = options.environment ?? process.env;
+  // Disconnect before touching the integration: capture stops even if the
+  // removal below fails or is cut short.
+  let disconnected = true;
+  try {
+    revokeAiClientConnection(
+      resolveKoedServerPaths(environment).koedHome,
+      options.harness
+    );
+  } catch {
+    disconnected = false;
+  }
+  const removedResult = () =>
+    disconnected
+      ? result(options.harness, "removed")
+      : result(
+          options.harness,
+          "needs_attention",
+          "The AI Client could not be disconnected; Koed may still read its conversations."
+        );
   try {
     const descriptor = readHeadlessRemoteIntegration(environment);
     if (!descriptor?.harnesses.includes(options.harness))
-      return result(options.harness, "removed");
+      return removedResult();
     const childEnvironment = harnessEnvironment(environment, descriptor);
     const removed = options.removeHarness
       ? options.removeHarness(options.harness, childEnvironment)
@@ -405,7 +443,7 @@ export const removeHeadlessRemoteIntegration = (
     } else {
       unlinkSync(headlessRemoteIntegrationPath(environment));
     }
-    return result(options.harness, "removed");
+    return removedResult();
   } catch {
     return result(
       options.harness,

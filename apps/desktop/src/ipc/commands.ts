@@ -1,4 +1,16 @@
+import {
+  presentationPreferencesGetChannel,
+  presentationPreferencesSetChannel
+} from "./protocol.js";
+import type { PresentationPreferences } from "../window/presentation-preferences.js";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
+import {
+  v1StateChannel,
+  v1StateRequestSchema,
+  v1StateResponseSchema,
+  type V1StateRequest,
+  type V1StateResponse
+} from "./v1-state-protocol.js";
 import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
@@ -139,6 +151,7 @@ export const registerDesktopCommandHandlers = (
   handlers: Record<DesktopCommandName, DesktopCommandHandler>,
   options: {
     allowedRendererOrigins: ReadonlySet<string>;
+    v1State?: (request: V1StateRequest) => Promise<V1StateResponse>;
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
     managedConversation: (
@@ -170,6 +183,10 @@ export const registerDesktopCommandHandlers = (
     setLaunchAtStartup: (
       enabled: boolean
     ) => Promise<DesktopLaunchAtStartupState>;
+    getPresentationPreferences?: () => PresentationPreferences;
+    setPresentationPreferences?: (
+      value: PresentationPreferences
+    ) => PresentationPreferences;
     selectProjectDirectory?: () => Promise<unknown>;
   }
 ): void => {
@@ -261,6 +278,35 @@ export const registerDesktopCommandHandlers = (
     return options.getThemePreference();
   });
 
+  ipcMain.handle(presentationPreferencesGetChannel, (event) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (!options.getPresentationPreferences)
+      throw new Error("Presentation settings are unavailable.");
+    return options.getPresentationPreferences();
+  });
+  ipcMain.handle(presentationPreferencesSetChannel, (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Object.keys(value).some(
+        (key) => key !== "graphicsAcceleration" && key !== "showMenuBar"
+      ) ||
+      !("graphicsAcceleration" in value) ||
+      typeof value.graphicsAcceleration !== "boolean" ||
+      !("showMenuBar" in value) ||
+      typeof value.showMenuBar !== "boolean"
+    )
+      throw new Error("Invalid presentation preferences.");
+    if (!options.setPresentationPreferences)
+      throw new Error("Presentation settings are unavailable.");
+    return options.setPresentationPreferences({
+      graphicsAcceleration: value.graphicsAcceleration,
+      showMenuBar: value.showMenuBar
+    });
+  });
   ipcMain.handle(themePreferenceSetChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {
       throw new Error("Untrusted Desktop IPC sender.");
@@ -422,6 +468,15 @@ export const registerDesktopCommandHandlers = (
       return result;
     }
   );
+
+  ipcMain.handle(v1StateChannel, async (event, value) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    if (!options.v1State) throw new Error("V1 state is unavailable.");
+    const request = v1StateRequestSchema.parse(value);
+    return v1StateResponseSchema.parse(await options.v1State(request));
+  });
 
   ipcMain.handle(managedProjectCommandChannel, async (event, value) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {

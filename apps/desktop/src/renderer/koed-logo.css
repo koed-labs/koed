@@ -1,0 +1,15 @@
+.koed-logo {
+  display: inline-block;
+  flex: none;
+  background: url("../../assets/logo-light-mode.png") center / contain no-repeat;
+}
+
+:root.dark .koed-logo {
+  background-image: url("../../assets/logo-dark-mode.png");
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) .koed-logo {
+    background-image: url("../../assets/logo-dark-mode.png");
+  }
+}

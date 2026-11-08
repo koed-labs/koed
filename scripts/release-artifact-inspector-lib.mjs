@@ -605,6 +605,35 @@ export const inspectArchive = async ({ path, platform, architecture }) => {
 
 export const evaluateArtifactPolicy = (report, policy, baseline = null) => {
   const errors = [];
+  const nativeKind = report.source.startsWith("koed-native-core-")
+    ? "core"
+    : report.source.startsWith("koed-native-cuda-")
+      ? "cuda"
+      : null;
+  if (nativeKind) {
+    const prefix = nativeKind === "core" ? "nativeCore" : "nativeCuda";
+    for (const [measured, maximum, label] of [
+      [report.bytes.archive, policy[`${prefix}ArchiveMaximum`], "archive"],
+      [
+        report.bytes.expandedRegularFiles,
+        policy[`${prefix}ExpandedMaximum`],
+        "expanded"
+      ]
+    ]) {
+      if (!Number.isSafeInteger(maximum) || maximum <= 0)
+        errors.push(
+          `native ${nativeKind} ${label} size budget is missing or invalid`
+        );
+      else if (
+        !Number.isSafeInteger(measured) ||
+        measured < 0 ||
+        measured > maximum
+      )
+        errors.push(
+          `native ${nativeKind} ${label} bytes ${measured} exceed the ${maximum}-byte budget`
+        );
+    }
+  }
   if (report.bytes.duplicateRatio > policy.maxDuplicateRatio) {
     errors.push(
       `duplicate ratio ${report.bytes.duplicateRatio} exceeds ${policy.maxDuplicateRatio}`

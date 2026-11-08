@@ -1,8 +1,33 @@
 import { describe, expect, it } from "vitest";
+import {
+  codeDefaultAssignmentFor,
+  documentDefault
+} from "@koed/shared/ai-client-flow-defaults";
 
 import { readLocalAiClientReadModel } from "./local-ai-client-read-model.js";
 
 describe("local AI Client read model", () => {
+  it("returns effective limits when a Pi default has no model", () => {
+    const model = readLocalAiClientReadModel(
+      {
+        defaults: {
+          lcm_summary: documentDefault(codeDefaultAssignmentFor("lcm_summary"))
+        }
+      },
+      {
+        MEMORY_LCM_SUMMARY_PROVIDER: "pi",
+        MEMORY_LCM_SUMMARY_TIMEOUT_MS: "240000"
+      }
+    );
+
+    expect(model.defaults.lcm_summary).toMatchObject({
+      available: false,
+      assignment: null,
+      reason: "Selected provider requires explicit model.",
+      executionLimits: { timeout_ms: 240000, max_attempts: 2 }
+    });
+  });
+
   it("retains the executable model ID separately from its qualified label ID", () => {
     const model = readLocalAiClientReadModel(
       {

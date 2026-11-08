@@ -8,9 +8,6 @@ import type {
   ManagedConversationLaunchOptions
 } from "../../../ipc/managed-conversation-protocol.js";
 
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 const options: ManagedConversationLaunchOptions = {
   runners: [],
   instances: [

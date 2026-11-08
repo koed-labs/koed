@@ -16,7 +16,7 @@ Long-term memory for Codex, Claude Code, and Pi. Private, local, and yours.
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey)
 [![Supported AI Clients](https://img.shields.io/badge/AI%20Clients-Codex%20%7C%20Claude%20Code%20%7C%20Pi-6e40c9)](#connect-an-ai-client)
 
-[Features](#features) • [Quickstart](#quickstart) • [Connect an AI Client](#connect-an-ai-client) • [Documentation](#documentation)
+[Benchmark](#benchmark) • [Features](#features) • [Quickstart](#quickstart) • [Connect an AI Client](#connect-an-ai-client) • [Documentation](#documentation)
 
 </div>
 
@@ -30,6 +30,21 @@ decisions, dead ends, and context from the last one.
 Your memory stays on your machine or on a server you run. Koed stores and
 searches it. Your AI Client writes the answers, so no extra LLM sits in the
 middle.
+
+## Benchmark
+
+We ran 20 selected Terminal-Bench 4 tasks 3 times each on GPT-6 Luna, with and
+without Koed. With Koed, 12 tasks improved with captured knowledge and estimated cost per passing run fell from $1.16 to $0.12. Cost figures include Koed's known recall and preparation costs. Full results [here](docs/benchmark-results.md).
+
+<br/>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/koed-benchmark-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/koed-benchmark.svg">
+    <img alt="With Koed, 38 of 60 runs passed, against 7 of 60 without it. Coding time was 52% lower, coding tokens 69% lower, and cost with overhead 42% lower." src="docs/assets/koed-benchmark.svg" width="680">
+  </picture>
+</p>
 
 ## Features
 
@@ -64,12 +79,11 @@ middle.
 
 ```bash
 pnpm install
-pnpm local:setup
-KOED_DEPENDENCY_MODE=bundled-local KOED_AUTO_PORTS=1 pnpm desktop:start
+pnpm desktop:start
 ```
 
-`pnpm local:setup` creates `.env`, builds the workspace, links the Homebrew
-runtime, and installs the models. Koed Desktop opens when setup is complete.
+On first launch, choose **Set up Koed** and confirm. Desktop installs the
+runtime and models it needs, then starts the local services.
 
 To stop Koed, run:
 

@@ -881,7 +881,8 @@ describe.skipIf(!originUrl || !receiverUrl)(
       expect(advertise).toHaveBeenCalledWith([
         "source_context_v1",
         "project_membership_v1",
-        "project_defaults_v1"
+        "project_defaults_v1",
+        "project_kin_v1"
       ]);
     }, 120_000);
   }

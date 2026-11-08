@@ -1,4 +1,8 @@
 import {
+  readPresentationPreferences,
+  writePresentationPreferences
+} from "./window/presentation-preferences.js";
+import {
   app,
   BrowserWindow,
   clipboard,
@@ -18,6 +22,12 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
+import { registerDesktopUpdateIpc } from "./ipc/update.js";
+import {
+  createUpdateDiscovery,
+  officialInstallerDownload,
+  supportsDesktopUpdates
+} from "./main/update-discovery.js";
 import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
 import type { DesktopCommandName } from "./ipc/protocol.js";
 import {
@@ -42,6 +52,7 @@ import {
   resolveAppProtocolRequest
 } from "./window/app-protocol.js";
 import { createManagedConversationDraftStore } from "./managed-conversation-draft-store.js";
+import { createV1State, v1OwnerScope } from "./v1-state.js";
 import { createPdsDesktopSecretStore } from "./pds-secure-provider.js";
 import { PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE } from "./pds-authority.js";
 import { resolveKoedHome as resolveApplicationKoedHome } from "@koed-labs/server";
@@ -102,11 +113,7 @@ const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   desktopManagedLocal: true,
   packagedDesktop: app.isPackaged
 });
-const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
-const menuBarIconFile = menuBarIconFilename(process.platform);
-const menuBarIconPath = menuBarIconFile
-  ? resolve(appDir, "../assets", menuBarIconFile)
-  : null;
+const desktopIconPath = resolve(appDir, "../assets/koed-icon.png");
 const devServerUrl = resolveDevServerUrl({
   appIsPackaged: app.isPackaged,
   devServerUrl: process.env.VITE_DEV_SERVER_URL
@@ -117,11 +124,23 @@ const allowedRendererOrigins = new Set([
 ]);
 
 app.setName(appName);
+const presentationPreferencePath = resolve(
+  app.getPath("userData"),
+  "presentation-preferences.json"
+);
+let presentationPreferences = readPresentationPreferences(
+  presentationPreferencePath
+);
+// Electron window rendering only; never change embedding/privacy runtime policy.
+if (!presentationPreferences.graphicsAcceleration)
+  app.disableHardwareAcceleration();
 
 let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
+let disposeDesktopUpdateIpc: (() => void) | null = null;
+let disposeDesktopUpdateDiscovery: (() => void) | null = null;
 let backgroundLaunchPending = false;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
 const managedPreviewController = createManagedPreviewController();
@@ -275,11 +294,18 @@ const getAppDistDir = (): string =>
     ? resolve(process.resourcesPath, "app-dist")
     : resolve(repoRoot, "apps/desktop/dist");
 
-const getDesktopIcon = () => {
-  if (!existsSync(desktopIconPath)) {
-    return undefined;
-  }
-  return nativeImage.createFromPath(desktopIconPath);
+const getMenuBarIcon = () => {
+  const file = menuBarIconFilename(
+    process.platform,
+    nativeTheme.shouldUseDarkColors
+  );
+  if (!file) return null;
+  const icon = nativeImage.createFromPath(resolve(appDir, "../assets", file));
+  if (icon.isEmpty()) return null;
+  if (process.platform !== "darwin")
+    return icon.resize({ width: 24, height: 24 });
+  icon.setTemplateImage(true);
+  return icon;
 };
 
 const registerAppProtocol = (): void => {
@@ -309,7 +335,7 @@ const createWindow = async () => {
   const window = new BrowserWindow(
     createMainWindowOptions(
       appDir,
-      existsSync(desktopIconPath) ? desktopIconPath : undefined,
+      desktopIconPath,
       desktopThemeChromeColor(nativeTheme.shouldUseDarkColors)
     )
   );
@@ -372,6 +398,37 @@ async function showPairingDeepLink(value: string): Promise<void> {
 
 const bootstrap = async () => {
   await app.whenReady();
+  const updateDiscovery = createUpdateDiscovery({
+    eligible:
+      app.isPackaged &&
+      supportsDesktopUpdates(process.platform, process.arch) &&
+      !process.argv.includes("--koed-private-smoke"),
+    installedVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch
+  });
+  disposeDesktopUpdateIpc = registerDesktopUpdateIpc({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    allowedRendererOrigins,
+    discovery: updateDiscovery,
+    openRelease: async () => {
+      const release = updateDiscovery.current().release;
+      const download = release
+        ? officialInstallerDownload(
+            release.version,
+            process.platform,
+            process.arch
+          )
+        : null;
+      if (download) await openExternal(download);
+    }
+  });
+  const updateStartTimer = setTimeout(() => updateDiscovery.start(), 45_000);
+  disposeDesktopUpdateDiscovery = () => {
+    clearTimeout(updateStartTimer);
+    updateDiscovery.dispose();
+  };
   const launchAtStartup = createLaunchAtStartupController({
     appDataPath: app.getPath("appData"),
     appIsPackaged: app.isPackaged,
@@ -405,9 +462,8 @@ const bootstrap = async () => {
     personalDevicePairingStore
   );
   const server = koedServer;
-  const desktopIcon = getDesktopIcon();
-  if (desktopIcon && process.platform === "darwin") {
-    app.dock?.setIcon(desktopIcon);
+  if (process.platform === "darwin" && !app.isPackaged) {
+    app.dock?.setIcon(desktopIconPath);
   }
   registerAppProtocol();
   const privacyInstallBridge = server.privacyInstall;
@@ -512,7 +568,18 @@ const bootstrap = async () => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send(channel, value);
   });
+  const v1State = createV1State({
+    userDataPath: app.getPath("userData"),
+    ownerIdentity: async () => {
+      const identity = await server.v1StateIdentity();
+      return {
+        ownerId: identity.ownerUserId,
+        scopeKey: v1OwnerScope(identity.apiOrigin, identity.ownerUserId)
+      };
+    }
+  });
   registerDesktopCommandHandlers(ipcMain, server.handlers, {
+    v1State: v1State.request,
     allowedRendererOrigins,
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,
@@ -538,6 +605,13 @@ const bootstrap = async () => {
         resolvedDark: nativeTheme.shouldUseDarkColors
       };
     },
+    getPresentationPreferences: () => ({ ...presentationPreferences }),
+    setPresentationPreferences: (value) => {
+      writePresentationPreferences(presentationPreferencePath, value);
+      presentationPreferences = value;
+      configureMenuBar();
+      return { ...value };
+    },
     getHardwareAcceleration: () => server.hardwareAcceleration.get(),
     setHardwareAcceleration: (enabled) =>
       server.hardwareAcceleration.set(enabled),
@@ -561,35 +635,49 @@ const bootstrap = async () => {
       return { canceled: false, result };
     }
   });
-  if (menuBarIconPath && existsSync(menuBarIconPath)) {
-    const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);
-    if (process.platform === "darwin") menuBarIcon.setTemplateImage(true);
-    const tray = new Tray(menuBarIcon);
-    desktopMenuBar = createDesktopMenuBar<Menu>({
-      tray: {
-        destroy: () => tray.destroy(),
-        onClick: (listener) => {
-          tray.on("click", listener);
+  const configureMenuBar = () => {
+    desktopMenuBar?.dispose();
+    desktopMenuBar = null;
+    if (!presentationPreferences.showMenuBar) return;
+    const menuBarIcon = getMenuBarIcon();
+    if (menuBarIcon) {
+      const tray = new Tray(menuBarIcon);
+      const updateTrayIcon = () => {
+        const icon = getMenuBarIcon();
+        if (icon) tray.setImage(icon);
+      };
+      if (process.platform !== "darwin")
+        nativeTheme.on("updated", updateTrayIcon);
+      desktopMenuBar = createDesktopMenuBar<Menu>({
+        tray: {
+          destroy: () => {
+            nativeTheme.off("updated", updateTrayIcon);
+            tray.destroy();
+          },
+          onClick: (listener) => {
+            tray.on("click", listener);
+          },
+          ...(process.platform === "darwin"
+            ? {
+                onRightClick: (listener: () => void) => {
+                  tray.on("right-click", listener);
+                },
+                popUpContextMenu: (menu: Menu) => tray.popUpContextMenu(menu)
+              }
+            : { setContextMenu: (menu: Menu) => tray.setContextMenu(menu) }),
+          setToolTip: (tooltip) => tray.setToolTip(tooltip)
         },
-        ...(process.platform === "darwin"
-          ? {
-              onRightClick: (listener: () => void) => {
-                tray.on("right-click", listener);
-              },
-              popUpContextMenu: (menu: Menu) => tray.popUpContextMenu(menu)
-            }
-          : { setContextMenu: (menu: Menu) => tray.setContextMenu(menu) }),
-        setToolTip: (tooltip) => tray.setToolTip(tooltip)
-      },
-      buildMenu: (template) => Menu.buildFromTemplate(template),
-      getStatus: () => server.handlers.status(),
-      openDesktop: showDesktopWindow,
-      startKoed: () => {
-        void Promise.resolve(server.handlers.start()).catch(() => undefined);
-      },
-      quit: () => app.quit()
-    });
-  }
+        buildMenu: (template) => Menu.buildFromTemplate(template),
+        getStatus: () => server.handlers.status(),
+        openDesktop: showDesktopWindow,
+        startKoed: () => {
+          void Promise.resolve(server.handlers.start()).catch(() => undefined);
+        },
+        quit: () => app.quit()
+      });
+    }
+  };
+  configureMenuBar();
   // One cheap local observer drives both the window and the tray, so an
   // external stop or start is reflected without waiting for full polling.
   server.lifecycle.subscribe(() => {
@@ -639,6 +727,7 @@ const bootstrap = async () => {
         argv: process.argv,
         channel: process,
         send: (message) => process.send?.(message),
+        getUpdateNoticeState: () => updateDiscovery.current(),
         invoke: async (command) => {
           if (command === "privacy_status")
             return server.privacyInstall.getStatus();
@@ -703,6 +792,10 @@ app.on("activate", () => {
 });
 let koedServerStoppedForQuit = false;
 app.on("before-quit", (event) => {
+  disposeDesktopUpdateDiscovery?.();
+  disposeDesktopUpdateDiscovery = null;
+  disposeDesktopUpdateIpc?.();
+  disposeDesktopUpdateIpc = null;
   if (koedServerStoppedForQuit) {
     return;
   }

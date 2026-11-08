@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
+import { ConversationPresentationContext } from "../../conversation-presentation.js";
 import { MonitorSmartphone } from "lucide-react";
 import type {
   ManagedConversationDesktopApi,
@@ -49,6 +50,9 @@ export function NewConversationComposer({
     initialPrompt?: InitialConversationPrompt
   ) => void;
 }) {
+  const presentation = useContext(ConversationPresentationContext);
+  const Input = presentation.Input ?? ConversationInput;
+  const Container = presentation.Input ? "div" : "form";
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -181,7 +185,8 @@ export function NewConversationComposer({
     }
   };
   return (
-    <form
+    <Container
+      role={presentation.Input ? "form" : undefined}
       className="personal-managed-composer personal-new-conversation-composer"
       aria-label="New Conversation"
       aria-busy={!api || !projectId || !options || busy}
@@ -190,7 +195,7 @@ export function NewConversationComposer({
         void start();
       }}
     >
-      <ConversationInput
+      <Input
         action={{
           kind: busy ? "busy" : "send",
           label: busy ? "Starting Conversation" : "Start Conversation",
@@ -250,6 +255,6 @@ export function NewConversationComposer({
           {error}
         </p>
       )}
-    </form>
+    </Container>
   );
 }

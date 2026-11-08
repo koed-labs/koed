@@ -1,0 +1,426 @@
+@import "./fonts.css";
+
+.v1-app {
+  --v1-heat-1: #6aa8ff;
+  --v1-heat-2: #4fd1a5;
+  --v1-heat-3: #f2b544;
+  --v1-heat-4: #ff7a59;
+  --v1-bg: #050507;
+  --v1-rail: #0c0c0f;
+  --v1-card: #131317;
+  --v1-card-hi: #17171c;
+  --v1-surface: #1d1d23;
+  --v1-surface-hover: #27272e;
+  --v1-border: #2a2a31;
+  --v1-hairline: #1b1b20;
+  --v1-fg: #f4f4f5;
+  --v1-fg2: #d4d4d8;
+  --v1-muted: #a1a1aa;
+  --v1-faint: #5b5b63;
+  --v1-accent: #5e6ad2;
+  --v1-accent-soft: color-mix(in srgb, #5e6ad2 16%, transparent);
+  --v1-accent-text: #a5acf2;
+  --v1-field: #1c1c22;
+  --v1-btn: #f4f4f5;
+  --v1-btn-fg: #0b0b0e;
+  --v1-shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.8);
+  color-scheme: dark;
+  background: var(--v1-bg);
+  color: var(--v1-fg);
+  font-family:
+    Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+.v1-app[data-theme="light"],
+:root.light .v1-app {
+  --v1-heat-1: #2f7de0;
+  --v1-heat-2: #14946f;
+  --v1-heat-3: #c98a0c;
+  --v1-heat-4: #dc5530;
+  --v1-bg: #fbfbfc;
+  --v1-rail: #f2f2f5;
+  --v1-card: #f1f1f4;
+  --v1-card-hi: #ececf0;
+  --v1-surface: #e7e7ec;
+  --v1-surface-hover: #dddde3;
+  --v1-border: #dcdce2;
+  --v1-hairline: #ececf0;
+  --v1-fg: #18181b;
+  --v1-fg2: #3f3f46;
+  --v1-muted: #63636b;
+  --v1-faint: #a6a6ae;
+  --v1-accent-soft: color-mix(in srgb, #5e6ad2 12%, transparent);
+  --v1-accent-text: #4551b5;
+  --v1-field: #fff;
+  --v1-btn: #18181b;
+  --v1-btn-fg: #fafafa;
+  --v1-shadow: 0 18px 50px -26px rgba(20, 20, 40, 0.28);
+  color-scheme: light;
+}
+.v1-app * {
+  box-sizing: border-box;
+}
+:where(.v1-app) :where(button, input, textarea) {
+  font: inherit;
+  color: inherit;
+}
+.v1-app button {
+  cursor: pointer;
+}
+.v1-app :focus-visible {
+  outline: 2px solid var(--v1-accent);
+  outline-offset: 2px;
+}
+.v1-icon {
+  all: unset;
+  box-sizing: border-box;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  color: var(--v1-muted);
+  cursor: pointer;
+  flex: none;
+}
+.v1-icon:hover {
+  background: var(--v1-surface);
+  color: var(--v1-fg);
+}
+.v1-icon svg {
+  width: 19px;
+  height: 19px;
+}
+.v1-logo {
+  width: 36px;
+  height: 36px;
+}
+.v1-hero {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 30px;
+  padding: 24px 16px 12vh;
+}
+.v1-hero-mark {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.v1-hero-mark .v1-pixelkin {
+  border-radius: 18px;
+}
+.v1-hero-mark h1 {
+  margin: 0;
+  font-size: 46px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1;
+}
+.v1-hero-composer {
+  width: 100%;
+  max-width: 760px;
+}
+.v1-hero-subtitle {
+  margin: -18px 0 0;
+  font-size: 14px;
+  color: var(--v1-muted);
+  text-align: center;
+  text-wrap: balance;
+}
+.v1-composer {
+  position: relative;
+  background: var(--v1-card);
+  border: 1px solid var(--v1-border);
+  border-radius: 26px;
+  box-shadow: var(--v1-shadow);
+  padding: 10px 10px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s;
+}
+.v1-composer:focus-within {
+  border-color: color-mix(in srgb, var(--v1-fg) 22%, var(--v1-border));
+}
+.v1-composer textarea {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 28px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 6px 6px 0;
+  font-size: 16px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  resize: none;
+}
+.v1-composer textarea::placeholder {
+  color: var(--v1-faint);
+}
+.v1-composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.v1-composer-spacer {
+  flex: 1;
+}
+.v1-composer-option {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--v1-border);
+  font-size: 14px;
+  color: var(--v1-fg2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.v1-composer-option svg {
+  color: var(--v1-muted);
+}
+.v1-composer-option:hover {
+  background: var(--v1-surface);
+}
+.v1-send {
+  all: unset;
+  box-sizing: border-box;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--v1-btn);
+  color: var(--v1-btn-fg) !important;
+  cursor: pointer;
+  flex: none;
+  transition: transform 0.1s;
+}
+.v1-send:active {
+  transform: scale(0.94);
+}
+.v1-send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.v1-model-picker {
+  position: relative;
+}
+.v1-mode-button {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 36px;
+  padding: 0 8px 0 10px;
+  border-radius: 999px;
+  color: var(--v1-muted);
+  font-size: 13.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.v1-mode-button:hover {
+  color: var(--v1-fg);
+  background: var(--v1-surface);
+}
+.v1-mode-button .v1-model-label {
+  font-weight: 500;
+}
+.v1-mode-button .v1-effort-label {
+  color: var(--v1-faint);
+  font-size: 12.5px;
+  margin-left: 2px;
+}
+.v1-heat-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.v1-model-menu {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: 280px;
+  max-height: min(460px, 65vh);
+  overflow-y: auto;
+  background: var(--v1-card);
+  border: 1px solid var(--v1-border);
+  border-radius: 18px;
+  box-shadow: var(--v1-shadow);
+  padding: 6px;
+}
+.v1-menu-empty {
+  font-size: 13px;
+  color: var(--v1-muted);
+  padding: 10px;
+  margin: 0;
+}
+.v1-model-menu-heading {
+  display: grid;
+  grid-template-columns: 36px 1fr 36px;
+  align-items: center;
+  text-align: center;
+  padding: 2px 0 6px;
+}
+.v1-model-menu-heading b {
+  font-weight: 600;
+  font-size: 14px;
+}
+.v1-provider-title {
+  font-size: 11px;
+  color: var(--v1-faint);
+  padding: 10px 12px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.v1-model-option {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.v1-model-option:hover,
+.v1-model-option:focus-visible {
+  background: var(--v1-surface);
+}
+.v1-model-option:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.v1-model-option > span {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.v1-model-option b {
+  font-weight: 500;
+  font-size: 14.5px;
+}
+.v1-model-option small {
+  font-size: 12.5px;
+  color: var(--v1-muted);
+  line-height: 1.35;
+}
+.v1-reason-panel {
+  padding: 6px 6px 8px;
+}
+.v1-reason-top {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  align-items: center;
+}
+.v1-reason-top > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.v1-reason-top b {
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--v1-accent-text);
+  letter-spacing: -0.01em;
+}
+.v1-reason-top div button {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 14px;
+  color: var(--v1-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.v1-reason-top div button:hover {
+  color: var(--v1-fg);
+  background: var(--v1-surface);
+}
+.v1-reason-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 30px;
+  margin-top: 10px;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 6px;
+}
+.v1-reason-bars > span {
+  flex: 1;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+}
+.v1-reason-bars i {
+  display: block;
+  height: 5px;
+  border-radius: 1.5px;
+  background: var(--v1-surface-hover);
+}
+.v1-reason-bars > span.on i {
+  background: var(--v1-bar-color);
+}
+.v1-reason-bars:hover > span:not(.on) i {
+  background: color-mix(in srgb, var(--v1-fg) 14%, var(--v1-surface-hover));
+}
+.v1-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.v1-field > span {
+  font-size: 12px;
+  color: var(--v1-muted);
+}
+.v1-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+@media (max-width: 760px) {
+  .v1-hero-mark h1 {
+    font-size: 38px;
+  }
+  .v1-composer-option span {
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v1-composer,
+  .v1-send {
+    transition: none;
+  }
+}

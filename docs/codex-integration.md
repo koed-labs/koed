@@ -77,6 +77,11 @@ unrelated Codex settings. Koed Desktop mandatory setup runs core setup only.
 `pnpm clients:bootstrap` remains an explicit Codex-focused Local Operator
 Script for manual recovery.
 
+Codex can reorder its TOML settings and leave only Koed’s closing marker.
+During setup, Koed restores its marked section when it recognizes all of its
+generated MCP Server tables and Capture Hooks for this Koed home. If those
+entries contain custom edits, setup reports the marker error for manual review.
+
 Koed first uses a non-empty `MEMORY_CODEX_APP_SERVER_BINARY` override, then
 searches the inherited `PATH`. On macOS it also searches `~/.local/bin`,
 `/opt/homebrew/bin`, and `/usr/local/bin`, in that order. This supports packaged
@@ -196,6 +201,15 @@ managed Codex Conversations. It runs inside the Local AI Runtime supervised by
 and stops before the API. Developer and local-personal runtime modes enable it
 by default. External runtime mode does not run a Local AI Runtime or Transcript
 Watcher; user-local capture belongs on the User's local `koed-server`.
+
+Capture is authorized for the current `KOED_HOME` only by `koed setup codex`,
+`koed repair codex`, or the equivalent Koed Desktop action. Each one connects
+Codex only after verifying that Codex's managed MCP command and arguments match
+this runtime. Status checks never authorize capture. When a status check sees
+the Codex integration moved to another Koed home, it disconnects Codex in the
+previous home; restoring the configuration does not reconnect it until setup or
+repair runs again. `koed remove codex` disconnects Codex before it edits the
+configuration.
 
 By default, the watcher scans `CODEX_HOME/sessions` (`~/.codex/sessions` when
 `CODEX_HOME` is unset). `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces that default

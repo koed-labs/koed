@@ -1,4 +1,8 @@
 export { selectPersonalMembershipHead } from "./personal-membership-contract.js";
+export {
+  personalConversationOrganizationInputSchema,
+  personalConversationOrganizationResultSchema
+} from "./personal-source-correction-contract.js";
 export * from "./personal-inventory.js";
 export * from "./personal-inventory-classification.js";
 export { personalFolderExecutionId } from "./personal-folder-execution-id.js";
@@ -38,15 +42,17 @@ import {
 } from "./personal-source-contract.js";
 import { personalMembershipReasonSchema } from "./personal-membership-contract.js";
 export {
+  PERSONAL_PROJECT_INSPECTION_BATCH_SIZE,
   personalProjectCommandSchema,
   personalProjectCommandResultSchema
 } from "./personal-project-contract.js";
 import { z } from "zod";
+export { personalProjectKinSchema } from "./personal-project-kin.js";
 import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 27;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 29;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -553,7 +559,10 @@ export const personalDesktopSessionTitleInputSchema = z
   .strict();
 
 export const personalDesktopProjectCreateInputSchema = z
-  .object({ name: z.string().trim().min(1).max(160) })
+  .object({
+    name: z.string().trim().min(1).max(160),
+    requestId: z.uuid().optional()
+  })
   .strict();
 
 export const personalDesktopAskTurnSchema = z

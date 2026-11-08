@@ -79,6 +79,65 @@ describe.skipIf(!databaseUrl)(
         })
       ).id
     });
+    it("replays one owner-scoped creation after a lost response without another revision", async () => {
+      const repo = createMemorySourceRepository(pool, options);
+      const actor = await user();
+      const other = await user();
+      const requestId = randomUUID();
+      const [first, concurrent] = await Promise.all([
+        repo.createNamedPersonalProject(actor, { name: "Recovery", requestId }),
+        repo.createNamedPersonalProject(actor, { name: "Recovery", requestId })
+      ]);
+      expect(concurrent.projectId).toBe(first.projectId);
+      const replay = await repo.createNamedPersonalProject(actor, {
+        name: "Recovery",
+        requestId
+      });
+      expect(replay.projectId).toBe(first.projectId);
+      expect(await repo.listNamedPersonalProjects(actor)).toHaveLength(1);
+      const revisions = await pool.query<{ count: string }>(
+        `select count(*) from personal_membership_changes where owner_user_id=$1 and project_id=$2 and operation='set_project'`,
+        [actor.userId, first.projectId]
+      );
+      expect(revisions.rows[0]?.count).toBe("1");
+      await expect(
+        repo.createNamedPersonalProject(actor, {
+          name: "Different",
+          requestId
+        })
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect(await repo.listNamedPersonalProjects(actor)).toHaveLength(1);
+      const foreign = await repo.createNamedPersonalProject(other, {
+        name: "Different",
+        requestId
+      });
+      expect(foreign.projectId).not.toBe(first.projectId);
+      const renamed = await repo.updateNamedPersonalProject(
+        actor,
+        first.projectId,
+        { name: "Renamed", expectedVersion: first.version }
+      );
+      expect(
+        (
+          await repo.createNamedPersonalProject(actor, {
+            name: "Recovery",
+            requestId
+          })
+        ).projectId
+      ).toBe(first.projectId);
+      const deleted = await repo.deleteNamedPersonalProject(
+        actor,
+        first.projectId,
+        { expectedVersion: renamed.version }
+      );
+      const afterDeletion = await repo.createNamedPersonalProject(actor, {
+        name: "Recovery",
+        requestId
+      });
+      expect(afterDeletion.projectId).toBe(first.projectId);
+      expect(afterDeletion.deletedAt).toBe(deleted.deletedAt);
+      expect(await repo.listNamedPersonalProjects(actor)).toHaveLength(0);
+    });
     it("persists empty Projects and retained inclusion history with owner and stale-write protection", async () => {
       const repo = createMemorySourceRepository(pool, options),
         actor = await user(),

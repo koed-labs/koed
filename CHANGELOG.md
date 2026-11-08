@@ -1,5 +1,39 @@
 # Koed
 
+## 0.11.1
+
+### Patch Changes
+
+- dbbb72b: Correct solo desktop onboarding readiness, Project chat and folder navigation, and Settings controls. Keep window graphics preferences separate from local inference settings and reuse existing service and AI-client commands.
+
+- dbbb72b: Add the solo V1 desktop presentation with Chief of Staff customization, local onboarding, model and reasoning selection, and new-chat and Project navigation. Preserve existing managed execution and Personal Memory integrations; imported conversations remain memory sources without appearing in the new chat history.
+
+- dbbb72b: Replace the desktop home composer with a Home stage; there is no new-chat composer. Every state shares one layout: AI Client keycaps above a stage where Kin stand in a spotlight that scales with the window. Projects gather around the most recently active one, a quiet stage shows before there are any, recent history processing shows as a hatching stage with its progress, and a full-screen attention state appears only when Koed cannot load Projects. Clicking a Project opens its most recent conversation. Keycaps use the same health as Settings and offer Connect or Repair, with the same consent step as Settings.
+
+- ebe3105: Recover idle Project Kin spins and animate newly discovered Conversations toward their Project Kin or the No Project floor.
+
+- dbbb72b: Introduce the V1 desktop experience with streamlined onboarding, project navigation, Home, and settings.
+
+## 0.11.0
+
+### Minor Changes
+
+- dbbb72b: Add a notify-only Desktop update notice: an app-wide sidebar card and About panel that download the official installer for the running platform.
+
+- dbbb72b: Koed now reads an AI Client's conversations only while you have connected it. A client that is detected but not connected is no longer captured or imported, and connecting or disconnecting takes effect within seconds, without a restart. Automatic history import no longer stalls: a Conversation that fails the same way on every pass is skipped and logged instead of holding back newer ones, a closed import run is replaced with a new one, failures record the Memory API's error code, and a restart no longer marks history as stuck.
+
+- dbbb72b: Only setting up or repairing an AI Client now connects it for capture, and only after Koed verifies the integration for the current `KOED_HOME`. Status checks no longer connect clients. Removing a client disconnects it before its integration is changed, so a removal that fails or is interrupted still stops capture, and a setup that was running when the client was removed can no longer reconnect it. Headless remote runtimes no longer reconnect clients when they start. Existing installations must connect each AI Client again, through Koed Desktop or `koed setup <client>`; no Memory is deleted.
+
+- 5e31d33: Add an optional Linux CUDA package to each product release. The CLI installs the CPU core by default. Use `koed runtime install --provider release --dependency-mode bundled-local --with-cuda` to add CUDA while Koed is stopped.
+
+- dbbb72b: Support a saved Chief of Staff name for Koed-created conversations and retry-safe Personal Project creation. Existing callers can continue without supplying either optional field.
+
+### Patch Changes
+
+- a55a62a: Avoid repeatedly polling pending Personal Device Sync outbox entries so other deliveries can make progress.
+
+- b7063ab: Harden release promotion against npm registry visibility delays and reduce temporary disk use during published asset verification.
+
 ## 0.10.3
 
 ### Patch Changes

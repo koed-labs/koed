@@ -25,11 +25,13 @@ import type { DesktopProject } from "../../project-memory-ui.js";
 import {
   LcmSummaryFrame,
   MemoryEventFrame,
-  MemorySourceParts,
+  MemorySourceParts
+} from "../conversation/MemoryPresentation.js";
+import {
   SecureMarkdown,
-  VirtualizedTimeline,
   type MarkdownPlatformAdapters
-} from "@koed/memory-ui";
+} from "../markdown/SecureMarkdown.js";
+import { VirtualizedTimeline } from "../conversation/VirtualizedTimeline.js";
 
 type BoundSharedMemoryCandidatePreview = SharedMemoryCandidatePreview & {
   source: NonNullable<SharedMemoryCandidatePreview["source"]>;

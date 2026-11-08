@@ -3,7 +3,8 @@ import {
   personalIdentifierSchema,
   personalOwnerIdSchema,
   personalMembershipEntitySnapshotSchema,
-  type PersonalMembershipRevision
+  type PersonalMembershipRevision,
+  type PersonalProjectKin
 } from "@koed/shared";
 import {
   retainLocalPersonalMembershipSnapshot,
@@ -24,6 +25,7 @@ type NativeCatalogChange = {
       PersonalMembershipRevision["automaticDefault"]
     >;
     name?: string;
+    kin?: PersonalProjectKin;
     portableMembership?: {
       projectIdentity: string;
       entityIdentity: string;
@@ -102,7 +104,11 @@ export const bridgePersonalMembershipCatalog = async (
       replaces: [...(frozen?.replaces ?? change.replaces)].sort(),
       operation:
         change.operation === "set_project"
-          ? { kind: "set_project", name: change.value.name! }
+          ? {
+              kind: "set_project",
+              name: change.value.name!,
+              ...(change.value.kin && { kin: change.value.kin })
+            }
           : { kind: "delete_project" }
     });
     nativeChanges.set(change.revision_id, change.revision_id);
