@@ -199,6 +199,35 @@ test(
       const appPos = fs.indexOf(Buffer.from("app.asar"));
       assert.notEqual(appPos, -1);
       assert.equal(fs.indexOf(Buffer.from("app.asar"), appPos + 1), -1);
+      const wrongNumber = Buffer.from(fs);
+      wrongNumber.writeInt16LE(
+        wrongNumber.readInt16LE(appPos - 6) + 1,
+        appPos - 6
+      );
+      writeFileSync(resolve(dir, "fs"), wrongNumber);
+      rejects(run(["/work/fs", "1024"]));
+      for (const diff of [-32768, 32767]) {
+        const overflow = Buffer.from(fs);
+        overflow.writeInt16LE(diff, appPos - 6);
+        writeFileSync(resolve(dir, "fs"), overflow);
+        rejects(run(["/work/fs", "1024"]));
+      }
+      const rootRef = fs.readBigUInt64LE(32);
+      assert.equal(rootRef >> 16n, 0n);
+      assert.equal(fs.readUInt32LE(appPos - 16), 0);
+      const inodeStart = Number(fs.readBigUInt64LE(64));
+      const rootNumber = fs.readUInt32LE(inodeStart + 2 + Number(rootRef) + 12);
+      const headerBase = fs.readUInt32LE(appPos - 12);
+      const rootAlias = Buffer.from(fs);
+      rootAlias.writeUInt16LE(Number(rootRef), appPos - 8);
+      rootAlias.writeInt16LE(rootNumber - headerBase, appPos - 6);
+      rootAlias.writeUInt16LE(1, appPos - 4);
+      writeFileSync(resolve(dir, "fs"), rootAlias);
+      rejects(run(["/work/fs", "1024"]));
+      const invalidRef = Buffer.from(fs);
+      invalidRef.writeUInt16LE(8192, appPos - 8);
+      writeFileSync(resolve(dir, "fs"), invalidRef);
+      rejects(run(["/work/fs", "1024"]));
       const wrongType = Buffer.from(fs);
       assert.equal(wrongType.readUInt16LE(appPos - 4), 2);
       wrongType.writeUInt16LE(1, appPos - 4);
@@ -209,6 +238,11 @@ test(
       assert.notEqual(pos, -1);
       assert.equal(fs.indexOf(Buffer.from("zzz.asar"), pos + 1), -1);
       assert.equal(fs.readUInt16LE(pos - 4), 2);
+      const alias = Buffer.from(fs);
+      alias.writeUInt16LE(fs.readUInt16LE(appPos - 8), pos - 8);
+      alias.writeInt16LE(fs.readInt16LE(appPos - 6), pos - 6);
+      writeFileSync(resolve(dir, "fs"), alias);
+      rejects(run(["/work/fs", "1024"]));
       Buffer.from("app.asar").copy(fs, pos);
       writeFileSync(resolve(dir, "fs"), fs);
       result = run(["/work/fs", "1024"]);

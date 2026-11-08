@@ -6,6 +6,7 @@
 #include <sqfs/dir.h>
 #include <sqfs/inode.h>
 #include <sqfs/data_reader.h>
+#include <sqfs/meta_reader.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,22 +16,50 @@
 #define MAX_ENTRIES 100000U
 #define MAX_DEPTH 64U
 #define MAX_OUTPUT (128U * 1024U * 1024U)
+#define REF_SLOTS 262144U
 
 typedef struct { sqfs_inode_generic_t *inode; unsigned depth; int resources; } pending;
 typedef struct {
-    sqfs_dir_reader_t *reader;
+    sqfs_meta_reader_t *dirs, *inodes;
+    const sqfs_super_t *super;
     pending *queue;
     unsigned count, next, entries, inode_count;
-    unsigned char *seen;
+    unsigned char *seen, *ref_used;
+    sqfs_u64 *refs;
     sqfs_inode_generic_t *target;
 } walk;
 
+static int remember_ref(walk *w, sqfs_u64 ref) {
+    unsigned slot = (unsigned)((ref * UINT64_C(11400714819323198485)) >> 46);
+    while (w->ref_used[slot]) {
+        if (w->refs[slot] == ref) return -1;
+        slot = (slot + 1) & (REF_SLOTS - 1);
+    }
+    w->ref_used[slot] = 1;
+    w->refs[slot] = ref;
+    return 0;
+}
+
+static int read_inode(walk *w, sqfs_u64 ref, sqfs_inode_generic_t **inode) {
+    sqfs_u64 block = ref >> 16;
+    if (block >= w->super->directory_table_start - w->super->inode_table_start ||
+        (ref & 0xffff) >= 8192) return -1;
+    /* libsquashfs 1.2.0 adds inode_table_start internally, despite its header. */
+    return sqfs_meta_reader_read_inode(w->inodes, w->super,
+        block, (size_t)(ref & 0xffff), inode);
+}
+
 static int scan(walk *w, pending dir) {
     sqfs_dir_entry_t *entry = NULL;
+    sqfs_readdir_state_t state;
+    sqfs_u32 inum;
+    sqfs_u64 ref;
     char previous[257] = "";
     int rc;
-    if (sqfs_dir_reader_open_dir(w->reader, dir.inode, 0)) return -1;
-    while ((rc = sqfs_dir_reader_read(w->reader, &entry)) == 0) {
+    if (sqfs_readdir_state_init(&state, w->super, dir.inode) ||
+        state.init.block < w->super->directory_table_start ||
+        state.init.block >= w->super->bytes_used) return -1;
+    while ((rc = sqfs_meta_reader_readdir(w->dirs, &state, &entry, &inum, &ref)) == 0) {
         sqfs_inode_generic_t *inode = NULL;
         size_t n = (size_t)entry->size + 1;
         if (++w->entries > MAX_ENTRIES || n > 256 || memchr(entry->name, 0, n) ||
@@ -39,12 +68,14 @@ static int scan(walk *w, pending dir) {
         memcpy(name, entry->name, n); name[n] = 0;
         if (!strcmp(name, ".") || !strcmp(name, "..") || strcmp(previous, name) >= 0) goto bad;
         memcpy(previous, name, n + 1);
-        if (sqfs_dir_reader_get_inode(w->reader, &inode)) goto bad;
+        int64_t encoded = (int64_t)state.inum_base + entry->inode_diff;
+        if (encoded < 1 || encoded > w->inode_count || (sqfs_u32)encoded != inum ||
+            remember_ref(w, ref) || read_inode(w, ref, &inode)) goto bad;
         unsigned id = inode->base.inode_number;
         unsigned type = inode->base.type;
         /* Directory entries encode the basic form even for extended inodes. */
         if (type >= SQFS_INODE_EXT_DIR && type <= SQFS_INODE_EXT_SOCKET) type -= 7;
-        if (entry->type != type || !id || id > w->inode_count || w->seen[id]) {
+        if (entry->type != type || id != inum || !id || id > w->inode_count || w->seen[id]) {
             sqfs_free(inode); goto bad;
         }
         w->seen[id] = 1;
@@ -73,7 +104,7 @@ static int inspect(const char *path, unsigned long limit) {
     int ok = -1;
     sqfs_file_t *file = NULL;
     sqfs_compressor_t *cmp = NULL;
-    sqfs_dir_reader_t *reader = NULL;
+    sqfs_meta_reader_t *dirs = NULL, *inodes = NULL;
     sqfs_data_reader_t *data = NULL;
     sqfs_super_t super;
     sqfs_compressor_config_t cfg;
@@ -83,14 +114,22 @@ static int inspect(const char *path, unsigned long limit) {
     file = sqfs_open_file(path, SQFS_FILE_OPEN_READ_ONLY);
     if (!file || file->get_size(file) > UINT64_C(4294967296) ||
         sqfs_super_read(&super, file) || super.inode_count > MAX_ENTRIES ||
+        super.bytes_used > file->get_size(file) ||
+        super.inode_table_start >= super.directory_table_start ||
+        super.directory_table_start >= super.bytes_used ||
         sqfs_compressor_config_init(&cfg, super.compression_id, super.block_size, SQFS_COMP_FLAG_UNCOMPRESS) ||
         sqfs_compressor_create(&cfg, &cmp)) goto done;
-    reader = sqfs_dir_reader_create(&super, cmp, file, 0);
-    w.reader = reader;
+    dirs = sqfs_meta_reader_create(file, cmp, super.directory_table_start, super.bytes_used);
+    inodes = sqfs_meta_reader_create(file, cmp, super.inode_table_start, super.directory_table_start);
+    w.dirs = dirs; w.inodes = inodes; w.super = &super;
     w.inode_count = super.inode_count;
     w.queue = calloc(MAX_ENTRIES, sizeof(*w.queue));
     w.seen = calloc(MAX_ENTRIES + 1, 1);
-    if (!reader || !w.queue || !w.seen || sqfs_dir_reader_get_root_inode(reader, &w.queue[0].inode)) goto done;
+    w.refs = calloc(REF_SLOTS, sizeof(*w.refs));
+    w.ref_used = calloc(REF_SLOTS, 1);
+    if (!dirs || !inodes || !w.queue || !w.seen || !w.refs || !w.ref_used ||
+        remember_ref(&w, super.root_inode_ref) ||
+        read_inode(&w, super.root_inode_ref, &w.queue[0].inode)) goto done;
     w.count = 1;
     if ((w.queue[0].inode->base.type != SQFS_INODE_DIR &&
          w.queue[0].inode->base.type != SQFS_INODE_EXT_DIR) ||
@@ -117,8 +156,8 @@ static int inspect(const char *path, unsigned long limit) {
     ok = 0;
 done:
     while (w.next < w.count) sqfs_free(w.queue[w.next++].inode);
-    sqfs_free(w.target); free(w.queue); free(w.seen); free(output);
-    sqfs_destroy(data); sqfs_destroy(reader); sqfs_destroy(cmp); sqfs_destroy(file);
+    sqfs_free(w.target); free(w.queue); free(w.seen); free(w.refs); free(w.ref_used); free(output);
+    sqfs_destroy(data); sqfs_destroy(dirs); sqfs_destroy(inodes); sqfs_destroy(cmp); sqfs_destroy(file);
     return ok;
 }
 
