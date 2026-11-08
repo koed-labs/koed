@@ -48,6 +48,19 @@ test("Linux checksum names and verifies exact AppImage; rejects tampering and am
   writeFileSync(asset, "tampered");
   assert.throws(() => verifyLinuxDesktopReleaseChecksum(options));
 });
+test("Linux checksum covers bytes across read boundaries", (t) => {
+  const root = fixture(t);
+  const options = { releaseVersion: "1.2.3", releaseDirectory: root };
+  const bytes = Buffer.alloc(2 * 1024 * 1024 + 17, 0x61);
+  bytes[1024 * 1024] = 0x62;
+  writeFileSync(join(root, "Koed-1.2.3-x86_64.AppImage"), bytes);
+  const checksum = writeLinuxDesktopReleaseChecksum(options);
+  assert.equal(
+    readFileSync(checksum, "utf8"),
+    `${createHash("sha256").update(bytes).digest("hex")}  Koed-1.2.3-x86_64.AppImage\n`
+  );
+  assert.doesNotThrow(() => verifyLinuxDesktopReleaseChecksum(options));
+});
 test("Linux provisional size gate accepts 4 GiB and rejects larger or missing images", (t) => {
   const root = fixture(t);
   const asset = join(root, "Koed-1.2.3-x86_64.AppImage");

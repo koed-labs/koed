@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertKoedReleaseVersion } from "../packages/koed/release-version.mjs";
@@ -33,12 +42,18 @@ function linuxChecksumPaths({ releaseVersion, releaseDirectory }) {
 }
 
 function linuxChecksumLine(paths) {
-  if (!statSync(paths.asset).isFile())
-    throw new Error("AppImage must be a regular file.");
-  const hash = createHash("sha256")
-    .update(readFileSync(paths.asset))
-    .digest("hex");
-  return `${hash}  ${paths.name}\n`;
+  const fd = openSync(paths.asset, "r");
+  try {
+    if (!fstatSync(fd).isFile())
+      throw new Error("AppImage must be a regular file.");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (let count; (count = readSync(fd, buffer, 0, buffer.length, null)) > 0;)
+      hash.update(buffer.subarray(0, count));
+    return `${hash.digest("hex")}  ${paths.name}\n`;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function writeLinuxDesktopReleaseChecksum(options) {
