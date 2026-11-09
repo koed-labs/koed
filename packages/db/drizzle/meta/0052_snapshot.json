@@ -15889,7 +15889,7 @@
         },
         "managed_conversation_executions_chief_of_staff_name_check": {
           "name": "managed_conversation_executions_chief_of_staff_name_check",
-          "value": "\"chief_of_staff_name\" IS NULL OR (char_length(\"chief_of_staff_name\") BETWEEN 1 AND 80 AND \"chief_of_staff_name\" = btrim(\"chief_of_staff_name\") AND \"chief_of_staff_name\" !~ '[[:cntrl:]]')"
+          "value": "\"managed_conversation_executions\".\"chief_of_staff_name\" is null or (char_length(\"managed_conversation_executions\".\"chief_of_staff_name\") between 1 and 80\n        and \"managed_conversation_executions\".\"chief_of_staff_name\" = btrim(\"managed_conversation_executions\".\"chief_of_staff_name\")\n        and \"managed_conversation_executions\".\"chief_of_staff_name\" !~ '[[:cntrl:]]')"
         },
         "managed_conversation_executions_generation_check": {
           "name": "managed_conversation_executions_generation_check",
@@ -15902,6 +15902,10 @@
         "managed_conversation_executions_runner_lease_check": {
           "name": "managed_conversation_executions_runner_lease_check",
           "value": "(\"managed_conversation_executions\".\"runner_id\" is null and \"managed_conversation_executions\".\"runner_lease_expires_at\" is null)\n        or (\"managed_conversation_executions\".\"runner_id\" is not null and \"managed_conversation_executions\".\"runner_lease_expires_at\" is not null)"
+        },
+        "managed_conversation_executions_chief_of_staff_name_check": {
+          "name": "managed_conversation_executions_chief_of_staff_name_check",
+          "value": "\"chief_of_staff_name\" IS NULL OR (char_length(\"chief_of_staff_name\") BETWEEN 1 AND 80 AND \"chief_of_staff_name\" = btrim(\"chief_of_staff_name\") AND \"chief_of_staff_name\" !~ '[[:cntrl:]]')"
         }
       },
       "isRLSEnabled": false
