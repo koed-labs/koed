@@ -1679,7 +1679,8 @@ const run = async (extractedRoot) => {
     const diagnostics = preserveFailureDiagnostics({
       layout,
       koedHome,
-      diagnosticsDir: options.diagnosticsDir
+      diagnosticsDir: options.diagnosticsDir,
+      desktopOutput: desktop?.output
     });
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}\n\n${diagnostics}`,
