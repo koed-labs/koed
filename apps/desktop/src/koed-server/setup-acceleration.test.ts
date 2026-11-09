@@ -47,9 +47,20 @@ vi.mock("@koed-labs/server", async (original) => ({
       return control.snapshot;
     },
     install: async (
-      _choice: unknown,
+      choice: { mode: "core" | "cuda" },
       signal: AbortSignal
     ): Promise<AccelerationInstallResult> => {
+      // On Linux the release provider installs the core runtime through this
+      // same seam before the model stage; CUDA follows the model stage.
+      if (choice.mode === "core") {
+        control.runtime = true;
+        control.calls.push("core");
+        return {
+          snapshot: control.snapshot!,
+          validation: "inference",
+          changed: true
+        };
+      }
       control.calls.push("cuda");
       control.installSignal = signal;
       await control.installGate;
@@ -108,6 +119,9 @@ beforeEach(() => {
       args: ["fixture-cli", ...args],
       env: {}
     }),
+    // CUDA acceleration is a Linux path, so exercise Linux release-provider
+    // runtime selection regardless of the host running the tests.
+    platform: "linux",
     existsSync: () => true,
     execFile: (_command, args, _options, callback) => {
       let value: unknown = { ok: true, state: "installed" };

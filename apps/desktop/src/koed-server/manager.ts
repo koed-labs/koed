@@ -244,6 +244,8 @@ export interface KoedServerManagerOptions {
   packagedResourcesPath?: string;
   productVersion?: string;
   existsSync: (path: string) => boolean;
+  /** Host platform used for runtime provider selection; defaults to process.platform. */
+  platform?: NodeJS.Platform;
   execFile: (
     command: string,
     args: string[],
@@ -1554,6 +1556,7 @@ export const createKoedServerManager = ({
   packagedResourcesPath,
   productVersion,
   existsSync,
+  platform = process.platform,
   execFile,
   spawn,
   openExternal,
@@ -1816,7 +1819,7 @@ export const createKoedServerManager = ({
 
   const selectedRuntimeInstallProvider = () =>
     selectDesktopRuntimeProvider({
-      platform: process.platform,
+      platform,
       koedHome: resolveKoedHome(environment),
       packagedManifest: packagedRuntimeManifestPath(packagedResourcesPath),
       exists: existsSync

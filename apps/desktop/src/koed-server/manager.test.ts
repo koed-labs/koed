@@ -1083,6 +1083,7 @@ describe("Koed server desktop manager", () => {
       }),
       packagedResourcesPath: "/app/Contents/Resources",
       productVersion: "0.8.1",
+      platform: "darwin",
       existsSync: () => true,
       execFile,
       spawn: makeChild as never,
@@ -5291,6 +5292,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
@@ -5328,6 +5330,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: () => true,
       execFile: () => undefined,
       spawn: () => childProcess() as never,
@@ -5354,6 +5357,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: (path) =>
         path === "/repo/cli.js" ||
         path === "/resources/koed-runtime/runtime-asset-manifest.json",
@@ -5384,6 +5388,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: (path) => path === "/repo/cli.js",
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
@@ -5479,6 +5484,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
@@ -5578,6 +5584,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           args: ["/repo/cli.js", ...args],
           env: { KOED_REPO_ROOT: "/repo" }
         }),
+        platform: "darwin",
         existsSync: () => true,
         execFile: (_command, args, _options, callback) => {
           calls.push(args);
