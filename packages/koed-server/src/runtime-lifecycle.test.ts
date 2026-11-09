@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveKoedServerPaths } from "./paths.js";
@@ -41,6 +47,88 @@ const pin = (pid: number, processIdentity: string) => ({
 });
 
 describe("observeRuntimeLifecycle", () => {
+  it("recognises a source owner only while its supervisor process identity matches", () => {
+    const { paths, write } = fixture();
+    const sourceOwner = {
+      kind: "standalone" as const,
+      installationId: "a".repeat(32)
+    };
+    write("koed-server.lock", {
+      pid: 42,
+      acquiredAt: "x",
+      processIdentity: "live",
+      sourceOwner
+    });
+    const dependencies = { resolveProcessIdentity: identities({ 42: "live" }) };
+    expect(observeRuntimeLifecycle(paths, dependencies)).toMatchObject({
+      state: "starting",
+      owner: sourceOwner
+    });
+    write("koed-server.json", { pid: 42 });
+    const running = observeRuntimeLifecycle(paths, dependencies);
+    expect(running).toMatchObject({ state: "running", owner: sourceOwner });
+    expect(runtimeOwnedBy(running, sourceOwner)).toBe(true);
+    expect(
+      runtimeOwnedBy(running, {
+        ...sourceOwner,
+        installationId: "b".repeat(32)
+      })
+    ).toBe(false);
+    expect(
+      observeRuntimeLifecycle(paths, {
+        resolveProcessIdentity: identities({ 42: "reused" })
+      })
+    ).toMatchObject({ state: "stopped" });
+  });
+
+  it.each(["malformed", "foreign-process", "dangling-link"])(
+    "does not use source ownership to bypass a %s generation pin",
+    (kind) => {
+      const { paths, write } = fixture();
+      write("koed-server.lock", {
+        pid: 42,
+        acquiredAt: "x",
+        processIdentity: "live",
+        sourceOwner: { kind: "standalone", installationId: "a".repeat(32) }
+      });
+      write("koed-server.json", { pid: 42 });
+      if (kind === "dangling-link")
+        symlinkSync(
+          resolve(paths.runDir, "absent.json"),
+          paths.generationStatePath!
+        );
+      else
+        write(
+          "runtime-generation.json",
+          kind === "malformed" ? {} : pin(99, "other")
+        );
+      expect(
+        observeRuntimeLifecycle(paths, {
+          resolveProcessIdentity: identities({ 42: "live" })
+        })
+      ).toMatchObject({ state: "starting", owner: null });
+    }
+  );
+
+  it.each([
+    { kind: "desktop", installationId: "a".repeat(32) },
+    { kind: "standalone", installationId: "invalid" },
+    { kind: "standalone", installationId: "a".repeat(32), extra: true }
+  ])("rejects malformed source ownership: %j", (sourceOwner) => {
+    const { paths, write } = fixture();
+    write("koed-server.lock", {
+      pid: 42,
+      acquiredAt: "x",
+      processIdentity: "live",
+      sourceOwner
+    });
+    expect(
+      observeRuntimeLifecycle(paths, {
+        resolveProcessIdentity: identities({ 42: "live" })
+      })
+    ).toMatchObject({ state: "unavailable" });
+  });
+
   it("reports stopped without a supervisor lock and ignores stale files", () => {
     const { paths, write } = fixture();
     expect(

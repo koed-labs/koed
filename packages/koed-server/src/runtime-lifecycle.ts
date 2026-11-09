@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { RuntimeOwner } from "./component-contract.js";
 import type { KoedServerPaths } from "./paths.js";
@@ -16,7 +16,7 @@ export interface RuntimeLifecycleObservation {
   message: string;
   pid?: number;
   processIdentity?: string;
-  // Null until the live supervisor has pinned its verified generation.
+  // Packaged generation pin or source owner bound to the live supervisor lock.
   owner?: RuntimeOwner | null;
   generationId?: string;
 }
@@ -76,10 +76,10 @@ export function observeRuntimeLifecycle(
       message: "Koed is not running."
     };
   const epoch = `${lock.pid}:${identity}`;
-  const pin = readJson(
+  const pinPath =
     paths.generationStatePath ??
-      resolve(paths.runDir, "runtime-generation.json")
-  );
+    resolve(paths.runDir, "runtime-generation.json");
+  const pin = readJson(pinPath);
   const pinned =
     isRuntimeGenerationState(pin) &&
     pin.pid === lock.pid &&
@@ -89,14 +89,19 @@ export function observeRuntimeLifecycle(
   const runtime = readJson(paths.runtimeStatePath) as
     | { pid?: unknown }
     | undefined;
-  const running = pinned !== null && runtime?.pid === lock.pid;
+  // A malformed or foreign generation record must not fall back to source
+  // authority. Source ownership is valid only for the identified live process.
+  const owner =
+    pinned?.owner ??
+    (!lstatSync(pinPath, { throwIfNoEntry: false }) ? lock.sourceOwner : null);
+  const running = !!owner && runtime?.pid === lock.pid;
   return {
     state: running ? "running" : "starting",
     epoch,
     message: running ? "Koed is running." : "Koed is starting.",
     pid: lock.pid,
     processIdentity: identity,
-    owner: pinned ? { ...pinned.owner } : null,
+    owner: owner ? { ...owner } : null,
     ...(pinned ? { generationId: pinned.generationId } : {})
   };
 }

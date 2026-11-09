@@ -3,6 +3,21 @@ export {
   resolveKoedServerConfig,
   writeKoedServerConfig
 } from "./config.js";
+export type {
+  AccelerationChoice,
+  AccelerationCudaPackage,
+  AccelerationHardware,
+  AccelerationInstallProgress,
+  AccelerationInstallResult,
+  AccelerationOperation,
+  AccelerationPreference,
+  AccelerationSnapshot,
+  DesktopAccelerationApi,
+  DesktopAccelerationState,
+  EmbeddingBackend
+} from "./acceleration-contract.js";
+export { createAccelerationInspector } from "./acceleration-inspection.js";
+export { createAccelerationManagement } from "./acceleration-management.js";
 export {
   collectKoedServerDoctor,
   collectKoedServerStartupStatus,

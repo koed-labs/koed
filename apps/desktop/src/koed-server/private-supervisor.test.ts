@@ -16,6 +16,27 @@ const childFixture = () => {
   };
 };
 describe("private supervisor transport", () => {
+  it("allows long downloads without a whole-operation timeout and still cleans up on disconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      const { child, session } = childFixture();
+      const result = requestSupervisor(
+        session,
+        "acceleration",
+        "install",
+        {},
+        null
+      );
+      const rejected = expect(result).rejects.toThrow("disconnected");
+      await vi.advanceTimersByTimeAsync(3_600_000);
+      expect(child.listenerCount("message")).toBe(1);
+      child.emit("disconnect");
+      await rejected;
+      expect(child.listenerCount("message")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("ignores foreign nonces and request IDs and removes all RPC listeners after response", async () => {
     const { child, session } = childFixture();
     const result = requestSupervisor(session, "privacy", "install", {}, 1000);

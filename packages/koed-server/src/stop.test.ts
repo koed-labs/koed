@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { stopKoedServer } from "./stop.js";
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
 import { withLifecycleLock } from "./generation-lifecycle.js";
@@ -92,6 +92,68 @@ const runtime = (
 });
 
 describe("stopKoedServer", () => {
+  it("lets a source supervisor finish bounded shutdown before signalling its children", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime());
+    writeSupervisorLock(koedHome, 100);
+    let elapsed = 0;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => elapsed);
+    const kill = vi.fn();
+    try {
+      const result = stopKoedServer({
+        environment: { KOED_HOME: koedHome },
+        resolveProcessIdentity: () => "test-supervisor",
+        checkPid: () => elapsed < 7_000,
+        sleepSync: (ms) => {
+          elapsed += ms;
+        },
+        kill
+      });
+      expect(result.ok).toBe(true);
+      expect(kill).not.toHaveBeenCalled();
+      expect(elapsed).toBe(7_000);
+    } finally {
+      now.mockRestore();
+    }
+  });
+  it.each([true, false])(
+    "only stops a source runtime belonging to this installation: %s",
+    (sameInstallation) => {
+      const koedHome = makeHome();
+      writeRuntime(koedHome, runtime({ processes: {}, services: [] }));
+      const owner = resolveKoedRuntimeOwner();
+      writeFileSync(
+        resolve(koedHome, "run", "koed-server.lock"),
+        JSON.stringify({
+          pid: 100,
+          acquiredAt: "2026-01-01T00:00:00.000Z",
+          processIdentity: "test-supervisor",
+          sourceOwner: sameInstallation
+            ? owner
+            : { ...owner, installationId: "f".repeat(32) }
+        })
+      );
+      const signals: Array<[number, NodeJS.Signals]> = [];
+      let live = true;
+      const result = stopKoedServer({
+        environment: { KOED_HOME: koedHome },
+        resolveProcessIdentity: () => "test-supervisor",
+        kill: (pid, signal) => {
+          signals.push([pid, signal]);
+          live = false;
+        },
+        checkPid: (pid) => pid === 100 && live,
+        waitForExitMs: 0,
+        sleepSync: () => undefined
+      });
+      expect(result.ok).toBe(sameInstallation);
+      expect(signals).toEqual(sameInstallation ? [[100, "SIGTERM"]] : []);
+      if (!sameInstallation)
+        expect(existsSync(resolve(koedHome, "run", "koed-server.json"))).toBe(
+          true
+        );
+    }
+  );
   it("returns ok when runtime state is missing", () => {
     const koedHome = makeHome();
 

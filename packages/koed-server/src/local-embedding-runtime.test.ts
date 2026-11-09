@@ -86,6 +86,25 @@ afterEach(() => {
 });
 
 describe("local Embedding Service runtime", () => {
+  it("keeps packaged execution on its admitted native selection even if a selected binary disappears", () => {
+    const root = tempDir();
+    const selected = resolve(root, "runtime/native/selections/verified");
+    const runtime = resolveLocalEmbeddingRuntimePaths(
+      { ...paths(root), nativeSelectionRoot: selected },
+      { KOED_PACKAGED_DESKTOP: "1", KOED_PACKAGED_RESOURCES_PATH: root },
+      (candidate) => !String(candidate).startsWith(selected),
+      packagedRuntime(resolve(root, "verified-app-generation"))
+    );
+    expect(runtime.llamaServerBin).toBe(
+      resolve(selected, "llama.cpp/llama-server")
+    );
+    expect(localEmbeddingEnv(runtime).LLAMA_SERVER_BINARY).toBe(
+      runtime.llamaServerBin
+    );
+    expect(runtime.serviceEntry).toBe(
+      resolve(root, "verified-app-generation/embedding-service/dist/index.js")
+    );
+  });
   it("resolves default native paths under KOED_HOME runtime", () => {
     const root = tempDir();
     const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {});

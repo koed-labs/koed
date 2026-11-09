@@ -20,6 +20,10 @@ import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { CliInstallApi } from "./cli-install/protocol.js";
 import type { DesktopUpdateApi } from "@koed/shared/desktop-update-contract";
+import type {
+  AccelerationChoice,
+  DesktopAccelerationApi
+} from "@koed-labs/server";
 
 export type ComponentState =
   | "not_configured"
@@ -122,6 +126,7 @@ export type DesktopSetupStageId =
   | "package"
   | "runtime"
   | "model"
+  | "acceleration"
   | "services"
   | "integration"
   | "verification";
@@ -153,7 +158,7 @@ export interface DesktopSetupSnapshot {
 
 export interface DesktopSetupApi {
   inspect: () => Promise<DesktopSetupSnapshot>;
-  run: () => Promise<DesktopSetupSnapshot>;
+  run: (acceleration?: AccelerationChoice) => Promise<DesktopSetupSnapshot>;
   subscribe: (listener: (snapshot: DesktopSetupSnapshot) => void) => () => void;
 }
 
@@ -221,6 +226,7 @@ export interface DesktopApi {
       showMenuBar: boolean;
     }) => Promise<{ graphicsAcceleration: boolean; showMenuBar: boolean }>;
   };
+  acceleration?: DesktopAccelerationApi;
   hardwareAcceleration?: {
     get: () => Promise<{
       enabled: boolean;

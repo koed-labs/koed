@@ -6,6 +6,69 @@ import {
 } from "./setup-workflow.js";
 
 describe("desktop setup workflow", () => {
+  it("reports an interrupted main process using fresh prerequisites and never resumes a lost CUDA intent", async () => {
+    const runStage = vi.fn(async () => ({ ok: true, message: "Complete" }));
+    const workflow = createDesktopSetupWorkflow({
+      receipt: {
+        previous: {
+          id: "d6abf730-0f02-4adc-a7e6-4ddf98f30905",
+          sequence: 3,
+          state: "running"
+        },
+        save: vi.fn()
+      },
+      inspectStage: async (id) => ({
+        complete: ["package", "runtime", "model"].includes(id),
+        message: "Current state"
+      }),
+      runStage
+    });
+    const state = await workflow.inspect();
+    expect(state.state).toBe("failed");
+    expect(state.error).toContain("interrupted");
+    expect(state.stages.find((s) => s.id === "model")?.state).toBe("complete");
+    expect(state.stages.some((s) => s.id === "acceleration")).toBe(false);
+    expect(runStage).not.toHaveBeenCalled();
+    expect((await workflow.run(() => {})).state).toBe("complete");
+    expect(runStage).toHaveBeenCalledTimes(3);
+  });
+  it("places opted-in acceleration after the model and before services, retaining failure for reopened windows", async () => {
+    const completed = new Set<DesktopSetupStageId>();
+    const ids: DesktopSetupStageId[] = [
+      "package",
+      "runtime",
+      "model",
+      "acceleration",
+      "services",
+      "integration",
+      "verification"
+    ];
+    const run = vi.fn(async (stage: DesktopSetupStageId) => {
+      if (stage === "acceleration")
+        return { ok: false, message: "CUDA verification failed" };
+      completed.add(stage);
+      return { ok: true, message: "Complete" };
+    });
+    const workflow = createDesktopSetupWorkflow({
+      stageIds: () => ids,
+      inspectStage: async (id) => ({
+        complete: completed.has(id),
+        message: "Inspect"
+      }),
+      runStage: run
+    });
+    const failed = await workflow.run(() => {});
+    expect(run.mock.calls.map(([stage]) => stage)).toEqual(ids.slice(0, 4));
+    expect(await workflow.inspect()).toEqual(failed);
+    ids.splice(3, 1); // Explicit CPU recovery removes only the optional stage.
+    run.mockClear();
+    expect((await workflow.run(() => {})).state).toBe("complete");
+    expect(run.mock.calls.map(([stage]) => stage)).toEqual([
+      "services",
+      "integration",
+      "verification"
+    ]);
+  });
   it("does not mark final verification complete before its prerequisites", async () => {
     const workflow = createDesktopSetupWorkflow({
       randomId: () => "setup-run",

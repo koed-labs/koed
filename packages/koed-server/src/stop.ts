@@ -386,6 +386,7 @@ export const stopKoedServer = ({
     ? resolveProcessIdentity(runtime.pid)
     : null;
   if (
+    (lock?.sourceOwner && !ownersMatch(lock.sourceOwner, owner)) ||
     (ownerPinRequired && !pin) ||
     (pinExists && !pin) ||
     (pin !== null &&
@@ -439,7 +440,7 @@ export const stopKoedServer = ({
         checkPid,
         // Let the supervisor finish its bounded per-child shutdown before falling
         // back to direct PID signals, which cannot reach llama-server descendants.
-        waitForExitMs: requestedWait ?? (releaseManaged ? 60_000 : 5_000),
+        waitForExitMs: requestedWait ?? 60_000,
         pollIntervalMs,
         sleepSync
       });

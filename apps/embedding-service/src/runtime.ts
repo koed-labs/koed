@@ -43,6 +43,8 @@ export class EmbeddingRuntime {
   embeddingServer: LlamaEmbeddingClient | null = null;
 
   private embeddingLoadPromise: Promise<void> | null = null;
+  private shuttingDown = false;
+  private shutdownPromise: Promise<void> | null = null;
 
   constructor(
     readonly config: EmbeddingServiceEnv,
@@ -62,6 +64,9 @@ export class EmbeddingRuntime {
   }
 
   async loadEmbeddingModel(): Promise<void> {
+    if (this.shuttingDown) {
+      throw new HttpError(503, "embedding service is shutting down");
+    }
     if (this.embeddingServer?.isRunning()) {
       return;
     }
@@ -75,13 +80,29 @@ export class EmbeddingRuntime {
   }
 
   async shutdownRuntime(): Promise<void> {
+    this.shuttingDown = true;
+    this.shutdownPromise ??= this.stopEmbeddingModel();
+    await this.shutdownPromise;
+  }
+
+  private async stopEmbeddingModel(): Promise<void> {
+    // Startup may still be discovering a device or falling back to CPU. Let it
+    // settle before stopping its final child, and reject any queued reloads.
+    await this.embeddingLoadPromise?.catch(() => undefined);
     const embeddingServer = this.embeddingServer;
-    this.embeddingServer = null;
-    await embeddingServer?.stop();
+    try {
+      await embeddingServer?.stop();
+    } finally {
+      this.embeddingServer = null;
+    }
   }
 
   isModelLoaded(): boolean {
-    return this.embeddingServer !== null && this.embeddingServer.isRunning();
+    return (
+      !this.shuttingDown &&
+      this.embeddingServer !== null &&
+      this.embeddingServer.isRunning()
+    );
   }
 
   healthQueueSnapshot() {
@@ -103,7 +124,7 @@ export class EmbeddingRuntime {
     } catch {
       throw new HttpError(503, "embedding model is still loading");
     }
-    if (!this.embeddingServer?.isRunning()) {
+    if (this.shuttingDown || !this.embeddingServer?.isRunning()) {
       throw new HttpError(503, "embedding model is still loading");
     }
     return this.embeddingServer;

@@ -16,7 +16,12 @@ const commands = new Set([
   "privacy_status",
   "privacy_install",
   "quit",
-  "update_notice"
+  "update_notice",
+  "acceleration_status",
+  "acceleration_cpu",
+  "acceleration_auto",
+  "acceleration_cuda",
+  "acceleration_cancel"
 ]);
 type HarnessInput = {
   packaged: boolean;

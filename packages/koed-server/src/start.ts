@@ -170,7 +170,8 @@ export interface KoedServerStartOptions {
   provisionLocalApiToken?: typeof provisionLocalApiToken;
   signal?: AbortSignal;
   desktopRuntimeCapability?: DesktopRuntimeCapability;
-  onReady?: () => void;
+  /** Private supervisor status readers may use the effective service credentials. */
+  onReady?: (serviceEnvironment: NodeJS.ProcessEnv) => void;
 }
 
 const runCommand = (
@@ -966,6 +967,9 @@ export const startKoedServer = async ({
 
   ensureKoedHome(paths);
   const supervisorLock = acquireKoedServerSupervisorLock(paths, {
+    ...(execution === "source"
+      ? { sourceOwner: resolveKoedRuntimeOwner() }
+      : {}),
     exclusive: (action) => withLifecycleLock(paths, action)
   });
   if (!supervisorLock.acquired) {
@@ -1720,7 +1724,7 @@ export const startKoedServer = async ({
       }
       emitStartupMilestone("core_services_ready");
       startupReady = true;
-      onReady?.();
+      onReady?.(refreshedEnv);
       console.log(JSON.stringify(status, null, 2));
       emitStartupMilestone("final_supervisor_status_emitted");
       console.log(

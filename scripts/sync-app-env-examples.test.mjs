@@ -187,3 +187,21 @@ test("sync output is deterministic", () => {
 
   assert.equal(second, first);
 });
+
+test("generated root defaults leave Desktop processing preferences editable", () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const keys = new Set(
+    collectAppEnvEntries(root).map((entry) => entry.rootKey)
+  );
+  for (const key of [
+    "KOED_HARDWARE_ACCELERATION",
+    "KOED_EMBEDDING_ACCELERATION",
+    "PRIVACY_RUNTIME_PROVIDER"
+  ]) {
+    assert.equal(
+      keys.has(key),
+      false,
+      `${key} must be an explicit Operator override`
+    );
+  }
+});

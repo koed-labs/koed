@@ -71,7 +71,13 @@ export async function checkCudaHost(signal: AbortSignal) {
     ],
     {
       ...context,
-      env: { ...context.env, LD_PRELOAD: "libcuda.so.1" }
+      // Desktop also calls this probe from Electron main. Its executable must
+      // run as Node, just as it does for the private server supervisor.
+      env: {
+        ...context.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        LD_PRELOAD: "libcuda.so.1"
+      }
     }
   );
   if (loaded !== "true")

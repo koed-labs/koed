@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DesktopSetupSnapshot } from "../../../types.js";
+import type { AccelerationChoice } from "@koed-labs/server";
 import { errorText } from "./model.js";
 
 export function useSetup() {
@@ -81,14 +82,14 @@ export function useSetup() {
       window.clearTimeout(timer);
     };
   }, [snapshot, busy, error, inspect]);
-  const run = async () => {
+  const run = async (choice?: AccelerationChoice) => {
     if (!api || locked.current) return;
     locked.current = true;
     const request = ++operation.current;
     setBusy(true);
     setError(null);
     try {
-      const next = await api.run();
+      const next = await api.run(choice);
       if (mounted.current && request === operation.current) accept(next);
     } catch (cause) {
       if (mounted.current && request === operation.current)

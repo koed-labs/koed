@@ -34,7 +34,7 @@
     "test:browser": "pnpm build && pnpm build:validation && electron scripts/validate-project-workspace.mjs && electron scripts/validate-projects-default.mjs && electron scripts/validate-project-transfer.mjs && electron scripts/validate-conversation-cards.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs",
     "build:validation": "vite build --mode validation",
     "pixelkin:sync": "node scripts/sync-pixelkin.mjs",
-    "test:browser:v1": "vite build --mode v1-validation && electron scripts/validate-v1-ui.mjs && electron scripts/validate-onboarding.mjs"
+    "test:browser:v1": "vite build --mode v1-validation && electron scripts/validate-v1-ui.mjs && electron scripts/validate-onboarding.mjs && electron scripts/validate-acceleration-lifecycle.mjs"
   },
   "dependencies": {
     "@koed-labs/server": "workspace:*",

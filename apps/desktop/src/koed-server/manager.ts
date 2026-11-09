@@ -1,4 +1,18 @@
 import { modelProgressReader, type ModelProgress } from "./model-progress.js";
+import { createAccelerationController } from "./acceleration-controller.js";
+import { createOperationReceipt } from "./operation-receipt.js";
+import { selectDesktopRuntimeProvider } from "./runtime-provider.js";
+import {
+  accelerationChoiceSchema,
+  accelerationInstallProgressSchema
+} from "../ipc/acceleration-protocol.js";
+import {
+  createAccelerationManagement,
+  type AccelerationSnapshot,
+  type AccelerationInstallProgress,
+  type AccelerationInstallResult,
+  type DesktopAccelerationApi
+} from "@koed-labs/server";
 import { prepareLocalExecutionFolder } from "./local-execution-folder.js";
 import {
   readProjectFolderFilter,
@@ -98,8 +112,7 @@ import {
   resolveKoedHome,
   resolveKoedServerConfig,
   resolveKoedServerPaths,
-  runPersonalSyncCommand,
-  writeKoedServerConfig
+  runPersonalSyncCommand
 } from "@koed-labs/server";
 import {
   existsSync as nodeExistsSync,
@@ -142,6 +155,7 @@ import {
 import type { NodeEntrypointInvocation } from "./runtime.js";
 import {
   createDesktopSetupWorkflow,
+  desktopSetupStageIds,
   type DesktopSetupActionResult,
   type DesktopSetupCheck
 } from "./setup-workflow.js";
@@ -287,6 +301,7 @@ export interface KoedServerManagerOptions {
 }
 
 export interface KoedServerManager {
+  acceleration: DesktopAccelerationApi;
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   localAiClients: LocalAiClientDesktopHandler;
@@ -1015,15 +1030,6 @@ const packagedRuntimeManifestPath = (
   return resourcesPath
     ? resolve(resourcesPath, "koed-runtime", "runtime-asset-manifest.json")
     : null;
-};
-
-const runtimeInstallProvider = (
-  packagedResourcesPath: string | undefined,
-  existsSync: (path: string) => boolean
-): "packaged" | "homebrew" => {
-  const manifestPath = packagedRuntimeManifestPath(packagedResourcesPath);
-  if (manifestPath && existsSync(manifestPath)) return "packaged";
-  return "homebrew";
 };
 
 const firstFileWithSuffix = (root: string, suffix: string): string | null => {
@@ -1811,16 +1817,58 @@ export const createKoedServerManager = ({
   );
 
   const selectedRuntimeInstallProvider = () =>
-    runtimeInstallProvider(packagedResourcesPath, existsSync);
+    selectDesktopRuntimeProvider({
+      platform: process.platform,
+      koedHome: resolveKoedHome(environment),
+      packagedManifest: packagedRuntimeManifestPath(packagedResourcesPath),
+      exists: existsSync
+    });
 
   const runRuntimeStatusJson = () =>
-    runJson(
-      ["runtime", "status", "--provider", selectedRuntimeInstallProvider()],
-      60_000
-    );
+    selectedRuntimeInstallProvider() === "release"
+      ? withLifecycleOperation(async () =>
+          sourceAcceleration
+            ? sourceAcceleration.runtimeStatus()
+            : requestSupervisor(
+                await accelerationRpcSession(),
+                "acceleration",
+                "runtime-status"
+              )
+        )
+      : runJson(
+          ["runtime", "status", "--provider", selectedRuntimeInstallProvider()],
+          60_000
+        );
 
-  const runRuntimeInstallJson = async (args?: Record<string, unknown>) => {
+  const runRuntimeInstallJson = async (
+    args?: Record<string, unknown>,
+    onProgress?: (progress: AccelerationInstallProgress) => void,
+    signal = new AbortController().signal
+  ) => {
     const provider = selectedRuntimeInstallProvider();
+    if (provider === "release")
+      return withLifecycleOperation(async () => {
+        const state = await accelerationRpc("inspect", { refresh: true });
+        if (state.readOnlyReason)
+          return {
+            ok: false,
+            state: "unavailable",
+            provider,
+            message: state.readOnlyReason
+          };
+        await installAccelerationRuntime(
+          "core",
+          state.revision,
+          signal,
+          onProgress ?? (() => {})
+        );
+        return {
+          ok: true,
+          state: "installed",
+          provider,
+          message: "The admitted native runtime is ready."
+        };
+      });
     if (provider === "homebrew" && args?.operatorConsented !== true) {
       return {
         ok: false,
@@ -5098,7 +5146,11 @@ export const createKoedServerManager = ({
       stream.once("close", finish);
     });
   };
-  const openStoppedPrivacySession = async () => {
+  const openStoppedPrivacySession = async (
+    mode:
+      | "privacy-management"
+      | "acceleration-management" = "privacy-management"
+  ) => {
     if (!createSupervisorInvocation || !packagedResourcesPath)
       throw new Error(
         "Trusted Desktop supervisor is unavailable for asset management."
@@ -5119,7 +5171,7 @@ export const createKoedServerManager = ({
       return await connectSupervisor(
         child,
         packagedResourcesPath,
-        "privacy-management",
+        mode,
         30_000
       );
     } catch (error) {
@@ -5375,10 +5427,16 @@ export const createKoedServerManager = ({
   const requestDaemonStart = (
     generation = captureStartGeneration(),
     explicitStopAtStart = explicitStopGeneration
-  ) =>
-    withLifecycleOperation(() =>
+  ) => {
+    if (acceleration.isRunning())
+      return Promise.resolve({
+        ok: false,
+        error: "Wait for the processing change to finish before starting Koed."
+      });
+    return withLifecycleOperation(() =>
       requestDaemonStartUnlocked(generation, explicitStopAtStart)
     );
+  };
 
   const start = async () => {
     const explicitStopAtStart = explicitStopGeneration;
@@ -5561,6 +5619,11 @@ export const createKoedServerManager = ({
     };
   };
 
+  let setupCudaIntent: {
+    configurationRevision: string;
+    complete: boolean;
+  } | null = null;
+  let setupAbort: AbortController | null = null;
   let setupInspection: Promise<
     Record<DesktopSetupStageId, DesktopSetupCheck>
   > | null = null;
@@ -5607,14 +5670,17 @@ export const createKoedServerManager = ({
             runtime: {
               complete:
                 resultOk(runtimeStatus) &&
-                resultState(runtimeStatus) === "installed",
-              message:
-                resultState(runtimeStatus) === "installed"
-                  ? "Local runtime is ready."
-                  : resultMessage(
-                      runtimeStatus,
-                      "Local runtime needs to be installed."
-                    )
+                ["installed", "outdated"].includes(
+                  resultState(runtimeStatus) ?? ""
+                ),
+              message: ["installed", "outdated"].includes(
+                resultState(runtimeStatus) ?? ""
+              )
+                ? "Local runtime is ready."
+                : resultMessage(
+                    runtimeStatus,
+                    "Local runtime needs to be installed."
+                  )
             },
             model: {
               complete: modelsComplete,
@@ -5628,6 +5694,12 @@ export const createKoedServerManager = ({
                       modelStatus,
                       "Required local models need to be downloaded."
                     )
+            },
+            acceleration: {
+              complete: !setupCudaIntent || setupCudaIntent.complete,
+              message: setupCudaIntent?.complete
+                ? "CUDA inference verification passed."
+                : "CUDA requires installation and model inference verification."
             },
             services: {
               complete: servicesComplete,
@@ -5697,7 +5769,16 @@ export const createKoedServerManager = ({
           totalBytes: null
         });
         return setupActionResult(
-          await runRuntimeInstallJson({ operatorConsented: true }),
+          await runRuntimeInstallJson(
+            { operatorConsented: true },
+            (progress) =>
+              onProgress({
+                ...progress,
+                progressPhase:
+                  progress.phase === "downloading" ? "downloading" : "verifying"
+              }),
+            setupAbort?.signal
+          ),
           "Local runtime installation failed."
         );
       }
@@ -5735,6 +5816,52 @@ export const createKoedServerManager = ({
           ),
           "Required local model installation failed."
         );
+      }
+      case "acceleration": {
+        const intent = setupCudaIntent;
+        if (!intent)
+          return { ok: true, message: "No CUDA installation requested." };
+        const fresh = await acceleration.inspect(true);
+        if (
+          !fresh.snapshot ||
+          fresh.snapshot.configurationRevision !== intent.configurationRevision
+        )
+          return {
+            ok: false,
+            message:
+              "Processing configuration changed during setup. Review your device choice before retrying."
+          };
+        const unsubscribe = acceleration.subscribe(({ operation }) => {
+          if (operation)
+            onProgress({
+              message: operation.message,
+              completedBytes: operation.completedBytes,
+              totalBytes: operation.totalBytes,
+              progressPhase:
+                operation.phase === "downloading" ? "downloading" : "verifying"
+            });
+        });
+        try {
+          await acceleration.applyForSetup({
+            preference: "auto",
+            installCuda: true,
+            expectedRevision: fresh.snapshot.revision
+          });
+          const result = await acceleration.wait();
+          if (result.operation?.state !== "complete")
+            return {
+              ok: false,
+              message:
+                result.operation?.message ?? "CUDA setup did not complete."
+            };
+          intent.complete = true;
+          return {
+            ok: true,
+            message: "CUDA runtime and model inference verified."
+          };
+        } finally {
+          unsubscribe();
+        }
       }
       case "services": {
         onProgress({
@@ -5780,6 +5907,21 @@ export const createKoedServerManager = ({
   };
 
   const setupWorkflow = createDesktopSetupWorkflow({
+    receipt: createOperationReceipt(
+      resolve(
+        resolveKoedHome(environment),
+        "cache",
+        "desktop-setup-operation.json"
+      )
+    ),
+    stageIds: () =>
+      setupCudaIntent
+        ? [
+            ...desktopSetupStageIds.slice(0, 3),
+            "acceleration",
+            ...desktopSetupStageIds.slice(3)
+          ]
+        : desktopSetupStageIds,
     inspectStage: inspectSetupStage,
     runStage: runSetupStage
   });
@@ -5800,9 +5942,13 @@ export const createKoedServerManager = ({
     }
   };
 
-  const stop = async () => {
+  const stopRuntime = async (explicit: boolean) => {
     stopGeneration += 1;
-    explicitStopGeneration += 1;
+    if (explicit) {
+      explicitStopGeneration += 1;
+      acceleration.supersede();
+      setupAbort?.abort();
+    }
     await closeDesktopServices();
     if (desktopSupervisorProcess && !desktopSupervisorProcess.killed) {
       const child = desktopSupervisorProcess;
@@ -5837,11 +5983,14 @@ export const createKoedServerManager = ({
         message: "Koed Desktop supervisor stopped."
       };
     }
-    const result = await runJson(["stop"], 45_000);
+    // Include the supervisor's graceful shutdown window before CLI fallback.
+    const result = await runJson(["stop"], 90_000);
     if (serverProcess && !serverProcess.killed) serverProcess.kill("SIGTERM");
     serverProcess = null;
     return result;
   };
+
+  const stop = () => stopRuntime(true);
 
   // Packaged Desktop only owns the supervisor it spawned. An instance it
   // adopted (for example one started by the installed CLI) outlives Desktop.
@@ -5849,6 +5998,8 @@ export const createKoedServerManager = ({
     stopGeneration += 1;
     explicitStopGeneration += 1;
     lifecycle.stop();
+    accelerationSession?.child.kill("SIGTERM");
+    accelerationSession = null;
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
       await closeDesktopServices();
       return {
@@ -5896,37 +6047,200 @@ export const createKoedServerManager = ({
       };
     };
 
+  // Keep stopped authority alive so inspection does not rehash native payloads
+  // and reverify the entire Desktop bundle on every Settings poll. All requests
+  // here run under the same manager lifecycle queue as start and mutations.
+  let accelerationSession: PrivateSupervisorSession | null = null;
+  let accelerationSessionPending: Promise<PrivateSupervisorSession> | null =
+    null;
+  const sourceAcceleration = createSupervisorInvocation
+    ? null
+    : createAccelerationManagement({
+        paths: { ...resolveKoedServerPaths(environment), repoRoot },
+        environment: () => environment
+      });
+  const accelerationRpcSession =
+    async (): Promise<PrivateSupervisorSession> => {
+      if (desktopSupervisorProcess?.connected && desktopSupervisorNonce)
+        return {
+          child: desktopSupervisorProcess,
+          nonce: desktopSupervisorNonce
+        };
+      if (accelerationSession?.child.connected) return accelerationSession;
+      accelerationSessionPending ??= openStoppedPrivacySession(
+        "acceleration-management"
+      )
+        .then((session) => {
+          accelerationSession = session;
+          return session;
+        })
+        .finally(() => {
+          accelerationSessionPending = null;
+        });
+      return accelerationSessionPending;
+    };
+  const accelerationRpc = async (
+    action: "inspect" | "save",
+    args: Record<string, unknown>
+  ): Promise<AccelerationSnapshot> => {
+    if (sourceAcceleration)
+      return action === "inspect"
+        ? sourceAcceleration.inspect(args.refresh === true)
+        : sourceAcceleration.save(args);
+    return requestSupervisor<AccelerationSnapshot>(
+      await accelerationRpcSession(),
+      "acceleration",
+      action,
+      args,
+      120_000
+    );
+  };
+  const installAccelerationRuntime = async (
+    mode: "core" | "cuda",
+    expectedRevision: string,
+    signal: AbortSignal,
+    onProgress: (progress: AccelerationInstallProgress) => void
+  ): Promise<AccelerationInstallResult> => {
+    if (sourceAcceleration)
+      return sourceAcceleration.install(
+        { mode, expectedRevision },
+        signal,
+        onProgress
+      );
+    const session = await accelerationRpcSession();
+    signal.throwIfAborted();
+    const requestId = randomUUID();
+    const cancel = () => {
+      void requestSupervisor(session, "acceleration", "cancel", {
+        targetRequestId: requestId
+      }).catch(() => undefined);
+    };
+    const task = requestSupervisor<AccelerationInstallResult>(
+      session,
+      "acceleration",
+      "install",
+      { mode, expectedRevision, requestId },
+      null,
+      (event) => {
+        const progress = accelerationInstallProgressSchema.safeParse(
+          event.progress
+        );
+        if (progress.success) onProgress(progress.data);
+      }
+    );
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
+    try {
+      return await task;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+    }
+  };
+  let nativeMutationActive = false;
+  let setupPreparing = false;
+  const beginNativeMutation = () => {
+    if (
+      nativeMutationActive ||
+      setupPreparing ||
+      acceleration.isRunning() ||
+      setupWorkflow.isRunning()
+    )
+      throw new Error(
+        "Another setup or processing operation is running. Wait for it to finish before changing native assets."
+      );
+    nativeMutationActive = true;
+    return () => {
+      nativeMutationActive = false;
+    };
+  };
+  const withNativeMutation = async <T>(run: () => Promise<T>): Promise<T> => {
+    const release = beginNativeMutation();
+    try {
+      return await run();
+    } finally {
+      release();
+    }
+  };
+  const acceleration = createAccelerationController({
+    receipt: createOperationReceipt(
+      resolve(
+        resolveKoedHome(environment),
+        "cache",
+        "desktop-acceleration-operation.json"
+      )
+    ),
+    inspect: (refresh) => accelerationRpc("inspect", { refresh }),
+    save: (choice) => accelerationRpc("save", choice),
+    install: (revision, signal, progress) =>
+      installAccelerationRuntime("cuda", revision, signal, progress),
+    exclusive: withLifecycleOperation,
+    observe: () => observeRuntimeLifecycle(resolveKoedServerPaths(environment)),
+    explicitStopGeneration: () => explicitStopGeneration,
+    assertAvailable: (origin) => {
+      if (
+        nativeMutationActive ||
+        (setupPreparing && origin !== "setup") ||
+        (setupWorkflow.isRunning() && origin !== "setup") ||
+        stoppedPrivacyOperation ||
+        queuedPrivacyInstalls.size
+      )
+        throw new Error(
+          "Wait for the current setup or Privacy installation to finish before changing processing."
+        );
+    },
+    stop: async () => {
+      const result = await stopRuntime(false);
+      if (!resultOk(result))
+        throw new Error(
+          resultMessage(
+            result,
+            "Koed did not stop. Processing was not changed."
+          )
+        );
+    },
+    start: async () => {
+      const generation = captureStartGeneration();
+      const result = await requestDaemonStartUnlocked(
+        generation,
+        explicitStopGeneration
+      );
+      if (!resultOk(result))
+        throw new Error(
+          resultMessage(
+            result,
+            "Koed could not restart. Check service status or choose CPU recovery."
+          )
+        );
+      const ready = await pollUntilReady(60, generation);
+      if (!resultOk(ready))
+        throw new Error(
+          resultMessage(
+            ready,
+            "Koed did not become ready. Check service status or choose CPU recovery."
+          )
+        );
+    }
+  });
   const setHardwareAcceleration = async (
     enabled: boolean
   ): Promise<HardwareAccelerationState> => {
-    if (hardwareAccelerationManagedByEnvironment()) {
+    if (hardwareAccelerationManagedByEnvironment())
       throw new Error(
         "Hardware acceleration is managed by the Operator environment."
       );
-    }
-    const paths = resolveKoedServerPaths(environment);
-    const config = resolveKoedServerConfig(paths, {});
-    writeKoedServerConfig(paths, {
-      ...config,
-      hardwareAcceleration: enabled ? "auto" : "cpu"
+    const current = await acceleration.inspect(true);
+    if (!current.snapshot)
+      throw new Error("Acceleration status is unavailable.");
+    await acceleration.apply({
+      preference: enabled ? "auto" : "cpu",
+      installCuda: false,
+      expectedRevision: current.snapshot.revision
     });
-    const restarted = desktopSupervisorProcess
-      ? await (async () => {
-          await stop();
-          const started = await requestDaemonStart();
-          if (!resultOk(started)) return started;
-          return await pollUntilReady(60);
-        })()
-      : await runJson(["restart"], 60_000);
-    if (!resultOk(restarted)) {
+    const result = await acceleration.wait();
+    if (result.operation?.state !== "complete")
       throw new Error(
-        resultMessage(
-          restarted,
-          "Koed could not restart with the new hardware acceleration preference."
-        )
+        result.operation?.message ?? "Processing preference could not be saved."
       );
-    }
-    await pollUntilReady(60);
     return hardwareAccelerationState();
   };
 
@@ -6164,6 +6478,7 @@ export const createKoedServerManager = ({
   >();
 
   const privacyInstall = createPrivacyInstallBridge({
+    beginMutation: beginNativeMutation,
     productVersion,
     ...(!createSupervisorInvocation
       ? {
@@ -6186,7 +6501,8 @@ export const createKoedServerManager = ({
         runJson(["models", "status", "--kind", "embedding"], 60_000)
       ]);
       return (
-        resultState(runtime) === "installed" &&
+        resultOk(runtime) &&
+        ["installed", "outdated"].includes(resultState(runtime) ?? "") &&
         resultState(embedding) === "installed"
       );
     },
@@ -6216,6 +6532,7 @@ export const createKoedServerManager = ({
   return {
     personalMemory,
     localAiClients,
+    acceleration,
     hardwareAcceleration: {
       get: hardwareAccelerationState,
       set: setHardwareAcceleration
@@ -6340,11 +6657,13 @@ export const createKoedServerManager = ({
       remove_claude: () =>
         runMutatingAiClient("Claude Code", ["remove", "claude"]),
       runtime_status: () => runRuntimeStatusJson(),
-      runtime_install: (args) => runRuntimeInstallJson(args),
+      runtime_install: (args) =>
+        withNativeMutation(() => runRuntimeInstallJson(args)),
       models_status: () => runModelJson(),
-      models_install: () => runModelInstallJson(),
+      models_install: () => withNativeMutation(() => runModelInstallJson()),
       package_status: () => runPackageStatusJson(),
-      package_install: (args) => runPackageInstallJson(args),
+      package_install: (args) =>
+        withNativeMutation(() => runPackageInstallJson(args)),
       repository_review: (args) => projectCommands.review(args),
       project_folder_filter_get: async (args) =>
         readProjectFolderFilter(
@@ -6665,14 +6984,70 @@ export const createKoedServerManager = ({
         return { complete: true };
       },
       setup_inspect: () => setupWorkflow.inspect(),
-      setup_run: (args, context) => {
+      setup_run: async (args, context) => {
+        if (acceleration.isRunning() || nativeMutationActive || setupPreparing)
+          throw new Error(
+            "Wait for the current native operation to finish before starting setup."
+          );
         if (args?.operatorConsented !== true) {
           throw new Error("Setup requires explicit operator consent.");
         }
         if (!context?.emitSetupProgress) {
           throw new Error("Desktop setup context is required.");
         }
-        return setupWorkflow.run(context.emitSetupProgress, context.signal);
+        // Reserve the whole transition before awaiting the preference operation.
+        // Drafts are display state; only this explicit run carries consent.
+        const choice =
+          args.acceleration === undefined
+            ? undefined
+            : accelerationChoiceSchema.parse(args.acceleration);
+        if (choice && setupWorkflow.isRunning())
+          throw new Error("Setup is already running.");
+        setupPreparing = true;
+        try {
+          setupAbort = new AbortController();
+          if (choice?.installCuda) {
+            const fresh = await acceleration.inspect(true);
+            const snapshot = fresh.snapshot;
+            if (!snapshot || snapshot.revision !== choice.expectedRevision)
+              throw new Error(
+                "Processing configuration changed. Review your device choice before continuing."
+              );
+            if (snapshot.readOnlyReason)
+              throw new Error(snapshot.readOnlyReason);
+            if (
+              snapshot.hardware.backend !== "cuda" ||
+              snapshot.hardware.state !== "available" ||
+              !snapshot.cuda.canInstall
+            )
+              throw new Error(
+                "CUDA is not available for installation. Check again or choose CPU."
+              );
+            setupCudaIntent = {
+              configurationRevision: snapshot.configurationRevision,
+              complete: false
+            };
+          } else if (choice) {
+            await acceleration.applyForSetup(choice);
+            const result = await acceleration.wait();
+            if (result.operation?.state !== "complete")
+              throw new Error(
+                result.operation?.message ??
+                  "The processing choice could not be saved."
+              );
+            setupCudaIntent = null;
+          } else if (setupCudaIntent) {
+            const current = await acceleration.inspect(true);
+            if (current.snapshot?.readOnlyReason) setupCudaIntent = null;
+          }
+          return await setupWorkflow.run(
+            context.emitSetupProgress,
+            setupAbort.signal
+          );
+        } finally {
+          setupPreparing = false;
+          setupAbort = null;
+        }
       }
     },
     stop

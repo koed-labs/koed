@@ -3,6 +3,12 @@ import {
   presentationPreferencesSetChannel
 } from "./protocol.js";
 import type { PresentationPreferences } from "../window/presentation-preferences.js";
+import type { DesktopAccelerationApi } from "@koed-labs/server";
+import {
+  accelerationChannel,
+  accelerationChoiceSchema,
+  accelerationRequestSchema
+} from "./acceleration-protocol.js";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
   v1StateChannel,
@@ -171,6 +177,7 @@ export const registerDesktopCommandHandlers = (
       preference: DesktopThemePreference;
       resolvedDark: boolean;
     };
+    acceleration?: DesktopAccelerationApi;
     getHardwareAcceleration?: () => Promise<{
       enabled: boolean;
       managedByEnvironment: boolean;
@@ -224,20 +231,34 @@ export const registerDesktopCommandHandlers = (
     }
   );
 
-  ipcMain.handle(setupCommandChannel, async (event, operation: unknown) => {
-    if (!trustedSender(event, options.allowedRendererOrigins)) {
-      throw new Error("Untrusted Desktop IPC sender.");
+  ipcMain.handle(
+    setupCommandChannel,
+    async (event, operation: unknown, choice: unknown) => {
+      if (!trustedSender(event, options.allowedRendererOrigins)) {
+        throw new Error("Untrusted Desktop IPC sender.");
+      }
+      if (operation !== "inspect" && operation !== "run") {
+        throw new Error("Unsupported Desktop setup operation.");
+      }
+      const handler =
+        operation === "inspect" ? handlers.setup_inspect : handlers.setup_run;
+      const acceleration =
+        choice === undefined
+          ? undefined
+          : accelerationChoiceSchema.parse(choice);
+      if (operation === "inspect" && acceleration)
+        throw new Error("Inspection cannot change processing.");
+      return await handler(
+        operation === "run"
+          ? {
+              operatorConsented: true,
+              ...(acceleration ? { acceleration } : {})
+            }
+          : undefined,
+        contextForSender(event.sender)
+      );
     }
-    if (operation !== "inspect" && operation !== "run") {
-      throw new Error("Unsupported Desktop setup operation.");
-    }
-    const handler =
-      operation === "inspect" ? handlers.setup_inspect : handlers.setup_run;
-    return await handler(
-      operation === "run" ? { operatorConsented: true } : undefined,
-      contextForSender(event.sender)
-    );
-  });
+  );
 
   ipcMain.handle(collaborationCommandChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {
@@ -315,6 +336,19 @@ export const registerDesktopCommandHandlers = (
       throw new Error("Invalid Desktop theme preference.");
     }
     return options.setThemePreference(value);
+  });
+
+  ipcMain.handle(accelerationChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    const request = accelerationRequestSchema.parse(value);
+    if (!options.acceleration)
+      throw new Error("Local AI acceleration is unavailable.");
+    if (request.operation === "inspect")
+      return options.acceleration.inspect(request.refresh);
+    if (request.operation === "cancel")
+      return options.acceleration.cancel(request.operationId);
+    return options.acceleration.apply(request.choice);
   });
 
   ipcMain.handle(hardwareAccelerationGetChannel, async (event) => {

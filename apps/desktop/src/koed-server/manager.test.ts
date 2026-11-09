@@ -22,6 +22,12 @@ import {
 } from "@koed/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// These manager unit tests use synthetic paths. Real receipt persistence is
+// covered by operation-receipt and setup-acceleration's disposable homes.
+vi.mock("./operation-receipt.js", () => ({
+  createOperationReceipt: () => ({ previous: null, save: vi.fn() })
+}));
+
 // Never observe the developer's real KOED_HOME; tests steer lifecycle here.
 const lifecycleControl = vi.hoisted(() => ({
   current: {
@@ -2224,9 +2230,11 @@ describe("Koed server desktop manager", () => {
     });
   });
 
-  it("persists and restarts after changing hardware acceleration", async () => {
+  it("persists hardware acceleration without starting a stopped runtime", async () => {
+    lifecycleControl.current = { ...stoppedManagedLifecycle };
+    mkdirSync("scratch", { recursive: true });
     const koedHome = mkdtempSync(
-      resolve(tmpdir(), "koed-desktop-acceleration-")
+      resolve("scratch", "koed-desktop-acceleration-")
     );
     mkdirSync(resolve(koedHome, "config"), { recursive: true });
     const calls: string[][] = [];
@@ -2267,7 +2275,9 @@ describe("Koed server desktop manager", () => {
       enabled: false,
       managedByEnvironment: false
     });
-    expect(calls.some((args) => args.includes("restart"))).toBe(true);
+    expect(
+      calls.some((args) => args.includes("restart") || args.includes("start"))
+    ).toBe(false);
     const persisted = readFileSync(
       resolve(koedHome, "config/server.json"),
       "utf8"
