@@ -103,11 +103,18 @@ export function requestSupervisor<T>(
   });
 }
 
+// The runtime handshake completes only once startKoedServer reports core
+// services ready. That readiness wait alone allows 180s (startKoedServer
+// timeoutMs) after bundle verification, Postgres start and process spawn, so
+// Desktop must wait longer or it abandons startups the supervisor still
+// considers on schedule (seen on slower hosts and AppImage FUSE launches).
+export const desktopSupervisorStartupTimeoutMs = 300_000;
+
 export async function connectSupervisor(
   child: ChildProcess,
   resourcesPath: string,
   mode: "runtime" | "privacy-management" = "runtime",
-  timeoutMs = 120_000
+  timeoutMs = desktopSupervisorStartupTimeoutMs
 ): Promise<PrivateSupervisorSession> {
   const nonce = randomBytes(32).toString("hex");
   await new Promise<void>((resolve, reject) => {
