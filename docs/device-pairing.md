@@ -1,5 +1,12 @@
 # Connect Personal devices
 
+> [!NOTE]
+> This release supports one device. Pairing is turned off by default and is not
+> shown in Koed Desktop. To use the commands below, set
+> `KOED_PERSONAL_DEVICE_SYNC_ENABLED=true` in the environment of each `koed`
+> command (see [Configuration](configuration.md)). Without it, `koed pair` and
+> `koed personal-sync` exit with a message and do nothing.
+
 To share anchor preferences after pairing, use a Project's **Repository anchor** →
 **Shared Project selection** controls. Each checkout must explicitly accept the
 association. Ordinary clone recall can match equal repository anchors without
