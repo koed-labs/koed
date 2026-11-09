@@ -919,15 +919,17 @@ export const startKoedServer = async ({
   const startupId = randomBytes(12).toString("hex");
   const startupStartedAt = process.hrtime.bigint();
   const emitStartupMilestone = (milestone: string): void => {
-    console.log(
-      JSON.stringify({
-        event: "koed.supervisor.startup",
-        startupId,
-        milestone,
-        elapsedMs:
-          Number(process.hrtime.bigint() - startupStartedAt) / 1_000_000
-      })
-    );
+    const line = JSON.stringify({
+      event: "koed.supervisor.startup",
+      startupId,
+      milestone,
+      elapsedMs: Number(process.hrtime.bigint() - startupStartedAt) / 1_000_000
+    });
+    console.log(line);
+    // Desktop discards supervisor stdout but attaches stderr to startup
+    // failures; mirror milestones there only when tracing is requested.
+    if (process.env.KOED_SUPERVISOR_STARTUP_TRACE === "1")
+      process.stderr.write(`${line}\n`);
   };
   emitStartupMilestone("supervisor_entry");
   const execution = resolveKoedAppRuntimeExecution();

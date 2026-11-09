@@ -381,6 +381,8 @@ export const createSmokeEnv = (koedHome, extraEnv = {}) => {
     MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
     MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "false",
     MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "false",
+    // Attach supervisor startup milestones to startup failures.
+    KOED_SUPERVISOR_STARTUP_TRACE: "1",
     ...extraEnv
   };
   for (const key of [

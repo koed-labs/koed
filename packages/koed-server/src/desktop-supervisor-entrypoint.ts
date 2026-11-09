@@ -125,10 +125,25 @@ export const sendDesktopSupervisorStatus = (
   });
 };
 
+const entryStartedAt = process.hrtime.bigint();
+const traceEntrypoint = (phase: string): void => {
+  if (process.env.KOED_SUPERVISOR_STARTUP_TRACE !== "1") return;
+  process.stderr.write(
+    `${JSON.stringify({
+      event: "koed.supervisor.entrypoint",
+      phase,
+      elapsedMs: Number(process.hrtime.bigint() - entryStartedAt) / 1_000_000
+    })}\n`
+  );
+};
+
 export async function runDesktopSupervisorEntrypoint(): Promise<void> {
+  traceEntrypoint("loaded");
   const handshake = await waitForManagerAuthority();
+  traceEntrypoint(`handshake:${handshake.mode ?? "runtime"}`);
   assertParentExecutable(handshake.managerPid);
   const capability = verifyDesktopRuntimeBundle(handshake.resourcesPath);
+  traceEntrypoint("bundle-verified");
   if (typeof process.send !== "function")
     throw new Error("Desktop supervisor IPC channel is unavailable");
   const supervisorEnvironment = createDesktopSupervisorEnvironment(process.env);
@@ -236,6 +251,7 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
       process.kill(process.pid, "SIGTERM");
   });
   process.once("disconnect", () => process.kill(process.pid, "SIGTERM"));
+  traceEntrypoint("starting-server");
   try {
     await startKoedServer({
       environment: createDesktopSupervisorEnvironment(process.env),
