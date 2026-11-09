@@ -381,8 +381,6 @@ export const createSmokeEnv = (koedHome, extraEnv = {}) => {
     MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
     MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "false",
     MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "false",
-    // Attach supervisor startup milestones to startup failures.
-    KOED_SUPERVISOR_STARTUP_TRACE: "1",
     ...extraEnv
   };
   for (const key of [
@@ -1797,9 +1795,31 @@ const run = async (extractedRoot) => {
   }
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  run().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+// A finished smoke must not be kept alive by a leaked process or pipe. Report
+// what survived and fail fast instead of hanging until the CI job timeout.
+const failIfStillAliveAfterCompletion = (graceMs = 30_000) => {
+  const guard = setTimeout(() => {
+    console.error(
+      `[packaged-smoke] still running ${graceMs}ms after completion; surviving processes and handles:`
+    );
+    spawnSync("ps", ["-eo", "pid,ppid,etime,comm,args"], {
+      stdio: ["ignore", 2, 2]
+    });
+    const handles = process
+      .getActiveResourcesInfo()
+      .filter((name) => name !== "Timeout");
+    console.error(`[packaged-smoke] active resources: ${handles.join(", ")}`);
     process.exit(1);
-  });
+  }, graceMs);
+  guard.unref();
+};
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  run().then(
+    () => failIfStillAliveAfterCompletion(),
+    (error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+  );
 }
