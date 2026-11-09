@@ -653,6 +653,9 @@ jobs:
 
       - name: Run Linux directory and extracted AppImage smoke
         if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
+        # Three smokes take about 20 minutes; fail with logs instead of
+        # holding the runner until the job timeout.
+        timeout-minutes: 45
         env:
           KOED_EMBEDDING_ACCELERATION: cpu
         run: |
