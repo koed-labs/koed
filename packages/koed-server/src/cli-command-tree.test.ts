@@ -86,14 +86,19 @@ describe("Commander help and lightweight actions", () => {
       const installModel = vi.fn(() => {
         throw new Error("help installed a model");
       });
-      expect(
-        await runKoedServerCli(args, {
-          stdout: stdout.stream,
-          resolvePaths,
-          installRuntime,
-          installModel
-        })
-      ).toBe(0);
+      vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "true");
+      try {
+        expect(
+          await runKoedServerCli(args, {
+            stdout: stdout.stream,
+            resolvePaths,
+            installRuntime,
+            installModel
+          })
+        ).toBe(0);
+      } finally {
+        vi.unstubAllEnvs();
+      }
       expect(stdout.text()).toContain(included);
       expect(stdout.text()).not.toContain(excluded);
       expect(resolvePaths).not.toHaveBeenCalled();

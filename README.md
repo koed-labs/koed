@@ -60,8 +60,6 @@ without Koed. With Koed, 12 tasks improved with captured knowledge and estimated
   session, and conversation in your memory.
 - **You decide what is remembered.** Capture Policies, Capture Pause, and a
   local Privacy Filter model control what Koed keeps and what it masks.
-- **Grows with you.** Pair your other devices, and share memory with your team
-  through a Team Workspace.
 
 ## Quickstart
 
@@ -124,9 +122,10 @@ You can also connect a client from the command line:
 > work. Koed never uses one client in place of another. To choose the model for
 > each task, see [Local AI Runtime settings](docs/local-memory-agent-settings.md).
 
-To add another of your devices, run `pnpm koed pair` on that device. Then paste
-its link into **Devices → Add device** in Koed Desktop. For more, see
-[Device pairing](docs/device-pairing.md).
+> [!NOTE]
+> This release runs Koed on one device. Pairing devices and Personal Device
+> Sync are turned off by default. To try them anyway, see
+> [Device pairing](docs/device-pairing.md).
 
 ## Documentation
 

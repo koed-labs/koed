@@ -18,6 +18,11 @@ import { registerPackageCommands } from "./cli-package.js";
 import { registerModelCommands } from "./cli-models.js";
 import { registerRuntimeCommands } from "./cli-runtime.js";
 import { resolveKoedControlPlaneVersion } from "./app-runtime.js";
+import {
+  personalDeviceSyncCommandNames,
+  personalDeviceSyncFeatureEnvironmentName,
+  resolvePersonalDeviceSyncEnabled
+} from "./personal-device-sync-feature.js";
 
 export const runCommandTree = async (
   args: string[],
@@ -25,6 +30,26 @@ export const runCommandTree = async (
 ): Promise<number> => {
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
+  let personalDeviceSyncEnabled = false;
+  let personalDeviceSyncDisabledMessage = `Personal Device Sync is disabled in this release. Set ${personalDeviceSyncFeatureEnvironmentName}=true to use it.`;
+  try {
+    personalDeviceSyncEnabled = resolvePersonalDeviceSyncEnabled();
+  } catch (error) {
+    personalDeviceSyncDisabledMessage =
+      error instanceof Error ? error.message : String(error);
+  }
+  const requested = args[0] === "help" ? args[1] : args[0];
+  if (
+    !personalDeviceSyncEnabled &&
+    personalDeviceSyncCommandNames.includes(requested ?? "")
+  ) {
+    if (args.includes("--json"))
+      stdout.write(
+        `${JSON.stringify({ ok: false, error: personalDeviceSyncDisabledMessage }, null, 2)}\n`
+      );
+    else stderr.write(`${personalDeviceSyncDisabledMessage}\n`);
+    return 1;
+  }
   let exitCode = 0;
   const program = new Command()
     .name("koed")
@@ -81,7 +106,8 @@ export const runCommandTree = async (
     (code) => {
       exitCode = code;
     },
-    args.includes("--advanced")
+    args.includes("--advanced"),
+    !personalDeviceSyncEnabled
   );
   program.addHelpText(
     "after",
