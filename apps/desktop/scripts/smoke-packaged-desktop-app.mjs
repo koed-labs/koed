@@ -1399,6 +1399,72 @@ const installTeamEmbeddingModel = (layout, koedHome) => {
   }
 };
 
+// Measurement only: time the startup bundle verification on the extracted copy
+// and on a real FUSE mount of the same AppImage, to attribute direct-launch
+// slowness. Never fails the smoke on its own.
+export const mountAppImage = (image, timeoutMs = 60_000) =>
+  new Promise((resolveMount, rejectMount) => {
+    const child = spawn(image, ["--appimage-mount"], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      rejectMount(new Error("AppImage mount timed out."));
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      const line = stdout.split("\n")[0];
+      if (stdout.includes("\n") && line.trim()) {
+        clearTimeout(timer);
+        resolveMount({
+          mountPoint: line.trim(),
+          unmount: () => {
+            child.kill("SIGTERM");
+          }
+        });
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectMount(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      rejectMount(new Error(`AppImage mount exited (${code}).`));
+    });
+  });
+
+const measureBundleVerification = async (layout, image) => {
+  const { verifyDesktopRuntimeBundle } =
+    await import("../../../packages/koed-server/dist/desktop-runtime-capability.js");
+  const time = (resourcesPath) => {
+    const started = performance.now();
+    const capability = verifyDesktopRuntimeBundle(resourcesPath, {});
+    return {
+      ms: Math.round(performance.now() - started),
+      files: capability.manifest.files.length
+    };
+  };
+  try {
+    const extracted = time(layout.resourcesPath);
+    const mount = await mountAppImage(image);
+    try {
+      const fuse = time(resolve(mount.mountPoint, "resources"));
+      const fuseAgain = time(resolve(mount.mountPoint, "resources"));
+      console.error(
+        `[packaged-smoke] bundle verification (${extracted.files} files): extracted ${extracted.ms}ms, FUSE ${fuse.ms}ms, FUSE repeat ${fuseAgain.ms}ms`
+      );
+    } finally {
+      mount.unmount();
+    }
+  } catch (error) {
+    console.error(
+      `[packaged-smoke] bundle verification measurement failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+};
+
 const seedTeamSmokeDesktopGeneration = async (layout, koedHome) => {
   const [
     { pinDesktopBundleGenerationForStart },
@@ -1531,6 +1597,7 @@ const run = async (extractedRoot) => {
     async () => {
       const packagedLayout = resolvePackagedLayout(extractedRoot);
       if (options.appImageDirect) {
+        await measureBundleVerification(packagedLayout, options.appImage);
         packagedLayout.guiExecutable = options.appImage;
         setAppImageInstallationEnv({
           APPIMAGE: realpathSync(options.appImage),
