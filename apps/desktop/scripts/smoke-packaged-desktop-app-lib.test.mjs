@@ -27,6 +27,7 @@ import {
 import * as smokeLib from "./smoke-packaged-desktop-app-lib.mjs";
 import {
   createSmokeEnv,
+  setAppImageInstallationEnv,
   assertNoSourceCheckoutResolution,
   assertFailClosedPrivacy,
   assertFailClosedTeamStart,
@@ -657,4 +658,30 @@ test("packaged smoke rejects source-checkout artifact resolution", () => {
       artifactPath: "/Applications/Koed.app/Contents/Resources/koed-runtime/api"
     })
   );
+});
+
+test("direct AppImage smoke gives CLI steps the AppImage installation identity", () => {
+  const original = {
+    APPIMAGE: process.env.APPIMAGE,
+    APPDIR: process.env.APPDIR
+  };
+  try {
+    process.env.APPIMAGE = "/inherited/Other.AppImage";
+    process.env.APPDIR = "/inherited/mount";
+    const plain = createSmokeEnv("/tmp/koed-home");
+    assert.equal(plain.APPIMAGE, undefined);
+    assert.equal(plain.APPDIR, undefined);
+    setAppImageInstallationEnv({
+      APPIMAGE: "/tmp/Koed.AppImage",
+      APPDIR: "/tmp/extract/squashfs-root"
+    });
+    const direct = createSmokeEnv("/tmp/koed-home", { APPIMAGE: "/ignored" });
+    assert.equal(direct.APPIMAGE, "/tmp/Koed.AppImage");
+    assert.equal(direct.APPDIR, "/tmp/extract/squashfs-root");
+  } finally {
+    setAppImageInstallationEnv({});
+    for (const [key, value] of Object.entries(original))
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+  }
 });

@@ -9,6 +9,7 @@ import {
   existsSync,
   readFileSync,
   mkdirSync,
+  realpathSync,
   statSync,
   writeFileSync
 } from "node:fs";
@@ -341,6 +342,15 @@ const isolatedSmokeApiPort = (koedHome) =>
       )
   );
 
+// Direct AppImage smoke runs CLI steps from an extracted copy but launches the
+// GUI through FUSE. The AppImage runtime gives the GUI APPIMAGE/APPDIR, and
+// Desktop identifies its installation by the image file; give CLI steps the
+// same identity, so both resolve to one installation as they do for a User.
+let appImageInstallationEnv = {};
+export const setAppImageInstallationEnv = (value) => {
+  appImageInstallationEnv = value;
+};
+
 export const createSmokeEnv = (koedHome, extraEnv = {}) => {
   const env = {
     ...process.env,
@@ -392,7 +402,7 @@ export const createSmokeEnv = (koedHome, extraEnv = {}) => {
   delete env.KOED_SERVER_CLI;
   delete env.KOED_PACKAGED_RESOURCES_PATH;
   delete env.KOED_ALLOW_PACKAGED_SOURCE_FALLBACK;
-  return env;
+  return { ...env, ...appImageInstallationEnv };
 };
 
 const parseJsonOutput = (label, output) => {
@@ -1520,8 +1530,13 @@ const run = async (extractedRoot) => {
     "package surface verification",
     async () => {
       const packagedLayout = resolvePackagedLayout(extractedRoot);
-      if (options.appImageDirect)
+      if (options.appImageDirect) {
         packagedLayout.guiExecutable = options.appImage;
+        setAppImageInstallationEnv({
+          APPIMAGE: realpathSync(options.appImage),
+          APPDIR: realpathSync(extractedRoot)
+        });
+      }
       assertPackagedJsSurface(packagedLayout);
       return packagedLayout;
     }
