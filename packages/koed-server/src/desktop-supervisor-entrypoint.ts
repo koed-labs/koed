@@ -198,6 +198,7 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
         throw new Error("runtime owner mismatch");
       }
     }
+    traceEntrypoint("management-ready");
     process.on("message", (message: unknown) => {
       if (handshake.mode === "privacy-management" && handleStatusRpc(message))
         return;

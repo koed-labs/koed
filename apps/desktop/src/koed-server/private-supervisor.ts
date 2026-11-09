@@ -110,6 +110,12 @@ export function requestSupervisor<T>(
 // considers on schedule (seen on slower hosts and AppImage FUSE launches).
 export const desktopSupervisorStartupTimeoutMs = 300_000;
 
+// A stopped-state management session verifies the bundle and pins the Desktop
+// generation, which reads the bundle again, before it answers. Over a freshly
+// mounted AppImage verification alone measured 21s in CI, so 30s abandoned
+// sessions that were still on schedule.
+export const desktopSupervisorManagementTimeoutMs = 120_000;
+
 export async function connectSupervisor(
   child: ChildProcess,
   resourcesPath: string,

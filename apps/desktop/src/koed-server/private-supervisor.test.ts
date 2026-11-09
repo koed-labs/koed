@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   connectSupervisor,
+  desktopSupervisorManagementTimeoutMs,
   desktopSupervisorStartupTimeoutMs,
   requestSupervisor
 } from "./private-supervisor.js";
@@ -123,6 +124,15 @@ describe("Desktop supervisor startup deadline", () => {
     expect(readinessMs).toBeGreaterThan(0);
     expect(desktopSupervisorStartupTimeoutMs).toBeGreaterThanOrEqual(
       readinessMs + 60_000
+    );
+  });
+
+  it("gives stopped management sessions room for AppImage verification", () => {
+    // Bundle verification over a cold AppImage mount measured 21s in CI and
+    // the generation pin reads the bundle again before the handshake.
+    expect(desktopSupervisorManagementTimeoutMs).toBeGreaterThanOrEqual(90_000);
+    expect(desktopSupervisorManagementTimeoutMs).toBeLessThan(
+      desktopSupervisorStartupTimeoutMs
     );
   });
 });
