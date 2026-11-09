@@ -161,10 +161,11 @@ export const registerPersonalSyncCommands = (
   program: Command,
   dependencies: KoedServerCliDependencies,
   complete: (code: number) => void,
-  advanced: boolean
+  advanced: boolean,
+  hidden = false
 ): void => {
   const pair = program
-    .command("pair")
+    .command("pair", { hidden })
     .description("Connect this device through Koed Desktop")
     .option("--device-label <name>", "Device display name")
     .option("--detach", "Return after creating the request")
@@ -191,7 +192,7 @@ export const registerPersonalSyncCommands = (
       .option("--json", "Emit JSON output")
       .action(async (options: PairOptions) => pairAction(operation, options));
   const sync = program
-    .command("personal-sync")
+    .command("personal-sync", { hidden })
     .description("Inspect Personal Sync and recovery guidance")
     .option("--advanced", "Show advanced compatibility and recovery commands");
   sync.action(() => sync.outputHelp());

@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runKoedServerCli } from "./cli.js";
 
 const output = () => {
@@ -104,7 +104,92 @@ const recoveryInvocations = [
   ]
 ];
 
+describe("Personal Sync CLI when Personal Device Sync is not enabled", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("omits pair and personal-sync from general help", async () => {
+    vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "");
+    const stdout = output();
+    expect(await runKoedServerCli(["--help"], { stdout: stdout.stream })).toBe(
+      0
+    );
+    expect(stdout.text()).toContain("Usage: koed [options] [command]");
+    expect(stdout.text()).not.toMatch(/^\s+pair\b/m);
+    expect(stdout.text()).not.toMatch(/^\s+personal-sync\b/m);
+  });
+
+  it.each([
+    [["pair"]],
+    [["pair", "status"]],
+    [["pair", "--help"]],
+    [["help", "pair"]],
+    [["personal-sync"]],
+    [["personal-sync", "status"]],
+    [["personal-sync", "--help", "--advanced"]],
+    [["help", "personal-sync"]]
+  ])("refuses %j without running Personal Sync", async (args) => {
+    vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "false");
+    const stdout = output();
+    const stderr = output();
+    const resolvePaths = vi.fn(() => {
+      throw new Error("resolved runtime paths");
+    });
+    const runPersonalSync = vi.fn();
+    expect(
+      await runKoedServerCli(args, {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        resolvePaths,
+        runPersonalSync
+      })
+    ).toBe(1);
+    expect(stderr.text()).toBe(
+      "Personal Device Sync is disabled in this release. Set KOED_PERSONAL_DEVICE_SYNC_ENABLED=true to use it.\n"
+    );
+    expect(stdout.text()).toBe("");
+    expect(resolvePaths).not.toHaveBeenCalled();
+    expect(runPersonalSync).not.toHaveBeenCalled();
+  });
+
+  it("reports the refusal as JSON when requested", async () => {
+    vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "");
+    const stdout = output();
+    expect(
+      await runKoedServerCli(["personal-sync", "status", "--json"], {
+        stdout: stdout.stream
+      })
+    ).toBe(1);
+    expect(JSON.parse(stdout.text())).toEqual({
+      ok: false,
+      error:
+        "Personal Device Sync is disabled in this release. Set KOED_PERSONAL_DEVICE_SYNC_ENABLED=true to use it."
+    });
+  });
+
+  it("rejects values other than true or false", async () => {
+    vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "yes");
+    const stderr = output();
+    expect(await runKoedServerCli(["pair"], { stderr: stderr.stream })).toBe(1);
+    expect(stderr.text()).toBe(
+      'KOED_PERSONAL_DEVICE_SYNC_ENABLED must be exactly "true" or "false"\n'
+    );
+  });
+
+  it("lists both commands when enabled", async () => {
+    vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "true");
+    const stdout = output();
+    expect(await runKoedServerCli(["--help"], { stdout: stdout.stream })).toBe(
+      0
+    );
+    expect(stdout.text()).toMatch(/^\s+pair\b/m);
+    expect(stdout.text()).toMatch(/^\s+personal-sync\b/m);
+  });
+});
+
 describe("Personal Sync CLI contracts", () => {
+  beforeEach(() => vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "true"));
+  afterEach(() => vi.unstubAllEnvs());
+
   it.each(recoveryInvocations.map((args) => [args]))(
     "dispatches protected recovery inputs for %j",
     async (args) => {

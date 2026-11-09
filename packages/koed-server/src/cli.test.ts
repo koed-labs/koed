@@ -182,11 +182,16 @@ describe("koed executable help", () => {
     );
     expect(secretProvider.text()).not.toContain("koed-server");
 
-    expect(
-      await runKoedServerCli(["personal-sync", "--help"], {
-        stdout: personalSync.stream
-      })
-    ).toBe(0);
+    vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "true");
+    try {
+      expect(
+        await runKoedServerCli(["personal-sync", "--help"], {
+          stdout: personalSync.stream
+        })
+      ).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
     expect(personalSync.text()).toContain("koed personal-sync status --json");
     expect(personalSync.text()).toContain(
       "koed personal-sync --help --advanced"
@@ -1136,6 +1141,7 @@ describe("JSON command output", () => {
     const stdout = writer();
     const calls: unknown[] = [];
 
+    vi.stubEnv("KOED_PERSONAL_DEVICE_SYNC_ENABLED", "true");
     const exitCode = await runKoedServerCli(
       ["personal-sync", "status", "--json"],
       {
@@ -1150,7 +1156,7 @@ describe("JSON command output", () => {
           };
         }
       }
-    );
+    ).finally(() => vi.unstubAllEnvs());
 
     expect(exitCode).toBe(0);
     expect(calls).toEqual([

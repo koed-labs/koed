@@ -153,6 +153,19 @@ Supported mode fields:
   credentials while this switch is false. Bundled-local and Desktop do not
   start the Privacy Filter Service or require its model while this switch is
   false. Restart the supervisor, API, and Worker after changing the value.
+- `KOED_PERSONAL_DEVICE_SYNC_ENABLED`: makes the `koed pair` and
+  `koed personal-sync` CLI commands available. It accepts only `true` or
+  `false`, and defaults to `false`: this release supports one device. While it
+  is off, both commands are absent from `koed --help` and exit with status 1
+  without reading runtime state; with `--json` they report
+  `{"ok": false, "error": ...}`. Any other value makes both commands fail with a
+  validation message. The switch covers only these CLI commands. Koed Desktop
+  does not show device pairing, and an installation that is not in a Personal
+  Device Group starts no pairing listener or sync work. Existing Personal Device
+  Groups are not changed, and the API, Worker and Desktop sync code paths are
+  not gated by this switch. Desktop passes its own environment to the CLI
+  commands it runs, so Desktop device controls that call `koed personal-sync`
+  need the variable set for Desktop as well.
 - `KOED_DEVELOPER_TEAM_BACKEND_ENABLED`: an isolated local-testing switch that
   lets the `developer` deployment profile truthfully advertise and serve the
   Team backend capability foundation. It accepts only `true` or `false`,
