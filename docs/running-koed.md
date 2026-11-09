@@ -35,6 +35,11 @@ verification fails. Where FUSE is unavailable, AppImage extraction
 compatible libraries. This fallback does not establish that direct FUSE launch
 works and must be verified on the target machine.
 
+Each AppImage launch mounts the app at a new temporary path. Desktop
+identifies its installation by the AppImage file, so keep it at the same
+path. Moving or renaming the AppImage makes Desktop treat it as a different
+installation, as moving an installed app would on macOS.
+
 On first run, follow Desktop's guided setup and confirm provisioning when
 prompted. The local runtime is installed under `KOED_HOME`; setup also provisions
 the required embedding model. Model downloads require network access. See
