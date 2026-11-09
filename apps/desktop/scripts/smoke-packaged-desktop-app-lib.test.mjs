@@ -28,6 +28,7 @@ import * as smokeLib from "./smoke-packaged-desktop-app-lib.mjs";
 import {
   createSmokeEnv,
   setAppImageInstallationEnv,
+  withProcessEnv,
   assertNoSourceCheckoutResolution,
   assertFailClosedPrivacy,
   assertFailClosedTeamStart,
@@ -683,5 +684,20 @@ test("direct AppImage smoke gives CLI steps the AppImage installation identity",
     for (const [key, value] of Object.entries(original))
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
+  }
+});
+
+test("withProcessEnv applies and restores process environment overrides", () => {
+  const before = process.env.APPDIR;
+  delete process.env.APPDIR;
+  try {
+    const restore = withProcessEnv({ APPDIR: "/tmp/extract/squashfs-root" });
+    assert.equal(process.env.APPDIR, "/tmp/extract/squashfs-root");
+    restore();
+    assert.equal(process.env.APPDIR, undefined);
+    assert.doesNotThrow(() => withProcessEnv({})());
+  } finally {
+    if (before === undefined) delete process.env.APPDIR;
+    else process.env.APPDIR = before;
   }
 });

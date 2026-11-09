@@ -1476,9 +1476,28 @@ const seedTeamSmokeDesktopGeneration = async (layout, koedHome) => {
     import("../../../packages/koed-server/dist/paths.js")
   ]);
   const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
-  const capability = verifyDesktopRuntimeBundle(layout.resourcesPath);
-  const pin = await pinDesktopBundleGenerationForStart(paths, capability);
-  await pin.release();
+  // Seeding runs in this process; give it the same installation identity as
+  // the CLI steps and the GUI, including verification inside the pin.
+  const restore = withProcessEnv(appImageInstallationEnv);
+  try {
+    const capability = verifyDesktopRuntimeBundle(layout.resourcesPath);
+    const pin = await pinDesktopBundleGenerationForStart(paths, capability);
+    await pin.release();
+  } finally {
+    restore();
+  }
+};
+
+export const withProcessEnv = (overrides) => {
+  const previous = Object.fromEntries(
+    Object.keys(overrides).map((key) => [key, process.env[key]])
+  );
+  Object.assign(process.env, overrides);
+  return () => {
+    for (const [key, value] of Object.entries(previous))
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+  };
 };
 
 const prepareTeamSmokeHome = async (layout, koedHome, options) => {
