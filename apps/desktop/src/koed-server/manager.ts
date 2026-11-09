@@ -6,13 +6,6 @@ import {
   accelerationChoiceSchema,
   accelerationInstallProgressSchema
 } from "../ipc/acceleration-protocol.js";
-import {
-  createAccelerationManagement,
-  type AccelerationSnapshot,
-  type AccelerationInstallProgress,
-  type AccelerationInstallResult,
-  type DesktopAccelerationApi
-} from "@koed-labs/server";
 import { prepareLocalExecutionFolder } from "./local-execution-folder.js";
 import {
   readProjectFolderFilter,
@@ -52,12 +45,17 @@ import {
   writePersonalDeviceName
 } from "../personal-device-names.js";
 import {
+  createAccelerationManagement,
   refreshProjectAssociations,
   deviceRequestCommand,
   exchangeDeviceRequest,
   observeRuntimeLifecycle,
   parseDeviceRequestLink,
   resolveProcessIdentity,
+  type AccelerationSnapshot,
+  type AccelerationInstallProgress,
+  type AccelerationInstallResult,
+  type DesktopAccelerationApi,
   type RuntimeLifecycleObservation
 } from "@koed-labs/server";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
@@ -5097,7 +5095,7 @@ export const createKoedServerManager = ({
         timeoutMs
       );
 
-    const session = await openStoppedPrivacySession();
+    const session = await openStoppedManagementSession();
     try {
       const live = await inspectManagedLifecycle(session);
       if (live.state !== "stopped" && !live.owned)
@@ -5146,7 +5144,7 @@ export const createKoedServerManager = ({
       stream.once("close", finish);
     });
   };
-  const openStoppedPrivacySession = async (
+  const openStoppedManagementSession = async (
     mode:
       | "privacy-management"
       | "acceleration-management" = "privacy-management"
@@ -5208,7 +5206,7 @@ export const createKoedServerManager = ({
         args
       );
     }
-    const session = await openStoppedPrivacySession();
+    const session = await openStoppedManagementSession();
     if (action === "install") {
       if (stoppedPrivacyOperation) {
         session.child.kill("SIGTERM");
@@ -5288,7 +5286,7 @@ export const createKoedServerManager = ({
     | { ok: false; state: "needs_attention"; error: string }
     | null
   > => {
-    const session = await openStoppedPrivacySession();
+    const session = await openStoppedManagementSession();
     let live: ManagedLifecycle;
     try {
       live = await inspectManagedLifecycle(session);
@@ -6067,7 +6065,7 @@ export const createKoedServerManager = ({
           nonce: desktopSupervisorNonce
         };
       if (accelerationSession?.child.connected) return accelerationSession;
-      accelerationSessionPending ??= openStoppedPrivacySession(
+      accelerationSessionPending ??= openStoppedManagementSession(
         "acceleration-management"
       )
         .then((session) => {
@@ -6262,7 +6260,7 @@ export const createKoedServerManager = ({
       else
         result = await withLifecycleOperation(async () => {
           if (desktopSupervisorNonce) return requestDesktopStatusRpc(action);
-          const session = await openStoppedPrivacySession();
+          const session = await openStoppedManagementSession();
           try {
             return await requestSupervisor(
               session,
@@ -6515,7 +6513,7 @@ export const createKoedServerManager = ({
     expectedCurrentGeneration: string | null
   ): Promise<void> =>
     withLifecycleOperation(async () => {
-      const session = await openStoppedPrivacySession();
+      const session = await openStoppedManagementSession();
       try {
         await requestSupervisor(
           session,
