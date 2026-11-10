@@ -6,13 +6,13 @@ import {
   linkSync,
   mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   rmSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
+import { readBoundedUtf8 } from "./bounded-read.js";
 
 export interface LauncherInput {
   destination: string;
@@ -36,6 +36,10 @@ export interface LauncherStatus {
   // "legacy" launchers are unchanged v1 files that installation upgrades.
   template: "current" | "legacy" | null;
   pathVisible: boolean;
+  pendingCancellationAvailable?: boolean;
+  pendingInstallation?: boolean;
+  destination?: string;
+  selectionCancelled?: boolean;
   // A managed shell PATH block exists for the active launcher directory.
   pathConfigured?: boolean;
   fingerprint: string | null;
@@ -57,7 +61,7 @@ const legacyLauncherContents = (
 ): string =>
   `${legacyMarker}\n# version:${input.expectedVersion}\nexport ELECTRON_RUN_AS_NODE=1\nexec ${quote(input.helperPath)} ${quote(legacyCliPath)} "$@"\n`;
 
-const assertLauncherPaths = (input: LauncherInput): void => {
+export const assertLauncherPaths = (input: LauncherInput): void => {
   for (const value of [
     input.helperPath,
     input.cliPath,
@@ -110,12 +114,16 @@ interface FileInspection {
 const inspectFile = (path: string): FileInspection => {
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
     const stat = fstatSync(descriptor);
-    if (!stat.isFile()) return { snapshot: null, invalid: true };
+    if (!stat.isFile() || stat.size > 1024 * 1024)
+      return { snapshot: null, invalid: true };
     return {
       snapshot: {
-        contents: readFileSync(descriptor, "utf8"),
+        contents: readBoundedUtf8(descriptor, 1024 * 1024),
         dev: stat.dev,
         ino: stat.ino
       },
@@ -124,17 +132,46 @@ const inspectFile = (path: string): FileInspection => {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { snapshot: null, invalid: false };
-    if (code === "ELOOP") return { snapshot: null, invalid: true };
+    if (code === "ELOOP" || code === "ERR_ENCODING_INVALID_ENCODED_DATA")
+      return { snapshot: null, invalid: true };
     throw error;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
 };
 
-const cliTargetStatus = (path: string): "valid" | "missing" | "invalid" => {
+const matchesExactRecord = (
+  contents: string,
+  current: LauncherInput,
+  previous: LauncherInput
+): boolean =>
+  previous.destination === current.destination &&
+  previous.koedHome === current.koedHome &&
+  ownedLauncher(contents, previous)?.template === "current" &&
+  contents === launcherContents(previous);
+
+export const hasRecordedLauncher = (
+  current: LauncherInput,
+  records: LauncherInput[]
+): boolean => {
+  const snapshot = inspectFile(current.destination).snapshot;
+  return (
+    !!snapshot &&
+    records.some((record) =>
+      matchesExactRecord(snapshot.contents, current, record)
+    )
+  );
+};
+
+export const cliTargetStatus = (
+  path: string
+): "valid" | "missing" | "invalid" => {
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
     return fstatSync(descriptor).isFile() ? "valid" : "invalid";
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -214,7 +251,11 @@ export const removeLauncher = async (
 };
 
 export const installLauncher = async (
-  input: LauncherInput & { consent: boolean; probeHelper: HelperProbe }
+  input: LauncherInput & {
+    consent: boolean;
+    probeHelper: HelperProbe;
+    previousLaunchers?: LauncherInput[];
+  }
 ): Promise<LauncherStatus> => {
   if (input.consent !== true)
     throw new Error("Launcher installation requires explicit consent.");
@@ -227,9 +268,15 @@ export const installLauncher = async (
   assertLauncherPaths(input);
   const observed = await inspectLauncher(input);
   // Only an unchanged Koed-owned launcher (including exact v1) is replaced.
+  const previous = input.previousLaunchers ?? [];
+  const candidate = inspectFile(input.destination).snapshot;
   const replaced =
-    observed.ownership === "koed"
-      ? inspectFile(input.destination).snapshot
+    candidate &&
+    (ownedLauncherVersion(candidate.contents, input) !== null ||
+      previous.some((record) =>
+        matchesExactRecord(candidate.contents, input, record)
+      ))
+      ? candidate
       : null;
   if (observed.ownership !== "absent" && !replaced)
     throw new Error(
@@ -249,7 +296,10 @@ export const installLauncher = async (
         current.dev !== replaced.dev ||
         current.ino !== replaced.ino ||
         current.contents !== replaced.contents ||
-        ownedLauncherVersion(current.contents, input) === null
+        (ownedLauncherVersion(current.contents, input) === null &&
+          !previous.some((record) =>
+            matchesExactRecord(current.contents, input, record)
+          ))
       )
         throw new Error(
           "Launcher changed during installation; refusing replacement."

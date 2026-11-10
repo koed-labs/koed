@@ -4,11 +4,11 @@ import {
   constants,
   fstatSync,
   openSync,
-  readFileSync,
   renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
+import { readBoundedUtf8 } from "./bounded-read.js";
 
 export interface ShellPathMutation {
   rcPath: string;
@@ -34,12 +34,17 @@ interface RcSnapshot {
 const readRc = (path: string): RcSnapshot | null => {
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
     const stat = fstatSync(descriptor);
     if (!stat.isFile())
       throw new Error("Shell rc path must be a regular file, not a symlink.");
+    if (stat.size > 1024 * 1024)
+      throw new Error("Shell rc file is too large to inspect safely.");
     return {
-      contents: readFileSync(descriptor, "utf8"),
+      contents: readBoundedUtf8(descriptor, 1024 * 1024),
       dev: stat.dev,
       ino: stat.ino,
       mode: stat.mode

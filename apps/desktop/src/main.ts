@@ -552,10 +552,11 @@ const bootstrap = async () => {
     ipcMain,
     allowedRendererOrigins,
     manager: cliInstallManager,
-    selectLauncherDestination: async () => {
+    selectLauncherDestination: async (defaultPath) => {
       const options = {
-        title: "Choose Koed CLI launcher location",
-        defaultPath: resolve(app.getPath("home"), ".local", "bin", "koed"),
+        title:
+          "Choose Koed CLI launcher location (use the current location to recover)",
+        defaultPath,
         buttonLabel: "Install launcher"
       };
       const selected = mainWindow

@@ -67,6 +67,7 @@ export type CliInstallCommand =
   | { operation: "launcher-inspect" }
   | { operation: "launcher-install"; consent: boolean; destination?: string }
   | { operation: "launcher-remove" }
+  | { operation: "launcher-cancel-pending" }
   | {
       operation: "path-update";
       operationKind: "add" | "remove";
@@ -90,7 +91,7 @@ export interface CliInstallApi {
   cancel(): Promise<void>;
   selectOffline(): Promise<PrivacyOfflineSource | null>;
   launcher(
-    operation: "inspect" | "install" | "remove",
+    operation: "inspect" | "install" | "remove" | "cancel-pending",
     options?: { consent?: boolean; destination?: string }
   ): Promise<LauncherStatus>;
   updatePath(operation: "add" | "remove", consent: boolean): Promise<void>;

@@ -2,12 +2,14 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
+  renameSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +20,8 @@ import {
   unavailablePrivacyStatus
 } from "./manager.js";
 import type { PrivacyInstallBridge } from "./protocol.js";
+import { inspectLauncher } from "./launcher.js";
+import { hasManagedPathBlock } from "./shell-path.js";
 import {
   loadCliInstallSettingsForDesktop,
   readCliInstallSettings,
@@ -50,6 +54,437 @@ const create = (root: string, bridge?: PrivacyInstallBridge) =>
   });
 
 describe("desktop CLI install adapter", () => {
+  it("does not strand a successfully installed launcher when another install is queued", async () => {
+    const root = fixture(),
+      settingsFile = join(root, "settings.json");
+    const first = join(root, "first", "koed"),
+      second = join(root, "second", "koed");
+    writeFileSync(join(root, "cli.js"), "// entry\n");
+    let release!: () => void,
+      entered!: () => void,
+      probes = 0;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const createManager = () =>
+      createDesktopCliInstallManager({
+        appPath: root,
+        helperPath: join(root, "Koed"),
+        cliPath: join(root, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        settings: readCliInstallSettings(settingsFile),
+        probeHelper: async () => {
+          if (++probes === 1) {
+            entered();
+            await gate;
+          }
+          return true;
+        },
+        saveSettings: (settings) =>
+          writeCliInstallSettings(settingsFile, settings)
+      });
+    const manager = createManager();
+    const install = manager.launcher("install", {
+      consent: true,
+      destination: first
+    });
+    await started;
+    const other = manager.launcher("install", {
+      consent: true,
+      destination: second
+    });
+    const outcome = other.then(
+      () => null,
+      (error: Error) => error
+    );
+    release();
+    await install;
+    expect((await outcome)?.message).toMatch(/remove|destination/i);
+    expect(existsSync(first)).toBe(true);
+    expect(existsSync(second)).toBe(false);
+    expect(
+      readCliInstallSettings(settingsFile).installedLauncher?.destination
+    ).toBe(first);
+    const restarted = createManager();
+    await expect(
+      restarted.launcher("install", {
+        consent: true,
+        destination: second
+      })
+    ).rejects.toThrow(/remove|destination/i);
+    await restarted.launcher("remove");
+    await restarted.launcher("install", { consent: true, destination: second });
+    expect(existsSync(first)).toBe(false);
+    expect(existsSync(second)).toBe(true);
+    expect(
+      readCliInstallSettings(settingsFile).installedLauncher?.destination
+    ).toBe(second);
+  });
+
+  it("serializes overlapping installs and preserves pending intent after failure", async () => {
+    const root = fixture(),
+      settingsFile = join(root, "settings.json");
+    writeFileSync(join(root, "cli.js"), "// entry\n");
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let probes = 0,
+      writes = 0;
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => {
+        if (++probes === 1) {
+          entered();
+          await gate;
+        }
+        return true;
+      },
+      saveSettings: (settings) => {
+        if (++writes === 2) throw new Error("final save failed");
+        writeCliInstallSettings(settingsFile, settings);
+      }
+    });
+    const firstDestination = join(root, "first", "koed"),
+      secondDestination = join(root, "second", "koed");
+    const first = manager.launcher("install", {
+      consent: true,
+      destination: firstDestination
+    });
+    const firstResult = expect(first).rejects.toThrow("final save failed");
+    await started;
+    const second = manager.launcher("install", {
+      consent: true,
+      destination: secondDestination
+    });
+    const secondResult = expect(second).rejects.toThrow(/pending/i);
+    await Promise.resolve();
+    expect(probes).toBe(1);
+    release();
+    await firstResult;
+    await secondResult;
+    expect(readCliInstallSettings(settingsFile).pendingDestination).toBe(
+      firstDestination
+    );
+    expect(existsSync(firstDestination)).toBe(true);
+    expect(existsSync(secondDestination)).toBe(false);
+  });
+
+  it.each(["remove", "path", "cancel-pending", "inspect"] as const)(
+    "queues %s behind an in-flight install",
+    async (operation) => {
+      vi.stubEnv("SHELL", "/bin/zsh");
+      const root = fixture(),
+        destination = join(root, "custom", "koed"),
+        settingsFile = join(root, "settings.json");
+      writeFileSync(join(root, "cli.js"), "// entry\n");
+      let release!: () => void,
+        entered!: () => void,
+        probes = 0;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const manager = createDesktopCliInstallManager({
+        appPath: root,
+        helperPath: join(root, "Koed"),
+        cliPath: join(root, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => {
+          if (++probes === 1) {
+            entered();
+            await gate;
+          }
+          return true;
+        },
+        saveSettings: (settings) =>
+          writeCliInstallSettings(settingsFile, settings)
+      });
+      const install = manager.launcher("install", {
+        consent: true,
+        destination
+      });
+      await started;
+      const request =
+        operation === "path"
+          ? manager.updatePath("add", true)
+          : manager.launcher(operation);
+      let settled = false;
+      const result = request.then(
+        () => {
+          settled = true;
+          return null;
+        },
+        (error: Error) => {
+          settled = true;
+          return error;
+        }
+      );
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      release();
+      await install;
+      const error = await result;
+      if (operation === "cancel-pending")
+        expect(error?.message).toMatch(/no pending/i);
+      else expect(error).toBeNull();
+      if (operation === "remove") expect(existsSync(destination)).toBe(false);
+      if (operation === "path")
+        expect(readCliInstallSettings(settingsFile).pathDirectory).toBe(
+          join(root, "custom")
+        );
+    }
+  );
+
+  it("waits for pending cancellation before checking a new destination", async () => {
+    const root = fixture(),
+      pendingDestination = join(root, "pending", "koed"),
+      destination = join(root, "new", "koed");
+    writeFileSync(join(root, "cli.js"), "// entry\n");
+    let release!: () => void,
+      entered!: () => void,
+      probes = 0;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      settings: { pendingDestination },
+      probeHelper: async () => {
+        if (++probes === 1) {
+          entered();
+          await gate;
+        }
+        return true;
+      }
+    });
+    const cancel = manager.launcher("cancel-pending");
+    await started;
+    const install = manager.launcher("install", { consent: true, destination });
+    release();
+    await cancel;
+    await install;
+    expect(existsSync(destination)).toBe(true);
+  });
+
+  it("refuses launcher installation from an AppImage without creating a file", async () => {
+    const root = fixture();
+    const destination = join(root, "koed");
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "linux",
+      probeHelper: async () => true
+    });
+    await expect(
+      manager.launcher("install", { consent: true, destination })
+    ).rejects.toThrow(/AppImage/);
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it("fails closed on Linux when AppImage environment is unavailable", async () => {
+    const root = fixture();
+    const destination = join(root, "koed");
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "linux",
+      probeHelper: async () => true
+    });
+    await expect(
+      manager.launcher("install", { consent: true, destination })
+    ).rejects.toThrow(/Linux/);
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "does not block on FIFO launcher, CLI target, rc, or settings files",
+    async () => {
+      const fifo = process.env.KOED_FIFO_TEST;
+      if (fifo) {
+        const input = {
+          destination: fifo,
+          cliPath: fifo,
+          appPath: "/",
+          helperPath: "/helper",
+          koedHome: "/home",
+          expectedVersion: "1.0.0",
+          currentPath: "",
+          probeHelper: async () => true
+        };
+        await expect(inspectLauncher(input)).resolves.toMatchObject({
+          ownership: "changed",
+          target: "invalid"
+        });
+        expect(() => hasManagedPathBlock(fifo, "/bin")).toThrow();
+        expect(() => readCliInstallSettings(fifo)).toThrow();
+        return;
+      }
+      const root = fixture();
+      const path = join(root, "fifo");
+      execFileSync("mkfifo", [path]);
+      const result = spawnSync(
+        "pnpm",
+        [
+          "exec",
+          "vitest",
+          "run",
+          "src/cli-install/manager.test.ts",
+          "-t",
+          "does not block on FIFO"
+        ],
+        {
+          env: { ...process.env, KOED_FIFO_TEST: path },
+          encoding: "utf8",
+          timeout: 10000
+        }
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr + result.stdout).toBe(0);
+    }
+  );
+
+  it("rejects oversized launcher and shell files without reading them into memory", async () => {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    const root = fixture();
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const manager = create(root);
+    const destination = join(root, "koed");
+    writeFileSync(destination, "x".repeat(2 * 1024 * 1024));
+    await expect(
+      manager.launcher("inspect", { destination })
+    ).resolves.toMatchObject({ ownership: "changed" });
+    writeFileSync(join(root, ".zshrc"), "x".repeat(2 * 1024 * 1024));
+    await expect(manager.updatePath("add", true)).rejects.toThrow(/large/i);
+  });
+
+  it("cleans old Bash blocks after switching to zsh and moving the launcher", async () => {
+    vi.stubEnv("SHELL", "/bin/bash");
+    const root = fixture();
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const manager = create(root);
+    await manager.launcher("install", {
+      consent: true,
+      destination: join(root, "old", "koed")
+    });
+    await manager.updatePath("add", true);
+    vi.stubEnv("SHELL", "/bin/zsh");
+    await manager.launcher("remove");
+    await manager.launcher("install", {
+      consent: true,
+      destination: join(root, "new", "koed")
+    });
+    await manager.updatePath("add", true);
+    for (const name of [".bashrc", ".bash_profile"])
+      expect(readFileSync(join(root, name), "utf8")).not.toContain(
+        "koed managed PATH"
+      );
+    await manager.updatePath("remove", true);
+    expect(readFileSync(join(root, ".zshrc"), "utf8")).not.toContain(
+      "koed managed PATH"
+    );
+  });
+
+  it("retains old PATH directory for retry after a cross-shell cleanup conflict", async () => {
+    vi.stubEnv("SHELL", "/bin/bash");
+    const root = fixture();
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const manager = create(root);
+    await manager.launcher("install", {
+      consent: true,
+      destination: join(root, "old", "koed")
+    });
+    await manager.updatePath("add", true);
+    const profile = join(root, ".bash_profile");
+    const original = readFileSync(profile, "utf8");
+    writeFileSync(
+      profile,
+      original.replace("export PATH", "# edited\nexport PATH")
+    );
+    vi.stubEnv("SHELL", "/bin/zsh");
+    await manager.launcher("remove");
+    await manager.launcher("install", {
+      consent: true,
+      destination: join(root, "new", "koed")
+    });
+    await expect(manager.updatePath("add", true)).rejects.toThrow(/edited/);
+    writeFileSync(profile, original);
+    await manager.updatePath("add", true);
+    expect(readFileSync(profile, "utf8")).not.toContain("koed managed PATH");
+    expect(readFileSync(join(root, ".zshrc"), "utf8")).toContain(
+      join(root, "new")
+    );
+  });
+
+  it("moves a managed PATH block after changing launcher directory", async () => {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    const root = fixture();
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const manager = create(root);
+    await manager.launcher("install", {
+      consent: true,
+      destination: join(root, "old", "koed")
+    });
+    await manager.updatePath("add", true);
+    await manager.launcher("remove");
+    await manager.launcher("install", {
+      consent: true,
+      destination: join(root, "new", "koed")
+    });
+    await manager.updatePath("add", true);
+    const rc = readFileSync(join(root, ".zshrc"), "utf8");
+    expect(rc).toContain(join(root, "new"));
+    expect(rc).not.toContain(join(root, "old"));
+    await manager.updatePath("remove", true);
+    expect(readFileSync(join(root, ".zshrc"), "utf8")).not.toContain(
+      "koed managed PATH"
+    );
+  });
   it.each(["corrupt", "symlink", "unreadable"])(
     "keeps Privacy installation available but blocks CLI mutations with %s settings",
     async (kind) => {
@@ -321,8 +756,9 @@ describe("desktop CLI install adapter", () => {
       process.env.SHELL?.endsWith("zsh") ? ".zshrc" : ".bashrc"
     );
     expect(readFileSync(rc, "utf8")).not.toContain("koed managed PATH");
-    expect(readCliInstallSettings(settingsFile)).toEqual({
-      destination: join(root, "different", "koed")
+    expect(readCliInstallSettings(settingsFile)).toMatchObject({
+      destination: join(root, "different", "koed"),
+      installedLauncher: { destination: join(root, "different", "koed") }
     });
   });
 
@@ -414,16 +850,109 @@ describe("desktop CLI install adapter", () => {
     expect(shellPathRemovalFiles(root, "/bin/bash")).toEqual([
       join(root, ".bashrc"),
       join(root, ".bash_profile"),
+      join(root, ".bash_login"),
       join(root, ".profile")
     ]);
   });
 
-  it("skips symlinked login files during removal because setup never writes them", () => {
+  it("retains tracked PATH when a managed Bash profile is replaced by a symlink", async () => {
+    vi.stubEnv("SHELL", "/bin/bash");
+    const root = fixture(),
+      settingsFile = join(root, "settings.json"),
+      profile = join(root, ".bash_profile");
+    writeFileSync(join(root, "cli.js"), "// entry\n");
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true,
+      saveSettings: (settings) =>
+        writeCliInstallSettings(settingsFile, settings)
+    });
+    await manager.launcher("install", {
+      consent: true,
+      destination: join(root, "old", "koed")
+    });
+    await manager.updatePath("add", true);
+    const target = join(root, "moved-profile"),
+      original = readFileSync(profile, "utf8");
+    renameSync(profile, target);
+    symlinkSync(target, profile);
+    await expect(manager.updatePath("remove", true)).rejects.toThrow(
+      /symlink|regular/i
+    );
+    expect(readCliInstallSettings(settingsFile).pathDirectory).toBe(
+      join(root, "old")
+    );
+    expect(readFileSync(target, "utf8")).toBe(original);
+    rmSync(profile);
+    renameSync(target, profile);
+    await manager.updatePath("remove", true);
+    expect(readCliInstallSettings(settingsFile).pathDirectory).toBeUndefined();
+  });
+
+  it.each(["symlink", "dangling", "directory", "fifo"])(
+    "refuses Bash cleanup when a login path is %s and keeps tracking",
+    async (kind) => {
+      vi.stubEnv("SHELL", "/bin/zsh");
+      const root = fixture(),
+        rc = join(root, ".bash_login"),
+        target = join(root, "target");
+      const oldDirectory = join(root, "old"),
+        settingsFile = join(root, "settings.json");
+      writeFileSync(target, "unrelated\n");
+      if (kind === "symlink") symlinkSync(target, rc);
+      if (kind === "dangling") symlinkSync(join(root, "missing"), rc);
+      if (kind === "directory") mkdirSync(rc);
+      if (kind === "fifo") execFileSync("mkfifo", [rc]);
+      writeCliInstallSettings(settingsFile, {
+        destination: join(root, "new", "koed"),
+        pathDirectory: oldDirectory
+      });
+      const manager = createDesktopCliInstallManager({
+        appPath: root,
+        helperPath: join(root, "Koed"),
+        cliPath: join(root, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => true,
+        settings: {
+          destination: join(root, "new", "koed"),
+          pathDirectory: oldDirectory
+        },
+        saveSettings: (settings) =>
+          writeCliInstallSettings(settingsFile, settings)
+      });
+      await expect(manager.updatePath("add", true)).rejects.toThrow();
+      expect(readFileSync(target, "utf8")).toBe("unrelated\n");
+      expect(readCliInstallSettings(settingsFile).pathDirectory).toBe(
+        oldDirectory
+      );
+      rmSync(rc, { recursive: true, force: true });
+      await manager.updatePath("add", true);
+      expect(readCliInstallSettings(settingsFile).pathDirectory).toBe(
+        join(root, "new")
+      );
+    }
+  );
+
+  it("includes symlinked and absent login files in removal inspection", () => {
     const root = fixture();
     writeFileSync(join(root, "dotfiles-profile"), "# managed elsewhere\n");
     symlinkSync(join(root, "dotfiles-profile"), join(root, ".profile"));
     expect(shellPathRemovalFiles(root, "/bin/bash")).toEqual([
-      join(root, ".bashrc")
+      join(root, ".bashrc"),
+      join(root, ".bash_profile"),
+      join(root, ".bash_login"),
+      join(root, ".profile")
     ]);
     expect(shellPathRemovalFiles(root, "/bin/zsh")).toEqual([
       join(root, ".zshrc")
@@ -449,6 +978,539 @@ describe("desktop CLI install adapter", () => {
     expect(shellStartupFiles(root, undefined)[1]).toBe(
       join(root, ".bash_profile")
     );
+  });
+
+  it("does not record an invalid destination as pending", async () => {
+    const root = fixture();
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const saveSettings = vi.fn();
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true,
+      saveSettings
+    });
+    await expect(
+      manager.launcher("install", {
+        consent: true,
+        destination: "relative-koed"
+      })
+    ).rejects.toThrow(/absolute/);
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  it.each(["helper", "target"])(
+    "does not record intent when %s validation fails",
+    async (failure) => {
+      const root = fixture();
+      if (failure !== "target")
+        writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+      const saveSettings = vi.fn();
+      const manager = createDesktopCliInstallManager({
+        appPath: root,
+        helperPath: join(root, "Ko Koed"),
+        cliPath: join(root, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => failure !== "helper",
+        saveSettings
+      });
+      await expect(
+        manager.launcher("install", {
+          consent: true,
+          destination: join(root, "koed")
+        })
+      ).rejects.toThrow();
+      expect(saveSettings).not.toHaveBeenCalled();
+    }
+  );
+
+  it("recovers a recorded exact launcher after moving Desktop only with consent", async () => {
+    const root = fixture();
+    const oldApp = join(root, "Old App");
+    const newApp = join(root, "New App");
+    const destination = join(root, "bin", "koed");
+    const settingsFile = join(root, "settings.json");
+    mkdirSync(oldApp);
+    writeFileSync(join(oldApp, "cli.js"), "// CLI entry\n");
+    const managerFor = (appPath: string) =>
+      createDesktopCliInstallManager({
+        appPath,
+        helperPath: join(appPath, "Koed"),
+        cliPath: join(appPath, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => true,
+        settings: readCliInstallSettings(settingsFile),
+        saveSettings: (settings) =>
+          writeCliInstallSettings(settingsFile, settings)
+      });
+    await managerFor(oldApp).launcher("install", {
+      consent: true,
+      destination
+    });
+    const oldContents = readFileSync(destination, "utf8");
+    renameSync(oldApp, newApp);
+    const manager = managerFor(newApp);
+    await expect(
+      manager.launcher("install", { consent: false })
+    ).rejects.toThrow(/consent/i);
+    expect(readFileSync(destination, "utf8")).toBe(oldContents);
+    await manager.launcher("install", { consent: true });
+    expect(readFileSync(destination, "utf8")).toContain(join(newApp, "Koed"));
+    await expect(manager.launcher("inspect")).resolves.toMatchObject({
+      ownership: "koed",
+      target: "valid"
+    });
+  });
+
+  it.each(["edited", "version", "unrecorded", "home", "symlink"])(
+    "refuses relocation recovery for %s launcher",
+    async (kind) => {
+      const root = fixture();
+      const oldApp = join(root, "old-app"),
+        newApp = join(root, "new-app");
+      const destination = join(root, "koed"),
+        settingsFile = join(root, "settings.json");
+      mkdirSync(oldApp);
+      writeFileSync(join(oldApp, "cli.js"), "// entry\n");
+      const managerFor = (appPath: string, home: string) =>
+        createDesktopCliInstallManager({
+          appPath,
+          helperPath: join(appPath, "Koed"),
+          cliPath: join(appPath, "cli.js"),
+          koedHome: home,
+          expectedVersion: "0.9.0",
+          currentPath: "",
+          homePath: root,
+          platform: "darwin",
+          probeHelper: async () => true,
+          settings: readCliInstallSettings(settingsFile),
+          saveSettings: (settings) =>
+            writeCliInstallSettings(settingsFile, settings)
+        });
+      await managerFor(oldApp, join(root, "home")).launcher("install", {
+        consent: true,
+        destination
+      });
+      renameSync(oldApp, newApp);
+      let original = readFileSync(destination, "utf8");
+      if (kind === "edited") original += "# edited\n";
+      if (kind === "version") original = original.replace("0.9.0", "0.9.1");
+      writeFileSync(destination, original);
+      if (kind === "unrecorded")
+        writeCliInstallSettings(settingsFile, { destination });
+      if (kind === "symlink") {
+        renameSync(destination, join(root, "target"));
+        symlinkSync(join(root, "target"), destination);
+      }
+      const manager = managerFor(
+        newApp,
+        join(root, kind === "home" ? "other-home" : "home")
+      );
+      await expect(
+        manager.launcher("install", { consent: true })
+      ).rejects.toThrow(/conflict/i);
+      expect(readFileSync(destination, "utf8")).toBe(original);
+    }
+  );
+
+  it("rejects non-UTF-8 bytes even when lossy decoding resembles a recorded template", async () => {
+    const root = fixture(),
+      oldApp = join(root, "old-�"),
+      newApp = join(root, "new");
+    const destination = join(root, "koed"),
+      settingsFile = join(root, "settings.json");
+    mkdirSync(oldApp);
+    writeFileSync(join(oldApp, "cli.js"), "// entry\n");
+    const managerFor = (appPath: string) =>
+      createDesktopCliInstallManager({
+        appPath,
+        helperPath: join(appPath, "Koed"),
+        cliPath: join(appPath, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => true,
+        settings: readCliInstallSettings(settingsFile),
+        saveSettings: (settings) =>
+          writeCliInstallSettings(settingsFile, settings)
+      });
+    await managerFor(oldApp).launcher("install", {
+      consent: true,
+      destination
+    });
+    const bytes = readFileSync(destination);
+    const marker = Buffer.from("�");
+    const index = bytes.indexOf(marker);
+    expect(index).toBeGreaterThan(-1);
+    const invalid = Buffer.concat([
+      bytes.subarray(0, index),
+      Buffer.from([0xff]),
+      bytes.subarray(index + marker.length)
+    ]);
+    writeFileSync(destination, invalid);
+    renameSync(oldApp, newApp);
+    await expect(
+      managerFor(newApp).launcher("install", { consent: true })
+    ).rejects.toThrow(/conflict/i);
+    expect(readFileSync(destination)).toEqual(invalid);
+  });
+
+  it("recovers an interrupted install after Desktop moves", async () => {
+    const root = fixture(),
+      oldApp = join(root, "old"),
+      newApp = join(root, "new");
+    const destination = join(root, "koed"),
+      settingsFile = join(root, "settings.json");
+    mkdirSync(oldApp);
+    writeFileSync(join(oldApp, "cli.js"), "// entry\n");
+    let writes = 0;
+    const managerFor = (appPath: string, fail: boolean) =>
+      createDesktopCliInstallManager({
+        appPath,
+        helperPath: join(appPath, "Koed"),
+        cliPath: join(appPath, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => true,
+        settings: readCliInstallSettings(settingsFile),
+        saveSettings: (settings) => {
+          if (fail && ++writes === 2) throw new Error("settings failure");
+          writeCliInstallSettings(settingsFile, settings);
+        }
+      });
+    await expect(
+      managerFor(oldApp, true).launcher("install", {
+        consent: true,
+        destination
+      })
+    ).rejects.toThrow("settings failure");
+    renameSync(oldApp, newApp);
+    await managerFor(newApp, false).launcher("install", { consent: true });
+    expect(readFileSync(destination, "utf8")).toContain(join(newApp, "Koed"));
+  });
+
+  it("retains the previous pending template if relocation retry stops before replacement", async () => {
+    const root = fixture(),
+      oldApp = join(root, "old"),
+      newApp = join(root, "new");
+    const destination = join(root, "koed"),
+      settingsFile = join(root, "settings.json");
+    mkdirSync(oldApp);
+    writeFileSync(join(oldApp, "cli.js"), "// entry\n");
+    let writes = 0,
+      probes = 0;
+    const managerFor = (appPath: string, fail: "final" | "probe" | "none") =>
+      createDesktopCliInstallManager({
+        appPath,
+        helperPath: join(appPath, "Koed"),
+        cliPath: join(appPath, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => fail !== "probe" || ++probes === 1,
+        settings: readCliInstallSettings(settingsFile),
+        saveSettings: (settings) => {
+          if (fail === "final" && ++writes === 2)
+            throw new Error("settings failure");
+          writeCliInstallSettings(settingsFile, settings);
+        }
+      });
+    await expect(
+      managerFor(oldApp, "final").launcher("install", {
+        consent: true,
+        destination
+      })
+    ).rejects.toThrow("settings failure");
+    renameSync(oldApp, newApp);
+    await expect(
+      managerFor(newApp, "probe").launcher("install", { consent: true })
+    ).rejects.toThrow(/unsupported/i);
+    await managerFor(newApp, "none").launcher("install", { consent: true });
+    expect(readFileSync(destination, "utf8")).toContain(join(newApp, "Koed"));
+  });
+
+  it("clears an interrupted absent pending destination without changing files", async () => {
+    const root = fixture();
+    const settingsFile = join(root, "settings.json");
+    const destination = join(root, "pending", "koed");
+    writeCliInstallSettings(settingsFile, { pendingDestination: destination });
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true,
+      settings: readCliInstallSettings(settingsFile),
+      saveSettings: (settings) =>
+        writeCliInstallSettings(settingsFile, settings)
+    });
+    await expect(manager.launcher("inspect")).resolves.toMatchObject({
+      pendingCancellationAvailable: true
+    });
+    await manager.launcher("cancel-pending");
+    expect(readCliInstallSettings(settingsFile)).toEqual({});
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it("cancels absent intent after creation fails and retains it if cancellation persistence fails", async () => {
+    const root = fixture(),
+      destination = join(root, "koed"),
+      settingsFile = join(root, "settings.json");
+    writeFileSync(join(root, "cli.js"), "// entry\n");
+    let probes = 0,
+      failCancel = false;
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => ++probes !== 2,
+      saveSettings: (settings) => {
+        if (failCancel) throw new Error("cancel save failed");
+        writeCliInstallSettings(settingsFile, settings);
+      }
+    });
+    await expect(
+      manager.launcher("install", { consent: true, destination })
+    ).rejects.toThrow(/unsupported/i);
+    expect(existsSync(destination)).toBe(false);
+    failCancel = true;
+    await expect(manager.launcher("cancel-pending")).rejects.toThrow(
+      "cancel save failed"
+    );
+    expect(readCliInstallSettings(settingsFile).pendingDestination).toBe(
+      destination
+    );
+    failCancel = false;
+    await manager.launcher("cancel-pending");
+    expect(
+      readCliInstallSettings(settingsFile).pendingDestination
+    ).toBeUndefined();
+    await manager.launcher("install", {
+      consent: true,
+      destination: join(root, "other", "koed")
+    });
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "keeps pending intent after unlink failure until the file is manually removed",
+    async () => {
+      const root = fixture(),
+        directory = join(root, "bin"),
+        destination = join(directory, "koed"),
+        settingsFile = join(root, "settings.json");
+      writeFileSync(join(root, "cli.js"), "// entry\n");
+      let saves = 0;
+      const manager = createDesktopCliInstallManager({
+        appPath: root,
+        helperPath: join(root, "Koed"),
+        cliPath: join(root, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => true,
+        saveSettings: (settings) => {
+          if (++saves === 2) throw new Error("final save failed");
+          writeCliInstallSettings(settingsFile, settings);
+        }
+      });
+      await expect(
+        manager.launcher("install", { consent: true, destination })
+      ).rejects.toThrow("final save failed");
+      chmodSync(directory, 0o555);
+      try {
+        await expect(manager.launcher("remove")).rejects.toThrow();
+        await expect(manager.launcher("cancel-pending")).rejects.toThrow();
+        expect(existsSync(destination)).toBe(true);
+        expect(readCliInstallSettings(settingsFile).pendingDestination).toBe(
+          destination
+        );
+      } finally {
+        chmodSync(directory, 0o755);
+      }
+      rmSync(destination);
+      await manager.launcher("cancel-pending");
+      expect(
+        readCliInstallSettings(settingsFile).pendingDestination
+      ).toBeUndefined();
+    }
+  );
+
+  it("cancels absent intent after unlink succeeds but settings persistence fails", async () => {
+    const root = fixture(),
+      destination = join(root, "koed"),
+      settingsFile = join(root, "settings.json");
+    writeFileSync(join(root, "cli.js"), "// entry\n");
+    let fail = false;
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true,
+      saveSettings: (settings) => {
+        if (fail) throw new Error("save failed");
+        writeCliInstallSettings(settingsFile, settings);
+      }
+    });
+    await manager.launcher("install", { consent: true, destination });
+    const current = readCliInstallSettings(settingsFile);
+    const pending = { ...current, pendingDestination: destination };
+    writeCliInstallSettings(settingsFile, pending);
+    const resumed = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true,
+      settings: pending,
+      saveSettings: (settings) => {
+        if (fail) throw new Error("save failed");
+        writeCliInstallSettings(settingsFile, settings);
+      }
+    });
+    fail = true;
+    await expect(resumed.launcher("remove")).rejects.toThrow("save failed");
+    expect(existsSync(destination)).toBe(false);
+    expect(readCliInstallSettings(settingsFile).pendingDestination).toBe(
+      destination
+    );
+    fail = false;
+    await resumed.launcher("cancel-pending");
+    expect(
+      readCliInstallSettings(settingsFile).pendingDestination
+    ).toBeUndefined();
+  });
+
+  it("never cancels pending intent when a destination file exists", async () => {
+    const root = fixture(),
+      settingsFile = join(root, "settings.json"),
+      destination = join(root, "koed");
+    writeCliInstallSettings(settingsFile, { pendingDestination: destination });
+    writeFileSync(destination, "preserve me");
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true,
+      settings: readCliInstallSettings(settingsFile),
+      saveSettings: (settings) =>
+        writeCliInstallSettings(settingsFile, settings)
+    });
+    await expect(manager.launcher("cancel-pending")).rejects.toThrow(/exists/i);
+    expect(readFileSync(destination, "utf8")).toBe("preserve me");
+    expect(readCliInstallSettings(settingsFile).pendingDestination).toBe(
+      destination
+    );
+  });
+
+  it("does not create a launcher if recording installation intent fails", async () => {
+    const root = fixture();
+    const destination = join(root, "custom", "koed");
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true,
+      saveSettings: () => {
+        throw new Error("settings write failed");
+      }
+    });
+    await expect(
+      manager.launcher("install", { consent: true, destination })
+    ).rejects.toThrow("settings write failed");
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it("recovers a custom launcher after final settings persistence fails and Desktop restarts", async () => {
+    const root = fixture();
+    const settingsFile = join(root, "settings.json");
+    const destination = join(root, "custom", "koed");
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    let writes = 0;
+    const restart = (failFinal = false) =>
+      createDesktopCliInstallManager({
+        appPath: root,
+        helperPath: join(root, "Koed"),
+        cliPath: join(root, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => true,
+        settings: readCliInstallSettings(settingsFile),
+        saveSettings: (settings) => {
+          if (failFinal && ++writes === 2)
+            throw new Error("settings write failed");
+          writeCliInstallSettings(settingsFile, settings);
+        }
+      });
+    await expect(
+      restart(true).launcher("install", { consent: true, destination })
+    ).rejects.toThrow("settings write failed");
+    const restarted = restart();
+    await expect(restarted.launcher("inspect")).resolves.toMatchObject({
+      ownership: "koed"
+    });
+    await expect(
+      restarted.launcher("install", {
+        consent: true,
+        destination: join(root, "other", "koed")
+      })
+    ).rejects.toThrow(/pending/i);
+    await restarted.launcher("remove");
+    expect(existsSync(destination)).toBe(false);
   });
 
   it("does not persist failed installs or infer arbitrary file ownership from settings", async () => {

@@ -159,6 +159,7 @@ export class InstallSetupStore {
           launcher.ownership === "koed" &&
           launcher.target === "valid" &&
           launcher.template === "current" &&
+          !launcher.pendingInstallation &&
           (launcher.pathConfigured || launcher.pathVisible);
         this.job("cli", {
           checking: false,
@@ -166,7 +167,9 @@ export class InstallSetupStore {
           removing: false,
           unavailable: false,
           stage: ready ? "ready" : "idle",
-          message: undefined
+          message: launcher.pendingInstallation
+            ? "Launcher setup is incomplete. Retry to finish installation."
+            : undefined
         });
       }
     } catch (cause) {
@@ -274,16 +277,40 @@ export class InstallSetupStore {
       const launcher =
         observed.ownership === "koed" &&
         observed.target === "valid" &&
-        observed.template === "current"
+        observed.template === "current" &&
+        !observed.pendingInstallation
           ? observed
           : await this.api.launcher("install", { consent: true });
       this.update({ launcher });
+      if (launcher.selectionCancelled) {
+        this.job("cli", {
+          stage: "idle",
+          message: "Launcher location selection cancelled."
+        });
+        return;
+      }
+      if (
+        launcher.ownership !== "koed" ||
+        launcher.target !== "valid" ||
+        launcher.template !== "current" ||
+        launcher.pendingInstallation
+      )
+        throw new Error(
+          "Launcher verification failed. Retry installation or resolve the conflict manually."
+        );
       this.job("cli", { step: 1 });
       await this.api.updatePath("add", true);
       // Report ready only when inspection confirms every shell startup file
       // that a new terminal reads now carries the PATH entry.
       const verified = await this.api.launcher("inspect");
       this.update({ launcher: verified });
+      if (
+        verified.ownership !== "koed" ||
+        verified.target !== "valid" ||
+        verified.template !== "current" ||
+        verified.pendingInstallation
+      )
+        throw new Error("Launcher verification failed after PATH setup.");
       if (!verified.pathConfigured && !verified.pathVisible)
         throw new Error(
           "PATH setup did not reach every shell startup file. Retry, or add the launcher directory to PATH manually."
@@ -297,6 +324,29 @@ export class InstallSetupStore {
           ? "Couldn’t update PATH"
           : "Couldn’t install command line",
         message: `${partial ? "The launcher was installed, but PATH setup failed. " : ""}${errorMessage(cause)}`
+      });
+    } finally {
+      this.job("cli", { running: false });
+    }
+  };
+  cancelPendingCli = async () => {
+    if (this.state.cli.running) return;
+    ++this.revision.cli;
+    this.job("cli", { running: true, message: undefined });
+    try {
+      await this.api.launcher("cancel-pending");
+      const launcher = await this.api.launcher("inspect");
+      this.update({ launcher });
+      this.job("cli", {
+        stage: "idle",
+        heading: undefined,
+        message: undefined
+      });
+    } catch (cause) {
+      this.job("cli", {
+        stage: "failed",
+        heading: "Couldn’t cancel setup",
+        message: errorMessage(cause)
       });
     } finally {
       this.job("cli", { running: false });

@@ -74,6 +74,19 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 describe("General setup flows", () => {
+  it("cancels pending CLI intent without touching PATH", async () => {
+    const { api, owned } = fixture();
+    vi.mocked(api.launcher).mockResolvedValue({
+      ...owned,
+      ownership: "absent",
+      pendingCancellationAvailable: true
+    });
+    const store = getInstallSetupStore(api);
+    await store.refresh();
+    await store.cancelPendingCli();
+    expect(api.launcher).toHaveBeenCalledWith("cancel-pending");
+    expect(api.updatePath).not.toHaveBeenCalled();
+  });
   it("refreshes Privacy and launcher status after returning to Preferences and reopening a dialog", async () => {
     const { api, owned } = fixture();
     const host = document.createElement("div");

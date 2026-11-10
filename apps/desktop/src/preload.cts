@@ -134,7 +134,7 @@ contextBridge.exposeInMainWorld("koedDesktop", {
         operation: "select-offline"
       }),
     launcher: (
-      operation: "inspect" | "install" | "remove",
+      operation: "inspect" | "install" | "remove" | "cancel-pending",
       options?: { consent?: boolean; destination?: string }
     ) =>
       ipcRenderer.invoke(
@@ -143,7 +143,9 @@ contextBridge.exposeInMainWorld("koedDesktop", {
           ? { operation: "launcher-inspect" }
           : operation === "remove"
             ? { operation: "launcher-remove" }
-            : { operation: "launcher-install", ...options }
+            : operation === "cancel-pending"
+              ? { operation: "launcher-cancel-pending" }
+              : { operation: "launcher-install", ...options }
       ),
     updatePath: (operationKind: "add" | "remove", consent: boolean) =>
       ipcRenderer.invoke(cliInstallCommandChannel, {
