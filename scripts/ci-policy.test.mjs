@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
@@ -16,8 +17,8 @@ const linuxJob = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs[
   "native-runtime-linux-x64"
 ];
 
-function runsFor(condition, outputs, cacheHit) {
-  if (!condition) return true;
+function runsFor(condition, outputs, { nativeHit, coreHit, failed = false }) {
+  if (!condition) return !failed;
   const expression = condition
     .replace(
       /needs\.changes\.outputs\.(run_linux_native|run_app_smoke|run_full_validation)/g,
@@ -25,14 +26,16 @@ function runsFor(condition, outputs, cacheHit) {
     )
     .replace(
       /steps\.native-cache\.outputs\.cache-hit/g,
-      JSON.stringify(cacheHit)
+      JSON.stringify(nativeHit)
     )
     .replace(
       /steps\.native-core-cache\.outputs\.cache-hit/g,
-      JSON.stringify(cacheHit)
-    );
+      JSON.stringify(coreHit)
+    )
+    .replace(/failure\(\)/g, String(failed));
   assert.match(expression, /^[\s()'"a-z!&|=]+$/);
-  return Function(`"use strict"; return (${expression});`)();
+  const matches = Function(`"use strict"; return (${expression});`)();
+  return (condition.includes("failure()") || !failed) && matches;
 }
 
 test("Linux combined payload and CPU smoke respect policy and cache scenarios", () => {
@@ -49,8 +52,11 @@ test("Linux combined payload and CPU smoke respect policy and cache scenarios", 
   const misses = new Set(combined.slice(1, 4).concat(combined[5]));
   const cpu = [
     "Restore Linux native CPU core",
+    "Build Linux native CPU core on a cache miss",
     "Verify Linux native CPU core",
+    "Save Linux native CPU core",
     "Build workspace and Linux release AppImage",
+    "Upload unreleased Linux AppImage for manual testing",
     "Run Linux directory and extracted AppImage smoke"
   ];
   const step = (name) => {
@@ -72,34 +78,129 @@ test("Linux combined payload and CPU smoke respect policy and cache scenarios", 
       run_app_smoke: String(smoke),
       run_full_validation: String(full)
     };
-    for (const hit of [true, false]) {
-      const cacheHit = String(hit);
-      const jobRuns = runsFor(linuxJob.if, outputs, cacheHit);
-      assert.equal(jobRuns, native || smoke || full);
-      for (const name of combined) {
+    for (const nativeHit of [true, false]) {
+      for (const coreHit of [true, false]) {
+        const cache = {
+          nativeHit: String(nativeHit),
+          coreHit: String(coreHit)
+        };
+        const jobRuns = runsFor(linuxJob.if, outputs, cache);
+        assert.equal(jobRuns, native || smoke || full);
+        for (const name of combined) {
+          assert.equal(
+            jobRuns && runsFor(step(name).if, outputs, cache),
+            (native || full) && (!misses.has(name) || !nativeHit),
+            `${name}: ${JSON.stringify({ outputs, nativeHit, coreHit })}`
+          );
+        }
+        for (const name of cpu) {
+          assert.equal(
+            jobRuns && runsFor(step(name).if, outputs, cache),
+            (smoke || full) &&
+              ((!name.includes("on a cache miss") &&
+                name !== "Save Linux native CPU core") ||
+                !coreHit),
+            `${name}: ${JSON.stringify({ outputs, nativeHit, coreHit })}`
+          );
+        }
         assert.equal(
-          jobRuns && runsFor(step(name).if, outputs, cacheHit),
-          (native || full) && (!misses.has(name) || !hit),
-          `${name}: ${JSON.stringify({ outputs, hit })}`
+          jobRuns &&
+            runsFor(
+              step("Upload verified Linux native runtime artifact").if,
+              outputs,
+              cache
+            ),
+          native
+        );
+        const diagnostics = step("Upload Linux Desktop smoke diagnostics");
+        assert.equal(jobRuns && runsFor(diagnostics.if, outputs, cache), false);
+        assert.equal(
+          jobRuns &&
+            runsFor(diagnostics.if, outputs, { ...cache, failed: true }),
+          smoke || full
         );
       }
-      for (const name of cpu) {
-        assert.equal(
-          jobRuns && runsFor(step(name).if, outputs, cacheHit),
-          smoke || full,
-          name
-        );
-      }
-      assert.equal(
-        jobRuns &&
-          runsFor(
-            step("Upload verified Linux native runtime artifact").if,
-            outputs,
-            cacheHit
-          ),
-        native
-      );
     }
+  }
+});
+
+test("Linux payload failures prevent save, packaging and successful required CI", () => {
+  const names = [
+    "Validate native runtime payload before use or save",
+    "Save verified Linux native runtime payload",
+    "Package native runtime artifact",
+    "Validate packaged native runtime artifact",
+    "Upload verified Linux native runtime artifact"
+  ];
+  const steps = names.map((name) => {
+    const step = linuxJob.steps.find((item) => item.name === name);
+    assert.ok(step, `missing step ${name}`);
+    assert.notEqual(step["continue-on-error"], true, name);
+    assert.doesNotMatch(step.if ?? "", /always\(\)|failure\(\)/, name);
+    return step;
+  });
+  assert.deepEqual(
+    steps.map((step) => linuxJob.steps.indexOf(step)),
+    steps.map((step) => linuxJob.steps.indexOf(step)).toSorted((a, b) => a - b)
+  );
+  const outputs = {
+    run_linux_native: "true",
+    run_app_smoke: "true",
+    run_full_validation: "false"
+  };
+  const failed = { nativeHit: "false", coreHit: "false", failed: true };
+  for (const step of steps.slice(1))
+    assert.equal(runsFor(step.if, outputs, failed), false, step.name);
+
+  const required = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs[
+    "ci-required"
+  ];
+  assert.ok(required.needs.includes("native-runtime-linux-x64"));
+  assert.equal(
+    required.steps.find(
+      (step) => step.run === "node .github/scripts/ci-required.mjs"
+    ).env.LINUX_NATIVE_RESULT,
+    "${{ needs.native-runtime-linux-x64.result }}"
+  );
+  assert.equal(
+    evaluateRequiredJobs({
+      policy: outputs,
+      results: {
+        changes: "success",
+        static_checks: "success",
+        node_26_consumer: "success",
+        tests: "success",
+        build: "success",
+        relevant_packaged_smoke: "success",
+        release_candidate_validation: "skipped",
+        native_runtime_linux_x64: "failure"
+      }
+    }).ok,
+    false
+  );
+});
+
+test("Linux payload validation preserves validator failure after diagnostics", () => {
+  const step = linuxJob.steps.find(
+    (item) => item.name === "Validate native runtime payload before use or save"
+  );
+  mkdirSync(resolve("scratch"), { recursive: true });
+  const directory = mkdtempSync(resolve("scratch/ci-policy-"));
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `node() { echo '{}'; return 7; }\njq() { return 0; }\n${step.run}`
+      ],
+      {
+        env: { ...process.env, RUNNER_TEMP: directory },
+        encoding: "utf8"
+      }
+    );
+    assert.equal(result.status, 7, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
