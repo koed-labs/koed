@@ -77,6 +77,20 @@ test("Linux native artifact CI installs and requires the pinned CUDA toolkit", (
       assert.doesNotMatch(key, /loader-validation|validate-runtime/);
     }
   }
+  const coreVerification = linuxJob
+    .split("- name: Verify Linux native CPU core")[1]
+    .split("- name: Save Linux native CPU core")[0];
+  const validationPosition = coreVerification.indexOf(
+    "pnpm native-runtime:validate"
+  );
+  assert.ok(validationPosition > 0);
+  assert.ok(
+    coreVerification.indexOf(
+      "verifyFrozenCore(process.argv[1])",
+      validationPosition
+    ) > validationPosition,
+    "verify after validation before save"
+  );
   const coreKeys = linuxJob.match(/key: linux-native-core-v1-[^\n]*/g);
   assert.equal(coreKeys?.length, 2);
   for (const key of coreKeys) {

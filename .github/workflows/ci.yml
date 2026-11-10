@@ -678,6 +678,7 @@ jobs:
             jq '{ok, errors}' "${RUNNER_TEMP}/koed-native-core-validation.json"
             exit 1
           }
+          node --input-type=module -e 'import { verifyFrozenCore } from "./scripts/native-runtime/core-artifact.mjs"; verifyFrozenCore(process.argv[1]);' "${root}"
 
       - name: Save Linux native CPU core
         if: (needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true') && steps.native-core-cache.outputs.cache-hit != 'true'

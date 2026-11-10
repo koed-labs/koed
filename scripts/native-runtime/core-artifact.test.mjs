@@ -159,6 +159,57 @@ for (const change of [
   });
 }
 
+test("inventory mismatch reports bounded paths and changed fields without file contents", () => {
+  const { runtimeRoot } = fixture();
+  writeFileSync(
+    resolve(runtimeRoot, "llama.cpp/cpu/llama-server"),
+    "secret changed content"
+  );
+  rmSync(resolve(runtimeRoot, "postgres/bin/pg_dump"));
+  for (let i = 0; i < 20; i++)
+    writeFileSync(
+      resolve(runtimeRoot, `postgres/extra-${String(i).padStart(2, "0")}`),
+      "extra"
+    );
+  assert.throws(
+    () => verifyFrozenCore(runtimeRoot),
+    (error) => {
+      assert.match(
+        error.message,
+        /llama\.cpp\/cpu\/llama-server.*(?:bytes|sha256)/
+      );
+      assert.match(error.message, /postgres\/bin\/pg_dump.*missing/);
+      assert.match(error.message, /postgres\/extra-00.*unexpected/);
+      assert.match(error.message, /truncated/);
+      assert.doesNotMatch(
+        error.message,
+        /secret changed content|postgres\/extra-19/
+      );
+      assert.ok(error.message.length < 4096);
+      return true;
+    }
+  );
+});
+
+test("inventory diagnostic remains bounded for escaped filenames", () => {
+  const { runtimeRoot } = fixture();
+  for (let i = 0; i < 10; i++)
+    writeFileSync(
+      resolve(runtimeRoot, `postgres/${i}${"\x01".repeat(110)}`),
+      "extra"
+    );
+  assert.throws(
+    () => verifyFrozenCore(runtimeRoot),
+    (error) => {
+      assert.ok(
+        error.message.length < 4096,
+        `diagnostic length: ${error.message.length}`
+      );
+      return true;
+    }
+  );
+});
+
 test("native inventory rejects hard links, absolute links and link chains", () => {
   const { runtimeRoot } = fixture();
   const target = resolve(runtimeRoot, "llama.cpp/cpu/second-link");
