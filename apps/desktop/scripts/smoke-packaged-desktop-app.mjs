@@ -947,6 +947,21 @@ const fetchSmokeApiReadiness = async (koedHome, fetcher) => {
 // Full status probes hit rate-limited AI Client endpoints; keep retries coarse.
 const FULL_STATUS_RETRY_INTERVAL_MS = 30_000;
 
+export async function trackCurrentSupervisor(getStatus, daemonPids) {
+  const status = await getStatus();
+  const pid = status?.lifecycle?.pid;
+  if (
+    status?.lifecycle?.state !== "running" ||
+    !Number.isInteger(pid) ||
+    pid <= 0
+  )
+    throw new Error(
+      "Unable to identify running supervisor PID after processing change."
+    );
+  daemonPids?.push(pid);
+  return pid;
+}
+
 export const waitForHealthyStatus = async (
   {
     layout,
@@ -1242,9 +1257,20 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   );
   finishPhase(timings, "packaged core and Codex setup", phaseStarted);
 
+  let currentSupervisorPid = startJson.startedPid;
   const acceleration = options.verifyAcceleration
-    ? await measurePhase(timings, "packaged CPU and Metal switching", () =>
-        smokePackagedAcceleration(desktop, koedHome)
+    ? await measurePhase(timings, "packaged CPU and GPU switching", () =>
+        smokePackagedAcceleration(
+          desktop,
+          koedHome,
+          globalThis.fetch,
+          async () => {
+            currentSupervisorPid = await trackCurrentSupervisor(
+              () => desktop.invoke("status"),
+              options.daemonPids
+            );
+          }
+        )
       )
     : null;
 
@@ -1262,7 +1288,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   if (
     stopJson.ok !== true ||
     stopJson.state !== "stopped" ||
-    pidIsRunning(startJson.startedPid)
+    pidIsRunning(currentSupervisorPid)
   ) {
     throw new Error(
       `Manager stop did not terminate owned supervisor: ${stop.stdout}`
@@ -1283,7 +1309,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   if (
     restartJson.ok !== true ||
     typeof restartJson.startedPid !== "number" ||
-    restartJson.startedPid === startJson.startedPid
+    restartJson.startedPid === currentSupervisorPid
   ) {
     throw new Error(
       `reopen start --daemon --json did not include daemon start details: ${restart.stdout}`

@@ -36,6 +36,41 @@ import {
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
 import * as smokeApp from "./smoke-packaged-desktop-app.mjs";
+import * as accelerationSmoke from "./acceleration-packaged-smoke.mjs";
+
+test("acceleration smoke allows AppImage startup beyond 180 seconds", async () => {
+  let time = 0;
+  let polls = 0;
+  const result = await accelerationSmoke.waitForAccelerationChange(
+    {
+      invoke: async () => ({
+        operation: { id: "op", state: ++polls === 1 ? "running" : "complete" }
+      })
+    },
+    { operation: { id: "op", state: "running" } },
+    {
+      now: () => time,
+      sleep: async () => {
+        time = 181_000;
+      }
+    }
+  );
+  assert.equal(result.operation.state, "complete");
+});
+
+test("acceleration smoke tracks the current supervisor for stop and cleanup", async () => {
+  const pids = [101];
+  const pid = await smokeApp.trackCurrentSupervisor(
+    async () => ({ lifecycle: { state: "running", pid: 202 } }),
+    pids
+  );
+  assert.equal(pid, 202);
+  assert.deepEqual(pids, [101, 202]);
+  await assert.rejects(
+    smokeApp.trackCurrentSupervisor(async () => ({ lifecycle: {} }), pids),
+    /supervisor PID/
+  );
+});
 
 test("failure diagnostics read failing home before cleanup and retain original cause", async () => {
   const home = createSmokeHome("koed-team-diagnostics-test-");
