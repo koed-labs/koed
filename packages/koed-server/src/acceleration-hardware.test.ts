@@ -12,7 +12,7 @@ const fixture = () => ({
   platform: "linux" as const,
   arch: "x64",
   libc: "2.35",
-  exists: vi.fn(() => true),
+  resolveNvidiaSmi: vi.fn<() => string | null>(() => "/usr/bin/nvidia-smi"),
   command: vi.fn<typeof nativeCommand>(async () => devices),
   checkCuda: vi.fn(async () => "550.54.14")
 });
@@ -56,7 +56,10 @@ describe("hardware capability inspection", () => {
       memoryBytes: 16384 * 1_048_576,
       verification: "host"
     });
-    expect(f.checkCuda).toHaveBeenCalledOnce();
+    expect(f.checkCuda).toHaveBeenCalledExactlyOnceWith(
+      expect.any(AbortSignal),
+      "/usr/bin/nvidia-smi"
+    );
     expect(f.command.mock.calls[0]?.[2].signal).toBeInstanceOf(AbortSignal);
   });
   it.each(["cuda_driver_too_old", "cuda_driver_library_unavailable"])(
@@ -80,11 +83,37 @@ describe("hardware capability inspection", () => {
       (await inspectAccelerationHardware({}, { ...f, libc: "2.34" })).state
     ).toBe("unsupported");
     expect(
-      (await inspectAccelerationHardware({}, { ...f, exists: () => false }))
-        .reason
+      (
+        await inspectAccelerationHardware(
+          {},
+          { ...f, resolveNvidiaSmi: () => null }
+        )
+      ).reason
     ).toContain("tools");
     f.command.mockResolvedValueOnce("malformed");
     expect((await inspectAccelerationHardware({}, f)).state).toBe("unknown");
+  });
+  it("uses the WSL tool for both hardware discovery and host validation", async () => {
+    const f = fixture();
+    f.resolveNvidiaSmi.mockReturnValue("/usr/lib/wsl/lib/nvidia-smi");
+    expect(await inspectAccelerationHardware({}, f)).toMatchObject({
+      state: "available",
+      backend: "cuda",
+      verification: "host"
+    });
+    expect(f.command).toHaveBeenCalledExactlyOnceWith(
+      "/usr/lib/wsl/lib/nvidia-smi",
+      expect.arrayContaining([
+        "--query-gpu=index,uuid,name,memory.total,compute_cap"
+      ]),
+      expect.objectContaining({
+        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }
+      })
+    );
+    expect(f.checkCuda).toHaveBeenCalledExactlyOnceWith(
+      expect.any(AbortSignal),
+      "/usr/lib/wsl/lib/nvidia-smi"
+    );
   });
   it("respects the architectures admitted by this release rather than assuming every CUDA device is supported", async () => {
     const f = fixture();

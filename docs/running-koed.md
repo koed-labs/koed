@@ -1362,6 +1362,15 @@ The extra acceleration step is included only after explicit opt-in. Validation
 checks offload and CPU/GPU vector agreement; device discovery alone cannot
 complete it. Automatic processing is saved only after successful installation.
 
+Linux hardware choice and CUDA host validation share executable discovery for
+`nvidia-smi`: `/usr/bin`, `/bin`, `/usr/local/bin`, `/usr/local/nvidia/bin`, then
+WSL's `/usr/lib/wsl/lib`. Each candidate must be an executable file. Desktop does
+not require a shell PATH change or a symlink for WSL. Both paths still require
+NVIDIA driver 550.54.14 or later and a loadable `libcuda.so.1`, followed by the
+model-backed validation above. In WSL, the Windows NVIDIA driver supplies CUDA;
+follow [NVIDIA's WSL guide](https://docs.nvidia.com/cuda/wsl-user-guide/) rather
+than installing a Linux display driver inside the distro.
+
 Cancel is available while CUDA work can still stop before activation. Desktop
 waits for downloads/probes and staging cleanup. **Retry step** rechecks successful
 prerequisites; **Continue with CPU** retains the core, model, and any safely

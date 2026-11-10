@@ -7,6 +7,7 @@ import {
   withNativeProbe
 } from "./native-validation-process.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { resolveNvidiaSmi } from "./nvidia-smi.js";
 import {
   checkCudaHost,
   validateStagedCuda
@@ -22,8 +23,14 @@ vi.mock("./native-validation-process.js", () => ({
   withNativeProbe: vi.fn()
 }));
 
-describe("CUDA host driver probe", () => {
-  beforeEach(() => vi.resetAllMocks());
+vi.mock("./nvidia-smi.js", () => ({ resolveNvidiaSmi: vi.fn() }));
+
+const toolPaths = ["/usr/bin/nvidia-smi", "/usr/lib/wsl/lib/nvidia-smi"];
+describe.each(toolPaths)("CUDA host driver probe (%s)", (toolPath) => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(resolveNvidiaSmi).mockReturnValue(toolPath);
+  });
 
   it("loads the driver in Node mode when the host executable is Electron", async () => {
     vi.mocked(nativeCommand)
@@ -32,6 +39,13 @@ describe("CUDA host driver probe", () => {
     await expect(checkCudaHost(new AbortController().signal)).resolves.toBe(
       "595.91.07"
     );
+    expect(vi.mocked(nativeCommand).mock.calls[0]).toEqual([
+      toolPath,
+      ["--query-gpu=driver_version", "--format=csv,noheader"],
+      expect.objectContaining({
+        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }
+      })
+    ]);
     const invocation = vi.mocked(nativeCommand).mock.calls[1];
     expect(invocation?.[0]).toBe(process.execPath);
     expect(invocation?.[1]).toContain("-p");
@@ -39,6 +53,54 @@ describe("CUDA host driver probe", () => {
       ELECTRON_RUN_AS_NODE: "1",
       LD_PRELOAD: "libcuda.so.1"
     });
+  });
+
+  it.each(["535.183.01", "550.54.13"])(
+    "rejects old driver %s before loading CUDA",
+    async (version) => {
+      vi.mocked(nativeCommand).mockResolvedValueOnce(version);
+      await expect(
+        checkCudaHost(new AbortController().signal)
+      ).rejects.toMatchObject({
+        reason: "cuda_driver_too_old"
+      });
+      expect(nativeCommand).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it.each(["", "N/A", "595.91.07\n580.95.05"])(
+    "rejects an invalid or inconsistent driver report (%s)",
+    async (report) => {
+      vi.mocked(nativeCommand).mockResolvedValueOnce(report);
+      await expect(
+        checkCudaHost(new AbortController().signal)
+      ).rejects.toMatchObject({
+        reason: "cuda_device_unavailable"
+      });
+      expect(nativeCommand).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("rejects a failed driver query", async () => {
+    vi.mocked(nativeCommand).mockRejectedValueOnce(
+      new Error("driver communication failed")
+    );
+    await expect(
+      checkCudaHost(new AbortController().signal)
+    ).rejects.toMatchObject({
+      reason: "cuda_device_unavailable"
+    });
+    expect(nativeCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports missing tools before spawning any process", async () => {
+    vi.mocked(resolveNvidiaSmi).mockReturnValue(null);
+    await expect(
+      checkCudaHost(new AbortController().signal)
+    ).rejects.toMatchObject({
+      reason: "cuda_device_unavailable"
+    });
+    expect(nativeCommand).not.toHaveBeenCalled();
   });
 
   it("still rejects a driver that the host loader cannot load", async () => {
@@ -53,13 +115,14 @@ describe("CUDA host driver probe", () => {
   });
 });
 
-describe("staged CUDA inference admission", () => {
+describe.each(toolPaths)("staged CUDA inference admission (%s)", (toolPath) => {
   const paths = resolveKoedServerPaths({ KOED_HOME: "/fixture" });
   const response = (embedding: number[]) => ({
     data: [0, 1, 2].map((index) => ({ index, embedding }))
   });
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(resolveNvidiaSmi).mockReturnValue(toolPath);
     vi.mocked(nativeCommand).mockImplementation(async (_binary, args) =>
       args.includes("--list-devices")
         ? "Available devices:\nCUDA0: Synthetic GPU"
@@ -126,6 +189,7 @@ describe("staged CUDA inference admission", () => {
         { dimensions: 2, cosine: 1 }
       ]
     });
+    expect(vi.mocked(nativeCommand).mock.calls[0]?.[0]).toBe(toolPath);
     const calls = vi.mocked(withNativeProbe).mock.calls;
     expect(calls.map((call) => call[0])).toEqual([
       "/fixture/llama.cpp/cpu/llama-server",

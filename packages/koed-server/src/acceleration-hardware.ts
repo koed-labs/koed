@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
 import type { AccelerationHardware } from "./acceleration-contract.js";
 import { nativeCommand } from "./native-validation-process.js";
+import { resolveNvidiaSmi } from "./nvidia-smi.js";
 import { checkCudaHost } from "./runtime-release-validation.js";
 import { getNativeRuntimeCatalog } from "./native-runtime-catalog.js";
 
@@ -80,7 +80,7 @@ export async function inspectAccelerationHardware(
     platform?: NodeJS.Platform;
     arch?: string;
     libc?: string;
-    exists?: typeof existsSync;
+    resolveNvidiaSmi?: typeof resolveNvidiaSmi;
     command?: typeof nativeCommand;
     checkCuda?: typeof checkCudaHost;
     architectures?: readonly number[];
@@ -123,14 +123,15 @@ export async function inspectAccelerationHardware(
     return unavailable(
       "GPU devices are hidden by the Operator's CUDA_VISIBLE_DEVICES setting."
     );
-  if (!(dependencies.exists ?? existsSync)("/usr/bin/nvidia-smi"))
+  const nvidiaSmi = (dependencies.resolveNvidiaSmi ?? resolveNvidiaSmi)();
+  if (!nvidiaSmi)
     return unavailable(
       "NVIDIA driver tools are not available. CPU processing is ready to use."
     );
   const signal = AbortSignal.timeout(15_000);
   try {
     const output = await (dependencies.command ?? nativeCommand)(
-      "/usr/bin/nvidia-smi",
+      nvidiaSmi,
       [
         "--query-gpu=index,uuid,name,memory.total,compute_cap",
         "--format=csv,noheader,nounits"
@@ -170,7 +171,7 @@ export async function inspectAccelerationHardware(
         "A visible GPU is outside the CUDA package's supported architectures.",
         "unsupported"
       );
-    await (dependencies.checkCuda ?? checkCudaHost)(signal);
+    await (dependencies.checkCuda ?? checkCudaHost)(signal, nvidiaSmi);
     return {
       state: "available",
       backend: "cuda",

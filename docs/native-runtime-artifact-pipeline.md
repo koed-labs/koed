@@ -57,6 +57,13 @@ and inventory, then runs the staged validator under the lock before switching th
 pointer. Without an installed model the result is device-only. A failed check
 preserves the active pair. A CPU execution policy continues to use CPU.
 
+Host validation uses the same executable `nvidia-smi` discovery as Desktop
+hardware choice, including `/usr/lib/wsl/lib/nvidia-smi` on WSL without changing
+PATH. It still checks the reported driver version and loads the host driver
+library before the staged CUDA device and embedding probes. See
+[Desktop CUDA validation](running-koed.md#packaged-desktop-first-run) for the
+system locations and WSL driver requirements.
+
 With neither asset flag, a core update reuses compatible installed CUDA bytes
 without another copy or download. The installer checks the CUDA host before
 downloading the core. If that check or GPU validation fails under an `auto` or
