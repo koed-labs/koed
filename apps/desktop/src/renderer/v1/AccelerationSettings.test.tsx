@@ -19,6 +19,7 @@ const snapshot = (): AccelerationSnapshot => ({
   effectivePolicy: "cpu",
   source: "saved",
   readOnlyReason: null,
+  runtimeReadOnlyReason: null,
   hardware: {
     state: "available",
     backend: "cuda",

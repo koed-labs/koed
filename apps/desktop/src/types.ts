@@ -154,6 +154,9 @@ export interface DesktopSetupSnapshot {
   sequence: number;
   stages: DesktopSetupStage[];
   state: "inspecting" | "ready" | "running" | "complete" | "failed";
+  // An interrupted run carried a processing choice that was not kept. Setup
+  // needs that choice again before it can continue.
+  reviewProcessing?: true;
 }
 
 export interface DesktopSetupApi {

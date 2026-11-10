@@ -30,6 +30,7 @@ function fixture() {
     effectivePolicy: "cpu",
     source: "saved",
     readOnlyReason: null,
+    runtimeReadOnlyReason: null,
     hardware: {
       state: "available",
       backend: "cuda",
@@ -153,6 +154,22 @@ describe("Desktop native installation boundary", () => {
       expect(f.publish).not.toHaveBeenCalled();
     }
   );
+  it("installs the core runtime under Operator-managed acceleration but not CUDA", async () => {
+    const managed = fixture();
+    managed.snapshot.source = "environment";
+    managed.snapshot.readOnlyReason =
+      "The Operator environment controls local acceleration.";
+    await expect(managed.run("core")).resolves.toMatchObject({
+      changed: true
+    });
+    await expect(managed.run("cuda")).rejects.toThrow(
+      "stopped and owned by this installation"
+    );
+    const foreign = fixture();
+    foreign.snapshot.readOnlyReason = "Foreign owner";
+    foreign.snapshot.runtimeReadOnlyReason = "Foreign owner";
+    await expect(foreign.run("core")).rejects.toThrow();
+  });
   it("checks configuration again after staged acquisition", async () => {
     const f = fixture();
     f.publish.mockImplementation(() => {

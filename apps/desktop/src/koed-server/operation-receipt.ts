@@ -13,7 +13,17 @@ const receiptSchema = z
   .object({
     id: z.string().uuid(),
     sequence: z.number().int().positive(),
-    state: z.enum(["running", "complete", "failed", "cancelled", "interrupted"])
+    state: z.enum([
+      "running",
+      "complete",
+      "failed",
+      "cancelled",
+      "interrupted"
+    ]),
+    // The run included explicit consent (such as CUDA) that lives only in
+    // memory. If it was interrupted, the User must choose again; this never
+    // authorizes resuming that work.
+    reviewProcessing: z.literal(true).optional()
   })
   .strict();
 export type OperationReceipt = z.infer<typeof receiptSchema>;

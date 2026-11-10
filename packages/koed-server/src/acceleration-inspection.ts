@@ -225,15 +225,17 @@ export function createAccelerationInspector(options: {
     } catch {
       ownerUnverified = true;
     }
-    const readOnlyReason = external
+    const runtimeReadOnlyReason = external
       ? "The Operator manages the external Embedding Service."
-      : managed
+      : ownerMismatch
+        ? "Another Koed installation owns this runtime. Manage acceleration from that installation."
+        : ownerUnverified
+          ? "Runtime ownership could not be verified. Check Koed status before changing processing."
+          : null;
+    const readOnlyReason =
+      !external && managed
         ? "The Operator environment controls local acceleration."
-        : ownerMismatch
-          ? "Another Koed installation owns this runtime. Manage acceleration from that installation."
-          : ownerUnverified
-            ? "Runtime ownership could not be verified. Check Koed status before changing processing."
-            : null;
+        : runtimeReadOnlyReason;
     let selectedId: string | null;
     try {
       selectedId = process.platform === "linux" ? currentNativeId(paths) : null;
@@ -251,7 +253,8 @@ export function createAccelerationInspector(options: {
       config.hardwareAcceleration,
       environment.KOED_EMBEDDING_ACCELERATION,
       environment.PRIVACY_RUNTIME_PROVIDER,
-      readOnlyReason
+      readOnlyReason,
+      runtimeReadOnlyReason
     ]);
     const key = JSON.stringify([
       configurationKey,
@@ -334,6 +337,7 @@ export function createAccelerationInspector(options: {
       effectivePolicy: embeddingPolicy(paths, environment),
       source,
       readOnlyReason,
+      runtimeReadOnlyReason,
       recommendedPreference:
         source !== "default" ||
         (selectedId !== null && selectedId !== "unavailable") ||

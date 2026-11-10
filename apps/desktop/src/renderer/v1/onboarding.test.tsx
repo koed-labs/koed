@@ -416,6 +416,16 @@ describe("desktop onboarding", () => {
     );
     expect(progress()).toBe("100");
   });
+  it("asks for the processing choice again after an interrupted CUDA setup instead of retrying without it", async () => {
+    const interrupted = setupSnapshot("failed");
+    interrupted.error = "Setup was interrupted.";
+    interrupted.reviewProcessing = true;
+    const { setup, click } = await render({ snapshot: interrupted });
+    expect(text()).not.toContain("Retry step");
+    await click("Review processing choice");
+    expect(setup.run).not.toHaveBeenCalled();
+    expect(text()).toContain("Choose how Koed processes memories");
+  });
   it("cleans subscriptions on unmount including Strict Mode", async () => {
     const { listeners } = await render({ strict: true });
     expect(listeners.size).toBe(1);

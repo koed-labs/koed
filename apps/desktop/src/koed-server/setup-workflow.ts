@@ -76,6 +76,8 @@ export const createDesktopSetupWorkflow = ({
   let activeRun: Promise<DesktopSetupSnapshot> | null = null;
   let activeSnapshot: DesktopSetupSnapshot | null = null;
   let interrupted = receipt?.previous?.state === "running";
+  let reviewProcessing =
+    interrupted && receipt?.previous?.reviewProcessing === true;
 
   const inspect = async (forRun = false): Promise<DesktopSetupSnapshot> => {
     if (activeRun && activeSnapshot) return cloneSnapshot(activeSnapshot);
@@ -111,7 +113,11 @@ export const createDesktopSetupWorkflow = ({
     // An interrupted attempt stops mattering once every step checks complete,
     // for example after setup finished through the CLI. Record that so the
     // stale receipt does not resurface on the next launch.
-    if (interrupted && stages.every(({ state }) => state === "complete")) {
+    if (
+      interrupted &&
+      !reviewProcessing &&
+      stages.every(({ state }) => state === "complete")
+    ) {
       interrupted = false;
       try {
         receipt?.save({ id: runId, sequence: 1, state: "complete" });
@@ -125,6 +131,7 @@ export const createDesktopSetupWorkflow = ({
         interrupted && !forRun
           ? "Setup was interrupted. Current prerequisites have been checked. Review your processing choice before continuing; no installation has resumed."
           : null,
+      ...(reviewProcessing && !forRun ? { reviewProcessing: true } : {}),
       runId,
       sequence: 1,
       stages,
@@ -145,9 +152,13 @@ export const createDesktopSetupWorkflow = ({
     receipt?.save({
       id: initial.runId,
       sequence: initial.sequence,
-      state: "running"
+      state: "running",
+      ...(initial.stages.some(({ id }) => id === "acceleration")
+        ? { reviewProcessing: true }
+        : {})
     });
     interrupted = false;
+    reviewProcessing = false;
     let sequence = initial.sequence;
     let snapshot: DesktopSetupSnapshot = {
       ...initial,
@@ -254,6 +265,7 @@ export const createDesktopSetupWorkflow = ({
   return {
     inspect,
     isRunning: () => activeRun !== null,
+    requiresProcessingChoice: () => reviewProcessing,
     run(
       emit: (snapshot: DesktopSetupSnapshot) => void,
       signal?: AbortSignal

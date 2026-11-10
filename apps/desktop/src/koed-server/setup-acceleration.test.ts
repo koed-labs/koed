@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -106,7 +106,10 @@ beforeEach(() => {
   });
   mkdirSync("scratch", { recursive: true });
   root = mkdtempSync(resolve("scratch", "setup-acceleration-"));
-  manager = createKoedServerManager({
+  manager = createManager();
+});
+const createManager = () =>
+  createKoedServerManager({
     repoRoot: root,
     cliPath: resolve(root, "cli.js"),
     environment: {
@@ -197,7 +200,6 @@ beforeEach(() => {
       }) as never,
     openExternal: async () => undefined
   });
-});
 afterEach(async () => {
   await manager?.stop();
   rmSync(root, { recursive: true, force: true });
@@ -249,6 +251,48 @@ describe("Desktop acceleration setup integration", () => {
     expect(
       (await manager.acceleration.inspect()).snapshot?.embedding.backend
     ).toBe("cuda");
+  });
+  it("installs the core runtime on fresh Linux when the Operator manages acceleration", async () => {
+    control.snapshot = {
+      ...control.snapshot!,
+      source: "environment",
+      readOnlyReason: "The Operator environment controls local acceleration.",
+      runtimeReadOnlyReason: null
+    };
+    const result = await manager.handlers.setup_run!(
+      { operatorConsented: true },
+      context().value
+    );
+    expect(result).toMatchObject({ state: "complete" });
+    expect(control.calls).toEqual(["core", "model", "start"]);
+  });
+  it("refuses to continue an interrupted CUDA setup without a fresh choice after restart", async () => {
+    mkdirSync(resolve(root, "cache"), { recursive: true });
+    writeFileSync(
+      resolve(root, "cache", "desktop-setup-operation.json"),
+      JSON.stringify({
+        id: "d6abf730-0f02-4adc-a7e6-4ddf98f30905",
+        sequence: 2,
+        state: "running",
+        reviewProcessing: true
+      })
+    );
+    await manager.stop();
+    manager = createManager();
+    expect(await manager.handlers.setup_inspect!()).toMatchObject({
+      state: "failed",
+      reviewProcessing: true
+    });
+    await expect(
+      manager.handlers.setup_run!({ operatorConsented: true }, context().value)
+    ).rejects.toThrow("Review your processing choice");
+    expect(control.calls).toEqual([]);
+    const result = await manager.handlers.setup_run!(
+      { operatorConsented: true, acceleration: cuda },
+      context().value
+    );
+    expect(result).toMatchObject({ state: "complete" });
+    expect(control.calls).toContain("cuda");
   });
   it("retains core and model work after CUDA failure and resumes through explicit CPU recovery", async () => {
     control.failCuda = true;

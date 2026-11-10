@@ -117,7 +117,13 @@ export function createAccelerationInstaller(
       const assertConfiguration = async () => {
         signal.throwIfAborted();
         const state = await inspector.inspect(true);
-        if (state.readOnlyReason)
+        // Operator acceleration settings block CUDA, not the core runtime that
+        // setup needs whatever processing the Operator has chosen.
+        if (
+          choice.mode === "core"
+            ? state.runtimeReadOnlyReason
+            : state.readOnlyReason
+        )
           throw new Error("Runtime ownership or configuration is read-only.");
         if (state.revision !== choice.expectedRevision)
           throw new Error("Configuration changed.");

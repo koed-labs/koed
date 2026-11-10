@@ -55,6 +55,8 @@ export function createAccelerationValidation(
         ? "The Operator environment controls local acceleration."
         : "The Operator manages the external Embedding Service.";
     if (device === "external")
+      snapshot.runtimeReadOnlyReason = snapshot.readOnlyReason;
+    if (device === "external")
       snapshot.model.label = "Operator-managed embedding model";
   }
   const state: DesktopAccelerationState = { snapshot, operation: null };

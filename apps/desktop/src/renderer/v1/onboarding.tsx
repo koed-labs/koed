@@ -405,15 +405,21 @@ export function V1Onboarding({
                         type="button"
                         className="lp-primary-button lp-next-button"
                         onClick={() =>
-                          failed ? void setup.run() : setScreen("hardware")
+                          failed && !setup.snapshot?.reviewProcessing
+                            ? void setup.run()
+                            : setScreen("hardware")
                         }
                       >
-                        {failed ? "Retry step" : "Get Started"}
+                        {setup.snapshot?.reviewProcessing
+                          ? "Review processing choice"
+                          : failed
+                            ? "Retry step"
+                            : "Get Started"}
                       </button>
                       {failed && (
                         <p className="lp-live-detail">
                           Completed steps are retained when you retry.
-                          {processing && (
+                          {processing && !setup.snapshot?.reviewProcessing && (
                             <>
                               {" "}
                               <button

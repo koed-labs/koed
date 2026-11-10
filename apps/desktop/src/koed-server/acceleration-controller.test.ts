@@ -19,6 +19,7 @@ const initial = (): AccelerationSnapshot => ({
   effectivePolicy: "auto",
   source: "saved",
   readOnlyReason: null,
+  runtimeReadOnlyReason: null,
   hardware: {
     state: "available",
     backend: "metal",

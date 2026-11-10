@@ -1851,12 +1851,13 @@ export const createKoedServerManager = ({
       return withLifecycleOperation(async () => {
         try {
           const state = await accelerationRpc("inspect", { refresh: true });
-          if (state.readOnlyReason)
+          // Operator-managed acceleration still needs the core runtime.
+          if (state.runtimeReadOnlyReason)
             return {
               ok: false,
               state: "unavailable",
               provider,
-              message: state.readOnlyReason
+              message: state.runtimeReadOnlyReason
             };
           await installAccelerationRuntime(
             "core",
@@ -7019,6 +7020,16 @@ export const createKoedServerManager = ({
             : accelerationChoiceSchema.parse(args.acceleration);
         if (choice && setupWorkflow.isRunning())
           throw new Error("Setup is already running.");
+        // A CUDA choice is never persisted. After an interrupted CUDA setup,
+        // continuing without a fresh choice would silently skip CUDA.
+        if (
+          !choice &&
+          !setupWorkflow.isRunning() &&
+          setupWorkflow.requiresProcessingChoice()
+        )
+          throw new Error(
+            "Setup was interrupted before your processing choice finished. Review your processing choice before continuing."
+          );
         setupPreparing = true;
         try {
           setupAbort = new AbortController();

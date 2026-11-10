@@ -315,6 +315,8 @@ describe("trusted acceleration mutations", () => {
     const current = await f.manager.inspect();
     expect(current.source).toBe("environment");
     expect(current.readOnlyReason).toContain("Operator environment");
+    // The Operator's choice must not block the core runtime that setup needs.
+    expect(current.runtimeReadOnlyReason).toBeNull();
     await expect(
       f.manager.save({ preference: "cpu", expectedRevision: current.revision })
     ).rejects.toThrow("Operator environment");

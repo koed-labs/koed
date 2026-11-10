@@ -41,6 +41,10 @@ export interface AccelerationSnapshot {
   effectivePolicy: string;
   source: "default" | "saved" | "environment" | "external";
   readOnlyReason: string | null;
+  // Blocks native runtime changes: another owner, unverified ownership or an
+  // external Embedding Service. Operator acceleration settings alone do not,
+  // so setup can still install the core runtime they need.
+  runtimeReadOnlyReason: string | null;
   hardware: AccelerationHardware;
   cuda: AccelerationCudaPackage;
   model: { key: string; label: string; filename: string; present: boolean };

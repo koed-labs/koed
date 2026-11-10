@@ -13,6 +13,7 @@ export const accelerationSnapshot = (): AccelerationSnapshot => ({
   effectivePolicy: "auto",
   source: "default",
   readOnlyReason: null,
+  runtimeReadOnlyReason: null,
   hardware: {
     state: "available",
     backend: "cuda",
