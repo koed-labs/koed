@@ -132,6 +132,26 @@ test("includes root configuration and copied assets", () => {
   assert.notEqual(configChanged.fingerprint, assetChanged.fingerprint);
 });
 
+test("invalidates source preparation when an explicit release catalog changes", () => {
+  const { root, spec } = createFixture();
+  const key = "KOED_TEST_RELEASE_CATALOG";
+  const previous = process.env[key];
+  spec.catalogInputs = [key];
+  try {
+    const before = calculateSourceRuntimeFingerprint(root, options(spec));
+    process.env[key] = resolve(root, "release-catalog.json");
+    write(root, "release-catalog.json", '{"manifestSha256":"first"}\n');
+    const first = calculateSourceRuntimeFingerprint(root, options(spec));
+    assert.notEqual(first.fingerprint, before.fingerprint);
+    write(root, "release-catalog.json", '{"manifestSha256":"second"}\n');
+    const second = calculateSourceRuntimeFingerprint(root, options(spec));
+    assert.notEqual(second.fingerprint, first.fingerprint);
+  } finally {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  }
+});
+
 test("builds once and skips a current runtime", async () => {
   const { root, spec } = createFixture();
   let builds = 0;
@@ -144,6 +164,24 @@ test("builds once and skips a current runtime", async () => {
   assert.equal(first.state, "built");
   assert.equal(second.state, "current");
   assert.equal(builds, 1);
+});
+
+test("detects catalog outputs overwritten by a later workspace build and refuses a live-runtime rebuild", async () => {
+  const { root, spec } = createFixture();
+  spec.integrityOutputs = ["apps/service/dist/index.js"];
+  const build = () => writeOutputs(root);
+  const settings = options(spec, { runBuild: build });
+  await prepareSourceRuntime(root, settings);
+  await checkSourceRuntime(root, options(spec));
+  write(root, "apps/service/dist/index.js", "export const catalog = null;\n");
+  await assert.rejects(checkSourceRuntime(root, options(spec)), /do not match/);
+  await prepareSourceRuntime(root, settings);
+  await checkSourceRuntime(root, options(spec, { leasePid: process.pid }));
+  write(root, "apps/service/dist/index.js", "export const catalog = null;\n");
+  await assert.rejects(
+    prepareSourceRuntime(root, settings),
+    /supervisor is using/
+  );
 });
 
 test("removes deleted-source outputs before rebuilding the runtime closure", async () => {
@@ -456,7 +494,7 @@ test("configures Desktop preparation before Electron startup", () => {
   );
   assert.equal(
     desktopManifest.scripts.prestart,
-    "pnpm --filter @koed-labs/server build && pnpm -w source-runtime:prepare"
+    "pnpm -w source-runtime:prepare"
   );
   assert.equal(desktopManifest.scripts.start, "pnpm build && electron .");
 });

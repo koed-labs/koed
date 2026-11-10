@@ -108,6 +108,26 @@ plane, which includes the CLI. Workspace builds run one at a time to limit
 peak memory use. Desktop packaging uses the same preparation step before
 staging its service runtime.
 
+After the entire workspace build finishes, preparation embeds the reviewed
+native and component catalogs from `config/source-runtime-catalogs.json` into
+the generated Server control plane. The file records the published release and
+its catalog/package hashes; its contents are trusted through repository review,
+not supplied by downloads or environment overrides. The current source pins are
+for v0.11.1. Preparation requires the checkout and component catalog to match
+that product version, validates the native CPU/CUDA pair and minimum runtime
+contract, and fails closed if pins are missing or incompatible. A product-version
+change requires reviewing and updating these source pins. It never falls back to
+an unpinned latest release. Normal installation still verifies manifest, archive,
+and extracted-file hashes, and CUDA still requires driver and inference checks.
+
+The source preparation fingerprint includes these catalog inputs and records
+hashes of the two generated catalog modules. A later workspace build that replaces
+them with null placeholders makes the prepared runtime stale. Preparation repairs
+it only after checking that no source supervisor is using those outputs. Explicit
+release-build catalogs retain their own authority; development pins never replace
+them. The catalog-less tracked source modules and frozen component runtime
+boundary remain unchanged.
+
 Source supervisors record the control-plane installation identity in their
 supervisor lock, alongside the PID and process identity. This lets Desktop and
 the CLI from the same checkout manage the running services without a packaged
@@ -153,6 +173,43 @@ them. The supervisor records a repository lease while it uses the outputs.
 Preparation fails instead of changing stale outputs that a live supervisor
 uses. Stop that supervisor before you prepare the stale runtime. Packaged
 Desktop and standalone `koed-server` packages do not use this fingerprint.
+
+### Test source setup with a fresh home
+
+On Linux/WSL, use Node.js 24, the lockfile's pnpm version, and a glibc 2.35+
+x64 distro. Keep the checkout and test homes on the Linux filesystem. No
+Homebrew installation, CUDA toolkit compilation, catalog override, or checksum
+bypass is required. WSL uses the Windows NVIDIA driver exposed to Linux.
+
+Install dependencies once, then launch a separate empty home for each test:
+
+```bash
+pnpm install
+export KOED_HOME="$(mktemp -d "$HOME/koed-cpu-test.XXXXXX")"
+pnpm desktop:start
+```
+
+Choose **CPU processing** and finish local setup. Confirm that Services reports
+ready CPU processing and that a synthetic Memory can be captured and found.
+Close Desktop and stop that test home's services before the next test:
+
+```bash
+pnpm koed stop --json
+export KOED_HOME="$(mktemp -d "$HOME/koed-cuda-test.XXXXXX")"
+pnpm desktop:start
+```
+
+On a supported NVIDIA device, select CUDA and explicitly approve its download.
+Complete setup and check Settings → Services → Hardware Acceleration: the active
+Embedding Service must report ready CUDA processing. Setup must pass model-backed
+GPU offload and CPU/GPU embedding agreement; seeing the GPU name alone is
+insufficient. Capture and find another synthetic Memory. Switch to CPU in the
+same settings, confirm ready CPU processing, and find that Memory again to check
+CPU recovery without changing the model or stored vectors. For setup-time
+fallback, repeat with another empty home, cancel CUDA before activation, choose
+**Continue with CPU**, and confirm setup completes on CPU. Stop each test home's
+services before changing `KOED_HOME`; keep test homes until diagnostics are no
+longer needed. Do not remove an existing home to make these tests fresh.
 
 Release assembly uses one `@koed/app-runtime-stage` production deployment as
 source for base and optional privacy payloads. `scripts/component-assembly.mjs`
@@ -271,7 +328,11 @@ and Base with Privacy. `koed components cleanup --json` removes only verified in
 generations and retains the two newest eligible generations. Cleanup never
 removes User data or models.
 
-Development builds may lack a compiled catalog. Component installation then fails closed; use the matching trusted release instead of bypassing verification or supplying ad hoc CLI/environment trust inputs.
+Raw development builds may lack a compiled catalog. The documented source flow
+runs `pnpm source-runtime:prepare` to embed the reviewed matching catalogs before
+Desktop starts. A missing or mismatched source catalog fails preparation; update
+the reviewed build input or use the matching trusted release. Do not bypass
+verification or supply ad hoc CLI/environment trust inputs.
 
 Task 7 focused evidence (Node `v24.13.1`):
 
