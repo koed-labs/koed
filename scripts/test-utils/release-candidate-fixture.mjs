@@ -21,6 +21,10 @@ import { writeDeterministicTarGz } from "../deterministic-tar-gzip.mjs";
 import { createPackageReleaseIdentity } from "../package-release-identity.mjs";
 import { createAsarFixture } from "./create-asar-fixture.mjs";
 import { writeControlPlaneLauncher } from "../control-plane-bundle.mjs";
+import {
+  renderReleaseServerInstaller,
+  serverInstallerAssetName
+} from "../render-server-installer.mjs";
 
 export const runtimeIdentities = [
   {
@@ -533,6 +537,10 @@ const addNativeFixture = (fixture, nativePayload, nativeArchivePayload) => {
   fixture.contents.set(
     "native-runtime-catalog.json",
     Buffer.from(JSON.stringify(catalog))
+  );
+  fixture.contents.set(
+    serverInstallerAssetName,
+    Buffer.from(renderReleaseServerInstaller("1.2.3"))
   );
   const entry = resolve(fixture.packageRoot, "vendor/control-plane.js");
   writeFileSync(

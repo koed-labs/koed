@@ -115,6 +115,36 @@ const recatalog = (f) => {
   rehash(f);
 };
 
+test("official candidate requires the installer rendered from the reviewed template", async () => {
+  for (const mutate of [
+    (f, asset) => {
+      const bytes = Buffer.from("#!/bin/sh\necho substituted\n");
+      f.contents.set(asset.name, bytes);
+      asset.sha256 = officialCandidate.sha256(bytes);
+    },
+    (f, asset) => {
+      f.contents.delete(asset.name);
+      f.expected.assets.splice(f.expected.assets.indexOf(asset), 1);
+      f.release.assets = f.release.assets.filter((a) => a.name !== asset.name);
+    }
+  ]) {
+    const f = await setup({ native: true });
+    try {
+      const asset = f.expected.assets.find(
+        (a) => a.name === "install-koed-server.sh"
+      );
+      assert.ok(asset);
+      mutate(f, asset);
+      await assert.rejects(
+        officialCandidate.verifyReleaseCandidate(f.input, f.readers),
+        /Server installer differs/
+      );
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
 test("official candidate verifies frozen inventory against actual macOS archive bytes", async () => {
   const f = await setup({ native: true });
   const forged = await setup({ native: true, nativeArchivePayload: "evil" });

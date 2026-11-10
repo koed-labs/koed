@@ -233,3 +233,28 @@ test("official promotion invokes pin-only adapter behind publication and approva
   assert.doesNotMatch(adapter, /process\.exit\(0\)/);
   assert.doesNotMatch(release, /draft=false|npm publish|npm dist-tag/);
 });
+
+test("versioned Server installer is rendered into the reviewed metadata artifact and required for publication", () => {
+  const { jobs } = parse(release);
+  const steps = jobs["standalone-koed-server-release-metadata"].steps;
+  const render = steps.findIndex((step) =>
+    step.run?.includes("scripts/render-server-installer.mjs")
+  );
+  const retain = steps.findIndex(
+    (step) => step.with?.name === "koed-release-metadata"
+  );
+  assert.ok(render >= 0 && render < retain);
+  assert.match(steps[retain].with.path, /^install-koed-server\.sh$/m);
+  assert.ok(
+    steps.some(
+      (step) =>
+        step.run?.includes("scripts/ensure-release-assets.mjs") &&
+        step.run.includes("install-koed-server.sh")
+    )
+  );
+  assert.ok(
+    jobs["publish-release"].steps.some((step) =>
+      step.run?.includes('"install-koed-server.sh"')
+    )
+  );
+});

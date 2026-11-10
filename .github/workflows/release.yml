@@ -725,11 +725,16 @@ jobs:
             --out "koed-release-artifacts-${{ needs.release.outputs.version }}.json" \
             --json
 
+      - name: Render versioned Server installer
+        run: node scripts/render-server-installer.mjs "${{ needs.release.outputs.version }}" install-koed-server.sh
+
       - name: Retain reviewed release metadata
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: koed-release-metadata
-          path: koed-release-artifacts-${{ needs.release.outputs.version }}.json
+          path: |
+            koed-release-artifacts-${{ needs.release.outputs.version }}.json
+            install-koed-server.sh
           if-no-files-found: error
           retention-days: 30
 
@@ -738,7 +743,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
-            "koed-release-artifacts-${{ needs.release.outputs.version }}.json"
+            "koed-release-artifacts-${{ needs.release.outputs.version }}.json" \
+            install-koed-server.sh
 
   native-runtime-linux-x64-release-assets:
     name: Linux x64 native runtime release assets
@@ -1307,6 +1313,7 @@ jobs:
             "koed-privacy-${VERSION}-macos-arm64.tar.gz.sha256" \
             "koed-privacy-${VERSION}-macos-arm64.tar.gz.manifest.json" \
             "koed-release-artifacts-${VERSION}.json" \
+            "install-koed-server.sh" \
             "koed-labs-server.tgz" \
             "koed-labs-server-release-identity.json" \
             "native-runtime-catalog.json" \

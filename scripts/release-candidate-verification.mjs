@@ -22,6 +22,10 @@ import { verifyDraftNativePins } from "./native-runtime-pins.mjs";
 import { readFrozenInventoryEvidence } from "./native-runtime/frozen-inventory-evidence.mjs";
 import { coreRecipeId } from "./native-runtime/core-artifact.mjs";
 import { verifyApprovedMacosCore } from "./native-runtime/verify-approved-macos-core.mjs";
+import {
+  renderReleaseServerInstaller,
+  serverInstallerAssetName
+} from "./render-server-installer.mjs";
 
 export const sha256 = (bytes) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -306,6 +310,21 @@ const verifyMacosCandidate = async (
   });
 };
 
+// The installer asset must be exactly the reviewed template rendered with the
+// release version; a stale, unrendered or substituted script fails here.
+const verifyInstallerAsset = (expected, root, required) => {
+  const listed = expected.assets.some(
+    (asset) => asset.name === serverInstallerAssetName
+  );
+  if (!listed && !required) return;
+  if (
+    !listed ||
+    readFileSync(resolve(root, serverInstallerAssetName), "utf8") !==
+      renderReleaseServerInstaller(expected.version)
+  )
+    fail("Server installer differs from reviewed template for this version.");
+};
+
 /** Evidence only. Readers expose GETs, never a shell, signer or mutation capability. */
 export const verifyReleaseCandidate = async (
   input,
@@ -377,6 +396,7 @@ export const verifyReleaseCandidate = async (
         assets: expected.assets,
         allowLegacyNativeCatalog
       });
+    verifyInstallerAsset(expected, root, nativeCatalog?.schemaVersion === 2);
     if (nativeCatalog?.schemaVersion === 2)
       await verifyMacosCandidate(
         snapshot,
