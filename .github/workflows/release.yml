@@ -204,6 +204,23 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: 0
         run: node scripts/build-koed-component-release.mjs --version "${{ needs.release.outputs.version }}" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
+      - name: Smoke frozen components on Node 24
+        run: |
+          cp -R "dist/koed-components/${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/koed-component-release"
+          node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release"
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release" --variant cuda
+          fi
+      - name: Set up Node 26 consumer
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 26
+      - name: Smoke frozen components on Node 26
+        run: |
+          node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release"
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release" --variant cuda
+          fi
       - name: Upload frozen component outputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

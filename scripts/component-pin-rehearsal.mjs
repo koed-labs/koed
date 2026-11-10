@@ -79,9 +79,9 @@ const exerciseFixture = async (root) => {
     runtimes: [
       {
         kind: "node",
-        runtimeRange: ">=24 <25",
-        nodeRange: ">=24 <25",
-        modulesAbi: runtime.modulesAbi
+        runtimeRange: ">=24 <27",
+        nodeRange: ">=24 <27",
+        minimumNapi: 10
       }
     ],
     requiredFiles: { base: ["main.js"], privacy: ["main.js"] }

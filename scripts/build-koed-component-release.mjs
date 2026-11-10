@@ -112,10 +112,7 @@ const main = async () => {
         ? { libc: { family: "glibc", minimumVersion: "2.35" } }
         : {})
     },
-    runtimes: componentRuntimeDeclarations({
-      nodeModulesAbi: process.versions.modules,
-      electronIdentity
-    }),
+    runtimes: componentRuntimeDeclarations({ electronIdentity }),
     requiredFiles: {
       base: staged.baseRequired,
       privacy: staged.privacyRequired,

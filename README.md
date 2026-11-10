@@ -66,7 +66,7 @@ without Koed. With Koed, 12 tasks improved with captured knowledge and estimated
 ### Requirements
 
 - macOS, Linux, or WSL
-- [Node.js](https://nodejs.org) 24 and [pnpm](https://pnpm.io)
+- [Node.js](https://nodejs.org) 24 (build toolchain) and [pnpm](https://pnpm.io); newly built standalone components support Node 24–26
 - [Homebrew](https://brew.sh), for the native runtime
 
 > [!NOTE]

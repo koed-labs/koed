@@ -325,6 +325,47 @@ describe("component verification", () => {
     ).rejects.toThrow(reason);
   });
 
+  it("enforces Node version and N-API bounds without requiring a modules ABI", async () => {
+    const sample = await componentFixture({
+      runtimes: [
+        {
+          kind: "node",
+          runtimeRange: ">=24 <27",
+          nodeRange: ">=24 <27",
+          minimumNapi: 10
+        }
+      ]
+    });
+    fixtures.push(sample);
+    for (const version of ["24.0.0", "26.0.0", "26.99.99"]) {
+      await expect(
+        verifyComponent({
+          ...sample.input,
+          runtime: {
+            ...sample.input.runtime,
+            version,
+            nodeVersion: version,
+            modulesAbi: "999"
+          }
+        })
+      ).resolves.toBeDefined();
+    }
+    for (const version of ["23.99.99", "27.0.0"]) {
+      await expect(
+        verifyComponent({
+          ...sample.input,
+          runtime: { ...sample.input.runtime, version, nodeVersion: version }
+        })
+      ).rejects.toThrow("runtime version is incompatible");
+    }
+    await expect(
+      verifyComponent({
+        ...sample.input,
+        runtime: { ...sample.input.runtime, napiVersion: 9 }
+      })
+    ).rejects.toThrow("runtime N-API version is incompatible");
+  });
+
   it("accepts compatible Electron tuple and rejects mismatched Node ABI", async () => {
     const sample = await componentFixture({
       runtimes: [

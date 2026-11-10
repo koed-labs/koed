@@ -122,7 +122,7 @@ test("server source is private, singly named and coordinated", () => {
   assert.equal(server.name, "@koed-labs/server");
   assert.equal(server.private, true);
   assert.deepEqual(server.bin, { koed: "dist/cli.js" });
-  assert.equal(server.engines.node, ">=24 <25");
+  assert.equal(server.engines.node, ">=24 <27");
   assert.equal(server.publishConfig.access, "public");
   assert.match(
     server.scripts.prepublishOnly,

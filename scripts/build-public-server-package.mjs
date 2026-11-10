@@ -194,7 +194,7 @@ const main = async () => {
     type: "module",
     private: false,
     bin: { koed: "bin/koed.js" },
-    engines: { node: ">=24 <25" },
+    engines: { node: ">=24 <27" },
     publishConfig: { access: "public" },
     files: [
       "bin/koed.js",

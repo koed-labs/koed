@@ -17,7 +17,7 @@ const walk = (node, visit) => {
 const assertLauncher = (files) => {
   const expected = [
     "#!/usr/bin/env node",
-    'if (Number(process.versions.node.split(".")[0]) !== 24) { console.error(`@koed-labs/server requires Node.js >=24 <25; found ${process.versions.node}.`); process.exit(1); }',
+    'if (Number(process.versions.node.split(".")[0]) < 24 || Number(process.versions.node.split(".")[0]) >= 27) { console.error(`@koed-labs/server requires Node.js >=24 <27; found ${process.versions.node}.`); process.exit(1); }',
     'const { runKoedServerCli, shouldExitPackagedSupervisor } = await import("../vendor/control-plane.js");',
     "const args = process.argv.slice(2);",
     "const exitCode = await runKoedServerCli(args);",

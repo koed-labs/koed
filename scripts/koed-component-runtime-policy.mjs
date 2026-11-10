@@ -15,16 +15,13 @@ export const assertElectronVersionMatchesLock = ({
     );
 };
 
-export const componentRuntimeDeclarations = ({
-  nodeModulesAbi,
-  electronIdentity
-}) => {
+export const componentRuntimeDeclarations = ({ electronIdentity }) => {
   const runtimes = [
     {
       kind: "node",
-      runtimeRange: ">=24 <25",
-      nodeRange: ">=24 <25",
-      modulesAbi: nodeModulesAbi
+      runtimeRange: ">=24 <27",
+      nodeRange: ">=24 <27",
+      minimumNapi: 10
     }
   ];
   if (!electronIdentity) return runtimes;

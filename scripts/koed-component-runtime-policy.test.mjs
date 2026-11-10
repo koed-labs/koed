@@ -21,7 +21,7 @@ test("requires installed Electron to match pnpm-lock.yaml", () => {
   );
 });
 
-test("declares the measured Node 24 and exact validated Electron runtimes", () => {
+test("declares N-API Node 24–26 and exact validated Electron runtimes", () => {
   assert.deepEqual(
     componentRuntimeDeclarations({
       nodeModulesAbi: "137",
@@ -30,9 +30,9 @@ test("declares the measured Node 24 and exact validated Electron runtimes", () =
     [
       {
         kind: "node",
-        runtimeRange: ">=24 <25",
-        nodeRange: ">=24 <25",
-        modulesAbi: "137"
+        runtimeRange: ">=24 <27",
+        nodeRange: ">=24 <27",
+        minimumNapi: 10
       },
       {
         kind: "electron",
@@ -67,9 +67,9 @@ test("does not add Electron claims to targets without a measured Electron runtim
   assert.deepEqual(componentRuntimeDeclarations({ nodeModulesAbi: "137" }), [
     {
       kind: "node",
-      runtimeRange: ">=24 <25",
-      nodeRange: ">=24 <25",
-      modulesAbi: "137"
+      runtimeRange: ">=24 <27",
+      nodeRange: ">=24 <27",
+      minimumNapi: 10
     }
   ]);
 });
