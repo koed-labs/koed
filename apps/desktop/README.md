@@ -210,6 +210,10 @@ packaging, signing, runtime distribution, or packaged smoke support.
 
 ## Notes
 
+- Electron 45.2.3's macOS app declares macOS 13.0 as its minimum; Koed's
+  source-built native runtime targets macOS 14.0. A complete packaged install
+  therefore requires macOS 14 or later. The minimum OS itself still requires
+  native release qualification.
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
 - `desktop:dev` runs the renderer dev server only.
 - `desktop:package` (`desktop:package:mac`) builds `apps/desktop/release/mac/Koed.app` with

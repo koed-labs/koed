@@ -165,7 +165,7 @@ export const registerDesktopCommandHandlers = (
     consumePendingPersonalDevicePairingLink: (
       expectedLink?: string
     ) => string | null;
-    writeClipboard: (value: string) => void;
+    writeClipboard: (value: string) => Promise<void>;
     getThemePreference: () => DesktopThemePreference;
     setThemePreference: (preference: DesktopThemePreference) => {
       preference: DesktopThemePreference;
@@ -268,7 +268,7 @@ export const registerDesktopCommandHandlers = (
     ) {
       throw new Error("Invalid Desktop clipboard value.");
     }
-    options.writeClipboard(value);
+    await options.writeClipboard(value);
   });
 
   ipcMain.handle(themePreferenceGetChannel, async (event) => {

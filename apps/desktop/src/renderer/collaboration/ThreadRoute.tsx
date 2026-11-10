@@ -155,6 +155,7 @@ function MessageRow({
   outgoing: boolean;
 }) {
   const actionsRef = useRef<HTMLDetailsElement | null>(null);
+  const [copyError, setCopyError] = useState(false);
   return (
     <div
       role="listitem"
@@ -192,7 +193,10 @@ function MessageRow({
           <div role="menu" aria-label="Message actions">
             <button
               onClick={() => {
-                void adapters.writeClipboard(message.body);
+                setCopyError(false);
+                void Promise.resolve()
+                  .then(() => adapters.writeClipboard(message.body))
+                  .catch(() => setCopyError(true));
                 actionsRef.current?.removeAttribute("open");
               }}
               role="menuitem"
@@ -203,6 +207,11 @@ function MessageRow({
             </button>
           </div>
         </details>
+        {copyError ? (
+          <span className="collab-inline-error" role="alert">
+            Could not copy message. Try again.
+          </span>
+        ) : null}
         <footer>
           {message.delivery === "queued" ? <span>Sending...</span> : null}
           {message.delivery === "sent" && outgoing ? (

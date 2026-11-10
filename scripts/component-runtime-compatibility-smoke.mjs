@@ -13,6 +13,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validatedElectronRuntime } from "./koed-component-runtime-policy.mjs";
 import { extractFrozenComponents } from "./component-runtime-extraction.mjs";
+import { resolveElectronExecutable } from "./electron-executable.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = new Map();
@@ -43,13 +44,11 @@ if (
   releaseRelative !== ".."
 )
   throw new Error("The assembled release must be outside the source checkout.");
-const electronBin = resolve(
-  options.get("--electron-bin") ??
-    resolve(
-      repoRoot,
-      "apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
-    )
-);
+const electronBin = options.get("--electron-bin")
+  ? resolve(options.get("--electron-bin"))
+  : process.platform === "darwin"
+    ? resolveElectronExecutable(repoRoot)
+    : undefined;
 const distributionPath = readdirSync(releaseDir)
   .filter((name) => /^koed-distribution-.*\.json$/.test(name))
   .map((name) => resolve(releaseDir, name));

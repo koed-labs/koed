@@ -1,7 +1,7 @@
 export const validatedElectronRuntime = Object.freeze({
-  version: "39.8.10",
-  nodeVersion: "22.22.1",
-  modulesAbi: "140",
+  version: "45.2.3",
+  nodeVersion: "24.22.2",
+  modulesAbi: "150",
   napiVersion: 10
 });
 
