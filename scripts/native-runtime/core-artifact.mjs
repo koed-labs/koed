@@ -202,78 +202,95 @@ export const coreInventory = (
   { desktop = false } = {}
 ) => {
   const root = realpathSync(runtimeRoot);
-  return deterministicArchiveEntries(root)
-    .filter((entry) => desktop || entry.relativePath !== coreManifestName)
-    .map((entry) => {
-      const path = entry.relativePath.replace(/\/$/, "");
-      if (
-        !(
-          path === "postgres" ||
-          path.startsWith("postgres/") ||
-          path === "llama.cpp" ||
-          path === "llama.cpp/llama-server" ||
-          path === `llama.cpp/${platform === "macos" ? "metal" : "cpu"}` ||
-          path.startsWith(
-            `llama.cpp/${platform === "macos" ? "metal" : "cpu"}/`
-          ) ||
-          (platform === "macos" &&
-            (path === "third-party-licenses" ||
-              path.startsWith("third-party-licenses/"))) ||
-          path === "runtime-asset-manifest.json" ||
-          (platform === "macos" &&
-            desktop &&
-            (path === "provenance.json" ||
-              path === "README.koed-native-runtime.txt"))
-        )
-      )
-        throw new Error(
-          `CPU core contains an unexpected payload or legacy provenance: ${path}`
-        );
-      if ((entry.stat.mode & 0o7000) !== 0)
-        throw new Error(
-          `Native special permission bits are not supported: ${path}`
-        );
-      // Linux ignores symlink permissions. Record the archive's fixed mode,
-      // including when a frozen tree is inspected on macOS.
-      const mode = entry.type === "symlink" ? 0o777 : entry.stat.mode & 0o777;
-      if (entry.type === "directory") {
-        if (mode !== 0o755)
-          throw new Error(`Native directory mode must be 0755: ${path}`);
-        return { path, type: "directory", mode };
+  const entries = deterministicArchiveEntries(root).filter(
+    (entry) => desktop || entry.relativePath !== coreManifestName
+  );
+  const occupied = new Set();
+  if (platform === "macos") {
+    for (const entry of entries) {
+      if (entry.type === "directory") continue;
+      let parent = dirname(entry.relativePath);
+      while (parent !== ".") {
+        occupied.add(parent);
+        parent = dirname(parent);
       }
-      if (entry.type === "file") {
-        if (platform === "macos") validateMacFile(entry, path, mode);
-        if (entry.stat.nlink !== 1)
-          throw new Error(`Native hard links are not supported: ${path}`);
-        return {
-          path,
-          type: "file",
-          mode,
-          bytes: entry.stat.size,
-          sha256: sha256File(entry.path)
-        };
-      }
-      if (entry.type !== "symlink")
-        throw new Error(`Unsupported native entry: ${path}`);
-      const target = readlinkSync(entry.path);
-      const destination = resolve(dirname(entry.path), target);
-      if (
-        isAbsolute(target) ||
-        !inside(root, destination) ||
-        !inside(root, realpathSync(destination)) ||
-        !lstatSync(destination).isFile()
+    }
+  }
+  return entries.map((entry) => {
+    const path = entry.relativePath.replace(/\/$/, "");
+    if (
+      !(
+        path === "postgres" ||
+        path.startsWith("postgres/") ||
+        path === "llama.cpp" ||
+        path === "llama.cpp/llama-server" ||
+        path === `llama.cpp/${platform === "macos" ? "metal" : "cpu"}` ||
+        path.startsWith(
+          `llama.cpp/${platform === "macos" ? "metal" : "cpu"}/`
+        ) ||
+        (platform === "macos" &&
+          (path === "third-party-licenses" ||
+            path.startsWith("third-party-licenses/"))) ||
+        path === "runtime-asset-manifest.json" ||
+        (platform === "macos" &&
+          desktop &&
+          (path === "provenance.json" ||
+            path === "README.koed-native-runtime.txt"))
       )
-        throw new Error(
-          `Native link must point directly to a contained regular file: ${path}`
-        );
-      if (platform === "macos")
-        validateMacFile(
-          { path: destination },
-          path,
-          lstatSync(destination).mode & 0o777
-        );
-      return { path, type: "symlink", mode, target };
-    });
+    )
+      throw new Error(
+        `CPU core contains an unexpected payload or legacy provenance: ${path}`
+      );
+    if ((entry.stat.mode & 0o7000) !== 0)
+      throw new Error(
+        `Native special permission bits are not supported: ${path}`
+      );
+    // Linux ignores symlink permissions. Record the archive's fixed mode,
+    // including when a frozen tree is inspected on macOS.
+    const mode = entry.type === "symlink" ? 0o777 : entry.stat.mode & 0o777;
+    if (entry.type === "directory") {
+      if (
+        platform === "macos" &&
+        (path.startsWith("llama.cpp/metal/") || !occupied.has(path))
+      )
+        throw new Error(`Unexpected macOS native directory: ${path}`);
+      if (mode !== 0o755)
+        throw new Error(`Native directory mode must be 0755: ${path}`);
+      return { path, type: "directory", mode };
+    }
+    if (entry.type === "file") {
+      if (platform === "macos") validateMacFile(entry, path, mode);
+      if (entry.stat.nlink !== 1)
+        throw new Error(`Native hard links are not supported: ${path}`);
+      return {
+        path,
+        type: "file",
+        mode,
+        bytes: entry.stat.size,
+        sha256: sha256File(entry.path)
+      };
+    }
+    if (entry.type !== "symlink")
+      throw new Error(`Unsupported native entry: ${path}`);
+    const target = readlinkSync(entry.path);
+    const destination = resolve(dirname(entry.path), target);
+    if (
+      isAbsolute(target) ||
+      !inside(root, destination) ||
+      !inside(root, realpathSync(destination)) ||
+      !lstatSync(destination).isFile()
+    )
+      throw new Error(
+        `Native link must point directly to a contained regular file: ${path}`
+      );
+    if (platform === "macos")
+      validateMacFile(
+        { path: destination },
+        path,
+        lstatSync(destination).mode & 0o777
+      );
+    return { path, type: "symlink", mode, target };
+  });
 };
 
 export const assertMacLicenses = (runtimeRoot, inventory) => {

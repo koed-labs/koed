@@ -164,6 +164,20 @@ test("macOS core preserves frozen bytes and reproducibly packages Metal and lice
   }
 });
 
+test("staging rejects empty and nested Metal directories before packaging", () => {
+  for (const path of ["postgres/share/unrelated", "llama.cpp/metal/nested"]) {
+    const { root, input } = fixture();
+    try {
+      mkdirSync(resolve(input, path), { recursive: true });
+      const result = run(input, resolve(root, "out"));
+      assert.notEqual(result.status, 0, path);
+      assert.match(result.stderr, /unexpected.*(?:directory|payload)/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("packaging and canonicalization changes alter recipe identity", () => {
   const { root, input, approved } = fixture();
   try {

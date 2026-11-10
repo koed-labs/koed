@@ -24,6 +24,7 @@ import {
 import {
   compareNativeVersions,
   validateNativeRuntimeCatalog,
+  selectNativeRuntimeCatalog,
   nativeKind,
   type NativePin,
   type NativeCudaPin,
@@ -39,11 +40,11 @@ export const nativePathExists = (path: string) =>
   lstatSync(path, { throwIfNoEntry: false }) !== undefined;
 export const payloadRoot = (paths: KoedServerPaths, pin: NativePin) =>
   resolve(nativeStore(paths), nativeKind(pin), pin.recipeId);
-const coreLinks = [
+const coreLinks = (pin: NativeCorePin) => [
   "postgres",
-  "llama.cpp/cpu",
+  `llama.cpp/${pin.target.platform === "macos" ? "metal" : "cpu"}`,
   "llama.cpp/llama-server"
-] as const;
+];
 const entryNames = ["postgres", "llama.cpp"] as const;
 const document = (pin: NativeCorePin, cuda: NativeCudaPin | null) => ({
   schemaVersion: 1,
@@ -138,12 +139,40 @@ function loadSelection(
   if (nativeDigest(raw) !== id)
     throw new Error("Native selection metadata changed.");
   const record = nativeJsonObject(raw);
-  const { core: pin, cuda } = validateNativeRuntimeCatalog({
+  const core = record.core;
+  if (
+    typeof core === "object" &&
+    core !== null &&
+    "target" in core &&
+    typeof core.target === "object" &&
+    core.target !== null &&
+    "platform" in core.target &&
+    (core.target.platform === "linux" || core.target.platform === "macos") &&
+    core.target.platform !== catalog.core.target.platform
+  )
+    throw new NativeSelectionTargetError();
+  const receipt = {
     schemaVersion: 1,
     minimumCoreVersion: "0.0.0",
     core: record.core,
     cuda: record.cuda
-  });
+  };
+  let pin: NativeCorePin, cuda: NativeCudaPin | null;
+  try {
+    ({ core: pin, cuda } =
+      catalog.core.target.platform === "linux"
+        ? validateNativeRuntimeCatalog(receipt)
+        : selectNativeRuntimeCatalog(
+            { schemaVersion: 2, linux: null, macos: receipt },
+            "darwin",
+            "arm64"
+          ));
+  } catch (cause) {
+    throw new Error(
+      "Native selection target or receipt is incompatible with the reviewed host catalog.",
+      { cause }
+    );
+  }
   if (
     canonicalArtifactJson(document(pin, cuda)) !== raw.toString("utf8") ||
     (cuda && conflictsWithPin(cuda, catalog.cuda)) ||
@@ -155,13 +184,17 @@ function loadSelection(
       canonicalArtifactJson(["llama.cpp", "postgres", "selection.json"]) ||
     canonicalArtifactJson(readdirSync(resolve(root, "llama.cpp")).sort()) !==
       canonicalArtifactJson(
-        cuda ? ["cpu", "cuda", "llama-server"] : ["cpu", "llama-server"]
+        pin.target.platform === "macos"
+          ? ["llama-server", "metal"]
+          : cuda
+            ? ["cpu", "cuda", "llama-server"]
+            : ["cpu", "llama-server"]
       )
   )
     throw new Error("Unexpected native selection contents.");
   const payload = payloadRoot(paths, pin);
   assertDirectoryChain(paths.koedHome, payload);
-  for (const name of coreLinks) {
+  for (const name of coreLinks(pin)) {
     const path = resolve(root, name);
     checkLink(path, relative(dirname(path), resolve(payload, name)));
   }
@@ -179,6 +212,14 @@ function loadSelection(
   return { id, root, pin, cuda };
 }
 
+export class NativeSelectionTargetError extends Error {
+  constructor() {
+    super(
+      "Native selection target differs from this host. Stop Koed, preserve the existing native store, and use a fresh KOED_HOME before installing the runtime. The new KOED_HOME does not include the existing database or other data."
+    );
+  }
+}
+
 export function readNativeSelection(
   paths: KoedServerPaths,
   catalog: NativeRuntimeCatalog
@@ -189,6 +230,7 @@ export function readNativeSelection(
   try {
     return loadSelection(paths, id, catalog);
   } catch (cause) {
+    if (cause instanceof NativeSelectionTargetError) throw cause;
     const detail = (
       cause instanceof Error ? cause.message : String(cause)
     ).replace(/\.$/, "");
@@ -243,7 +285,7 @@ export function composeNativeSelection(
       mode: 0o600,
       flush: true
     });
-    for (const name of coreLinks) {
+    for (const name of coreLinks(pin)) {
       const target = relative(
         dirname(resolve(root, name)),
         resolve(payloadRoot(paths, pin), name)

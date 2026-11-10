@@ -106,12 +106,13 @@ const cudaPin = z
     "Native CUDA URL does not identify the retained recipe release."
   );
 
-export type NativeCorePin = z.infer<typeof corePin>;
 export type NativeCudaPin = z.infer<typeof cudaPin>;
 export type NativePin = NativeCorePin | NativeCudaPin;
 export const nativeKind = (pin: NativePin) =>
   "components" in pin ? "core" : "cuda";
 export const compatibleCuda = (core: NativeCorePin, cuda: NativeCudaPin) =>
+  core.target.platform === "linux" &&
+  "revision" in core.components.llamaCpp &&
   core.components.llamaCpp.revision === cuda.llamaCpp.revision &&
   core.components.llamaCpp.version === cuda.llamaCpp.version &&
   core.contracts.layout === cuda.contracts.layout &&
@@ -148,11 +149,118 @@ const catalog = z
     "Pinned native core is below the compiled minimum runtime version."
   );
 
-export type NativeRuntimeCatalog = z.infer<typeof catalog>;
+const macCorePin = z
+  .object({
+    ...corePin.shape,
+    target: z
+      .object({
+        platform: z.literal("macos"),
+        architecture: z.literal("arm64"),
+        minimumVersion: z.literal("14.0")
+      })
+      .strict(),
+    components: z
+      .object({
+        postgres: z
+          .object({
+            major: z.literal(17),
+            version: z.string().regex(/^17\.\d+$/)
+          })
+          .strict(),
+        pgvector: z.object({ version: z.literal("0.8.3") }).strict(),
+        llamaCpp: z.object({ version: z.string().regex(/^b\d+$/) }).strict()
+      })
+      .strict()
+  })
+  .strict()
+  .refine((pin) => {
+    const prefix = "https://github.com/koed-labs/koed/releases/download/";
+    const [tag, archive, ...extra] = pin.url.slice(prefix.length).split("/");
+    return (
+      pin.url.startsWith(prefix) &&
+      extra.length === 0 &&
+      archive === `koed-native-core-${pin.recipeId}-macos-arm64.tar.gz` &&
+      (tag === `native-core-${pin.recipeId}` ||
+        /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag ?? ""))
+    );
+  }, "Native macOS core URL does not identify the retained recipe release.");
+
+const macCatalog = z
+  .object({
+    schemaVersion: z.literal(1),
+    minimumCoreVersion: version,
+    core: macCorePin,
+    cuda: z.null()
+  })
+  .strict()
+  .refine(
+    (value) =>
+      compareNativeVersions(
+        value.core.runtimeVersion,
+        value.minimumCoreVersion
+      ) >= 0
+  );
+const compiledCatalog = z
+  .object({
+    schemaVersion: z.literal(2),
+    linux: catalog.nullable(),
+    macos: macCatalog.nullable()
+  })
+  .strict();
+
+export type NativeCorePin =
+  | z.infer<typeof corePin>
+  | z.infer<typeof macCorePin>;
+export type NativeRuntimeCatalog =
+  | z.infer<typeof catalog>
+  | z.infer<typeof macCatalog>;
+export type MacNativeRuntimeCatalog = z.infer<typeof macCatalog>;
+export type CompiledNativeRuntimeCatalog = z.infer<typeof compiledCatalog>;
+
+export function validateCompiledNativeRuntimeCatalog(
+  value: unknown
+): CompiledNativeRuntimeCatalog {
+  const result = compiledCatalog.safeParse(value);
+  if (!result.success)
+    throw new Error(
+      `Invalid compiled native runtime catalog: ${result.error.message}`
+    );
+  return result.data;
+}
+
+export function selectNativeRuntimeCatalog(
+  value: unknown,
+  platform: string,
+  architecture: string
+): NativeRuntimeCatalog | MacNativeRuntimeCatalog {
+  if (
+    !(
+      (platform === "linux" && architecture === "x64") ||
+      (platform === "darwin" && architecture === "arm64")
+    )
+  )
+    throw new Error(
+      "Unsupported release runtime host. Requires Linux x64 or macOS arm64."
+    );
+  const isLegacy =
+    typeof value === "object" &&
+    value !== null &&
+    "schemaVersion" in value &&
+    value.schemaVersion === 1;
+  const compiled = isLegacy
+    ? { linux: validateNativeRuntimeCatalog(value), macos: null }
+    : validateCompiledNativeRuntimeCatalog(value);
+  const selected = platform === "linux" ? compiled.linux : compiled.macos;
+  if (!selected)
+    throw new Error(
+      "This Control Plane has no reviewed native runtime pin for this host. Use a trusted release with native runtime support."
+    );
+  return selected;
+}
 
 export const validateNativeRuntimeCatalog = (
   value: unknown
-): NativeRuntimeCatalog => {
+): z.infer<typeof catalog> => {
   const parsed = catalog.safeParse(value);
   if (!parsed.success)
     throw new Error(
@@ -166,5 +274,9 @@ export const getNativeRuntimeCatalog = (): NativeRuntimeCatalog => {
     throw new Error(
       "This Control Plane has no reviewed native runtime pin. Use a trusted release with native runtime support."
     );
-  return validateNativeRuntimeCatalog(productionNativeRuntimeCatalog);
+  return selectNativeRuntimeCatalog(
+    productionNativeRuntimeCatalog,
+    process.platform,
+    process.arch
+  );
 };
