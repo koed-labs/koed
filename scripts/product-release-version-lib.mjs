@@ -329,7 +329,9 @@ export const assertReleaseWorkflowVersionPropagation = (root) => {
     }
   }
 
-  const desktopJobId = "signed-desktop-release-assets";
+  // The macOS native runtime is built once in the freeze job and shared by
+  // Desktop and the standalone Server core.
+  const desktopJobId = "frozen-macos-native-runtime";
   const desktopJob = findWorkflowJob(
     workflow,
     desktopJobId,

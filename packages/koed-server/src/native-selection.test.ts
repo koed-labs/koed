@@ -262,7 +262,7 @@ it("preserves cross-target selections and refuses installation or startup before
   );
   vi.spyOn(process.report, "getReport").mockReturnValue({
     header: { glibcVersionRuntime: "2.35" }
-  } as NodeJS.ProcessReport);
+  } as unknown as NodeJS.ProcessReport);
   try {
     for (const [system, architecture, paths, target] of [
       ["darwin", "arm64", linuxHome, mac.catalog],

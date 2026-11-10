@@ -65,7 +65,7 @@ const validReleaseWorkflow = [
   "    steps:",
   "      - name: Package native runtime release artifact",
   '        run: pnpm native-runtime:build:linux-x64 -- --version "${{ needs.release.outputs.version }}" --json',
-  "  signed-desktop-release-assets:",
+  "  frozen-macos-native-runtime:",
   "    needs: release",
   "    steps:",
   "      - name: Build native runtime artifact",

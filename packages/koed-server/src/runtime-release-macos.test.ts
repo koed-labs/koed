@@ -550,7 +550,7 @@ describe("synthetic macOS release lifecycle", () => {
     vi.spyOn(download, "fetchBounded").mockImplementation(
       async (_url, dest) => {
         const bytes = readFileSync(archive);
-        bytes[bytes.length - 1] ^= 1;
+        bytes[bytes.length - 1] = (bytes.at(-1) ?? 0) ^ 1;
         writeFileSync(dest, bytes);
       }
     );
