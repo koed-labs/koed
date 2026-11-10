@@ -58,14 +58,55 @@ test("acceleration smoke allows AppImage startup beyond 180 seconds", async () =
   assert.equal(result.operation.state, "complete");
 });
 
-test("acceleration smoke tracks the current supervisor for stop and cleanup", async () => {
-  const pids = [101];
+test("acceleration smoke rejects late and stalled status responses", async () => {
+  let time = 0;
+  const started = { operation: { id: "op", state: "running" } };
+  await assert.rejects(
+    accelerationSmoke.waitForAccelerationChange(
+      {
+        invoke: async () => {
+          time = 600_001;
+          return { operation: { id: "op", state: "complete" } };
+        }
+      },
+      started,
+      { now: () => time, sleep: async () => {} }
+    ),
+    /smoke deadline/
+  );
+  await assert.rejects(
+    accelerationSmoke.waitForAccelerationChange(
+      { invoke: async () => new Promise(() => {}) },
+      started,
+      { timeoutMs: 20, sleep: async () => {} }
+    ),
+    /smoke deadline/
+  );
+});
+
+test("acceleration smoke tracks supervisor identity and refuses recycled PIDs", async () => {
+  const pids = [];
   const pid = await smokeApp.trackCurrentSupervisor(
     async () => ({ lifecycle: { state: "running", pid: 202 } }),
-    pids
+    pids,
+    () => "original"
   );
   assert.equal(pid, 202);
-  assert.deepEqual(pids, [101, 202]);
+  assert.deepEqual(pids, [{ pid: 202, identity: "original" }]);
+  const signals = [];
+  smokeApp.killTrackedSupervisor(pids[0], {
+    identify: () => "replacement",
+    signal: (...args) => signals.push(args),
+    sleep: () => {}
+  });
+  assert.deepEqual(signals, []);
+  let checks = 0;
+  smokeApp.killTrackedSupervisor(pids[0], {
+    identify: () => (++checks === 1 ? "original" : "replacement"),
+    signal: (...args) => signals.push(args),
+    sleep: () => {}
+  });
+  assert.deepEqual(signals, [[202, "SIGTERM"]]);
   await assert.rejects(
     smokeApp.trackCurrentSupervisor(async () => ({ lifecycle: {} }), pids),
     /supervisor PID/

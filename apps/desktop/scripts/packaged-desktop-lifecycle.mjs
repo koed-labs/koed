@@ -117,11 +117,11 @@ export const connectPackagedDesktop = (child, timeoutMs) => {
     fail(new Error(`Packaged Desktop IPC disconnected.\n${output}`))
   );
   child.on("message", (message) => handleMessage(message, pending, fail));
-  const invoke = async (command) => {
+  const invoke = async (command, requestTimeoutMs = timeoutMs) => {
     await ready;
     if (ended || !child.connected)
       throw new Error(`Packaged Desktop is not connected.\n${output}`);
-    return request(child, pending, command, timeoutMs);
+    return request(child, pending, command, requestTimeoutMs);
   };
   return {
     child,

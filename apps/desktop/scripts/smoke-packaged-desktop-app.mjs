@@ -17,6 +17,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { basename, resolve } from "node:path";
+import { resolveProcessIdentity } from "../../../packages/koed-server/dist/supervisor-lock.js";
 import {
   createOwnedDiagnosticsDir,
   readDiagnosticWindow,
@@ -947,7 +948,39 @@ const fetchSmokeApiReadiness = async (koedHome, fetcher) => {
 // Full status probes hit rate-limited AI Client endpoints; keep retries coarse.
 const FULL_STATUS_RETRY_INTERVAL_MS = 30_000;
 
-export async function trackCurrentSupervisor(getStatus, daemonPids) {
+export function trackSupervisor(
+  pid,
+  daemonPids,
+  identify = resolveProcessIdentity
+) {
+  const identity = identify(pid);
+  if (identity) daemonPids?.push({ pid, identity });
+  return Boolean(identity);
+}
+
+export function killTrackedSupervisor(
+  record,
+  {
+    identify = resolveProcessIdentity,
+    signal = process.kill,
+    sleep = sleepSync
+  } = {}
+) {
+  if (!record.identity || identify(record.pid) !== record.identity) return;
+  try {
+    signal(record.pid, "SIGTERM");
+    sleep(500);
+    if (identify(record.pid) === record.identity) signal(record.pid, "SIGKILL");
+  } catch {
+    // Process exited or cannot be signalled.
+  }
+}
+
+export async function trackCurrentSupervisor(
+  getStatus,
+  daemonPids,
+  identify = resolveProcessIdentity
+) {
   const status = await getStatus();
   const pid = status?.lifecycle?.pid;
   if (
@@ -958,7 +991,10 @@ export async function trackCurrentSupervisor(getStatus, daemonPids) {
     throw new Error(
       "Unable to identify running supervisor PID after processing change."
     );
-  daemonPids?.push(pid);
+  if (!trackSupervisor(pid, daemonPids, identify))
+    throw new Error(
+      "Unable to identify running supervisor PID after processing change."
+    );
   return pid;
 }
 
@@ -1192,7 +1228,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   const startJson = parseJsonOutput("start --daemon --json", start.stdout);
   assertNoSourceCheckoutResolution("start --daemon --json", startJson);
   if (startJson.ok === true && typeof startJson.startedPid === "number") {
-    options.daemonPids?.push(startJson.startedPid);
+    trackSupervisor(startJson.startedPid, options.daemonPids);
   }
   if (startJson.ok !== true || typeof startJson.startedPid !== "number") {
     throw new Error(
@@ -1304,7 +1340,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   const restartJson = parseJsonOutput("start --daemon --json", restart.stdout);
   assertNoSourceCheckoutResolution("reopen start --daemon --json", restartJson);
   if (restartJson.ok === true && typeof restartJson.startedPid === "number") {
-    options.daemonPids?.push(restartJson.startedPid);
+    trackSupervisor(restartJson.startedPid, options.daemonPids);
   }
   if (
     restartJson.ok !== true ||
@@ -1570,7 +1606,7 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
         await desktop.ready;
         const start = await desktop.invoke("start_daemon");
         if (typeof start?.startedPid === "number")
-          daemonPids.push(start.startedPid);
+          trackSupervisor(start.startedPid, daemonPids);
         assertFailClosedTeamStart(start);
         const status = await desktop.invoke("status");
         assertNoSourceCheckoutResolution("Team manager status", status);
@@ -1828,8 +1864,8 @@ const run = async (extractedRoot) => {
         killPidBestEffort(desktop.child.pid);
       }
     }
-    for (const pid of daemonPids.toReversed()) {
-      killPidBestEffort(pid);
+    for (const supervisor of daemonPids.toReversed()) {
+      killTrackedSupervisor(supervisor);
     }
     spawnSync("pkill", ["-f", koedHome], { stdio: "ignore" });
     removeSmokeHome(koedHome);
