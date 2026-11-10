@@ -98,6 +98,10 @@ Run this command. It does not connect an AI Client.
 pnpm koed setup core --json
 ```
 
+Each release also publishes a versioned installer for Koed Server on macOS
+arm64 and Linux x64 that needs no Homebrew or source checkout; see
+[Standalone Server installer](docs/running-koed.md#standalone-server-installer).
+
 For other ways to run Koed, see [Running Koed](docs/running-koed.md).
 
 </details>

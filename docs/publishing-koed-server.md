@@ -164,6 +164,19 @@ publishing before enabling them. Without those authorizations,
 release workflows must leave GitHub releases as drafts and must not publish npm
 packages or stable tags.
 
+## Server installer asset
+
+The release metadata job renders `scripts/install-server.sh` with the release
+version (`scripts/render-server-installer.mjs`) and retains
+`install-koed-server.sh` in the reviewed `koed-release-metadata` artifact, so
+its hash is part of the protected release identity like every other public
+asset. Candidate verification re-renders the template from the reviewed commit
+and requires the draft asset to match byte for byte; an unrendered, stale or
+substituted installer blocks promotion, and publication requires the asset to
+be present. The installer selects `@koed-labs/server` and Base assets by that
+same embedded version. A release whose package does not accept Node 26 cannot
+be installed with the private Node fallback.
+
 ## Immutable candidate and retry protocol
 
 1. Build all release bytes from one product version and retain the npm tarball,

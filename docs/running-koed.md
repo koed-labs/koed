@@ -490,6 +490,72 @@ remote requests kept outside the locked mutation phase. Browser approval and
 upstream-side device credential revocation remain browser/session-mediated
 local-edge flows.
 
+## Standalone Server installer
+
+Each release publishes `install-koed-server.sh`, a Bash installer rendered for
+that exact release. It installs Koed Server for one User without Homebrew,
+`sudo`, Docker or changes to the system Node. macOS 14+ on arm64 and Linux x64
+with glibc 2.35+ are **candidate** targets: clean-host qualification of a
+published release is still outstanding, and other hosts are rejected before any
+change is made. The installer needs Bash and Python 3, plus `curl` when it has to
+download a private Node.
+
+Download, inspect, then run it with the same version:
+
+```bash
+curl --fail --location --proto '=https' -o install-koed-server.sh \
+  https://github.com/koed-labs/koed/releases/download/vX.Y.Z/install-koed-server.sh
+less install-koed-server.sh
+bash install-koed-server.sh --version X.Y.Z
+```
+
+Piping also works (`curl ... | bash -s -- --version X.Y.Z`). The script only
+defines functions until its final line, so a truncated download does not start
+an installation, but piping still trusts whatever bytes were downloaded; HTTPS
+and `pipefail` do not authenticate the script.
+
+What it does, in order:
+
+1. Refuses an existing `KOED_HOME` it does not own (including Desktop
+   installations and other versions) and an existing `~/.local/bin/koed` it did
+   not create. Existing data is never modified.
+2. Reuses the `node` on `PATH` when it is Node 24–26 with its own adjacent npm.
+   Otherwise it downloads official Node 26.13.0 into
+   `KOED_HOME/installer/node`, verifies the archive against SHA-256 values
+   pinned in the installer, and extracts it with bounded, link-restricted
+   extraction. The pins were taken from the Node release checksum manifest;
+   that is not an independent attestation.
+3. Installs exactly `@koed-labs/server@X.Y.Z` from the public npm registry into
+   `KOED_HOME/installer/package` with lifecycle scripts disabled and inherited
+   npm configuration ignored.
+4. Writes the launcher `KOED_HOME/installer/bin/koed` and links it at
+   `~/.local/bin/koed`. Shell profiles and `PATH` are not changed; the
+   installer says when `~/.local/bin` is not on `PATH`. The launcher always
+   manages the installed `KOED_HOME` and refuses a conflicting `KOED_HOME`
+   environment value.
+5. Installs the matching Base component from the release, the native runtime
+   with `runtime install --provider release --dependency-mode bundled-local`,
+   and the embedding model. Components and runtime assets are authenticated by
+   the pins compiled into the package, not by the installer.
+6. Starts the server with `start --daemon`, then waits until the supervisor it
+   started holds this home's lock and `status --startup` reports healthy before
+   running `setup core` and `doctor`.
+
+It does not configure an AI Client; connect one afterwards. Koed CLI commands
+run with a minimal environment, so inherited `KOED_*` overrides and
+`NODE_OPTIONS` do not affect installation. Command output that may contain
+credentials is never printed.
+
+The installer holds `KOED_HOME/installer/lock` while it runs and records
+progress in `KOED_HOME/installer/owner.json`. On failure it reports the phase
+and leaves everything in place: nothing is stopped, rolled back or deleted.
+Rerunning the same version resumes, skipping finished stages, and is safe when
+the server is already running. If a run was killed, the lock directory remains
+and must be removed by hand once no installer is running. The launcher records
+the absolute path of the Node it was installed with; if a reused Node is later
+moved or removed, rerun the same installer version to select a working Node.
+Upgrades to another version are manual; the installer refuses them.
+
 ## Reset local state / start fresh
 
 To start fresh with a new `KOED_HOME` and reset all local enrollment, memory, and
@@ -1162,6 +1228,9 @@ and Recall remain device-local.
 - `data/` for native database files, including `data/postgres`
 - `models/` for embedding model files
 - `cache/` for installer metadata and downloaded artifact cache
+- `installer/` only when the [standalone Server installer](#standalone-server-installer)
+  created this home: ownership record, lock, launcher, the installed package
+  and, when needed, a private Node
 - `runtime/` for bundled or packaged native runtime binaries
 
 Packaged Desktop and headless local-personal flows both use this layout. Raw host proof stays in user-private platform state outside `KOED_HOME`; copying this layout alone intentionally cannot clone usable device identity. See [configuration](configuration.md#clone-safe-local-device-identity) for paths, POSIX permission checks, and Windows ACL limits.
