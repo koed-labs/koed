@@ -7,6 +7,7 @@ import {
   kinMember
 } from "../pixelkin/vendor/index.js";
 import { KinSpin } from "./kin-spin.js";
+import { kinStageSize, kinStageSurface } from "../pixelkin/presentation.js";
 import { createHappyJoyCycle, onboardingSkins } from "./kin-presentation.js";
 
 type Props = {
@@ -270,15 +271,8 @@ export function LoadingKin({
             y: (target.y - position.y) / length,
             z: (target.z - position.z) / length
           };
-          // One large Kin needs a sharper canvas than the homepage crowd.
-          // Supersample at 1x displays and retain native detail up to 3x.
-          const renderScale = Math.max(
-            2,
-            Math.min(window.devicePixelRatio || 1, 3)
-          );
           renderer.render({
-            width: Math.round(width * renderScale),
-            height: Math.round(height * renderScale),
+            ...kinStageSize(width, height),
             pixelStep: 1,
             camera: {
               position,
@@ -304,32 +298,7 @@ export function LoadingKin({
                 scaleZ: scaleXZ
               }
             ],
-            lights: [
-              {
-                name: "Stage",
-                enabled: true,
-                x: 0,
-                y: 10.56,
-                z: 6.19,
-                target: { x: 0, y: 1, z: 0 },
-                distanceDecay: 0.0225,
-                intensity: 3.822,
-                color: "#fff0c8",
-                coneRadius: 10.66,
-                spotlight: true,
-                volumetric: false
-              }
-            ],
-            ambient: 0.1,
-            floor: false,
-            floorGlow: 0,
-            coloured: true,
-            bands: 4,
-            pixelDensity: 18,
-            dither: true,
-            mode: "pixel",
-            outline: 0.26,
-            disco: false,
+            ...kinStageSurface(),
             time: reduced ? 0 : clock
           });
         }

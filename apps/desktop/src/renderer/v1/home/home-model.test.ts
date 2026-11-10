@@ -155,7 +155,7 @@ describe("ingestion", () => {
     failingSince: null as string | null
   });
 
-  it("shows the hatching screen only while a run is running or retrying", () => {
+  it("keeps preparing the first Projects only while a run is running or retrying", () => {
     const running = homeStatus({
       claudeCode: { state: "healthy", configured: true, detected: true },
       historicalIngestion: {
@@ -164,7 +164,8 @@ describe("ingestion", () => {
         pi: progress("unknown", null)
       }
     } as Partial<KoedServerStatus>);
-    expect(selectHomeView(running, null)).toMatchObject({
+    expect(selectHomeView(running, null)).toEqual({ kind: "loading" });
+    expect(selectHomeView(running, [])).toMatchObject({
       kind: "ingesting",
       ingestion: {
         active: true,
@@ -254,12 +255,12 @@ describe("ingestion", () => {
           }
         }
       } as Partial<KoedServerStatus>);
-    expect(selectHomeView(failing(2), null)).toMatchObject({
+    expect(selectHomeView(failing(2), [])).toMatchObject({
       kind: "ingesting",
       warnings: [],
       ingestion: { clients: [{ stuck: false }] }
     });
-    expect(selectHomeView(failing(15), null)).toMatchObject({
+    expect(selectHomeView(failing(15), [])).toMatchObject({
       kind: "ingesting",
       // The chip reads "Check Codex history".
       warnings: [{ id: "ingestion-codex", title: "Codex history" }],
@@ -274,7 +275,7 @@ describe("ingestion", () => {
         claude: progress("running", 4)
       }
     } as Partial<KoedServerStatus>);
-    const view = selectHomeView(status, null);
+    const view = selectHomeView(status, []);
     expect(view.kind === "ingesting" && view.ingestion.selected).toBeNull();
   });
 });
