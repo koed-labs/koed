@@ -15,6 +15,13 @@ const repoRoot = resolve(import.meta.dirname, "..");
 const reviewed = JSON.parse(
   readFileSync(resolve(repoRoot, "config/source-runtime-catalogs.json"), "utf8")
 );
+const componentDocument = JSON.parse(
+  readFileSync(
+    resolve(repoRoot, "config/source-component-catalog.json"),
+    "utf8"
+  )
+);
+const productVersion = componentDocument.catalog.productVersion;
 const roots = [];
 afterEach(() => {
   for (const root of roots.splice(0))
@@ -33,12 +40,14 @@ const fixture = (catalogs = structuredClone(reviewed)) => {
   mkdirSync(resolve(repoRoot, "scratch"), { recursive: true });
   const root = mkdtempSync(resolve(repoRoot, "scratch/source-catalogs-"));
   roots.push(root);
-  write(root, "package.json", { version: reviewed.productVersion });
+  write(root, "package.json", { version: productVersion });
   write(root, "packages/koed-server/package.json", {
-    version: reviewed.productVersion
+    version: productVersion
   });
   write(root, "config/source-runtime-catalogs.json", catalogs);
+  write(root, "config/source-component-catalog.json", componentDocument);
   write(root, "scripts/native-runtime/core-compatibility.linux-x64.json", {
+    schemaVersion: 1,
     minimumCoreVersion: reviewed.native.minimumCoreVersion
   });
   write(
@@ -79,10 +88,10 @@ test("a clean source build receives complete version-matched CPU/CUDA and compon
   );
   assert.deepEqual(
     embedSourceRuntimeCatalogs({ repoRoot: root, environment: {} }),
-    { mode: "source", version: reviewed.productVersion }
+    { mode: "source", version: productVersion }
   );
   assert.deepEqual(nativeOutput(root), reviewed.native);
-  assert.deepEqual(componentOutput(root), reviewed.components);
+  assert.deepEqual(componentOutput(root), componentDocument.catalog);
   assert.deepEqual(
     readFileSync(
       resolve(root, "packages/koed-server/src/native-runtime-catalog-data.mjs")
@@ -102,14 +111,14 @@ test("a clean source build receives complete version-matched CPU/CUDA and compon
   );
   embedSourceRuntimeCatalogs({ repoRoot: root, environment: {} });
   assert.deepEqual(nativeOutput(root), reviewed.native);
-  assert.deepEqual(componentOutput(root), reviewed.components);
+  assert.deepEqual(componentOutput(root), componentDocument.catalog);
 });
 
 for (const [name, mutate] of [
   [
-    "unreviewed product version",
+    "unreviewed release identity",
     (value) => {
-      value.productVersion = "99.0.0";
+      value.sourceRelease = "v99.0.0";
     }
   ],
   [
@@ -141,18 +150,6 @@ for (const [name, mutate] of [
     (value) => {
       value.native.cuda = null;
     }
-  ],
-  [
-    "different component version",
-    (value) => {
-      value.components.productVersion = "99.0.0";
-    }
-  ],
-  [
-    "incomplete component catalog",
-    (value) => {
-      value.components.entries.pop();
-    }
   ]
 ]) {
   test(`rejects ${name} before replacing either output`, () => {
@@ -173,14 +170,14 @@ test("requires the checkout, control plane and minimum native contract to match 
     ["packages/koed-server/package.json", { version: "99.0.0" }],
     [
       "scripts/native-runtime/core-compatibility.linux-x64.json",
-      { minimumCoreVersion: "99.0.0" }
+      { schemaVersion: 1, minimumCoreVersion: "99.0.0" }
     ]
   ]) {
     const root = fixture();
     write(root, path, value);
     assert.throws(
       () => embedSourceRuntimeCatalogs({ repoRoot: root, environment: {} }),
-      /version|compatibility/
+      /version|compatibility|below required/
     );
     assert.equal(nativeOutput(root), null);
   }
@@ -190,7 +187,7 @@ test("preserves explicit release catalogs instead of substituting development pi
   const root = fixture();
   const native = structuredClone(reviewed.native);
   native.core.sha256 = "e".repeat(64);
-  const components = structuredClone(reviewed.components);
+  const components = structuredClone(componentDocument.catalog);
   components.entries[0].manifestSha256 = "e".repeat(64);
   write(
     root,
@@ -208,7 +205,11 @@ test("preserves explicit release catalogs instead of substituting development pi
 
 test("does not mix a partial release input with the development catalogs", () => {
   const root = fixture();
-  const path = write(root, "release-components.json", reviewed.components);
+  const path = write(
+    root,
+    "release-components.json",
+    componentDocument.catalog
+  );
   assert.throws(
     () =>
       embedSourceRuntimeCatalogs({
@@ -227,4 +228,48 @@ test("does not mix a partial release input with the development catalogs", () =>
     () => embedSourceRuntimeCatalogs({ repoRoot: root, environment: {} }),
     /both explicit/
   );
+});
+
+test("a newer product can use older compatible native assets without admitting older components", () => {
+  const root = fixture();
+  write(root, "package.json", { version: "1.0.0" });
+  write(root, "packages/koed-server/package.json", { version: "1.0.0" });
+  embedSourceRuntimeCatalogs({ repoRoot: root, environment: {} });
+  assert.deepEqual(nativeOutput(root), reviewed.native);
+  assert.equal(componentOutput(root), null);
+});
+
+test("source CPU/CUDA preparation does not require a component catalog", () => {
+  const root = fixture();
+  rmSync(resolve(root, "config/source-component-catalog.json"));
+  embedSourceRuntimeCatalogs({ repoRoot: root, environment: {} });
+  assert.deepEqual(nativeOutput(root), reviewed.native);
+  assert.equal(componentOutput(root), null);
+});
+
+test("the checkout's raised minimum is embedded without changing the artifact pins", () => {
+  const root = fixture();
+  const minimumCoreVersion = reviewed.native.core.runtimeVersion;
+  write(root, "scripts/native-runtime/core-compatibility.linux-x64.json", {
+    schemaVersion: 1,
+    minimumCoreVersion
+  });
+  embedSourceRuntimeCatalogs({ repoRoot: root, environment: {} });
+  assert.deepEqual(nativeOutput(root), {
+    ...reviewed.native,
+    minimumCoreVersion
+  });
+});
+
+test("incomplete exact-version components never become install authority", () => {
+  const root = fixture();
+  const document = structuredClone(componentDocument);
+  document.catalog.entries.pop();
+  write(root, "config/source-component-catalog.json", document);
+  assert.throws(
+    () => embedSourceRuntimeCatalogs({ repoRoot: root, environment: {} }),
+    /incomplete/
+  );
+  assert.equal(nativeOutput(root), null);
+  assert.equal(componentOutput(root), null);
 });

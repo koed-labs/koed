@@ -84,10 +84,10 @@ pnpm desktop:start
 On first launch, choose **Set up Koed** and confirm. Desktop installs the
 runtime and models it needs, then starts the local services.
 
-Source preparation embeds reviewed, version-matched runtime download catalogs
-from this checkout. Linux/WSL installs the pinned CPU runtime; compatible NVIDIA
-devices can opt into the additional CUDA download. Archive and file checksums
-remain required. See [fresh-home CPU/CUDA testing](docs/running-koed.md#test-source-setup-with-a-fresh-home).
+The reviewed catalog in this checkout lists the approved runtime downloads.
+Linux/WSL installs its CPU runtime. Compatible NVIDIA devices can also use the
+CUDA download. Koed still requires archive and file checksums, values calculated
+from file contents. See [fresh-home CPU/CUDA testing](docs/running-koed.md#test-source-setup-with-a-fresh-home).
 
 To stop Koed, run:
 

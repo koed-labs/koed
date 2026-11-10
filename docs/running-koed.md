@@ -108,17 +108,31 @@ plane, which includes the CLI. Workspace builds run one at a time to limit
 peak memory use. Desktop packaging uses the same preparation step before
 staging its service runtime.
 
-After the entire workspace build finishes, preparation embeds the reviewed
-native and component catalogs from `config/source-runtime-catalogs.json` into
-the generated Server control plane. The file records the published release and
-its catalog/package hashes; its contents are trusted through repository review,
-not supplied by downloads or environment overrides. The current source pins are
-for v0.11.1. Preparation requires the checkout and component catalog to match
-that product version, validates the native CPU/CUDA pair and minimum runtime
-contract, and fails closed if pins are missing or incompatible. A product-version
-change requires reviewing and updating these source pins. It never falls back to
-an unpinned latest release. Normal installation still verifies manifest, archive,
-and extracted-file hashes, and CUDA still requires driver and inference checks.
+The catalog in `config/source-runtime-catalogs.json` lists approved CPU/CUDA
+downloads. After the workspace build, preparation adds it to the generated
+Server control plane. Repository review approves its release, asset identities,
+and checksums. A checksum is a value calculated from file contents.
+
+Native versions can be older than the product version. They must meet the
+minimum runtime version, interface requirements, and CPU/CUDA compatibility
+requirements. Preparation stops if the catalog is missing or incompatible.
+A manifest lists the files in a runtime download. Installation still compares
+manifest, archive, and extracted-file checksums. CUDA still requires driver
+tests and tests that run the model.
+
+Version Koed PRs update the catalog from published stable releases. The update
+tool makes sure that downloaded files match their checksums before proposing a
+change. Startup uses the committed catalog and never selects a newer release.
+See [source runtime pin updates](release-versioning.md#source-runtime-pin-updates)
+for the release rules and manual update command.
+
+Koed builds application services from this checkout. The optional
+`config/source-component-catalog.json` lists reviewed Base/Privacy downloads.
+These downloads require an exact product-version match. A missing or older
+catalog leaves these downloads unavailable but permits source Personal CPU/CUDA
+setup. Native catalog updates leave component versions unchanged. Official
+release builds still require a complete component catalog for their product
+version.
 
 The source preparation fingerprint includes these catalog inputs and records
 hashes of the two generated catalog modules. A later workspace build that replaces

@@ -4,11 +4,17 @@ Use `.env.example` as the canonical Koed environment example. It is the starting
 
 The README Quickstart covers the basic bundled-local setup and packaged Desktop first-run. This page is the advanced reference for environment variables, runtime modes, external dependency URLs, and production settings.
 
-The documented source Desktop flow prepares reviewed runtime catalogs from
-`config/source-runtime-catalogs.json` before startup. These are versioned build
-inputs, not per-profile configuration or environment overrides. A fresh
-`KOED_HOME` uses the same pinned downloads and integrity checks as other homes;
-see [source CPU/CUDA testing](running-koed.md#test-source-setup-with-a-fresh-home).
+The source Desktop build reads approved runtime downloads from
+`config/source-runtime-catalogs.json`. This file applies to all profiles.
+Environment variables cannot replace it. Every `KOED_HOME`, including an empty
+one, uses the same downloads and file integrity tests.
+
+Native runtime versions must meet compatibility requirements. They do not need
+to match the product version. Optional component downloads use
+`config/source-component-catalog.json` and require an exact product-version match.
+See the [Version Koed workflow](release-versioning.md#source-runtime-pin-updates)
+for catalog updates and [source CPU/CUDA testing](running-koed.md#test-source-setup-with-a-fresh-home)
+for setup tests.
 
 For an AI Client connected to an existing backend without local backend
 dependencies, see [Headless Remote MCP](headless-remote-mcp.md). That opt-in path

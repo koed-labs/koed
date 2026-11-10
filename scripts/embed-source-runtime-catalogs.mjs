@@ -1,9 +1,15 @@
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { validateNativeRuntimeCatalog } from "../packages/koed-server/dist/native-runtime-catalog.js";
 import { validateReleaseManifestCatalog } from "./embed-component-manifest-catalog.mjs";
 import { readProductionNativeCatalog } from "./native-runtime-pins.mjs";
+import { readSourceNativeCatalog } from "./source-native-catalog.mjs";
 
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 
@@ -19,7 +25,7 @@ export function embedSourceRuntimeCatalogs({
   if (readJson(resolve(repoRoot, "package.json")).version !== version)
     throw new Error("Source workspace/control-plane version mismatch.");
   let native = readProductionNativeCatalog(repoRoot);
-  let components;
+  let components = null;
   const releaseCatalogPath = environment.KOED_COMPONENT_MANIFEST_CATALOG;
   if (releaseCatalogPath || native !== null) {
     if (!releaseCatalogPath || native === null)
@@ -31,29 +37,23 @@ export function embedSourceRuntimeCatalogs({
       version
     );
   } else {
-    const reviewed = readJson(
-      resolve(repoRoot, "config/source-runtime-catalogs.json")
+    native = readSourceNativeCatalog(repoRoot);
+    const componentPath = resolve(
+      repoRoot,
+      "config/source-component-catalog.json"
     );
-    if (reviewed.schemaVersion !== 1 || reviewed.productVersion !== version)
-      throw new Error(
-        "No reviewed source runtime catalogs match this product version. Update config/source-runtime-catalogs.json from a reviewed compatible release."
+    if (existsSync(componentPath)) {
+      const reviewed = readJson(componentPath);
+      if (reviewed.schemaVersion !== 1)
+        throw new Error("Invalid source component catalog format.");
+      const candidate = validateReleaseManifestCatalog(
+        reviewed.catalog,
+        reviewed.catalog?.productVersion
       );
-    native = validateNativeRuntimeCatalog(reviewed.native);
-    components = validateReleaseManifestCatalog(reviewed.components, version);
-    const compatibility = readJson(
-      resolve(
-        repoRoot,
-        "scripts/native-runtime/core-compatibility.linux-x64.json"
-      )
-    );
-    if (
-      native.core.runtimeVersion !== version ||
-      native.cuda?.runtimeVersion !== version ||
-      native.minimumCoreVersion !== compatibility.minimumCoreVersion
-    )
-      throw new Error(
-        "Reviewed source native runtime version/compatibility mismatch."
-      );
+      // Application services are built from source. Older component artifacts
+      // never gain authority over a new product version's optional installs.
+      if (candidate.productVersion === version) components = candidate;
+    }
   }
   // Validate both catalogs before changing either output. Source preparation's
   // dirty marker and lifecycle lock protect the pair until its manifest commits.
@@ -64,7 +64,9 @@ export function embedSourceRuntimeCatalogs({
     ],
     [
       "component-manifest-catalog-data.js",
-      `import { validateManifestCatalog } from "./component-manifest-catalog.js";\nexport const productionComponentManifestCatalog = validateManifestCatalog(${JSON.stringify(components)});\n`
+      components
+        ? `import { validateManifestCatalog } from "./component-manifest-catalog.js";\nexport const productionComponentManifestCatalog = validateManifestCatalog(${JSON.stringify(components)});\n`
+        : "export const productionComponentManifestCatalog = null;\n"
     ]
   ];
   for (const [name, contents] of outputs) {

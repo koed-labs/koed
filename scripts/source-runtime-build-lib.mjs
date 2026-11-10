@@ -34,6 +34,7 @@ export const SOURCE_RUNTIME_BUILD_SPEC = Object.freeze({
     "scripts/source-runtime-build-lib.mjs",
     "scripts/source-runtime-build.mjs",
     "scripts/embed-source-runtime-catalogs.mjs",
+    "scripts/source-native-catalog.mjs",
     "scripts/embed-component-manifest-catalog.mjs",
     "scripts/component-manifest-catalog.mjs",
     "scripts/koed-server-package-lib.mjs",
@@ -64,6 +65,7 @@ export const SOURCE_RUNTIME_BUILD_SPEC = Object.freeze({
     "packages/koed-server/dist/component-manifest-catalog-data.js"
   ],
   catalogInputs: ["KOED_COMPONENT_MANIFEST_CATALOG"],
+  optionalInputs: ["config/source-component-catalog.json"],
   copiedTrees: [
     { source: "prompts", output: "packages/mcp-server/dist/prompts" }
   ]
@@ -455,6 +457,10 @@ export const calculateSourceRuntimeFingerprint = (
   }
   for (const input of spec.extraInputs) {
     collectPath(repoRoot, resolve(repoRoot, input), files);
+  }
+  for (const input of spec.optionalInputs ?? []) {
+    if (existsSync(resolve(repoRoot, input)))
+      collectPath(repoRoot, resolve(repoRoot, input), files);
   }
   for (const key of spec.catalogInputs ?? []) {
     const input = process.env[key];

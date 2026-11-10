@@ -152,6 +152,24 @@ test("invalidates source preparation when an explicit release catalog changes", 
   }
 });
 
+test("optional component pins invalidate preparation when added, changed or removed", async () => {
+  const { root, spec } = createFixture();
+  const path = "config/source-component-catalog.json";
+  spec.optionalInputs = [path];
+  const settings = options(spec, { runBuild: () => writeOutputs(root) });
+  await prepareSourceRuntime(root, settings);
+  write(root, path, '{"version":"first"}');
+  await assert.rejects(checkSourceRuntime(root, settings));
+  await prepareSourceRuntime(root, settings);
+  write(root, path, '{"version":"second"}');
+  await assert.rejects(checkSourceRuntime(root, settings));
+  await prepareSourceRuntime(root, settings);
+  rmSync(resolve(root, path));
+  await assert.rejects(checkSourceRuntime(root, settings));
+  await prepareSourceRuntime(root, settings);
+  await checkSourceRuntime(root, settings);
+});
+
 test("builds once and skips a current runtime", async () => {
   const { root, spec } = createFixture();
   let builds = 0;
