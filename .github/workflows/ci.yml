@@ -646,6 +646,42 @@ jobs:
       - name: Validate packaged native runtime artifact
         run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/linux-x64/koed-runtime --platform linux --json
 
+      # Linux Desktop bundles only the frozen CPU core, built by the same
+      # script as the release core package (ADR 0067); never the CUDA add-on.
+      - name: Restore Linux native CPU core
+        id: native-core-cache
+        if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-native-core
+          key: linux-native-core-v1-jammy-node${{ env.NODE_VERSION }}-${{ hashFiles('scripts/native-runtime/*.linux-x64.json', 'scripts/native-runtime/build-core-linux-x64.mjs', 'scripts/native-runtime/core-artifact.mjs', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/deterministic-tar-gzip.mjs', 'packages/koed-server/src/artifact-canonical-json.mjs') }}
+
+      - name: Build Linux native CPU core on a cache miss
+        if: (needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true') && steps.native-core-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential bison flex libssl-dev patchelf cmake
+          node scripts/native-runtime/build-core-linux-x64.mjs --out-dir "${RUNNER_TEMP}/koed-native-core" --json
+
+      - name: Verify Linux native CPU core
+        if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/koed-native-core/koed-runtime"
+          node --input-type=module -e 'import { verifyFrozenCore } from "./scripts/native-runtime/core-artifact.mjs"; verifyFrozenCore(process.argv[1]);' "${root}"
+          pnpm native-runtime:validate -- --runtime-root "${root}" --platform linux --json > "${RUNNER_TEMP}/koed-native-core-validation.json" || {
+            jq '{ok, errors}' "${RUNNER_TEMP}/koed-native-core-validation.json"
+            exit 1
+          }
+
+      - name: Save Linux native CPU core
+        if: (needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true') && steps.native-core-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-native-core
+          key: linux-native-core-v1-jammy-node${{ env.NODE_VERSION }}-${{ hashFiles('scripts/native-runtime/*.linux-x64.json', 'scripts/native-runtime/build-core-linux-x64.mjs', 'scripts/native-runtime/core-artifact.mjs', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/deterministic-tar-gzip.mjs', 'packages/koed-server/src/artifact-canonical-json.mjs') }}
+
       - name: Install Linux Desktop smoke dependencies
         if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
         run: sudo apt-get update && sudo apt-get install -y xvfb libfuse2 libgtk-3-0 libnss3 libasound2 libgbm1 libxss1
@@ -653,12 +689,16 @@ jobs:
       - name: Build workspace and Linux release AppImage
         if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
         env:
-          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ github.workspace }}/dist/native-runtime/linux-x64/koed-runtime
+          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-core/koed-runtime
         run: |
+          set -euo pipefail
           rm -rf apps/desktop/release/linux-unpacked
           rm -f apps/desktop/release/Koed-*.AppImage apps/desktop/release/koed-desktop-linux-x64.sha256
           pnpm build
           pnpm desktop:package:linux:release
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          node scripts/desktop-release-checksum.mjs size-linux apps/desktop/release "${version}"
+          du -h apps/desktop/release/linux-unpacked/resources/* "apps/desktop/release/Koed-${version}-x86_64.AppImage" | tee -a "${GITHUB_STEP_SUMMARY}"
 
       # Unsigned, unreleased CI build for manual testing only; release
       # publication uses the protected release workflow instead.

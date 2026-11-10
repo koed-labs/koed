@@ -68,7 +68,8 @@ test("release guard accepts validated staging and propagates validator failure",
     runtimeRoot: root,
     platform: "linux",
     arch: "x64",
-    nativeRuntimeSource: root
+    nativeRuntimeSource: root,
+    verifyCore: () => {}
   };
   const runValidator = (_command, args) => {
     assert.equal(args[1], "--runtime-root");
@@ -180,6 +181,7 @@ test("release guard validates native source and rejects a differing staged copy"
     platform: "linux",
     arch: "x64",
     nativeRuntimeSource: source,
+    verifyCore: () => {},
     runValidator: (_command, args) => {
       validated.push(realpathSync(args[2]));
       return {
@@ -220,4 +222,54 @@ test("release guard validates native source and rejects a differing staged copy"
     damage();
     assert.throws(() => module.validateLinuxRelease(options), pattern);
   }
+});
+
+test("release guard requires the frozen CPU core and refuses bundled CUDA", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "koed-linux-release-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, "source");
+  const staged = join(root, "staged");
+  for (const dir of [source, staged]) {
+    mkdirSync(join(dir, "llama.cpp/cpu"), { recursive: true });
+    writeFileSync(join(dir, "llama.cpp/cpu/llama-server"), "cpu", {
+      mode: 0o755
+    });
+  }
+  writeFileSync(
+    join(staged, "desktop-bundle-manifest.json"),
+    JSON.stringify({ target: { platform: "linux", architecture: "x64" } })
+  );
+  const module = await import("./validate-linux-release.mjs");
+  const verified = [];
+  const options = {
+    runtimeRoot: staged,
+    platform: "linux",
+    arch: "x64",
+    nativeRuntimeSource: source,
+    verifyCore: (path) => verified.push(realpathSync(path)),
+    runValidator: () => ({
+      status: 0,
+      stdout: JSON.stringify({
+        ok: true,
+        packagedProvider: { skipped: false, ok: true }
+      }),
+      stderr: ""
+    })
+  };
+  assert.doesNotThrow(() => module.validateLinuxRelease(options));
+  assert.deepEqual(verified, [realpathSync(source)]);
+
+  // The real frozen-core check rejects a source that is not a frozen core,
+  // such as the combined CPU and CUDA runtime.
+  assert.throws(
+    () => module.validateLinuxRelease({ ...options, verifyCore: undefined }),
+    /requires the frozen native CPU core/
+  );
+
+  mkdirSync(join(staged, "llama.cpp/cuda"), { recursive: true });
+  writeFileSync(join(staged, "llama.cpp/cuda/llama-server"), "cuda");
+  assert.throws(
+    () => module.validateLinuxRelease(options),
+    /must not bundle the CUDA add-on/
+  );
 });

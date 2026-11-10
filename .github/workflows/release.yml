@@ -886,13 +886,7 @@ jobs:
     name: Linux x64 Desktop release assets
     runs-on: ubuntu-22.04
     timeout-minutes: 150
-    needs:
-      [
-        release,
-        component-manifest-catalog,
-        native-runtime-linux-x64-release-assets,
-        linux-native-packages
-      ]
+    needs: [release, component-manifest-catalog, linux-native-packages]
     if: github.ref == 'refs/heads/main' && needs.release.outputs.desktop_assets_enabled == 'true'
     env:
       KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json
@@ -919,23 +913,31 @@ jobs:
         with:
           name: koed-component-catalog
           path: release-components
-      - name: Download verified Linux runtime
+      # Linux Desktop bundles only the CPU core (ADR 0067). The optional CUDA
+      # add-on stays a separate release asset, installed with
+      # `koed runtime install --provider release --with-cuda`.
+      - name: Download Linux native packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: koed-native-runtime-linux-x64
-          path: release-runtime
+          name: koed-linux-native-packages
+          path: release-native
       - *embed-native-pins
       - name: Build koed-server CLI
         run: pnpm --filter @koed-labs/server build
-      - name: Verify and extract Linux runtime
+      - name: Verify and extract Linux CPU core
+        env:
+          NATIVE_CATALOG: ${{ needs.linux-native-packages.outputs.catalog }}
         run: |
           set -euo pipefail
-          version="${{ needs.release.outputs.version }}"
-          archive="koed-native-runtime-linux-x64-${version}.tar.gz"
-          cd release-runtime
-          test "$(wc -l < "${archive}.sha256")" -eq 1
-          test "$(cut -c 67- "${archive}.sha256")" = "${archive}"
-          sha256sum --check --strict "${archive}.sha256"
+          recipe=$(jq -r '.core.recipeId' <<<"${NATIVE_CATALOG}")
+          sha=$(jq -r '.core.sha256' <<<"${NATIVE_CATALOG}")
+          manifest_sha=$(jq -r '.core.manifestSha256' <<<"${NATIVE_CATALOG}")
+          for value in "${recipe}" "${sha}" "${manifest_sha}"; do
+            [[ "${value}" =~ ^[a-f0-9]{64}$ ]]
+          done
+          archive="koed-native-core-${recipe}-linux-x64.tar.gz"
+          cd release-native
+          echo "${sha}  ${archive}" | sha256sum --check --strict
           mkdir -p "${RUNNER_TEMP}/koed-linux-runtime"
           python3 -c 'import sys, tarfile
           archive, destination = sys.argv[1:]
@@ -947,7 +949,10 @@ jobs:
                       raise ValueError("Unexpected runtime archive path")
               tar.extractall(destination, filter="data")' "${archive}" "${RUNNER_TEMP}/koed-linux-runtime"
           cd ..
-          pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-linux-runtime/koed-runtime" --platform linux --json
+          root="${RUNNER_TEMP}/koed-linux-runtime/koed-runtime"
+          echo "${manifest_sha}  ${root}/native-core-manifest.json" | sha256sum --check --strict
+          node --input-type=module -e 'import { verifyFrozenCore } from "./scripts/native-runtime/core-artifact.mjs"; verifyFrozenCore(process.argv[1]);' "${root}"
+          pnpm native-runtime:validate -- --runtime-root "${root}" --platform linux --json
       - name: Install Linux Desktop smoke dependencies
         run: sudo apt-get update && sudo apt-get install -y xvfb libfuse2 libgtk-3-0 libnss3 libasound2 libgbm1 libxss1
       - name: Build Linux Desktop artifacts

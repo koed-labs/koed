@@ -74,18 +74,39 @@ test("Linux release builds and smokes verified runtime and retains exact final a
   for (const dependency of [
     "release",
     "component-manifest-catalog",
-    "native-runtime-linux-x64-release-assets",
     "linux-native-packages"
   ])
     assert.ok(linux.needs.includes(dependency));
+  // Desktop bundles only the pinned CPU core, never the combined CPU and
+  // CUDA runtime (ADR 0067).
+  assert.ok(!linux.needs.includes("native-runtime-linux-x64-release-assets"));
   const steps = linux.steps;
   const commands = steps.map((s) => s.run ?? "").join("\n");
+  assert.ok(steps.some((s) => s.with?.name === "koed-linux-native-packages"));
   assert.ok(
-    steps.some((s) => s.with?.name === "koed-native-runtime-linux-x64")
+    !steps.some((s) => s.with?.name === "koed-native-runtime-linux-x64")
   );
+  assert.doesNotMatch(commands, /koed-native-runtime-linux-x64-/);
+  const core = steps.find(
+    (s) => s.name === "Verify and extract Linux CPU core"
+  );
+  assert.ok(core, "missing CPU core verification step");
   assert.match(
-    commands,
-    /koed-native-runtime-linux-x64-\$\{version\}\.tar\.gz/
+    core.env.NATIVE_CATALOG,
+    /linux-native-packages\.outputs\.catalog/
+  );
+  assert.match(core.run, /\.core\.sha256/);
+  assert.match(core.run, /\.core\.manifestSha256/);
+  assert.match(core.run, /koed-native-core-\$\{recipe\}-linux-x64\.tar\.gz/);
+  assert.match(core.run, /verifyFrozenCore/);
+  const build = steps.find((s) => s.name === "Build Linux Desktop artifacts");
+  assert.equal(
+    build.env.KOED_NATIVE_RUNTIME_SOURCE_DIR,
+    "${{ runner.temp }}/koed-linux-runtime/koed-runtime"
+  );
+  assert.ok(
+    steps.indexOf(core) < steps.indexOf(build),
+    "CPU core must be verified before Desktop packaging"
   );
   assert.match(commands, /sha256sum --check/);
   assert.match(commands, /native-runtime:validate/);

@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
 import console from "node:console";
+import { verifyFrozenCore } from "../../../scripts/native-runtime/core-artifact.mjs";
 
 const fileSha256 = (path) => {
   const hash = createHash("sha256");
@@ -83,7 +84,8 @@ export function validateLinuxRelease({
   platform = process.platform,
   arch = process.arch,
   nativeRuntimeSource = process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR,
-  runValidator = spawnSync
+  runValidator = spawnSync,
+  verifyCore = verifyFrozenCore
 }) {
   const runtimeRoot = resolve(root ?? ".koed-runtime");
   const manifest = JSON.parse(
@@ -136,6 +138,23 @@ export function validateLinuxRelease({
         `Linux native runtime validation failed: ${result.stdout}`
       );
     }
+    // Linux Desktop bundles only the frozen CPU core (ADR 0067). The CUDA
+    // add-on is a separate, optional release asset and never ships inside the
+    // AppImage; the frozen inventory rejects any extra native file.
+    try {
+      verifyCore(source);
+    } catch (error) {
+      throw new Error(
+        `Linux Desktop requires the frozen native CPU core: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      );
+    }
+    if (
+      lstatSync(join(runtimeRoot, "llama.cpp/cuda"), { throwIfNoEntry: false })
+    )
+      throw new Error(
+        "Linux Desktop must not bundle the CUDA add-on (llama.cpp/cuda)."
+      );
     assertStagedNativeRuntimeMatches({ source, staged: runtimeRoot });
   } finally {
     rmSync(resources, { recursive: true, force: true });

@@ -60,6 +60,10 @@ candidate with an AppImage or evidence asset but no protected Linux identity is
 rejected. Linux assurance therefore depends on the integrity of the reviewed
 build job, unlike the independently inspected macOS ZIP.
 
+Linux Desktop packages the verified frozen CPU core from the Linux native
+packages; CUDA remains a separate optional download. The 512 MiB AppImage
+size gate is provisional until an Electron 45 release build validates it.
+
 On PR #421 alone, the Desktop workflow produces
 **unsigned** artifacts; hashing them is not code signing or notarization. The
 #428 signing layer must retain the final signed ZIP and DMG after sealing and

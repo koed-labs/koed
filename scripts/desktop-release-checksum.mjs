@@ -62,14 +62,19 @@ export function writeLinuxDesktopReleaseChecksum(options) {
   return paths.checksum;
 }
 
+// Linux Desktop bundles only the native CPU core, not the CUDA add-on, so the
+// AppImage stays close to the macOS DMG. This provisional budget must be
+// validated against an Electron 45 release build; it also guards against CUDA.
+export const linuxDesktopReleaseBudgetBytes = 512 * 1024 ** 2;
+
 export function verifyLinuxDesktopReleaseSize(options) {
   const paths = linuxChecksumPaths(options);
   const stat = statSync(paths.asset);
-  // Provisional safety ceiling matches the protected candidate verifier limit;
-  // it is not an empirical Linux release size baseline.
-  if (!stat.isFile() || stat.size === 0 || stat.size > 4 * 1024 ** 3)
+  if (!stat.isFile() || stat.size === 0)
+    throw new Error("Linux AppImage is not a nonempty regular file.");
+  if (stat.size > linuxDesktopReleaseBudgetBytes)
     throw new Error(
-      "Linux AppImage exceeds provisional 4 GiB ceiling or is not a nonempty regular file."
+      `Linux AppImage is ${stat.size} bytes, over the ${linuxDesktopReleaseBudgetBytes}-byte release budget.`
     );
 }
 

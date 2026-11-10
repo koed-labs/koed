@@ -61,7 +61,7 @@ test("Linux checksum covers bytes across read boundaries", (t) => {
   );
   assert.doesNotThrow(() => verifyLinuxDesktopReleaseChecksum(options));
 });
-test("Linux provisional size gate accepts 4 GiB and rejects larger or missing images", (t) => {
+test("Linux size budget accepts 512 MiB and rejects larger or missing images", (t) => {
   const root = fixture(t);
   const asset = join(root, "Koed-1.2.3-x86_64.AppImage");
   const run = () =>
@@ -72,10 +72,12 @@ test("Linux provisional size gate accepts 4 GiB and rejects larger or missing im
     );
   assert.notEqual(run().status, 0);
   writeFileSync(asset, "x");
-  truncateSync(asset, 4_294_967_296);
+  truncateSync(asset, 536_870_912);
   assert.equal(run().status, 0);
-  truncateSync(asset, 4_294_967_297);
-  assert.notEqual(run().status, 0);
+  truncateSync(asset, 536_870_913);
+  const over = run();
+  assert.notEqual(over.status, 0);
+  assert.match(over.stderr, /release budget/);
 });
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "koed-checksum-"));
