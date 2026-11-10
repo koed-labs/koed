@@ -590,6 +590,7 @@ jobs:
         run: pnpm --filter @koed-labs/server build
 
       - name: Restore verified Linux native runtime payload
+        if: needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_full_validation == 'true'
         id: native-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
@@ -597,11 +598,11 @@ jobs:
           key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
 
       - name: Install native runtime build dependencies
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: (needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_full_validation == 'true') && steps.native-cache.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y build-essential bison flex libssl-dev curl ca-certificates
 
       - name: Install pinned CUDA build toolkit
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: (needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_full_validation == 'true') && steps.native-cache.outputs.cache-hit != 'true'
         run: |
           curl --fail --location --retry 3 \
             --output "${RUNNER_TEMP}/cuda-keyring.deb" \
@@ -615,7 +616,7 @@ jobs:
           echo "CUDACXX=/usr/local/cuda-12.4/bin/nvcc" >> "${GITHUB_ENV}"
 
       - name: Cold-build native runtime payload
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: (needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_full_validation == 'true') && steps.native-cache.outputs.cache-hit != 'true'
         env:
           KOED_NATIVE_RUNTIME_VERSION: cache-seed
         run: |
@@ -624,6 +625,7 @@ jobs:
           cp -a "${RUNNER_TEMP}/koed-native-runtime-cache-build/koed-runtime" "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime"
 
       - name: Validate native runtime payload before use or save
+        if: needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_full_validation == 'true'
         run: |
           report="${RUNNER_TEMP}/koed-native-runtime-validation.json"
           set +e
@@ -634,16 +636,18 @@ jobs:
           exit "${status}"
 
       - name: Save verified Linux native runtime payload
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: (needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_full_validation == 'true') && steps.native-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ runner.temp }}/koed-native-runtime-cache/linux-x64/koed-runtime
           key: native-runtime-payload-v1-linux-x64-cuda-12.4-${{ hashFiles('scripts/native-runtime/sources.linux-x64.json', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/build-linux-x64.mjs', 'scripts/native-runtime-copy.mjs') }}
 
       - name: Package native runtime artifact
+        if: needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_full_validation == 'true'
         run: pnpm native-runtime:build:linux-x64 -- --source-dir "${RUNNER_TEMP}/koed-native-runtime-cache/linux-x64/koed-runtime" --version "${GITHUB_SHA}" --json
 
       - name: Validate packaged native runtime artifact
+        if: needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_full_validation == 'true'
         run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/linux-x64/koed-runtime --platform linux --json
 
       # Linux Desktop bundles only the frozen CPU core, built by the same

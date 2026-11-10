@@ -12,6 +12,97 @@ import { evaluateRequiredJobs } from "../.github/scripts/ci-required.mjs";
 
 const REPOSITORY_FULL_NAME = "koed-labs/koed";
 
+const linuxJob = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs[
+  "native-runtime-linux-x64"
+];
+
+function runsFor(condition, outputs, cacheHit) {
+  if (!condition) return true;
+  const expression = condition
+    .replace(
+      /needs\.changes\.outputs\.(run_linux_native|run_app_smoke|run_full_validation)/g,
+      (_, key) => JSON.stringify(outputs[key])
+    )
+    .replace(
+      /steps\.native-cache\.outputs\.cache-hit/g,
+      JSON.stringify(cacheHit)
+    )
+    .replace(
+      /steps\.native-core-cache\.outputs\.cache-hit/g,
+      JSON.stringify(cacheHit)
+    );
+  assert.match(expression, /^[\s()'"a-z!&|=]+$/);
+  return Function(`"use strict"; return (${expression});`)();
+}
+
+test("Linux combined payload and CPU smoke respect policy and cache scenarios", () => {
+  const combined = [
+    "Restore verified Linux native runtime payload",
+    "Install native runtime build dependencies",
+    "Install pinned CUDA build toolkit",
+    "Cold-build native runtime payload",
+    "Validate native runtime payload before use or save",
+    "Save verified Linux native runtime payload",
+    "Package native runtime artifact",
+    "Validate packaged native runtime artifact"
+  ];
+  const misses = new Set(combined.slice(1, 4).concat(combined[5]));
+  const cpu = [
+    "Restore Linux native CPU core",
+    "Verify Linux native CPU core",
+    "Build workspace and Linux release AppImage",
+    "Run Linux directory and extracted AppImage smoke"
+  ];
+  const step = (name) => {
+    const found = linuxJob.steps.find((item) => item.name === name);
+    assert.ok(found, `missing step ${name}`);
+    return found;
+  };
+  const scenarios = [
+    { native: false, smoke: true, full: false },
+    { native: false, smoke: false, full: true },
+    { native: true, smoke: false, full: false },
+    { native: true, smoke: true, full: false },
+    { native: true, smoke: false, full: true },
+    { native: false, smoke: false, full: false }
+  ];
+  for (const { native, smoke, full } of scenarios) {
+    const outputs = {
+      run_linux_native: String(native),
+      run_app_smoke: String(smoke),
+      run_full_validation: String(full)
+    };
+    for (const hit of [true, false]) {
+      const cacheHit = String(hit);
+      const jobRuns = runsFor(linuxJob.if, outputs, cacheHit);
+      assert.equal(jobRuns, native || smoke || full);
+      for (const name of combined) {
+        assert.equal(
+          jobRuns && runsFor(step(name).if, outputs, cacheHit),
+          (native || full) && (!misses.has(name) || !hit),
+          `${name}: ${JSON.stringify({ outputs, hit })}`
+        );
+      }
+      for (const name of cpu) {
+        assert.equal(
+          jobRuns && runsFor(step(name).if, outputs, cacheHit),
+          smoke || full,
+          name
+        );
+      }
+      assert.equal(
+        jobRuns &&
+          runsFor(
+            step("Upload verified Linux native runtime artifact").if,
+            outputs,
+            cacheHit
+          ),
+        native
+      );
+    }
+  }
+});
+
 const pullRequest = ({
   head = "feature",
   labels = [],
