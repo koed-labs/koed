@@ -16,10 +16,12 @@ Packaged Desktop never silently falls back to source-checkout `vendor` paths. De
 
 ## Linux Desktop release qualification
 
-`pnpm desktop:package:linux:release` requires a native Linux x64 host and
-checks the host before building or staging. It also requires a validated native
-runtime source via `KOED_NATIVE_RUNTIME_SOURCE_DIR`; the later artifact checks
-still apply. The generic `pnpm desktop:package:linux` directory build is unchanged.
+`pnpm desktop:package:linux:release` checks for a Linux x64 Node.js execution
+environment before building or staging. Use a native Linux x64 host for release
+qualification: the guard does not detect emulation, and emulated hosts are not
+qualified. The command also requires a validated native runtime source via
+`KOED_NATIVE_RUNTIME_SOURCE_DIR`; the later artifact checks still apply. The
+generic `pnpm desktop:package:linux` directory build is unchanged.
 
 The Linux x64 Desktop release job stages the versioned Linux native runtime
 archive after checking its SHA-256 sidecar and validating the extracted tree.

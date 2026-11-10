@@ -31,7 +31,7 @@ test("Linux release host guard accepts only Linux x64 before packaging", async (
   ]) {
     assert.throws(
       () => validateLinuxReleaseHost(platform, arch),
-      /Linux x64 host/
+      /Linux x64 Node.js execution environment/
     );
   }
   const pkg = JSON.parse(readFileSync(join(desktop, "package.json"), "utf8"));
@@ -39,6 +39,34 @@ test("Linux release host guard accepts only Linux x64 before packaging", async (
     pkg.scripts["package:linux:release"],
     /^node scripts\/validate-linux-release-host\.mjs && pnpm package:workspace:build && pnpm package:runtime &&/
   );
+});
+
+test("Linux release host CLI accepts Linux x64 and rejects unsupported Node environments", () => {
+  for (const [platform, arch, expectedStatus] of [
+    ["linux", "x64", 0],
+    ["darwin", "x64", 1],
+    ["darwin", "arm64", 1],
+    ["linux", "arm64", 1]
+  ]) {
+    const preload = `data:text/javascript,${encodeURIComponent(`Object.defineProperty(process, 'platform', { value: '${platform}' }); Object.defineProperty(process, 'arch', { value: '${arch}' });`)}`;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        preload,
+        resolve(desktop, "scripts/validate-linux-release-host.mjs")
+      ],
+      { encoding: "utf8" }
+    );
+    assert.equal(result.status, expectedStatus, result.stderr);
+    if (expectedStatus) {
+      assert.match(result.stderr, /Linux x64 Node\.js execution environment/);
+      assert.match(result.stderr, new RegExp(`${platform} ${arch}`));
+    } else {
+      assert.equal(result.stderr, "");
+    }
+    assert.equal(result.stdout, "");
+  }
 });
 
 test("Linux release config targets x64 AppImage with explicit artifact name", () => {

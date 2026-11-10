@@ -8,7 +8,7 @@ export function validateLinuxReleaseHost(
 ) {
   if (platform !== "linux" || arch !== "x64") {
     throw new Error(
-      `Linux Desktop release requires a native Linux x64 host (detected ${platform} ${arch}).`
+      `Linux Desktop release requires a Linux x64 Node.js execution environment (detected ${platform} ${arch}). Use a native Linux x64 host; emulation is not qualified.`
     );
   }
 }
