@@ -784,6 +784,10 @@ export const pruneMsgpackrForTarget = ({
   if (
     extractorInfo.name !== "msgpackr-extract" ||
     extractorInfo.version !== "3.0.3" ||
+    extractorInfo.main !== "./index.js" ||
+    Object.hasOwn(extractorInfo, "exports") ||
+    extractorInfo.dependencies?.["node-gyp-build-optional-packages"] !==
+      "5.2.2" ||
     extractorInfo.optionalDependencies?.[name] !== "3.0.3"
   )
     fail(extractorManifest);
@@ -791,8 +795,17 @@ export const pruneMsgpackrForTarget = ({
   if (!existsSync(manifestPath) || !lstatSync(manifestPath).isFile())
     fail(manifestPath);
   const manifest = readManifest(manifestPath);
-  if (manifest.name !== name || manifest.version !== "3.0.3")
+  if (
+    manifest.name !== name ||
+    manifest.version !== "3.0.3" ||
+    Object.hasOwn(manifest, "main") ||
+    Object.hasOwn(manifest, "exports")
+  )
     fail(manifestPath);
+  for (const root of [extractor, target]) {
+    const index = resolve(root, "index.js");
+    if (!existsSync(index) || !lstatSync(index).isFile()) fail(index);
+  }
   for (const path of ["build/Release", "build/Debug", "prebuilds"]) {
     if (existsSync(resolve(extractor, path))) fail(resolve(extractor, path));
   }

@@ -95,16 +95,31 @@ test("prunes only known staged Linux msgpackr ABI binaries and inventories retai
   packageFixture(
     source,
     "msgpackr-extract",
+    { "node-gyp-build-optional-packages": "5.2.2" },
+    { "index.js": "module.exports = {};" },
+    {
+      version: "3.0.3",
+      type: undefined,
+      main: "./index.js",
+      optionalDependencies: { [name]: "3.0.3" }
+    }
+  );
+  packageFixture(
+    source,
+    "node-gyp-build-optional-packages",
     {},
-    { "index.js": "export {};" },
-    { version: "3.0.3", optionalDependencies: { [name]: "3.0.3" } }
+    { "index.js": "module.exports = {};" },
+    { version: "5.2.2", type: undefined }
   );
   packageFixture(
     source,
     name,
     {},
-    Object.fromEntries(binaries.map((file) => [file, file])),
-    { version: "3.0.3" }
+    {
+      "index.js": "",
+      ...Object.fromEntries(binaries.map((file) => [file, file]))
+    },
+    { version: "3.0.3", type: undefined, os: ["linux"], cpu: ["x64"] }
   );
   cpSync(source, staged, { recursive: true });
   assembly.pruneMsgpackrForTarget({
@@ -163,9 +178,11 @@ test("rejects unexpected msgpackr layouts before removing staged files", () => {
     packageFixture(
       root,
       "msgpackr-extract",
-      {},
+      { "node-gyp-build-optional-packages": "5.2.2" },
       { "index.js": "" },
       {
+        main: "./index.js",
+        type: undefined,
         version: mutation === "extractor-version" ? "4.0.0" : "3.0.3",
         optionalDependencies:
           mutation === "missing-declaration"
@@ -177,15 +194,23 @@ test("rejects unexpected msgpackr layouts before removing staged files", () => {
       root,
       name,
       {},
-      Object.fromEntries(
-        [
-          "node.abi115.glibc.node",
-          "node.abi115.musl.node",
-          "node.napi.glibc.node",
-          "node.napi.musl.node"
-        ].map((file) => [file, file])
-      ),
-      { version: mutation === "version" ? "4.0.0" : "3.0.3" }
+      {
+        "index.js": "",
+        ...Object.fromEntries(
+          [
+            "node.abi115.glibc.node",
+            "node.abi115.musl.node",
+            "node.napi.glibc.node",
+            "node.napi.musl.node"
+          ].map((file) => [file, file])
+        )
+      },
+      {
+        version: mutation === "version" ? "4.0.0" : "3.0.3",
+        type: undefined,
+        os: ["linux"],
+        cpu: ["x64"]
+      }
     );
     const target = resolve(root, "node_modules", name);
     if (mutation === "modules-symlink") {
@@ -246,6 +271,94 @@ test("rejects unexpected msgpackr layouts before removing staged files", () => {
     assert.ok(existsSync(resolve(target, "node.abi115.glibc.node")), mutation);
   }
 });
+
+for (const mutation of [
+  "extractor-main",
+  "extractor-exports",
+  "platform-main",
+  "platform-exports",
+  "loader-missing",
+  "loader-version",
+  "extractor-index-missing",
+  "platform-index-missing",
+  "extractor-index-directory",
+  "platform-index-directory",
+  "extractor-index-symlink",
+  "platform-index-symlink"
+]) {
+  test(`rejects ${mutation} before pruning ABI files`, () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-msgpackr-routing-"));
+    roots.push(root);
+    const name = "@msgpackr-extract/msgpackr-extract-linux-x64";
+    const loader = "node-gyp-build-optional-packages";
+    const dependencies = { [loader]: "5.2.2" };
+    if (mutation === "loader-missing") delete dependencies[loader];
+    if (mutation === "loader-version") dependencies[loader] = "5.2.1";
+    packageFixture(
+      root,
+      "msgpackr-extract",
+      dependencies,
+      { "index.js": "" },
+      {
+        version: "3.0.3",
+        type: undefined,
+        main:
+          mutation === "extractor-main" ? "./nested/index.js" : "./index.js",
+        ...(mutation === "extractor-exports"
+          ? { exports: "./nested/index.js" }
+          : {}),
+        optionalDependencies: { [name]: "3.0.3" }
+      }
+    );
+    const abiFiles = ["node.abi115.glibc.node", "node.abi115.musl.node"];
+    packageFixture(
+      root,
+      name,
+      {},
+      {
+        "index.js": "",
+        ...Object.fromEntries(
+          [...abiFiles, "node.napi.glibc.node", "node.napi.musl.node"].map(
+            (file) => [file, file]
+          )
+        )
+      },
+      {
+        version: "3.0.3",
+        type: undefined,
+        os: ["linux"],
+        cpu: ["x64"],
+        ...(mutation === "platform-main" ? { main: "./nested/index.js" } : {}),
+        ...(mutation === "platform-exports"
+          ? { exports: "./nested/index.js" }
+          : {})
+      }
+    );
+    const target = resolve(root, "node_modules", name);
+    if (mutation.includes("index-")) {
+      const index = resolve(
+        root,
+        "node_modules",
+        mutation.startsWith("extractor") ? "msgpackr-extract" : name,
+        "index.js"
+      );
+      rmSync(index);
+      if (mutation.endsWith("directory")) mkdirSync(index);
+      if (mutation.endsWith("symlink")) symlinkSync("package.json", index);
+    }
+    assert.throws(
+      () =>
+        assembly.pruneMsgpackrForTarget({
+          runtimeRoot: root,
+          platform: "linux",
+          architecture: "x64"
+        }),
+      /msgpackr/i
+    );
+    for (const file of abiFiles)
+      assert.equal(readFileSync(resolve(target, file), "utf8"), file);
+  });
+}
 
 test("projects hermetic base and privacy closures from shared production graph", () => {
   const workspace = mkdtempSync(resolve(tmpdir(), "koed-component-assembly-"));
