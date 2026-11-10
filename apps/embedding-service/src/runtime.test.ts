@@ -1,8 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LlamaEmbeddingClient } from "./runtime.js";
 import { EmbeddingRuntime } from "./runtime.js";
 import type { TokenPiece } from "./llama-server.js";
 import { testConfig, testLogger } from "./test-helpers.js";
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 class FakeLlamaServer implements LlamaEmbeddingClient {
   embedInputs: string[][] = [];
@@ -48,6 +56,74 @@ class FakeLlamaServer implements LlamaEmbeddingClient {
 }
 
 describe("EmbeddingRuntime", () => {
+  it("rejects queued requests during shutdown without reloading the model", async () => {
+    const stopping = deferred();
+    const server = new FakeLlamaServer();
+    server.stop = vi.fn(() => stopping.promise);
+    const createClient = vi.fn(() => server);
+    const runtime = new EmbeddingRuntime(
+      testConfig(),
+      testLogger(),
+      createClient
+    );
+    await runtime.loadEmbeddingModel();
+
+    const shutdown = runtime.shutdownRuntime();
+    const secondShutdown = runtime.shutdownRuntime();
+    expect(runtime.isModelLoaded()).toBe(false);
+    await expect(runtime.requireEmbeddingServer()).rejects.toThrow();
+    stopping.resolve();
+    await Promise.all([shutdown, secondShutdown]);
+    await expect(runtime.requireEmbeddingServer()).rejects.toThrow();
+    expect(createClient).toHaveBeenCalledTimes(1);
+    expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(runtime.embeddingServer).toBeNull();
+  });
+
+  it("stops the child created by startup that was in flight at shutdown", async () => {
+    const starting = deferred();
+    const server = Object.assign(new FakeLlamaServer(), {
+      start: () => starting.promise,
+      stop: vi.fn(async () => undefined)
+    });
+    const createClient = vi.fn(() => server);
+    const runtime = new EmbeddingRuntime(
+      testConfig(),
+      testLogger(),
+      createClient
+    );
+    const load = runtime.loadEmbeddingModel();
+    const shutdown = runtime.shutdownRuntime();
+
+    await expect(runtime.loadEmbeddingModel()).rejects.toThrow("shutting down");
+    expect(server.stop).not.toHaveBeenCalled();
+    starting.resolve();
+    await Promise.all([load, shutdown]);
+    expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(createClient).toHaveBeenCalledTimes(1);
+    expect(runtime.isModelLoaded()).toBe(false);
+  });
+
+  it("cancels an in-flight startup at shutdown when the client supports it", async () => {
+    const starting = deferred();
+    const server = Object.assign(new FakeLlamaServer(), {
+      start: () => starting.promise,
+      shutdown: vi.fn(async () => starting.resolve()),
+      stop: vi.fn(async () => undefined)
+    });
+    const runtime = new EmbeddingRuntime(
+      testConfig(),
+      testLogger(),
+      () => server
+    );
+    const load = runtime.loadEmbeddingModel();
+    await runtime.shutdownRuntime();
+    await load;
+    expect(server.shutdown).toHaveBeenCalledOnce();
+    expect(server.stop).toHaveBeenCalledOnce();
+    expect(runtime.isModelLoaded()).toBe(false);
+  });
+
   it("preserves chunk order and metadata", async () => {
     const fakeServer = new FakeLlamaServer();
     const runtime = new EmbeddingRuntime(testConfig(), testLogger());

@@ -88,7 +88,9 @@ function Validation() {
         savedDraft={
           validation?.scene === "clients"
             ? { version: 2, step: "clients" }
-            : undefined
+            : validation?.scene === "hardware"
+              ? { version: 2, step: "hardware" }
+              : undefined
         }
         onSaveDraft={async (draft) => {
           if (validation) validation.fixture.draft = draft;

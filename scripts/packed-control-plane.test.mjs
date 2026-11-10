@@ -55,9 +55,9 @@ test("global npm control plane admits only pinned components without checkout im
         runtimes: [
           {
             kind: "node",
-            runtimeRange: ">=24 <25",
-            nodeRange: ">=24 <25",
-            modulesAbi: process.versions.modules
+            runtimeRange: ">=24 <27",
+            nodeRange: ">=24 <27",
+            minimumNapi: 10
           }
         ],
         requiredFiles: { base: ["ready.js"], privacy: ["ready.js"] }
@@ -126,14 +126,17 @@ test("global npm control plane admits only pinned components without checkout im
     assert.match(help.stdout, /Usage: koed /);
     assert.ok(!help.stdout.includes(repoRoot));
     const systemNode = spawnSync("node", ["--version"], { encoding: "utf8" });
-    if (!/^v24\./.test(systemNode.stdout.trim())) {
+    const systemNodeMajor = Number(
+      systemNode.stdout.trim().match(/^v(\d+)\./)?.[1]
+    );
+    if (systemNodeMajor < 24 || systemNodeMajor >= 27) {
       const unsupported = spawnSync("node", [executable, "--help"], {
         cwd: outside,
         env: { ...cleanEnvironment, PATH: process.env.PATH ?? "" },
         encoding: "utf8"
       });
       assert.equal(unsupported.status, 1, unsupported.stderr);
-      assert.match(unsupported.stderr, /requires Node\.js >=24 <25/);
+      assert.match(unsupported.stderr, /requires Node\.js >=24 <27/);
     }
     const models = runKoed(["models", "status", "--json"]);
     assert.equal(models.status, 0, models.stderr);

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   acquireKoedServerSupervisorLock,
+  readSupervisorLock,
   releaseKoedServerSupervisorLock
 } from "./supervisor-lock.js";
 
@@ -20,6 +21,7 @@ describe("koed-server supervisor lock", () => {
     const paths = pathsForTest();
     const first = acquireKoedServerSupervisorLock(paths, {
       pid: 101,
+      sourceOwner: { kind: "standalone", installationId: "a".repeat(32) },
       isProcessRunning: (pid) => pid === 101,
       resolveProcessIdentity: (pid) => `process-${pid}`,
       now: () => new Date("2026-01-01T00:00:00.000Z")
@@ -31,6 +33,10 @@ describe("koed-server supervisor lock", () => {
     });
 
     expect(first.acquired).toBe(true);
+    expect(readSupervisorLock(first.lockPath)?.sourceOwner).toEqual({
+      kind: "standalone",
+      installationId: "a".repeat(32)
+    });
     expect(second).toMatchObject({ acquired: false, ownerPid: 101 });
     expect(JSON.parse(readFileSync(first.lockPath, "utf8"))).toMatchObject({
       pid: 101,

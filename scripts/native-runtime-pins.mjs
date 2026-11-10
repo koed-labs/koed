@@ -3,10 +3,28 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { canonicalArtifactJson } from "../packages/koed-server/src/artifact-canonical-json.mjs";
-import { validateNativeRuntimeCatalog } from "../packages/koed-server/dist/native-runtime-catalog.js";
+import {
+  validateCompiledNativeRuntimeCatalog,
+  validateNativeRuntimeCatalog
+} from "../packages/koed-server/dist/native-runtime-catalog.js";
 import { readPackagedCatalog } from "./static-packaged-catalog.mjs";
 
+export const createCompiledNativeCatalog = (linux, macos) => {
+  const compiled = validateCompiledNativeRuntimeCatalog({
+    schemaVersion: 2,
+    linux,
+    macos
+  });
+  if (!compiled.linux?.cuda || !compiled.macos)
+    throw new Error("All required native packages must be present.");
+  return compiled;
+};
+
 const symbol = "productionNativeRuntimeCatalog";
+const validateCatalog = (value) =>
+  value?.schemaVersion === 2
+    ? validateCompiledNativeRuntimeCatalog(value)
+    : validateNativeRuntimeCatalog(value);
 export const readProductionNativeCatalog = (
   repoRoot = resolve(import.meta.dirname, "..")
 ) => {
@@ -17,12 +35,12 @@ export const readProductionNativeCatalog = (
     ),
     symbol
   );
-  return value === null ? null : validateNativeRuntimeCatalog(value);
+  return value === null ? null : validateCatalog(value);
 };
 
 export const readPackagedNativeCatalog = (modulePath) => {
   const actual = readPackagedCatalog(modulePath, symbol);
-  return actual === null ? null : validateNativeRuntimeCatalog(actual);
+  return actual === null ? null : validateCatalog(actual);
 };
 
 export const verifyPackagedNativeCatalog = ({ modulePath, expected }) => {
@@ -36,9 +54,29 @@ export const verifyPackagedNativeCatalog = ({ modulePath, expected }) => {
 };
 
 // downloadCandidate already authenticated every draft asset against its protected build hash.
-export function verifyDraftNativePins(catalog, { root, version, assets }) {
-  if (!catalog?.cuda)
-    throw new Error("The release CLI must include both native packages.");
+export function verifyDraftNativePins(
+  catalog,
+  { root, version, assets, allowLegacyNativeCatalog = false }
+) {
+  if (!catalog) throw new Error("Missing required native release catalog.");
+  const validated = validateCatalog(catalog);
+  if (validated.schemaVersion !== 2 && !allowLegacyNativeCatalog)
+    throw new Error("A schema 2 native release catalog is required.");
+  if (
+    validated.schemaVersion !== 2 &&
+    assets.some((asset) =>
+      /^(?:koed-native-core-.*-macos-arm64\.tar\.gz|native-core-manifest-macos-arm64\.json)$/.test(
+        asset.name
+      )
+    )
+  )
+    throw new Error("macOS native assets require a schema 2 release catalog.");
+  const linux = validated.schemaVersion === 2 ? validated.linux : validated;
+  const macos = validated.schemaVersion === 2 ? validated.macos : null;
+  if (!linux?.cuda || (validated.schemaVersion === 2 && !macos))
+    throw new Error(
+      "The release CLI must include all required native packages."
+    );
   const hashes = new Map(assets.map((asset) => [asset.name, asset.sha256]));
   assert.deepEqual(
     catalog,
@@ -47,10 +85,32 @@ export function verifyDraftNativePins(catalog, { root, version, assets }) {
     ),
     "Native catalog differs from the release CLI."
   );
-  for (const kind of ["core", "cuda"]) {
-    const pin = catalog[kind];
-    const archive = `koed-native-${kind}-${pin.recipeId}-linux-x64.tar.gz`;
-    const manifestName = `native-${kind}-manifest.json`;
+  const pins = [
+    {
+      kind: "core",
+      pin: linux.core,
+      platform: "linux-x64",
+      manifestName: "native-core-manifest.json"
+    },
+    {
+      kind: "cuda",
+      pin: linux.cuda,
+      platform: "linux-x64",
+      manifestName: "native-cuda-manifest.json"
+    },
+    ...(macos
+      ? [
+          {
+            kind: "core",
+            pin: macos.core,
+            platform: "macos-arm64",
+            manifestName: "native-core-manifest-macos-arm64.json"
+          }
+        ]
+      : [])
+  ];
+  for (const { kind, pin, platform, manifestName } of pins) {
+    const archive = `koed-native-${kind}-${pin.recipeId}-${platform}.tar.gz`;
     if (
       pin.url !==
         `https://github.com/koed-labs/koed/releases/download/v${version}/${archive}` ||

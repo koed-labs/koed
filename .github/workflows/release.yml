@@ -67,6 +67,9 @@ jobs:
           commit: "ci: version koed"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # release:version refreshes only published native assets. The resulting
+          # checked-in pins are reviewed with the version bump, before promotion.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Pull requests created or updated with GITHUB_TOKEN only produce
       # approval-required pull_request runs (action_required, no jobs), so CI
@@ -204,6 +207,23 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: 0
         run: node scripts/build-koed-component-release.mjs --version "${{ needs.release.outputs.version }}" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
+      - name: Smoke frozen components on Node 24
+        run: |
+          cp -R "dist/koed-components/${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/koed-component-release"
+          node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release"
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release" --variant cuda
+          fi
+      - name: Set up Node 26 consumer
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 26
+      - name: Smoke frozen components on Node 26
+        run: |
+          node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release"
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release" --variant cuda
+          fi
       - name: Upload frozen component outputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -302,6 +322,7 @@ jobs:
           set -euo pipefail
           node scripts/native-runtime/stage-release.mjs "$VERSION" scratch/native-packages release-native
           echo "catalog=$(jq -c . release-native/native-runtime-catalog.json)" >> "$GITHUB_OUTPUT"
+          rm release-native/native-runtime-catalog.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -316,13 +337,157 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
         run: node scripts/ensure-release-assets.mjs "$TAG" release-native/*
 
+  frozen-macos-native-runtime:
+    name: Build and freeze macOS native runtime
+    needs: release
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+    runs-on: macos-15
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.freeze-upload.outputs.artifact-id }}
+      inventory_sha256: ${{ steps.inventory.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build native runtime artifact
+        env:
+          KOED_NATIVE_RUNTIME_VERSION: ${{ needs.release.outputs.version }}
+        run: pnpm native-runtime:build:macos-arm64 -- --json
+      - name: Extract built native runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/koed-native-runtime-release"
+          tarballs=(dist/native-runtime/macos-arm64/koed-native-runtime-macos-arm64-*.tar.gz)
+          test "${#tarballs[@]}" -eq 1 && test -f "${tarballs[0]}"
+          tar -xzf "${tarballs[0]}" -C "${RUNNER_TEMP}/koed-native-runtime-release"
+      - name: Record frozen macOS inventory and retain evidence
+        id: inventory
+        run: |
+          set -euo pipefail
+          digest="$(node scripts/native-runtime/stage-macos-core.mjs --source-dir "${RUNNER_TEMP}/koed-native-runtime-release/koed-runtime" --inspect-inventory)"
+          [[ "${digest}" =~ ^[a-f0-9]{64}$ ]]
+          node scripts/native-runtime/stage-macos-core.mjs --source-dir "${RUNNER_TEMP}/koed-native-runtime-release/koed-runtime" --write-inventory dist/native-runtime/macos-arm64/approved-macos-inventory.json --frozen-inventory-sha256 "${digest}"
+          echo "sha256=${digest}" >> "${GITHUB_OUTPUT}"
+      - name: Upload private frozen native payload
+        id: freeze-upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-private-frozen-macos-native-runtime
+          path: |
+            dist/native-runtime/macos-arm64/koed-native-runtime-macos-arm64-*.tar.gz
+            dist/native-runtime/macos-arm64/approved-macos-inventory.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  macos-native-packages:
+    name: Stage frozen macOS core and complete native catalog
+    needs: [release, linux-native-packages, frozen-macos-native-runtime]
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    outputs:
+      catalog: ${{ steps.catalog.outputs.catalog }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile && pnpm build
+      - &download-frozen-macos
+        name: Download frozen macOS native runtime
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.frozen-macos-native-runtime.outputs.artifact_id }}
+          path: frozen-macos
+          merge-multiple: true
+      - &extract-frozen-macos
+        name: Extract frozen macOS native runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/koed-native-runtime-release"
+          tarballs=(frozen-macos/koed-native-runtime-macos-arm64-*.tar.gz)
+          test "${#tarballs[@]}" -eq 1 && test -f "${tarballs[0]}"
+          tar -xzf "${tarballs[0]}" -C "${RUNNER_TEMP}/koed-native-runtime-release"
+      - &verify-frozen-macos-inventory
+        name: Verify frozen macOS inventory
+        env:
+          FROZEN_INVENTORY_SHA256: ${{ needs.frozen-macos-native-runtime.outputs.inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "${FROZEN_INVENTORY_SHA256}" =~ ^[a-f0-9]{64}$ ]]
+          actual="$(node scripts/native-runtime/stage-macos-core.mjs --source-dir "${RUNNER_TEMP}/koed-native-runtime-release/koed-runtime" --inspect-inventory)"
+          test "${actual}" = "${FROZEN_INVENTORY_SHA256}"
+      - name: Stage frozen macOS core
+        env:
+          FROZEN_INVENTORY_SHA256: ${{ needs.frozen-macos-native-runtime.outputs.inventory_sha256 }}
+        run: |
+          node scripts/native-runtime/stage-macos-core.mjs --source-dir "${RUNNER_TEMP}/koed-native-runtime-release/koed-runtime" --out-dir scratch/macos-core --version "${{ needs.release.outputs.version }}" --frozen-inventory-sha256 "${FROZEN_INVENTORY_SHA256}"
+      - name: Download Linux native packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: koed-linux-native-packages
+          path: release-native
+      - name: Assemble and verify complete native catalog
+        id: catalog
+        env:
+          LINUX_CATALOG: ${{ needs.linux-native-packages.outputs.catalog }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          node scripts/native-runtime/assemble-release-catalog.mjs "$VERSION" scratch/macos-core release-native
+          echo "catalog=$(jq -c . release-native/native-runtime-catalog.json)" >> "$GITHUB_OUTPUT"
+      - name: Upload macOS native release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-macos-native-packages
+          path: |
+            release-native/koed-native-core-*-macos-arm64.tar.gz
+            release-native/koed-native-core-*-macos-arm64.tar.gz.sha256
+            release-native/native-core-manifest-macos-arm64.json
+            release-native/native-runtime-catalog.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - name: Attach macOS core and complete catalog to product draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: node scripts/ensure-release-assets.mjs "$TAG" release-native/koed-native-core-*-macos-arm64.tar.gz release-native/koed-native-core-*-macos-arm64.tar.gz.sha256 release-native/native-core-manifest-macos-arm64.json release-native/native-runtime-catalog.json
+
   standalone-koed-server-release-assets:
     name: Standalone koed-server release assets (${{ matrix.platform }} ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: write
-    needs: [release, component-manifest-catalog, linux-native-packages]
+    needs: [release, component-manifest-catalog, macos-native-packages]
     if: needs.release.outputs.desktop_assets_enabled == 'true'
     env:
       KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json
@@ -365,7 +530,7 @@ jobs:
       - &embed-native-pins
         name: Embed native package pins in the release build
         env:
-          NATIVE_CATALOG: ${{ needs.linux-native-packages.outputs.catalog }}
+          NATIVE_CATALOG: ${{ needs.macos-native-packages.outputs.catalog }}
         run: |
           node --input-type=module -e '
             import { writeFileSync } from "node:fs";
@@ -563,11 +728,16 @@ jobs:
             --out "koed-release-artifacts-${{ needs.release.outputs.version }}.json" \
             --json
 
+      - name: Render versioned Server installer
+        run: node scripts/render-server-installer.mjs "${{ needs.release.outputs.version }}" install-koed-server.sh
+
       - name: Retain reviewed release metadata
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: koed-release-metadata
-          path: koed-release-artifacts-${{ needs.release.outputs.version }}.json
+          path: |
+            koed-release-artifacts-${{ needs.release.outputs.version }}.json
+            install-koed-server.sh
           if-no-files-found: error
           retention-days: 30
 
@@ -576,7 +746,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
-            "koed-release-artifacts-${{ needs.release.outputs.version }}.json"
+            "koed-release-artifacts-${{ needs.release.outputs.version }}.json" \
+            install-koed-server.sh
 
   native-runtime-linux-x64-release-assets:
     name: Linux x64 native runtime release assets
@@ -852,7 +1023,13 @@ jobs:
     name: Signed Desktop release assets
     runs-on: macos-15
     timeout-minutes: 150
-    needs: [release, component-manifest-catalog, linux-native-packages]
+    needs:
+      [
+        release,
+        component-manifest-catalog,
+        macos-native-packages,
+        frozen-macos-native-runtime
+      ]
     if: github.ref == 'refs/heads/main' && needs.release.outputs.desktop_assets_enabled == 'true'
     environment: desktop-release
     env:
@@ -892,20 +1069,9 @@ jobs:
           pnpm --filter @koed-labs/server build
           node scripts/verify-frozen-component-assets.mjs release-components "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}"
 
-      - name: Build native runtime artifact
-        env:
-          KOED_NATIVE_RUNTIME_VERSION: ${{ needs.release.outputs.version }}
-        run: pnpm native-runtime:build:macos-arm64 -- --json
-
-      - name: Extract native runtime artifact for relocation validation
-        run: |
-          set -euo pipefail
-          runtime_root="${RUNNER_TEMP}/koed-native-runtime-release"
-          mkdir -p "${runtime_root}"
-          tarball="$(find dist/native-runtime/macos-arm64 -name 'koed-native-runtime-macos-arm64-*.tar.gz' -print -quit)"
-          test -n "${tarball}"
-          tar -xzf "${tarball}" -C "${runtime_root}"
-          test -d "${runtime_root}/koed-runtime"
+      - *download-frozen-macos
+      - *extract-frozen-macos
+      - *verify-frozen-macos-inventory
 
       - name: Validate native runtime artifact
         run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-release/koed-runtime" --platform darwin --json
@@ -1080,6 +1246,8 @@ jobs:
         standalone-koed-server-release-metadata,
         native-runtime-linux-x64-release-assets,
         linux-native-packages,
+        macos-native-packages,
+        frozen-macos-native-runtime,
         signed-desktop-release-assets,
         linux-desktop-release-assets,
         privacy-release-qualification
@@ -1105,11 +1273,13 @@ jobs:
         id: sources
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FROZEN_MACOS_ARTIFACT_ID: ${{ needs.frozen-macos-native-runtime.outputs.artifact_id }}
         run: |
           set -euo pipefail
           mkdir -p scratch
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > scratch/build-artifacts.json
-          ids="$(jq -r '[.artifacts[] | select(.name == "koed-component-catalog" or .name == "koed-server-app-runtime-linux-x64" or .name == "koed-server-app-runtime-macos-arm64" or .name == "koed-desktop-final-assets" or .name == "koed-desktop-linux-final-assets" or .name == "koed-native-runtime-linux-x64" or .name == "koed-linux-native-packages" or .name == "koed-release-metadata") | .id] | join(",")' scratch/build-artifacts.json)"
+          jq -e --argjson id "${FROZEN_MACOS_ARTIFACT_ID}" '[.artifacts[] | select(.name == "koed-private-frozen-macos-native-runtime" and .id == $id and .expired == false)] | length == 1' scratch/build-artifacts.json > /dev/null
+          ids="$(jq -r '[.artifacts[] | select(.name == "koed-component-catalog" or .name == "koed-server-app-runtime-linux-x64" or .name == "koed-server-app-runtime-macos-arm64" or .name == "koed-desktop-final-assets" or .name == "koed-desktop-linux-final-assets" or .name == "koed-native-runtime-linux-x64" or .name == "koed-linux-native-packages" or .name == "koed-macos-native-packages" or .name == "koed-release-metadata") | .id] | join(",")' scratch/build-artifacts.json)"
           test -n "${ids}"
           echo "ids=${ids}" >> "${GITHUB_OUTPUT}"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -1144,6 +1314,8 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: 11.1.2
@@ -1157,6 +1329,7 @@ jobs:
           path: scratch/expected-build
           merge-multiple: true
       - name: Verify with read-only artifact access
+        id: verify
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1284,12 +1457,16 @@ jobs:
             "koed-privacy-${VERSION}-macos-arm64.tar.gz.sha256" \
             "koed-privacy-${VERSION}-macos-arm64.tar.gz.manifest.json" \
             "koed-release-artifacts-${VERSION}.json" \
+            "install-koed-server.sh" \
             "koed-labs-server.tgz" \
             "koed-labs-server-release-identity.json" \
             "native-runtime-catalog.json" \
             "native-core-manifest.json" \
+            "native-core-manifest-macos-arm64.json" \
             "native-cuda-manifest.json" \
             "koed-native-core-*-linux-x64.tar.gz" \
+            "koed-native-core-*-macos-arm64.tar.gz" \
+            "koed-native-core-*-macos-arm64.tar.gz.sha256" \
             "koed-native-cuda-*-linux-x64.tar.gz" \
             "koed-native-runtime-linux-x64-${VERSION}.tar.gz" \
             "koed-native-runtime-linux-x64-${VERSION}.tar.gz.sha256" \

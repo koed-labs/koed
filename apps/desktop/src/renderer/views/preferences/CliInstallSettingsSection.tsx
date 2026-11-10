@@ -109,6 +109,11 @@ function InstallSettings({
         }}
         onCancel={() => void store.cancelPrivacy()}
         onRemove={() => void store.removeCli()}
+        onCancelPending={
+          tool === "cli" && state.launcher?.pendingCancellationAvailable
+            ? () => void store.cancelPendingCli()
+            : undefined
+        }
         disabled={selected.checking}
         cancelDisabled={state.cancelling}
         heading={

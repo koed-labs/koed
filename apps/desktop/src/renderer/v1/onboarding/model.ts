@@ -3,6 +3,7 @@ import type {
   DesktopSetupStageId,
   KoedServerStatus
 } from "../../../types.js";
+import type { AccelerationChoice } from "@koed-labs/server";
 import {
   DEFAULT_AGENT_LOOK,
   normalizeAgentLook,
@@ -18,10 +19,11 @@ export const clients = [
 ] as const;
 export type OnboardingDraft = {
   version: 2;
-  step: "setup" | "clients" | "memory-model" | "complete";
+  step: "setup" | "hardware" | "clients" | "memory-model" | "complete";
   selected: ClientId[];
   selectionInitialized: boolean;
   agent?: OnboardingAgent;
+  processing?: AccelerationChoice;
 };
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -32,7 +34,8 @@ export function restoreOnboarding(value: unknown): OnboardingDraft {
     // Legacy drafts always re-enter setup inspection, without their chat transcript.
     step:
       draft.version === 2 &&
-      (draft.step === "clients" ||
+      (draft.step === "hardware" ||
+        draft.step === "clients" ||
         draft.step === "memory-model" ||
         draft.step === "complete")
         ? draft.step
@@ -46,7 +49,22 @@ export function restoreOnboarding(value: unknown): OnboardingDraft {
           .map((c) => c.id)
       : [],
     selectionInitialized:
-      draft.version === 2 && draft.selectionInitialized === true
+      draft.version === 2 && draft.selectionInitialized === true,
+    ...(draft.version === 2 &&
+    record(draft.processing) &&
+    (draft.processing.preference === "cpu" ||
+      draft.processing.preference === "auto") &&
+    typeof draft.processing.installCuda === "boolean" &&
+    typeof draft.processing.expectedRevision === "string" &&
+    /^[a-f0-9]{64}$/.test(draft.processing.expectedRevision)
+      ? {
+          processing: {
+            preference: draft.processing.preference,
+            installCuda: draft.processing.installCuda,
+            expectedRevision: draft.processing.expectedRevision
+          }
+        }
+      : {})
   };
 }
 export function restoreAgent(
@@ -113,6 +131,16 @@ export const stages: Record<
       "Getting the good ideas together…"
     ]
   },
+  acceleration: {
+    name: "CUDA acceleration",
+    label: "Preparing CUDA acceleration",
+    description: "Verify GPU offload with the installed embedding model.",
+    messages: [
+      "A little help from your hardware…",
+      "Checking how the dots connect…",
+      "Getting your GPU ready…"
+    ]
+  },
   integration: {
     name: "Koed core integration",
     label: "Connecting Koed components",
@@ -134,9 +162,19 @@ export const stages: Record<
     ]
   }
 };
-export const stageIds = Object.keys(stages) as DesktopSetupStageId[];
+export const stageIds: DesktopSetupStageId[] = [
+  "package",
+  "runtime",
+  "model",
+  "services",
+  "integration",
+  "verification"
+];
 export function setupState(snapshot: DesktopSetupSnapshot | null) {
-  const rows = stageIds.map((id) =>
+  const ids = snapshot?.stages.some(({ id }) => id === "acceleration")
+    ? [...stageIds.slice(0, 3), "acceleration" as const, ...stageIds.slice(3)]
+    : stageIds;
+  const rows = ids.map((id) =>
     snapshot?.stages.find((stage) => stage.id === id)
   );
   const ready =
@@ -161,7 +199,7 @@ export function setupState(snapshot: DesktopSetupSnapshot | null) {
     : Math.min(
         99,
         (100 * (done + (active?.state === "running" ? (fraction ?? 0) : 0))) /
-          stageIds.length
+          ids.length
       );
   const formatBytes = (bytes: number) =>
     `${Math.round(bytes / 1_048_576).toLocaleString()} MB`;
@@ -180,7 +218,8 @@ export function setupState(snapshot: DesktopSetupSnapshot | null) {
     ready,
     activeId,
     copy: stages[activeId],
-    index: stageIds.indexOf(activeId),
+    index: ids.indexOf(activeId),
+    total: ids.length,
     done,
     fraction,
     detail,

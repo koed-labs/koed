@@ -32,11 +32,24 @@ export const SOURCE_RUNTIME_BUILD_SPEC = Object.freeze({
     "tsconfig.base.json",
     "prompts",
     "scripts/source-runtime-build-lib.mjs",
-    "scripts/source-runtime-build.mjs"
+    "scripts/source-runtime-build.mjs",
+    "scripts/embed-source-runtime-catalogs.mjs",
+    "scripts/source-native-catalog.mjs",
+    "scripts/embed-component-manifest-catalog.mjs",
+    "scripts/component-manifest-catalog.mjs",
+    "scripts/koed-server-package-lib.mjs",
+    "scripts/provider-runtime-package-policy.mjs",
+    "scripts/native-runtime-pins.mjs",
+    "scripts/static-packaged-catalog.mjs",
+    "scripts/static-catalog-binding.mjs",
+    "scripts/native-runtime/core-compatibility.linux-x64.json",
+    "config/source-runtime-catalogs.json"
   ],
   requiredOutputs: [
     "packages/koed-server/dist/cli.js",
     "packages/koed-server/dist/cli-command-tree.js",
+    "packages/koed-server/dist/native-runtime-catalog-data.mjs",
+    "packages/koed-server/dist/component-manifest-catalog-data.js",
     "apps/api/dist/index.js",
     "apps/api/dist/browser-approval/index.html",
     "apps/worker/dist/index.js",
@@ -47,6 +60,12 @@ export const SOURCE_RUNTIME_BUILD_SPEC = Object.freeze({
     "packages/mcp-server/dist/capture-hook.js",
     "packages/mcp-server/dist/codex-memory-hook.js"
   ],
+  integrityOutputs: [
+    "packages/koed-server/dist/native-runtime-catalog-data.mjs",
+    "packages/koed-server/dist/component-manifest-catalog-data.js"
+  ],
+  catalogInputs: ["KOED_COMPONENT_MANIFEST_CATALOG"],
+  optionalInputs: ["config/source-component-catalog.json"],
   copiedTrees: [
     { source: "prompts", output: "packages/mcp-server/dist/prompts" }
   ]
@@ -439,6 +458,14 @@ export const calculateSourceRuntimeFingerprint = (
   for (const input of spec.extraInputs) {
     collectPath(repoRoot, resolve(repoRoot, input), files);
   }
+  for (const input of spec.optionalInputs ?? []) {
+    if (existsSync(resolve(repoRoot, input)))
+      collectPath(repoRoot, resolve(repoRoot, input), files);
+  }
+  for (const key of spec.catalogInputs ?? []) {
+    const input = process.env[key];
+    if (input) collectPath(repoRoot, resolve(repoRoot, input), files);
+  }
 
   const nodeMajor = Number.parseInt(nodeVersion.split(".")[0] ?? "", 10);
   if (!Number.isInteger(nodeMajor)) {
@@ -493,6 +520,18 @@ const validManifest = (value) =>
   Number.isInteger(value.packageCount) &&
   Number.isInteger(value.fileCount);
 
+const integrityHashes = (repoRoot, spec) =>
+  Object.fromEntries(
+    (spec.integrityOutputs ?? []).map((path) => [
+      path,
+      existsSync(resolve(repoRoot, path))
+        ? createHash("sha256")
+            .update(readFileSync(resolve(repoRoot, path)))
+            .digest("hex")
+        : null
+    ])
+  );
+
 export const inspectSourceRuntime = (repoRoot, options = {}) => {
   const spec = options.spec ?? SOURCE_RUNTIME_BUILD_SPEC;
   const paths = resolveSourceRuntimeBuildPaths(repoRoot);
@@ -501,6 +540,7 @@ export const inspectSourceRuntime = (repoRoot, options = {}) => {
   const missingOutputs = requiredOutputPaths(repoRoot, spec)
     .filter((path) => !existsSync(path))
     .map((path) => normalizePath(relative(repoRoot, path)));
+  const outputHashes = integrityHashes(repoRoot, spec);
   let reason = null;
   if (existsSync(paths.dirtyPath)) reason = "dirty";
   else if (!existsSync(paths.manifestPath)) reason = "missing_manifest";
@@ -508,10 +548,17 @@ export const inspectSourceRuntime = (repoRoot, options = {}) => {
   else if (manifestValue.fingerprint !== calculated.fingerprint)
     reason = "fingerprint_mismatch";
   else if (missingOutputs.length > 0) reason = "missing_outputs";
+  else if (
+    Object.entries(outputHashes).some(
+      ([path, hash]) => manifestValue.outputHashes?.[path] !== hash
+    )
+  )
+    reason = "catalog_outputs_changed";
   return {
     current: reason === null,
     reason,
     missingOutputs,
+    outputHashes,
     calculated,
     manifest: validManifest(manifestValue) ? manifestValue : null,
     paths
@@ -580,7 +627,8 @@ const manifestFor = (state, spec, now) => ({
   architecture: state.calculated.architecture,
   rootPackages: [...spec.rootPackages],
   packageCount: state.calculated.packages.length,
-  fileCount: state.calculated.fileCount
+  fileCount: state.calculated.fileCount,
+  outputHashes: state.outputHashes
 });
 
 const defaultBuild = (repoRoot, spec) => {
@@ -598,6 +646,22 @@ const defaultBuild = (repoRoot, spec) => {
       `Source-runtime build failed with exit code ${result.status ?? 1}.`
     );
   }
+  // MCP's forced TypeScript build can re-emit the catalog-less source modules.
+  // Bind trust only after the entire service closure has finished building.
+  const catalogs = spawnSync(
+    process.execPath,
+    [resolve(repoRoot, "scripts/embed-source-runtime-catalogs.mjs")],
+    {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: "inherit"
+    }
+  );
+  if (catalogs.error) throw catalogs.error;
+  if (catalogs.status !== 0)
+    throw new Error(
+      "Source runtime catalog preparation failed; no prepared runtime was published."
+    );
 };
 
 export const prepareSourceRuntime = async (

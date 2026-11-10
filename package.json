@@ -31,6 +31,7 @@
     "desktop:start": "pnpm --filter @koed/desktop start",
     "source-runtime:prepare": "node scripts/source-runtime-build.mjs prepare",
     "source-runtime:check": "node scripts/source-runtime-build.mjs check",
+    "source-runtime:refresh": "pnpm --filter @koed-labs/server build && node scripts/refresh-source-runtime-catalogs.mjs",
     "native-runtime:stage:homebrew": "node scripts/stage-native-runtime-homebrew.mjs",
     "koed-server:package": "node scripts/build-koed-server-package.mjs",
     "koed-server:public-package": "node scripts/build-public-server-package.mjs",
@@ -48,7 +49,7 @@
     "eval": "pnpm --filter @koed/evals eval",
     "eval:lcm-summary": "pnpm --filter @koed/evals eval:lcm-summary:live",
     "changeset": "changeset",
-    "release:version": "changeset version && node scripts/sync-product-release.mjs --consume-changesets",
+    "release:version": "changeset version && node scripts/sync-product-release.mjs --consume-changesets && pnpm source-runtime:refresh",
     "release:check": "node scripts/check-product-release.mjs",
     "release:notes": "node scripts/product-release-notes.mjs",
     "codex:configure": "node scripts/configure-codex.mjs",
@@ -113,6 +114,7 @@
     "typescript": "^6.0.3",
     "vite": "^8.0.13",
     "vitest": "^4.1.6",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "yauzl": "3.4.0"
   }
 }

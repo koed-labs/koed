@@ -14,7 +14,7 @@ import {
   Network,
   RefreshCw
 } from "lucide-react";
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { inboxModelFromSnapshot } from "./inbox-model.js";
 import "./inbox.css";
 
@@ -106,6 +106,13 @@ export function InboxView({
   snapshot
 }: InboxViewProps) {
   const mainRef = useRef<HTMLElement | null>(null);
+  const [copyError, setCopyError] = useState(false);
+  const copyOutbox = (send: CollaborationDurableSend) => {
+    setCopyError(false);
+    void Promise.resolve()
+      .then(() => onCopyOutbox?.(send))
+      .catch(() => setCopyError(true));
+  };
   useEffect(() => mainRef.current?.focus({ preventScroll: true }), []);
 
   const model = useMemo(
@@ -185,6 +192,12 @@ export function InboxView({
         </p>
       ) : null}
 
+      {copyError ? (
+        <p className="koed-inbox-error" role="alert">
+          Could not copy message. Try again.
+        </p>
+      ) : null}
+
       {empty ? (
         <div className="koed-inbox-empty">
           <Check aria-hidden="true" />
@@ -203,7 +216,7 @@ export function InboxView({
                         aria-label="Copy message text"
                         onClick={(event) => {
                           event.stopPropagation();
-                          void onCopyOutbox(item.send);
+                          copyOutbox(item.send);
                         }}
                         size="icon"
                         title="Copy message text"
@@ -273,7 +286,7 @@ export function InboxView({
                       aria-label="Copy queued message text"
                       onClick={(event) => {
                         event.stopPropagation();
-                        void onCopyOutbox(item.send);
+                        copyOutbox(item.send);
                       }}
                       size="icon"
                       title="Copy queued message text"

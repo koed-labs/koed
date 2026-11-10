@@ -99,7 +99,10 @@ const resolvePostgresBinDir = (
     "postgres",
     "bin"
   );
-  if (hasAnyPostgresBinary(koedRuntimeDir, exists)) {
+  if (
+    paths.nativeSelectionRoot ||
+    hasAnyPostgresBinary(koedRuntimeDir, exists)
+  ) {
     return { binDir: koedRuntimeDir, artifactSource: "koed-home-runtime" };
   }
   const packagedRuntimeRoot = resolvePackagedKoedRuntimeRoot(environment);

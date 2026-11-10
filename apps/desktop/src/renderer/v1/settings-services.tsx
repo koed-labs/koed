@@ -1,6 +1,7 @@
 import { Badge, Button, Card } from "@koed/ui";
 import { Activity, Clipboard, FileText, RefreshCw } from "lucide-react";
 import type { ComponentStatus, KoedServerStatus } from "../../types.js";
+import { AccelerationSettings } from "./AccelerationSettings.js";
 import {
   EmbeddingStateDetails,
   embeddingSummaryLabel,
@@ -111,6 +112,7 @@ export function SettingsServicesOverview({
           />
         )}
       </Group>
+      <AccelerationSettings />
     </>
   );
 }

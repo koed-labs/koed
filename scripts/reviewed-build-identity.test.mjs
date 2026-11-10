@@ -49,6 +49,8 @@ test("public inventory excludes nested catalog components and includes staged si
       "koed-desktop-linux-final-assets",
       "koed-native-runtime-linux-x64",
       "koed-linux-native-packages",
+      "koed-macos-native-packages",
+      "koed-private-frozen-macos-native-runtime",
       "koed-release-metadata"
     ])
       mkdirSync(resolve(root, name), { recursive: true });
@@ -83,6 +85,14 @@ test("public inventory excludes nested catalog components and includes staged si
       ),
       "report"
     );
+    writeFileSync(
+      resolve(root, "koed-macos-native-packages/native-runtime-catalog.json"),
+      "mac catalog"
+    );
+    writeFileSync(
+      resolve(root, "koed-private-frozen-macos-native-runtime/frozen.tar.gz"),
+      "private"
+    );
     const names = identity
       .collectPublicReleaseAssets(root)
       .map((asset) => asset.name);
@@ -91,6 +101,7 @@ test("public inventory excludes nested catalog components and includes staged si
       [
         "component-manifest-hashes.json",
         "desktop-artifact-size-report.json",
+        "native-runtime-catalog.json",
         "koed-distribution-1.2.3-linux-x64.json",
         "koed-server-app-runtime-1.2.3-linux-x64.provenance.json.sig",
         "koed-server-app-runtime-linux-x64-artifact-size-report.json"
@@ -109,7 +120,9 @@ const approvedNames = [
   "koed-desktop-linux-final-assets",
   "koed-native-runtime-linux-x64",
   "koed-linux-native-packages",
-  "koed-release-metadata"
+  "koed-macos-native-packages",
+  "koed-release-metadata",
+  "koed-private-frozen-macos-native-runtime"
 ];
 const buildInput = (fixture) => ({
   root: resolve(fixture.root, "reviewed"),
@@ -171,6 +184,18 @@ test("createReviewedBuildIdentity binds approved outputs to the current attempt 
     assert.equal(retriedBuild.runAttempt, 2);
     assert.deepEqual(retriedBuild.runtimeIdentities, runtimeIdentities);
     assert.equal(retriedBuild.artifacts.length, approvedNames.length);
+    assert.ok(
+      retriedBuild.artifacts.some(
+        (artifact) =>
+          artifact.name === "koed-private-frozen-macos-native-runtime" &&
+          artifact.id === approvedNames.length
+      )
+    );
+    assert.ok(
+      retriedBuild.artifacts.some(
+        (artifact) => artifact.name === "koed-macos-native-packages"
+      )
+    );
     assert.deepEqual(retriedBuild.npm, f.identity.npm);
     assert.deepEqual(retriedBuild.linuxDesktop, {
       asset: "Koed-1.2.3-x86_64.AppImage",

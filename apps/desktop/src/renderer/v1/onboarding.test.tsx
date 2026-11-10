@@ -8,6 +8,10 @@ import { V1Onboarding } from "./onboarding.js";
 import { DEFAULT_AGENT_LOOK } from "./visual.js";
 import { memoryModelFixture } from "./onboarding/memory-model.fixture.js";
 import { stageIds } from "./onboarding/model.js";
+import {
+  accelerationApiFixture,
+  accelerationSnapshot
+} from "./acceleration.fixture.js";
 
 vi.mock("./onboarding/LoadingKin.js", () => ({
   LoadingKin: (props: { sad: boolean }) => (
@@ -77,6 +81,32 @@ function deferred<T>() {
 }
 
 describe("desktop onboarding", () => {
+  it.each(["services", "verification"] as const)(
+    "offers explicit CPU recovery after GPU setup fails at %s",
+    async (stage) => {
+      const failed = setupSnapshot("failed");
+      failed.activeStage = stage;
+      failed.error = "GPU services did not become ready.";
+      const f = await render({
+        snapshot: failed,
+        draft: {
+          version: 2,
+          step: "setup",
+          processing: {
+            preference: "auto",
+            installCuda: true,
+            expectedRevision: "a".repeat(64)
+          }
+        }
+      });
+      await f.click("Continue with CPU");
+      expect(f.setup.run).toHaveBeenCalledWith({
+        preference: "cpu",
+        installCuda: false,
+        expectedRevision: "a".repeat(64)
+      });
+    }
+  );
   let container: HTMLDivElement;
   let root: Root;
   afterEach(async () => {
@@ -140,6 +170,7 @@ describe("desktop onboarding", () => {
       configurable: true,
       value: {
         setup,
+        acceleration: accelerationApiFixture(),
         localAiClients: options.memoryApi,
         invoke,
         theme: { get: async () => "light", set: themeSet }
@@ -198,7 +229,7 @@ describe("desktop onboarding", () => {
       .querySelector('[role="progressbar"]')
       ?.getAttribute("aria-valuenow");
 
-  it("starts directly at live setup without the maker or chat and requires consent", async () => {
+  it("inspects hardware before setup and requires an explicit processing choice", async () => {
     const { click, setup, invoke } = await render({
       snapshot: setupSnapshot("ready"),
       strict: true
@@ -209,7 +240,15 @@ describe("desktop onboarding", () => {
     expect(setup.run).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalled();
     await click("Get Started");
+    expect(text()).toContain("A little help fromyour hardware.");
+    expect(setup.run).not.toHaveBeenCalled();
+    await click("Continue");
     expect(setup.run).toHaveBeenCalledOnce();
+    expect(setup.run).toHaveBeenCalledWith({
+      preference: "cpu",
+      installCuda: false,
+      expectedRevision: "a".repeat(64)
+    });
     expect(text()).toContain("Your Koed is ready.");
     expect(progress()).toBe("100");
   });
@@ -217,6 +256,20 @@ describe("desktop onboarding", () => {
     const { setup } = await render();
     expect(text()).toContain("Your Koed is ready.");
     expect(setup.run).not.toHaveBeenCalled();
+  });
+  it("passes an explicitly selected CUDA download into setup without downloading during detection", async () => {
+    const { click, setup } = await render({ snapshot: setupSnapshot("ready") });
+    await click("Get Started");
+    expect(setup.run).not.toHaveBeenCalled();
+    await act(async () =>
+      container.querySelector<HTMLInputElement>('input[value="auto"]')!.click()
+    );
+    await click("Continue");
+    expect(setup.run).toHaveBeenCalledWith({
+      preference: "auto",
+      installCuda: true,
+      expectedRevision: "a".repeat(64)
+    });
   });
   it.each(["codex", "claude", "pi"])(
     "allows final completion with another ready client after %s fails",
@@ -365,6 +418,32 @@ describe("desktop onboarding", () => {
       retry.resolve({ ...setupSnapshot("complete", "retry"), sequence: 10 })
     );
     expect(progress()).toBe("100");
+  });
+  it("asks for the processing choice again after an interrupted CUDA setup instead of retrying without it", async () => {
+    const interrupted = setupSnapshot("failed");
+    interrupted.error = "Setup was interrupted.";
+    interrupted.reviewProcessing = true;
+    const { setup, click } = await render({ snapshot: interrupted });
+    expect(text()).not.toContain("Retry step");
+    await click("Review processing choice");
+    expect(setup.run).not.toHaveBeenCalled();
+    expect(text()).toContain("Choose how Koed processes memories");
+  });
+  it("acknowledges Operator-managed processing when continuing a reviewed setup", async () => {
+    const interrupted = setupSnapshot("failed");
+    interrupted.error = "Setup was interrupted.";
+    interrupted.reviewProcessing = true;
+    const { setup, click } = await render({ snapshot: interrupted });
+    const managed = accelerationSnapshot();
+    managed.source = "environment";
+    managed.readOnlyReason =
+      "The Operator environment controls local acceleration.";
+    window.koedDesktop!.acceleration = accelerationApiFixture(managed);
+    await click("Review processing choice");
+    await click("Continue");
+    expect(setup.run).toHaveBeenCalledWith(undefined, {
+      acknowledgeOperatorProcessing: true
+    });
   });
   it("cleans subscriptions on unmount including Strict Mode", async () => {
     const { listeners } = await render({ strict: true });
@@ -974,6 +1053,7 @@ describe("desktop onboarding", () => {
     const run = deferred<DesktopSetupSnapshot>();
     setup.run.mockImplementationOnce(() => run.promise);
     await click("Get Started");
+    await click("Continue");
     await emit({ ...setupSnapshot("running", "run"), sequence: 2 });
     await act(async () => run.reject(new Error("Setup bridge disconnected")));
     expect(text()).toContain("Setup bridge disconnected");

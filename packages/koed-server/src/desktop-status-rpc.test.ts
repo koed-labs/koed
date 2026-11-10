@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import {
 const setup = vi.hoisted(() => ({
   home: "",
   verified: true,
+  doctorOk: true,
   claude: vi.fn(async () => ({ ok: true, koedHome: setup.home })),
   pi: vi.fn(async () => ({ ok: true, koedHome: setup.home }))
 }));
@@ -16,6 +17,14 @@ vi.mock("./claude-setup.js", () => ({ setupClaude: setup.claude }));
 vi.mock("./pi-setup.js", () => ({ setupPi: setup.pi }));
 vi.mock("./status.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./status.js")>()),
+  collectKoedServerDoctor: async () => ({
+    ok: setup.doctorOk,
+    generatedAt: "2026-11-09T12:00:00.000Z",
+    summary: setup.doctorOk
+      ? "Core setup verified."
+      : "Core setup needs attention.",
+    checks: []
+  }),
   collectKoedServerStatus: async () => ({
     koedHome: setup.home,
     claudeCode: { configured: setup.verified },
@@ -28,6 +37,7 @@ afterEach(() => {
   if (setup.home) rmSync(setup.home, { recursive: true, force: true });
   setup.home = "";
   setup.verified = true;
+  setup.doctorOk = true;
 });
 
 const runSetup = async (action: string) => {
@@ -58,6 +68,22 @@ const runSetup = async (action: string) => {
 };
 
 describe("private Desktop AI Client setup", () => {
+  it.each([true, false])(
+    "persists the core doctor result for subsequent onboarding readiness checks (ok=%s)",
+    async (ok) => {
+      setup.doctorOk = ok;
+      await runSetup("doctor");
+      expect(
+        JSON.parse(
+          readFileSync(join(setup.home, "run/last-verification.json"), "utf8")
+        )
+      ).toEqual({
+        ok,
+        checkedAt: "2026-11-09T12:00:00.000Z",
+        message: ok ? "Core setup verified." : "Core setup needs attention."
+      });
+    }
+  );
   it.each(["setup-claude", "repair-claude", "setup-pi", "repair-pi"])(
     "passes supervisor environment and authority for %s and connects it",
     async (action) => {

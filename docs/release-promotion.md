@@ -79,7 +79,7 @@ arbitrary JavaScript semantics or a replacement for protected build provenance.
 `reviewed-build.json` now includes mandatory `runtimeIdentities`. These come from
 protected checkout policy in `scripts/reviewed-build-identity-runtimes.mjs`, not
 candidate manifests: Node 24.13.1 / ABI 137 / N-API 10 for Linux x64 and macOS
-arm64; Electron 39.8.10 / embedded Node 22.22.1 / ABI 140 / N-API 10 for macOS
+arm64; Electron 45.2.3 / embedded Node 24.22.2 / ABI 150 / N-API 10 for macOS
 arm64. Electron must match the resolved Desktop lock and independently validated
 runtime policy. Linux glibc 2.35 is the admission baseline, not a candidate-chosen
 minimum. Frozen verification checks each component against every required

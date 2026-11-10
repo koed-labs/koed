@@ -121,6 +121,81 @@ test("Linux release builds and smokes verified runtime and retains exact final a
   assert.match(steps[upload].run, /koed-desktop-linux-x64\.evidence\.json/);
 });
 
+test("macOS native build freezes once and both consumers bind the same immutable artifact", () => {
+  const freeze = jobs["frozen-macos-native-runtime"];
+  const stage = jobs["macos-native-packages"];
+  assert.ok(freeze && stage);
+  const builds = Object.values(jobs)
+    .flatMap((job) => job.steps ?? [])
+    .filter((s) => /native-runtime:build:macos-arm64/.test(s.run ?? ""));
+  assert.equal(builds.length, 1);
+  assert.ok(freeze.steps.includes(builds[0]));
+  const upload = freeze.steps.find((s) => s.id === "freeze-upload");
+  assert.equal(
+    freeze.outputs.artifact_id,
+    "${{ steps.freeze-upload.outputs.artifact-id }}"
+  );
+  assert.equal(upload.with.name, "koed-private-frozen-macos-native-runtime");
+  const evidence = freeze.steps.find((s) => s.id === "inventory");
+  assert.match(evidence.run, /--inspect-inventory/);
+  assert.match(evidence.run, /--write-inventory/);
+  assert.equal(evidence.env, undefined);
+  assert.equal(
+    freeze.outputs.inventory_sha256,
+    "${{ steps.inventory.outputs.sha256 }}"
+  );
+  assert.ok(freeze.steps.indexOf(evidence) < freeze.steps.indexOf(upload));
+  assert.match(upload.with.path, /approved-macos-inventory\.json/);
+  for (const consumer of [stage, desktop]) {
+    assert.ok(consumer.needs.includes("frozen-macos-native-runtime"));
+    const download = consumer.steps.find(
+      (s) => s.name === "Download frozen macOS native runtime"
+    );
+    assert.equal(
+      download.with["artifact-ids"],
+      "${{ needs.frozen-macos-native-runtime.outputs.artifact_id }}"
+    );
+    const verify = consumer.steps.find(
+      (s) => s.name === "Verify frozen macOS inventory"
+    );
+    assert.match(verify.run, /--inspect-inventory/);
+    assert.equal(
+      verify.env.FROZEN_INVENTORY_SHA256,
+      "${{ needs.frozen-macos-native-runtime.outputs.inventory_sha256 }}"
+    );
+  }
+  assert.match(
+    stage.steps.find((s) => s.name === "Stage frozen macOS core").run,
+    /--frozen-inventory-sha256/
+  );
+  assert.ok(
+    jobs["standalone-koed-server-release-assets"].needs.includes(
+      "macos-native-packages"
+    )
+  );
+  assert.equal(
+    step("Embed native package pins in the release build").env.NATIVE_CATALOG,
+    "${{ needs.macos-native-packages.outputs.catalog }}"
+  );
+});
+
+test("promotion binds public macOS assets and private freeze identity", () => {
+  const reviewed = jobs["reviewed-release-identity"];
+  assert.ok(reviewed.needs.includes("macos-native-packages"));
+  assert.ok(reviewed.needs.includes("frozen-macos-native-runtime"));
+  const sources = reviewed.steps.find((s) => s.id === "sources");
+  assert.equal(
+    sources.env.FROZEN_MACOS_ARTIFACT_ID,
+    "${{ needs.frozen-macos-native-runtime.outputs.artifact_id }}"
+  );
+  assert.match(sources.run, /koed-macos-native-packages/);
+  const gate = jobs["publish-release"].steps.find(
+    (s) => s.name === "Verify required release assets"
+  ).run;
+  assert.match(gate, /native-core-manifest-macos-arm64\.json/);
+  assert.match(gate, /koed-native-core-\*-macos-arm64\.tar\.gz/);
+});
+
 test("manual and alternate recovery signers removed", () => {
   assert.equal(
     existsSync(".github/workflows/release-desktop-assets.yml"),

@@ -60,16 +60,15 @@ without Koed. With Koed, 12 tasks improved with captured knowledge and estimated
   session, and conversation in your memory.
 - **You decide what is remembered.** Capture Policies, Capture Pause, and a
   local Privacy Filter model control what Koed keeps and what it masks.
-- **Grows with you.** Pair your other devices, and share memory with your team
-  through a Team Workspace.
 
 ## Quickstart
 
 ### Requirements
 
 - macOS, Linux, or WSL
-- [Node.js](https://nodejs.org) 24 and [pnpm](https://pnpm.io)
-- [Homebrew](https://brew.sh), for the native runtime
+- [Node.js](https://nodejs.org) 24 (build toolchain) and [pnpm](https://pnpm.io); newly built standalone components support Node 24–26
+- Linux/WSL: x64 with glibc 2.35 or later (for example, Ubuntu 22.04+)
+- macOS: [Homebrew](https://brew.sh), for the native runtime when running from source
 
 > [!NOTE]
 > On Windows, run Koed in WSL. Keep `KOED_HOME` and the checkout on the Linux
@@ -85,6 +84,11 @@ pnpm desktop:start
 On first launch, choose **Set up Koed** and confirm. Desktop installs the
 runtime and models it needs, then starts the local services.
 
+The reviewed catalog in this checkout lists the approved runtime downloads.
+Linux/WSL installs its CPU runtime. Compatible NVIDIA devices can also use the
+CUDA download. Koed still requires archive and file checksums, values calculated
+from file contents. See [fresh-home CPU/CUDA testing](docs/running-koed.md#test-source-setup-with-a-fresh-home).
+
 To stop Koed, run:
 
 ```bash
@@ -97,8 +101,19 @@ pnpm koed stop --json
 Run this command. It does not connect an AI Client.
 
 ```bash
+pnpm source-runtime:prepare
 pnpm koed setup core --json
 ```
+
+Each release also publishes an installer for Koed Server on macOS arm64 and
+Linux x64 that needs no Homebrew or source checkout:
+
+```bash
+curl -fsSL https://github.com/koed-labs/koed/releases/latest/download/install-koed-server.sh | bash
+```
+
+See [Standalone Server installer](docs/running-koed.md#standalone-server-installer)
+for what it does and how to inspect it or pin a version first.
 
 For other ways to run Koed, see [Running Koed](docs/running-koed.md).
 
@@ -124,16 +139,17 @@ You can also connect a client from the command line:
 > work. Koed never uses one client in place of another. To choose the model for
 > each task, see [Local AI Runtime settings](docs/local-memory-agent-settings.md).
 
-To add another of your devices, run `pnpm koed pair` on that device. Then paste
-its link into **Devices → Add device** in Koed Desktop. For more, see
-[Device pairing](docs/device-pairing.md).
+> [!NOTE]
+> This release runs Koed on one device. Pairing devices and Personal Device
+> Sync are turned off by default. To try them anyway, see
+> [Device pairing](docs/device-pairing.md).
 
 ## Documentation
 
 | Topic      | Read                                                                                                                                                                                                                                  |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Run        | [Running Koed](docs/running-koed.md) · [Configuration](docs/configuration.md) · [Server deployment boundary](docs/server-deployment-boundary.md)                                                                                      |
-| Desktop    | [Desktop UI](docs/desktop-ui.md) · [Packaged Desktop](apps/desktop/README.md) · [Managed Conversation routing](docs/managed-conversation-ai-client-routing.md)                                                                        |
+| Desktop    | [Desktop UI](docs/desktop-ui.md) · [Packaged Desktop](apps/desktop/README.md) · [Desktop CLI](docs/desktop-cli.md) · [Managed Conversation routing](docs/managed-conversation-ai-client-routing.md)                                   |
 | Memory     | [Service sequence overview](docs/service-sequence-overview.md) · [Durable Memory Answer](docs/durable-memory-answer.md) · [Curated Memory](docs/curated-memory.md) · [Raw ingestion and Projection](docs/raw-ingestion-projection.md) |
 | Teams      | [Team collaboration](docs/team-collaboration.md) · [Shared memory owner workflow](docs/shared-memory-owner-workflow.md)                                                                                                               |
 | Operations | [Security](docs/security.md) · [Backup and restore](docs/backup-restore.md) · [Upgrades](docs/upgrades.md) · [Observability](docs/observability.md)                                                                                   |

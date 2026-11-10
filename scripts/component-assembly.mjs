@@ -28,6 +28,7 @@ import {
   prunePrivacyRuntimeVariant
 } from "./privacy-runtime-package-policy.mjs";
 import { pruneTerminalRuntimeForTarget } from "./terminal-runtime-package-policy.mjs";
+import { scanNativeAddons } from "./component-native-scan.mjs";
 import {
   pruneSharedAppRuntimeMetadata,
   packageDirectories,
@@ -783,6 +784,25 @@ export const stageRuntimeComponents = async ({
         variant: "cpu"
       });
       result.privacyCpuRequired = refreshRequiredFiles(result.privacyCpuRoot);
+    }
+    const hostPlatform =
+      process.platform === "darwin" ? "macos" : process.platform;
+    if (platform !== hostPlatform || architecture !== process.arch)
+      throw new Error(
+        "Native addon scanning requires the matching target platform and architecture."
+      );
+    for (const root of [
+      result.baseRoot,
+      result.privacyRoot,
+      result.privacyCpuRoot
+    ].filter(Boolean)) {
+      const { addons, libraries } = scanNativeAddons(root, platform);
+      const inventoryPath = resolve(root, "component-assembly-inventory.json");
+      const inventory = readManifest(inventoryPath);
+      writeFileSync(
+        inventoryPath,
+        `${JSON.stringify({ ...inventory, nativeAddonScan: { addons, libraries, evidence: "nm global symbols from staged addons and shared libraries; registration and import checks do not prove ABI independence" } }, null, 2)}\n`
+      );
     }
     return result;
   } finally {

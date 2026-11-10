@@ -210,6 +210,10 @@ packaging, signing, runtime distribution, or packaged smoke support.
 
 ## Notes
 
+- Electron 45.2.3's macOS app declares macOS 13.0 as its minimum; Koed's
+  source-built native runtime targets macOS 14.0. A complete packaged install
+  therefore requires macOS 14 or later. The minimum OS itself still requires
+  native release qualification.
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
 - `desktop:dev` runs the renderer dev server only.
 - `desktop:package` (`desktop:package:mac`) builds `apps/desktop/release/mac/Koed.app` with
@@ -262,10 +266,9 @@ packaging, signing, runtime distribution, or packaged smoke support.
   `KOED_SERVER_CLI`, and `KOED_NODE_COMMAND` overrides fail closed. Desktop
   generation ownership still requires a validated private manager channel;
   Desktop does not assert ownership through renderer data, environment
-  variables, or public CLI flags. Terminal launcher filesystem helpers exist
-  for isolated validation, but installation and shell PATH editing remain
-  unavailable until packaged Electron helper/fuse compatibility and mutation
-  safety are validated on supported target.
+  variables, or public CLI flags. See [Desktop CLI launcher](../../docs/desktop-cli.md)
+  for opt-in installation and PATH management. Linux launcher installation is
+  disabled until durable executable and CLI paths can be verified.
 - The agent's Pixelkin comes from the Pixelkin engine in the `pixelkin-lab`
   repository. Until that repository is public, the renderer keeps a copy in
   `src/renderer/v1/pixelkin/vendor/`. Do not edit it by hand: change

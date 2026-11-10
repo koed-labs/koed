@@ -10,12 +10,26 @@ import { spawnSync } from "node:child_process";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
+import type { RuntimeOwner } from "./component-contract.js";
 
 export interface SupervisorLockRecord {
   pid: number;
   acquiredAt: string;
   processIdentity?: string;
+  // Source installs have no packaged generation pin. Publish their control
+  // plane identity atomically with the supervisor's process identity instead.
+  sourceOwner?: RuntimeOwner;
 }
+
+const isSourceOwner = (value: unknown): value is RuntimeOwner =>
+  typeof value === "object" &&
+  value !== null &&
+  Object.keys(value).length === 2 &&
+  "kind" in value &&
+  value.kind === "standalone" &&
+  "installationId" in value &&
+  typeof value.installationId === "string" &&
+  /^[a-f0-9]{32}$/.test(value.installationId);
 
 export interface KoedServerSupervisorLock {
   acquired: boolean;
@@ -97,10 +111,15 @@ export const readSupervisorLock = (
 const parseSupervisorLock = (text: string): SupervisorLockRecord | null => {
   try {
     const value = JSON.parse(text) as Partial<SupervisorLockRecord>;
+    if (value.sourceOwner !== undefined && !isSourceOwner(value.sourceOwner))
+      return null;
     return Number.isInteger(value.pid) && Number(value.pid) > 0
       ? {
           pid: Number(value.pid),
           acquiredAt: String(value.acquiredAt ?? "unknown"),
+          ...(value.sourceOwner
+            ? { sourceOwner: { ...value.sourceOwner } }
+            : {}),
           ...(typeof value.processIdentity === "string" &&
           value.processIdentity.length > 0
             ? { processIdentity: value.processIdentity }
@@ -119,12 +138,17 @@ export const acquireKoedServerSupervisorLock = (
     now?: () => Date;
     isProcessRunning?: (pid: number) => boolean;
     resolveProcessIdentity?: (pid: number) => string | null;
+    sourceOwner?: RuntimeOwner;
     // Exclusion for removing a stale record. The supervisor passes the lifecycle
     // lock, which stale-record cleanup in koed stop also takes.
     exclusive?: (action: () => void) => void;
   } = {}
 ): KoedServerSupervisorLock => {
   const pid = options.pid ?? process.pid;
+  if (options.sourceOwner !== undefined && !isSourceOwner(options.sourceOwner))
+    throw new Error(
+      "Source runtime owner must identify a standalone control plane."
+    );
   const exclusive = options.exclusive ?? ((action: () => void) => action());
   const isRunning = options.isProcessRunning ?? processIsRunning;
   const identify = options.resolveProcessIdentity ?? resolveProcessIdentity;
@@ -145,7 +169,10 @@ export const acquireKoedServerSupervisorLock = (
             {
               pid,
               acquiredAt: (options.now ?? (() => new Date()))().toISOString(),
-              processIdentity
+              processIdentity,
+              ...(options.sourceOwner
+                ? { sourceOwner: options.sourceOwner }
+                : {})
             },
             null,
             2

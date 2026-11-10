@@ -1,5 +1,7 @@
 import { memoryModelFixture } from "./renderer/v1/onboarding/memory-model.fixture.js";
 import { homeStatus } from "./renderer/v1/home/home-status.fixture.js";
+import { createAccelerationValidation } from "./acceleration-validation.js";
+import type { AccelerationChoice } from "@koed-labs/server";
 // Deterministic bridge used ONLY by the Vite validation entry, never the app entry.
 import type { V1Profile } from "./ipc/v1-state-protocol.js";
 import type {
@@ -18,6 +20,9 @@ export function installOnboardingValidation() {
   const scene = query.get("scene") ?? "ready";
   const outcome = query.get("outcome") ?? "partial";
   const listeners = new Set<(snapshot: DesktopSetupSnapshot) => void>();
+  const acceleration = createAccelerationValidation(query, () =>
+    fail("CUDA setup cancelled. You can retry or continue with CPU.")
+  );
   let preference =
     (query.get("full") === "1"
       ? localStorage.getItem("onboarding-theme")
@@ -27,10 +32,11 @@ export function installOnboardingValidation() {
     error: null,
     runId: "validation",
     sequence: 1,
-    state: scene === "pending" ? "ready" : "complete",
+    state: scene === "pending" || scene === "hardware" ? "ready" : "complete",
     stages: stageIds.map((id) => ({
       id,
-      state: scene === "pending" ? "pending" : "complete",
+      state:
+        scene === "pending" || scene === "hardware" ? "pending" : "complete",
       message: "Ready",
       completedBytes: null,
       totalBytes: null
@@ -75,7 +81,9 @@ export function installOnboardingValidation() {
     for (const listener of listeners) listener(snapshot);
   }
   function stage(id: DesktopSetupStageId, fraction = 0) {
-    const index = stageIds.indexOf(id);
+    const index = snapshot.stages.findIndex((stage) => stage.id === id);
+    if (id === "acceleration")
+      acceleration.progress(fraction ? "downloading" : "inference", fraction);
     snapshot = {
       ...snapshot,
       state: "running",
@@ -93,6 +101,7 @@ export function installOnboardingValidation() {
   function fail(
     message = "Memory models couldn’t finish setting up. Let’s try that step again."
   ) {
+    acceleration.fail();
     snapshot = {
       ...snapshot,
       state: "failed",
@@ -106,6 +115,7 @@ export function installOnboardingValidation() {
     resolveRun = undefined;
   }
   function completeSetup() {
+    acceleration.complete();
     snapshot = {
       ...snapshot,
       state: "complete",
@@ -117,6 +127,7 @@ export function installOnboardingValidation() {
     resolveRun?.(snapshot);
     resolveRun = undefined;
   }
+  if (snapshot.state === "complete") acceleration.complete();
   if (scene === "running" || scene === "setup-error") {
     stage("model", 0.5);
     if (scene === "setup-error") fail();
@@ -129,6 +140,7 @@ export function installOnboardingValidation() {
         })
       : { onboarding: { completed: false, selections: {} } };
   const fixture = {
+    acceleration,
     calls: () => calls,
     stage,
     fail,
@@ -153,6 +165,7 @@ export function installOnboardingValidation() {
   Object.defineProperty(window, "koedDesktop", {
     configurable: true,
     value: {
+      acceleration: acceleration.api,
       localAiClients: memoryModelFixture(() =>
         clients
           .filter(
@@ -189,8 +202,29 @@ export function installOnboardingValidation() {
             listeners.delete(listener);
           };
         },
-        run: () => {
-          calls.push({ command: "setup_run" });
+        run: (choice?: AccelerationChoice) => {
+          acceleration.run(choice);
+          calls.push({
+            command: "setup_run",
+            ...(choice ? { args: { acceleration: choice } } : {})
+          });
+          const ids = choice?.installCuda
+            ? [
+                ...stageIds.slice(0, 3),
+                "acceleration" as const,
+                ...stageIds.slice(3)
+              ]
+            : stageIds;
+          snapshot.stages = ids.map(
+            (id) =>
+              snapshot.stages.find((stage) => stage.id === id) ?? {
+                id,
+                state: "pending",
+                message: "Pending",
+                completedBytes: null,
+                totalBytes: null
+              }
+          );
           stage("package");
           return new Promise<DesktopSetupSnapshot>((resolve) => {
             resolveRun = resolve;

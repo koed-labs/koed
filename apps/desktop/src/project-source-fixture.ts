@@ -26,7 +26,8 @@ const uuid = (n: number) =>
 export const createProjectSourceFixture = () => {
   const ownerUserId = uuid(1),
     projectId = uuid(2),
-    createdAt = "2026-10-27T10:00:00.000Z";
+    // Keep the fixture inside the active-Project window whenever tests run.
+    createdAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const git: PersonalGitContext = {
     kind: "portable_repository",
     key: "gr_koed_fixture",

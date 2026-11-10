@@ -139,7 +139,8 @@ export function createPrivacyInstallBridge({
   requestDaemonStart,
   pollUntilReady,
   activatePrivacyGeneration,
-  canStartServices = async () => true
+  canStartServices = async () => true,
+  beginMutation = () => () => undefined
 }: {
   productVersion?: string;
   unavailableStatus?: PrivacyInstallStatus;
@@ -156,6 +157,7 @@ export function createPrivacyInstallBridge({
     expectedCurrentGeneration: string | null
   ) => Promise<void>;
   canStartServices?: () => Promise<boolean>;
+  beginMutation?: () => () => void;
 }): PrivacyInstallBridge {
   let activeRequestId: string | null = null;
   let cancelRequested = false;
@@ -215,6 +217,7 @@ export function createPrivacyInstallBridge({
           "Desktop release version is unavailable. Update Koed Desktop before installing Privacy Filter."
         );
       const requestId = randomUUID();
+      const releaseMutation = beginMutation();
       activeRequestId = requestId;
       cancelRequested = false;
       activationStarted = false;
@@ -435,6 +438,7 @@ export function createPrivacyInstallBridge({
           throw error;
         }
       } finally {
+        releaseMutation();
         activeRequestId = null;
         cancelRequested = false;
         activationStarted = false;

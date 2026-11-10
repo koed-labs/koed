@@ -91,7 +91,7 @@ test("assembled public package has only koed bin and self-contained control plan
     assert.deepEqual(JSON.parse(embedded), catalog);
     assert.equal(manifest.private, false);
     assert.deepEqual(manifest.bin, { koed: "bin/koed.js" });
-    assert.deepEqual(manifest.engines, { node: ">=24 <25" });
+    assert.deepEqual(manifest.engines, { node: ">=24 <27" });
     assert.deepEqual(manifest.dependencies ?? {}, {});
     assert.equal(manifest.scripts, undefined);
     assert.ok(!manifest.files.includes("dist/component-trust-roots.js"));
@@ -117,7 +117,11 @@ test("assembled public package has only koed bin and self-contained control plan
         {
           cwd: scratch,
           encoding: "utf8",
-          env: { ...process.env, KOED_HOME: resolve(scratch, "isolated-home") }
+          env: {
+            ...process.env,
+            KOED_HOME: resolve(scratch, "isolated-home"),
+            KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true"
+          }
         }
       );
       assert.ok(help.includes(`Usage: koed ${args.slice(0, -1).join(" ")}`));
@@ -150,7 +154,11 @@ test("assembled public package has only koed bin and self-contained control plan
       {
         cwd: scratch,
         encoding: "utf8",
-        env: { ...process.env, KOED_HOME: resolve(scratch, "isolated-home") }
+        env: {
+          ...process.env,
+          KOED_HOME: resolve(scratch, "isolated-home"),
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true"
+        }
       }
     );
     assert.equal(legacyRevocation.status, 1, legacyRevocation.stderr);

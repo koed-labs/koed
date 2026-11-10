@@ -248,6 +248,27 @@ const readPinState = (
     throw new Error("runtime generation state is invalid");
   return parsed;
 };
+// A crashed packaged supervisor can leave its generation pin behind. Source
+// start calls this while holding the supervisor lock so the stale pin does not
+// hide the source owner from lifecycle observation. Live, uncertain or
+// malformed pins are left for their own authority or Operator recovery.
+export const removeStaleGenerationPin = (paths: KoedServerPaths): boolean => {
+  let pin: RuntimeGenerationState | null;
+  try {
+    pin = readPinState(paths);
+  } catch {
+    return false;
+  }
+  if (!pin) return false;
+  const identity = resolveProcessIdentity(pin.pid);
+  if (
+    identity === pin.processIdentity ||
+    (!identity && processIsRunning(pin.pid))
+  )
+    return false;
+  rmSync(generationStatePath(paths), { force: true });
+  return true;
+};
 const assertOwner = (
   generation: { readonly owner: Readonly<RuntimeOwner> },
   requester: RuntimeOwner

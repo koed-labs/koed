@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validatedElectronRuntime } from "./koed-component-runtime-policy.mjs";
+import { extractFrozenComponents } from "./component-runtime-extraction.mjs";
+import { resolveElectronExecutable } from "./electron-executable.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = new Map();
@@ -42,13 +44,11 @@ if (
   releaseRelative !== ".."
 )
   throw new Error("The assembled release must be outside the source checkout.");
-const electronBin = resolve(
-  options.get("--electron-bin") ??
-    resolve(
-      repoRoot,
-      "apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
-    )
-);
+const electronBin = options.get("--electron-bin")
+  ? resolve(options.get("--electron-bin"))
+  : process.platform === "darwin"
+    ? resolveElectronExecutable(repoRoot)
+    : undefined;
 const distributionPath = readdirSync(releaseDir)
   .filter((name) => /^koed-distribution-.*\.json$/.test(name))
   .map((name) => resolve(releaseDir, name));
@@ -69,11 +69,6 @@ const variant = options.get("--variant") ?? (isLinux ? "cpu" : undefined);
 if (isLinux ? !["cpu", "cuda"].includes(variant) : variant !== undefined)
   throw new Error("--variant cpu|cuda applies only to Linux x64 components.");
 const privacyIdentity = variant ? `privacy-${variant}` : "privacy";
-const privacyRoot = resolve(
-  releaseDir,
-  "components",
-  variant === "cpu" ? "privacy-cpu" : "privacy"
-);
 const electronSupported = !isLinux;
 for (const component of ["base", privacyIdentity]) {
   const artifact = distribution.components[component];
@@ -84,10 +79,12 @@ for (const component of ["base", privacyIdentity]) {
     manifest.runtimes.some(
       (runtime) =>
         runtime.kind === "node" &&
-        runtime.runtimeRange === ">=24 <25" &&
-        runtime.modulesAbi === "137"
+        runtime.runtimeRange === ">=24 <27" &&
+        runtime.nodeRange === ">=24 <27" &&
+        runtime.minimumNapi === 10 &&
+        runtime.modulesAbi === undefined
     ),
-    `${component} is missing the Node 24.14.0 compatibility record`
+    `${component} is missing the Node 24–26 N-API compatibility record`
   );
   if (electronSupported)
     assert.ok(
@@ -138,6 +135,7 @@ const privacy = createRequire(path.join(process.argv[3], 'package.json'));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
 const scratch = mkdtempSync(resolve(tmpdir(), "koed-component-runtime-"));
+const privacyRoot = resolve(scratch, "components/privacy");
 const nativeSmokePath = resolve(scratch, "native-smoke.cjs");
 writeFileSync(nativeSmokePath, nativeSmoke);
 const run = (executable, args, env = process.env) => {
@@ -159,6 +157,12 @@ const run = (executable, args, env = process.env) => {
 
 let completed = false;
 try {
+  await extractFrozenComponents(
+    releaseDir,
+    distribution.components,
+    privacyIdentity,
+    scratch
+  );
   const electronIdentity = electronSupported
     ? run(
         electronBin,
@@ -181,11 +185,11 @@ try {
     );
   const nodeResult = run(process.execPath, [
     nativeSmokePath,
-    releaseDir,
+    scratch,
     privacyRoot
   ]);
   const electronResult = electronSupported
-    ? run(electronBin, [nativeSmokePath, releaseDir, privacyRoot], {
+    ? run(electronBin, [nativeSmokePath, scratch, privacyRoot], {
         ...process.env,
         ELECTRON_RUN_AS_NODE: "1"
       })

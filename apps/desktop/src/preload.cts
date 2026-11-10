@@ -3,6 +3,8 @@ import {
   presentationPreferencesSetChannel
 } from "./ipc/protocol.js";
 import type { PresentationPreferences } from "./window/presentation-preferences.js";
+import { accelerationChannel } from "./ipc/acceleration-protocol.js";
+import type { AccelerationChoice } from "@koed-labs/server";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   CollaborationCommandResult,
@@ -108,6 +110,20 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     set: (value: PresentationPreferences): Promise<PresentationPreferences> =>
       ipcRenderer.invoke(presentationPreferencesSetChannel, value)
   }),
+  acceleration: Object.freeze({
+    inspect: (refresh = false) =>
+      ipcRenderer.invoke(accelerationChannel, {
+        operation: "inspect",
+        refresh
+      }),
+    apply: (choice: AccelerationChoice) =>
+      ipcRenderer.invoke(accelerationChannel, { operation: "apply", choice }),
+    cancel: (operationId: string) =>
+      ipcRenderer.invoke(accelerationChannel, {
+        operation: "cancel",
+        operationId
+      })
+  }),
   hardwareAcceleration: Object.freeze({
     get: () => ipcRenderer.invoke(hardwareAccelerationGetChannel),
     set: (enabled: boolean) =>
@@ -134,7 +150,7 @@ contextBridge.exposeInMainWorld("koedDesktop", {
         operation: "select-offline"
       }),
     launcher: (
-      operation: "inspect" | "install" | "remove",
+      operation: "inspect" | "install" | "remove" | "cancel-pending",
       options?: { consent?: boolean; destination?: string }
     ) =>
       ipcRenderer.invoke(
@@ -143,7 +159,9 @@ contextBridge.exposeInMainWorld("koedDesktop", {
           ? { operation: "launcher-inspect" }
           : operation === "remove"
             ? { operation: "launcher-remove" }
-            : { operation: "launcher-install", ...options }
+            : operation === "cancel-pending"
+              ? { operation: "launcher-cancel-pending" }
+              : { operation: "launcher-install", ...options }
       ),
     updatePath: (operationKind: "add" | "remove", consent: boolean) =>
       ipcRenderer.invoke(cliInstallCommandChannel, {
@@ -167,7 +185,10 @@ contextBridge.exposeInMainWorld("koedDesktop", {
   }),
   setup: Object.freeze({
     inspect: () => ipcRenderer.invoke(setupCommandChannel, "inspect"),
-    run: () => ipcRenderer.invoke(setupCommandChannel, "run"),
+    run: (
+      choice?: AccelerationChoice,
+      options?: { acknowledgeOperatorProcessing?: true }
+    ) => ipcRenderer.invoke(setupCommandChannel, "run", choice, options),
     subscribe: (listener: (snapshot: unknown) => void) => {
       if (typeof listener !== "function") {
         throw new TypeError("Setup progress listener is required.");

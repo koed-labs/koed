@@ -301,13 +301,18 @@ function verifyCompatibility(
       satisfies(input.runtime.nodeVersion, item.nodeRange)
   );
   if (!versionMatches.length)
-    throw new Error("runtime version is incompatible");
+    throw new Error(
+      "runtime version is incompatible; reinstall components from a release supporting this runtime"
+    );
   const abiMatches = versionMatches.filter(
     (item) =>
       item.modulesAbi === undefined ||
       item.modulesAbi === input.runtime.modulesAbi
   );
-  if (!abiMatches.length) throw new Error("runtime ABI mismatch");
+  if (!abiMatches.length)
+    throw new Error(
+      "runtime ABI mismatch; reinstall components from a release supporting this runtime"
+    );
   const compatibility = abiMatches.find(
     (item) =>
       item.minimumNapi === undefined ||

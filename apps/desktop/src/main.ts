@@ -552,10 +552,11 @@ const bootstrap = async () => {
     ipcMain,
     allowedRendererOrigins,
     manager: cliInstallManager,
-    selectLauncherDestination: async () => {
+    selectLauncherDestination: async (defaultPath) => {
       const options = {
-        title: "Choose Koed CLI launcher location",
-        defaultPath: resolve(app.getPath("home"), ".local", "bin", "koed"),
+        title:
+          "Choose Koed CLI launcher location (use the current location to recover)",
+        defaultPath,
         buttonLabel: "Install launcher"
       };
       const selected = mainWindow
@@ -612,6 +613,7 @@ const bootstrap = async () => {
       configureMenuBar();
       return { ...value };
     },
+    acceleration: server.acceleration,
     getHardwareAcceleration: () => server.hardwareAcceleration.get(),
     setHardwareAcceleration: (enabled) =>
       server.hardwareAcceleration.set(enabled),
@@ -729,6 +731,28 @@ const bootstrap = async () => {
         send: (message) => process.send?.(message),
         getUpdateNoticeState: () => updateDiscovery.current(),
         invoke: async (command) => {
+          if (command === "acceleration_status")
+            return server.acceleration.inspect(true);
+          if (command === "acceleration_cancel") {
+            const current = await server.acceleration.inspect();
+            if (!current.operation)
+              throw new Error("No processing operation to cancel.");
+            return server.acceleration.cancel(current.operation.id);
+          }
+          if (
+            command === "acceleration_cpu" ||
+            command === "acceleration_auto" ||
+            command === "acceleration_cuda"
+          ) {
+            const current = await server.acceleration.inspect(true);
+            if (!current.snapshot)
+              throw new Error("Acceleration inspection unavailable.");
+            return server.acceleration.apply({
+              preference: command === "acceleration_cpu" ? "cpu" : "auto",
+              installCuda: command === "acceleration_cuda",
+              expectedRevision: current.snapshot.revision
+            });
+          }
           if (command === "privacy_status")
             return server.privacyInstall.getStatus();
           if (command === "privacy_install") {

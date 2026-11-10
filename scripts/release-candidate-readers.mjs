@@ -62,10 +62,17 @@ export const createCandidateReaders = ({
     return value;
   };
   return Object.freeze({
+    listReleases: (repository, page = 1) =>
+      github(`${repo(repository)}/releases?per_page=100&page=${id(page)}`),
     getWorkflowRun: (repository, runId) =>
       github(`${repo(repository)}/actions/runs/${id(runId)}`),
     getArtifact: (repository, artifactId) =>
       github(`${repo(repository)}/actions/artifacts/${id(artifactId)}`),
+    getArtifactArchive: (repository, artifactId) =>
+      github(
+        `${repo(repository)}/actions/artifacts/${id(artifactId)}/zip`,
+        true
+      ),
     getRelease: (repository, releaseId) =>
       github(`${repo(repository)}/releases/${id(releaseId)}`),
     getAsset: (repository, assetId) =>
@@ -90,7 +97,8 @@ export const createCandidateReaders = ({
 
 export const runReleaseVerification = async (
   args,
-  readers = createCandidateReaders()
+  readers = createCandidateReaders(),
+  options = {}
 ) => {
   const bytes = readFileSync(args.expectedBuild);
   if (
@@ -127,6 +135,7 @@ export const runReleaseVerification = async (
       releaseId: args.releaseId,
       expected
     },
-    readers
+    readers,
+    options
   );
 };

@@ -179,6 +179,20 @@ test("publication and reviewed identity require hosted native Privacy qualificat
     )
   );
   assert.equal(jobs["privacy-native-cuda-qualification"], undefined);
+  const frozenSteps = jobs["frozen-component-release-assets"].steps;
+  assert.ok(
+    !frozenSteps.some(
+      (step) =>
+        step.name === "Block release pending native CUDA GPU qualification"
+    )
+  );
+  for (const version of ["24", "26"]) {
+    const smoke = frozenSteps.find(
+      (step) => step.name === `Smoke frozen components on Node ${version}`
+    );
+    assert.match(smoke.run, /component-runtime-compatibility-smoke\.mjs/);
+    assert.match(smoke.run, /--variant cuda/);
+  }
   for (const [name, job] of Object.entries(jobs))
     assert.ok(
       !JSON.stringify(job["runs-on"] ?? "").includes("self-hosted"),

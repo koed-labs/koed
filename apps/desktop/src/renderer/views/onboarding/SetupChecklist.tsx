@@ -46,6 +46,10 @@ const stageCopy: Record<
     title: "Memory models",
     description: "Verify the models used to protect, index, and recall Memory."
   },
+  acceleration: {
+    title: "CUDA acceleration",
+    description: "Verify GPU offload with the installed embedding model."
+  },
   services: {
     title: "Local services",
     description: "Start Personal Memory and background processing."

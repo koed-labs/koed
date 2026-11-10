@@ -5,6 +5,7 @@ export const evaluateRequiredJobs = ({ policy, results }) => {
   const expected = {
     changes: true,
     static_checks: true,
+    node_26_consumer: true,
     tests: true,
     build: true,
     relevant_packaged_smoke: policy.run_app_smoke === "true",
@@ -39,6 +40,7 @@ const main = () => {
     results: {
       changes: process.env.CHANGES_RESULT,
       static_checks: process.env.STATIC_CHECKS_RESULT,
+      node_26_consumer: process.env.NODE_26_CONSUMER_RESULT,
       tests: process.env.TESTS_RESULT,
       build: process.env.BUILD_RESULT,
       relevant_packaged_smoke: process.env.APP_SMOKE_RESULT,

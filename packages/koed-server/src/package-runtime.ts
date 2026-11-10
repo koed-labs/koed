@@ -1012,6 +1012,7 @@ const extractTarGz = async (
   native?: {
     kind: "core" | "cuda";
     expandedBytes: number;
+    platform: "linux" | "macos";
     signal?: AbortSignal;
   }
 ): Promise<void> => {
@@ -1125,7 +1126,8 @@ const extractTarGz = async (
             !permitsNativeEntry(
               native.kind,
               path.slice("koed-runtime/".length),
-              type === "5"
+              type === "5",
+              native.platform
             ) ||
             path
               .split("/")
@@ -1243,10 +1245,16 @@ export const extractNativeArchive = (
   archive: string,
   destination: string,
   expandedBytes: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  platform: "linux" | "macos" = "linux"
 ): Promise<void> => {
   mkdirSync(destination, { mode: 0o700 });
-  return extractTarGz(archive, destination, { kind, expandedBytes, signal });
+  return extractTarGz(archive, destination, {
+    kind,
+    expandedBytes,
+    signal,
+    platform
+  });
 };
 
 const findExtractedPackageRoot = (extractDir: string): string => {

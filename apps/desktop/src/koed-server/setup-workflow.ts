@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { createOperationReceipt } from "./operation-receipt.js";
 
 import type {
   DesktopSetupSnapshot,
@@ -34,6 +35,8 @@ export type DesktopSetupStageProgress = {
 };
 
 export type DesktopSetupWorkflowDependencies = {
+  receipt?: ReturnType<typeof createOperationReceipt>;
+  stageIds?: () => readonly DesktopSetupStageId[];
   inspectStage: (stage: DesktopSetupStageId) => Promise<DesktopSetupCheck>;
   randomId?: () => string;
   runStage: (
@@ -64,18 +67,30 @@ const cloneSnapshot = (
 });
 
 export const createDesktopSetupWorkflow = ({
+  receipt,
   inspectStage,
   randomId = randomUUID,
-  runStage
+  runStage,
+  stageIds = () => desktopSetupStageIds
 }: DesktopSetupWorkflowDependencies) => {
   let activeRun: Promise<DesktopSetupSnapshot> | null = null;
   let activeSnapshot: DesktopSetupSnapshot | null = null;
+  let interrupted = receipt?.previous?.state === "running";
+  // A CUDA choice lives only in memory. Any unsuccessful run that carried one,
+  // interrupted or failed, needs a replacement choice after a restart.
+  let reviewProcessing =
+    receipt?.previous?.reviewProcessing === true &&
+    receipt.previous.state !== "complete";
 
-  const inspect = async (): Promise<DesktopSetupSnapshot> => {
+  const inspect = async (forRun = false): Promise<DesktopSetupSnapshot> => {
     if (activeRun && activeSnapshot) return cloneSnapshot(activeSnapshot);
+    // A reopened window sees the failed attempt and its recovery controls.
+    // An explicit retry still re-inspects every prerequisite before any work.
+    if (!forRun && activeSnapshot?.state === "failed")
+      return cloneSnapshot(activeSnapshot);
     const runId = randomId();
     const checks = await Promise.all(
-      desktopSetupStageIds.map(async (stage) => ({
+      stageIds().map(async (stage) => ({
         stage,
         check: await inspectStage(stage)
       }))
@@ -98,15 +113,39 @@ export const createDesktopSetupWorkflow = ({
         state: "pending"
       };
     }
+    // An interrupted attempt stops mattering once every step checks complete,
+    // for example after setup finished through the CLI. Record that so the
+    // stale receipt does not resurface on the next launch.
+    if (
+      interrupted &&
+      !reviewProcessing &&
+      stages.every(({ state }) => state === "complete")
+    ) {
+      interrupted = false;
+      try {
+        receipt?.save({ id: runId, sequence: 1, state: "complete" });
+      } catch {
+        /* The fresh inspection above remains authoritative. */
+      }
+    }
     return {
       activeStage: null,
-      error: null,
+      error:
+        interrupted && !forRun
+          ? "Setup was interrupted. Current prerequisites have been checked. Review your processing choice before continuing; no installation has resumed."
+          : reviewProcessing && !forRun
+            ? "Setup did not finish your processing choice. Review it before continuing; no installation has resumed."
+            : null,
+      ...(reviewProcessing && !forRun ? { reviewProcessing: true } : {}),
       runId,
       sequence: 1,
       stages,
-      state: stages.every(({ state }) => state === "complete")
-        ? "complete"
-        : "ready"
+      state:
+        (interrupted || reviewProcessing) && !forRun
+          ? "failed"
+          : stages.every(({ state }) => state === "complete")
+            ? "complete"
+            : "ready"
     };
   };
 
@@ -114,7 +153,18 @@ export const createDesktopSetupWorkflow = ({
     emit: (snapshot: DesktopSetupSnapshot) => void,
     signal?: AbortSignal
   ): Promise<DesktopSetupSnapshot> => {
-    const initial = await inspect();
+    const initial = await inspect(true);
+    const carriesProcessingChoice = initial.stages.some(
+      ({ id }) => id === "acceleration"
+    );
+    receipt?.save({
+      id: initial.runId,
+      sequence: initial.sequence,
+      state: "running",
+      ...(carriesProcessingChoice ? { reviewProcessing: true } : {})
+    });
+    interrupted = false;
+    reviewProcessing = false;
     let sequence = initial.sequence;
     let snapshot: DesktopSetupSnapshot = {
       ...initial,
@@ -124,11 +174,26 @@ export const createDesktopSetupWorkflow = ({
       sequence += 1;
       snapshot = { ...snapshot, sequence };
       activeSnapshot = cloneSnapshot(snapshot);
+      if (snapshot.state !== "running") {
+        try {
+          const complete = snapshot.state === "complete";
+          receipt?.save({
+            id: snapshot.runId,
+            sequence,
+            state: complete ? "complete" : "failed",
+            ...(!complete && carriesProcessingChoice
+              ? { reviewProcessing: true }
+              : {})
+          });
+        } catch {
+          /* Retain the initial interrupted-work receipt. */
+        }
+      }
       emit(cloneSnapshot(snapshot));
     };
     publish();
 
-    for (const stageId of desktopSetupStageIds) {
+    for (const { id: stageId } of initial.stages) {
       if (signal?.aborted) {
         snapshot = {
           ...snapshot,
@@ -209,6 +274,8 @@ export const createDesktopSetupWorkflow = ({
 
   return {
     inspect,
+    isRunning: () => activeRun !== null,
+    requiresProcessingChoice: () => reviewProcessing,
     run(
       emit: (snapshot: DesktopSetupSnapshot) => void,
       signal?: AbortSignal
@@ -216,7 +283,7 @@ export const createDesktopSetupWorkflow = ({
       if (!activeRun) {
         activeRun = execute(emit, signal).finally(() => {
           activeRun = null;
-          activeSnapshot = null;
+          if (activeSnapshot?.state !== "failed") activeSnapshot = null;
         });
       }
       return activeRun;

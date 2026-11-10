@@ -83,6 +83,7 @@ import {
   readCurrentGeneration,
   readCurrentDesktopGenerationOrderingEvidence,
   readCurrentRuntimeOwner,
+  removeStaleGenerationPin,
   withStoppedRuntime
 } from "./generation-lifecycle.js";
 import { runComponentStatus } from "./component-commands.js";
@@ -1191,6 +1192,35 @@ describe("generation lifecycle", () => {
     );
     await activateGeneration(paths, generation.id, owner);
     expect(existsSync(stalePinPath)).toBe(false);
+  });
+
+  it("removes only a well-formed pin whose supervisor is gone for source start", () => {
+    const paths = pathsForTest();
+    mkdirSync(paths.runDir, { recursive: true });
+    const pinPath = paths.generationStatePath!;
+    const pin = (pid: number, processIdentity: string | null) =>
+      writeFileSync(
+        pinPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          generationId: "a".repeat(64),
+          pid,
+          processIdentity,
+          startedAt: "2026-10-05T00:00:00.000Z",
+          owner,
+          pinToken: "c".repeat(64)
+        })
+      );
+    expect(removeStaleGenerationPin(paths)).toBe(false);
+    pin(process.pid, supervisorLock.resolveProcessIdentity(process.pid));
+    expect(removeStaleGenerationPin(paths)).toBe(false);
+    expect(existsSync(pinPath)).toBe(true);
+    writeFileSync(pinPath, "{not json");
+    expect(removeStaleGenerationPin(paths)).toBe(false);
+    expect(existsSync(pinPath)).toBe(true);
+    pin(2147483647, "dead-process-identity");
+    expect(removeStaleGenerationPin(paths)).toBe(true);
+    expect(existsSync(pinPath)).toBe(false);
   });
 
   it("fails closed when stale-pin liveness cannot be confirmed", async () => {

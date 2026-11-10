@@ -30,6 +30,14 @@ describe("Desktop CLI settings", () => {
     ).toEqual({ destination: "/tmp/koed", pathDirectory: "/tmp/bin" });
   });
 
+  it("rejects oversized settings before parsing", () => {
+    const root = mkdtempSync(join(tmpdir(), "koed cli settings "));
+    roots.push(root);
+    const path = join(root, "settings.json");
+    writeFileSync(path, `"${"x".repeat(2 * 1024 * 1024)}"`);
+    expect(() => readCliInstallSettings(path)).toThrow(/large/i);
+  });
+
   it("round trips separate launcher and PATH locations and refuses symlink settings", () => {
     const root = mkdtempSync(join(tmpdir(), "koed cli settings "));
     roots.push(root);

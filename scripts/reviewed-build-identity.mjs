@@ -23,8 +23,10 @@ const sourceNames = [
   "koed-desktop-linux-final-assets",
   "koed-native-runtime-linux-x64",
   "koed-linux-native-packages",
+  "koed-macos-native-packages",
   "koed-release-metadata"
 ];
+const privateSourceNames = ["koed-private-frozen-macos-native-runtime"];
 
 export const collectReviewedAssets = (root) => {
   const found = new Map();
@@ -84,7 +86,7 @@ export const createReviewedBuildIdentity = ({
   runAttempt,
   version
 }) => {
-  const selected = sourceNames.map((name) => {
+  const selected = [...sourceNames, ...privateSourceNames].map((name) => {
     const matches = artifacts.filter(
       (artifact) =>
         artifact.name === name &&

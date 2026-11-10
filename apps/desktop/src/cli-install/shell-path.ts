@@ -3,12 +3,13 @@ import {
   closeSync,
   constants,
   fstatSync,
+  lstatSync,
   openSync,
-  readFileSync,
   renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
+import { readBoundedUtf8 } from "./bounded-read.js";
 
 export interface ShellPathMutation {
   rcPath: string;
@@ -34,12 +35,17 @@ interface RcSnapshot {
 const readRc = (path: string): RcSnapshot | null => {
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
     const stat = fstatSync(descriptor);
     if (!stat.isFile())
       throw new Error("Shell rc path must be a regular file, not a symlink.");
+    if (stat.size > 1024 * 1024)
+      throw new Error("Shell rc file is too large to inspect safely.");
     return {
-      contents: readFileSync(descriptor, "utf8"),
+      contents: readBoundedUtf8(descriptor, 1024 * 1024),
       dev: stat.dev,
       ino: stat.ino,
       mode: stat.mode
@@ -52,6 +58,30 @@ const readRc = (path: string): RcSnapshot | null => {
         cause: error
       });
     throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+
+// A symlinked startup file (for example one managed by stow or chezmoi) is
+// never written through. Removal may skip it only when its target holds no
+// Koed markers; the target is read, not modified.
+const symlinkWithoutManagedBlock = (path: string): boolean => {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return false;
+  } catch {
+    return false;
+  }
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > 1024 * 1024) return false;
+    const contents = readBoundedUtf8(descriptor, 1024 * 1024);
+    return !contents.includes(begin) && !contents.includes(end);
+  } catch (error) {
+    // A dangling link has no target that could hold a block.
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
@@ -111,6 +141,8 @@ export const updateManagedPathBlock = async (
       "Launcher directory contains unsupported control characters."
     );
   }
+  if (input.operation === "remove" && symlinkWithoutManagedBlock(input.rcPath))
+    return;
   const before = readRc(input.rcPath);
   const original = before?.contents ?? "";
   const updated = buildUpdatedContent(

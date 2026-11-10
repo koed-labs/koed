@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { stageRuntimeComponents } from "./component-assembly.mjs";
+import { resolveElectronExecutable } from "./electron-executable.mjs";
 import { buildComponentReleaseSet } from "./component-release-lib.mjs";
 import { parse } from "yaml";
 import {
@@ -63,10 +64,7 @@ const main = async () => {
         lock.importers?.["apps/desktop"]?.devDependencies?.electron?.version,
       installedVersion: installedElectron.version
     });
-    const electronPath = resolve(
-      repoRoot,
-      "apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
-    );
+    const electronPath = resolveElectronExecutable(repoRoot);
     const measured = spawnSync(
       electronPath,
       [
@@ -112,10 +110,7 @@ const main = async () => {
         ? { libc: { family: "glibc", minimumVersion: "2.35" } }
         : {})
     },
-    runtimes: componentRuntimeDeclarations({
-      nodeModulesAbi: process.versions.modules,
-      electronIdentity
-    }),
+    runtimes: componentRuntimeDeclarations({ electronIdentity }),
     requiredFiles: {
       base: staged.baseRequired,
       privacy: staged.privacyRequired,

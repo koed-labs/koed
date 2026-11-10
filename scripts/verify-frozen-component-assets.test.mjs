@@ -54,9 +54,9 @@ test("frozen assets match complete catalog; manifest/archive mutation and missin
             ? [
                 {
                   kind: "electron",
-                  runtimeRange: "=39.8.10",
-                  nodeRange: "=22.22.1",
-                  modulesAbi: "140",
+                  runtimeRange: "=45.2.3",
+                  nodeRange: "=24.22.2",
+                  modulesAbi: "150",
                   minimumNapi: 10
                 }
               ]
@@ -131,8 +131,8 @@ for (const [label, runtimes, rejects] of [
       },
       {
         kind: "electron",
-        runtimeRange: "=39.8.10",
-        nodeRange: "=22.22.1",
+        runtimeRange: "=45.2.3",
+        nodeRange: "=24.22.2",
         minimumNapi: 10
       }
     ],
@@ -149,8 +149,8 @@ for (const [label, runtimes, rejects] of [
       },
       {
         kind: "electron",
-        runtimeRange: "=39.8.10",
-        nodeRange: "=22.22.1",
+        runtimeRange: "=45.2.3",
+        nodeRange: "=24.22.2",
         modulesAbi: "999"
       }
     ],
@@ -212,9 +212,9 @@ for (const [field, value] of [
       },
       {
         kind: "electron",
-        runtimeRange: "=39.8.10",
-        nodeRange: "=22.22.1",
-        modulesAbi: "140",
+        runtimeRange: "=45.2.3",
+        nodeRange: "=24.22.2",
+        modulesAbi: "150",
         minimumNapi: 10,
         [field]: value
       }
