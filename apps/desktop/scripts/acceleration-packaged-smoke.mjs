@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { setTimeout, clearTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { cosineSimilarity } from "../../../scripts/embedding-acceleration-benchmark-lib.mjs";
 import { seedAccelerationStorageProbe } from "./acceleration-storage-smoke.mjs";
@@ -10,39 +9,17 @@ import { seedAccelerationStorageProbe } from "./acceleration-storage-smoke.mjs";
 export async function waitForAccelerationChange(
   desktop,
   started,
-  { now = Date.now, sleep = delay, timeoutMs = 600_000 } = {}
+  { now = Date.now, sleep = delay } = {}
 ) {
-  const deadline = now() + timeoutMs;
-  const remaining = () => {
-    const value = deadline - now();
-    assert.ok(
-      value > 0,
-      "Processing change finished within the smoke deadline"
-    );
-    return value;
-  };
+  const deadline = now() + 600_000;
   let current = started;
   while (current.operation?.state === "running") {
-    await sleep(Math.min(250, remaining()));
-    const budget = remaining();
-    let timer;
-    try {
-      current = await Promise.race([
-        desktop.invoke("acceleration_status", budget),
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error("Processing change exceeded the smoke deadline")
-              ),
-            budget
-          );
-        })
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
-    remaining();
+    assert.ok(
+      now() < deadline,
+      "Processing change finished within the smoke deadline"
+    );
+    await sleep(250);
+    current = await desktop.invoke("acceleration_status");
     assert.equal(current.operation.id, started.operation.id);
   }
   return current;

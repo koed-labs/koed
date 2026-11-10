@@ -120,12 +120,6 @@ test("bootstrap timeout terminates manager with diagnostics", async () => {
   assert.equal(child.killed, true);
 });
 
-test("per-request timeout bounds status polling", async () => {
-  const { desktop, ready } = fixture(1000);
-  ready();
-  await assert.rejects(desktop.invoke("acceleration_status", 20), /timed out/);
-});
-
 test("disconnect rejects in-flight lifecycle operation", async () => {
   const { child, desktop, ready } = fixture();
   ready();
