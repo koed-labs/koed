@@ -125,6 +125,7 @@ test("Linux combined payload and CPU smoke respect policy and cache scenarios", 
 });
 
 test("Linux payload failures prevent save, packaging and successful required CI", () => {
+  assert.ok([undefined, false].includes(linuxJob["continue-on-error"]));
   const names = [
     "Validate native runtime payload before use or save",
     "Save verified Linux native runtime payload",
@@ -135,7 +136,7 @@ test("Linux payload failures prevent save, packaging and successful required CI"
   const steps = names.map((name) => {
     const step = linuxJob.steps.find((item) => item.name === name);
     assert.ok(step, `missing step ${name}`);
-    assert.notEqual(step["continue-on-error"], true, name);
+    assert.ok([undefined, false].includes(step["continue-on-error"]), name);
     assert.doesNotMatch(step.if ?? "", /always\(\)|failure\(\)/, name);
     return step;
   });
@@ -156,10 +157,14 @@ test("Linux payload failures prevent save, packaging and successful required CI"
     "ci-required"
   ];
   assert.ok(required.needs.includes("native-runtime-linux-x64"));
+  assert.ok([undefined, false].includes(required["continue-on-error"]));
+  const requiredStep = required.steps.find(
+    (step) => step.run === "node .github/scripts/ci-required.mjs"
+  );
+  assert.ok(requiredStep);
+  assert.ok([undefined, false].includes(requiredStep["continue-on-error"]));
   assert.equal(
-    required.steps.find(
-      (step) => step.run === "node .github/scripts/ci-required.mjs"
-    ).env.LINUX_NATIVE_RESULT,
+    requiredStep.env.LINUX_NATIVE_RESULT,
     "${{ needs.native-runtime-linux-x64.result }}"
   );
   assert.equal(
