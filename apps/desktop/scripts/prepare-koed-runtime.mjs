@@ -122,6 +122,7 @@ if (preservedManifest) {
       asset.packagedResourcePath !== asset.id ||
       asset.installPath !== asset.id ||
       !isDeepStrictEqual(asset.executablePaths, executables) ||
+      (asset.id === "postgres" && Object.hasOwn(asset, "variants")) ||
       (asset.id === "llama.cpp" &&
         !isDeepStrictEqual(asset.variants, [
           {

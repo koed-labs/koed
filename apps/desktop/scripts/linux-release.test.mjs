@@ -493,6 +493,38 @@ test("actual Linux staging preserves frozen manifest bytes and guard rejects tam
     0,
     "invalid asset manifest must fail even in self-consistent core"
   );
+  for (const variants of [{}, [{ backend: "invalid" }]]) {
+    rmSync(invalid, { recursive: true, force: true });
+    cpSync(source, invalid, { recursive: true, verbatimSymlinks: true });
+    const malformed = JSON.parse(readFileSync(join(invalid, manifest), "utf8"));
+    malformed.assets.find((asset) => asset.id === "postgres").variants =
+      variants;
+    writeFileSync(join(invalid, manifest), JSON.stringify(malformed));
+    rmSync(join(invalid, "native-core-manifest.json"));
+    freezeCore({
+      runtimeRoot: invalid,
+      configuration,
+      recipe: {
+        schemaVersion: 1,
+        kind: "core",
+        configuration,
+        sources: Object.fromEntries(
+          ["postgres", "pgvector", "llamaCpp"].map((key) => [key, pinned[key]])
+        ),
+        toolchain: { cc: "fixture" },
+        logic: { build: "a".repeat(64) },
+        packaging: { epoch: 0 }
+      }
+    });
+    verifyFrozenCore(invalid);
+    const result = runStage(invalid);
+    assert.notEqual(
+      result.status,
+      0,
+      "malformed PostgreSQL variants must fail"
+    );
+    assert.match(result.stderr, /Frozen runtime asset changed: postgres/);
+  }
   rmSync(invalid, { recursive: true, force: true });
   cpSync(source, invalid, { recursive: true, verbatimSymlinks: true });
   rmSync(join(invalid, "native-core-manifest.json"));
