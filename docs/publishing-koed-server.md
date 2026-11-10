@@ -17,9 +17,26 @@ and the effective embedded manifest catalog for promotion verification.
 
 Component manifests use canonical sorted-key JSON bytes without a trailing newline,
 matching catalog generation and installer verification. The manifest schema stays
-at v1. Archive members are relative to the payload root, matching the pinned inventory. The headless release builder runs
-under Node 24 and records its actual modules ABI. It does not declare Electron
-compatibility; that requires separate packaged validation.
+at v1. Archive members are relative to the payload root, matching the pinned inventory.
+The component release builder runs under Node 24; its measured build identity is
+separate from the manifest's runtime compatibility declaration. Electron
+compatibility is declared only for the exact separately validated runtime.
+
+New component releases are built with Node 24 and declare standalone Node
+`>=24 <27` with minimum N-API 10, without a Node modules ABI pin. Assembly
+scans staged native addons and shared libraries with the target platform's `nm`
+(dynamic symbols on Linux), rejecting Node/V8 ABI imports and Node registration
+symbols. Addons must also provide N-API registration evidence. Inspection covers
+staged `.node`, `.dylib`, `.so`, and versioned `.so` files; it does not establish
+dependency closure or detect hidden symbols, static linkage, or runtime lookup.
+It is not proof of ABI independence: run native component smoke on representative Node 24
+and Node 26 consumers and each supported target, plus exact Electron validation.
+Linux CUDA GPU execution remains unverified. Loading the CUDA archive on a
+CPU-only runner is not GPU qualification; native GPU execution requires separate
+release qualification. The workflow does not enforce that qualification.
+Previously published manifests remain immutable and retain their original runtime
+constraints. If an installed component rejects a newer runtime, reinstall it from
+a release whose catalog declares that runtime; do not edit its manifest.
 
 After `pnpm install --frozen-lockfile` and `pnpm build`, run the opt-in native smoke.
 OpenSSL must be on `PATH` to create its temporary fixture-only HTTPS certificate;
@@ -146,6 +163,21 @@ authorization and release promotion approval remain disabled. Review npm trusted
 publishing before enabling them. Without those authorizations,
 release workflows must leave GitHub releases as drafts and must not publish npm
 packages or stable tags.
+
+## Server installer asset
+
+The release metadata job renders `scripts/install-server.sh` with the release
+version (`scripts/render-server-installer.mjs`) and retains
+`install-koed-server.sh` in the reviewed `koed-release-metadata` artifact, so
+its hash is part of the protected release identity like every other public
+asset. Candidate verification re-renders the template from the reviewed commit
+and requires the draft asset to match byte for byte; an unrendered, stale or
+substituted installer blocks promotion, and publication requires the asset to
+be present. The installer selects `@koed-labs/server` and Base assets by that
+same embedded version. The documented short command uses
+`releases/latest/download/install-koed-server.sh`, so only promoted product
+releases may be marked latest on GitHub. A release whose package does not accept Node 26 cannot
+be installed with the private Node fallback.
 
 ## Immutable candidate and retry protocol
 

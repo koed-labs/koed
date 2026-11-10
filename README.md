@@ -66,7 +66,7 @@ without Koed. With Koed, 12 tasks improved with captured knowledge and estimated
 ### Requirements
 
 - macOS, Linux, or WSL
-- [Node.js](https://nodejs.org) 24 and [pnpm](https://pnpm.io)
+- [Node.js](https://nodejs.org) 24 (build toolchain) and [pnpm](https://pnpm.io); newly built standalone components support Node 24–26
 - Linux/WSL: x64 with glibc 2.35 or later (for example, Ubuntu 22.04+)
 - macOS: [Homebrew](https://brew.sh), for the native runtime when running from source
 
@@ -105,6 +105,16 @@ pnpm source-runtime:prepare
 pnpm koed setup core --json
 ```
 
+Each release also publishes an installer for Koed Server on macOS arm64 and
+Linux x64 that needs no Homebrew or source checkout:
+
+```bash
+curl -fsSL https://github.com/koed-labs/koed/releases/latest/download/install-koed-server.sh | bash
+```
+
+See [Standalone Server installer](docs/running-koed.md#standalone-server-installer)
+for what it does and how to inspect it or pin a version first.
+
 For other ways to run Koed, see [Running Koed](docs/running-koed.md).
 
 </details>
@@ -139,7 +149,7 @@ You can also connect a client from the command line:
 | Topic      | Read                                                                                                                                                                                                                                  |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Run        | [Running Koed](docs/running-koed.md) · [Configuration](docs/configuration.md) · [Server deployment boundary](docs/server-deployment-boundary.md)                                                                                      |
-| Desktop    | [Desktop UI](docs/desktop-ui.md) · [Packaged Desktop](apps/desktop/README.md) · [Managed Conversation routing](docs/managed-conversation-ai-client-routing.md)                                                                        |
+| Desktop    | [Desktop UI](docs/desktop-ui.md) · [Packaged Desktop](apps/desktop/README.md) · [Desktop CLI](docs/desktop-cli.md) · [Managed Conversation routing](docs/managed-conversation-ai-client-routing.md)                                   |
 | Memory     | [Service sequence overview](docs/service-sequence-overview.md) · [Durable Memory Answer](docs/durable-memory-answer.md) · [Curated Memory](docs/curated-memory.md) · [Raw ingestion and Projection](docs/raw-ingestion-projection.md) |
 | Teams      | [Team collaboration](docs/team-collaboration.md) · [Shared memory owner workflow](docs/shared-memory-owner-workflow.md)                                                                                                               |
 | Operations | [Security](docs/security.md) · [Backup and restore](docs/backup-restore.md) · [Upgrades](docs/upgrades.md) · [Observability](docs/observability.md)                                                                                   |

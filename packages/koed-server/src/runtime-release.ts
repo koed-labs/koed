@@ -10,6 +10,7 @@ import {
   readlinkSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { release as kernelRelease } from "node:os";
 import { nativeCommand } from "./native-validation-process.js";
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
 import type { DownloadProgress } from "./bounded-download.js";
@@ -33,7 +34,8 @@ import {
   nativePathExists,
   nativeStore,
   readNativeSelection,
-  releaseInstallCommand
+  releaseInstallCommand,
+  NativeSelectionTargetError
 } from "./native-selection.js";
 import {
   assertDirectoryChain,
@@ -57,15 +59,44 @@ import {
 } from "./desktop-runtime-capability.js";
 
 const reserve = 128 * 1024 * 1024;
-export function assertReleaseHost(): void {
-  const report = process.report.getReport() as {
-    header?: { glibcVersionRuntime?: string };
-  };
-  const libc = report.header?.glibcVersionRuntime ?? "";
+class MacCudaPolicyError extends Error {
+  constructor() {
+    super(
+      "CUDA is not supported by the macOS release runtime. Set KOED_EMBEDDING_ACCELERATION to auto or metal before installing or starting."
+    );
+  }
+}
+function assertMacPolicy(platform: string, policy: string): void {
+  if (platform === "macos" && policy === "cuda") throw new MacCudaPolicyError();
+}
+export function assertReleaseHost(
+  host = {
+    platform: process.platform as string,
+    arch: process.arch as string,
+    kernel: kernelRelease(),
+    libc:
+      (
+        process.report.getReport() as {
+          header?: { glibcVersionRuntime?: string };
+        }
+      ).header?.glibcVersionRuntime ?? ""
+  }
+): void {
+  if (host.platform === "darwin" && host.arch === "arm64") {
+    if (
+      !/^\d+\.\d+\.\d+$/.test(host.kernel) ||
+      Number(host.kernel.split(".")[0]) < 23
+    )
+      throw new Error(
+        "The release provider requires macOS 14 or later on arm64. Upgrade macOS before installing the release runtime."
+      );
+    return;
+  }
+  const libc = host.libc;
   const [major, minor] = libc.split(".").map(Number);
   if (
-    process.platform !== "linux" ||
-    process.arch !== "x64" ||
+    host.platform !== "linux" ||
+    host.arch !== "x64" ||
     !/^\d+\.\d+(\.\d+)?$/.test(libc) ||
     !(major! > 2 || (major === 2 && minor! >= 35))
   )
@@ -91,7 +122,7 @@ export function collectReleaseRuntimeStatus(
       installedCudaId: null,
       pinnedCudaId: catalog.cuda?.recipeId ?? null,
       executionPolicy: policy,
-      message: `Install the CPU runtime with ${releaseInstallCommand}.`
+      message: `Install the ${catalog.core.target.platform === "macos" ? "Metal" : "CPU"} runtime with ${releaseInstallCommand}.`
     };
   const blocker = coreStartBlocker(selected.pin, catalog);
   if (blocker)
@@ -132,13 +163,17 @@ export function collectReleaseRuntimeStatus(
         ? `A native core update is available. Stop Koed and run ${releaseInstallCommand}.`
         : selected.cuda
           ? "The selected CPU core and CUDA add-on are installed."
-          : "The selected CPU runtime is installed."
+          : `The selected ${catalog.core.target.platform === "macos" ? "Metal" : "CPU"} runtime is installed.`
   };
 }
 
 // Run short, foreground version probes from the composed selection. No probe opens
 // a port or database. Wait for close even when cancellation kills its process group.
-async function probeCore(root: string, signal: AbortSignal): Promise<void> {
+async function probeCore(
+  root: string,
+  signal: AbortSignal,
+  platform: "linux" | "macos"
+): Promise<void> {
   for (const binary of [
     "postgres/bin/postgres",
     "postgres/bin/psql",
@@ -152,13 +187,39 @@ async function probeCore(root: string, signal: AbortSignal): Promise<void> {
           PATH: "/usr/bin:/bin",
           LANG: "C",
           LC_ALL: "C",
-          KOED_LLAMA_SERVER_BACKEND: "cpu"
+          KOED_LLAMA_SERVER_BACKEND: platform === "macos" ? "metal" : "cpu"
         }
       });
     } catch (error) {
       throw new Error(
         `Staged native probe failed: ${binary}. ${error instanceof Error ? error.message : String(error)}`,
         { cause: error }
+      );
+    }
+  }
+  if (platform === "macos") {
+    try {
+      const devices = await nativeCommand(
+        resolve(root, "llama.cpp/llama-server"),
+        ["--list-devices"],
+        {
+          cwd: root,
+          signal,
+          env: {
+            PATH: "/usr/bin:/bin",
+            LANG: "C",
+            LC_ALL: "C",
+            KOED_LLAMA_SERVER_BACKEND: "metal",
+            LLAMA_ARG_UI: "false"
+          }
+        }
+      );
+      if (!/^[ \t]*(?:MTL[0-9]+|Metal[0-9]*):[ \t]+\S/im.test(devices))
+        throw new Error("No Metal device was reported.");
+    } catch (cause) {
+      throw new Error(
+        `Staged Metal device discovery failed: ${cause instanceof Error ? cause.message : String(cause)}. Check Metal support and the native runtime, then retry.`,
+        { cause }
       );
     }
   }
@@ -211,6 +272,14 @@ export async function installReleaseRuntime(
   } = {}
 ) {
   assertReleaseHost();
+  if (
+    process.platform === "darwin" &&
+    options.cuda &&
+    options.cuda !== "preserve"
+  )
+    throw new Error(
+      "--with-cuda and --without-cuda are not supported on macOS."
+    );
   const catalog = getNativeRuntimeCatalog(),
     pin = catalog.core,
     store = nativeStore(paths),
@@ -228,8 +297,9 @@ export async function installReleaseRuntime(
   const signal = options.signal ?? new AbortController().signal;
   const plan = () => {
     signal.throwIfAborted();
-    const selected = readNativeSelection(paths, catalog);
     const policy = embeddingPolicy(paths, environment);
+    assertMacPolicy(pin.target.platform, policy);
+    const selected = readNativeSelection(paths, catalog);
     const cuda = chooseCuda(catalog, selected?.cuda ?? null, choice, policy);
     if (
       selected &&
@@ -361,7 +431,7 @@ export async function installReleaseRuntime(
       }
       const next = composeNativeSelection(paths, pin, staging, catalog, cuda);
       options.phase?.("verifying");
-      await probeCore(next.root, signal);
+      await probeCore(next.root, signal, pin.target.platform);
       if (cuda) options.phase?.("inference");
       const validation = cuda
         ? await validateStagedCuda(paths, next.root, environment, {
@@ -380,7 +450,7 @@ export async function installReleaseRuntime(
       const dropped = choice === "preserve" && selected?.cuda && !cuda;
       const message = dropped
         ? `CPU runtime selected. The prior CUDA add-on is incompatible; run ${releaseInstallCommand} --with-cuda for a compatible pair. Run koed start when ready.`
-        : `${cuda ? "CPU core and CUDA add-on" : "CPU runtime"} installed. Run koed start when ready.`;
+        : `${cuda ? "CPU core and CUDA add-on" : pin.target.platform === "macos" ? "Metal runtime" : "CPU runtime"} installed. Run koed start when ready.`;
       return {
         ok: true,
         provider: "release",
@@ -441,16 +511,21 @@ export function resolveSelectedCoreForStart(
     const catalog = getNativeRuntimeCatalog(),
       selected = readNativeSelection(paths, catalog)!;
     assertStartableCore(selected.pin, catalog);
-    if (
-      useSelectedLlama &&
-      embeddingPolicy(paths, environment) === "cuda" &&
-      !selected.cuda
-    )
+    const policy = useSelectedLlama
+      ? embeddingPolicy(paths, environment)
+      : null;
+    if (policy) assertMacPolicy(catalog.core.target.platform, policy);
+    if (useSelectedLlama && policy === "cuda" && !selected.cuda)
       throw new Error(
         "The forced CUDA policy requires a selected CUDA add-on."
       );
     return selected.root;
   } catch (cause) {
+    if (
+      cause instanceof MacCudaPolicyError ||
+      cause instanceof NativeSelectionTargetError
+    )
+      throw cause;
     const command =
       environment.KOED_EMBEDDING_ACCELERATION?.trim().toLowerCase() === "cuda"
         ? releaseInstallCommand + " --with-cuda"

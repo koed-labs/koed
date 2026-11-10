@@ -237,6 +237,35 @@ describe("InboxView", () => {
     );
   });
 
+  it.each(["Copy message text", "Copy queued message text"])(
+    "reports a failed %s action and clears the error on retry",
+    async (label) => {
+      const onCopyOutbox = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("denied"))
+        .mockResolvedValueOnce(undefined);
+      await act(async () =>
+        root.render(
+          <InboxView
+            onCopyOutbox={onCopyOutbox}
+            onOpenPreferences={vi.fn()}
+            onOpenSelection={vi.fn()}
+            snapshot={snapshotFixture()}
+          />
+        )
+      );
+      const copy = container.querySelector<HTMLButtonElement>(
+        `button[aria-label="${label}"]`
+      )!;
+      await act(async () => copy.click());
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        "Could not copy message. Try again."
+      );
+      await act(async () => copy.click());
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    }
+  );
+
   it("renders explicit loading and unavailable states", async () => {
     await act(async () =>
       root.render(

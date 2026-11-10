@@ -31,6 +31,7 @@ const parseCommand = (value: unknown): CliInstallCommand => {
     case "select-offline":
     case "launcher-inspect":
     case "launcher-remove":
+    case "launcher-cancel-pending":
       return { operation: command.operation } as CliInstallCommand;
     case "install":
       if (
@@ -88,7 +89,7 @@ export const registerCliInstallIpc = (input: {
   ipcMain: Pick<IpcMain, "handle">;
   allowedRendererOrigins: ReadonlySet<string>;
   manager: DesktopCliInstallManager;
-  selectLauncherDestination(): Promise<string | null>;
+  selectLauncherDestination(defaultPath: string): Promise<string | null>;
 }): void => {
   input.ipcMain.handle(
     cliInstallCommandChannel,
@@ -111,8 +112,13 @@ export const registerCliInstallIpc = (input: {
         case "launcher-inspect":
           return input.manager.launcher("inspect");
         case "launcher-install": {
-          const destination = await input.selectLauncherDestination();
-          if (!destination) return input.manager.launcher("inspect");
+          const observed = await input.manager.launcher("inspect");
+          if (!observed.destination)
+            throw new Error("Launcher destination is unavailable.");
+          const destination = await input.selectLauncherDestination(
+            observed.destination
+          );
+          if (!destination) return { ...observed, selectionCancelled: true };
           return input.manager.launcher("install", {
             consent: command.consent,
             destination
@@ -120,6 +126,8 @@ export const registerCliInstallIpc = (input: {
         }
         case "launcher-remove":
           return input.manager.launcher("remove");
+        case "launcher-cancel-pending":
+          return input.manager.launcher("cancel-pending");
         case "path-update":
           return input.manager.updatePath(
             command.operationKind,

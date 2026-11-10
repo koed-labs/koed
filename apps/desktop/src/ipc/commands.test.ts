@@ -634,6 +634,14 @@ describe("desktop IPC command registry", () => {
     );
   });
 
+  it("propagates asynchronous clipboard failures", async () => {
+    const { registered, writeClipboard } = register();
+    writeClipboard.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    await expect(
+      registered.get(clipboardWriteChannel)!(renderer(), "text")
+    ).rejects.toThrow("clipboard unavailable");
+  });
+
   it("gets and sets only a bounded theme preference for trusted renderers", async () => {
     const { registered, getThemePreference, setThemePreference } = register();
     const get = registered.get(themePreferenceGetChannel)!;

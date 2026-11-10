@@ -104,7 +104,14 @@ export async function stageNativeAsset(
       { cause }
     );
   }
-  await extractNativeArchive(kind, archive, unpack, pin.expandedBytes, signal);
+  await extractNativeArchive(
+    kind,
+    archive,
+    unpack,
+    pin.expandedBytes,
+    signal,
+    pin.target.platform
+  );
   const root = resolve(unpack, "koed-runtime");
   verifyNativePayload(root, pin, true);
   return root;

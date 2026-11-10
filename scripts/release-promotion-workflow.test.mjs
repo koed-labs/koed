@@ -10,16 +10,26 @@ const release = readFileSync(
   "utf8"
 );
 
-test("candidate verification can read the draft but gets no publication credentials, with protected build identity dependencies", () => {
+test("candidate verification has read-only artifact access and no persisted credentials", () => {
   const { jobs } = parse(release);
   const identity = jobs["reviewed-release-identity"];
   const verification = jobs["verify-release-candidate"];
   assert.ok(identity, "missing independent build identity job");
-  // Draft releases and their assets are visible only with contents: write.
   assert.deepEqual(verification.permissions, {
     contents: "write",
     actions: "read"
   });
+  const checkout = verification.steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@")
+  );
+  assert.equal(checkout.with["persist-credentials"], false);
+  assert.equal(
+    verification.steps.find((step) => step.run?.includes("--verify-only")).env
+      .GH_TOKEN,
+    "${{ secrets.GITHUB_TOKEN }}"
+  );
+  assert.equal(jobs["publish-release"].permissions.contents, "write");
+  assert.equal(jobs["publish-release"].permissions["id-token"], "write");
   assert.equal(verification.environment, undefined);
   assert.equal(verification.permissions["id-token"], undefined);
   assert.equal(JSON.stringify(verification.steps).includes("NPM_TOKEN"), false);
@@ -34,6 +44,8 @@ test("candidate verification can read the draft but gets no publication credenti
   );
   assert.ok(verifyStep);
   assert.ok(verifyStep.run.includes("--identity-artifact-id"));
+  assert.doesNotMatch(release, /KOED_MACOS_APPROVED_INVENTORY_SHA256/);
+  assert.doesNotMatch(verifyStep.run, /approved-macos-inventory/);
   assert.ok(identity.steps.some((step) => step.id === "identity-upload"));
 });
 
@@ -61,6 +73,7 @@ test("reviewed identity comes from immutable build artifacts, not candidate draf
     "${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}"
   );
   assert.match(publication.run, /--expected-build-sha256/);
+  assert.doesNotMatch(publication.run, /approved-macos-inventory/);
   const signed = jobs["signed-desktop-release-assets"];
   const desktop = (signed ?? jobs["unsigned-desktop-release-assets"]).steps;
   const retained = desktop.findIndex(
@@ -219,4 +232,29 @@ test("official promotion invokes pin-only adapter behind publication and approva
   assert.match(adapter, /main\(\)\.catch\([\s\S]*process\.exitCode = 1/);
   assert.doesNotMatch(adapter, /process\.exit\(0\)/);
   assert.doesNotMatch(release, /draft=false|npm publish|npm dist-tag/);
+});
+
+test("versioned Server installer is rendered into the reviewed metadata artifact and required for publication", () => {
+  const { jobs } = parse(release);
+  const steps = jobs["standalone-koed-server-release-metadata"].steps;
+  const render = steps.findIndex((step) =>
+    step.run?.includes("scripts/render-server-installer.mjs")
+  );
+  const retain = steps.findIndex(
+    (step) => step.with?.name === "koed-release-metadata"
+  );
+  assert.ok(render >= 0 && render < retain);
+  assert.match(steps[retain].with.path, /^install-koed-server\.sh$/m);
+  assert.ok(
+    steps.some(
+      (step) =>
+        step.run?.includes("scripts/ensure-release-assets.mjs") &&
+        step.run.includes("install-koed-server.sh")
+    )
+  );
+  assert.ok(
+    jobs["publish-release"].steps.some((step) =>
+      step.run?.includes('"install-koed-server.sh"')
+    )
+  );
 });

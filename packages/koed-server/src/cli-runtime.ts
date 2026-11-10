@@ -79,6 +79,8 @@ export const runRuntimeCommand = async (
           throw new Error("Provide a trusted staged runtime directory.");
         const root = options.runtimeRoot;
         release.assertReleaseHost();
+        if (process.platform === "darwin")
+          throw new Error("CUDA runtime validation is not supported on macOS.");
         const { withStoppedRuntime } =
           await import("./generation-lifecycle.js");
         const { resolveKoedRuntimeOwner } = await import("./app-runtime.js");

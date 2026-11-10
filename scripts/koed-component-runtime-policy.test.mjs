@@ -8,20 +8,20 @@ import {
 
 test("requires installed Electron to match pnpm-lock.yaml", () => {
   assertElectronVersionMatchesLock({
-    lockVersion: "39.8.10",
-    installedVersion: "39.8.10"
+    lockVersion: "45.2.3",
+    installedVersion: "45.2.3"
   });
   assert.throws(
     () =>
       assertElectronVersionMatchesLock({
-        lockVersion: "39.8.11",
-        installedVersion: "39.8.10"
+        lockVersion: "45.2.4",
+        installedVersion: "45.2.3"
       }),
     /does not match pnpm-lock.yaml/
   );
 });
 
-test("declares the measured Node 24 and exact validated Electron runtimes", () => {
+test("declares N-API Node 24–26 and exact validated Electron runtimes", () => {
   assert.deepEqual(
     componentRuntimeDeclarations({
       nodeModulesAbi: "137",
@@ -30,26 +30,26 @@ test("declares the measured Node 24 and exact validated Electron runtimes", () =
     [
       {
         kind: "node",
-        runtimeRange: ">=24 <25",
-        nodeRange: ">=24 <25",
-        modulesAbi: "137"
+        runtimeRange: ">=24 <27",
+        nodeRange: ">=24 <27",
+        minimumNapi: 10
       },
       {
         kind: "electron",
-        runtimeRange: "=39.8.10",
-        nodeRange: "=22.22.1",
-        modulesAbi: "140",
+        runtimeRange: "=45.2.3",
+        nodeRange: "=24.22.2",
+        modulesAbi: "150",
         minimumNapi: 10
       }
     ]
   );
 });
 
-test("keeps Electron 39 compatibility closed when its measured identity changes", () => {
+test("keeps Electron 45 compatibility closed when its measured identity changes", () => {
   for (const changed of [
-    { ...validatedElectronRuntime, version: "39.8.11" },
-    { ...validatedElectronRuntime, nodeVersion: "22.22.2" },
-    { ...validatedElectronRuntime, modulesAbi: "141" },
+    { ...validatedElectronRuntime, version: "45.2.4" },
+    { ...validatedElectronRuntime, nodeVersion: "24.22.3" },
+    { ...validatedElectronRuntime, modulesAbi: "151" },
     { ...validatedElectronRuntime, napiVersion: 11 }
   ]) {
     assert.throws(
@@ -67,9 +67,9 @@ test("does not add Electron claims to targets without a measured Electron runtim
   assert.deepEqual(componentRuntimeDeclarations({ nodeModulesAbi: "137" }), [
     {
       kind: "node",
-      runtimeRange: ">=24 <25",
-      nodeRange: ">=24 <25",
-      modulesAbi: "137"
+      runtimeRange: ">=24 <27",
+      nodeRange: ">=24 <27",
+      minimumNapi: 10
     }
   ]);
 });

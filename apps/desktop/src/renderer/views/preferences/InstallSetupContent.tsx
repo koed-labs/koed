@@ -31,6 +31,7 @@ export type InstallSetupContentProps = {
   onInstall: () => void;
   onCancel: () => void;
   onRemove: () => void;
+  onCancelPending?: () => void;
   message?: string;
   heading?: string;
   disabled?: boolean;
@@ -47,6 +48,7 @@ export function InstallSetupContent({
   onInstall,
   onCancel,
   onRemove,
+  onCancelPending,
   message,
   heading,
   disabled = false,
@@ -221,6 +223,15 @@ export function InstallSetupContent({
       {!statusOnly &&
         ((!busy && !ready) || (ready && !privacy) || canCancel) && (
           <div className="koed-setup-dialog-actions">
+            {!busy && !ready && !privacy && onCancelPending && (
+              <Button
+                disabled={disabled || job.running}
+                variant="outline"
+                onClick={onCancelPending}
+              >
+                Cancel pending setup
+              </Button>
+            )}
             {canCancel ? (
               <Button
                 className={nested ? "v1-settings-secondary" : undefined}

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
   mkdirSync,
@@ -17,7 +18,10 @@ import {
   compareNativeVersions,
   validateNativeRuntimeCatalog
 } from "../packages/koed-server/dist/native-runtime-catalog.js";
-import { verifyPackagedNativeCatalog } from "./native-runtime-pins.mjs";
+import {
+  createCompiledNativeCatalog,
+  verifyPackagedNativeCatalog
+} from "./native-runtime-pins.mjs";
 import { verifyReleaseCandidate } from "./release-candidate-verification.mjs";
 import {
   setupCandidate,
@@ -222,9 +226,289 @@ test("packaged native authority is inspected statically and must equal the revie
   }
 });
 
+test("packaged catalog inspection accepts both targets and rejects a substituted macOS pin", () => {
+  mkdirSync("scratch", { recursive: true });
+  const root = mkdtempSync(resolve("scratch/native-pins-v2-"));
+  const modulePath = resolve(root, "control-plane.mjs");
+  const linux = fixture().catalog;
+  const macos = structuredClone(linux);
+  macos.core.target = {
+    platform: "macos",
+    architecture: "arm64",
+    minimumVersion: "14.0"
+  };
+  macos.core.components.llamaCpp = { version: "b10514" };
+  macos.core.url = macos.core.url.replace("linux-x64", "macos-arm64");
+  const expected = { schemaVersion: 2, linux, macos };
+  try {
+    writeFileSync(
+      modulePath,
+      `export const productionNativeRuntimeCatalog = ${JSON.stringify(expected)};`
+    );
+    assert.deepEqual(
+      verifyPackagedNativeCatalog({ modulePath, expected }),
+      expected
+    );
+    const changed = structuredClone(expected);
+    changed.macos.core.sha256 = "b".repeat(64);
+    writeFileSync(
+      modulePath,
+      `export const productionNativeRuntimeCatalog = ${JSON.stringify(changed)};`
+    );
+    assert.throws(
+      () => verifyPackagedNativeCatalog({ modulePath, expected }),
+      /differ/
+    );
+    changed.macos.core.target.platform = "linux";
+    writeFileSync(
+      modulePath,
+      `export const productionNativeRuntimeCatalog = ${JSON.stringify(changed)};`
+    );
+    assert.throws(
+      () => verifyPackagedNativeCatalog({ modulePath, expected }),
+      /Invalid compiled/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("compiled release catalog requires valid Linux CUDA and macOS core pins", () => {
+  const linux = fixture().catalog;
+  linux.cuda = cudaFixture(linux).pin;
+  const macos = structuredClone(linux);
+  macos.cuda = null;
+  macos.core.target = {
+    platform: "macos",
+    architecture: "arm64",
+    minimumVersion: "14.0"
+  };
+  macos.core.components.llamaCpp = { version: "b10514" };
+  macos.core.url = macos.core.url.replace("linux-x64", "macos-arm64");
+  assert.deepEqual(createCompiledNativeCatalog(linux, macos), {
+    schemaVersion: 2,
+    linux,
+    macos
+  });
+  assert.throws(() => createCompiledNativeCatalog(linux, null), /required/);
+  assert.throws(
+    () => createCompiledNativeCatalog({ ...linux, cuda: null }, macos),
+    /required/
+  );
+  const wrong = structuredClone(macos);
+  wrong.core.url = linux.core.url;
+  assert.throws(
+    () => createCompiledNativeCatalog(linux, wrong),
+    /Invalid compiled/
+  );
+});
+
+test("candidate binds schema 2 macOS and Linux pins to reviewed release bytes", async () => {
+  const f = await setupCandidate({ native: true });
+  try {
+    const linuxFixture = fixture();
+    const linux = linuxFixture.catalog;
+    const cuda = cudaFixture(linux);
+    linux.cuda = cuda.pin;
+    const initialCatalog = JSON.parse(
+      f.contents.get("native-runtime-catalog.json")
+    );
+    const macCore = initialCatalog.macos.core;
+    const macBytes = f.contents.get("native-core-manifest-macos-arm64.json");
+    const macArchive = f.contents.get(
+      `koed-native-core-${macCore.recipeId}-macos-arm64.tar.gz`
+    );
+    const macos = {
+      schemaVersion: 1,
+      minimumCoreVersion: macCore.runtimeVersion,
+      core: macCore,
+      cuda: null
+    };
+    for (const [pin, platform, kind, archive, manifest, manifestName] of [
+      [
+        linux.core,
+        "linux-x64",
+        "core",
+        linuxFixture.archive,
+        linuxFixture.manifestBytes,
+        "native-core-manifest.json"
+      ],
+      [
+        linux.cuda,
+        "linux-x64",
+        "cuda",
+        cuda.archive,
+        cuda.manifest,
+        "native-cuda-manifest.json"
+      ],
+      [
+        macCore,
+        "macos-arm64",
+        "core",
+        macArchive,
+        macBytes,
+        "native-core-manifest-macos-arm64.json"
+      ]
+    ]) {
+      const name = `koed-native-${kind}-${pin.recipeId}-${platform}.tar.gz`;
+      pin.url = `https://github.com/koed-labs/koed/releases/download/v${f.expected.version}/${name}`;
+      f.contents.set(name, archive);
+      f.contents.set(manifestName, manifest);
+    }
+    const catalog = { schemaVersion: 2, linux, macos };
+    const linuxDir = resolve(f.root, "assembly-linux");
+    const macDir = resolve(f.root, "assembly-macos");
+    mkdirSync(resolve(macDir, "koed-runtime"), { recursive: true });
+    mkdirSync(linuxDir);
+    for (const [name, bytes] of f.contents) {
+      if (
+        /^(koed-native-.*-linux-x64\.tar\.gz|native-(core|cuda)-manifest\.json)$/.test(
+          name
+        )
+      )
+        writeFileSync(resolve(linuxDir, name), bytes);
+    }
+    const { url: _url, ...reportPin } = macCore;
+    writeFileSync(
+      resolve(macDir, "core-candidate.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "core",
+        archive: `koed-native-core-${macCore.recipeId}-macos-arm64.tar.gz`,
+        ...reportPin
+      })
+    );
+    writeFileSync(
+      resolve(
+        macDir,
+        `koed-native-core-${macCore.recipeId}-macos-arm64.tar.gz`
+      ),
+      macArchive
+    );
+    writeFileSync(
+      resolve(macDir, "koed-runtime/native-core-manifest.json"),
+      macBytes
+    );
+    const assemble = () =>
+      spawnSync(
+        process.execPath,
+        [
+          "scripts/native-runtime/assemble-release-catalog.mjs",
+          f.expected.version,
+          macDir,
+          linuxDir
+        ],
+        {
+          env: { ...process.env, LINUX_CATALOG: JSON.stringify(linux) },
+          encoding: "utf8"
+        }
+      );
+    const assembled = assemble();
+    assert.equal(assembled.status, 0, assembled.stderr);
+    assert.deepEqual(
+      JSON.parse(
+        readFileSync(resolve(linuxDir, "native-runtime-catalog.json"))
+      ),
+      catalog
+    );
+    writeFileSync(
+      resolve(macDir, "koed-runtime/native-core-manifest.json"),
+      "altered"
+    );
+    assert.notEqual(assemble().status, 0);
+    f.contents.set(
+      "native-runtime-catalog.json",
+      Buffer.from(JSON.stringify(catalog))
+    );
+    const path = resolve(f.packageRoot, "vendor/control-plane.js");
+    const source = readFileSync(path, "utf8");
+    const originalCatalog = `export const productionNativeRuntimeCatalog = ${JSON.stringify(initialCatalog)};`;
+    const pack = () => {
+      writeFileSync(
+        path,
+        source.replace(
+          originalCatalog,
+          `export const productionNativeRuntimeCatalog = ${JSON.stringify(catalog)};`
+        )
+      );
+      refreshCandidatePackage(f);
+      f.release.assets = [...f.contents.keys()].map((name, index) => ({
+        id: index + 10,
+        name
+      }));
+    };
+    pack();
+    assert.equal(
+      (await verifyReleaseCandidate(f.input, f.readers)).kind,
+      "verified-release-candidate"
+    );
+    f.contents.set(
+      "native-core-manifest-macos-arm64.json",
+      Buffer.from("changed")
+    );
+    pack();
+    await assert.rejects(
+      verifyReleaseCandidate(f.input, f.readers),
+      /differs from the product draft/
+    );
+    f.contents.set("native-core-manifest-macos-arm64.json", macBytes);
+    const macName = `koed-native-core-${macCore.recipeId}-macos-arm64.tar.gz`;
+    f.contents.set(macName, Buffer.from("substituted archive"));
+    pack();
+    await assert.rejects(
+      verifyReleaseCandidate(f.input, f.readers),
+      /differs from the product draft/
+    );
+    f.contents.set(macName, macArchive);
+    catalog.macos = null;
+    pack();
+    await assert.rejects(
+      verifyReleaseCandidate(f.input, f.readers),
+      /all required native packages/
+    );
+    catalog.macos = macos;
+    catalog.linux = null;
+    pack();
+    await assert.rejects(
+      verifyReleaseCandidate(f.input, f.readers),
+      /all required native packages/
+    );
+    catalog.linux = linux;
+    f.contents.set(
+      "native-runtime-catalog.json",
+      Buffer.from(JSON.stringify(linux))
+    );
+    writeFileSync(
+      path,
+      source.replace(
+        originalCatalog,
+        `export const productionNativeRuntimeCatalog = ${JSON.stringify(linux)};`
+      )
+    );
+    refreshCandidatePackage(f);
+    f.release.assets = [...f.contents.keys()].map((name, index) => ({
+      id: index + 10,
+      name
+    }));
+    await assert.rejects(
+      verifyReleaseCandidate(f.input, f.readers),
+      /schema 2/
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("promotion binds both packaged pins to the same product draft", async () => {
   const f = await setupCandidate();
+  const donor = await setupCandidate({ native: true });
   try {
+    f.expected.artifacts.push(
+      donor.expected.artifacts.find((artifact) => artifact.id === 4)
+    );
+    const getArtifact = f.readers.getArtifact;
+    f.readers.getArtifact = (repo, id) =>
+      id === 4 ? donor.readers.getArtifact(repo, id) : getArtifact(repo, id);
     const native = fixture(),
       { catalog } = native;
     const cuda = cudaFixture(catalog);
@@ -260,14 +544,39 @@ test("promotion binds both packaged pins to the same product draft", async () =>
       }));
     }
     pack();
+    f.input.allowLegacyNativeCatalog = true;
+    await assert.rejects(
+      verifyReleaseCandidate(f.input, f.readers),
+      /schema 2/
+    );
     assert.equal(
-      (await verifyReleaseCandidate(f.input, f.readers)).kind,
+      (
+        await verifyReleaseCandidate(f.input, f.readers, {
+          allowLegacyNativeCatalog: true
+        })
+      ).kind,
       "verified-release-candidate"
     );
+    for (const name of [
+      `koed-native-core-${"a".repeat(64)}-macos-arm64.tar.gz`,
+      "native-core-manifest-macos-arm64.json"
+    ]) {
+      f.contents.set(name, Buffer.from("unverified macOS native asset"));
+      pack();
+      await assert.rejects(
+        verifyReleaseCandidate(f.input, f.readers, {
+          allowLegacyNativeCatalog: true
+        }),
+        /macOS native assets require a schema 2 release catalog/
+      );
+      f.contents.delete(name);
+    }
     f.contents.set("native-cuda-manifest.json", Buffer.from("changed"));
     pack();
     await assert.rejects(
-      verifyReleaseCandidate(f.input, f.readers),
+      verifyReleaseCandidate(f.input, f.readers, {
+        allowLegacyNativeCatalog: true
+      }),
       /differs from the product draft/
     );
     f.contents.set("native-cuda-manifest.json", cuda.manifest);
@@ -278,10 +587,13 @@ test("promotion binds both packaged pins to the same product draft", async () =>
     );
     pack();
     await assert.rejects(
-      verifyReleaseCandidate(f.input, f.readers),
+      verifyReleaseCandidate(f.input, f.readers, {
+        allowLegacyNativeCatalog: true
+      }),
       /differs from the product draft/
     );
   } finally {
+    donor.cleanup();
     f.cleanup();
   }
 });

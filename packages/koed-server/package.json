@@ -8,7 +8,7 @@
     "koed": "dist/cli.js"
   },
   "engines": {
-    "node": ">=24 <25"
+    "node": ">=24 <27"
   },
   "publishConfig": {
     "access": "public"

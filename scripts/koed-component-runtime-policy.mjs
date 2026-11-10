@@ -1,7 +1,7 @@
 export const validatedElectronRuntime = Object.freeze({
-  version: "39.8.10",
-  nodeVersion: "22.22.1",
-  modulesAbi: "140",
+  version: "45.2.3",
+  nodeVersion: "24.22.2",
+  modulesAbi: "150",
   napiVersion: 10
 });
 
@@ -15,16 +15,13 @@ export const assertElectronVersionMatchesLock = ({
     );
 };
 
-export const componentRuntimeDeclarations = ({
-  nodeModulesAbi,
-  electronIdentity
-}) => {
+export const componentRuntimeDeclarations = ({ electronIdentity }) => {
   const runtimes = [
     {
       kind: "node",
-      runtimeRange: ">=24 <25",
-      nodeRange: ">=24 <25",
-      modulesAbi: nodeModulesAbi
+      runtimeRange: ">=24 <27",
+      nodeRange: ">=24 <27",
+      minimumNapi: 10
     }
   ];
   if (!electronIdentity) return runtimes;

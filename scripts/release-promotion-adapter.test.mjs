@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 import {
-  setupCandidate,
+  setupCandidate as setupFixture,
   verificationArgs
 } from "./test-utils/release-candidate-fixture.mjs";
 import {
@@ -17,6 +17,9 @@ import {
   registryVersion,
   parseArgs
 } from "./release-promotion-adapter.mjs";
+
+const setupCandidate = (options = {}) =>
+  setupFixture({ ...options, native: true });
 
 test("candidate polling backs off with a cap and respects its overall deadline", async () => {
   let now = 0;
@@ -237,6 +240,35 @@ test("verify-only ignores mutation capabilities; publication rejects without sep
   }
 });
 
+test("macOS core that differs from the frozen inventory never reaches promotion mutations", async () => {
+  const forged = await setupCandidate({
+    desktop: true,
+    nativeArchivePayload: "evil"
+  });
+  try {
+    const args = verificationArgs(forged);
+    let mutations = 0;
+    await assert.rejects(
+      runReleasePromotion(args, {
+        publicationApproved: true,
+        readers: forged.readers,
+        run: () => {
+          mutations++;
+          throw new Error("mutation touched");
+        },
+        fetchRegistry: () => {
+          mutations++;
+          throw new Error("mutation touched");
+        }
+      }),
+      /content mismatch/i
+    );
+    assert.equal(mutations, 0);
+  } finally {
+    forged.cleanup();
+  }
+});
+
 test("candidate failures block all publication adapters even with independent approval", async () => {
   const cases = [
     (f) => f.contents.delete("component-manifest-hashes.json"),
@@ -301,7 +333,10 @@ for (const downloadDrift of [
   "catalog",
   "tarball",
   "identity",
-  "recheck"
+  "recheck",
+  "evidence",
+  "evidence-after-publish",
+  "evidence-before-latest"
 ])
   test(`pin-only promotion verifies frozen assets before mutation (download drift: ${downloadDrift})`, async () => {
     const f = await setupCandidate({ desktop: true });
@@ -310,6 +345,16 @@ for (const downloadDrift of [
         ![...f.contents.keys()].some((name) => name.endsWith(".signature.json"))
       );
       const args = verificationArgs(f);
+      if (downloadDrift === "evidence") {
+        const getArchive = f.readers.getArtifactArchive;
+        let reads = 0;
+        f.readers.getArtifactArchive = async (...args) => {
+          if (++reads === 1) return getArchive(...args);
+          return (async function* () {
+            yield Buffer.from("changed evidence");
+          })();
+        };
+      }
       let published = false;
       let latestPromoted = false;
       const mutations = [];
@@ -359,11 +404,24 @@ for (const downloadDrift of [
             return JSON.stringify(f.release);
           }
           mutations.push([command, ...argv]);
-          if (command === "npm" && argv[0] === "publish") published = true;
+          if (command === "npm" && argv[0] === "publish") {
+            published = true;
+            if (downloadDrift === "evidence-after-publish")
+              f.readers.getArtifactArchive = async () =>
+                (async function* () {
+                  yield Buffer.from("changed evidence");
+                })();
+          }
           if (command === "npm" && argv.at(-1) === "latest")
             latestPromoted = true;
-          if (command === "gh" && argv.includes("PATCH"))
+          if (command === "gh" && argv.includes("PATCH")) {
             f.release.draft = false;
+            if (downloadDrift === "evidence-before-latest")
+              f.readers.getArtifactArchive = async () =>
+                (async function* () {
+                  yield Buffer.from("changed evidence");
+                })();
+          }
           return "";
         },
         fetchRegistry: async (_name, version) =>
@@ -376,13 +434,30 @@ for (const downloadDrift of [
           runReleasePromotion(args, adapters),
           downloadDrift === "catalog"
             ? /Release asset differs from protected build/
-            : /protected build|Frozen component|not canonical|draft|Candidate changed/
+            : /protected build|Frozen component|not canonical|draft|Candidate changed|digest mismatch/
         );
-        assert.equal(
-          mutations.length,
-          0,
-          "drift must reject before npm/GitHub mutation"
-        );
+        if (downloadDrift === "evidence-after-publish") {
+          assert.equal(mutations.length, 1);
+          assert.deepEqual(mutations[0].slice(0, 2), ["npm", "publish"]);
+        } else if (downloadDrift === "evidence-before-latest") {
+          assert.ok(
+            mutations.some(
+              ([cmd, ...args]) => cmd === "gh" && args.includes("PATCH")
+            )
+          );
+          assert.equal(
+            mutations.some(
+              ([cmd, , , , tag]) => cmd === "npm" && tag === "latest"
+            ),
+            false
+          );
+        } else {
+          assert.equal(
+            mutations.length,
+            0,
+            "drift must reject before npm/GitHub mutation"
+          );
+        }
         if (["tarball", "identity"].includes(downloadDrift))
           assert.equal(
             tarCalls.length,

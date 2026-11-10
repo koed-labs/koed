@@ -152,6 +152,97 @@ test("refresh verifies all five assets, commits only native pins, and reuses an 
   assert.equal(readFileSync(f.destination, "utf8"), snapshot);
 });
 
+// A two-platform release: the published catalog wraps the Linux catalog and
+// adds a macOS core pin with its own archive and manifest.
+function publishedTwoPlatform(tag = "v0.11.2") {
+  const item = published(tag);
+  const { release, content, native } = item;
+  const recipe = { kind: "core", platform: "macos-arm64", fixture: tag };
+  const core = {
+    ...structuredClone(native.core),
+    recipeId: digest(canonicalArtifactJson(recipe)),
+    target: {
+      platform: "macos",
+      architecture: "arm64",
+      minimumVersion: "14.0"
+    },
+    components: {
+      postgres: native.core.components.postgres,
+      pgvector: native.core.components.pgvector,
+      llamaCpp: { version: native.core.components.llamaCpp.version }
+    }
+  };
+  const archiveName = `koed-native-core-${core.recipeId}-macos-arm64.tar.gz`;
+  core.url = `https://github.com/koed-labs/koed/releases/download/${tag}/${archiveName}`;
+  const archive = Buffer.from(`synthetic macos core ${tag}`);
+  const manifest = Buffer.from(
+    JSON.stringify({
+      schemaVersion: 1,
+      kind: "core",
+      recipe,
+      recipeId: core.recipeId,
+      runtimeVersion: core.runtimeVersion,
+      target: core.target,
+      contracts: core.contracts,
+      inventory: [],
+      components: core.components
+    })
+  );
+  core.sha256 = digest(archive);
+  core.manifestSha256 = digest(manifest);
+  core.archiveBytes = archive.length;
+  core.expandedBytes = manifest.length;
+  content.set(archiveName, archive);
+  content.set("native-core-manifest-macos-arm64.json", manifest);
+  content.set(
+    "native-runtime-catalog.json",
+    Buffer.from(
+      JSON.stringify({
+        schemaVersion: 2,
+        linux: native,
+        macos: {
+          schemaVersion: 1,
+          minimumCoreVersion: native.minimumCoreVersion,
+          core,
+          cuda: null
+        }
+      })
+    )
+  );
+  release.assets = [...content].map(([name, bytes], i) => ({
+    id: release.id * 10 + i,
+    name,
+    size: bytes.length,
+    digest: `sha256:${digest(bytes)}`,
+    state: "uploaded",
+    browser_download_url: `https://github.com/koed-labs/koed/releases/download/${tag}/${name}`
+  }));
+  return item;
+}
+
+test("refresh takes Linux pins from a two-platform release and verifies its macOS core", async () => {
+  const f = fixture([publishedTwoPlatform()]);
+  const result = await refreshSourceRuntimeCatalogs({
+    repoRoot: f.root,
+    readers: f.readers
+  });
+  assert.equal(result.state, "updated");
+  assert.deepEqual(f.read().native, f.releases[0].native);
+  // Catalog, two Linux archives and manifests, macOS archive and manifest.
+  assert.equal(f.calls.length, 7);
+
+  const tampered = publishedTwoPlatform();
+  tampered.content.set(
+    "native-core-manifest-macos-arm64.json",
+    Buffer.from("{}")
+  );
+  const g = fixture([tampered]);
+  await assert.rejects(
+    refreshSourceRuntimeCatalogs({ repoRoot: g.root, readers: g.readers })
+  );
+  assert.deepEqual(g.read(), baseline);
+});
+
 test("ignores drafts, prereleases, future versions, and releases without native catalogs", async () => {
   const good = published();
   const draft = published("v0.11.9", 2);

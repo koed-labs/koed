@@ -13,7 +13,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { canonicalArtifactJson } from "./artifact-canonical-json.mjs";
 import { nativeDigest } from "./native-payload-admission.js";
 import { resolveKoedServerPaths } from "./paths.js";
-import { validateNativeRuntimeCatalog } from "./native-runtime-catalog.js";
+import {
+  selectNativeRuntimeCatalog,
+  validateNativeRuntimeCatalog
+} from "./native-runtime-catalog.js";
 import {
   activateNativeSelection,
   assertStartableCore,
@@ -25,6 +28,18 @@ import {
 } from "./native-selection.js";
 import * as filesystem from "./generation-lifecycle-filesystem.js";
 import { chooseCuda, preservedCudaFailure } from "./runtime-release-assets.js";
+import * as catalogModule from "./native-runtime-catalog.js";
+import * as download from "./bounded-download.js";
+import * as supervisor from "./supervisor-lock.js";
+import {
+  installReleaseRuntime,
+  resolveSelectedCoreForStart
+} from "./runtime-release.js";
+
+vi.mock("node:os", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:os")>()),
+  release: () => "23.0.0"
+}));
 
 const homes: string[] = [];
 it("retains an admitted add-on without a new pin, but only a compatible core may reuse it", () => {
@@ -75,7 +90,11 @@ function home() {
   homes.push(path);
   return resolveKoedServerPaths({ KOED_HOME: path });
 }
-function candidate(paths: ReturnType<typeof home>, version: string) {
+function candidate(
+  paths: ReturnType<typeof home>,
+  version: string,
+  mac = false
+) {
   const recipe = { build: version },
     recipeId = nativeDigest(canonicalArtifactJson(recipe));
   const store = nativeStore(paths),
@@ -93,27 +112,72 @@ function candidate(paths: ReturnType<typeof home>, version: string) {
   };
   const pathsInOrder = [
     "llama.cpp",
-    "llama.cpp/cpu",
-    "llama.cpp/cpu/llama-server",
+    `llama.cpp/${mac ? "metal" : "cpu"}`,
+    `llama.cpp/${mac ? "metal" : "cpu"}/llama-server`,
     "llama.cpp/llama-server",
-    "postgres"
-  ];
+    "postgres",
+    ...(mac
+      ? [
+          "postgres/bin",
+          ...[
+            "postgres",
+            "initdb",
+            "pg_ctl",
+            "psql",
+            "pg_dump",
+            "pg_restore"
+          ].map((name) => `postgres/bin/${name}`),
+          "postgres/lib",
+          "postgres/lib/vector.so",
+          "postgres/lib/pgcrypto.so"
+        ]
+      : [])
+  ].sort();
   const data = Buffer.from(version);
+  const macho = Buffer.alloc(16);
+  macho.writeUInt32LE(0xfeedfacf, 0);
+  macho.writeUInt32LE(0x0100000c, 4);
+  macho.writeUInt32LE(2, 12);
+  const dylib = Buffer.from(macho);
+  dylib.writeUInt32LE(6, 12);
   const inventory = pathsInOrder.map((path) => {
     const dest = resolve(root, path);
-    if (!path.endsWith("server")) {
+    if (
+      [
+        "llama.cpp",
+        "llama.cpp/cpu",
+        "llama.cpp/metal",
+        "postgres",
+        "postgres/bin",
+        "postgres/lib"
+      ].includes(path)
+    ) {
       mkdirSync(dest, { recursive: true, mode: 0o755 });
       return { path, type: "directory", mode: 0o755 };
     }
-    writeFileSync(dest, data, { mode: 0o755 });
+    const content = mac
+      ? path === "llama.cpp/llama-server"
+        ? Buffer.from("#!/bin/sh\n")
+        : path.endsWith(".so")
+          ? dylib
+          : macho
+      : data;
+    const mode = path.endsWith(".so") ? 0o644 : 0o755;
+    writeFileSync(dest, content, { mode });
     return {
       path,
       type: "file",
-      mode: 0o755,
-      bytes: data.length,
-      sha256: nativeDigest(data)
+      mode,
+      bytes: content.length,
+      sha256: nativeDigest(content)
     };
   });
+  const selectedTarget = mac
+    ? { platform: "macos", architecture: "arm64", minimumVersion: "14.0" }
+    : target;
+  const selectedComponents = mac
+    ? { ...components, llamaCpp: { version: "b10514" } }
+    : components;
   const bytes = Buffer.from(
     canonicalArtifactJson({
       schemaVersion: 1,
@@ -121,37 +185,117 @@ function candidate(paths: ReturnType<typeof home>, version: string) {
       recipe,
       recipeId,
       runtimeVersion: version,
-      target,
+      target: selectedTarget,
       contracts,
-      components,
+      components: selectedComponents,
       inventory
     }) + "\n"
   );
   writeFileSync(resolve(root, "native-core-manifest.json"), bytes, {
     mode: 0o644
   });
-  const catalog = validateNativeRuntimeCatalog({
+  const rawCatalog = {
     schemaVersion: 1,
     minimumCoreVersion: "1.0.0",
     cuda: null,
     core: {
       recipeId,
       runtimeVersion: version,
-      target,
+      target: selectedTarget,
       contracts,
-      components,
-      url: `https://github.com/koed-labs/koed/releases/download/native-core-${recipeId}/koed-native-core-${recipeId}-linux-x64.tar.gz`,
+      components: selectedComponents,
+      url: `https://github.com/koed-labs/koed/releases/download/native-core-${recipeId}/koed-native-core-${recipeId}-${mac ? "macos-arm64" : "linux-x64"}.tar.gz`,
       sha256: "d".repeat(64),
       archiveBytes: 123,
       manifestSha256: nativeDigest(bytes),
-      expandedBytes: bytes.length + data.length * 2
+      expandedBytes:
+        bytes.length +
+        inventory.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0)
     }
-  });
+  };
+  const catalog = mac
+    ? selectNativeRuntimeCatalog(
+        { schemaVersion: 2, linux: null, macos: rawCatalog },
+        "darwin",
+        "arm64"
+      )
+    : validateNativeRuntimeCatalog(rawCatalog);
   mkdirSync(resolve(store, "selections"), { recursive: true, mode: 0o700 });
   const stage = mkdtempSync(resolve(store, ".stage-"));
   const selection = composeNativeSelection(paths, catalog.core, stage, catalog);
   return { catalog, selection, root };
 }
+
+it("admits a Metal selection and rejects it against a Linux catalog", () => {
+  const paths = home();
+  const { catalog, selection } = candidate(paths, "1.0.0", true);
+  activateNativeSelection(paths, selection.id);
+  expect(readlinkSync(resolve(selection.root, "llama.cpp/metal"))).toContain(
+    "llama.cpp/metal"
+  );
+  expect(readNativeSelection(paths, catalog)?.id).toBe(selection.id);
+  const linux = candidate(home(), "1.0.0").catalog;
+  expect(() => readNativeSelection(paths, linux)).toThrow(
+    /target.*preserve.*fresh.*KOED_HOME/i
+  );
+  const other = home();
+  const linuxSelection = candidate(other, "1.0.0");
+  activateNativeSelection(other, linuxSelection.selection.id);
+  expect(() => readNativeSelection(other, catalog)).toThrow(
+    /target.*preserve.*fresh.*KOED_HOME/i
+  );
+});
+
+it("preserves cross-target selections and refuses installation or startup before download", async () => {
+  const macHome = home(),
+    linuxHome = home();
+  const mac = candidate(macHome, "1.0.0", true),
+    linux = candidate(linuxHome, "1.0.0");
+  activateNativeSelection(macHome, mac.selection.id);
+  activateNativeSelection(linuxHome, linux.selection.id);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const arch = Object.getOwnPropertyDescriptor(process, "arch")!;
+  const pin = vi.spyOn(catalogModule, "getNativeRuntimeCatalog");
+  const fetch = vi.spyOn(download, "fetchBounded");
+  vi.spyOn(supervisor, "resolveProcessIdentity").mockReturnValue(
+    "test-identity"
+  );
+  vi.spyOn(process.report, "getReport").mockReturnValue({
+    header: { glibcVersionRuntime: "2.35" }
+  } as unknown as NodeJS.ProcessReport);
+  try {
+    for (const [system, architecture, paths, target] of [
+      ["darwin", "arm64", linuxHome, mac.catalog],
+      ["linux", "x64", macHome, linux.catalog]
+    ] as const) {
+      Object.defineProperty(process, "platform", {
+        value: system,
+        configurable: true
+      });
+      Object.defineProperty(process, "arch", {
+        value: architecture,
+        configurable: true
+      });
+      pin.mockReturnValue(target);
+      await expect(
+        installReleaseRuntime(paths, {
+          environment: { KOED_EMBEDDING_ACCELERATION: "auto" }
+        })
+      ).rejects.toThrow(/target.*preserve.*fresh.*KOED_HOME/i);
+      expect(() =>
+        resolveSelectedCoreForStart(paths, {
+          KOED_EMBEDDING_ACCELERATION: "auto"
+        })
+      ).toThrow(/target.*preserve.*fresh.*KOED_HOME/i);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+    expect(currentNativeId(macHome)).toBe(mac.selection.id);
+    expect(currentNativeId(linuxHome)).toBe(linux.selection.id);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    Object.defineProperty(process, "arch", arch);
+  }
+});
 
 it("reuses the same archive from a later product release and rejects a changed digest", () => {
   const paths = home();

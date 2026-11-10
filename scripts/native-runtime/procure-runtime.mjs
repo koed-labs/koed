@@ -527,7 +527,18 @@ const requirePostgresBuildTools = () => {
   );
 };
 
-const buildMacosOpenSslStatic = ({ source, cacheDir, workDir }) => {
+const retainSourceLicense = (sourceRoot, runtimeRoot, component, name) => {
+  const destination = resolve(runtimeRoot, "third-party-licenses", component);
+  mkdirSync(destination, { recursive: true });
+  copyFileSync(resolve(sourceRoot, name), resolve(destination, name));
+};
+
+const buildMacosOpenSslStatic = ({
+  source,
+  cacheDir,
+  workDir,
+  runtimeRoot
+}) => {
   if (process.platform !== "darwin") return undefined;
   if (!source) {
     throw new Error(
@@ -538,6 +549,7 @@ const buildMacosOpenSslStatic = ({ source, cacheDir, workDir }) => {
   const extractDir = resolve(workDir, "openssl-source");
   extractArchive(archive, extractDir);
   const sourceRoot = firstChildDir(extractDir);
+  retainSourceLicense(sourceRoot, runtimeRoot, "openssl", "LICENSE.txt");
   const prefix = resolve(workDir, "openssl-static");
   rmSync(prefix, { recursive: true, force: true });
   const env = macosNativeBuildEnv();
@@ -594,12 +606,15 @@ const buildPostgresSource = ({
   const openssl = buildMacosOpenSslStatic({
     source: opensslSource,
     cacheDir,
-    workDir
+    workDir,
+    runtimeRoot
   });
   const archive = download({ ...source, cacheDir });
   const extractDir = resolve(workDir, "postgres-source");
   extractArchive(archive, extractDir);
   const sourceRoot = firstChildDir(extractDir);
+  if (process.platform === "darwin")
+    retainSourceLicense(sourceRoot, runtimeRoot, "postgres", "COPYRIGHT");
   const target = resolve(runtimeRoot, "postgres");
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
@@ -693,6 +708,8 @@ const buildPgvector = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const extractDir = resolve(workDir, "pgvector");
   extractArchive(archive, extractDir);
   const sourceRoot = firstChildDir(extractDir);
+  if (process.platform === "darwin")
+    retainSourceLicense(sourceRoot, runtimeRoot, "pgvector", "LICENSE");
   const pgConfig = resolve(runtimeRoot, "postgres", "bin", "pg_config");
   if (!existsSync(pgConfig))
     throw new Error(`Cannot build pgvector; missing ${pgConfig}`);

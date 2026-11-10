@@ -290,13 +290,18 @@ describe("native release installation and recovery", () => {
   it("preserves a compatible installed CUDA add-on across a CPU core update without another add-on download", async () => {
     const first = await install({ cuda: "with", requireModel: true });
     const retained = state.catalog!.cuda!;
-    state.catalog = { ...candidate("1.1.0"), cuda: retained };
+    // The catalog type also covers macOS, whose CUDA pin is always null.
+    const updated = {
+      ...candidate("1.1.0"),
+      cuda: retained
+    } as NativeRuntimeCatalog;
+    state.catalog = updated;
     fetcher.mockClear();
     const next = await install();
     expect(next.cudaId).toBe(first.cudaId);
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(String(fetcher.mock.calls[0]![0])).toBe(state.catalog.core.url);
-    expect(readNativeSelection(paths, state.catalog)?.cuda?.recipeId).toBe(
+    expect(String(fetcher.mock.calls[0]![0])).toBe(updated.core.url);
+    expect(readNativeSelection(paths, updated)?.cuda?.recipeId).toBe(
       retained.recipeId
     );
     assertClean(next.selectionId);

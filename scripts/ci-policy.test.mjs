@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 import {
   evaluateCiPolicy,
   fileAffectsPackaging,
@@ -438,10 +439,24 @@ test("push, manual, scheduled, and Linux dispatch policies are explicit", () => 
   );
 });
 
+test("required CI job depends on and forwards Node 26 consumer result", () => {
+  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  const job = workflow.jobs["ci-required"];
+  assert.ok(job.needs.includes("node-26-consumer"));
+  const evaluation = job.steps.find(
+    (step) => step.run === "node .github/scripts/ci-required.mjs"
+  );
+  assert.equal(
+    evaluation.env.NODE_26_CONSUMER_RESULT,
+    "${{ needs.node-26-consumer.result }}"
+  );
+});
+
 test("stable required result accepts only policy-correct success and skips", () => {
   const baseResults = {
     changes: "success",
     static_checks: "success",
+    node_26_consumer: "success",
     tests: "success",
     build: "success",
     relevant_packaged_smoke: "skipped",
@@ -458,6 +473,17 @@ test("stable required result accepts only policy-correct success and skips", () 
       results: baseResults
     }).ok,
     true
+  );
+  assert.equal(
+    evaluateRequiredJobs({
+      policy: {
+        run_app_smoke: "false",
+        run_full_validation: "false",
+        run_linux_native: "false"
+      },
+      results: { ...baseResults, node_26_consumer: "failure" }
+    }).ok,
+    false
   );
   assert.equal(
     evaluateRequiredJobs({

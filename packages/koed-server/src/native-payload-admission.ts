@@ -7,6 +7,7 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   readlinkSync,
   realpathSync
@@ -15,6 +16,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { canonicalArtifactJson } from "./artifact-canonical-json.mjs";
 import { hashFileDescriptor } from "./component-verification.js";
 import { nativeKind, type NativePin } from "./native-runtime-catalog.js";
+import { permitsMacFilePath, validateMacFile } from "./native-macos-policy.js";
 
 export const nativeDigest = (value: Buffer | string): string =>
   createHash("sha256").update(value).digest("hex");
@@ -74,16 +76,46 @@ export function nativeFileDigest(
   }
 }
 
+function checkMacFile(file: string, path: string, mode: number): void {
+  const fd = openSync(
+    file,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  try {
+    const header = Buffer.alloc(16);
+    const length = readSync(fd, header, 0, header.length, 0);
+    validateMacFile(path, header.subarray(0, length), mode);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 // The manifest digest is the admission authority. Check the entire tree, including
 // extra files, before executing a probe or resolving a selection for startup.
 export function permitsNativeEntry(
   kind: "core" | "cuda",
   path: string,
-  directory: boolean
+  directory: boolean,
+  platform: "linux" | "macos" = "linux"
 ): boolean {
   if (path === "") return directory;
-  if (kind === "core")
-    return path !== "llama.cpp/cuda" && !path.startsWith("llama.cpp/cuda/");
+  if (kind === "core") {
+    if (platform === "linux")
+      return !["cuda", "metal"].some(
+        (backend) =>
+          path === `llama.cpp/${backend}` ||
+          path.startsWith(`llama.cpp/${backend}/`)
+      );
+    if (!directory) return permitsMacFilePath(path);
+    return (
+      path === "postgres" ||
+      path.startsWith("postgres/") ||
+      path === "llama.cpp" ||
+      path === "llama.cpp/metal" ||
+      path === "third-party-licenses" ||
+      path.startsWith("third-party-licenses/")
+    );
+  }
   if (path === "llama.cpp" || path === "llama.cpp/cuda") return directory;
   return (
     path.startsWith("llama.cpp/cuda/") &&
@@ -153,19 +185,49 @@ export function verifyNativePayload(
       );
   };
   let expanded = raw.length;
-  const walk = (directory: string) => {
+  const required = new Set([
+    "postgres/bin/postgres",
+    "postgres/bin/initdb",
+    "postgres/bin/pg_ctl",
+    "postgres/bin/psql",
+    "postgres/bin/pg_dump",
+    "postgres/bin/pg_restore",
+    "postgres/lib/vector.so",
+    "postgres/lib/pgcrypto.so",
+    "llama.cpp/llama-server",
+    "llama.cpp/metal/llama-server"
+  ]);
+  const walk = (directory: string): number => {
+    let files = 0;
     for (const entry of readdirSync(directory).sort()) {
       const path = resolve(directory, entry),
         key = relative(root, path);
       if (key === name) continue;
       const stat = lstatSync(path),
         mode = stat.mode & 0o7777;
-      if (!permitsNativeEntry(kind, key, stat.isDirectory()))
+      if (pin.target.platform === "macos" && (mode & 0o7000) !== 0)
+        throw new Error(`Invalid macOS native special permission bits: ${key}`);
+      if (
+        !permitsNativeEntry(kind, key, stat.isDirectory(), pin.target.platform)
+      )
         throw new Error(`Unexpected native ${kind} entry: ${key}`);
       if (stat.isDirectory()) {
+        if (pin.target.platform === "macos" && mode !== 0o755)
+          throw new Error(`Invalid macOS native directory mode: ${key}`);
         check({ path: key, type: "directory", mode });
-        walk(path);
+        const descendants = walk(path);
+        if (pin.target.platform === "macos" && descendants === 0)
+          throw new Error(`Unexpected native ${kind} empty directory: ${key}`);
+        files += descendants;
       } else if (stat.isFile()) {
+        files++;
+        if (
+          required.has(key) &&
+          (!(key.startsWith("postgres/bin/") || key.endsWith("llama-server")) ||
+            (mode & 0o111) !== 0)
+        )
+          required.delete(key);
+        if (pin.target.platform === "macos") checkMacFile(path, key, mode);
         expanded += stat.size;
         if (expanded > pin.expandedBytes)
           throw new Error("Native inventory exceeds its pinned size.");
@@ -189,13 +251,21 @@ export function verifyNativePayload(
             resolve(realpathSync(root), relative(root, dest))
         )
           throw new Error(`Unsafe native library link: ${key}`);
+        if (pin.target.platform === "macos")
+          checkMacFile(dest, key, lstatSync(dest).mode & 0o777);
+        files++;
         check({ path: key, type: "symlink", mode: 0o777, target });
       } else throw new Error(`Unsupported native file: ${key}`);
     }
     if (durable) syncNativeDirectory(directory);
+    return files;
   };
   if (durable) nativeFileDigest(file, raw.length, true);
   walk(root);
+  if (pin.target.platform === "macos" && kind === "core" && required.size)
+    throw new Error(
+      `Native macOS core is missing required executable or library: ${[...required][0]}`
+    );
   if (expanded !== pin.expandedBytes || index !== inventory.length)
     throw new Error(
       `Native ${kind} inventory changed. Inspect the installed payload before repair.`

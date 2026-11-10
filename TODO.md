@@ -354,3 +354,15 @@ children share lineage and must not count as independent corroboration.
 - Investigate the Desktop revocation wrapper. It sends device metadata without
   the signed transition file descriptors required by the advanced CLI. Preserve
   protected-input validation and existing authority boundaries.
+
+## Standalone Server installer qualification
+
+- [ ] Qualify `install-koed-server.sh` from a published release on clean macOS 14+
+      arm64 and Linux x64 glibc 2.35+ hosts: existing Node and private Node
+      fallback, fresh install, same-version rerun, interruption and recovery,
+      conflicting installation, and persistence across restart. Then remove the
+      "candidate" wording from `docs/running-koed.md`.
+- [ ] Reproduce the Node 26.13.0 release-signature verification behind the pinned
+      archive digests and record its provenance before the first installer release.
+- [ ] Qualify the macOS arm64 native runtime payload produced by the first full
+      release run; the installer cannot complete on macOS until one is published.

@@ -171,8 +171,14 @@ export async function refreshSourceRuntimeCatalogs({
           nativeCatalogUrl: catalogAsset.browser_download_url,
           nativeCatalogSha256: catalogAsset.digest.slice(7)
         },
-        native: readJson(catalogPath)
+        native: null
       };
+      // Releases publish either the legacy Linux catalog or a two-platform
+      // catalog. Source pins are the Linux catalog in both cases.
+      const publishedCatalog = readJson(catalogPath);
+      const twoPlatform = publishedCatalog?.schemaVersion === 2;
+      document.native = twoPlatform ? publishedCatalog.linux : publishedCatalog;
+      if (!document.native) continue;
       try {
         sourceNativeCatalog(document, policy.minimumCoreVersion);
       } catch (error) {
@@ -180,18 +186,37 @@ export async function refreshSourceRuntimeCatalogs({
         throw error;
       }
       const assets = [];
-      for (const kind of ["core", "cuda"]) {
-        const pin = document.native[kind];
+      const pins = [
+        [
+          "core",
+          document.native.core,
+          "linux-x64",
+          "native-core-manifest.json"
+        ],
+        [
+          "cuda",
+          document.native.cuda,
+          "linux-x64",
+          "native-cuda-manifest.json"
+        ],
+        ...(twoPlatform && publishedCatalog.macos
+          ? [
+              [
+                "core",
+                publishedCatalog.macos.core,
+                "macos-arm64",
+                "native-core-manifest-macos-arm64.json"
+              ]
+            ]
+          : [])
+      ];
+      for (const [kind, pin, platform, manifestName] of pins) {
         const archive = assetFor(
           release,
-          `koed-native-${kind}-${pin.recipeId}-linux-x64.tar.gz`,
-          kind === "core" ? 50_000_000 : 750_000_000
+          `koed-native-${kind}-${pin.recipeId}-${platform}.tar.gz`,
+          kind === "cuda" ? 750_000_000 : 250_000_000
         );
-        const manifest = assetFor(
-          release,
-          `native-${kind}-manifest.json`,
-          8 * 1024 * 1024
-        );
+        const manifest = assetFor(release, manifestName, 8 * 1024 * 1024);
         if (
           archive.digest !== `sha256:${pin.sha256}` ||
           archive.size !== pin.archiveBytes ||
@@ -222,8 +247,9 @@ export async function refreshSourceRuntimeCatalogs({
         );
       for (const asset of assets)
         await download(readers, asset, resolve(root, asset.name));
-      verifyDraftNativePins(document.native, {
+      verifyDraftNativePins(publishedCatalog, {
         root,
+        allowLegacyNativeCatalog: !twoPlatform,
         version: releaseVersion(document.sourceRelease),
         assets: assets.map((asset) => ({
           name: asset.name,
