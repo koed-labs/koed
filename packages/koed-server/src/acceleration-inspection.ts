@@ -108,10 +108,13 @@ export function inspectAccelerationPackage(
       (total, pin) => total + pin.archiveBytes,
       0
     );
-    const requiredFreeBytes = missing.reduce(
-      (total, pin) => total + pin.expandedBytes,
-      128 * 1024 * 1024 + downloadBytes
-    );
+    // The working reserve only matters when something must be downloaded.
+    const requiredFreeBytes = missing.length
+      ? missing.reduce(
+          (total, pin) => total + pin.expandedBytes,
+          128 * 1024 * 1024 + downloadBytes
+        )
+      : 0;
     const free = availableBytes(nativeStore(paths));
     const blocker = selected && coreStartBlocker(selected.pin, catalog);
     const state = blocker
@@ -334,7 +337,7 @@ export function createAccelerationInspector(options: {
       recommendedPreference:
         source !== "default" ||
         (selectedId !== null && selectedId !== "unavailable") ||
-        existsSync(resolve(paths.runDir, "last-verification.json"))
+        existsSync(paths.lastVerificationPath)
           ? config.hardwareAcceleration
           : staticState.hardware.backend === "metal"
             ? "auto"

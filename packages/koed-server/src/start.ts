@@ -28,6 +28,7 @@ import { removeOwnedRuntimeState, writeRuntimeState } from "./runtime-state.js";
 import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import {
   readCurrentRuntimeOwner,
+  removeStaleGenerationPin,
   withLifecycleLock,
   withSourceNativeStartLock
 } from "./generation-lifecycle.js";
@@ -1010,6 +1011,12 @@ export const startKoedServer = async ({
         throw error;
       }
     };
+    if (execution === "source") {
+      startupPhase = "stale generation pin cleanup";
+      await initializeUnderSupervisorLock(() => {
+        removeStaleGenerationPin(paths);
+      });
+    }
     startupPhase = "device identity initialization";
     await initializeUnderSupervisorLock(() =>
       ensureDeviceIdentity(paths, { environment })

@@ -18,6 +18,8 @@ export function useAcceleration(
   const actionLock = useRef(false);
   const requestSequence = useRef(0);
   const committedSequence = useRef(0);
+  // Inspection queues behind manager lifecycle work; never stack timer polls.
+  const pollInFlight = useRef(false);
   const accept = useCallback(
     (next: DesktopAccelerationState, request: number) => {
       if (!mounted.current || request < committedSequence.current) return;
@@ -65,7 +67,11 @@ export function useAcceleration(
     if (!api) return;
     const interval = window.setInterval(
       () => {
-        if (!document.hidden) void inspect();
+        if (document.hidden || pollInFlight.current) return;
+        pollInFlight.current = true;
+        void inspect().finally(() => {
+          pollInFlight.current = false;
+        });
       },
       state.operation?.state === "running" ? 1_000 : 10_000
     );

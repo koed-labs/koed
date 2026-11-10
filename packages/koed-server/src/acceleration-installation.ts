@@ -17,24 +17,54 @@ export const accelerationInstallSchema = z
   })
   .strict();
 
+const verificationFailed =
+  "Runtime verification could not finish. Check service status, retry, or continue with CPU.";
+const driverUnavailable =
+  "The NVIDIA driver is unavailable or incompatible. Check the driver, or continue with CPU.";
+const insufficientVram =
+  "CUDA has insufficient free graphics memory. Close other GPU workloads, or continue with CPU.";
+
+// Native validation failures carry a stable reason code. Prefer it over message
+// keywords, because their messages embed driver output and llama-server logs.
+const nativeReasonMessages: Record<string, string> = {
+  cuda_device_unavailable: driverUnavailable,
+  cuda_driver_library_unavailable: driverUnavailable,
+  cuda_driver_too_old: driverUnavailable,
+  cuda_memory_pressure: insufficientVram,
+  cuda_offload_unconfirmed: verificationFailed,
+  inference_failed: verificationFailed,
+  vector_agreement_failed: verificationFailed
+};
+const nativeReason = (error: unknown): string | null => {
+  for (let current = error, depth = 0; depth < 5; depth++) {
+    if (!(current instanceof Error)) return null;
+    const reason = (current as Error & { reason?: unknown }).reason;
+    if (typeof reason === "string" && reason in nativeReasonMessages)
+      return reason;
+    current = current.cause;
+  }
+  return null;
+};
+
 // Native errors can include executable output and filesystem paths. Keep those
 // out of this renderer-facing boundary, including nested acquisition errors.
 export function accelerationInstallError(error: unknown): string {
   const text = error instanceof Error ? error.message : "";
   if (/cancel|abort/i.test(text))
     return "Runtime installation was cancelled. Retained assets can be reused.";
+  const reason = nativeReason(error);
+  if (reason) return nativeReasonMessages[reason]!;
+  // Driver and memory text can mention "running" or "model"; classify it first.
+  if (/driver|libcuda/i.test(text)) return driverUnavailable;
+  if (/VRAM|out of memory/i.test(text)) return insufficientVram;
+  if (/owner|lock|stopped|running|read-only/i.test(text))
+    return "The runtime must be stopped and owned by this installation before its assets can change.";
   if (/changed|configuration/i.test(text))
     return "Configuration or runtime selection changed. Check again before retrying.";
-  if (/owner|lock|stopped|running/i.test(text))
-    return "The runtime must be stopped and owned by this installation before its assets can change.";
   if (/disk|free space|ENOSPC/i.test(text))
     return "Free more disk space, then retry the runtime installation.";
   if (/model/i.test(text))
     return "The pinned embedding model must be installed and verified before CUDA can be enabled.";
-  if (/driver|libcuda/i.test(text))
-    return "The NVIDIA driver is unavailable or incompatible. Check the driver, or continue with CPU.";
-  if (/VRAM|out of memory/i.test(text))
-    return "CUDA has insufficient free graphics memory. Close other GPU workloads, or continue with CPU.";
   if (/digest|checksum|payload|inventory|archive|manifest/i.test(text))
     return "Runtime asset verification failed. Check the selected runtime before retrying.";
   if (/catalog|reviewed|qualified|pin/i.test(text))
@@ -45,7 +75,7 @@ export function accelerationInstallError(error: unknown): string {
     return "The release runtime requires Linux x64 with glibc 2.35 or later.";
   if (/download|connect|stalled|acquire/i.test(text))
     return "The runtime download could not finish. Check your connection and retry.";
-  return "Runtime verification could not finish. Check service status, retry, or continue with CPU.";
+  return verificationFailed;
 }
 
 export function createAccelerationInstaller(

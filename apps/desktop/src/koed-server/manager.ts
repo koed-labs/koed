@@ -1849,20 +1849,35 @@ export const createKoedServerManager = ({
     const provider = selectedRuntimeInstallProvider();
     if (provider === "release")
       return withLifecycleOperation(async () => {
-        const state = await accelerationRpc("inspect", { refresh: true });
-        if (state.readOnlyReason)
+        try {
+          const state = await accelerationRpc("inspect", { refresh: true });
+          if (state.readOnlyReason)
+            return {
+              ok: false,
+              state: "unavailable",
+              provider,
+              message: state.readOnlyReason
+            };
+          await installAccelerationRuntime(
+            "core",
+            state.revision,
+            signal,
+            onProgress ?? (() => {})
+          );
+        } catch (error) {
+          // Match the Homebrew and packaged providers: report a result rather
+          // than rejecting, so callers can show the recovery action.
           return {
             ok: false,
-            state: "unavailable",
+            state: "needs_attention",
             provider,
-            message: state.readOnlyReason
+            error:
+              error instanceof Error
+                ? error.message
+                : "Local runtime installation failed.",
+            action: "Check service status, then retry runtime install."
           };
-        await installAccelerationRuntime(
-          "core",
-          state.revision,
-          signal,
-          onProgress ?? (() => {})
-        );
+        }
         return {
           ok: true,
           state: "installed",

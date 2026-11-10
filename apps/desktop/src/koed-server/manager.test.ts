@@ -5402,6 +5402,38 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(calls[0]).toContain("homebrew");
   });
 
+  it("reports a failed Linux release runtime install as a result instead of rejecting", async () => {
+    mkdirSync("scratch", { recursive: true });
+    const koedHome = mkdtempSync(resolve("scratch", "koed-release-install-"));
+    try {
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        }),
+        platform: "linux",
+        existsSync: () => true,
+        execFile: () => undefined,
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+      await expect(
+        manager.handlers.runtime_install!({ operatorConsented: true })
+      ).resolves.toMatchObject({
+        ok: false,
+        state: "needs_attention",
+        provider: "release",
+        action: "Check service status, then retry runtime install."
+      });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("runs model status and install through koed-server", async () => {
     const calls: string[][] = [];
     const manager = createKoedServerManager({

@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createAccelerationInstaller } from "./acceleration-installation.js";
+import {
+  accelerationInstallError,
+  createAccelerationInstaller
+} from "./acceleration-installation.js";
 import {
   installReleaseRuntime,
   collectReleaseRuntimeStatus
@@ -180,6 +183,45 @@ describe("Desktop native installation boundary", () => {
     );
     await expect(f.run()).rejects.toThrow("NVIDIA driver");
     await expect(f.run()).rejects.not.toThrow("secret");
+  });
+  it("classifies native validation failures by reason before message keywords", () => {
+    const native = (reason: string, message: string) =>
+      Object.assign(new Error(message), { reason });
+    expect(
+      accelerationInstallError(
+        native(
+          "inference_failed",
+          "CUDA embedding probe failed: llama_model_loader: loaded meta data"
+        )
+      )
+    ).toContain("Runtime verification could not finish");
+    expect(
+      accelerationInstallError(
+        native(
+          "cuda_device_unavailable",
+          "Cannot query the NVIDIA GPU driver: Make sure that the latest NVIDIA driver is installed and running."
+        )
+      )
+    ).toContain("NVIDIA driver");
+    expect(
+      accelerationInstallError(
+        new Error("Staged native probe failed.", {
+          cause: native("cuda_memory_pressure", "Check the model")
+        })
+      )
+    ).toContain("graphics memory");
+    expect(
+      accelerationInstallError(
+        new Error(
+          "Make sure that the latest NVIDIA driver is installed and running."
+        )
+      )
+    ).toContain("NVIDIA driver");
+    expect(
+      accelerationInstallError(
+        new Error("Runtime ownership or configuration is read-only.")
+      )
+    ).toContain("stopped and owned");
   });
   it("keeps an admitted compatible older core usable", () => {
     const f = fixture();

@@ -104,6 +104,26 @@ describe("EmbeddingRuntime", () => {
     expect(runtime.isModelLoaded()).toBe(false);
   });
 
+  it("cancels an in-flight startup at shutdown when the client supports it", async () => {
+    const starting = deferred();
+    const server = Object.assign(new FakeLlamaServer(), {
+      start: () => starting.promise,
+      shutdown: vi.fn(async () => starting.resolve()),
+      stop: vi.fn(async () => undefined)
+    });
+    const runtime = new EmbeddingRuntime(
+      testConfig(),
+      testLogger(),
+      () => server
+    );
+    const load = runtime.loadEmbeddingModel();
+    await runtime.shutdownRuntime();
+    await load;
+    expect(server.shutdown).toHaveBeenCalledOnce();
+    expect(server.stop).toHaveBeenCalledOnce();
+    expect(runtime.isModelLoaded()).toBe(false);
+  });
+
   it("preserves chunk order and metadata", async () => {
     const fakeServer = new FakeLlamaServer();
     const runtime = new EmbeddingRuntime(testConfig(), testLogger());

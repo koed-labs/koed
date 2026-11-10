@@ -28,6 +28,8 @@ export interface ChunkCandidate {
 export interface LlamaEmbeddingClient {
   isRunning(): boolean;
   stop(): Promise<void>;
+  // Stops an in-flight startup without letting it fall back to another child.
+  shutdown?(): Promise<void>;
   tokenize(text: string): Promise<TokenPiece[]>;
   detokenize(tokenIds: number[]): Promise<string>;
   embed(texts: string[]): Promise<{
@@ -86,9 +88,13 @@ export class EmbeddingRuntime {
   }
 
   private async stopEmbeddingModel(): Promise<void> {
-    // Startup may still be discovering a device or falling back to CPU. Let it
-    // settle before stopping its final child, and reject any queued reloads.
-    await this.embeddingLoadPromise?.catch(() => undefined);
+    // Startup may still be discovering a device or falling back to CPU. Cancel
+    // it where the client supports that, so shutdown stays within the
+    // supervisor's grace period, then stop whatever child remains.
+    const loading = this.embeddingLoadPromise;
+    if (loading)
+      await this.embeddingServer?.shutdown?.().catch(() => undefined);
+    await loading?.catch(() => undefined);
     const embeddingServer = this.embeddingServer;
     try {
       await embeddingServer?.stop();
@@ -375,6 +381,9 @@ export class EmbeddingRuntime {
     if (this.embeddingServer !== null) {
       await this.embeddingServer.stop();
       this.embeddingServer = null;
+    }
+    if (this.shuttingDown) {
+      throw new HttpError(503, "embedding service is shutting down");
     }
     this.logger.info("embedding model load started", {
       event: event("embedding.model.load_started"),

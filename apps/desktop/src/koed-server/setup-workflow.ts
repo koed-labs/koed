@@ -108,6 +108,17 @@ export const createDesktopSetupWorkflow = ({
         state: "pending"
       };
     }
+    // An interrupted attempt stops mattering once every step checks complete,
+    // for example after setup finished through the CLI. Record that so the
+    // stale receipt does not resurface on the next launch.
+    if (interrupted && stages.every(({ state }) => state === "complete")) {
+      interrupted = false;
+      try {
+        receipt?.save({ id: runId, sequence: 1, state: "complete" });
+      } catch {
+        /* The fresh inspection above remains authoritative. */
+      }
+    }
     return {
       activeStage: null,
       error:

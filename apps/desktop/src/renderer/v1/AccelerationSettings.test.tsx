@@ -338,6 +338,31 @@ describe("local processing Settings", () => {
       vi.useRealTimers();
     }
   });
+  it("does not stack timer polls while an inspection is still queued", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = await render();
+      expect(api.inspect).toHaveBeenCalledTimes(1);
+      let release!: () => void;
+      vi.mocked(api.inspect).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve({ snapshot: snapshot(), operation: null });
+          })
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(api.inspect).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        release();
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(api.inspect).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("does not expose a GPU option on a CPU-only device", async () => {
     const value = snapshot();
     value.hardware = {

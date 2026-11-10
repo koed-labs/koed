@@ -32,6 +32,27 @@ describe("desktop setup workflow", () => {
     expect((await workflow.run(() => {})).state).toBe("complete");
     expect(runStage).toHaveBeenCalledTimes(3);
   });
+  it("clears an interrupted receipt once every prerequisite is complete", async () => {
+    const save = vi.fn();
+    const workflow = createDesktopSetupWorkflow({
+      receipt: {
+        previous: {
+          id: "d6abf730-0f02-4adc-a7e6-4ddf98f30905",
+          sequence: 3,
+          state: "running"
+        },
+        save
+      },
+      inspectStage: async () => ({ complete: true, message: "Current state" }),
+      runStage: vi.fn()
+    });
+    const state = await workflow.inspect();
+    expect(state).toMatchObject({ state: "complete", error: null });
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "complete" })
+    );
+    expect((await workflow.inspect()).state).toBe("complete");
+  });
   it("places opted-in acceleration after the model and before services, retaining failure for reopened windows", async () => {
     const completed = new Set<DesktopSetupStageId>();
     const ids: DesktopSetupStageId[] = [
