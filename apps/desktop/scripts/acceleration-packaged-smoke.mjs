@@ -5,33 +5,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { cosineSimilarity } from "../../../scripts/embedding-acceleration-benchmark-lib.mjs";
 import { seedAccelerationStorageProbe } from "./acceleration-storage-smoke.mjs";
 
-// Allow shutdown, AppImage supervisor startup (300s), and readiness checks.
-export async function waitForAccelerationChange(
-  desktop,
-  started,
-  { now = Date.now, sleep = delay } = {}
-) {
-  const deadline = now() + 600_000;
-  let current = started;
-  while (current.operation?.state === "running") {
-    assert.ok(
-      now() < deadline,
-      "Processing change finished within the smoke deadline"
-    );
-    await sleep(250);
-    current = await desktop.invoke("acceleration_status");
-    assert.equal(current.operation.id, started.operation.id);
-  }
-  return current;
-}
-
 // Called only by the isolated packaged smoke. Credentials remain in this parent
 // process and authenticate synthetic inputs to the temporary local service.
 export async function smokePackagedAcceleration(
   desktop,
   koedHome,
-  fetcher = globalThis.fetch,
-  onSwitch = async () => {}
+  fetcher = globalThis.fetch
 ) {
   const before = await desktop.invoke("acceleration_status");
   assert.equal(before.snapshot.readOnlyReason, null);
@@ -100,7 +79,17 @@ export async function smokePackagedAcceleration(
   };
   const set = async (preference) => {
     const started = await desktop.invoke(`acceleration_${preference}`);
-    const current = await waitForAccelerationChange(desktop, started);
+    const deadline = Date.now() + 180_000;
+    let current = started;
+    while (current.operation?.state === "running") {
+      assert.ok(
+        Date.now() < deadline,
+        "Processing change finished within the smoke deadline"
+      );
+      await delay(250);
+      current = await desktop.invoke("acceleration_status");
+      assert.equal(current.operation.id, started.operation.id);
+    }
     assert.equal(
       current.operation.state,
       "complete",
@@ -108,7 +97,6 @@ export async function smokePackagedAcceleration(
     );
     assert.deepEqual(current.snapshot.model, model);
     assert.equal(current.snapshot.preference, preference);
-    await onSwitch();
     assert.equal(
       current.snapshot.embedding.state,
       "ready",
