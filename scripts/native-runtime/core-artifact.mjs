@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   lstatSync,
+  openSync,
   readFileSync,
+  readSync,
   readlinkSync,
   realpathSync,
   writeFileSync
@@ -28,10 +31,179 @@ const inside = (root, path) => {
   return part !== ".." && !part.startsWith(`..${sep}`) && !isAbsolute(part);
 };
 
-export const coreInventory = (runtimeRoot) => {
+const macPostgresExecutables = new Set([
+  "clusterdb",
+  "createdb",
+  "createuser",
+  "dropdb",
+  "dropuser",
+  "ecpg",
+  "initdb",
+  "oid2name",
+  "pg_amcheck",
+  "pg_archivecleanup",
+  "pg_basebackup",
+  "pg_checksums",
+  "pg_combinebackup",
+  "pg_config",
+  "pg_controldata",
+  "pg_createsubscriber",
+  "pg_ctl",
+  "pg_dump",
+  "pg_dumpall",
+  "pg_isready",
+  "pg_receivewal",
+  "pg_recvlogical",
+  "pg_resetwal",
+  "pg_restore",
+  "pg_rewind",
+  "pg_test_fsync",
+  "pg_test_timing",
+  "pg_upgrade",
+  "pg_verifybackup",
+  "pg_waldump",
+  "pg_walsummary",
+  "pgbench",
+  "postgres",
+  "postmaster",
+  "psql",
+  "reindexdb",
+  "vacuumdb",
+  "vacuumlo"
+]);
+const macBinaryLocation = (path) =>
+  (path.startsWith("postgres/bin/") &&
+    macPostgresExecutables.has(path.slice("postgres/bin/".length))) ||
+  (path.startsWith("postgres/lib/") && /\.(?:so|dylib)$/i.test(path)) ||
+  (path.startsWith("llama.cpp/metal/") &&
+    (path === "llama.cpp/metal/llama-server" || /\.dylib$/i.test(path)));
+
+const postgresShareFiles = new Set([
+  "errcodes.txt",
+  "information_schema.sql",
+  "pg_hba.conf.sample",
+  "pg_ident.conf.sample",
+  "pg_service.conf.sample",
+  "postgres.bki",
+  "postgresql.conf.sample",
+  "psqlrc.sample",
+  "snowball_create.sql",
+  "sql_features.txt",
+  "system_constraints.sql",
+  "system_functions.sql",
+  "system_views.sql"
+]);
+const macPostgresSharePath = (path, magic) => {
+  const shared = path
+    .slice("postgres/share/".length)
+    .replace(/^postgresql\//, "");
+  return (
+    postgresShareFiles.has(shared) ||
+    /^extension\/[\w.-]+\.(?:sql|control)$/.test(shared) ||
+    (/^timezone\/[\w.+/-]+$/.test(shared) && magic === "545a6966") ||
+    /^timezonesets\/(?:Africa|America|Antarctica|Asia|Atlantic|Australia|Default|Etc|Europe|India|Indian|Pacific)(?:\.txt)?$/.test(
+      shared
+    ) ||
+    /^tsearch_data\/[\w.-]+\.(?:stop|affix|dict|ths|syn|rules)$/.test(shared) ||
+    /^man\/man[1-9]\/[\w.+-]+\.[1-9](?:\.gz)?$/.test(shared) ||
+    /^locale\/[\w@.-]+\/LC_MESSAGES\/[\w.+-]+\.mo$/.test(shared) ||
+    /^doc\/[\w./+-]+\.(?:html|css|png|svg|txt|pdf|example)$/.test(shared)
+  );
+};
+const macDataPath = (path, magic) => {
+  if (
+    [
+      "runtime-asset-manifest.json",
+      "provenance.json",
+      "README.koed-native-runtime.txt",
+      "llama.cpp/llama-server"
+    ].includes(path)
+  )
+    return true;
+  if (path.startsWith("postgres/bin/"))
+    return macPostgresExecutables.has(path.slice("postgres/bin/".length));
+  if (path.startsWith("postgres/lib/"))
+    return (
+      /\.(?:so|dylib)$/i.test(path) ||
+      /^postgres\/lib\/(?:postgresql\/)?pkgconfig\/[\w.-]+\.pc$/.test(path) ||
+      /^postgres\/lib\/(?:postgresql\/)?pgxs\/config\/(?:install-sh|missing)$/.test(
+        path
+      )
+    );
+  if (path.startsWith("llama.cpp/metal/"))
+    return /^llama\.cpp\/metal\/(?:llama-server|LICENSE|ggml-metal\.metal|[\w.+-]+\.dylib)$/.test(
+      path
+    );
+  if (path.startsWith("third-party-licenses/"))
+    return /(?:^|\/|__)(?:LICEN[CS]E|NOTICE|COPYING|COPYRIGHT)(?:[._-][\w.-]+)?$/i.test(
+      path
+    );
+  return (
+    path.startsWith("postgres/share/") && macPostgresSharePath(path, magic)
+  );
+};
+
+const validateMacFile = (entry, path, mode) => {
+  const fd = openSync(entry.path, "r");
+  const header = Buffer.alloc(16);
+  let length;
+  try {
+    length = readSync(fd, header, 0, header.length, 0);
+  } finally {
+    closeSync(fd);
+  }
+  const magic = header.subarray(0, 4).toString("hex");
+  const arm64 =
+    length >= 16 &&
+    magic === "cffaedfe" &&
+    header.readUInt32LE(4) === 0x0100000c;
+  const isLibrary = /\.(?:so|dylib)$/i.test(path);
+  const fileTypeValid =
+    arm64 &&
+    (isLibrary
+      ? [6, 8].includes(header.readUInt32LE(12))
+      : header.readUInt32LE(12) === 2);
+  const macho = [
+    "cffaedfe",
+    "feedfacf",
+    "cafebabe",
+    "bebafeca",
+    "cafebabf",
+    "bfbafeca",
+    "cefaedfe",
+    "feedface"
+  ].includes(magic);
+  const foreign =
+    magic === "7f454c46" ||
+    header.subarray(0, 2).toString() === "MZ" ||
+    /\.(?:exe|dll|so\.\d+(?:\.\d+)*)$/i.test(path) ||
+    /(?:^|\/)libcu(?:da|blas|dart)/i.test(path);
+  const script =
+    (path === "llama.cpp/llama-server" ||
+      /^postgres\/lib\/(?:postgresql\/)?pgxs\/config\/(?:install-sh|missing)$/.test(
+        path
+      )) &&
+    header.subarray(0, 2).toString() === "#!";
+  if (!macDataPath(path, magic))
+    throw new Error(`Unexpected macOS payload file: ${path}`);
+  if (
+    foreign ||
+    (macho && (!fileTypeValid || !macBinaryLocation(path))) ||
+    (isLibrary && !fileTypeValid) ||
+    (path.startsWith("postgres/bin/") && !fileTypeValid) ||
+    ((mode & 0o111) !== 0 && !arm64 && !script)
+  )
+    throw new Error(`Invalid macOS native file or executable: ${path}`);
+};
+
+export const coreInventory = (
+  runtimeRoot,
+  platform = "linux",
+  { desktop = false } = {}
+) => {
   const root = realpathSync(runtimeRoot);
   return deterministicArchiveEntries(root)
-    .filter((entry) => entry.relativePath !== coreManifestName)
+    .filter((entry) => desktop || entry.relativePath !== coreManifestName)
     .map((entry) => {
       const path = entry.relativePath.replace(/\/$/, "");
       if (
@@ -40,9 +212,18 @@ export const coreInventory = (runtimeRoot) => {
           path.startsWith("postgres/") ||
           path === "llama.cpp" ||
           path === "llama.cpp/llama-server" ||
-          path === "llama.cpp/cpu" ||
-          path.startsWith("llama.cpp/cpu/") ||
-          path === "runtime-asset-manifest.json"
+          path === `llama.cpp/${platform === "macos" ? "metal" : "cpu"}` ||
+          path.startsWith(
+            `llama.cpp/${platform === "macos" ? "metal" : "cpu"}/`
+          ) ||
+          (platform === "macos" &&
+            (path === "third-party-licenses" ||
+              path.startsWith("third-party-licenses/"))) ||
+          path === "runtime-asset-manifest.json" ||
+          (platform === "macos" &&
+            desktop &&
+            (path === "provenance.json" ||
+              path === "README.koed-native-runtime.txt"))
         )
       )
         throw new Error(
@@ -61,6 +242,7 @@ export const coreInventory = (runtimeRoot) => {
         return { path, type: "directory", mode };
       }
       if (entry.type === "file") {
+        if (platform === "macos") validateMacFile(entry, path, mode);
         if (entry.stat.nlink !== 1)
           throw new Error(`Native hard links are not supported: ${path}`);
         return {
@@ -84,8 +266,31 @@ export const coreInventory = (runtimeRoot) => {
         throw new Error(
           `Native link must point directly to a contained regular file: ${path}`
         );
+      if (platform === "macos")
+        validateMacFile(
+          { path: destination },
+          path,
+          lstatSync(destination).mode & 0o777
+        );
       return { path, type: "symlink", mode, target };
     });
+};
+
+export const assertMacLicenses = (runtimeRoot, inventory) => {
+  for (const path of [
+    "third-party-licenses/openssl/LICENSE.txt",
+    "third-party-licenses/postgres/COPYRIGHT",
+    "third-party-licenses/pgvector/LICENSE",
+    "llama.cpp/metal/LICENSE"
+  ]) {
+    const entry = inventory.find((item) => item.path === path);
+    if (
+      entry?.type !== "file" ||
+      entry.bytes === 0 ||
+      !readFileSync(resolve(runtimeRoot, path), "utf8").trim()
+    )
+      throw new Error(`Missing or empty macOS license: ${path}`);
+  }
 };
 
 const assertCoreMetadata = (metadata) => {
@@ -95,14 +300,19 @@ const assertCoreMetadata = (metadata) => {
     !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(
       metadata.runtimeVersion ?? ""
     ) ||
-    metadata.target?.platform !== "linux" ||
-    metadata.target.architecture !== "x64" ||
-    metadata.target.libc?.family !== "glibc" ||
-    metadata.target.libc.minimumVersion !== "2.35" ||
+    !(metadata.target?.platform === "linux"
+      ? metadata.target.architecture === "x64" &&
+        metadata.target.libc?.family === "glibc" &&
+        metadata.target.libc.minimumVersion === "2.35"
+      : metadata.target?.platform === "macos" &&
+        metadata.target.architecture === "arm64" &&
+        metadata.target.minimumVersion === "14.0" &&
+        !Object.hasOwn(metadata.target, "libc")) ||
     metadata.contracts?.layout !== 1 ||
     metadata.contracts.postgres !== 1 ||
     metadata.contracts.embedding !== 1 ||
-    !/^[a-f0-9]{40}$/.test(metadata.components?.llamaCpp?.revision ?? "") ||
+    (metadata.target?.platform === "linux" &&
+      !/^[a-f0-9]{40}$/.test(metadata.components?.llamaCpp?.revision ?? "")) ||
     !/^17\.\d+$/.test(metadata.components?.postgres?.version ?? "") ||
     !/^\d+\.\d+\.\d+$/.test(metadata.components?.pgvector?.version ?? "")
   )
@@ -118,8 +328,9 @@ const assertCoreMetadata = (metadata) => {
       canonicalArtifactJson(metadata.target) ||
     canonicalArtifactJson(recipe.configuration.contracts) !==
       canonicalArtifactJson(metadata.contracts) ||
-    recipe.configuration.llamaCppRevision !==
-      metadata.components.llamaCpp.revision ||
+    (metadata.target.platform === "linux" &&
+      recipe.configuration.llamaCppRevision !==
+        metadata.components.llamaCpp.revision) ||
     recipe.sources?.postgres?.version !==
       metadata.components.postgres.version ||
     metadata.components.postgres.major !== 17 ||
@@ -128,7 +339,9 @@ const assertCoreMetadata = (metadata) => {
     recipe.sources?.llamaCpp?.version !==
       metadata.components.llamaCpp.version ||
     Object.keys(recipe.sources).sort().join(",") !==
-      "llamaCpp,pgvector,postgres"
+      (metadata.target.platform === "macos"
+        ? "llamaCpp,openssl,pgvector,postgres"
+        : "llamaCpp,pgvector,postgres")
   )
     throw new Error("Native core metadata does not match its recipe.");
   for (const source of Object.values(recipe.sources)) {
@@ -152,12 +365,14 @@ export const freezeCore = ({ runtimeRoot, configuration, recipe }) => {
       pgvector: { version: recipe.sources.pgvector.version },
       llamaCpp: {
         version: recipe.sources.llamaCpp.version,
-        revision: configuration.llamaCppRevision
+        ...(configuration.target.platform === "linux"
+          ? { revision: configuration.llamaCppRevision }
+          : {})
       }
     },
     recipeId: coreRecipeId(recipe),
     recipe,
-    inventory: coreInventory(runtimeRoot)
+    inventory: coreInventory(runtimeRoot, configuration.target.platform)
   };
   assertCoreMetadata(manifest);
   writeFileSync(
@@ -188,9 +403,16 @@ export const verifyFrozenCore = (runtimeRoot) => {
     throw new Error("Native core recipe or canonical manifest changed.");
   if (
     canonicalArtifactJson(manifest.inventory) !==
-    canonicalArtifactJson(coreInventory(runtimeRoot))
+      canonicalArtifactJson(
+        coreInventory(runtimeRoot, manifest.target.platform)
+      ) ||
+    (manifest.target.platform === "macos" &&
+      manifest.recipe.frozenInventorySha256 !==
+        coreRecipeId(manifest.inventory))
   )
     throw new Error("Native core inventory changed after freezing.");
+  if (manifest.target.platform === "macos")
+    assertMacLicenses(runtimeRoot, manifest.inventory);
   for (const path of [
     "postgres/bin/postgres",
     "postgres/bin/initdb",
@@ -201,7 +423,7 @@ export const verifyFrozenCore = (runtimeRoot) => {
     "postgres/lib/vector.so",
     "postgres/lib/pgcrypto.so",
     "llama.cpp/llama-server",
-    "llama.cpp/cpu/llama-server"
+    `llama.cpp/${manifest.target.platform === "macos" ? "metal" : "cpu"}/llama-server`
   ]) {
     const entry = manifest.inventory.find((entry) => entry.path === path);
     if (
@@ -235,7 +457,7 @@ export const packageFrozenCore = ({
     throw new Error(
       `CPU core expanded size exceeds its ${maxExpandedBytes}-byte budget: ${expandedBytes}`
     );
-  const name = `koed-native-core-${manifest.recipeId}-linux-x64.tar.gz`;
+  const name = `koed-native-core-${manifest.recipeId}-${manifest.target.platform}-${manifest.target.architecture}.tar.gz`;
   const archivePath = resolve(outDir, name);
   try {
     lstatSync(archivePath);

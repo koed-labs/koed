@@ -110,6 +110,41 @@ dist/native-runtime/macos-arm64/
   provenance.json
 ```
 
+For the future macOS release core, build the Desktop runtime once with a stable
+`--version` and validate it as below. Independently review and approve that
+frozen tree and its complete inventory digest, then stage that exact tree (do
+not rebuild). The digest includes file bytes, paths, modes, symlink targets,
+licenses, asset manifest, and provenance. To calculate the candidate digest:
+
+```bash
+node scripts/native-runtime/stage-macos-core.mjs \
+  --source-dir dist/native-runtime/macos-arm64/koed-runtime --inspect-inventory
+```
+
+Calculation alone is not approval or authentication. Supply the digest through
+a separately reviewed and trusted channel, not from the source tree being
+staged. Staging fails if the full tree differs from that approved digest:
+
+```bash
+node scripts/native-runtime/stage-macos-core.mjs \
+  --source-dir dist/native-runtime/macos-arm64/koed-runtime \
+  --out-dir dist/native-runtime/macos-core \
+  --version 1.2.3 --approved-inventory-sha256 <approved-64-hex-digest>
+```
+
+The output directory must not exist. Staging requires matching pinned-source
+provenance and nonempty OpenSSL, PostgreSQL, pgvector, and llama.cpp licenses.
+It checks the Desktop asset manifest and macOS arm64 inventory, including
+expected PostgreSQL data, Metal library, and license path/content classes.
+These checks do not replace independent review of every approved inventory
+entry. It copies the Metal and PostgreSQL bytes without rebuilding and writes a recipe-addressed
+archive, canonical inventory manifest, checksum, and candidate metadata. The
+recipe binds the separately approved Desktop digest, source provenance, frozen
+payload inventory, packaging logic and Node/zlib identity; it does not claim
+reproducible fresh compilation. Validate the extracted core on macOS before considering it for a
+release. This interface does not yet integrate the release provider, catalog,
+or workflow; macOS release installation is not yet supported or qualified.
+
 Validate the staged runtime:
 
 ```bash
