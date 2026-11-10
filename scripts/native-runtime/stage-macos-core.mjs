@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import { cpSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync
+} from "node:fs";
 import {
   basename,
   dirname,
@@ -17,18 +23,46 @@ import {
   packageFrozenCore
 } from "./core-artifact.mjs";
 import { listFiles, sha256File, sha256Files } from "./manifest-lib.mjs";
+import { verifyApprovedMacosInventory } from "./macos-inventory.mjs";
+import { canonicalArtifactJson } from "../../packages/koed-server/src/artifact-canonical-json.mjs";
 
 const { values } = parseArgs({
   options: {
     "source-dir": { type: "string" },
     "out-dir": { type: "string" },
-    "approved-inventory-sha256": { type: "string" },
+    "frozen-inventory-sha256": { type: "string" },
     "inspect-inventory": { type: "boolean" },
+    "write-inventory": { type: "string" },
     version: { type: "string" }
   }
 });
 if (!values["source-dir"]) throw new Error("Missing frozen source directory.");
 const input = realpathSync(resolve(values["source-dir"]));
+if (values["inspect-inventory"] && values["write-inventory"])
+  throw new Error(
+    "Inventory inspection and evidence output are mutually exclusive."
+  );
+if (values["write-inventory"]) {
+  const path = resolve(values["write-inventory"]);
+  const output = resolve(realpathSync(dirname(path)), basename(path));
+  const rel = relative(input, output);
+  if (
+    rel === "" ||
+    (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))
+  )
+    throw new Error("Inventory evidence must be outside the frozen source.");
+  const inventory = coreInventory(input, "macos", { desktop: true });
+  assertMacLicenses(input, inventory);
+  verifyApprovedMacosInventory(
+    inventory,
+    values["frozen-inventory-sha256"] ?? coreRecipeId(inventory)
+  );
+  writeFileSync(output, `${canonicalArtifactJson(inventory)}\n`, {
+    flag: "wx",
+    mode: 0o600
+  });
+  process.exit(0);
+}
 if (values["inspect-inventory"]) {
   const inventory = coreInventory(input, "macos", { desktop: true });
   assertMacLicenses(input, inventory);
@@ -37,11 +71,11 @@ if (values["inspect-inventory"]) {
 }
 if (
   !values["out-dir"] ||
-  !/^[a-f0-9]{64}$/.test(values["approved-inventory-sha256"] ?? "") ||
+  !/^[a-f0-9]{64}$/.test(values["frozen-inventory-sha256"] ?? "") ||
   !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(values.version ?? "")
 )
   throw new Error(
-    "Staging requires --out-dir, --version, and independently approved --approved-inventory-sha256."
+    "Staging requires --out-dir, --version, and the freeze job's --frozen-inventory-sha256."
   );
 const requestedOut = resolve(values["out-dir"]);
 const out = resolve(
@@ -103,8 +137,10 @@ for (const asset of assets.assets) {
   )
     throw new Error(`Frozen runtime asset changed: ${asset.id}`);
 }
-if (coreRecipeId(frozenInventory) !== values["approved-inventory-sha256"])
-  throw new Error("Frozen runtime does not match approved inventory digest.");
+const payloadInventory = verifyApprovedMacosInventory(
+  frozenInventory,
+  values["frozen-inventory-sha256"]
+);
 mkdirSync(out);
 const runtimeRoot = resolve(out, "koed-runtime");
 mkdirSync(runtimeRoot);
@@ -118,10 +154,6 @@ for (const name of [
     recursive: true,
     verbatimSymlinks: true
   });
-const payloadInventory = frozenInventory.filter(
-  (entry) =>
-    !["provenance.json", "README.koed-native-runtime.txt"].includes(entry.path)
-);
 if (
   coreRecipeId(coreInventory(runtimeRoot, "macos")) !==
   coreRecipeId(payloadInventory)
@@ -146,7 +178,7 @@ const recipe = {
   configuration,
   sources,
   provenance,
-  approvedDesktopInventorySha256: values["approved-inventory-sha256"],
+  approvedDesktopInventorySha256: values["frozen-inventory-sha256"],
   packagingRuntime: {
     node: process.version,
     zlib: process.versions.zlib,
@@ -156,6 +188,7 @@ const recipe = {
   logic: Object.fromEntries(
     [
       "scripts/native-runtime/stage-macos-core.mjs",
+      "scripts/native-runtime/macos-inventory.mjs",
       "scripts/native-runtime/core-artifact.mjs",
       "scripts/native-runtime/manifest-lib.mjs",
       "scripts/deterministic-tar-gzip.mjs",

@@ -19,6 +19,9 @@ import { validateReviewedRuntimeIdentities } from "./reviewed-build-identity-run
 import { compareVersions } from "./release-promotion-lib.mjs";
 import { verifyPackagedDesktopCatalog } from "../apps/desktop/scripts/verify-packaged-component-catalog.mjs";
 import { verifyDraftNativePins } from "./native-runtime-pins.mjs";
+import { readFrozenInventoryEvidence } from "./native-runtime/frozen-inventory-evidence.mjs";
+import { coreRecipeId } from "./native-runtime/core-artifact.mjs";
+import { verifyApprovedMacosCore } from "./native-runtime/verify-approved-macos-core.mjs";
 
 export const sha256 = (bytes) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -171,14 +174,20 @@ export const writeCandidateAsset = async (
   }
 };
 
-const downloadCandidate = async (input, expected, readers, root) => {
+const downloadCandidate = async (
+  input,
+  expected,
+  readers,
+  root,
+  expectPublished
+) => {
   const release = await readers.getRelease(
     expected.repository,
     input.releaseId
   );
   if (
     String(release.id) !== String(input.releaseId) ||
-    release.draft !== true ||
+    release.draft !== !expectPublished ||
     release.prerelease !== false ||
     release.tag_name !== `v${expected.version}` ||
     !Array.isArray(release.assets)
@@ -252,8 +261,57 @@ const inspectDesktop = (expected, root, catalogPath) => {
   };
 };
 
+const validateMacosApproval = (snapshot, expected) => {
+  const artifacts = expected.artifacts.filter(
+    (artifact) => artifact.name === "koed-private-frozen-macos-native-runtime"
+  );
+  if (artifacts.length !== 1)
+    fail("Missing or duplicate frozen macOS artifact identity.");
+  // Repository, commit, run, attempt and frozen artifact identity are bound by
+  // the reviewed build identity; the inventory digest is the protected pin.
+  return artifacts[0];
+};
+
+const verifyMacosCandidate = async (
+  snapshot,
+  expected,
+  readers,
+  root,
+  catalog
+) => {
+  const artifact = validateMacosApproval(snapshot, expected);
+  const zip = resolve(root, "private-frozen-macos.zip");
+  await writeCandidateAsset(
+    await readers.getArtifactArchive(expected.repository, artifact.id),
+    zip
+  );
+  const inventory = await readFrozenInventoryEvidence({
+    archivePath: zip,
+    artifactDigest: artifact.digest,
+    version: expected.version
+  });
+  const pin = catalog.macos.core;
+  await verifyApprovedMacosCore({
+    archivePath: resolve(
+      root,
+      `koed-native-core-${pin.recipeId}-macos-arm64.tar.gz`
+    ),
+    externalManifestPath: resolve(
+      root,
+      "native-core-manifest-macos-arm64.json"
+    ),
+    fullInventory: inventory,
+    approvedSha256: coreRecipeId(inventory),
+    pin
+  });
+};
+
 /** Evidence only. Readers expose GETs, never a shell, signer or mutation capability. */
-export const verifyReleaseCandidate = async (input, readers) => {
+export const verifyReleaseCandidate = async (
+  input,
+  readers,
+  { allowLegacyNativeCatalog = false, expectPublished = false } = {}
+) => {
   const original = JSON.stringify(input);
   const snapshot = structuredClone(input);
   const expected = validateReviewedBuildIdentity(snapshot.expected);
@@ -268,11 +326,18 @@ export const verifyReleaseCandidate = async (input, readers) => {
       fail(`Protected candidate identity mismatch: ${field}`);
   if (!positive(Number(snapshot.releaseId)))
     fail("Invalid candidate release identity.");
+  if (!allowLegacyNativeCatalog) validateMacosApproval(snapshot, expected);
   await verifyBuildOrigin(expected, readers);
   mkdirSync(resolve("scratch"), { recursive: true });
   const root = mkdtempSync(resolve("scratch/release-candidate-"));
   try {
-    const release = await downloadCandidate(snapshot, expected, readers, root);
+    const release = await downloadCandidate(
+      snapshot,
+      expected,
+      readers,
+      root,
+      expectPublished
+    );
     const catalogPath = resolve(root, "component-manifest-hashes.json");
     await verifyFrozenComponentAssets({
       assetsDir: root,
@@ -301,6 +366,7 @@ export const verifyReleaseCandidate = async (input, readers) => {
     });
     if (
       nativeCatalog ||
+      !allowLegacyNativeCatalog ||
       expected.artifacts.some(
         (asset) => asset.name === "koed-linux-native-packages"
       )
@@ -308,8 +374,17 @@ export const verifyReleaseCandidate = async (input, readers) => {
       verifyDraftNativePins(nativeCatalog, {
         root,
         version: expected.version,
-        assets: expected.assets
+        assets: expected.assets,
+        allowLegacyNativeCatalog
       });
+    if (nativeCatalog?.schemaVersion === 2)
+      await verifyMacosCandidate(
+        snapshot,
+        expected,
+        readers,
+        root,
+        nativeCatalog
+      );
     const desktop = inspectDesktop(expected, root, catalogPath);
     const registry = await readers.getRegistryVersion(
       "@koed-labs/server",

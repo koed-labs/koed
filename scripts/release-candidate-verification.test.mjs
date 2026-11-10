@@ -25,7 +25,15 @@ import {
   refreshCandidatePackage,
   hash
 } from "./test-utils/release-candidate-fixture.mjs";
-import * as candidate from "./release-candidate-verification.mjs";
+import * as officialCandidate from "./release-candidate-verification.mjs";
+
+const candidate = {
+  ...officialCandidate,
+  verifyReleaseCandidate: (input, readers) =>
+    officialCandidate.verifyReleaseCandidate(input, readers, {
+      allowLegacyNativeCatalog: true
+    })
+};
 
 test("asset stream enforces actual size, private mode and cleans partial files", async () => {
   mkdirSync("scratch", { recursive: true });
@@ -106,6 +114,112 @@ const recatalog = (f) => {
   );
   rehash(f);
 };
+
+test("official candidate verifies frozen inventory against actual macOS archive bytes", async () => {
+  const f = await setup({ native: true });
+  const forged = await setup({ native: true, nativeArchivePayload: "evil" });
+  try {
+    assert.equal(
+      (await officialCandidate.verifyReleaseCandidate(f.input, f.readers)).kind,
+      "verified-release-candidate"
+    );
+    await assert.rejects(
+      officialCandidate.verifyReleaseCandidate(forged.input, forged.readers)
+    );
+  } finally {
+    f.cleanup();
+    forged.cleanup();
+  }
+});
+
+test("official candidate fails closed for missing, expired, substituted, or corrupted private evidence", async () => {
+  for (const kind of ["missing", "expired", "id", "run", "digest", "bytes"]) {
+    const f = await setup({ native: true });
+    try {
+      if (kind === "missing")
+        f.expected.artifacts = f.expected.artifacts.filter((a) => a.id !== 4);
+      else if (kind === "bytes")
+        f.readers.getArtifactArchive = async () =>
+          (async function* () {
+            yield Buffer.from("wrong zip");
+          })();
+      else {
+        const getArtifact = f.readers.getArtifact;
+        f.readers.getArtifact = async (...args) => {
+          const artifact = await getArtifact(...args);
+          if (args[1] === 4) {
+            if (kind === "expired") artifact.expired = true;
+            if (kind === "id") artifact.id = 5;
+            if (kind === "run") artifact.workflow_run.id = 43;
+            if (kind === "digest") artifact.digest = `sha256:${"0".repeat(64)}`;
+          }
+          return artifact;
+        };
+      }
+      await assert.rejects(
+        officialCandidate.verifyReleaseCandidate(f.input, f.readers),
+        /artifact|digest/i,
+        kind
+      );
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
+test("official candidate rejects coherently pinned archive with unapproved actual payload", async () => {
+  const f = await setup({ native: true, nativeArchivePayload: "evil" });
+  try {
+    await assert.rejects(
+      officialCandidate.verifyReleaseCandidate(f.input, f.readers),
+      /hash|digest|content|payload/i
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("published-byte recheck requires explicit trusted verifier option", async () => {
+  const f = await setup({ native: true });
+  try {
+    f.release.draft = false;
+    await assert.rejects(
+      officialCandidate.verifyReleaseCandidate(f.input, f.readers),
+      /draft identity/
+    );
+    assert.equal(
+      (
+        await officialCandidate.verifyReleaseCandidate(f.input, f.readers, {
+          expectPublished: true
+        })
+      ).kind,
+      "verified-release-candidate"
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("official candidate rejects a null native catalog even when candidate requests legacy policy", async () => {
+  const f = await setup();
+  const donor = await setup({ native: true });
+  try {
+    f.expected.artifacts.push(
+      donor.expected.artifacts.find((artifact) => artifact.id === 4)
+    );
+    const getArtifact = f.readers.getArtifact;
+    f.readers.getArtifact = (repo, id) =>
+      id === 4 ? donor.readers.getArtifact(repo, id) : getArtifact(repo, id);
+    f.input.allowLegacyNativeCatalog = true;
+    await assert.rejects(
+      officialCandidate.verifyReleaseCandidate(f.input, f.readers),
+      /native.*catalog/i
+    );
+  } finally {
+    f.cleanup();
+    donor.cleanup();
+  }
+});
 
 test("pin-only candidate verifies real npm/Desktop inventories without executing candidate or signer/mutators", async () => {
   const f = await setup({ desktop: true });

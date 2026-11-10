@@ -110,40 +110,72 @@ dist/native-runtime/macos-arm64/
   provenance.json
 ```
 
-For the future macOS release core, build the Desktop runtime once with a stable
-`--version` and validate it as below. Independently review and approve that
-frozen tree and its complete inventory digest, then stage that exact tree (do
-not rebuild). The digest includes file bytes, paths, modes, symlink targets,
-licenses, asset manifest, and provenance. To calculate the candidate digest:
+For the macOS release core, build the Desktop runtime once with a stable
+`--version` and validate it as below, then stage that exact tree (do not
+rebuild). Its inventory digest covers file bytes, paths, modes, symlink
+targets, licenses, asset manifest, and provenance. To calculate it:
 
 ```bash
 node scripts/native-runtime/stage-macos-core.mjs \
   --source-dir dist/native-runtime/macos-arm64/koed-runtime --inspect-inventory
 ```
 
-Calculation alone is not approval or authentication. Supply the digest through
-a separately reviewed and trusted channel, not from the source tree being
-staged. Staging fails if the full tree differs from that approved digest:
+Staging takes that digest and fails if the tree it is given differs from it:
 
 ```bash
 node scripts/native-runtime/stage-macos-core.mjs \
   --source-dir dist/native-runtime/macos-arm64/koed-runtime \
   --out-dir dist/native-runtime/macos-core \
-  --version 1.2.3 --approved-inventory-sha256 <approved-64-hex-digest>
+  --version 1.2.3 --frozen-inventory-sha256 <64-hex-digest>
 ```
 
 The output directory must not exist. Staging requires matching pinned-source
 provenance and nonempty OpenSSL, PostgreSQL, pgvector, and llama.cpp licenses.
 It checks the Desktop asset manifest and macOS arm64 inventory, including
 expected PostgreSQL data, Metal library, and license path/content classes.
-These checks do not replace independent review of every approved inventory
-entry. It copies the Metal and PostgreSQL bytes without rebuilding and writes a recipe-addressed
+It copies the Metal and PostgreSQL bytes without rebuilding and writes a recipe-addressed
 archive, canonical inventory manifest, checksum, and candidate metadata. The
-recipe binds the separately approved Desktop digest, source provenance, frozen
+recipe binds the frozen Desktop inventory digest, source provenance, frozen
 payload inventory, packaging logic and Node/zlib identity; it does not claim
 reproducible fresh compilation. Validate the extracted core on macOS before considering it for a
-release. This interface does not yet integrate the release provider, catalog,
-or workflow; macOS release installation is not yet supported or qualified.
+release.
+
+The release workflow treats macOS like Linux: pins are computed in the run, not
+supplied beforehand. The freeze job builds once, computes the inventory digest,
+and uploads the original archive and canonical full-inventory evidence as one
+private workflow artifact. Core staging and signed Desktop download that exact
+artifact by immutable artifact ID and recheck the tree against the freeze job's
+digest, so both ship the same frozen bytes; Desktop retains its signing and
+notarization steps. The staging job combines the macOS core pin with Linux CPU
+and CUDA pins in a schema 2 catalog before building public packages.
+
+Reviewed release identity binds the public macOS assets and the private frozen
+artifact's immutable ID and digest without listing private payload bytes as
+public assets. Candidate verification authenticates the current run, commit,
+repository, artifact metadata and artifact ZIP digest, and reads the bounded canonical
+full inventory from that exact private artifact ID through the same open file
+descriptor used to hash the ZIP. It then checks the actual macOS core archive,
+its external and embedded manifests, and the inventory projection using
+`scripts/native-runtime/verify-approved-macos-core.mjs`. Archive inspection is
+bounded and does not extract or execute payloads. Official candidates require a
+schema 2 catalog; explicit legacy verification remains separate. The production
+job repeats verification immediately before each npm or GitHub mutation, including
+against the published release before the npm `latest` update. No repository
+variable, approval policy or approval environment is specific to macOS; an
+expired or mismatched frozen artifact blocks verification.
+
+Promotion relies on the existing release controls: the protected release
+identity, candidate verification, and independent production approval, with
+verification repeated before each mutation. As with the Linux and Desktop
+release paths, there is no live revocation service.
+
+The verify-only job has `actions: read` for private Actions artifacts and
+`contents: read`, with checkout credentials not persisted. GitHub draft releases
+and their assets may require `contents: write`, so this job can fail closed when
+reading the draft; a genuinely read-only draft access path must be qualified, not
+replaced with a write-capable verifier token. Release remains blocked until these
+issues, real GitHub artifact transport, end-to-end
+workflow, and native-host core validation have been qualified.
 
 Validate the staged runtime:
 

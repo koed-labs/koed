@@ -114,7 +114,7 @@ const run = (input, out, approved = frozenDigest(input)) =>
       out,
       "--version",
       "1.2.3",
-      "--approved-inventory-sha256",
+      "--frozen-inventory-sha256",
       approved
     ],
     { encoding: "utf8" }
@@ -164,6 +164,47 @@ test("macOS core preserves frozen bytes and reproducibly packages Metal and lice
   }
 });
 
+test("freeze evidence contains canonical full inventory only with matching independent approval", () => {
+  const { root, input, approved } = fixture();
+  try {
+    const evidence = resolve(root, "inventory.json");
+    const emit = (digest) =>
+      spawnSync(
+        process.execPath,
+        [
+          script,
+          "--source-dir",
+          input,
+          "--write-inventory",
+          evidence,
+          "--frozen-inventory-sha256",
+          digest
+        ],
+        { encoding: "utf8" }
+      );
+    const rejected = emit("0".repeat(64));
+    assert.notEqual(rejected.status, 0);
+    assert.equal(emit(approved).status, 0);
+    const bytes = readFileSync(evidence, "utf8");
+    const inventory = JSON.parse(bytes);
+    assert.equal(bytes, `${canonicalArtifactJson(inventory)}\n`);
+    assert.equal(
+      createHash("sha256")
+        .update(canonicalArtifactJson(inventory))
+        .digest("hex"),
+      approved
+    );
+    assert.ok(inventory.some((entry) => entry.path === "provenance.json"));
+    assert.notEqual(
+      emit(approved).status,
+      0,
+      "evidence must not be overwritten"
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("staging rejects empty and nested Metal directories before packaging", () => {
   for (const path of ["postgres/share/unrelated", "llama.cpp/metal/nested"]) {
     const { root, input } = fixture();
@@ -184,6 +225,7 @@ test("packaging and canonicalization changes alter recipe identity", () => {
     const copy = resolve(root, "code");
     for (const name of [
       "scripts/native-runtime/stage-macos-core.mjs",
+      "scripts/native-runtime/macos-inventory.mjs",
       "scripts/native-runtime/core-artifact.mjs",
       "scripts/native-runtime/manifest-lib.mjs",
       "scripts/deterministic-tar-gzip.mjs",
@@ -209,7 +251,7 @@ test("packaging and canonicalization changes alter recipe identity", () => {
           resolve(root, name),
           "--version",
           "1.2.3",
-          "--approved-inventory-sha256",
+          "--frozen-inventory-sha256",
           approved
         ],
         { encoding: "utf8" }
@@ -236,7 +278,7 @@ test("packaging and canonicalization changes alter recipe identity", () => {
   }
 });
 
-test("staging requires independently supplied approved inventory digest", () => {
+test("staging requires the frozen inventory digest", () => {
   const { root, input } = fixture();
   try {
     const result = spawnSync(
@@ -253,7 +295,7 @@ test("staging requires independently supplied approved inventory digest", () => 
       { encoding: "utf8" }
     );
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /approved.*inventory/i);
+    assert.match(result.stderr, /frozen-inventory-sha256/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

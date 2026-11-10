@@ -218,7 +218,7 @@ describe("synthetic macOS release lifecycle", () => {
         resolve(repo, "scripts/native-runtime/sources.macos-arm64.json"),
         "utf8"
       )
-    );
+    ) as unknown;
     writeFileSync(
       resolve(root, "provenance.json"),
       JSON.stringify({
@@ -261,13 +261,24 @@ describe("synthetic macOS release lifecycle", () => {
         out,
         "--version",
         "1.2.3",
-        "--approved-inventory-sha256",
+        "--frozen-inventory-sha256",
         inspected.stdout.trim()
       ],
       { cwd: repo, encoding: "utf8" }
     );
     expect(staged.status, staged.stderr).toBe(0);
-    const report = JSON.parse(staged.stdout);
+    const report = JSON.parse(staged.stdout) as {
+      recipeId: string;
+      runtimeVersion: string;
+      target: unknown;
+      contracts: unknown;
+      components: unknown;
+      archive: string;
+      sha256: string;
+      archiveBytes: number;
+      manifestSha256: string;
+      expandedBytes: number;
+    };
     const core = {
       recipeId: report.recipeId,
       runtimeVersion: report.runtimeVersion,
@@ -430,7 +441,7 @@ describe("synthetic macOS release lifecycle", () => {
         env: expect.objectContaining({
           KOED_LLAMA_SERVER_BACKEND: "metal",
           LLAMA_ARG_UI: "false"
-        })
+        }) as unknown
       })
     );
     expect(

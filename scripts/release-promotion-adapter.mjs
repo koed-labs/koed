@@ -230,6 +230,16 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     throw new Error(
       "Full release promotion requires effective Desktop verification."
     );
+  const recheckCandidate = async (expectPublished = false) => {
+    const checked = await runReleaseVerification(args, adapters.readers, {
+      expectPublished
+    });
+    if (
+      canonicalReleaseJson({ ...checked, registry: candidate.registry }) !==
+      canonicalReleaseJson(candidate)
+    )
+      throw new Error("Candidate changed before publication.");
+  };
   const {
     run = command,
     fetchRegistry = (name, version, timeout) =>
@@ -335,9 +345,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     });
     // Rerun from protected input, not a caller-supplied receipt; bind bytes used
     // below to the same evidence immediately before the first mutation.
-    const rechecked = await runReleaseVerification(args, adapters.readers);
-    if (canonicalReleaseJson(rechecked) !== canonicalReleaseJson(candidate))
-      throw new Error("Candidate changed before publication.");
+    await recheckCandidate();
     const immutableAssets = [
       ...manifests.flatMap((name) => [
         name,
@@ -402,6 +410,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     // any irreversible mutation.
     let published = await fetchRegistry(expected.packageName, expected.version);
     if (!published) {
+      await recheckCandidate();
       run("npm", [
         "publish",
         tarballPath,
@@ -417,6 +426,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     } else {
       await verifyNpmCandidate(expected, async () => published);
     }
+    await recheckCandidate();
     run("npm", [
       "dist-tag",
       "add",
@@ -482,6 +492,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
           throw new Error(
             "Refusing npm latest downgrade or invalid registry version."
           );
+        await recheckCandidate(true);
         // npm dist-tag has no compare-and-swap: an external update can still race this read.
         run("npm", [
           "dist-tag",
@@ -497,17 +508,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
           { sleep: adapters.sleep, integrity: expected.integrity }
         );
       } else if (action.kind === "publish-github") {
-        const beforePatch = await runReleaseVerification(
-          args,
-          adapters.readers
-        );
-        if (
-          canonicalReleaseJson({
-            ...beforePatch,
-            registry: candidate.registry
-          }) !== canonicalReleaseJson(candidate)
-        )
-          throw new Error("Candidate changed before GitHub publication.");
+        await recheckCandidate();
         run("gh", [
           "api",
           "--method",

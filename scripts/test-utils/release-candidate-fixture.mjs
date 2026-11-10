@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalArtifactJson } from "../../packages/koed-server/src/artifact-canonical-json.mjs";
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
@@ -197,7 +198,13 @@ export const addDesktopFixture = async (
   return { asset, asarEntry: "Koed.app/Contents/Resources/app.asar" };
 };
 
-export const setupCandidate = async ({ desktop = false, payload } = {}) => {
+export const setupCandidate = async ({
+  desktop = false,
+  payload,
+  native = false,
+  nativePayload = "safe",
+  nativeArchivePayload = nativePayload
+} = {}) => {
   const fixture = candidateFixture({ payload });
   const desktopIdentity = desktop ? await addDesktopFixture(fixture) : null;
   const contents = new Map(
@@ -280,7 +287,9 @@ export const setupCandidate = async ({ desktop = false, payload } = {}) => {
             dist: { integrity: fixture.identity.npm.integrity }
           }
   };
-  return { ...fixture, contents, expected, input, readers, release };
+  const result = { ...fixture, contents, expected, input, readers, release };
+  if (native) addNativeFixture(result, nativePayload, nativeArchivePayload);
+  return result;
 };
 
 // Rehash candidate-controlled bytes so rejection exercises package inspection,
@@ -307,6 +316,247 @@ export const refreshCandidatePackage = (fixture) => {
   fixture.expected.assets = [...fixture.contents].map(([name, bytes]) => ({
     name,
     sha256: hash(bytes)
+  }));
+};
+
+const makeNativeFixturePin = (fixture, kind, platform) => {
+  const components = {
+    postgres: { major: 17, version: "17.6" },
+    pgvector: { version: "0.8.3" },
+    llamaCpp: { version: "b10514", revision: "a".repeat(40) }
+  };
+  const recipe = { kind, platform, fixture: true };
+  const recipeId = hash(canonicalArtifactJson(recipe));
+  const target =
+    platform === "linux-x64"
+      ? {
+          platform: "linux",
+          architecture: "x64",
+          libc: { family: "glibc", minimumVersion: "2.35" }
+        }
+      : { platform: "macos", architecture: "arm64", minimumVersion: "14.0" };
+  const coreComponents =
+    platform === "macos-arm64"
+      ? { ...components, llamaCpp: { version: "b10514" } }
+      : components;
+  const shared = {
+    recipeId,
+    runtimeVersion: "1.1.0",
+    target,
+    contracts:
+      kind === "core"
+        ? { layout: 1, postgres: 1, embedding: 1 }
+        : { layout: 1, embedding: 1 },
+    ...(kind === "core"
+      ? { components: coreComponents }
+      : {
+          llamaCpp: components.llamaCpp,
+          cuda: {
+            toolkitVersion: "12.4",
+            minimumDriverLinux: "550.54.14",
+            architectures: [89]
+          }
+        })
+  };
+  return writeNativeFixturePin(fixture, kind, platform, recipe, shared);
+};
+
+const writeNativeFixturePin = (fixture, kind, platform, recipe, shared) => {
+  const { recipeId } = shared;
+  const manifest = Buffer.from(
+    canonicalArtifactJson({
+      ...shared,
+      kind,
+      schemaVersion: 1,
+      recipe,
+      inventory: []
+    })
+  );
+  const archive = Buffer.from(`synthetic ${kind} ${platform}`);
+  const name = `koed-native-${kind}-${recipeId}-${platform}.tar.gz`;
+  const manifestName =
+    platform === "macos-arm64"
+      ? "native-core-manifest-macos-arm64.json"
+      : `native-${kind}-manifest.json`;
+  fixture.contents.set(name, archive);
+  fixture.contents.set(manifestName, manifest);
+  return {
+    ...shared,
+    url: `https://github.com/koed-labs/koed/releases/download/v1.2.3/${name}`,
+    sha256: hash(archive),
+    archiveBytes: archive.length,
+    manifestSha256: hash(manifest),
+    expandedBytes: manifest.length
+  };
+};
+
+const addApprovedMacosFixture = (
+  fixture,
+  pin,
+  nativePayload,
+  nativeArchivePayload
+) => {
+  const tree = resolve(fixture.root, "approved-macos-tree");
+  const evidence = resolve(fixture.root, "approved-evidence");
+  mkdirSync(tree);
+  mkdirSync(evidence);
+  const inventory = [
+    {
+      path: "file",
+      type: "file",
+      mode: 0o644,
+      bytes: Buffer.byteLength(nativePayload),
+      sha256: hash(nativePayload)
+    },
+    {
+      path: "provenance.json",
+      type: "file",
+      mode: 0o644,
+      bytes: 1,
+      sha256: hash("p")
+    }
+  ];
+  const approved = hash(canonicalArtifactJson(inventory));
+  const payload = inventory.slice(0, 1);
+  const recipe = {
+    kind: "core",
+    platform: "macos-arm64",
+    fixture: true,
+    approvedDesktopInventorySha256: approved,
+    frozenInventorySha256: hash(canonicalArtifactJson(payload))
+  };
+  const recipeId = hash(canonicalArtifactJson(recipe));
+  const manifest = Buffer.from(
+    `${canonicalArtifactJson({
+      schemaVersion: 1,
+      kind: "core",
+      recipe,
+      recipeId,
+      inventory: payload,
+      runtimeVersion: pin.runtimeVersion,
+      target: pin.target,
+      contracts: pin.contracts,
+      components: pin.components
+    })}\n`
+  );
+  writeFileSync(resolve(tree, "file"), nativeArchivePayload, { mode: 0o644 });
+  writeFileSync(resolve(tree, "native-core-manifest.json"), manifest, {
+    mode: 0o644
+  });
+  const archivePath = resolve(fixture.root, "macos-core.tar.gz");
+  writeDeterministicTarGz({
+    sourceDir: tree,
+    rootName: "koed-runtime",
+    tarPath: archivePath
+  });
+  const archive = readFileSync(archivePath);
+  const name = `koed-native-core-${recipeId}-macos-arm64.tar.gz`;
+  for (const name of [...fixture.contents.keys()])
+    if (/^koed-native-core-.*-macos-arm64\.tar\.gz$/.test(name))
+      fixture.contents.delete(name);
+  fixture.contents.set(name, archive);
+  fixture.contents.set("native-core-manifest-macos-arm64.json", manifest);
+  writeFileSync(
+    resolve(evidence, "approved-macos-inventory.json"),
+    `${canonicalArtifactJson(inventory)}\n`
+  );
+  writeFileSync(
+    resolve(evidence, "koed-native-runtime-macos-arm64-1.2.3.tar.gz"),
+    "frozen"
+  );
+  execFileSync(
+    "zip",
+    [
+      "-q",
+      "artifact.zip",
+      "approved-macos-inventory.json",
+      "koed-native-runtime-macos-arm64-1.2.3.tar.gz"
+    ],
+    { cwd: evidence }
+  );
+  const zip = readFileSync(resolve(evidence, "artifact.zip"));
+  const artifact = {
+    id: 4,
+    name: "koed-private-frozen-macos-native-runtime",
+    digest: `sha256:${hash(zip)}`
+  };
+  fixture.expected.artifacts.push(artifact);
+  const getArtifact = fixture.readers.getArtifact;
+  fixture.readers.getArtifact = async (repository, id) =>
+    id === 4
+      ? {
+          ...artifact,
+          expired: false,
+          workflow_run: { id: 42, head_sha: fixture.expected.commit }
+        }
+      : getArtifact(repository, id);
+  fixture.readers.getArtifactArchive = async (repository, id) => {
+    if (repository !== "org/repo" || id !== 4)
+      throw new Error("Unexpected artifact request");
+    return (async function* () {
+      yield zip;
+    })();
+  };
+  return {
+    ...pin,
+    recipeId,
+    url: `https://github.com/koed-labs/koed/releases/download/v1.2.3/${name}`,
+    sha256: hash(archive),
+    archiveBytes: archive.length,
+    manifestSha256: hash(manifest),
+    expandedBytes: manifest.length + Buffer.byteLength(nativePayload)
+  };
+};
+
+const addNativeFixture = (fixture, nativePayload, nativeArchivePayload) => {
+  const catalog = {
+    schemaVersion: 2,
+    linux: {
+      schemaVersion: 1,
+      minimumCoreVersion: "1.0.0",
+      core: makeNativeFixturePin(fixture, "core", "linux-x64"),
+      cuda: makeNativeFixturePin(fixture, "cuda", "linux-x64")
+    },
+    macos: {
+      schemaVersion: 1,
+      minimumCoreVersion: "1.0.0",
+      core: makeNativeFixturePin(fixture, "core", "macos-arm64"),
+      cuda: null
+    }
+  };
+  catalog.macos.core = addApprovedMacosFixture(
+    fixture,
+    catalog.macos.core,
+    nativePayload,
+    nativeArchivePayload
+  );
+  fixture.contents.set(
+    "native-runtime-catalog.json",
+    Buffer.from(JSON.stringify(catalog))
+  );
+  const entry = resolve(fixture.packageRoot, "vendor/control-plane.js");
+  writeFileSync(
+    entry,
+    readFileSync(entry, "utf8").replace(
+      "export const productionNativeRuntimeCatalog = null;",
+      `export const productionNativeRuntimeCatalog = ${JSON.stringify(catalog)};`
+    )
+  );
+  refreshCandidatePackage(fixture);
+  fixture.identity = JSON.parse(
+    fixture.contents.get("koed-labs-server-release-identity.json")
+  );
+  fixture.readers.getRegistryVersion = async (_name, version) =>
+    version === "latest"
+      ? null
+      : {
+          name: "@koed-labs/server",
+          version: "1.2.3",
+          dist: { integrity: fixture.identity.npm.integrity }
+        };
+  fixture.release.assets = [...fixture.contents.keys()].map((name, index) => ({
+    id: index + 10,
+    name
   }));
 };
 
