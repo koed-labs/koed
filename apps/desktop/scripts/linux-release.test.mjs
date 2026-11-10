@@ -367,6 +367,7 @@ test("actual Linux staging preserves frozen manifest bytes and guard rejects tam
   );
   for (const name of [
     "prepare-koed-runtime.mjs",
+    "validate-linux-release.mjs",
     "finalize-runtime-manifests.mjs",
     "privacy-payload-inventory.mjs"
   ]) {
@@ -436,6 +437,71 @@ test("actual Linux staging preserves frozen manifest bytes and guard rejects tam
     );
     writeFileSync(join(staged, path), original);
   }
+  const runStage = (input, arch = "x64") => {
+    const override = `data:text/javascript,${encodeURIComponent(`Object.defineProperty(process, 'platform', { value: 'linux' }); Object.defineProperty(process, 'arch', { value: '${arch}' });`)}`;
+    return spawnSync(
+      process.execPath,
+      ["--import", override, join(scripts, "prepare-koed-runtime.mjs")],
+      {
+        encoding: "utf8",
+        env: { ...process.env, KOED_NATIVE_RUNTIME_SOURCE_DIR: input }
+      }
+    );
+  };
+  const invalid = join(root, "invalid");
+  cpSync(source, invalid, { recursive: true, verbatimSymlinks: true });
+  writeFileSync(join(invalid, "native-core-manifest.json"), "{}");
+  assert.notEqual(runStage(invalid).status, 0, "bogus core marker must fail");
+  rmSync(invalid, { recursive: true, force: true });
+  cpSync(source, invalid, { recursive: true, verbatimSymlinks: true });
+  writeFileSync(join(invalid, "postgres/bin/postgres"), "tampered");
+  assert.notEqual(
+    runStage(invalid).status,
+    0,
+    "tampered frozen core must fail"
+  );
+  assert.notEqual(
+    runStage(source, "arm64").status,
+    0,
+    "frozen x64 core must not stage on arm64"
+  );
+  rmSync(invalid, { recursive: true, force: true });
+  cpSync(source, invalid, { recursive: true, verbatimSymlinks: true });
+  writeFileSync(
+    join(invalid, manifest),
+    JSON.stringify({ schemaVersion: 1, assets: [{ id: "bogus" }] })
+  );
+  rmSync(join(invalid, "native-core-manifest.json"));
+  freezeCore({
+    runtimeRoot: invalid,
+    configuration,
+    recipe: {
+      schemaVersion: 1,
+      kind: "core",
+      configuration,
+      sources: Object.fromEntries(
+        ["postgres", "pgvector", "llamaCpp"].map((key) => [key, pinned[key]])
+      ),
+      toolchain: { cc: "fixture" },
+      logic: { build: "a".repeat(64) },
+      packaging: { epoch: 0 }
+    }
+  });
+  verifyFrozenCore(invalid);
+  assert.notEqual(
+    runStage(invalid).status,
+    0,
+    "invalid asset manifest must fail even in self-consistent core"
+  );
+  rmSync(invalid, { recursive: true, force: true });
+  cpSync(source, invalid, { recursive: true, verbatimSymlinks: true });
+  rmSync(join(invalid, "native-core-manifest.json"));
+  const generic = runStage(invalid);
+  assert.equal(generic.status, 0, generic.stderr);
+  assert.equal(
+    JSON.parse(readFileSync(join(staged, manifest), "utf8")).assets[0].version,
+    "postgresql-17-pgvector-packaged"
+  );
   const macPreload = `data:text/javascript,${encodeURIComponent("Object.defineProperty(process, 'platform', { value: 'darwin' }); Object.defineProperty(process, 'arch', { value: 'x64' });")}`;
   const mac = spawnSync(
     process.execPath,
