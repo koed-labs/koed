@@ -9,11 +9,13 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
+import * as linuxCoreBuilder from "./build-core-linux-x64.mjs";
 import {
   coreInventory,
   coreRecipeId,
@@ -28,7 +30,7 @@ test.afterEach(() =>
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true }))
 );
-const fixture = () => {
+const fixture = (prepare = () => {}) => {
   mkdirSync("scratch", { recursive: true });
   const root = mkdtempSync(resolve("scratch", "core-artifact-"));
   roots.push(root);
@@ -74,6 +76,7 @@ const fixture = () => {
     logic: { build: "a".repeat(64) },
     packaging: { epoch: 0 }
   };
+  prepare(runtimeRoot, root);
   freezeCore({ runtimeRoot, configuration, recipe });
   return { root, runtimeRoot, recipe };
 };
@@ -105,6 +108,85 @@ test("frozen core repackaging preserves bytes across output paths and product ve
     if (before === undefined) delete process.env.KOED_NATIVE_RUNTIME_VERSION;
     else process.env.KOED_NATIVE_RUNTIME_VERSION = before;
   }
+});
+
+test(
+  "cache tar extraction masks group-writable frozen license modes",
+  { skip: process.getuid?.() === 0 },
+  () => {
+    const { root } = fixture((runtime) => {
+      const license = resolve(runtime, "llama.cpp/cpu/libgomp-GPL-3.txt");
+      writeFileSync(license, "license");
+      chmodSync(license, 0o664);
+    });
+    const archive = resolve(root, "cache.tar");
+    const restored = resolve(root, "restored");
+    mkdirSync(restored);
+    let result = spawnSync(
+      "tar",
+      ["-cf", archive, "-C", root, "koed-runtime"],
+      { encoding: "utf8" }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    result = spawnSync(
+      "sh",
+      ["-c", 'umask 022; exec tar -xf "$1" -C "$2"', "sh", archive, restored],
+      { encoding: "utf8" }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const runtime = resolve(restored, "koed-runtime");
+    assert.equal(
+      statSync(resolve(runtime, "llama.cpp/cpu/libgomp-GPL-3.txt")).mode &
+        0o777,
+      0o644
+    );
+    assert.throws(
+      () => verifyFrozenCore(runtime),
+      /libgomp-GPL-3\.txt.*changed mode/
+    );
+  }
+);
+
+test("CPU license modes survive an unprivileged cache tar roundtrip and remain verified", () => {
+  const { root, runtimeRoot } = fixture((runtime, root) => {
+    const sources = {};
+    for (const name of ["libgomp-copyright.txt", "libgomp-GPL-3.txt"]) {
+      const source = resolve(root, name);
+      writeFileSync(source, "license");
+      chmodSync(source, 0o664);
+      sources[name] = source;
+    }
+    assert.equal(typeof linuxCoreBuilder.copyCpuRedistributables, "function");
+    linuxCoreBuilder.copyCpuRedistributables(
+      sources,
+      resolve(runtime, "llama.cpp/cpu")
+    );
+  });
+  for (const name of ["libgomp-copyright.txt", "libgomp-GPL-3.txt"])
+    assert.equal(
+      statSync(resolve(runtimeRoot, "llama.cpp/cpu", name)).mode & 0o777,
+      0o644
+    );
+  const archive = resolve(root, "cache.tar");
+  const restored = resolve(root, "restored");
+  mkdirSync(restored);
+  let result = spawnSync("tar", ["-cf", archive, "-C", root, "koed-runtime"], {
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  result = spawnSync(
+    "sh",
+    ["-c", 'umask 022; exec tar -xf "$1" -C "$2"', "sh", archive, restored],
+    { encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const restoredRuntime = resolve(restored, "koed-runtime");
+  verifyFrozenCore(restoredRuntime);
+  chmodSync(resolve(restoredRuntime, "llama.cpp/cpu/libgomp-GPL-3.txt"), 0o664);
+  assert.throws(
+    () => verifyFrozenCore(restoredRuntime),
+    /libgomp-GPL-3\.txt.*changed mode/
+  );
 });
 
 test("recipe identity covers source, toolchain, build logic and packaging inputs", () => {
