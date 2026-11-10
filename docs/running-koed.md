@@ -500,7 +500,21 @@ published release is still outstanding, and other hosts are rejected before any
 change is made. The installer needs Bash and Python 3, plus `curl` when it has to
 download a private Node.
 
-Download, inspect, then run it with the same version:
+Install the latest release:
+
+```bash
+curl -fsSL https://github.com/koed-labs/koed/releases/latest/download/install-koed-server.sh | bash
+```
+
+Each installer installs exactly the release it was published with. `latest`
+resolves to the newest published release, so this command installs whatever is
+current when it runs. The script only defines functions until its final line,
+so a truncated download does not start an installation. Piping still trusts the
+bytes that were downloaded; HTTPS does not authenticate the script.
+
+To choose a version or read the script first, download it from that release,
+inspect it, then run it. `--version` is optional and, when given, must match
+the installer's own release:
 
 ```bash
 curl --fail --location --proto '=https' -o install-koed-server.sh \
@@ -508,11 +522,6 @@ curl --fail --location --proto '=https' -o install-koed-server.sh \
 less install-koed-server.sh
 bash install-koed-server.sh --version X.Y.Z
 ```
-
-Piping also works (`curl ... | bash -s -- --version X.Y.Z`). The script only
-defines functions until its final line, so a truncated download does not start
-an installation, but piping still trusts whatever bytes were downloaded; HTTPS
-and `pipefail` do not authenticate the script.
 
 What it does, in order:
 

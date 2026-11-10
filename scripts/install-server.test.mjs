@@ -157,7 +157,9 @@ test("unrendered installer and invalid versions fail before host inspection", ()
       [readFileSync(sourcePath, "utf8"), ["--version", "1.2.3"]],
       [f.source, ["--version", "1.2.4"]],
       [f.source, ["--version", "1.2.3;echo bad"]],
-      [f.source, []],
+      [f.source, ["--version"]],
+      [f.source, ["1.2.3"]],
+      [f.source, ["koed-installer-complete-v1"]],
       [f.source, ["--version", "1.2.3", "--extra"]]
     ]) {
       const result = run(source, f.env, args);
@@ -177,14 +179,16 @@ test(
     const f = fixture();
     try {
       const bytes = Buffer.from(f.source);
+      // Each prefix runs with and without the optional --version argument.
       let next = 0;
       const worker = async () => {
-        while (next < bytes.length) {
-          const i = next++;
+        while (next < bytes.length * 2) {
+          const job = next++;
+          const i = job >> 1;
           await new Promise((done, reject) => {
             const child = spawn(
               "/bin/bash",
-              ["-s", "--", "--version", "1.2.3"],
+              ["-s", "--", ...(job & 1 ? ["--version", "1.2.3"] : [])],
               { env: f.env, stdio: ["pipe", "ignore", "ignore"] }
             );
             child.on("error", reject);
@@ -304,6 +308,18 @@ test("installs, provisions, starts and verifies with a paired trusted Node; reru
       argumentsText,
       "package is not reinstalled"
     );
+  } finally {
+    cleanup(f);
+  }
+});
+
+test("installs without arguments when piped as the short command", () => {
+  const f = fixture();
+  try {
+    const result = run(f.source, trustedNode(f), []);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Koed Server 1\.2\.3 is installed and running/);
+    assert.equal(calls(f).at(-1), "doctor --json");
   } finally {
     cleanup(f);
   }

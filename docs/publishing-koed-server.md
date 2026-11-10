@@ -174,7 +174,9 @@ asset. Candidate verification re-renders the template from the reviewed commit
 and requires the draft asset to match byte for byte; an unrendered, stale or
 substituted installer blocks promotion, and publication requires the asset to
 be present. The installer selects `@koed-labs/server` and Base assets by that
-same embedded version. A release whose package does not accept Node 26 cannot
+same embedded version. The documented short command uses
+`releases/latest/download/install-koed-server.sh`, so only promoted product
+releases may be marked latest on GitHub. A release whose package does not accept Node 26 cannot
 be installed with the private Node fallback.
 
 ## Immutable candidate and retry protocol

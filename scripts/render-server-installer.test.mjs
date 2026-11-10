@@ -22,13 +22,13 @@ test("renders one exact stable release version deterministically", () => {
     const mismatch = spawnSync("/bin/bash", [path, "--version", "1.2.4"], {
       encoding: "utf8"
     });
-    assert.match(mismatch.stderr, /exact stable release version/);
+    assert.match(mismatch.stderr, /one exact Koed Server release/);
     const match = spawnSync("/bin/bash", [path, "--version", "1.2.3"], {
       encoding: "utf8",
       env: { ...process.env, KOED_HOME: join(dir, "missing-parent", "home") }
     });
-    assert.doesNotMatch(match.stderr, /exact stable release version/);
-    assert.notEqual(match.status, 0, "unfinished installer must not provision");
+    assert.doesNotMatch(match.stderr, /one exact Koed Server release/);
+    assert.notEqual(match.status, 0, "missing KOED_HOME parent is refused");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

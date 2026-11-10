@@ -61,10 +61,12 @@ print(pid)' "$home"
 koed_install() {
   local embedded='__KOED_INSTALLER_VERSION__'
   local sentinel='koed-installer-complete-v1'
-  if [[ $# -ne 3 || $1 != --version || $3 != "$sentinel" ]] ||
+  # The sentinel must be the final argument, so a truncated last line fails.
+  # --version is optional; when given it must match this installer's release.
+  if [[ $# -lt 1 || ${!#} != "$sentinel" ]] ||
      [[ ! $embedded =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
-     [[ $2 != "$embedded" ]]; then
-    printf '%s\n' 'Installer requires its exact stable release version: --version X.Y.Z' >&2
+     ! { [[ $# -eq 1 ]] || [[ $# -eq 3 && $1 == --version && $2 == "$embedded" ]]; }; then
+    printf '%s\n' 'This installer installs one exact Koed Server release and accepts only an optional matching --version X.Y.Z' >&2
     return 1
   fi
   local os arch node npm node_version home parent install_dir package launcher link base_target resume=0
