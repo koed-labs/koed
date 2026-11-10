@@ -886,7 +886,13 @@ jobs:
     name: Linux x64 Desktop release assets
     runs-on: ubuntu-22.04
     timeout-minutes: 150
-    needs: [release, component-manifest-catalog, linux-native-packages]
+    needs:
+      [
+        release,
+        component-manifest-catalog,
+        linux-native-packages,
+        macos-native-packages
+      ]
     if: github.ref == 'refs/heads/main' && needs.release.outputs.desktop_assets_enabled == 'true'
     env:
       KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json

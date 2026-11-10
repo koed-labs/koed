@@ -67,6 +67,17 @@ test("trust, smoke, composition, hashes precede immutable release upload", () =>
     /koed-desktop-macos-arm64\.sha256/
   );
 });
+test("Linux Desktop can access the complete native catalog before embedding pins", () => {
+  const linux = jobs["linux-desktop-release-assets"];
+  const embed = linux.steps.find(
+    (s) => s.name === "Embed native package pins in the release build"
+  );
+  assert.equal(
+    embed.env.NATIVE_CATALOG,
+    "${{ needs.macos-native-packages.outputs.catalog }}"
+  );
+  assert.ok(linux.needs.includes("macos-native-packages"));
+});
 test("Linux release builds and smokes verified runtime and retains exact final assets", () => {
   const linux = jobs["linux-desktop-release-assets"];
   assert.ok(linux, "missing Linux Desktop release job");
