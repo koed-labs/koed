@@ -73,12 +73,18 @@ Home is what the navigation rail's Koed button opens: a stage over existing
 state. It never starts a Conversation; there is no new-chat composer. While Home
 is mounted, it refreshes status every 15 seconds when the document is visible
 and immediately when visibility returns. Hidden documents skip Home's periodic
-refresh; other status refresh triggers remain independent. Every state uses one
-grey stage: the AI Client keycaps along its top (no row at all when there are no clients, so the stage
+refresh; other status refresh triggers remain independent. Ready states use one
+gray stage: the AI Client keycaps along its top (no row at all when there are no clients, so the stage
 closes up), then Kin in a spotlight that starts under the keycaps, above a
 caption. Without Projects to show, the Koed Kin stands alone; the stage grows,
 and the page scrolls, only when the caption needs more room than the window
 leaves.
+
+Home shows a spinner during startup. It gives services 30 seconds to start
+before it shows recovery actions. Home opens Projects as soon as they load.
+If services stay unavailable, Home shows a sad Kin and an outlined "Start Koed"
+button. This delay applies only at startup. Background connection errors do not
+appear above Home.
 
 - **Attention** replaces Home only when the local API or its database is down,
   or Koed is stopped, because Projects cannot load. Other setup problems and an
@@ -144,24 +150,11 @@ leaves.
   pill. Keycaps offer no actions while Attention is shown, since Koed must be
   running again first.
 
-- **Hatching** shows while any connected AI Client's automatic historical
-  ingestion is running, waiting, or retrying after a failure, from
-  `status.historicalIngestion`, and no Project has been found yet: the Koed
-  Kin stands alone in the spotlight. Once any Project exists, Home shows
-  Projects instead and keeps the progress on the keycaps and in a slim bar
-  under the caption until ingestion ends. Koed reads only connected clients,
-  so progress left from a client that is no longer connected is ignored and
-  its keycap offers Connect. Hatching states the selection limits (recent
-  history only), counts finished Conversations per client and overall
-  (completed plus skipped), and keeps the progress bar indeterminate until
-  every selection is known. Below the bar one line gives the finished count,
-  how many of those were skipped (with a short note on why), and the latest
-  recorded progress; above it, when status can read them, the records read
-  and items indexed for the selected Conversations. It shows no time estimate
-  and no completion notification. Idle or unknown ingestion never holds Home
-  here. Once a client counts as stuck, the caption says its history has
-  stalled and the warning chip reads "Check <client> history", with
-  diagnostics.
+- While connected AI Clients read recent Conversations, Home keeps the spinner
+  until a Project appears. Progress shows finished and skipped Conversations.
+  If work stalls, Home shows a warning and a "Run diagnostics" button.
+  Once a Project appears, Home shows Projects and keeps the progress below them.
+  If processing ends without a Project, Home shows the quiet stage.
 - **Coins**: while history is processed, a rise in a client's finished
   Conversations, records read or items indexed drops golden pixel coins from
   that client's keycap onto the Kin in the spotlight, which hops. One update

@@ -9,6 +9,7 @@ import {
   type KinMember
 } from "./vendor/index.js";
 import { KIN_SPIN_FRONT, type KinSpin } from "../onboarding/kin-spin.js";
+import { kinStageSize, kinStageSurface } from "./presentation.js";
 
 // Every Pixelkin shares one WebGL2 renderer: the renderer draws each Kin in
 // turn and the result is copied into that Kin's own 2D canvas. One context per
@@ -17,6 +18,7 @@ type Personality = InstanceType<typeof PixelkinPersonalities.Controller>;
 export type PixelkinActor = {
   canvas: HTMLCanvasElement;
   size: number;
+  presentation: "avatar" | "stage";
   visible: boolean;
   hopAt: number | null;
   gaze: [number, number];
@@ -74,11 +76,13 @@ const reduced = () => reducedMotion?.matches ?? false;
 export function createPixelkinActor(
   canvas: HTMLCanvasElement,
   kin: Kin,
-  size: number
+  size: number,
+  presentation: PixelkinActor["presentation"] = "avatar"
 ): PixelkinActor {
   const actor = {
     canvas,
     size,
+    presentation,
     visible: true,
     hopAt: null,
     gaze: [0, 0],
@@ -167,43 +171,50 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
   const ratio = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
   const device = Math.round(actor.size * ratio);
   const zoom = Math.ceil(device / MAX_PIXELS);
-  const pixels = Math.max(16, Math.round(device / zoom));
-  gl.render(
-    kinScene({
-      width: pixels,
-      height: pixels,
-      time: t,
-      objects: [
-        {
-          member: actor.member,
-          x: 0,
-          y:
-            actor.rest.bodyY +
-            ((motion ? Math.sin(phase) * 0.026 * IDLE : 0) + jump * 0.22) *
-              scale,
-          z: 0,
-          yaw:
-            lookX * 0.31 * 1.5 +
-            (motion ? Math.sin(t * 0.66) * 0.025 * IDLE : 0) +
-            TAU * air +
-            turned,
-          pitch:
-            -lookY * 0.19 * 1.5 +
-            (motion ? Math.sin(t * 0.81 + 1.4) * 0.014 * IDLE : 0),
-          roll:
-            -lookX * 0.038 * 1.5 +
-            (motion ? Math.sin(t * 1.13 + 0.6) * 0.012 * IDLE : 0),
-          scaleX: scale * (1 + breathing * 0.52),
-          scaleY: scale * (1 - breathing),
-          scaleZ: scale * (1 + breathing * 0.34),
-          glossy: actor.kin.body.shininess,
-          gaze: [lookX, lookY]
-        }
-      ]
-    })
-  );
-  // Whole-number enlargement keeps the pixel art crisp.
-  const size = pixels * zoom;
+  const stage = actor.presentation === "stage";
+  const pixels = stage
+    ? kinStageSize(actor.size, actor.size).width
+    : Math.max(16, Math.round(device / zoom));
+  const scene = kinScene({
+    width: pixels,
+    height: pixels,
+    time: t,
+    objects: [
+      {
+        member: actor.member,
+        x: 0,
+        y:
+          actor.rest.bodyY +
+          ((motion ? Math.sin(phase) * 0.026 * IDLE : 0) + jump * 0.22) * scale,
+        z: 0,
+        yaw:
+          lookX * 0.31 * 1.5 +
+          (motion ? Math.sin(t * 0.66) * 0.025 * IDLE : 0) +
+          TAU * air +
+          turned,
+        pitch:
+          -lookY * 0.19 * 1.5 +
+          (motion ? Math.sin(t * 0.81 + 1.4) * 0.014 * IDLE : 0),
+        roll:
+          -lookX * 0.038 * 1.5 +
+          (motion ? Math.sin(t * 1.13 + 0.6) * 0.012 * IDLE : 0),
+        scaleX: scale * (1 + breathing * 0.52),
+        scaleY: scale * (1 - breathing),
+        scaleZ: scale * (1 + breathing * 0.34),
+        glossy: actor.kin.body.shininess,
+        gaze: [lookX, lookY]
+      }
+    ]
+  });
+  if (stage) {
+    Object.assign(scene, kinStageSurface(-1.25), {
+      paletteMode: undefined,
+      outlineViewport: { width: actor.size, height: actor.size }
+    });
+  }
+  gl.render(scene);
+  // Stage Kin retain every rendered pixel; small avatars use integer zoom.
+  const size = stage ? pixels : pixels * zoom;
   if (actor.canvas.width !== size) {
     actor.canvas.width = size;
     actor.canvas.height = size;

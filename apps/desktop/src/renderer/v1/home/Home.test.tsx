@@ -67,7 +67,6 @@ describe("Home", () => {
   const front = (name: string) => kin(name).hasAttribute("data-lead");
 
   it.each<HomeView>([
-    { kind: "loading" },
     { kind: "attention", problems: [], primary: null },
     { kind: "empty", warnings: [] }
   ])("puts the $kind state on the same stage as Projects", async (view) => {
@@ -78,7 +77,7 @@ describe("Home", () => {
       container.querySelector(".v1-home-stage .v1-home-caption")
     ).not.toBeNull();
     // While loading nothing is known about the clients yet.
-    if (view.kind === "loading") return;
+    if (view.kind === "attention") return;
     await render({
       view,
       entries: [],
@@ -97,6 +96,42 @@ describe("Home", () => {
         ".v1-home-stage .v1-home-stage-top .v1-home-keycaps"
       )
     ).not.toBeNull();
+  });
+
+  it("loads with the large shadcn spinner and no Kin or recovery buttons", async () => {
+    await render({ entries: [], view: { kind: "loading" } });
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+    expect(
+      container.querySelector('.v1-home-spinner[role="status"]')
+    ).not.toBeNull();
+    expect(container.textContent).toContain("Making room for your Projects");
+    expect(container.querySelector(".v1-pixelkin")).toBeNull();
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("shows a sad Kin and a neutral shadcn button that starts Koed", async () => {
+    const statusStore = new DesktopStatusStore();
+    const run = vi.spyOn(statusStore, "run").mockResolvedValue(undefined);
+    const problem: import("./home-model.js").HomeProblem = {
+      id: "services",
+      title: "Koed services",
+      message: "Koed isn’t running.",
+      action: { command: "start", label: "Start Koed", requiresConsent: false }
+    };
+    await render({
+      entries: [],
+      statusStore,
+      view: { kind: "attention", problems: [problem], primary: problem }
+    });
+    expect(container.querySelector('[data-expression="sad"]')).not.toBeNull();
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-slot="button"]'
+    )!;
+    expect(button.textContent).toBe("Start Koed");
+    expect(button.className).toContain("bg-popover");
+    expect(button.className).not.toContain("bg-primary");
+    await act(async () => button.click());
+    expect(run).toHaveBeenCalledWith("start", undefined);
   });
 
   it("refreshes status while Home remains open and stops on unmount", async () => {
@@ -488,7 +523,7 @@ describe("Home", () => {
 
   it("shows ingestion counts with an indeterminate bar until the total is known", async () => {
     await render({
-      entries: [entry("koed", "2026-11-03T11:00:00Z")],
+      entries: [],
       clients: [
         {
           id: "codex",
@@ -542,12 +577,8 @@ describe("Home", () => {
     expect(container.querySelector("[title]")?.getAttribute("title")).toContain(
       "Up to 50 conversations"
     );
-    const pills = [...container.querySelectorAll(".v1-home-pill")].map(
-      (pill) => pill.textContent
-    );
-    expect(pills).toEqual(["2 finished", "Retrying · 2 of 8 finished"]);
-    // Progress takes the pill, so connecting moves to the small line.
-    expect(container.textContent).toContain("Connect · 2.1.312");
+    expect(container.querySelector(".v1-home-spinner")).not.toBeNull();
+    expect(container.querySelector(".v1-pixelkin")).toBeNull();
     expect(container.textContent).toContain("4 conversations finished");
     expect(container.textContent).toContain(
       "Reading history · 45 records read"
@@ -578,14 +609,16 @@ describe("Home", () => {
     const bar = container.querySelector('[role="progressbar"]')!;
     expect(bar.hasAttribute("aria-valuenow")).toBe(false);
     expect(bar.hasAttribute("data-indeterminate")).toBe(true);
-    // Hatching is the Koed Kin alone: any Project switches Home to Projects.
+    // History preparation uses the same spinner, without a separate Kin stage.
     expect(
       container.querySelector('button[aria-label="Open Project koed"]')
     ).toBeNull();
-    expect(container.querySelector("[data-coin-target]")).not.toBeNull();
+    expect(container.querySelector("[data-coin-target]")).toBeNull();
   });
 
-  const reading = (completed: number): HomeView => ({
+  const reading = (
+    completed: number
+  ): Extract<HomeView, { kind: "ingesting" }> => ({
     kind: "ingesting",
     warnings: [],
     ingestion: {
@@ -606,6 +639,11 @@ describe("Home", () => {
       ]
     }
   });
+  const projectReading = (completed: number): HomeView => ({
+    kind: "projects",
+    warnings: [],
+    ingestion: reading(completed).ingestion
+  });
   const codexClient = {
     id: "codex" as const,
     name: "Codex",
@@ -613,6 +651,22 @@ describe("Home", () => {
     label: "Connected",
     version: null
   };
+
+  it("keeps the spinner mounted through history preparation and opens Projects directly", async () => {
+    await render({ entries: [], view: { kind: "loading" } });
+    const spinner = container.querySelector(".v1-home-spinner");
+    await render({ entries: [], view: reading(2) });
+    expect(container.querySelector(".v1-home-spinner")).toBe(spinner);
+    expect(container.textContent).toContain("Making room for your Projects");
+    expect(container.textContent).not.toContain("Hatching");
+    expect(container.querySelector(".v1-pixelkin")).toBeNull();
+    await render({
+      entries: [entry("a", "2026-11-03T11:00:00Z")],
+      view: projectsView
+    });
+    expect(container.textContent).toContain("Your Projects");
+    expect(container.querySelector(".v1-home-spinner")).toBeNull();
+  });
 
   it("does not produce coins when only ingestion progress rises", async () => {
     await render({ entries: [], view: reading(2), clients: [codexClient] });
@@ -627,8 +681,16 @@ describe("Home", () => {
     reducedMotion = true;
     const animate = vi.fn();
     Object.assign(HTMLElement.prototype, { animate });
-    await render({ entries: [], view: reading(2), clients: [codexClient] });
-    await render({ entries: [], view: reading(6), clients: [codexClient] });
+    await render({
+      entries: [entry("existing", "2026-11-03T11:00:00Z")],
+      view: projectReading(2),
+      clients: [codexClient]
+    });
+    await render({
+      entries: [entry("existing", "2026-11-03T11:00:00Z")],
+      view: projectReading(6),
+      clients: [codexClient]
+    });
     expect(container.querySelector(".v1-home-coin")).toBeNull();
     expect(animate).not.toHaveBeenCalled();
     delete (HTMLElement.prototype as { animate?: unknown }).animate;
@@ -657,21 +719,21 @@ describe("Home", () => {
       projectIds: []
     };
     await render({
-      entries: [],
-      view: reading(2),
+      entries: [entry("existing", "2026-11-03T11:00:00Z")],
+      view: projectReading(2),
       clients: [codexClient],
       conversations: [existing]
     });
     await render({
-      entries: [],
-      view: reading(9),
+      entries: [entry("existing", "2026-11-03T11:00:00Z")],
+      view: projectReading(9),
       clients: [codexClient],
       conversations: [existing]
     });
     expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(0);
     await render({
-      entries: [],
-      view: reading(9),
+      entries: [entry("existing", "2026-11-03T11:00:00Z")],
+      view: projectReading(9),
       clients: [codexClient],
       conversations: [existing, added]
     });
@@ -692,8 +754,8 @@ describe("Home", () => {
       }
     });
     const props = {
-      entries: [],
-      view: reading(2),
+      entries: [entry("existing", "2026-11-03T11:00:00Z")],
+      view: projectReading(2),
       clients: [codexClient],
       conversationScope: "one"
     };
@@ -717,8 +779,8 @@ describe("Home", () => {
       animate: () => ({ onfinish: null, cancel: () => undefined })
     });
     const props = {
-      entries: [],
-      view: reading(2),
+      entries: [entry("existing", "2026-11-03T11:00:00Z")],
+      view: projectReading(2),
       clients: [codexClient],
       conversationScope: "one"
     };
@@ -741,8 +803,8 @@ describe("Home", () => {
         animate: () => ({ onfinish: null, cancel: () => undefined })
       });
       const props = {
-        entries: [],
-        view: reading(2),
+        entries: [entry("existing", "2026-11-03T11:00:00Z")],
+        view: projectReading(2),
         clients: [codexClient],
         conversationScope: "one"
       };
@@ -941,7 +1003,7 @@ describe("Home", () => {
     expect(container.querySelector("[data-coin-target]")).not.toBeNull();
   });
 
-  it("says when history has stalled and when a client is only starting", async () => {
+  it("keeps stalled history guidance on the shared loading screen", async () => {
     const client = (
       id: "codex" | "claude",
       name: string,
@@ -990,11 +1052,8 @@ describe("Home", () => {
         }
       ]
     });
-    expect(
-      [...container.querySelectorAll(".v1-home-pill")].map(
-        (pill) => pill.textContent
-      )
-    ).toEqual(["Starting", "Stuck · 1 finished"]);
+    expect(container.querySelector(".v1-home-spinner")).not.toBeNull();
+    expect(container.querySelector(".v1-pixelkin")).toBeNull();
     expect(container.textContent).toContain(
       "Claude Code history has stalled, so Koed keeps retrying."
     );

@@ -3,6 +3,9 @@
   flex: none;
   image-rendering: pixelated;
 }
+.v1-pixelkin[data-presentation="stage"] {
+  image-rendering: auto;
+}
 /* Shown when WebGL2 is unavailable, so the agent still has a body and face. */
 .v1-pixelkin-fallback {
   position: relative;
@@ -222,4 +225,13 @@
 }
 .v1-kin-control [data-slot="select-trigger"] {
   width: 100%;
+}
+.v1-pixelkin-fallback[data-expression="sad"] i {
+  top: 38%;
+  height: 18%;
+}
+.v1-pixelkin-fallback[data-expression="sad"] b {
+  top: 61%;
+  height: 10%;
+  border-radius: 50% 50% 0 0;
 }
