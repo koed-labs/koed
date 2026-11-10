@@ -65,7 +65,15 @@ if (nativeRuntimeSource) {
 }
 prunePythonEmbeddingRuntimeFiles(runtimeRoot);
 assertNoPrivacyPayload(runtimeRoot, privacyOnlyPackages);
-const nativeAssets = writeNativeManifest();
+const preservedManifest =
+  process.platform === "linux" &&
+  nativeRuntimeSource &&
+  existsSync(resolve(runtimeRoot, "native-core-manifest.json"));
+const nativeAssets = preservedManifest
+  ? JSON.parse(
+      readFileSync(resolve(runtimeRoot, "runtime-asset-manifest.json"), "utf8")
+    ).assets.map((asset) => asset.id)
+  : writeNativeManifest();
 if (nativeRuntimeSource && nativeAssets.length === 0) {
   throw new Error(
     `KOED_NATIVE_RUNTIME_SOURCE_DIR did not contain recognized native assets: ${nativeRuntimeSource}`

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import process from "node:process";
+import { Buffer } from "node:buffer";
+import { URL } from "node:url";
 import {
   chmodSync,
   cpSync,
@@ -12,7 +14,13 @@ import {
   readFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import {
+  freezeCore,
+  verifyFrozenCore
+} from "../../../scripts/native-runtime/core-artifact.mjs";
+import { writeRuntimeAssetManifest } from "../../../scripts/native-runtime/manifest-lib.mjs";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { parse } from "yaml";
@@ -271,6 +279,189 @@ test("release guard validates native source and rejects a differing staged copy"
     damage();
     assert.throws(() => module.validateLinuxRelease(options), pattern);
   }
+});
+
+test("actual Linux staging preserves frozen manifest bytes and guard rejects tampering", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "koed-linux-staging-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, "source");
+  for (const path of [
+    "postgres/bin/postgres",
+    "postgres/bin/initdb",
+    "postgres/bin/pg_ctl",
+    "postgres/bin/psql",
+    "postgres/bin/pg_dump",
+    "postgres/bin/pg_restore",
+    "postgres/lib/vector.so",
+    "postgres/lib/pgcrypto.so",
+    "llama.cpp/llama-server",
+    "llama.cpp/cpu/llama-server"
+  ]) {
+    const target = join(source, path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, `fixture ${path}\n`, {
+      mode:
+        path.includes("/bin/") || path.endsWith("llama-server") ? 0o755 : 0o644
+    });
+  }
+  writeRuntimeAssetManifest({
+    runtimeRoot: source,
+    platform: "linux",
+    architecture: "x64",
+    versions: { postgres: "fixture-postgres", llamaCpp: "fixture-llama" }
+  });
+  const configuration = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../scripts/native-runtime/core.linux-x64.json",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
+  const pinned = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../scripts/native-runtime/sources.linux-x64.json",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
+  freezeCore({
+    runtimeRoot: source,
+    configuration,
+    recipe: {
+      schemaVersion: 1,
+      kind: "core",
+      configuration,
+      sources: Object.fromEntries(
+        ["postgres", "pgvector", "llamaCpp"].map((key) => [key, pinned[key]])
+      ),
+      toolchain: { cc: "fixture" },
+      logic: { build: "a".repeat(64) },
+      packaging: { epoch: 0 }
+    }
+  });
+  verifyFrozenCore(source);
+  const repo = join(root, "repo");
+  const scripts = join(repo, "apps/desktop/scripts");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(join(repo, "scripts"), { recursive: true });
+  symlinkSync(
+    resolve(desktop, "node_modules"),
+    join(repo, "apps/desktop/node_modules")
+  );
+  symlinkSync(
+    resolve(desktop, "../../node_modules"),
+    join(repo, "node_modules")
+  );
+  symlinkSync(resolve(desktop, "../../packages"), join(repo, "packages"));
+  symlinkSync(
+    resolve(desktop, "../../scripts/native-runtime"),
+    join(repo, "scripts/native-runtime")
+  );
+  symlinkSync(
+    resolve(desktop, "../../scripts/native-runtime-copy.mjs"),
+    join(repo, "scripts/native-runtime-copy.mjs")
+  );
+  for (const name of [
+    "prepare-koed-runtime.mjs",
+    "finalize-runtime-manifests.mjs",
+    "privacy-payload-inventory.mjs"
+  ]) {
+    cpSync(join(desktop, "scripts", name), join(scripts, name));
+  }
+  cpSync(
+    join(desktop, "package.json"),
+    join(repo, "apps/desktop/package.json")
+  );
+  const required = [
+    "api/dist/index.js",
+    "node_modules/@koed/db/dist/index.js",
+    "node_modules/@koed/db/drizzle/meta/_journal.json",
+    "worker/dist/index.js",
+    "embedding-service/dist/index.js",
+    "mcp-server/dist/cli.js",
+    "mcp-server/dist/capture-hook.js",
+    "mcp-server/dist/codex-memory-hook.js",
+    "mcp-server/dist/prompts/codex-global-agent-guidance.md",
+    "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
+    "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md"
+  ];
+  const base = join(root, "base");
+  for (const path of required) {
+    mkdirSync(dirname(join(base, path)), { recursive: true });
+    writeFileSync(join(base, path), "fixture");
+  }
+  writeFileSync(
+    join(repo, "scripts/component-assembly.mjs"),
+    `export const stageRuntimeComponents = async () => ({ baseRoot: ${JSON.stringify(base)}, privacyOnlyPackages: [] });\n`
+  );
+  const preload = `data:text/javascript,${encodeURIComponent("Object.defineProperty(process, 'platform', { value: 'linux' }); Object.defineProperty(process, 'arch', { value: 'x64' });")}`;
+  const result = spawnSync(
+    process.execPath,
+    ["--import", preload, join(scripts, "prepare-koed-runtime.mjs")],
+    {
+      encoding: "utf8",
+      env: { ...process.env, KOED_NATIVE_RUNTIME_SOURCE_DIR: source }
+    }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const staged = join(repo, "apps/desktop/.koed-runtime");
+  const manifest = "runtime-asset-manifest.json";
+  const bytes = readFileSync(join(source, manifest));
+  assert.deepEqual(readFileSync(join(staged, manifest)), bytes);
+  const bundle = JSON.parse(
+    readFileSync(join(staged, "desktop-bundle-manifest.json"), "utf8")
+  );
+  assert.equal(
+    bundle.files.find((file) => file.path === manifest).sha256,
+    createHash("sha256").update(bytes).digest("hex")
+  );
+  const { assertStagedNativeRuntimeMatches } =
+    await import("./validate-linux-release.mjs");
+  assert.doesNotThrow(() =>
+    assertStagedNativeRuntimeMatches({ source, staged })
+  );
+  for (const path of [manifest, "postgres/bin/postgres"]) {
+    const original = readFileSync(join(staged, path));
+    writeFileSync(
+      join(staged, path),
+      Buffer.concat([original, Buffer.from("tamper")])
+    );
+    assert.throws(
+      () => assertStagedNativeRuntimeMatches({ source, staged }),
+      /file differs/
+    );
+    writeFileSync(join(staged, path), original);
+  }
+  const macPreload = `data:text/javascript,${encodeURIComponent("Object.defineProperty(process, 'platform', { value: 'darwin' }); Object.defineProperty(process, 'arch', { value: 'x64' });")}`;
+  const mac = spawnSync(
+    process.execPath,
+    ["--import", macPreload, join(scripts, "prepare-koed-runtime.mjs")],
+    {
+      encoding: "utf8",
+      env: { ...process.env, KOED_NATIVE_RUNTIME_SOURCE_DIR: source }
+    }
+  );
+  assert.equal(mac.status, 0, mac.stderr);
+  const macManifest = JSON.parse(readFileSync(join(staged, manifest), "utf8"));
+  assert.equal(macManifest.assets[0].platform, "macos");
+  assert.equal(
+    macManifest.assets[0].version,
+    "postgresql-17-pgvector-packaged"
+  );
+  const noSource = spawnSync(
+    process.execPath,
+    ["--import", preload, join(scripts, "prepare-koed-runtime.mjs")],
+    {
+      encoding: "utf8",
+      env: { ...process.env, KOED_NATIVE_RUNTIME_SOURCE_DIR: "" }
+    }
+  );
+  assert.equal(noSource.status, 0, noSource.stderr);
+  assert.deepEqual(JSON.parse(noSource.stdout).nativeAssets, []);
 });
 
 test("release guard requires the frozen CPU core and refuses bundled CUDA", async (t) => {
