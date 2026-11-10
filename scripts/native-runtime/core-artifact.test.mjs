@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -189,6 +191,66 @@ test("inventory mismatch reports bounded paths and changed fields without file c
       return true;
     }
   );
+});
+
+test("truncation is reported only when more than ten differences exist", () => {
+  const { runtimeRoot } = fixture();
+  for (let i = 0; i < 10; i++)
+    writeFileSync(resolve(runtimeRoot, `postgres/extra-${i}`), "extra");
+  assert.throws(
+    () => verifyFrozenCore(runtimeRoot),
+    (error) => {
+      assert.doesNotMatch(error.message, /truncated/);
+      return true;
+    }
+  );
+  writeFileSync(resolve(runtimeRoot, "postgres/extra-10"), "extra");
+  assert.throws(() => verifyFrozenCore(runtimeRoot), /diagnostics truncated/);
+});
+
+test("CI verification blocks save when validation changes the core", () => {
+  for (const mutate of [false, true]) {
+    const { root, runtimeRoot } = fixture();
+    const temp = resolve(root, "runner");
+    mkdirSync(resolve(temp, "koed-native-core"), { recursive: true });
+    cpSync(runtimeRoot, resolve(temp, "koed-native-core/koed-runtime"), {
+      recursive: true,
+      verbatimSymlinks: true
+    });
+    const bin = resolve(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      resolve(bin, "pnpm"),
+      `#!/bin/sh\n${mutate ? 'printf changed > "$RUNNER_TEMP/koed-native-core/koed-runtime/postgres/bin/postgres"' : ":"}\n`,
+      { mode: 0o755 }
+    );
+    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+    const step = workflow
+      .split("- name: Verify Linux native CPU core\n")[1]
+      .split("\n      - name:")[0];
+    const script = step.split("        run: |\n")[1].replace(/^ {10}/gm, "");
+    const marker = resolve(root, "saved");
+    const result = spawnSync(
+      "bash",
+      ["-c", `${script}\nprintf saved > "$SAVE_MARKER"`],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RUNNER_TEMP: temp,
+          SAVE_MARKER: marker,
+          PATH: `${bin}:${process.env.PATH}`
+        }
+      }
+    );
+    assert.equal(result.status, mutate ? 1 : 0, result.stderr);
+    assert.equal(existsSync(marker), !mutate);
+    if (mutate)
+      assert.match(
+        result.stderr,
+        /Native core inventory changed after freezing/
+      );
+  }
 });
 
 test("inventory diagnostic remains bounded for escaped filenames", () => {

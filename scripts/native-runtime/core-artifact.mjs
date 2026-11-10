@@ -427,16 +427,15 @@ const inventoryMismatchDetails = (expected, actual) => {
       detail = `changed ${changed.join(", ") || "other fields"}`;
     }
     if (detail) {
+      if (differences.length === 10)
+        return ` ${differences.join("; ")}; diagnostics truncated`;
       const encodedPath = JSON.stringify(path);
       differences.push(
         `${encodedPath.length > 200 ? `${encodedPath.slice(0, 200)}...` : encodedPath}: ${detail}`
       );
     }
-    if (differences.length === 10) break;
   }
-  return differences.length
-    ? ` ${differences.join("; ")}${differences.length === 10 ? "; diagnostics truncated" : ""}`
-    : "";
+  return differences.length ? ` ${differences.join("; ")}` : "";
 };
 
 export const verifyFrozenCore = (runtimeRoot) => {
