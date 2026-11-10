@@ -159,9 +159,17 @@ export interface DesktopSetupSnapshot {
   reviewProcessing?: true;
 }
 
+export interface DesktopSetupRunOptions {
+  // The User continued with Operator-managed processing instead of a choice.
+  acknowledgeOperatorProcessing?: true;
+}
+
 export interface DesktopSetupApi {
   inspect: () => Promise<DesktopSetupSnapshot>;
-  run: (acceleration?: AccelerationChoice) => Promise<DesktopSetupSnapshot>;
+  run: (
+    acceleration?: AccelerationChoice,
+    options?: DesktopSetupRunOptions
+  ) => Promise<DesktopSetupSnapshot>;
   subscribe: (listener: (snapshot: DesktopSetupSnapshot) => void) => () => void;
 }
 

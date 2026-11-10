@@ -89,6 +89,43 @@ describe("desktop setup workflow", () => {
     });
     expect(withCuda.requiresProcessingChoice()).toBe(false);
   });
+  it("keeps the processing review after a failed CUDA run until a later run succeeds", async () => {
+    const saves: Array<Record<string, unknown>> = [];
+    const failing = createDesktopSetupWorkflow({
+      receipt: { previous: null, save: (value) => saves.push(value) },
+      stageIds: () => [...desktopSetupStageIds.slice(0, 3), "acceleration"],
+      inspectStage: async () => ({ complete: false, message: "Pending" }),
+      runStage: async (stage) => ({
+        ok: stage !== "acceleration",
+        message: stage === "acceleration" ? "CUDA failed" : "Complete"
+      })
+    });
+    expect((await failing.run(() => {})).state).toBe("failed");
+    expect(failing.requiresProcessingChoice()).toBe(false);
+    expect(saves.at(-1)).toMatchObject({
+      state: "failed",
+      reviewProcessing: true
+    });
+
+    const restarted = createDesktopSetupWorkflow({
+      receipt: {
+        previous: saves.at(-1) as never,
+        save: (value) => saves.push(value)
+      },
+      inspectStage: async () => ({ complete: true, message: "Current state" }),
+      runStage: async () => ({ ok: true, message: "Complete" })
+    });
+    expect(restarted.requiresProcessingChoice()).toBe(true);
+    expect(await restarted.inspect()).toMatchObject({
+      state: "failed",
+      reviewProcessing: true
+    });
+    expect((await restarted.run(() => {})).state).toBe("complete");
+    expect(saves.at(-1)).toEqual(
+      expect.not.objectContaining({ reviewProcessing: true })
+    );
+    expect(restarted.requiresProcessingChoice()).toBe(false);
+  });
   it("places opted-in acceleration after the model and before services, retaining failure for reopened windows", async () => {
     const completed = new Set<DesktopSetupStageId>();
     const ids: DesktopSetupStageId[] = [

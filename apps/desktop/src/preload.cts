@@ -183,8 +183,10 @@ contextBridge.exposeInMainWorld("koedDesktop", {
   }),
   setup: Object.freeze({
     inspect: () => ipcRenderer.invoke(setupCommandChannel, "inspect"),
-    run: (choice?: AccelerationChoice) =>
-      ipcRenderer.invoke(setupCommandChannel, "run", choice),
+    run: (
+      choice?: AccelerationChoice,
+      options?: { acknowledgeOperatorProcessing?: true }
+    ) => ipcRenderer.invoke(setupCommandChannel, "run", choice, options),
     subscribe: (listener: (snapshot: unknown) => void) => {
       if (typeof listener !== "function") {
         throw new TypeError("Setup progress listener is required.");

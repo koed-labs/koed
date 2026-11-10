@@ -294,6 +294,41 @@ describe("Desktop acceleration setup integration", () => {
     expect(result).toMatchObject({ state: "complete" });
     expect(control.calls).toContain("cuda");
   });
+  it("lets the User acknowledge Operator-managed processing after an interrupted CUDA setup", async () => {
+    mkdirSync(resolve(root, "cache"), { recursive: true });
+    writeFileSync(
+      resolve(root, "cache", "desktop-setup-operation.json"),
+      JSON.stringify({
+        id: "d6abf730-0f02-4adc-a7e6-4ddf98f30905",
+        sequence: 2,
+        state: "failed",
+        reviewProcessing: true
+      })
+    );
+    await manager.stop();
+    manager = createManager();
+    await expect(
+      manager.handlers.setup_run!(
+        { operatorConsented: true, acknowledgeOperatorProcessing: true },
+        context().value
+      )
+    ).rejects.toThrow("Review your processing choice");
+    control.snapshot = {
+      ...control.snapshot!,
+      source: "environment",
+      readOnlyReason: "The Operator environment controls local acceleration.",
+      runtimeReadOnlyReason: null
+    };
+    await expect(
+      manager.handlers.setup_run!({ operatorConsented: true }, context().value)
+    ).rejects.toThrow("Review your processing choice");
+    const result = await manager.handlers.setup_run!(
+      { operatorConsented: true, acknowledgeOperatorProcessing: true },
+      context().value
+    );
+    expect(result).toMatchObject({ state: "complete" });
+    expect(control.calls).toEqual(["core", "model", "start"]);
+  });
   it("retains core and model work after CUDA failure and resumes through explicit CPU recovery", async () => {
     control.failCuda = true;
     const c = context();

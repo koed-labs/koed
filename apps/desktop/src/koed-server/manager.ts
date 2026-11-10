@@ -7020,19 +7020,32 @@ export const createKoedServerManager = ({
             : accelerationChoiceSchema.parse(args.acceleration);
         if (choice && setupWorkflow.isRunning())
           throw new Error("Setup is already running.");
-        // A CUDA choice is never persisted. After an interrupted CUDA setup,
-        // continuing without a fresh choice would silently skip CUDA.
-        if (
+        // A CUDA choice is never persisted. After an unsuccessful CUDA setup,
+        // continuing without a fresh choice would silently skip CUDA. When the
+        // Operator now manages processing, the User acknowledges that instead.
+        const needsProcessingReview =
           !choice &&
           !setupWorkflow.isRunning() &&
-          setupWorkflow.requiresProcessingChoice()
-        )
-          throw new Error(
-            "Setup was interrupted before your processing choice finished. Review your processing choice before continuing."
-          );
+          setupWorkflow.requiresProcessingChoice();
+        const acknowledgedOperatorProcessing =
+          args.acknowledgeOperatorProcessing === true;
+        const reviewMessage =
+          "Setup did not finish your processing choice. Review your processing choice before continuing.";
+        if (needsProcessingReview && !acknowledgedOperatorProcessing)
+          throw new Error(reviewMessage);
         setupPreparing = true;
         try {
           setupAbort = new AbortController();
+          if (needsProcessingReview) {
+            const current = (await acceleration.inspect(true)).snapshot;
+            if (
+              !current?.readOnlyReason ||
+              (current.source !== "environment" &&
+                current.source !== "external")
+            )
+              throw new Error(reviewMessage);
+            setupCudaIntent = null;
+          }
           if (choice?.installCuda) {
             const fresh = await acceleration.inspect(true);
             const snapshot = fresh.snapshot;

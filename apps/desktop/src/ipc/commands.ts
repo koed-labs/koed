@@ -25,6 +25,7 @@ import {
   personalDesktopResultSchema
 } from "@koed/shared";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
+import { z } from "zod";
 import type {
   DesktopCommandContext,
   DesktopCommandHandler,
@@ -79,6 +80,10 @@ import {
   type ManagedProjectRequest,
   type ManagedProjectResult
 } from "./managed-project-protocol.js";
+
+const setupRunOptionsSchema = z
+  .object({ acknowledgeOperatorProcessing: z.literal(true).optional() })
+  .strict();
 
 export const invokeChannel = "koed:invoke";
 
@@ -233,7 +238,7 @@ export const registerDesktopCommandHandlers = (
 
   ipcMain.handle(
     setupCommandChannel,
-    async (event, operation: unknown, choice: unknown) => {
+    async (event, operation: unknown, choice: unknown, runOptions: unknown) => {
       if (!trustedSender(event, options.allowedRendererOrigins)) {
         throw new Error("Untrusted Desktop IPC sender.");
       }
@@ -248,11 +253,19 @@ export const registerDesktopCommandHandlers = (
           : accelerationChoiceSchema.parse(choice);
       if (operation === "inspect" && acceleration)
         throw new Error("Inspection cannot change processing.");
+      const acknowledgeOperatorProcessing =
+        runOptions === undefined
+          ? false
+          : setupRunOptionsSchema.parse(runOptions)
+              .acknowledgeOperatorProcessing === true;
       return await handler(
         operation === "run"
           ? {
               operatorConsented: true,
-              ...(acceleration ? { acceleration } : {})
+              ...(acceleration ? { acceleration } : {}),
+              ...(acknowledgeOperatorProcessing
+                ? { acknowledgeOperatorProcessing: true }
+                : {})
             }
           : undefined,
         contextForSender(event.sender)

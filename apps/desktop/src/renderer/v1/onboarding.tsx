@@ -258,7 +258,12 @@ export function V1Onboarding({
               setProcessing(choice);
               setSetupStarted(true);
               setScreen("setup");
-              void setup.run(choice);
+              // Without a choice, Continue keeps Operator-managed processing.
+              void (choice
+                ? setup.run(choice)
+                : setup.run(undefined, {
+                    acknowledgeOperatorProcessing: true
+                  }));
             }}
           />
         ) : showingClients ? (

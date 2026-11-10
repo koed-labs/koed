@@ -371,6 +371,19 @@ describe("desktop IPC command registry", () => {
     await expect(invoke(event, "inspect", choice)).rejects.toThrow(
       "Inspection cannot change"
     );
+    await invoke(event, "run", undefined, {
+      acknowledgeOperatorProcessing: true
+    });
+    expect(setupRun).toHaveBeenLastCalledWith(
+      { operatorConsented: true, acknowledgeOperatorProcessing: true },
+      expect.any(Object)
+    );
+    await expect(
+      invoke(event, "run", undefined, { acknowledgeOperatorProcessing: false })
+    ).rejects.toThrow();
+    await expect(
+      invoke(event, "run", undefined, { overrideOperator: true })
+    ).rejects.toThrow();
     await expect(
       invoke(event, "run", { ...choice, preference: "cuda" })
     ).rejects.toThrow();

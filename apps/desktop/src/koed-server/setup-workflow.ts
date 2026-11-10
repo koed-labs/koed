@@ -76,8 +76,11 @@ export const createDesktopSetupWorkflow = ({
   let activeRun: Promise<DesktopSetupSnapshot> | null = null;
   let activeSnapshot: DesktopSetupSnapshot | null = null;
   let interrupted = receipt?.previous?.state === "running";
+  // A CUDA choice lives only in memory. Any unsuccessful run that carried one,
+  // interrupted or failed, needs a replacement choice after a restart.
   let reviewProcessing =
-    interrupted && receipt?.previous?.reviewProcessing === true;
+    receipt?.previous?.reviewProcessing === true &&
+    receipt.previous.state !== "complete";
 
   const inspect = async (forRun = false): Promise<DesktopSetupSnapshot> => {
     if (activeRun && activeSnapshot) return cloneSnapshot(activeSnapshot);
@@ -130,13 +133,15 @@ export const createDesktopSetupWorkflow = ({
       error:
         interrupted && !forRun
           ? "Setup was interrupted. Current prerequisites have been checked. Review your processing choice before continuing; no installation has resumed."
-          : null,
+          : reviewProcessing && !forRun
+            ? "Setup did not finish your processing choice. Review it before continuing; no installation has resumed."
+            : null,
       ...(reviewProcessing && !forRun ? { reviewProcessing: true } : {}),
       runId,
       sequence: 1,
       stages,
       state:
-        interrupted && !forRun
+        (interrupted || reviewProcessing) && !forRun
           ? "failed"
           : stages.every(({ state }) => state === "complete")
             ? "complete"
@@ -149,13 +154,14 @@ export const createDesktopSetupWorkflow = ({
     signal?: AbortSignal
   ): Promise<DesktopSetupSnapshot> => {
     const initial = await inspect(true);
+    const carriesProcessingChoice = initial.stages.some(
+      ({ id }) => id === "acceleration"
+    );
     receipt?.save({
       id: initial.runId,
       sequence: initial.sequence,
       state: "running",
-      ...(initial.stages.some(({ id }) => id === "acceleration")
-        ? { reviewProcessing: true }
-        : {})
+      ...(carriesProcessingChoice ? { reviewProcessing: true } : {})
     });
     interrupted = false;
     reviewProcessing = false;
@@ -170,10 +176,14 @@ export const createDesktopSetupWorkflow = ({
       activeSnapshot = cloneSnapshot(snapshot);
       if (snapshot.state !== "running") {
         try {
+          const complete = snapshot.state === "complete";
           receipt?.save({
             id: snapshot.runId,
             sequence,
-            state: snapshot.state === "complete" ? "complete" : "failed"
+            state: complete ? "complete" : "failed",
+            ...(!complete && carriesProcessingChoice
+              ? { reviewProcessing: true }
+              : {})
           });
         } catch {
           /* Retain the initial interrupted-work receipt. */

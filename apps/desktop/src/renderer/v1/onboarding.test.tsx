@@ -8,7 +8,10 @@ import { V1Onboarding } from "./onboarding.js";
 import { DEFAULT_AGENT_LOOK } from "./visual.js";
 import { memoryModelFixture } from "./onboarding/memory-model.fixture.js";
 import { stageIds } from "./onboarding/model.js";
-import { accelerationApiFixture } from "./acceleration.fixture.js";
+import {
+  accelerationApiFixture,
+  accelerationSnapshot
+} from "./acceleration.fixture.js";
 
 vi.mock("./onboarding/LoadingKin.js", () => ({
   LoadingKin: (props: { sad: boolean }) => (
@@ -425,6 +428,22 @@ describe("desktop onboarding", () => {
     await click("Review processing choice");
     expect(setup.run).not.toHaveBeenCalled();
     expect(text()).toContain("Choose how Koed processes memories");
+  });
+  it("acknowledges Operator-managed processing when continuing a reviewed setup", async () => {
+    const interrupted = setupSnapshot("failed");
+    interrupted.error = "Setup was interrupted.";
+    interrupted.reviewProcessing = true;
+    const { setup, click } = await render({ snapshot: interrupted });
+    const managed = accelerationSnapshot();
+    managed.source = "environment";
+    managed.readOnlyReason =
+      "The Operator environment controls local acceleration.";
+    window.koedDesktop!.acceleration = accelerationApiFixture(managed);
+    await click("Review processing choice");
+    await click("Continue");
+    expect(setup.run).toHaveBeenCalledWith(undefined, {
+      acknowledgeOperatorProcessing: true
+    });
   });
   it("cleans subscriptions on unmount including Strict Mode", async () => {
     const { listeners } = await render({ strict: true });
