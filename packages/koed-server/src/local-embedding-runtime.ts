@@ -183,33 +183,38 @@ export const resolveLocalEmbeddingRuntimePaths = (
         path: resolve(llamaOverride),
         artifactSource: "explicit-override" as const
       }
-    : chooseRuntimePath(
-        [
-          {
-            path: koedRuntimeLlamaServer,
-            artifactSource: "koed-home-runtime" as const
-          },
-          ...(packagedLlamaServer
-            ? [
-                {
-                  path: packagedLlamaServer,
-                  artifactSource: "packaged-resource" as const
-                }
-              ]
-            : []),
-          ...(canUseSourceCheckoutFallback(environment)
-            ? [
-                {
-                  path: vendorLlamaServer,
-                  artifactSource: "source-checkout" as const
-                }
-              ]
-            : [])
-        ],
-        koedRuntimeLlamaServer,
-        "koed-home-runtime",
-        exists
-      );
+    : paths.nativeSelectionRoot
+      ? {
+          path: koedRuntimeLlamaServer,
+          artifactSource: "koed-home-runtime" as const
+        }
+      : chooseRuntimePath(
+          [
+            {
+              path: koedRuntimeLlamaServer,
+              artifactSource: "koed-home-runtime" as const
+            },
+            ...(packagedLlamaServer
+              ? [
+                  {
+                    path: packagedLlamaServer,
+                    artifactSource: "packaged-resource" as const
+                  }
+                ]
+              : []),
+            ...(canUseSourceCheckoutFallback(environment)
+              ? [
+                  {
+                    path: vendorLlamaServer,
+                    artifactSource: "source-checkout" as const
+                  }
+                ]
+              : [])
+          ],
+          koedRuntimeLlamaServer,
+          "koed-home-runtime",
+          exists
+        );
   const llamaServerBin = resolve(llama.path);
   return {
     appDir,

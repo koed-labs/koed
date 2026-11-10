@@ -1850,37 +1850,44 @@ describe("start supervisor", () => {
     expect(spawned.at(-1)?.env?.API_PORT).toBe(ports.api);
   });
 
-  it("does not allocate ports when a live supervisor owns KOED_HOME", async () => {
-    const root = tempDir();
-    const paths = resolveKoedServerPaths({
-      KOED_HOME: root,
-      KOED_REPO_ROOT: root
-    });
-    const lock = acquireKoedServerSupervisorLock(paths);
-    expect(lock.acquired).toBe(true);
-    writeActiveRuntimeOwner(paths, lock, resolveKoedRuntimeOwner());
-    const commands: string[] = [];
-
-    await startKoedServer({
-      ...cleanShutdownAfterReady(),
-      environment: {
+  it.each(["source", "packaged"])(
+    "does not allocate ports when this installation's %s supervisor is already live",
+    async (execution) => {
+      const root = tempDir();
+      const paths = resolveKoedServerPaths({
         KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        KOED_AUTO_PORTS: "1",
-        KOED_DEPENDENCY_MODE: "bundled-local"
-      },
-      spawnSync: (command) => {
-        commands.push(command);
-        return spawnResult();
-      }
-    });
+        KOED_REPO_ROOT: root
+      });
+      const lock = acquireKoedServerSupervisorLock(
+        paths,
+        execution === "source" ? { sourceOwner: resolveKoedRuntimeOwner() } : {}
+      );
+      expect(lock.acquired).toBe(true);
+      if (execution === "packaged")
+        writeActiveRuntimeOwner(paths, lock, resolveKoedRuntimeOwner());
+      const commands: string[] = [];
 
-    expect(commands).toEqual([]);
-    expect(() =>
-      readFileSync(resolve(root, "config/local-ports.json"), "utf8")
-    ).toThrow();
-    expect(releaseKoedServerSupervisorLock(lock)).toBe(true);
-  });
+      await startKoedServer({
+        ...cleanShutdownAfterReady(),
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_AUTO_PORTS: "1",
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        spawnSync: (command) => {
+          commands.push(command);
+          return spawnResult();
+        }
+      });
+
+      expect(commands).toEqual([]);
+      expect(() =>
+        readFileSync(resolve(root, "config/local-ports.json"), "utf8")
+      ).toThrow();
+      expect(releaseKoedServerSupervisorLock(lock)).toBe(true);
+    }
+  );
 
   it("rejects a stopped generation owned by another control plane", async () => {
     const root = realpathSync(tempDir());

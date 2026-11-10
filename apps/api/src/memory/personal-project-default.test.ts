@@ -1097,5 +1097,7 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
       JSON.stringify(report, null, 2)
     );
     console.log("PV-07 existing-data classification", JSON.stringify(report));
-  }, 30_000);
+    // Seeds and reconciles 600+ Conversations against Postgres; shared CI
+    // runners take ~20-30s, so leave headroom above that.
+  }, 90_000);
 });

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "packageUrl": "https://github.com/koed-labs/koed/releases/download/v0.11.1/koed-labs-server.tgz",
+    "packageSha256": "20d3db00077da482620e65d1d1c25a6622d6bc1741f3b2150921f63856f5e83a"
+  },
+  "catalog": {
+    "schemaVersion": 2,
+    "productVersion": "0.11.1",
+    "entries": [
+      {
+        "component": "base",
+        "manifestSha256": "0b52721f86a781aed5d220ff15155dc1ba66cee6e9a1d0a08f0737d7dd4a341b",
+        "target": {
+          "platform": "linux",
+          "architecture": "x64",
+          "libc": {
+            "family": "glibc",
+            "minimumVersion": "2.35"
+          }
+        }
+      },
+      {
+        "component": "base",
+        "manifestSha256": "16227b97790718bbc133746a6d18dc61e50d98eed3ff23ceaf4fd938f470e208",
+        "target": {
+          "platform": "macos",
+          "architecture": "arm64"
+        }
+      },
+      {
+        "component": "privacy",
+        "variant": "cpu",
+        "manifestSha256": "f2f0b951faefba2e8e6d756d27e7c352bad626011e07b617d2ed0bf5e3a4eea9",
+        "target": {
+          "platform": "linux",
+          "architecture": "x64",
+          "libc": {
+            "family": "glibc",
+            "minimumVersion": "2.35"
+          }
+        }
+      },
+      {
+        "component": "privacy",
+        "variant": "cuda",
+        "manifestSha256": "61178106c0b86eb4afb90b4cb27ceffaee25240224ca6820e3acb94394e6803a",
+        "target": {
+          "platform": "linux",
+          "architecture": "x64",
+          "libc": {
+            "family": "glibc",
+            "minimumVersion": "2.35"
+          }
+        }
+      },
+      {
+        "component": "privacy",
+        "manifestSha256": "2fe30669f016e2934357f1a37f79fd2e03a91fbfe8a4b02769531d5a6c8cbc49",
+        "target": {
+          "platform": "macos",
+          "architecture": "arm64"
+        }
+      }
+    ]
+  }
+}

@@ -14,7 +14,7 @@
     "build:package": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json && pnpm build:preload && vite build",
     "build:preload": "esbuild src/preload.cts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs && node scripts/verify-preload-bundle.mjs",
     "dev": "vite --host 127.0.0.1",
-    "prestart": "pnpm --filter @koed-labs/server build && pnpm -w source-runtime:prepare",
+    "prestart": "pnpm -w source-runtime:prepare",
     "package": "pnpm package:mac",
     "package:workspace:build": "pnpm -w source-runtime:prepare && pnpm --filter @koed/ui build && node ../../scripts/embed-component-manifest-catalog.mjs && pnpm build:package",
     "package:runtime": "node scripts/prepare-koed-runtime.mjs",
@@ -34,7 +34,7 @@
     "test:browser": "pnpm build && pnpm build:validation && electron scripts/validate-project-workspace.mjs && electron scripts/validate-projects-default.mjs && electron scripts/validate-project-transfer.mjs && electron scripts/validate-conversation-cards.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs",
     "build:validation": "vite build --mode validation",
     "pixelkin:sync": "node scripts/sync-pixelkin.mjs",
-    "test:browser:v1": "vite build --mode v1-validation && electron scripts/validate-v1-ui.mjs && electron scripts/validate-onboarding.mjs"
+    "test:browser:v1": "vite build --mode v1-validation && electron scripts/validate-v1-ui.mjs && electron scripts/validate-onboarding.mjs && electron scripts/validate-acceleration-lifecycle.mjs"
   },
   "dependencies": {
     "@koed-labs/server": "workspace:*",

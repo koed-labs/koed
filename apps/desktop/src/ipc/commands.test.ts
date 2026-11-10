@@ -12,6 +12,7 @@ import type {
 } from "../koed-server/manager.js";
 import { describe, expect, it, vi } from "vitest";
 import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
+import { accelerationChannel } from "./acceleration-protocol.js";
 import {
   presentationPreferencesGetChannel,
   presentationPreferencesSetChannel,
@@ -137,6 +138,11 @@ describe("desktop IPC command registry", () => {
     }));
     const setPresentationPreferences = vi.fn((value) => value);
     let hardwareAccelerationEnabled = true;
+    const acceleration = {
+      inspect: vi.fn(async () => ({ snapshot: null, operation: null })),
+      apply: vi.fn(async () => ({ snapshot: null, operation: null })),
+      cancel: vi.fn(async () => ({ snapshot: null, operation: null }))
+    };
     const getHardwareAcceleration = vi.fn(async () => ({
       enabled: hardwareAccelerationEnabled,
       managedByEnvironment: false
@@ -234,6 +240,7 @@ describe("desktop IPC command registry", () => {
         getPresentationPreferences,
         setPresentationPreferences,
         getHardwareAcceleration,
+        acceleration,
         setHardwareAcceleration,
         getLaunchAtStartup,
         setLaunchAtStartup,
@@ -253,6 +260,7 @@ describe("desktop IPC command registry", () => {
       getThemePreference,
       setThemePreference,
       getHardwareAcceleration,
+      acceleration,
       setHardwareAcceleration,
       getLaunchAtStartup,
       setLaunchAtStartup,
@@ -350,6 +358,38 @@ describe("desktop IPC command registry", () => {
     await expect(invoke(renderer(), "invalid")).rejects.toThrow(
       "Unsupported Desktop setup operation"
     );
+    const choice = {
+      preference: "cpu",
+      installCuda: false,
+      expectedRevision: "a".repeat(64)
+    };
+    await invoke(event, "run", choice);
+    expect(setupRun).toHaveBeenLastCalledWith(
+      { operatorConsented: true, acceleration: choice },
+      expect.any(Object)
+    );
+    await expect(invoke(event, "inspect", choice)).rejects.toThrow(
+      "Inspection cannot change"
+    );
+    await invoke(event, "run", undefined, {
+      acknowledgeOperatorProcessing: true
+    });
+    expect(setupRun).toHaveBeenLastCalledWith(
+      { operatorConsented: true, acknowledgeOperatorProcessing: true },
+      expect.any(Object)
+    );
+    await expect(
+      invoke(event, "run", undefined, { acknowledgeOperatorProcessing: false })
+    ).rejects.toThrow();
+    await expect(
+      invoke(event, "run", undefined, { overrideOperator: true })
+    ).rejects.toThrow();
+    await expect(
+      invoke(event, "run", { ...choice, preference: "cuda" })
+    ).rejects.toThrow();
+    await expect(
+      invoke(event, "run", { ...choice, capability: {} })
+    ).rejects.toThrow();
   });
 
   it("allows only known legacy commands from the trusted main frame", async () => {
@@ -611,6 +651,42 @@ describe("desktop IPC command registry", () => {
     await expect(
       set(renderer("https://attacker.example/"), "light")
     ).rejects.toThrow("Untrusted Desktop IPC sender");
+  });
+
+  it("validates processing choices and rejects untrusted acceleration IPC", async () => {
+    const { registered, acceleration } = register();
+    const invoke = registered.get(accelerationChannel)!;
+    const choice = {
+      preference: "cpu",
+      installCuda: false,
+      expectedRevision: "a".repeat(64)
+    };
+    await expect(
+      invoke(renderer("https://foreign.invalid"), {
+        operation: "apply",
+        choice
+      })
+    ).rejects.toThrow("Untrusted");
+    const subframe = renderer();
+    subframe.senderFrame = { url: "koed://app/" };
+    await expect(
+      invoke(subframe, { operation: "apply", choice })
+    ).rejects.toThrow("Untrusted");
+    await expect(
+      invoke(renderer(), {
+        operation: "apply",
+        choice: { ...choice, preference: "cuda" }
+      })
+    ).rejects.toThrow();
+    await expect(
+      invoke(renderer(), {
+        operation: "apply",
+        choice: { ...choice, capability: {} }
+      })
+    ).rejects.toThrow();
+    expect(acceleration.apply).not.toHaveBeenCalled();
+    await invoke(renderer(), { operation: "apply", choice });
+    expect(acceleration.apply).toHaveBeenCalledWith(choice);
   });
 
   it("gets and sets hardware acceleration only for trusted renderers", async () => {

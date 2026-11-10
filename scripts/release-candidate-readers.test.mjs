@@ -94,15 +94,24 @@ test("reader surface permits GET only, without generic execution or writes", asy
       return new Response(JSON.stringify({ id: 1 }));
     }
   });
+  await readers.listReleases("org/repo", 2);
   await readers.getWorkflowRun("org/repo", 1);
   await readers.getArtifact("org/repo", 2);
   await readers.getRelease("org/repo", 3);
   await readers.getAsset("org/repo", 4);
   await readers.getRegistryVersion("@koed-labs/server", "1.2.3");
-  assert.equal(requests.length, 5);
+  assert.equal(requests.length, 6);
+  assert.equal(
+    requests[0].url,
+    "https://api.github.com/repos/org/repo/releases?per_page=100&page=2"
+  );
   for (const request of requests) assert.equal(request.options.method, "GET");
   assert.equal(requests.at(-1).options.headers, undefined);
   assert.throws(() => readers.getRelease("org/../evil", 1), /repository/);
+  assert.throws(
+    () => readers.listReleases("org/repo", "1&draft=true"),
+    /identity/
+  );
   assert.throws(
     () => readers.getAsset("org/repo", "1?method=DELETE"),
     /identity/

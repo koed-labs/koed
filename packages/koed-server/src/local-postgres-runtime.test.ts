@@ -68,6 +68,18 @@ afterEach(() => {
 });
 
 describe("local Postgres runtime", () => {
+  it("never substitutes bundled Postgres after a native selection is admitted", () => {
+    const root = tempDir();
+    const selected = resolve(root, "runtime/native/selections/verified");
+    const runtime = resolveLocalPostgresRuntimePaths(
+      { ...paths(root), nativeSelectionRoot: selected },
+      { KOED_PACKAGED_DESKTOP: "1", KOED_PACKAGED_RESOURCES_PATH: root },
+      (candidate) => !String(candidate).startsWith(selected)
+    );
+    expect(runtime.pgCtlBin).toBe(resolve(selected, "postgres/bin/pg_ctl"));
+    expect(runtime.initdbBin).toBe(resolve(selected, "postgres/bin/initdb"));
+    expect(runtime.artifactSource).toBe("koed-home-runtime");
+  });
   it("resolves bundled paths and local DATABASE_URL", () => {
     const root = tempDir();
     const runtime = resolveLocalPostgresRuntimePaths(paths(root), {

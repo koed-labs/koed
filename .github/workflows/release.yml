@@ -67,6 +67,9 @@ jobs:
           commit: "ci: version koed"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # release:version refreshes only published native assets. The resulting
+          # checked-in pins are reviewed with the version bump, before promotion.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Pull requests created or updated with GITHUB_TOKEN only produce
       # approval-required pull_request runs (action_required, no jobs), so CI

@@ -26,6 +26,70 @@ repeat entries.
   transport format. Compatibility versions change only when that contract
   changes; they do not follow product releases.
 
+## Source runtime pin updates
+
+A pin fixes a download URL and its checksum. A checksum is a value calculated
+from file contents. The source runtime catalog lists approved CPU/CUDA pins.
+
+`pnpm release:version` updates the product version and runs
+`pnpm source-runtime:refresh`. Changesets includes changes to
+`config/source-runtime-catalogs.json` in the Version Koed PR. Before merging the
+PR, review the generated file. Startup reads it without looking for newer
+catalogs.
+
+Refresh selects the newest published stable release at or below the checkout
+version. Its catalog must meet the minimum core version. Refresh keeps the
+original runtime versions and enforces supported formats, interfaces, platforms,
+and matching llama.cpp revisions. Drafts and prereleases do not qualify.
+
+A product version change alone does not require a runtime rebuild. A Version
+Koed PR for v0.11.2 can keep compatible v0.11.1 downloads. After the release
+workflow publishes v0.11.2, a later PR can select its downloads.
+
+A manifest lists the files in an archive. For a new release, refresh downloads
+the catalog, both archives, and both manifests from the official repository
+through the GitHub API. It makes sure that their sizes and SHA-256 checksums
+match the GitHub records and catalog. It also makes sure that manifest
+identities and compatibility details match the catalog. Only then does it
+replace the committed file.
+
+Refresh keeps unchanged pins. It rejects older releases or changed catalog
+bytes under an already reviewed release tag. Missing compatible releases,
+unsupported interfaces, or checksum failures stop the update. If a raised
+minimum excludes all published runtimes, publish a compatible runtime or revise
+the release plan. Refresh never lowers the minimum.
+
+After `pnpm install`, run one of these commands from the repository root:
+
+```bash
+pnpm source-runtime:refresh
+# Or require a particular published stable release:
+pnpm source-runtime:refresh -- --release v0.11.1
+```
+
+Review the generated changes. Commit the file. `GH_TOKEN` can authenticate
+GitHub reads. The release workflow supplies its existing token. Refresh does
+not publish or edit releases. Source preparation and installation still require
+approved URLs and matching manifest, archive, and extracted-file checksums.
+
+The existing CI Build job reuses compiled output to install the CPU runtime into
+an empty `KOED_HOME` on Linux x64. It runs short tests of the installed programs.
+It does not test Desktop onboarding or run the embedding model. Hosted CI
+runners have no GPU.
+
+Build recipes specify how to build the runtime. If a build recipe or archive
+checksum changes, test CPU/CUDA setup on a real Linux/WSL NVIDIA host before
+merging. Use the
+[source setup procedure](running-koed.md#test-source-setup-with-a-fresh-home)
+to test GPU model execution and CPU fallback. Record the recipe IDs and archive
+checksums with the results.
+
+`config/source-component-catalog.json` supplies reviewed Base/Privacy downloads.
+Refresh leaves it unchanged. These optional downloads require an exact
+product-version match. Source services run from the checkout even if this
+catalog is absent or older. Official release builds use their own complete
+native and component catalogs.
+
 ## Release checks
 
 The release check requires the product, root, `@koed-labs/server`, and Desktop

@@ -3,6 +3,10 @@ import { realpathSync } from "node:fs";
 import { startKoedServer } from "./start.js";
 import { createDesktopStatusRpcHandler } from "./desktop-status-rpc.js";
 import {
+  createAccelerationManagement,
+  createDesktopAccelerationRpcHandler
+} from "./acceleration-management.js";
+import {
   createDesktopPrivacyRpcHandler,
   createDesktopComponentManagerBridge
 } from "./desktop-component-manager.js";
@@ -22,7 +26,11 @@ interface InitMessage {
   nonce: string;
   managerPid: number;
   resourcesPath: string;
-  mode?: "runtime" | "privacy-activation" | "privacy-management";
+  mode?:
+    | "runtime"
+    | "privacy-activation"
+    | "privacy-management"
+    | "acceleration-management";
 }
 
 const isInitMessage = (value: unknown): value is InitMessage => {
@@ -34,6 +42,7 @@ const isInitMessage = (value: unknown): value is InitMessage => {
     (item.mode === undefined ||
       item.mode === "runtime" ||
       item.mode === "privacy-activation" ||
+      item.mode === "acceleration-management" ||
       item.mode === "privacy-management") &&
     typeof item.nonce === "string" &&
     /^[a-f0-9]{64}$/.test(item.nonce) &&
@@ -155,6 +164,35 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
     environment: createDesktopSupervisorEnvironment(process.env),
     send: sendDesktopSupervisorStatus
   });
+  let accelerationEnvironment: NodeJS.ProcessEnv | undefined;
+  const handleAccelerationRpc = createDesktopAccelerationRpcHandler({
+    manager: createAccelerationManagement({
+      paths,
+      capability,
+      environment: () => supervisorEnvironment,
+      serviceEnvironment: () => accelerationEnvironment
+    }),
+    nonce: handshake.nonce,
+    send: sendDesktopSupervisorStatus
+  });
+  if (handshake.mode === "acceleration-management") {
+    // Read-only inspection can describe a foreign owner. Each mutation separately
+    // acquires stopped-runtime authority using this verified bundle capability.
+    process.on("message", handleAccelerationRpc);
+    process.once("disconnect", () => {
+      // Abort downloads/probes and let the installer release locks and staging
+      // before exiting. A completed activation is reconciled by the next main.
+      void handleAccelerationRpc.close().finally(() => process.exit(0));
+    });
+    process.send?.({
+      type: "koed.desktop.supervisor.ready",
+      nonce: handshake.nonce,
+      childPid: process.pid,
+      bundleDigest: capability.bundleDigest,
+      mode: handshake.mode
+    });
+    return;
+  }
   const handlePrivacyRpc = createDesktopPrivacyRpcHandler({
     manager: privacyManager,
     nonce: handshake.nonce,
@@ -184,7 +222,10 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
       }
     }
     process.on("message", (message: unknown) => {
-      if (handshake.mode === "privacy-management" && handleStatusRpc(message))
+      if (
+        handshake.mode === "privacy-management" &&
+        (handleStatusRpc(message) || handleAccelerationRpc(message))
+      )
         return;
       if (
         handshake.mode === "privacy-activation" &&
@@ -225,7 +266,12 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
     return;
   }
   process.on("message", (message: unknown) => {
-    if (handleStatusRpc(message) || handlePrivacyRpc(message)) return;
+    if (
+      handleStatusRpc(message) ||
+      handlePrivacyRpc(message) ||
+      handleAccelerationRpc(message)
+    )
+      return;
     if (
       message &&
       typeof message === "object" &&
@@ -240,7 +286,8 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
     await startKoedServer({
       environment: createDesktopSupervisorEnvironment(process.env),
       desktopRuntimeCapability: capability,
-      onReady: () => {
+      onReady: (serviceEnvironment) => {
+        accelerationEnvironment = serviceEnvironment;
         process.send?.({
           type: "koed.desktop.supervisor.ready",
           nonce: handshake.nonce,

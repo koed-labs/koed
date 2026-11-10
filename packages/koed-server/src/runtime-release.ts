@@ -51,6 +51,10 @@ import {
   validateStagedCuda
 } from "./runtime-release-validation.js";
 import type { KoedServerPaths } from "./paths.js";
+import {
+  resolveDesktopRuntimeOwner,
+  type DesktopRuntimeCapability
+} from "./desktop-runtime-capability.js";
 
 const reserve = 128 * 1024 * 1024;
 export function assertReleaseHost(): void {
@@ -198,13 +202,24 @@ export async function installReleaseRuntime(
     progress?: DownloadProgress;
     cuda?: CudaAssetChoice;
     environment?: NodeJS.ProcessEnv;
+    desktopRuntimeCapability?: DesktopRuntimeCapability;
+    requireModel?: boolean;
+    assertConfiguration?: () => Promise<void>;
+    phase?: (
+      phase: "checking" | "verifying" | "inference" | "activating"
+    ) => void;
   } = {}
 ) {
   assertReleaseHost();
   const catalog = getNativeRuntimeCatalog(),
     pin = catalog.core,
     store = nativeStore(paths),
-    owner = resolveKoedRuntimeOwner();
+    owner = options.desktopRuntimeCapability
+      ? resolveDesktopRuntimeOwner(
+          options.desktopRuntimeCapability,
+          paths.koedHome
+        )
+      : resolveKoedRuntimeOwner();
   const choice = options.cuda ?? "preserve",
     environment = options.environment ?? process.env;
   // No whole-install deadline: a large CUDA download on a slow link is legitimate.
@@ -229,6 +244,8 @@ export async function installReleaseRuntime(
     return { selected, cuda, policy };
   };
   const before = await withStoppedRuntime(paths, owner, async () => {
+    await options.assertConfiguration?.();
+    options.phase?.("checking");
     const { selected, cuda, policy } = plan();
     for (const name of ["core", "selections", ...(cuda ? ["cuda"] : [])]) {
       const dir = resolve(store, name);
@@ -239,10 +256,12 @@ export async function installReleaseRuntime(
       selected?.pin.recipeId === pin.recipeId &&
       selected.cuda?.recipeId === cuda?.recipeId
     ) {
+      if (choice === "with") options.phase?.("inference");
       const validation =
         choice === "with"
           ? await validateStagedCuda(paths, selected.root, environment, {
-              signal
+              signal,
+              requireModel: options.requireModel
             })
           : undefined;
       const warning = recordStatus(paths, selected.id);
@@ -308,12 +327,22 @@ export async function installReleaseRuntime(
   const staging = mkdtempSync(resolve(store, ".stage-"));
   try {
     const staged = new Map<NativePin, string>();
-    for (const asset of missing)
+    let downloaded = 0;
+    for (const asset of missing) {
       staged.set(
         asset,
-        await stageNativeAsset(asset, staging, signal, options.progress)
+        await stageNativeAsset(asset, staging, signal, (event) =>
+          options.progress?.({
+            ...event,
+            transferredBytes: downloaded + event.transferredBytes,
+            totalBytes: downloadBytes
+          })
+        )
       );
+      downloaded += asset.archiveBytes;
+    }
     return await withStoppedRuntime(paths, owner, async () => {
+      await options.assertConfiguration?.();
       const { selected, cuda, policy } = plan();
       if (
         (selected?.id ?? null) !== before.previousId ||
@@ -331,15 +360,20 @@ export async function installReleaseRuntime(
         }
       }
       const next = composeNativeSelection(paths, pin, staging, catalog, cuda);
+      options.phase?.("verifying");
       await probeCore(next.root, signal);
+      if (cuda) options.phase?.("inference");
       const validation = cuda
         ? await validateStagedCuda(paths, next.root, environment, {
-            signal
+            signal,
+            requireModel: options.requireModel
           }).catch((error: unknown) => {
             if (signal.aborted) throw error;
             throw preservedCudaFailure(error, choice, policy);
           })
         : undefined;
+      signal.throwIfAborted();
+      options.phase?.("activating");
       signal.throwIfAborted();
       activateNativeSelection(paths, next.id);
       const warning = recordStatus(paths, next.id);

@@ -322,4 +322,57 @@ describe("llama-server adapter helpers", () => {
     });
     await client.stop();
   });
+  it("cancels an in-flight startup at shutdown without falling back to CPU", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdout: null,
+      stderr: null,
+      kill: vi.fn((signal: NodeJS.Signals) => {
+        child.signalCode = signal;
+        child.emit("exit", null, signal);
+        return true;
+      })
+    });
+    const spawner = vi.fn(() => child as unknown as ChildProcess);
+    const config = testConfig({ embeddingAccelerationPolicy: "auto" });
+    const client = new LlamaServerClient(
+      config,
+      testLogger(),
+      {
+        name: "embedding",
+        modelPath: config.modelPath!,
+        port: config.embeddingServerPort,
+        pooling: "last",
+        embedding: true,
+        nCtx: config.llamaNCtx,
+        nThreads: config.llamaNThreads,
+        nBatch: config.llamaNBatch,
+        nUbatch: config.llamaNUbatch,
+        parallel: config.llamaParallel,
+        promptCacheEnabled: false,
+        accelerationPolicy: "auto",
+        accelerationDevice: null
+      },
+      async () => {
+        throw new Error("not ready");
+      },
+      spawner as unknown as typeof import("node:child_process").spawn,
+      async () => ({
+        listing: "Available devices:\n  CUDA0: test GPU",
+        devices: [{ id: "CUDA0", backend: "cuda" }]
+      }),
+      { platform: "linux", arch: "x64" }
+    );
+
+    const starting = client.start();
+    await vi.waitFor(() => expect(spawner).toHaveBeenCalledOnce());
+    const startedAt = Date.now();
+    await client.shutdown();
+    await expect(starting).rejects.toThrow("cancelled for shutdown");
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(spawner).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(client.isRunning()).toBe(false);
+  });
 });

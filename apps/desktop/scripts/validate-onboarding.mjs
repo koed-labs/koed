@@ -100,10 +100,15 @@ const run = async () => {
       `${name}: horizontal overflow`
     );
   };
-  const load = async (scene, theme = "light", outcome = "partial") => {
+  const load = async (
+    scene,
+    theme = "light",
+    outcome = "partial",
+    device = "cpu"
+  ) => {
     nativeTheme.themeSource = theme;
     await window.loadFile(page, {
-      query: { onboarding: "1", scene, theme, outcome }
+      query: { onboarding: "1", scene, theme, outcome, device }
     });
     await waitFor(
       "!!document.querySelector('.lp-workspace') && document.querySelector('.lp-kin-scene')?.dataset.kinState !== 'loading'"
@@ -117,6 +122,85 @@ const run = async () => {
     ]) {
       window.setContentSize(width, height);
       for (const theme of ["light", "dark"]) {
+        for (const device of ["cpu", "metal", "cuda"]) {
+          await load("hardware", theme, "partial", device);
+          await waitFor(
+            "!document.body.innerText.includes('Checking your device')"
+          );
+          assert.equal(
+            await evaluate(
+              "document.activeElement === document.querySelector('h1')"
+            ),
+            true
+          );
+          assert.equal(
+            await evaluate(
+              "window.onboardingValidation.calls().some(c=>c.command==='setup_run')"
+            ),
+            false
+          );
+          assert.equal(
+            await evaluate(
+              "document.body.innerText.includes('Your embedding model runs on this device.')"
+            ),
+            false
+          );
+          assert.equal(
+            await evaluate(
+              "document.body.innerText.includes('Downloads the optional CUDA runtime to this device.')"
+            ),
+            false
+          );
+          if (device === "cuda") {
+            await evaluate(
+              "document.querySelector('input[value=cpu]').focus()"
+            );
+            key("Down");
+            await waitFor(
+              "document.querySelector('input[value=auto]').checked"
+            );
+          }
+          await capture(`${size}-${theme}-hardware-${device}`);
+          assert.equal(
+            await evaluate(
+              "[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Continue').getBoundingClientRect().bottom <= innerHeight"
+            ),
+            true,
+            `${size}-${device}: Continue is visible`
+          );
+          await click("Continue");
+          await waitFor(
+            "window.onboardingValidation.calls().some(c=>c.command==='setup_run')"
+          );
+          assert.equal(
+            await evaluate(
+              "window.onboardingValidation.calls().find(c=>c.command==='setup_run').args.acceleration.installCuda"
+            ),
+            device === "cuda"
+          );
+          if (device === "cuda") {
+            await evaluate(
+              "window.onboardingValidation.stage('acceleration', .5)"
+            );
+            await waitFor(
+              "document.body.innerText.includes('Cancel CUDA setup')"
+            );
+            await capture(`${size}-${theme}-cuda-download`);
+            await click("Cancel CUDA setup");
+            await waitFor(
+              "document.body.innerText.includes('Continue with CPU')"
+            );
+            await capture(`${size}-${theme}-cuda-recovery`);
+            await click("Continue with CPU");
+          }
+          await evaluate("window.onboardingValidation.completeSetup()");
+          await waitFor(
+            "document.body.innerText.includes('Your Koed is ready.')"
+          );
+          await waitFor(
+            `document.body.innerText.includes('Using ${device === "metal" ? "METAL" : "CPU"}')`
+          );
+        }
         await load("ready", theme);
         await waitFor(
           "document.body.innerText.includes('Your Koed is ready.')"
@@ -169,6 +253,45 @@ const run = async () => {
         );
       }
     }
+    for (const device of [
+      "unknown",
+      "driver",
+      "managed",
+      "external",
+      "cuda-installed",
+      "checking"
+    ]) {
+      await load("hardware", "light", "partial", device);
+      if (device === "checking") {
+        assert.equal(
+          await evaluate(
+            "[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Continue').disabled"
+          ),
+          true
+        );
+        await capture("compact-light-hardware-checking");
+        await evaluate(
+          "window.onboardingValidation.acceleration.finishDetection()"
+        );
+      }
+      await waitFor(
+        "!document.body.innerText.includes('Checking your device')"
+      );
+      await capture(`compact-light-hardware-${device}`);
+    }
+    window.setContentSize(540, 720);
+    await load("hardware", "light", "partial", "cuda");
+    await capture("narrow-light-hardware-cuda");
+    await evaluate(
+      "document.querySelector('.lp-workspace').scrollTop = document.querySelector('.lp-workspace').scrollHeight"
+    );
+    assert.equal(
+      await evaluate(
+        "[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Continue').getBoundingClientRect().bottom <= innerHeight"
+      ),
+      true,
+      "Narrow Continue is reachable"
+    );
     window.setContentSize(960, 640);
     await load("clients", "dark", "details");
     await click("Connect");
@@ -279,6 +402,8 @@ const run = async () => {
     );
     await capture("desktop-dark-consent");
     await click("Get Started");
+    await waitFor("!document.body.innerText.includes('Checking your device')");
+    await click("Continue");
     await evaluate("window.onboardingValidation.stage('model',.5)");
     await waitFor(
       "document.querySelector('[role=progressbar]').getAttribute('aria-valuenow')==='41'"

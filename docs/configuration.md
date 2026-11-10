@@ -4,6 +4,18 @@ Use `.env.example` as the canonical Koed environment example. It is the starting
 
 The README Quickstart covers the basic bundled-local setup and packaged Desktop first-run. This page is the advanced reference for environment variables, runtime modes, external dependency URLs, and production settings.
 
+The source Desktop build reads approved runtime downloads from
+`config/source-runtime-catalogs.json`. This file applies to all profiles.
+Environment variables cannot replace it. Every `KOED_HOME`, including an empty
+one, uses the same downloads and file integrity tests.
+
+Native runtime versions must meet compatibility requirements. They do not need
+to match the product version. Optional component downloads use
+`config/source-component-catalog.json` and require an exact product-version match.
+See the [Version Koed workflow](release-versioning.md#source-runtime-pin-updates)
+for catalog updates and [source CPU/CUDA testing](running-koed.md#test-source-setup-with-a-fresh-home)
+for setup tests.
+
 For an AI Client connected to an existing backend without local backend
 dependencies, see [Headless Remote MCP](headless-remote-mcp.md). That opt-in path
 does not use the local dependency setup below.
@@ -1037,6 +1049,19 @@ policy, or full URLs containing customer content.
 - `KOED_EMBEDDING_LLAMA_SERVER_BIN`: llama-server executable for the native bundled-local Embedding Service. Defaults to `KOED_HOME/runtime/llama.cpp/llama-server`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/llama.cpp/llama-server` only as a development fallback; the Docker default `EMBEDDING_LLAMA_SERVER_BINARY=/opt/llama.cpp/llama-server` is ignored for native auto-detection unless overridden with this setting.
 - `KOED_EMBEDDING_ACCELERATION`: embedding acceleration policy: `auto`, `cpu`, `metal`, or `cuda`. Native bundled-local runs default to `auto`; CPU Docker Compose defaults to `cpu`. `auto` prefers Metal on Apple Silicon and CUDA on Linux/WSL when the selected llama-server reports a compatible device, then falls back visibly to CPU. Explicit GPU policies fail instead of falling back.
 - `KOED_HARDWARE_ACCELERATION`: persisted local inference preference used by Koed Desktop. `auto` enables compatible local acceleration and `cpu` disables it. Service-specific `KOED_EMBEDDING_ACCELERATION` or `PRIVACY_RUNTIME_PROVIDER` environment values remain Operator overrides and make the Desktop control read-only.
+  Desktop saves its preference in the local server configuration; an environment
+  value remains authoritative. Generated root environment files leave these
+  optional overrides unset so onboarding and Settings can manage the preference.
+  For older generated `.env` files, remove copied `KOED_HARDWARE_ACCELERATION=auto`,
+  `KOED_EMBEDDING_ACCELERATION=auto`, and `PRIVACY_RUNTIME_PROVIDER=auto` entries
+  if Desktop should control processing. Keep them when an Operator intends to
+  enforce the policy; explicit `auto` overrides remain authoritative.
+  The Services Settings control shows the saved choice separately from
+  authenticated live execution. Saving
+  a preference leaves stopped services stopped. For an owned running runtime,
+  Desktop confirms shutdown before saving and checks readiness after restart.
+  External services and another installation's runtime remain read-only. Changing
+  the preference neither installs Privacy Filter nor removes CUDA assets.
 - `KOED_EMBEDDING_DEVICE`: optional exact llama-server device identifier, such as `CUDA0`. The device must match the requested backend.
 - `KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS`: seconds of accelerator inactivity before llama-server unloads the embedding model from memory. Defaults to `300`; `0` keeps it resident. CPU execution does not use this policy.
 - `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.

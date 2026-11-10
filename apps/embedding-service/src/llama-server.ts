@@ -160,6 +160,7 @@ export class LlamaServerClient {
   private process: ChildProcess | null = null;
   private logFile: WriteStream | null = null;
   private resolved: ResolvedAcceleration | null = null;
+  private shutdownRequested = false;
 
   constructor(
     private readonly config: Pick<
@@ -177,15 +178,32 @@ export class LlamaServerClient {
     this.logPath = `/tmp/koed-${options.name}-llama-server.log`;
   }
 
+  // Shutdown during startup stops the child being started and prevents the CPU
+  // fallback from launching another one, so callers need not wait for a load.
+  async shutdown(): Promise<void> {
+    this.shutdownRequested = true;
+    await this.stop();
+  }
+
+  private assertNotShuttingDown(): void {
+    if (this.shutdownRequested)
+      throw new LlamaServerError(
+        `${this.options.name} llama-server startup was cancelled for shutdown`
+      );
+  }
+
   async start(): Promise<void> {
     if (this.isRunning()) {
       return;
     }
+    this.assertNotShuttingDown();
     this.resolved = await this.resolveRequestedAcceleration();
+    this.assertNotShuttingDown();
     try {
       await this.startResolved(this.resolved);
     } catch (error) {
       if (
+        this.shutdownRequested ||
         this.options.accelerationPolicy !== "auto" ||
         this.resolved.backend === "cpu"
       ) {
@@ -322,7 +340,13 @@ export class LlamaServerClient {
     const deadline = Date.now() + timeoutSeconds * 1000;
     let lastError: string | null = null;
     while (Date.now() < deadline) {
-      if (this.process !== null && this.process.exitCode !== null) {
+      // stop() clears the process; do not keep polling a child that is gone.
+      if (this.process === null) this.assertNotShuttingDown();
+      if (this.process === null)
+        throw new LlamaServerError(
+          `${this.options.name} llama-server stopped during startup`
+        );
+      if (this.process.exitCode !== null) {
         throw new LlamaServerError(
           `${this.options.name} llama-server exited during startup: ${this.readLogTail()}`
         );
