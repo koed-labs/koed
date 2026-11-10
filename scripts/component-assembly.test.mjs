@@ -15,6 +15,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { classifyRuntimeException } from "./component-assembly-policy.mjs";
 import { projectRuntimeComponents } from "./component-assembly.mjs";
+import * as assembly from "./component-assembly.mjs";
 
 const roots = [];
 test.afterEach(() => {
@@ -75,6 +76,176 @@ const minimalGraph = (
   );
   write(resolve(sourceRoot, "privacy-service/dist/index.js"), privacySource);
 };
+
+test("prunes only known staged Linux msgpackr ABI binaries and inventories retained closure", () => {
+  const workspace = mkdtempSync(resolve(tmpdir(), "koed-msgpackr-"));
+  roots.push(workspace);
+  const source = resolve(workspace, "source");
+  const staged = resolve(workspace, "staged");
+  const name = "@msgpackr-extract/msgpackr-extract-linux-x64";
+  const binaries = [
+    "node.abi115.glibc.node",
+    "node.abi115.musl.node",
+    "node.napi.glibc.node",
+    "node.napi.musl.node"
+  ];
+  minimalGraph(source, 'import "msgpackr-extract";', {
+    "msgpackr-extract": "3.0.3"
+  });
+  packageFixture(
+    source,
+    "msgpackr-extract",
+    {},
+    { "index.js": "export {};" },
+    { version: "3.0.3", optionalDependencies: { [name]: "3.0.3" } }
+  );
+  packageFixture(
+    source,
+    name,
+    {},
+    Object.fromEntries(binaries.map((file) => [file, file])),
+    { version: "3.0.3" }
+  );
+  cpSync(source, staged, { recursive: true });
+  assembly.pruneMsgpackrForTarget({
+    runtimeRoot: staged,
+    platform: "linux",
+    architecture: "x64"
+  });
+  const packagePath = `node_modules/${name}`;
+  for (const file of binaries) {
+    assert.equal(existsSync(resolve(source, packagePath, file)), true);
+    assert.equal(
+      existsSync(resolve(staged, packagePath, file)),
+      file.includes("napi")
+    );
+  }
+  const result = projectRuntimeComponents({
+    sourceRoot: staged,
+    outputDir: resolve(workspace, "output")
+  });
+  const inventory = JSON.parse(
+    readFileSync(
+      resolve(result.privacyRoot, "component-assembly-inventory.json"),
+      "utf8"
+    )
+  );
+  for (const file of binaries)
+    assert.equal(
+      inventory.required.includes(`${packagePath}/${file}`),
+      file.includes("napi")
+    );
+  assert.ok(
+    existsSync(resolve(result.privacyRoot, packagePath, "package.json"))
+  );
+});
+
+test("rejects unexpected msgpackr layouts before removing staged files", () => {
+  for (const mutation of [
+    "version",
+    "extractor-version",
+    "nested-extractor-native",
+    "nested-extractor-package",
+    "nested-platform-package",
+    "additional-platform-package",
+    "modules-symlink",
+    "missing-declaration",
+    "wrong-declaration",
+    "missing",
+    "extra",
+    "symlink",
+    "build",
+    "prebuild"
+  ]) {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-msgpackr-invalid-"));
+    roots.push(root);
+    const name = "@msgpackr-extract/msgpackr-extract-linux-x64";
+    packageFixture(
+      root,
+      "msgpackr-extract",
+      {},
+      { "index.js": "" },
+      {
+        version: mutation === "extractor-version" ? "4.0.0" : "3.0.3",
+        optionalDependencies:
+          mutation === "missing-declaration"
+            ? {}
+            : { [name]: mutation === "wrong-declaration" ? "3.0.2" : "3.0.3" }
+      }
+    );
+    packageFixture(
+      root,
+      name,
+      {},
+      Object.fromEntries(
+        [
+          "node.abi115.glibc.node",
+          "node.abi115.musl.node",
+          "node.napi.glibc.node",
+          "node.napi.musl.node"
+        ].map((file) => [file, file])
+      ),
+      { version: mutation === "version" ? "4.0.0" : "3.0.3" }
+    );
+    const target = resolve(root, "node_modules", name);
+    if (mutation === "modules-symlink") {
+      const external = resolve(root, "external-modules");
+      cpSync(resolve(root, "node_modules"), external, { recursive: true });
+      rmSync(resolve(root, "node_modules"), { recursive: true });
+      symlinkSync(external, resolve(root, "node_modules"));
+    }
+    if (mutation === "nested-extractor-package")
+      packageFixture(root, "other/node_modules/msgpackr-extract", {}, {});
+    if (mutation === "nested-platform-package")
+      packageFixture(root, `other/node_modules/${name}`, {}, {});
+    if (mutation === "additional-platform-package")
+      packageFixture(
+        root,
+        "@msgpackr-extract/msgpackr-extract-linux-arm64",
+        {},
+        {}
+      );
+    if (mutation === "missing") rmSync(resolve(target, "node.napi.musl.node"));
+    if (mutation === "extra")
+      write(resolve(target, "node.abi999.glibc.node"), "unexpected");
+    if (mutation === "symlink") {
+      rmSync(resolve(target, "node.napi.musl.node"));
+      symlinkSync(
+        "node.napi.glibc.node",
+        resolve(target, "node.napi.musl.node")
+      );
+    }
+    if (mutation === "nested-extractor-native")
+      write(
+        resolve(root, "node_modules/msgpackr-extract/other/nested/addon.node"),
+        "unexpected"
+      );
+    if (mutation === "build")
+      write(
+        resolve(root, "node_modules/msgpackr-extract/build/Release/addon.node"),
+        "unexpected"
+      );
+    if (mutation === "prebuild")
+      write(
+        resolve(
+          root,
+          "node_modules/msgpackr-extract/prebuilds/linux-x64/addon.node"
+        ),
+        "unexpected"
+      );
+    assert.throws(
+      () =>
+        assembly.pruneMsgpackrForTarget({
+          runtimeRoot: root,
+          platform: "linux",
+          architecture: "x64"
+        }),
+      /msgpackr/i,
+      mutation
+    );
+    assert.ok(existsSync(resolve(target, "node.abi115.glibc.node")), mutation);
+  }
+});
 
 test("projects hermetic base and privacy closures from shared production graph", () => {
   const workspace = mkdtempSync(resolve(tmpdir(), "koed-component-assembly-"));

@@ -736,6 +736,90 @@ export const projectRuntimeComponents = ({
   };
 };
 
+export const pruneMsgpackrForTarget = ({
+  runtimeRoot,
+  platform,
+  architecture
+}) => {
+  if (platform !== "linux" || architecture !== "x64") return;
+  const modules = resolve(runtimeRoot, "node_modules");
+  const extractor = resolve(modules, "msgpackr-extract");
+  const name = "@msgpackr-extract/msgpackr-extract-linux-x64";
+  const target = resolve(modules, name);
+  const fail = (detail) => {
+    throw new Error(`Unexpected msgpackr-extract layout: ${detail}`);
+  };
+  const checkCopies = (dir) => {
+    if (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory())
+      fail(dir);
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = resolve(dir, entry.name);
+      if (entry.isSymbolicLink()) fail(path);
+      if (!entry.isDirectory()) continue;
+      if (
+        (entry.name === "msgpackr-extract" &&
+          dirname(path).endsWith(`${sep}node_modules`) &&
+          path !== extractor) ||
+        (entry.name.startsWith("msgpackr-extract-") &&
+          dirname(path).endsWith(`${sep}node_modules${sep}@msgpackr-extract`) &&
+          path !== target)
+      )
+        fail(path);
+      checkCopies(path);
+    }
+  };
+  checkCopies(runtimeRoot);
+  for (const path of [
+    modules,
+    extractor,
+    resolve(modules, "@msgpackr-extract"),
+    target
+  ]) {
+    if (!existsSync(path) || !lstatSync(path).isDirectory()) fail(path);
+  }
+  const extractorManifest = resolve(extractor, "package.json");
+  if (!existsSync(extractorManifest) || !lstatSync(extractorManifest).isFile())
+    fail(extractorManifest);
+  const extractorInfo = readManifest(extractorManifest);
+  if (
+    extractorInfo.name !== "msgpackr-extract" ||
+    extractorInfo.version !== "3.0.3" ||
+    extractorInfo.optionalDependencies?.[name] !== "3.0.3"
+  )
+    fail(extractorManifest);
+  const manifestPath = resolve(target, "package.json");
+  if (!existsSync(manifestPath) || !lstatSync(manifestPath).isFile())
+    fail(manifestPath);
+  const manifest = readManifest(manifestPath);
+  if (manifest.name !== name || manifest.version !== "3.0.3")
+    fail(manifestPath);
+  for (const path of ["build/Release", "build/Debug", "prebuilds"]) {
+    if (existsSync(resolve(extractor, path))) fail(resolve(extractor, path));
+  }
+  const expected = new Set([
+    "node.abi115.glibc.node",
+    "node.abi115.musl.node",
+    "node.napi.glibc.node",
+    "node.napi.musl.node"
+  ]);
+  const visit = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = resolve(dir, entry.name);
+      if (entry.isSymbolicLink()) fail(path);
+      if (entry.isDirectory()) visit(path);
+      else if (!entry.isFile()) fail(path);
+      else if (entry.name.endsWith(".node")) {
+        if (dir !== target || !expected.delete(entry.name)) fail(path);
+      }
+    }
+  };
+  visit(extractor);
+  visit(target);
+  if (expected.size) fail(`missing ${[...expected].join(", ")}`);
+  for (const file of ["node.abi115.glibc.node", "node.abi115.musl.node"])
+    rmSync(resolve(target, file));
+};
+
 export const stageRuntimeComponents = async ({
   repoRoot,
   outputDir,
@@ -746,6 +830,7 @@ export const stageRuntimeComponents = async ({
   const sharedRoot = resolve(temporaryRoot, "shared-runtime");
   try {
     stageSharedAppRuntime({ repoRoot, runtimeRoot: sharedRoot });
+    pruneMsgpackrForTarget({ runtimeRoot: sharedRoot, platform, architecture });
     prunePrivacyRuntimeForTarget({
       repoRoot,
       runtimeRoot: sharedRoot,
