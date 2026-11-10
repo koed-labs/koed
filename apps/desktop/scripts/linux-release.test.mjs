@@ -20,6 +20,27 @@ import { parse } from "yaml";
 const desktop = resolve(import.meta.dirname, "..");
 const guard = resolve(desktop, "scripts/validate-linux-release.mjs");
 
+test("Linux release host guard accepts only Linux x64 before packaging", async () => {
+  const { validateLinuxReleaseHost } =
+    await import("./validate-linux-release-host.mjs");
+  assert.doesNotThrow(() => validateLinuxReleaseHost("linux", "x64"));
+  for (const [platform, arch] of [
+    ["darwin", "x64"],
+    ["darwin", "arm64"],
+    ["linux", "arm64"]
+  ]) {
+    assert.throws(
+      () => validateLinuxReleaseHost(platform, arch),
+      /Linux x64 host/
+    );
+  }
+  const pkg = JSON.parse(readFileSync(join(desktop, "package.json"), "utf8"));
+  assert.match(
+    pkg.scripts["package:linux:release"],
+    /^node scripts\/validate-linux-release-host\.mjs && pnpm package:workspace:build && pnpm package:runtime &&/
+  );
+});
+
 test("Linux release config targets x64 AppImage with explicit artifact name", () => {
   const config = parse(
     readFileSync(join(desktop, "electron-builder.yml"), "utf8")

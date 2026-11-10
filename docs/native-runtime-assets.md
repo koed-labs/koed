@@ -16,6 +16,11 @@ Packaged Desktop never silently falls back to source-checkout `vendor` paths. De
 
 ## Linux Desktop release qualification
 
+`pnpm desktop:package:linux:release` requires a native Linux x64 host and
+checks the host before building or staging. It also requires a validated native
+runtime source via `KOED_NATIVE_RUNTIME_SOURCE_DIR`; the later artifact checks
+still apply. The generic `pnpm desktop:package:linux` directory build is unchanged.
+
 The Linux x64 Desktop release job stages the versioned Linux native runtime
 archive after checking its SHA-256 sidecar and validating the extracted tree.
 The runtime build targets glibc 2.35 or newer; this is not evidence that Desktop
