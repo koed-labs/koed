@@ -29,6 +29,7 @@ import {
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
 import { verifyDisabledDesktopUpdateNotice } from "./desktop-update-notice-smoke.mjs";
+import { smokePackagedAcceleration } from "./acceleration-packaged-smoke.mjs";
 import {
   launchPackagedDesktop,
   waitForPackagedDesktopExit
@@ -48,6 +49,7 @@ export const parseArgs = (argv) => {
     missingAssets: false,
     maskNativeAssets: false,
     skipRendererFaults: false,
+    verifyAcceleration: false,
     embeddingModelSource: undefined,
     exportEmbeddingModel: undefined,
     diagnosticsDir: undefined,
@@ -75,6 +77,10 @@ export const parseArgs = (argv) => {
     }
     if (value === "--skip-renderer-faults") {
       options.skipRendererFaults = true;
+      continue;
+    }
+    if (value === "--verify-acceleration") {
+      options.verifyAcceleration = true;
       continue;
     }
     if (value === "--embedding-model-source") {
@@ -140,6 +146,7 @@ Options:
   --missing-assets          Expect packaged native runtime assets to be missing
   --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
   --skip-renderer-faults    Skip renderer fault injection when the local display cannot expose CDP targets
+  --verify-acceleration    Verify installed CPU/GPU switching with real embeddings
   --embedding-model-source  Pre-seed the pinned embedding model from this file
   --export-embedding-model  Copy the verified installed model to this path
   --diagnostics-dir <path>  Create a curated diagnostics child under this path
@@ -1172,6 +1179,12 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   );
   finishPhase(timings, "packaged core and Codex setup", phaseStarted);
 
+  const acceleration = options.verifyAcceleration
+    ? await measurePhase(timings, "packaged CPU and Metal switching", () =>
+        smokePackagedAcceleration(desktop, koedHome)
+      )
+    : null;
+
   phaseStarted = beginPhase("daemon stop, restart, and health");
   const privacyStatus = await desktop.invoke("privacy_status");
   assertFailClosedPrivacy(privacyStatus);
@@ -1248,6 +1261,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     packageStatus,
     runtimeStatus: runtimeStatusJson,
     install: installJson,
+    acceleration,
     installedRuntimeStatus: installedRuntimeStatusJson,
     modelStatus: requiredModelStatuses.embedding,
     requiredModelStatuses,
@@ -1555,6 +1569,7 @@ const run = async () => {
             collaborationBroker,
             rendererFaults,
             runtime: { ok: result.install.ok, state: result.install.state },
+            acceleration: result.acceleration,
             privacyStatus: result.privacyStatus,
             teamFailClosed,
             status: {

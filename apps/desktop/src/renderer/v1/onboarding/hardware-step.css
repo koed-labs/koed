@@ -1,0 +1,127 @@
+.lp-hardware-eyebrow {
+  margin: 0 0 16px;
+  color: var(--lp-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.19em;
+  text-transform: uppercase;
+}
+.lp-hardware-device,
+.lp-hardware-model {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 20px;
+  text-align: left;
+}
+.lp-hardware-device > svg,
+.lp-hardware-model > svg,
+.lp-hardware-option > svg {
+  width: 19px;
+  height: 19px;
+  flex-shrink: 0;
+  stroke-width: 1.5;
+}
+.lp-hardware-device strong,
+.lp-hardware-model strong,
+.lp-hardware-option strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+}
+.lp-hardware-device small,
+.lp-hardware-model small,
+.lp-hardware-option small {
+  display: block;
+  color: var(--lp-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.lp-hardware-device .lp-hardware-detected {
+  width: 15px;
+  margin-left: auto;
+  color: var(--lp-success);
+}
+.lp-hardware-options {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.lp-client-card.lp-hardware-option {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  text-align: left;
+}
+.lp-hardware-option > span {
+  flex: 1;
+}
+.lp-hardware-option span > span {
+  display: block;
+  margin: 3px 0 6px;
+  color: var(--lp-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.lp-client-card.lp-hardware-option input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--lp-text);
+  flex-shrink: 0;
+}
+.lp-hardware-option small svg {
+  display: inline;
+  vertical-align: -2px;
+  width: 11px;
+  height: 11px;
+}
+.lp-hardware-option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.7;
+}
+.lp-hardware-model {
+  margin: 20px 0 14px;
+  padding: 14px 0;
+  border-block: 1px solid var(--lp-border);
+}
+.lp-hardware-model strong {
+  font-size: 11px;
+  margin: 2px 0;
+}
+.lp-hardware-note {
+  color: var(--lp-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+.lp-hardware-recheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+.lp-hardware-recheck svg {
+  width: 13px;
+  height: 13px;
+}
+@media (max-height: 720px) and (min-width: 701px) {
+  .lp-hardware-eyebrow {
+    margin-bottom: 10px;
+  }
+  .lp-hardware-panel .lp-client-intro {
+    margin-bottom: 14px;
+  }
+  .lp-hardware-device {
+    margin-bottom: 14px;
+  }
+  .lp-client-card.lp-hardware-option {
+    padding: 12px 14px;
+  }
+  .lp-hardware-model {
+    margin-top: 14px;
+    padding-block: 10px;
+  }
+}

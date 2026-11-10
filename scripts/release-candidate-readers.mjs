@@ -62,6 +62,8 @@ export const createCandidateReaders = ({
     return value;
   };
   return Object.freeze({
+    listReleases: (repository, page = 1) =>
+      github(`${repo(repository)}/releases?per_page=100&page=${id(page)}`),
     getWorkflowRun: (repository, runId) =>
       github(`${repo(repository)}/actions/runs/${id(runId)}`),
     getArtifact: (repository, artifactId) =>

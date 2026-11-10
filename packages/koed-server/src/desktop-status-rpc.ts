@@ -5,6 +5,7 @@ import {
 } from "./ai-client-authorization.js";
 import { setupClaude } from "./claude-setup.js";
 import { setupPi } from "./pi-setup.js";
+import { persistDoctorVerification } from "./cli-service-output.js";
 import {
   resolveDesktopRuntimeOwner,
   type DesktopRuntimeCapability
@@ -53,7 +54,17 @@ export const createDesktopStatusRpcHandler = (options: {
       startup
         ? collectKoedServerStartupStatus(options.environment, dependencies)
         : collectKoedServerStatus(options.environment, dependencies),
-    doctor: () => collectKoedServerDoctor(options.environment, dependencies),
+    doctor: async () => {
+      const doctor = await collectKoedServerDoctor(
+        options.environment,
+        dependencies
+      );
+      persistDoctorVerification(
+        resolveKoedServerPaths(options.environment),
+        doctor
+      );
+      return doctor;
+    },
     // Ownership is judged with the verified capability, never by API health.
     lifecycle: () => {
       const paths = resolveKoedServerPaths(options.environment);

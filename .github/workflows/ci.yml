@@ -244,6 +244,11 @@ jobs:
             --policy config/release-artifact-size-policy.json \
             --baseline config/release-artifact-baseline-v0.6.2.json
 
+      - name: Verify source CPU runtime installation with a fresh home
+        run: |
+          node scripts/embed-source-runtime-catalogs.mjs
+          node scripts/source-runtime-cpu-smoke.mjs
+
   relevant-packaged-smoke:
     name: Relevant packaged Desktop app smoke
     needs: changes

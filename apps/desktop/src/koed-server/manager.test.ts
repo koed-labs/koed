@@ -22,6 +22,12 @@ import {
 } from "@koed/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// These manager unit tests use synthetic paths. Real receipt persistence is
+// covered by operation-receipt and setup-acceleration's disposable homes.
+vi.mock("./operation-receipt.js", () => ({
+  createOperationReceipt: () => ({ previous: null, save: vi.fn() })
+}));
+
 // Never observe the developer's real KOED_HOME; tests steer lifecycle here.
 const lifecycleControl = vi.hoisted(() => ({
   current: {
@@ -1077,6 +1083,7 @@ describe("Koed server desktop manager", () => {
       }),
       packagedResourcesPath: "/app/Contents/Resources",
       productVersion: "0.8.1",
+      platform: "darwin",
       existsSync: () => true,
       execFile,
       spawn: makeChild as never,
@@ -2224,9 +2231,11 @@ describe("Koed server desktop manager", () => {
     });
   });
 
-  it("persists and restarts after changing hardware acceleration", async () => {
+  it("persists hardware acceleration without starting a stopped runtime", async () => {
+    lifecycleControl.current = { ...stoppedManagedLifecycle };
+    mkdirSync("scratch", { recursive: true });
     const koedHome = mkdtempSync(
-      resolve(tmpdir(), "koed-desktop-acceleration-")
+      resolve("scratch", "koed-desktop-acceleration-")
     );
     mkdirSync(resolve(koedHome, "config"), { recursive: true });
     const calls: string[][] = [];
@@ -2267,7 +2276,9 @@ describe("Koed server desktop manager", () => {
       enabled: false,
       managedByEnvironment: false
     });
-    expect(calls.some((args) => args.includes("restart"))).toBe(true);
+    expect(
+      calls.some((args) => args.includes("restart") || args.includes("start"))
+    ).toBe(false);
     const persisted = readFileSync(
       resolve(koedHome, "config/server.json"),
       "utf8"
@@ -5281,6 +5292,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
@@ -5318,6 +5330,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: () => true,
       execFile: () => undefined,
       spawn: () => childProcess() as never,
@@ -5344,6 +5357,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: (path) =>
         path === "/repo/cli.js" ||
         path === "/resources/koed-runtime/runtime-asset-manifest.json",
@@ -5374,6 +5388,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: (path) => path === "/repo/cli.js",
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
@@ -5385,6 +5400,38 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
 
     await manager.handlers.runtime_status!();
     expect(calls[0]).toContain("homebrew");
+  });
+
+  it("reports a failed Linux release runtime install as a result instead of rejecting", async () => {
+    mkdirSync("scratch", { recursive: true });
+    const koedHome = mkdtempSync(resolve("scratch", "koed-release-install-"));
+    try {
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args: ["/repo/cli.js", ...args],
+          env: { KOED_REPO_ROOT: "/repo" }
+        }),
+        platform: "linux",
+        existsSync: () => true,
+        execFile: () => undefined,
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+      await expect(
+        manager.handlers.runtime_install!({ operatorConsented: true })
+      ).resolves.toMatchObject({
+        ok: false,
+        state: "needs_attention",
+        provider: "release",
+        action: "Check service status, then retry runtime install."
+      });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 
   it("runs model status and install through koed-server", async () => {
@@ -5469,6 +5516,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         args: ["/repo/cli.js", ...args],
         env: { KOED_REPO_ROOT: "/repo" }
       }),
+      platform: "darwin",
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
@@ -5568,6 +5616,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           args: ["/repo/cli.js", ...args],
           env: { KOED_REPO_ROOT: "/repo" }
         }),
+        platform: "darwin",
         existsSync: () => true,
         execFile: (_command, args, _options, callback) => {
           calls.push(args);

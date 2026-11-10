@@ -26,9 +26,8 @@ const uuid = (n: number) =>
 export const createProjectSourceFixture = () => {
   const ownerUserId = uuid(1),
     projectId = uuid(2),
-    // Relative to now: views hide activity older than their recency window, so
-    // a fixed date makes dependent tests fail once it ages out.
-    createdAt = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+    // Keep the fixture inside the active-Project window whenever tests run.
+    createdAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const git: PersonalGitContext = {
     kind: "portable_repository",
     key: "gr_koed_fixture",

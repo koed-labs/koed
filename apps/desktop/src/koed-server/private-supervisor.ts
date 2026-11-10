@@ -13,6 +13,13 @@ export class DesktopSupervisorStartupError extends Error {
   }
 }
 
+export class DesktopSupervisorRequestInterruptedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopSupervisorRequestInterruptedError";
+  }
+}
+
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -21,10 +28,10 @@ const record = (value: unknown): Record<string, unknown> | null =>
 // All private RPCs share correlation, deadline, disconnect and listener cleanup.
 export function requestSupervisor<T>(
   session: PrivateSupervisorSession,
-  channel: "status" | "privacy",
+  channel: "status" | "privacy" | "acceleration",
   action: string,
   args: Record<string, unknown> = {},
-  timeoutMs = 120_000,
+  timeoutMs: number | null = 120_000,
   onProgress?: (value: Record<string, unknown>) => void
 ): Promise<T> {
   const { child, nonce } = session;
@@ -37,7 +44,7 @@ export function requestSupervisor<T>(
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const cleanup = () => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       child.off("message", onMessage);
       child.off("exit", onExit);
       child.off("disconnect", onExit);
@@ -51,7 +58,9 @@ export function requestSupervisor<T>(
     };
     const onExit = () =>
       fail(
-        new Error("Private Desktop supervisor disconnected during request.")
+        new DesktopSupervisorRequestInterruptedError(
+          "Private Desktop supervisor disconnected during request."
+        )
       );
     const onMessage = (value: unknown) => {
       const item = record(value);
@@ -76,10 +85,18 @@ export function requestSupervisor<T>(
       cleanup();
       resolve(item.result as T);
     };
-    const timer = setTimeout(
-      () => fail(new Error("Private Desktop supervisor request timed out.")),
-      timeoutMs
-    );
+    const timer =
+      timeoutMs === null
+        ? null
+        : setTimeout(
+            () =>
+              fail(
+                new DesktopSupervisorRequestInterruptedError(
+                  "Private Desktop supervisor request timed out."
+                )
+              ),
+            timeoutMs
+          );
     child.on("message", onMessage);
     child.once("exit", onExit);
     child.once("disconnect", onExit);
@@ -106,7 +123,10 @@ export function requestSupervisor<T>(
 export async function connectSupervisor(
   child: ChildProcess,
   resourcesPath: string,
-  mode: "runtime" | "privacy-management" = "runtime",
+  mode:
+    | "runtime"
+    | "privacy-management"
+    | "acceleration-management" = "runtime",
   timeoutMs = 120_000
 ): Promise<PrivateSupervisorSession> {
   const nonce = randomBytes(32).toString("hex");

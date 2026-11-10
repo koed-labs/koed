@@ -2,18 +2,20 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { canonicalArtifactJson } from "../packages/koed-server/src/artifact-canonical-json.mjs";
 import {
   compareNativeVersions,
-  getNativeRuntimeCatalog,
   validateNativeRuntimeCatalog
 } from "../packages/koed-server/dist/native-runtime-catalog.js";
 import {
@@ -27,6 +29,37 @@ import {
 } from "./test-utils/release-candidate-fixture.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
+
+test("a catalog-less control plane still rejects native installation authority", async () => {
+  mkdirSync(resolve("scratch"), { recursive: true });
+  const root = mkdtempSync(resolve("scratch/catalogless-native-"));
+  try {
+    writeFileSync(resolve(root, "package.json"), '{"type":"module"}\n');
+    mkdirSync(resolve(root, "node_modules"));
+    symlinkSync(
+      resolve("packages/koed-server/node_modules/zod"),
+      resolve(root, "node_modules/zod"),
+      "junction"
+    );
+    copyFileSync(
+      resolve("packages/koed-server/dist/native-runtime-catalog.js"),
+      resolve(root, "native-runtime-catalog.js")
+    );
+    writeFileSync(
+      resolve(root, "native-runtime-catalog-data.mjs"),
+      "export const productionNativeRuntimeCatalog = null;\n"
+    );
+    const { getNativeRuntimeCatalog } = await import(
+      pathToFileURL(resolve(root, "native-runtime-catalog.js")).href
+    );
+    assert.throws(
+      () => getNativeRuntimeCatalog(),
+      /no reviewed native runtime pin/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 const cudaFixture = (catalog) => {
   const archive = Buffer.from("CUDA archive"),
@@ -128,10 +161,6 @@ test("CPU-only native catalog enforces URL, target, contract, version and fixed 
   const { catalog } = fixture();
   assert.deepEqual(validateNativeRuntimeCatalog(catalog), catalog);
   assert.equal(compareNativeVersions("1.10.0", "1.2.0"), 1);
-  assert.throws(
-    () => getNativeRuntimeCatalog(),
-    /no reviewed native runtime pin/
-  );
   for (const mutate of [
     (value) => {
       delete value.core;

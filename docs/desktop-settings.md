@@ -73,6 +73,75 @@ logs, and Copy diagnostics use the existing desktop operations. Failures remain 
 a failed stop prevents restart from proceeding to start. Copied diagnostics
 include only the existing allowlisted service states and timestamp.
 
+### Hardware Acceleration
+
+Hardware Acceleration appears below Service details. Its processing selector
+shows the saved preference; the model row reports the backend verified by the
+Embedding Service. Privacy Filter reports its own verified provider in a
+separate row.
+CPU, CUDA, and Metal are processing backends; they are separate from the AI
+Client's Memory Model. A saved automatic preference does not establish that a
+GPU is active. Stopped services and unavailable observations are shown explicitly.
+During a processing change, the summary shows progress until the new backend and
+any installed Privacy provider can be checked.
+Readiness comes from authenticated service health, including while the supervisor
+is still starting. Local checks use the ports allocated to the running services.
+After a successful change, the summary shows the current backend without a
+completion notice or default footer message.
+
+Choose CPU or the available GPU option and select **Apply**. GPU processing saves
+the shared automatic preference, allowing visible CPU fallback. Changes retain
+the embedding model and stored vectors and do not start reindexing. Switching
+to CPU retains optional CUDA assets for reuse. The General graphics acceleration
+setting is separate and controls Desktop rendering.
+
+On a supported Linux NVIDIA device without the add-on, select **GPU · CUDA**
+to review download and free-disk requirements from the release catalog and
+reusable local payloads. Select **Apply** to install and enable CUDA. Opening
+Settings or changing the selector alone never downloads CUDA. A compatible
+older installed runtime remains usable when an update is available.
+
+When GPU processing falls back to CPU, the explanation appears in the existing
+footer without adding a row or changing the card height. Startup and
+operation failures remain visible; **Check again** refreshes an unavailable or
+failed observation.
+
+CUDA installation requires the pinned embedding model and validates GPU offload
+and CPU/GPU embedding agreement before activation. Device discovery alone is not
+inference verification. Only a successful installation saves automatic processing.
+The existing card footer shows progress through download, verification, model
+inference, and activation without adding a progress row. **Cancel** replaces
+**Apply** while cancellation is available; it waits for installer cleanup. After a failure,
+retry the explicit installation or apply CPU processing. Installed payloads remain
+available for reuse.
+
+Desktop confirms ownership and shutdown before saving a change for a running
+installation, then restarts and checks the active backend. A failed stop prevents
+the change. A stopped installation saves the choice and remains stopped. A newer
+explicit stop prevents an operation from restarting services. Configuration that
+changes after inspection requires another check before it can be applied.
+
+Operator environment overrides, external Embedding Services, and runtimes owned
+by another installation are read-only here. Operations are coordinated with setup
+and native asset installation. Status belongs to the main process, so closing
+the Settings section does not cancel a processing change.
+Source installations identify their owner through the live supervisor lock, so
+Settings in the same checkout can switch processing. Missing ownership is shown
+as unverified rather than attributed to another installation. Older source
+supervisors need one service restart to publish their ownership record.
+Window reload reconnects to the same operation. A main-process interruption leaves
+a local operation receipt; reopening rereads the actual runtime selection,
+preference, model, and authenticated service state. It reports interruption without
+inventing progress, claiming rollback, or restarting installation automatically.
+Finished operation receipts do not reappear as notices after an application
+restart. Current-session failures remain visible, with concise recovery copy in
+the card and the detailed failure retained in the operation status.
+
+The same preference affects an installed Privacy Filter. Its provider and
+fallback are reported independently using its authenticated runtime status.
+Embedding CUDA does not install or qualify Privacy CUDA, and embedding Metal
+does not imply a Privacy provider. Unknown provider status is not GPU readiness.
+
 ## About
 
 About shows the installed Koed Desktop version. Use **Check for updates** to check for a newer release when updates are available for this build. If Koed finds one, use **Download** to open its download.

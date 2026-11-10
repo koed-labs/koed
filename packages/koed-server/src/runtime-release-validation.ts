@@ -10,6 +10,7 @@ import {
   type ProbeContext
 } from "./native-validation-process.js";
 import { compareNativeVersions } from "./native-runtime-catalog.js";
+import { resolveNvidiaSmi } from "./nvidia-smi.js";
 
 const minimumDriver = "550.54.14";
 const minimumCosine = 0.999;
@@ -28,7 +29,10 @@ class NativeValidationError extends Error {
   }
 }
 
-export async function checkCudaHost(signal: AbortSignal) {
+export async function checkCudaHost(
+  signal: AbortSignal,
+  nvidiaSmi = resolveNvidiaSmi()
+) {
   const context: ProbeContext = {
     cwd: "/",
     env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
@@ -36,8 +40,9 @@ export async function checkCudaHost(signal: AbortSignal) {
   };
   let driverVersion: string;
   try {
+    if (!nvidiaSmi) throw new Error("NVIDIA driver tools are not available.");
     const output = await nativeCommand(
-      "/usr/bin/nvidia-smi",
+      nvidiaSmi,
       ["--query-gpu=driver_version", "--format=csv,noheader"],
       context
     );
@@ -71,7 +76,13 @@ export async function checkCudaHost(signal: AbortSignal) {
     ],
     {
       ...context,
-      env: { ...context.env, LD_PRELOAD: "libcuda.so.1" }
+      // Desktop also calls this probe from Electron main. Its executable must
+      // run as Node, just as it does for the private server supervisor.
+      env: {
+        ...context.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        LD_PRELOAD: "libcuda.so.1"
+      }
     }
   );
   if (loaded !== "true")

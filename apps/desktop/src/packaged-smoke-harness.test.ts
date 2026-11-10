@@ -52,6 +52,24 @@ const fixture = (
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("private packaged smoke harness", () => {
+  it("admits only fixed processing choices, never renderer-supplied installer authority", async () => {
+    const f = fixture();
+    f.attach();
+    f.request("acceleration_status");
+    f.request("acceleration_cpu");
+    f.request("acceleration_auto");
+    f.request("acceleration_cuda");
+    f.request("acceleration_cancel");
+    f.request("acceleration_install");
+    await tick();
+    expect(f.calls).toEqual([
+      "acceleration_status",
+      "acceleration_cpu",
+      "acceleration_auto",
+      "acceleration_cuda",
+      "acceleration_cancel"
+    ]);
+  });
   it("requires packaged main and inherited connected IPC, not flag alone", () => {
     for (const [packaged, connected] of [
       [false, true],

@@ -28,6 +28,7 @@ import { removeOwnedRuntimeState, writeRuntimeState } from "./runtime-state.js";
 import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import {
   readCurrentRuntimeOwner,
+  removeStaleGenerationPin,
   withLifecycleLock,
   withSourceNativeStartLock
 } from "./generation-lifecycle.js";
@@ -170,7 +171,8 @@ export interface KoedServerStartOptions {
   provisionLocalApiToken?: typeof provisionLocalApiToken;
   signal?: AbortSignal;
   desktopRuntimeCapability?: DesktopRuntimeCapability;
-  onReady?: () => void;
+  /** Private supervisor status readers may use the effective service credentials. */
+  onReady?: (serviceEnvironment: NodeJS.ProcessEnv) => void;
 }
 
 const runCommand = (
@@ -966,6 +968,9 @@ export const startKoedServer = async ({
 
   ensureKoedHome(paths);
   const supervisorLock = acquireKoedServerSupervisorLock(paths, {
+    ...(execution === "source"
+      ? { sourceOwner: resolveKoedRuntimeOwner() }
+      : {}),
     exclusive: (action) => withLifecycleLock(paths, action)
   });
   if (!supervisorLock.acquired) {
@@ -1006,6 +1011,12 @@ export const startKoedServer = async ({
         throw error;
       }
     };
+    if (execution === "source") {
+      startupPhase = "stale generation pin cleanup";
+      await initializeUnderSupervisorLock(() => {
+        removeStaleGenerationPin(paths);
+      });
+    }
     startupPhase = "device identity initialization";
     await initializeUnderSupervisorLock(() =>
       ensureDeviceIdentity(paths, { environment })
@@ -1720,7 +1731,7 @@ export const startKoedServer = async ({
       }
       emitStartupMilestone("core_services_ready");
       startupReady = true;
-      onReady?.();
+      onReady?.(refreshedEnv);
       console.log(JSON.stringify(status, null, 2));
       emitStartupMilestone("final_supervisor_status_emitted");
       console.log(

@@ -67,7 +67,8 @@ without Koed. With Koed, 12 tasks improved with captured knowledge and estimated
 
 - macOS, Linux, or WSL
 - [Node.js](https://nodejs.org) 24 (build toolchain) and [pnpm](https://pnpm.io); newly built standalone components support Node 24–26
-- [Homebrew](https://brew.sh), for the native runtime
+- Linux/WSL: x64 with glibc 2.35 or later (for example, Ubuntu 22.04+)
+- macOS: [Homebrew](https://brew.sh), for the native runtime when running from source
 
 > [!NOTE]
 > On Windows, run Koed in WSL. Keep `KOED_HOME` and the checkout on the Linux
@@ -83,6 +84,11 @@ pnpm desktop:start
 On first launch, choose **Set up Koed** and confirm. Desktop installs the
 runtime and models it needs, then starts the local services.
 
+The reviewed catalog in this checkout lists the approved runtime downloads.
+Linux/WSL installs its CPU runtime. Compatible NVIDIA devices can also use the
+CUDA download. Koed still requires archive and file checksums, values calculated
+from file contents. See [fresh-home CPU/CUDA testing](docs/running-koed.md#test-source-setup-with-a-fresh-home).
+
 To stop Koed, run:
 
 ```bash
@@ -95,6 +101,7 @@ pnpm koed stop --json
 Run this command. It does not connect an AI Client.
 
 ```bash
+pnpm source-runtime:prepare
 pnpm koed setup core --json
 ```
 

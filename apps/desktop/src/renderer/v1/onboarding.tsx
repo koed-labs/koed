@@ -3,6 +3,11 @@ import type { DesktopStatusStore } from "../services/desktop-commands.js";
 import { useDesktopStatus } from "../state/use-status.js";
 import { Arrow, ClientSetup } from "./onboarding/ClientSetup.js";
 import { MemoryModelStep } from "./onboarding/MemoryModelStep.js";
+import {
+  HardwareStep,
+  SetupAccelerationActions,
+  ProcessingReadiness
+} from "./onboarding/HardwareStep.js";
 import { LoadingKin } from "./onboarding/LoadingKin.js";
 import { OnboardingConfetti } from "./onboarding/OnboardingConfetti.js";
 import {
@@ -48,6 +53,7 @@ export function V1Onboarding({
   const agentSaved = useRef(!!savedAgent?.name.trim());
   const [draftRetry, setDraftRetry] = useState(0);
   const [selected, setSelected] = useState(restored.selected);
+  const [processing, setProcessing] = useState(restored.processing);
   const [selectionInitialized, setSelectionInitialized] = useState(
     restored.selectionInitialized
   );
@@ -81,6 +87,7 @@ export function V1Onboarding({
       step: screen,
       selected,
       selectionInitialized,
+      ...(processing ? { processing } : {}),
       agent
     };
     draftWrites.current = draftWrites.current
@@ -95,7 +102,7 @@ export function V1Onboarding({
         if (mounted.current && sequence === draftSequence.current)
           setDraftError(errorText(cause));
       });
-  }, [screen, selected, selectionInitialized, agent, draftRetry]);
+  }, [screen, selected, selectionInitialized, agent, draftRetry, processing]);
   const running =
     setup.busy || (!setup.error && setup.snapshot?.state === "running");
   const failed =
@@ -103,7 +110,8 @@ export function V1Onboarding({
   // A restored draft cannot bypass current prerequisite inspection.
   const showingClients = screen === "clients" && state.ready && !setup.busy;
   const showingMemory = screen === "memory-model" && state.ready && !setup.busy;
-  const showingPanel = showingClients || showingMemory;
+  const showingHardware = screen === "hardware" && !running;
+  const showingPanel = showingClients || showingMemory || showingHardware;
   const complete = screen === "complete" && state.ready;
   const welcome =
     !setupStarted &&
@@ -194,11 +202,13 @@ export function V1Onboarding({
         aria-label={
           complete
             ? "All set"
-            : showingMemory
-              ? "Choose a Memory Model"
-              : showingClients
-                ? "Connect AI Clients"
-                : "Setting up Koed"
+            : showingHardware
+              ? "Choose local processing"
+              : showingMemory
+                ? "Choose a Memory Model"
+                : showingClients
+                  ? "Connect AI Clients"
+                  : "Setting up Koed"
         }
       >
         <div className="lp-kin-area">
@@ -226,18 +236,37 @@ export function V1Onboarding({
               <p key={feedback.failed ? "failed" : feedback.found}>
                 {showingMemory
                   ? "How shall we remember things?"
-                  : feedback.failed
-                    ? "A little hiccup. We can try again."
-                    : !feedback.scanned
-                      ? "Let’s make some introductions."
-                      : feedback.found
-                        ? "Looks like we’re in good company."
-                        : "A few new faces to meet."}
+                  : showingHardware
+                    ? "Let’s make ourselves at home."
+                    : feedback.failed
+                      ? "A little hiccup. We can try again."
+                      : !feedback.scanned
+                        ? "Let’s make some introductions."
+                        : feedback.found
+                          ? "Looks like we’re in good company."
+                          : "A few new faces to meet."}
               </p>
             </div>
           )}
         </div>
-        {showingClients ? (
+        {showingHardware ? (
+          <HardwareStep
+            draft={processing}
+            onChoice={setProcessing}
+            onBack={() => setScreen("setup")}
+            onContinue={(choice) => {
+              setProcessing(choice);
+              setSetupStarted(true);
+              setScreen("setup");
+              // Without a choice, Continue keeps Operator-managed processing.
+              void (choice
+                ? setup.run(choice)
+                : setup.run(undefined, {
+                    acknowledgeOperatorProcessing: true
+                  }));
+            }}
+          />
+        ) : showingClients ? (
           <ClientSetup
             statusStore={statusStore}
             selected={selected}
@@ -263,8 +292,7 @@ export function V1Onboarding({
             className="lp-primary-button lp-next-button"
             disabled={setup.busy}
             onClick={() => {
-              setSetupStarted(true);
-              void setup.run();
+              setScreen("hardware");
             }}
           >
             Get Started
@@ -314,8 +342,8 @@ export function V1Onboarding({
                       className={`lp-progress-track ${running && state.indeterminate && !state.ready ? "is-indeterminate" : ""}`}
                       style={
                         {
-                          "--lp-stage-start": `${(state.done * 100) / 6}%`,
-                          "--lp-stage-size": `${100 / 6}%`
+                          "--lp-stage-start": `${(state.done * 100) / state.total}%`,
+                          "--lp-stage-size": `${100 / state.total}%`
                         } as React.CSSProperties
                       }
                       role="progressbar"
@@ -338,6 +366,22 @@ export function V1Onboarding({
                     <p className="lp-progress-detail">{state.detail}</p>
                   )}
                 </div>
+                {state.ready && <ProcessingReadiness />}
+                {(setup.snapshot?.activeStage === "acceleration" ||
+                  (failed &&
+                    processing?.preference === "auto" &&
+                    (!setup.snapshot?.activeStage ||
+                      ["services", "verification"].includes(
+                        setup.snapshot.activeStage
+                      )))) && (
+                  <SetupAccelerationActions
+                    failed={failed}
+                    onCpu={(choice) => {
+                      setProcessing(choice);
+                      void setup.run(choice);
+                    }}
+                  />
+                )}
                 {state.ready ? (
                   <button
                     type="button"
@@ -365,13 +409,33 @@ export function V1Onboarding({
                       <button
                         type="button"
                         className="lp-primary-button lp-next-button"
-                        onClick={() => void setup.run()}
+                        onClick={() =>
+                          failed && !setup.snapshot?.reviewProcessing
+                            ? void setup.run()
+                            : setScreen("hardware")
+                        }
                       >
-                        {failed ? "Retry step" : "Get Started"}
+                        {setup.snapshot?.reviewProcessing
+                          ? "Review processing choice"
+                          : failed
+                            ? "Retry step"
+                            : "Get Started"}
                       </button>
                       {failed && (
                         <p className="lp-live-detail">
                           Completed steps are retained when you retry.
+                          {processing && !setup.snapshot?.reviewProcessing && (
+                            <>
+                              {" "}
+                              <button
+                                type="button"
+                                className="lp-text-button"
+                                onClick={() => setScreen("hardware")}
+                              >
+                                Review processing choice
+                              </button>
+                            </>
+                          )}
                         </p>
                       )}
                     </>

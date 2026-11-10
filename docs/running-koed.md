@@ -108,6 +108,57 @@ plane, which includes the CLI. Workspace builds run one at a time to limit
 peak memory use. Desktop packaging uses the same preparation step before
 staging its service runtime.
 
+The catalog in `config/source-runtime-catalogs.json` lists approved CPU/CUDA
+downloads. After the workspace build, preparation adds it to the generated
+Server control plane. Repository review approves its release, asset identities,
+and checksums. A checksum is a value calculated from file contents.
+
+Native versions can be older than the product version. They must meet the
+minimum runtime version, interface requirements, and CPU/CUDA compatibility
+requirements. Preparation stops if the catalog is missing or incompatible.
+A manifest lists the files in a runtime download. Installation still compares
+manifest, archive, and extracted-file checksums. CUDA still requires driver
+tests and tests that run the model.
+
+Version Koed PRs update the catalog from published stable releases. The update
+tool makes sure that downloaded files match their checksums before proposing a
+change. Startup uses the committed catalog and never selects a newer release.
+See [source runtime pin updates](release-versioning.md#source-runtime-pin-updates)
+for the release rules and manual update command.
+
+Koed builds application services from this checkout. The optional
+`config/source-component-catalog.json` lists reviewed Base/Privacy downloads.
+These downloads require an exact product-version match. A missing or older
+catalog leaves these downloads unavailable but permits source Personal CPU/CUDA
+setup. Native catalog updates leave component versions unchanged. Official
+release builds still require a complete component catalog for their product
+version.
+
+The source preparation fingerprint includes these catalog inputs and records
+hashes of the two generated catalog modules. A later workspace build that replaces
+them with null placeholders makes the prepared runtime stale. Preparation repairs
+it only after checking that no source supervisor is using those outputs. Explicit
+release-build catalogs retain their own authority; development pins never replace
+them. The catalog-less tracked source modules and frozen component runtime
+boundary remain unchanged.
+
+Source supervisors record the control-plane installation identity in their
+supervisor lock, alongside the PID and process identity. This lets Desktop and
+the CLI from the same checkout manage the running services without a packaged
+generation pin. A different checkout cannot change processing or stop that
+runtime. Packaged installations continue to require their generation ownership
+records. After upgrading an already-running source supervisor that predates this
+record, restart local services once; missing ownership stays unverified until
+the new supervisor publishes its identity.
+
+Source and packaged supervisors both have up to 60 seconds to finish their
+bounded child-process shutdown before stop falls back to direct signals. This
+lets the Embedding Service finish closing during CPU/GPU changes. Shutdown
+rejects queued model loads, waits for any in-flight model startup to settle, and
+stops its final child before returning. Requests cannot restart the model while
+the HTTP server is closing. Desktop allows 90 seconds for the stop command to
+return before reporting a timeout.
+
 The Server build compiles into a temporary directory and checks every expected
 output plus executable CLI help before replacing generated files. Compilation
 errors and interruptions during compilation leave the previous CLI intact.
@@ -136,6 +187,43 @@ them. The supervisor records a repository lease while it uses the outputs.
 Preparation fails instead of changing stale outputs that a live supervisor
 uses. Stop that supervisor before you prepare the stale runtime. Packaged
 Desktop and standalone `koed-server` packages do not use this fingerprint.
+
+### Test source setup with a fresh home
+
+On Linux/WSL, use Node.js 24, the lockfile's pnpm version, and a glibc 2.35+
+x64 distro. Keep the checkout and test homes on the Linux filesystem. No
+Homebrew installation, CUDA toolkit compilation, catalog override, or checksum
+bypass is required. WSL uses the Windows NVIDIA driver exposed to Linux.
+
+Install dependencies once, then launch a separate empty home for each test:
+
+```bash
+pnpm install
+export KOED_HOME="$(mktemp -d "$HOME/koed-cpu-test.XXXXXX")"
+pnpm desktop:start
+```
+
+Choose **CPU processing** and finish local setup. Confirm that Services reports
+ready CPU processing and that a synthetic Memory can be captured and found.
+Close Desktop and stop that test home's services before the next test:
+
+```bash
+pnpm koed stop --json
+export KOED_HOME="$(mktemp -d "$HOME/koed-cuda-test.XXXXXX")"
+pnpm desktop:start
+```
+
+On a supported NVIDIA device, select CUDA and explicitly approve its download.
+Complete setup and check Settings → Services → Hardware Acceleration: the active
+Embedding Service must report ready CUDA processing. Setup must pass model-backed
+GPU offload and CPU/GPU embedding agreement; seeing the GPU name alone is
+insufficient. Capture and find another synthetic Memory. Switch to CPU in the
+same settings, confirm ready CPU processing, and find that Memory again to check
+CPU recovery without changing the model or stored vectors. For setup-time
+fallback, repeat with another empty home, cancel CUDA before activation, choose
+**Continue with CPU**, and confirm setup completes on CPU. Stop each test home's
+services before changing `KOED_HOME`; keep test homes until diagnostics are no
+longer needed. Do not remove an existing home to make these tests fresh.
 
 Release assembly uses one `@koed/app-runtime-stage` production deployment as
 source for base and optional privacy payloads. `scripts/component-assembly.mjs`
@@ -254,7 +342,11 @@ and Base with Privacy. `koed components cleanup --json` removes only verified in
 generations and retains the two newest eligible generations. Cleanup never
 removes User data or models.
 
-Development builds may lack a compiled catalog. Component installation then fails closed; use the matching trusted release instead of bypassing verification or supplying ad hoc CLI/environment trust inputs.
+Raw development builds may lack a compiled catalog. The documented source flow
+runs `pnpm source-runtime:prepare` to embed the reviewed matching catalogs before
+Desktop starts. A missing or mismatched source catalog fails preparation; update
+the reviewed build input or use the matching trusted release. Do not bypass
+verification or supply ad hoc CLI/environment trust inputs.
 
 Task 7 focused evidence (Node `v24.13.1`):
 
@@ -1387,11 +1479,19 @@ Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app suppo
 
 ### Packaged Desktop first-run
 
-Personal Desktop onboarding proceeds through local setup, AI Client connection,
+Personal Desktop onboarding proceeds through hardware choice, local setup, AI Client connection,
 Memory Model selection, and completion. The opening screen shows Kin and
-**Get Started**. Status text and progress appear once setup begins. Onboarding follows the system appearance with
+**Get Started** opens the hardware choice without changing configuration or downloading CUDA.
+The page shows the embedding model separately from CPU, CUDA, or Metal processing.
+Fresh Linux setup selects CPU; supported Apple Silicon selects Metal. Existing
+saved preferences are retained. GPU detection is host capability, not evidence
+that the embedding model has run. Unknown GPU detection still permits CPU.
+**Continue** authorizes setup with the reviewed choice. Operator-managed or
+external processing stays read-only. Restored drafts are checked against current
+configuration before they can be applied and never replay consent automatically.
+Status text and progress appear once setup begins. Onboarding follows the system appearance with
 no theme toggle. Kin can be dragged to spin; a fast spin briefly startles it.
-Reduced motion disables release momentum. **Get Started** authorizes the existing six-stage local workflow;
+Reduced motion disables release momentum. The local workflow retains its existing steps;
 progress reflects completed steps and actual download bytes. Download progress
 streams from the installer into Desktop with a transferred-byte readout. The bar
 uses fractional progress between percentage labels; steps without a known total
@@ -1401,6 +1501,45 @@ completed installation work. Reopening during a run inspects its current state
 and continues checking until it ends, even when the original window's progress
 subscription is gone. Long setup errors and expanded connection details scroll
 within the window so recovery controls remain reachable.
+After setup, the authenticated Embedding Service reports the active CPU, Metal,
+or CUDA backend. CPU fallback, stopped services, and unavailable observations
+remain distinct. The saved preference and this live status also appear in
+Settings → Services → Hardware Acceleration.
+
+CUDA is an optional explicit download on supported Linux NVIDIA devices. Its
+selection shows catalog-derived download and free-disk requirements, including
+any required CPU core update. Setup runs in this order: admitted CPU runtime,
+pinned embedding model, optional CUDA installation and model-backed inference
+validation, services, AI-client integration discovery, and final verification.
+Desktop saves that verification result so the final onboarding check can confirm
+core setup after AI Client connection and Memory Model selection.
+The extra acceleration step is included only after explicit opt-in. Validation
+checks offload and CPU/GPU vector agreement; device discovery alone cannot
+complete it. Automatic processing is saved only after successful installation.
+
+Linux hardware choice and CUDA host validation share executable discovery for
+`nvidia-smi`: `/usr/bin`, `/bin`, `/usr/local/bin`, `/usr/local/nvidia/bin`, then
+WSL's `/usr/lib/wsl/lib`. Each candidate must be an executable file. Desktop does
+not require a shell PATH change or a symlink for WSL. Both paths still require
+NVIDIA driver 550.54.14 or later and a loadable `libcuda.so.1`, followed by the
+model-backed validation above. In WSL, the Windows NVIDIA driver supplies CUDA;
+follow [NVIDIA's WSL guide](https://docs.nvidia.com/cuda/wsl-user-guide/) rather
+than installing a Linux display driver inside the distro.
+
+Cancel is available while CUDA work can still stop before activation. Desktop
+waits for downloads/probes and staging cleanup. **Retry step** rechecks successful
+prerequisites; **Continue with CPU** retains the core, model, and any safely
+installed CUDA payloads, then continues normal setup. After activation or an
+interrupted observation, Desktop rereads actual state and does not claim an
+automatic rollback. A newer explicit stop prevents automatic service recovery.
+
+Window reload does not cancel authorized work. Main owns the operation and both
+onboarding and Settings reconnect to its current ID and sequence. Local receipts
+record whether setup or a processing change was interrupted by main exiting.
+Reopening checks persisted assets, configuration, and live service state; it
+does not resume an installation from a draft or replay an old consent. Review the
+current processing choice before an explicit retry.
+
 After core setup, detected Codex, Claude Code, and Pi installations are initially
 selected for connection. Selection and discovery do not configure them. **Connect**
 authorizes changes to the selected AI Clients only. Failed connections and sign-in
@@ -1457,7 +1596,22 @@ require these local downloads. See
 [Optional Privacy Filter installation](optional-privacy-installation.md) for
 provider selection, cancellation, retry, and recovery.
 
-Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists the public service and private llama-server child ports in `KOED_HOME/config/local-ports.json`, and uses the same inspect-before-change setup workflow as source Desktop. Allocating the child ports per Koed home allows independent local installations to run concurrently without sharing model processes. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
+Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists the public service and private llama-server child ports in `KOED_HOME/config/local-ports.json`, and uses the same inspect-before-change setup workflow as source Desktop. Allocating the child ports per Koed home allows independent local installations to run concurrently without sharing model processes.
+
+Fresh Linux Desktop setup uses the independent release CPU core on supported
+x64/glibc hosts. Compiled catalog pins, checksum admission, compatible core/add-on
+revisions, stopped-runtime ownership locks, and atomic selection remain required.
+The verified private Desktop supervisor carries installation authority; renderer
+input cannot supply an executable, artifact URL, hash, or ownership capability.
+Once selected, native embedding and Postgres executables must come from that
+admitted selection. Missing selected files fail rather than silently choosing a
+different bundled executable. A compatible older core remains usable.
+
+Existing Homebrew or combined packaged providers retain their provisioning path;
+Desktop does not silently migrate them to release composition. macOS retains its
+packaged-assets/Homebrew decision. Unsupported hosts and unavailable catalog
+assets produce an actionable setup failure. Native Windows packaged support and
+WSL qualification are not established by these Desktop changes.
 
 `desktop:package` and `desktop:package:smoke:mac` build unsigned/ad-hoc local smoke artifacts. `desktop:package:internal:mac` prepares unsigned macOS `dmg` and `zip` outputs for internal testing, including packaged native runtime assets when `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. Production `release.yml` uses electron-builder's built-in Developer ID signing/notarization after protected `desktop-release` environment approval. Reviewed `main` build hooks share the credential-bearing process. Signature/team/staple checks, packaged smoke, composition policy, and checksums gate publication. Manual asset recovery is disabled; old rebuilds require patch releases. Administrator credential/environment setup and first signed release clean-Mac acceptance remain required; see [Desktop notarization](desktop-notarization.md).
 
@@ -1485,6 +1639,13 @@ KOED_EMBEDDING_ACCELERATION=metal \
   pnpm smoke:bundled-local -- --full --install-runtime --json
 ```
 
+For a packaged candidate with native assets and an eligible installed GPU backend,
+add `--verify-acceleration` to the packaged Desktop smoke. It uses the real Desktop
+manager to switch CPU → automatic, generates synthetic embeddings on each backend,
+and checks the model digest, vector dimensions, CPU/GPU agreement, and independent
+Privacy state. It does not download CUDA. Keep exact-build evidence and qualify
+release-native artifacts separately from Homebrew-based development smoke assets.
+
 The command must pass capture, persisted embedding, and semantic Recall. The
 Embedding Service startup event must report `acceleration_backend` as `metal`
 with `gpu_layers` set to `all`. Repeat once with
@@ -1492,10 +1653,12 @@ with `gpu_layers` set to `all`. Repeat once with
 while reporting zero GPU layers. A forced Metal run that cannot discover or
 start Metal must fail rather than silently use CPU.
 
-Koed Desktop exposes a Hardware acceleration toggle in General preferences.
-The preference is stored in `KOED_HOME/config/server.json`; changing it restarts
-the local Koed services. An explicit Operator environment policy remains
-authoritative and makes the toggle read-only. Accelerated embedding
+Koed Desktop exposes CPU/GPU processing in Settings → Services → Hardware
+Acceleration. The preference is stored in `KOED_HOME/config/server.json`;
+changing it restarts running local Koed services. A stopped installation remains
+stopped. An explicit Operator environment policy remains authoritative and makes
+the control read-only. General graphics acceleration controls Desktop rendering
+separately. Accelerated embedding
 models unload after five idle minutes by default and reload on the
 next request. Set the corresponding idle-unload value to `0` only when keeping
 the model resident is an intentional resource decision.
