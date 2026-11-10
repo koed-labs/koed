@@ -177,12 +177,12 @@ verification repeated before each mutation. As with the Linux and Desktop
 release paths, there is no live revocation service.
 
 The verify-only job has `actions: read` for private Actions artifacts and
-`contents: read`, with checkout credentials not persisted. GitHub draft releases
-and their assets may require `contents: write`, so this job can fail closed when
-reading the draft; a genuinely read-only draft access path must be qualified, not
-replaced with a write-capable verifier token. Release remains blocked until these
-issues, real GitHub artifact transport, end-to-end
-workflow, and native-host core validation have been qualified.
+`contents: write`, with checkout credentials not persisted. GitHub shows draft
+releases and their assets only to tokens with write access, so a read-only
+token cannot read the draft. The verifier itself only issues GET requests and
+receives no publication or signing credentials. The macOS path remains
+unqualified until real GitHub artifact transport, the end-to-end workflow, and
+native-host core validation have run.
 
 Validate the staged runtime:
 

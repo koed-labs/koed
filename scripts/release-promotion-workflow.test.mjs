@@ -16,7 +16,7 @@ test("candidate verification has read-only artifact access and no persisted cred
   const verification = jobs["verify-release-candidate"];
   assert.ok(identity, "missing independent build identity job");
   assert.deepEqual(verification.permissions, {
-    contents: "read",
+    contents: "write",
     actions: "read"
   });
   const checkout = verification.steps.find((step) =>

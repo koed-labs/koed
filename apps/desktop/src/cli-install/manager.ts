@@ -65,7 +65,8 @@ export const shellStartupFiles = (
 
 // The preferred login file can change after setup (for example when the User
 // later creates .bash_profile), so removal checks every Bash login file that
-// could hold the block. Unsafe file types must fail closed rather than be skipped.
+// could hold the block. Unsafe file types fail closed rather than being
+// skipped, except a symlink whose target holds no Koed block (see shell-path).
 export const shellPathRemovalFiles = (
   home: string,
   shell: string | undefined

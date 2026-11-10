@@ -3,6 +3,7 @@ import {
   closeSync,
   constants,
   fstatSync,
+  lstatSync,
   openSync,
   renameSync,
   rmSync,
@@ -62,6 +63,30 @@ const readRc = (path: string): RcSnapshot | null => {
   }
 };
 
+// A symlinked startup file (for example one managed by stow or chezmoi) is
+// never written through. Removal may skip it only when its target holds no
+// Koed markers; the target is read, not modified.
+const symlinkWithoutManagedBlock = (path: string): boolean => {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return false;
+  } catch {
+    return false;
+  }
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > 1024 * 1024) return false;
+    const contents = readBoundedUtf8(descriptor, 1024 * 1024);
+    return !contents.includes(begin) && !contents.includes(end);
+  } catch (error) {
+    // A dangling link has no target that could hold a block.
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+
 const buildUpdatedContent = (
   original: string,
   operation: ShellPathMutation["operation"],
@@ -116,6 +141,8 @@ export const updateManagedPathBlock = async (
       "Launcher directory contains unsupported control characters."
     );
   }
+  if (input.operation === "remove" && symlinkWithoutManagedBlock(input.rcPath))
+    return;
   const before = readRc(input.rcPath);
   const original = before?.contents ?? "";
   const updated = buildUpdatedContent(

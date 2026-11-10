@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   renameSync,
@@ -896,7 +897,52 @@ describe("desktop CLI install adapter", () => {
     expect(readCliInstallSettings(settingsFile).pathDirectory).toBeUndefined();
   });
 
-  it.each(["symlink", "dangling", "directory", "fifo"])(
+  it.each(["symlink", "dangling"])(
+    "skips a %s login path that holds no Koed block without touching its target",
+    async (kind) => {
+      vi.stubEnv("SHELL", "/bin/zsh");
+      const root = fixture(),
+        rc = join(root, ".profile"),
+        target = join(root, "dotfiles-profile"),
+        settingsFile = join(root, "settings.json");
+      writeFileSync(join(root, "cli.js"), "// entry\n");
+      const manager = createDesktopCliInstallManager({
+        appPath: root,
+        helperPath: join(root, "Koed"),
+        cliPath: join(root, "cli.js"),
+        koedHome: join(root, "home"),
+        expectedVersion: "0.9.0",
+        currentPath: "",
+        homePath: root,
+        platform: "darwin",
+        probeHelper: async () => true,
+        saveSettings: (settings) =>
+          writeCliInstallSettings(settingsFile, settings)
+      });
+      await manager.launcher("install", {
+        consent: true,
+        destination: join(root, "old", "koed")
+      });
+      await manager.updatePath("add", true);
+      expect(readFileSync(join(root, ".zshrc"), "utf8")).toMatch(
+        /koed managed/
+      );
+      if (kind === "symlink") writeFileSync(target, "unrelated\n");
+      symlinkSync(target, rc);
+      await manager.updatePath("remove", true);
+      expect(readFileSync(join(root, ".zshrc"), "utf8")).not.toMatch(
+        /koed managed/
+      );
+      expect(
+        readCliInstallSettings(settingsFile).pathDirectory
+      ).toBeUndefined();
+      expect(lstatSync(rc).isSymbolicLink()).toBe(true);
+      if (kind === "symlink")
+        expect(readFileSync(target, "utf8")).toBe("unrelated\n");
+    }
+  );
+
+  it.each(["directory", "fifo"])(
     "refuses Bash cleanup when a login path is %s and keeps tracking",
     async (kind) => {
       vi.stubEnv("SHELL", "/bin/zsh");
@@ -906,8 +952,6 @@ describe("desktop CLI install adapter", () => {
       const oldDirectory = join(root, "old"),
         settingsFile = join(root, "settings.json");
       writeFileSync(target, "unrelated\n");
-      if (kind === "symlink") symlinkSync(target, rc);
-      if (kind === "dangling") symlinkSync(join(root, "missing"), rc);
       if (kind === "directory") mkdirSync(rc);
       if (kind === "fifo") execFileSync("mkfifo", [rc]);
       writeCliInstallSettings(settingsFile, {
