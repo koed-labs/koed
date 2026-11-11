@@ -122,9 +122,11 @@ const writeFakeDynamicMemoryAnswerAppServer = (
       | "refineSearch"
       | "scanLoop"
       | "scanOnlyNotFound"
+      | "eventWindowBudget"
       | "timeoutThenValid";
     answer?: Record<string, unknown>;
     capturePromptsPath?: string;
+    captureToolResponsesPath?: string;
     requiredPromptSnippets?: string[];
     retryPromptSnippets?: string[];
   } = {}
@@ -150,6 +152,7 @@ const mode = ${JSON.stringify(options.mode ?? "happy")};
 const requiredPromptSnippets = ${JSON.stringify(options.requiredPromptSnippets ?? [])};
 const retryPromptSnippets = ${JSON.stringify(options.retryPromptSnippets ?? [])};
 const capturePromptsPath = ${JSON.stringify(options.capturePromptsPath ?? null)};
+const captureToolResponsesPath = ${JSON.stringify(options.captureToolResponsesPath ?? null)};
 const attemptFile = ${JSON.stringify(attemptFile)};
 const answer = ${JSON.stringify(
       options.answer ?? {
@@ -254,6 +257,12 @@ lineReader.on("line", (line) => {
   }
   if (message.id === 9002) {
     const text = message.result?.contentItems?.[0]?.text ?? "";
+    if (captureToolResponsesPath) fs.appendFileSync(captureToolResponsesPath, text + "\\n");
+    if (mode === "eventWindowBudget") {
+      if (!text.includes("budget_exhausted") || !text.includes("complete event context observation")) process.exit(73);
+      sendFinal(notFoundAnswer);
+      return;
+    }
     if (mode === "scanLoop") {
       if (!text.includes("validation_error")) {
         console.error("expected scan budget validation error, got " + text.slice(0, 200));
@@ -427,6 +436,453 @@ const runPromptBudgetRegression = (
   );
 
 describe("memory answer worker", () => {
+  const eventWindow = (matched = "event-b") => ({
+    nodeId: `hit-${matched}`,
+    visibility: "personal",
+    sourceItems: ["event-a", "event-b", "event-c"].map(
+      (sourceId, position) => ({
+        kind: "memory_event",
+        sourceTable: "memory_events",
+        sourceId,
+        position,
+        visibility: "personal",
+        actor: position === 1 ? "assistant" : "user",
+        text: `${sourceId} ${"full canonical event ".repeat(350)} EXACT_EVENT_END_${sourceId}`,
+        provenance: {
+          contextRole:
+            sourceId === matched
+              ? "matched"
+              : position === 0
+                ? "preceding"
+                : "following",
+          matchedSourceIds: [matched]
+        }
+      })
+    )
+  });
+
+  it("deduplicates complete overlapping event windows with canonical neighbor citations and stable handles", async () => {
+    const search = vi.fn(async () => ({
+      hits: [eventWindow(), eventWindow("event-a")]
+    }));
+    const result = await runScriptedMemoryAnswerFirstPass({
+      client: {
+        search,
+        async expand() {
+          return {};
+        }
+      },
+      query: "What was decided?",
+      retrievalScope: "personal",
+      searchDomain: "all",
+      limit: 10,
+      maxSearches: 1
+    });
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ include_event_context: true })
+    );
+    expect(result.evidence).toHaveLength(3);
+    for (const item of result.evidence as Array<Record<string, unknown>>) {
+      expect(item.summaryText).toBe(
+        eventWindow().sourceItems.find(
+          (source) => source.sourceId === item.sourceId
+        )!.text
+      );
+      expect(item.citation).toMatchObject({
+        sourceType: "memory_event",
+        sourceId: item.sourceId,
+        sourceChunkIndex: 0
+      });
+      expect(item.actor).toBeDefined();
+    }
+    expect(
+      result.evidence.find(
+        (item) => (item as { sourceId: string }).sourceId === "event-a"
+      )
+    ).toMatchObject({
+      provenance: {
+        contextRole: "matched",
+        matchedSourceIds: ["event-b", "event-a"]
+      }
+    });
+    const selection = parseStructuredMemoryAnswer({
+      ...answerObject("The matched event supplies support."),
+      evidence: [{ evidence_index: 1 }]
+    });
+    const selected = evidenceSelectedByAnswer(result.evidence, selection);
+    expect(
+      evidenceSelectedByAnswer(
+        [
+          ...result.evidence,
+          {
+            sourceType: "memory_event",
+            sourceId: "later-event",
+            sourceChunkIndex: 0
+          }
+        ],
+        selection
+      )
+    ).toEqual(selected);
+    expect(selected).toEqual([
+      expect.objectContaining({ sourceId: "event-b" })
+    ]);
+  });
+
+  it("presents whole initial canonical events beyond both legacy string limits", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-whole-events-")
+    );
+    try {
+      const window = eventWindow();
+      const response = await answerWithMemoryWorker(
+        { evidenceBundle: { query: "What was decided?", evidence: [window] } },
+        {
+          client: {
+            async search() {
+              return { hits: [] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                useTools: false,
+                requiredPromptSnippets: window.sourceItems.map(
+                  (item) => item.text
+                ),
+                answer: answerObject("The preceding event supplies the answer.")
+              })
+          })
+        }
+      );
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      expect(response.evidenceBundle?.evidence).toEqual([
+        expect.objectContaining({
+          sourceId: "event-a",
+          summaryText: window.sourceItems[0]!.text
+        })
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("admits the first complete overlapping window when the event budget cannot fit their union", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-overlapping-window-budget-")
+    );
+    try {
+      const first = eventWindow();
+      const second = {
+        ...eventWindow("event-d"),
+        sourceItems: [
+          first.sourceItems[2]!,
+          ...eventWindow("event-d")
+            .sourceItems.slice(1)
+            .map((item, index) => ({
+              ...item,
+              sourceId: `event-${index === 0 ? "d" : "e"}`,
+              text: `SECOND_WINDOW_ONLY_${index}`
+            }))
+        ]
+      };
+      const capture = path.join(directory, "prompts.jsonl");
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What was decided?",
+            evidence: [first, second]
+          }
+        },
+        {
+          client: {
+            async search() {
+              return { hits: [] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "3",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                useTools: false,
+                capturePromptsPath: capture,
+                requiredPromptSnippets: first.sourceItems.map(
+                  (item) => item.text
+                ),
+                answer: {
+                  ...answerObject("The shared neighbor supplies support."),
+                  evidence: [{ evidence_index: 2, support: "event-c" }]
+                }
+              })
+          })
+        }
+      );
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      const prompt = JSON.parse(
+        fs.readFileSync(capture, "utf8").trim()
+      ) as string;
+      expect(prompt).not.toContain("SECOND_WINDOW_ONLY");
+      expect(response.evidenceBundle?.evidence).toEqual([
+        expect.objectContaining({
+          sourceId: "event-c",
+          sourceChunkIndex: 0,
+          eventContextWindowIds: [expect.any(String)],
+          citation: {
+            sourceType: "memory_event",
+            sourceId: "event-c",
+            sourceChunkIndex: 0,
+            visibility: "personal",
+            provenance: {
+              contextRole: "following",
+              matchedSourceIds: ["event-b"]
+            }
+          }
+        })
+      ]);
+      const promptDirectory = path.join(directory, "prompt-trimming");
+      fs.mkdirSync(promptDirectory);
+      const promptCapture = path.join(promptDirectory, "prompts.jsonl");
+      const trimmedResponse = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What was decided?",
+            evidence: [first, second]
+          }
+        },
+        {
+          client: {
+            async search() {
+              return { hits: [] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(promptDirectory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_PROMPT_TOKENS: String(
+              countTokensForModel(prompt, { model: "gpt-5.6-luna" }).tokens +
+                100
+            ),
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(promptDirectory, {
+                useTools: false,
+                capturePromptsPath: promptCapture,
+                requiredPromptSnippets: first.sourceItems.map(
+                  (item) => item.text
+                ),
+                answer: {
+                  ...answerObject("The shared neighbor remains available."),
+                  evidence: [{ evidence_index: 2, support: "event-c" }]
+                }
+              })
+          })
+        }
+      );
+      expect(
+        trimmedResponse.localMemoryWorker.usedFallback,
+        trimmedResponse.localMemoryWorker.errorMessage
+      ).toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(promptCapture, "utf8").trim()) as string
+      ).not.toContain("SECOND_WINDOW_ONLY");
+      expect(trimmedResponse.evidenceBundle?.evidence).toEqual([
+        expect.objectContaining({
+          sourceId: "event-c",
+          eventContextWindowIds: [expect.any(String)]
+        })
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { MEMORY_ANSWER_MAX_CANDIDATES: "2" },
+    { MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "2" },
+    { MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "256" },
+    { MEMORY_ANSWER_MAX_PROMPT_TOKENS: "512" }
+  ])(
+    "explicitly rejects a window that cannot fit atomically: %j",
+    async (budget) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-whole-event-budget-")
+      );
+      try {
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: {
+              query: "What was decided?",
+              evidence: [eventWindow()]
+            }
+          },
+          {
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              async expand() {
+                return {};
+              }
+            },
+            responseDetail: "internal",
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  useTools: false
+                }),
+              ...budget
+            })
+          }
+        );
+        expect(response.localMemoryWorker.usedFallback).toBe(true);
+        expect(response.localMemoryWorker.errorMessage).toContain(
+          "complete event context window"
+        );
+        expect(response.evidenceBundle?.evidence).toEqual([]);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("presents complete follow-up event windows without truncating the tool observation", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-event-tool-")
+    );
+    try {
+      const capture = path.join(directory, "observations.jsonl");
+      const window = eventWindow();
+      window.sourceItems[0]!.text += " KOE144_DYNAMIC_TOOL_EVIDENCE";
+      const search = vi.fn(async (input: Record<string, unknown>) =>
+        input.retrieval_stage === "score_scan"
+          ? { retrieval: { stages: [{ stage: "leaf_search", count: 1 }] } }
+          : { hits: [window] }
+      );
+      const response = await answerWithMemoryWorker(
+        { evidenceBundle: { query: "What was decided?", evidence: [] } },
+        {
+          client: {
+            search,
+            async expand() {
+              return {};
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                captureToolResponsesPath: capture
+              })
+          })
+        }
+      );
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      const observation = JSON.parse(
+        fs.readFileSync(capture, "utf8").trim()
+      ) as { hits: Array<{ item: { summaryText: string } }> };
+      expect(observation.hits).toHaveLength(3);
+      for (const [index, item] of window.sourceItems.entries())
+        expect(observation.hits[index]!.item.summaryText).toBe(item.text);
+      expect(
+        search.mock.calls.every(
+          ([input]) => input.include_event_context === true
+        )
+      ).toBe(true);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves exact canonical expansion text and the same event identity used by search", () => {
+    const text = `  ${"canonical event bytes ".repeat(500)}\nFINAL_EVENT_BYTES  `;
+    const [event] = evidenceFromExpansion({
+      nodeId: "leaf",
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceId: "event-a",
+          actor: "user",
+          position: 17,
+          text
+        }
+      ]
+    });
+    expect(event).toMatchObject({
+      sourceType: "memory_event",
+      sourceId: "event-a",
+      sourceChunkIndex: 0,
+      summaryText: text,
+      actor: "user",
+      fullCanonicalEvent: true
+    });
+  });
+
+  it("rejects a whole follow-up observation when the remaining prompt budget cannot admit it", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-event-tool-budget-")
+    );
+    try {
+      const capture = path.join(directory, "observations.jsonl");
+      const window = eventWindow();
+      const response = await answerWithMemoryWorker(
+        { evidenceBundle: { query: "What was decided?", evidence: [] } },
+        {
+          client: {
+            async search(input) {
+              return input.retrieval_stage === "score_scan"
+                ? {
+                    retrieval: { stages: [{ stage: "leaf_search", count: 1 }] }
+                  }
+                : { hits: [window] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_PROMPT_TOKENS: "3000",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                mode: "eventWindowBudget",
+                captureToolResponsesPath: capture
+              })
+          })
+        }
+      );
+      const observation = JSON.parse(
+        fs.readFileSync(capture, "utf8").trim()
+      ) as { kind: string; message: string };
+      expect(observation.kind).toBe("budget_exhausted");
+      expect(observation.message).toContain(
+        "complete event context observation"
+      );
+      expect(response.evidenceBundle?.evidence).toEqual([]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     [
       "OAuth refresh failed (401): invalid_refresh_token",

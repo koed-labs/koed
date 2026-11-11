@@ -34,6 +34,24 @@ PDS is not Directed Hosted Cross-Identity Sync. It is a symmetric Personal
 Device Group specialization under Cross-Identity Sync umbrella language in
 [ADR 0012](adr/0012-symmetric-replicated-personal-memory.md).
 
+### LCM Boundary Context Dependencies
+
+Context-aware leaf artifacts use `depth0-source-items-context-v2` and may include
+one optional `contextEventIds` entry, separate from `orderedSourceIds`. The
+context event helps finish a boundary-cut statement or tool result; it is not
+covered source. Its identity is bound into the artifact content, logical node
+and semantic-work identities. Omitting the field preserves historical
+no-context artifact identities.
+
+Export requires a mapped live context event in the same source closure. Import
+checks that it is the actual immediate next event, with matching ownership,
+Conversation, visibility and source closure, and with normal LCM eligibility,
+deletion and recall-readiness checks. An excluded neighbour cannot be skipped
+to admit a later one. Dependency storage does not add a covered source row;
+subsequent context invalidation also invalidates dependent leaves, rollups and
+embeddings. Incompatible peers must not reuse contextual artifacts as though
+they were historical no-context leaves.
+
 ## 1. Scope and trust boundary
 
 PDS has one protocol identifier: `koed/pds/v1`. A receiver accepts only that

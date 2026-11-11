@@ -120,6 +120,25 @@ Team Workspace.
 
 The removed `MEMORY_ANSWER_TIMEOUT_MS` name has no compatibility alias.
 
+## Evidence Selection And Budgets
+
+Personal Memory synthesis requests canonical event context by default. Embedding
+chunks locate matches; the local worker receives the complete matched Memory
+Event plus its immediate preceding and following events in the same authorised
+Conversation. Neighbours use the existing `captured_at,id` order. Deleted,
+ineligible or inaccessible neighbours are gaps, not permission to substitute a
+more distant event. Project, Session, time, PDS-readiness and encryption
+boundaries still apply. Team recall retains its separately authorised shared
+representations; this does not grant access to personal neighbouring events.
+
+Each event keeps its own source identity, actor and citation. Overlapping windows
+are deduplicated, and complete windows are admitted against existing evidence
+and prompt-token budgets. Canonical event text is not shortened to a preview to
+make it fit. If no complete window fits, the worker reports insufficient bounded
+context rather than presenting a cut statement as complete evidence. Direct
+diagnostic searches may opt in with `include_event_context: true`; ordinary
+diagnostic search behaviour is unchanged.
+
 ## AI Client Delivery
 
 Every route below uses the same durable task and the explicit submit-and-collect

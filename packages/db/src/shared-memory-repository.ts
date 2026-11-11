@@ -218,7 +218,10 @@ import {
   assertionSelect,
   type AssertionRow
 } from "./curated-memory-support.js";
-import { sessionExactCuratedAssertionSql } from "./approval-activity-sql.js";
+import {
+  semanticMemoryEventEligibleSql,
+  sessionExactCuratedAssertionSql
+} from "./approval-activity-sql.js";
 import {
   buildCapturedSessionSyncContributor,
   buildCapturedSessionSyncEvent,
@@ -6756,9 +6759,17 @@ export const createSharedMemoryRepository = (
     }
   ): Promise<Map<string, LoadedNodeItem>> => {
     const result = await client.query<Row>(
-      `select mn.*,mns.memory_event_id,mns.source_order
+      `select mn.*,mns.memory_event_id,mns.source_order,
+              context.memory_event_id as context_event_id,
+              (ev.id is not null and ev.owner_user_id=mn.owner_user_id
+                and ev.session_id=mn.session_id and ev.visibility='personal'
+                and ev.invalidated_at is null and ev.personal_deleted_at is null
+                and ev.include_in_lcm=true and pds_session_recall_ready(ev.session_id)
+                and ${semanticMemoryEventEligibleSql("ev")}) as context_eligible
          from memory_nodes mn
          join memory_node_sources mns on mns.memory_node_id=mn.id
+         left join memory_node_context_events context on context.memory_node_id=mn.id
+         left join memory_events ev on ev.id=context.memory_event_id
         where mn.owner_user_id=$1
           and mn.session_id=$2
           and mn.visibility='personal'
@@ -6792,6 +6803,21 @@ export const createSharedMemoryRepository = (
       if (matchingCount !== sourceEventIds.length) {
         throw new SharedMemoryConflictError(
           "LCM leaf mixes shared and unshared source provenance"
+        );
+      }
+      const contextEventIds = uniqueOrderedUuids(
+        rows
+          .map((row) => nullableString(row.context_event_id))
+          .filter((id): id is string => id !== null)
+      );
+      if (
+        rows.some(
+          (row) => row.context_event_id && row.context_eligible !== true
+        ) ||
+        contextEventIds.some((eventId) => !input.mappedEvents.has(eventId))
+      ) {
+        throw new SharedMemoryConflictError(
+          "LCM context dependency is outside the authorized source revision"
         );
       }
       const row = rows[0]!;
@@ -6875,7 +6901,7 @@ export const createSharedMemoryRepository = (
         }
       });
       const sourceCursor = Math.max(
-        ...sourceEventIds.map(
+        ...[...sourceEventIds, ...contextEventIds].map(
           (eventId) => input.mappedEvents.get(eventId)!.sourceCursor
         )
       );
@@ -6890,7 +6916,15 @@ export const createSharedMemoryRepository = (
         lcmAlgorithmVersion: stringValue(row.lcm_algorithm_version),
         structured,
         sourceEventIds,
-        eventRevisionHashes
+        eventRevisionHashes,
+        ...(contextEventIds.length
+          ? {
+              contextEventIds,
+              contextRevisionHashes: contextEventIds.map(
+                (eventId) => input.mappedEvents.get(eventId)!.mappedRevisionHash
+              )
+            }
+          : {})
       });
       loaded.set(nodeId, {
         item,
@@ -7128,6 +7162,7 @@ export const createSharedMemoryRepository = (
         }
       });
       const sourceCursor = Math.max(
+        ...childNodes.map((child) => child.manifestEntry.sourceCursor),
         ...descendantSourceEventIds.map(
           (eventId) => input.mappedEvents.get(eventId)!.sourceCursor
         )
@@ -7183,6 +7218,7 @@ export const createSharedMemoryRepository = (
       ownerUserId: string;
       localSessionId: string;
       sourceRevision: number;
+      syncRelationshipId: string;
     }
   ): Promise<Pick<AuthoritativeSourceMaterial, "items" | "manifest">> => {
     const result = await client.query<AssertionRow>(
@@ -7279,6 +7315,7 @@ export const createSharedMemoryRepository = (
         active_count: string;
         exact_count: string;
         invalid_node_count: string;
+        invalid_context_count: string;
         root_kind: "leaf" | "rollup";
         source_ids: string[];
       }>(
@@ -7298,7 +7335,20 @@ export const createSharedMemoryRepository = (
                 array_agg(distinct me.id) filter (where me.id is not null) as source_ids,
                 count(distinct me.id)::text as active_count,
                 count(distinct me.id) filter (where me.session_id=$3)::text as exact_count,
-                count(distinct d.id) filter (where node.id is null)::text as invalid_node_count
+                count(distinct d.id) filter (where node.id is null)::text as invalid_node_count,
+                (select count(*)::text from descendants context_descendant
+                  join memory_node_context_events context on context.memory_node_id=context_descendant.id
+                  where context_descendant.root_id=root.id and not exists (
+                    select 1 from memory_events ev
+                    join sync_event_mappings mapping on mapping.local_memory_event_id=ev.id
+                    where ev.id=context.memory_event_id and ev.owner_user_id=$2
+                      and ev.session_id=$3 and ev.visibility='personal'
+                      and ev.invalidated_at is null and ev.personal_deleted_at is null
+                      and ev.include_in_lcm=true and pds_session_recall_ready(ev.session_id)
+                      and ${semanticMemoryEventEligibleSql("ev")}
+                      and mapping.sync_relationship_id=$4 and mapping.active=true
+                      and mapping.invalidated_at is null and mapping.source_cursor <= $5
+                  )) as invalid_context_count
            from memory_nodes root
            join descendants d on d.root_id=root.id
            left join memory_nodes node on node.id=d.id
@@ -7311,7 +7361,13 @@ export const createSharedMemoryRepository = (
             and me.invalidated_at is null and me.personal_deleted_at is null
           where root.id=any($1::uuid[]) and root.owner_user_id=$2
           group by root.id,root.source_event_count,root.kind`,
-        [lcmNodeIds, input.ownerUserId, input.localSessionId]
+        [
+          lcmNodeIds,
+          input.ownerUserId,
+          input.localSessionId,
+          input.syncRelationshipId,
+          input.sourceRevision
+        ]
       )
     ]);
     const conversationIds = new Set(conversationRows.rows.map((row) => row.id));
@@ -7451,7 +7507,8 @@ export const createSharedMemoryRepository = (
             Number(row.active_count) > 0 &&
             Number(row.active_count) === Number(row.exact_count) &&
             Number(row.active_count) === Number(row.expected_count) &&
-            Number(row.invalid_node_count) === 0
+            Number(row.invalid_node_count) === 0 &&
+            Number(row.invalid_context_count) === 0
           );
           if (eligible) {
             const plaintext = decryptedValue(

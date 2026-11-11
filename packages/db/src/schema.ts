@@ -2234,6 +2234,21 @@ export const memoryNodeSources = pgTable(
   ]
 );
 
+export const memoryNodeContextEvents = pgTable(
+  "memory_node_context_events",
+  {
+    memoryNodeId: uuid("memory_node_id")
+      .primaryKey()
+      .references(() => memoryNodes.id, { onDelete: "cascade" }),
+    memoryEventId: uuid("memory_event_id")
+      .notNull()
+      .references(() => memoryEvents.id, { onDelete: "cascade" })
+  },
+  (table) => [
+    index("memory_node_context_events_event_idx").on(table.memoryEventId)
+  ]
+);
+
 export const curatedMemoryTopics = pgTable(
   "curated_memory_topics",
   {

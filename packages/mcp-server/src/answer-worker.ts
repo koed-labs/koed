@@ -725,6 +725,7 @@ interface MemoryAnswerBudgetLedger {
   evidenceTokenEstimate: number;
   promptTokenEstimateConsumed: number;
   budgetExhaustions: MemoryAnswerBudgetKind[];
+  eventContextPromptAdmissionOnly?: boolean;
 }
 
 type MemoryAnswerBudgetKind =
@@ -741,6 +742,7 @@ const markBudgetExhausted = (
   ledger: MemoryAnswerBudgetLedger,
   kind: MemoryAnswerBudgetKind
 ): void => {
+  if (kind === "prompt_tokens") ledger.eventContextPromptAdmissionOnly = false;
   if (!ledger.budgetExhaustions.includes(kind)) {
     ledger.budgetExhaustions.push(kind);
   }
@@ -894,10 +896,105 @@ const citationsFromPayload = (payload: MemoryAnswerPayload): unknown[] =>
   Array.isArray(payload.citations) ? payload.citations : [];
 
 const hitsFromSearch = (result: Record<string, unknown>): unknown[] => {
-  if (Array.isArray(result.hits)) return result.hits;
-  if (Array.isArray(result.evidence)) return result.evidence;
+  if (Array.isArray(result.hits)) return eventWindowEvidence(result.hits);
+  if (Array.isArray(result.evidence))
+    return eventWindowEvidence(result.evidence);
   const bundle = recordFromUnknown(result.evidenceBundle);
-  return Array.isArray(bundle.evidence) ? bundle.evidence : [];
+  return Array.isArray(bundle.evidence)
+    ? eventWindowEvidence(bundle.evidence)
+    : [];
+};
+
+const eventWindowIds = (item: unknown): string[] => {
+  const ids = recordFromUnknown(item).eventContextWindowIds;
+  return Array.isArray(ids)
+    ? ids.filter((id): id is string => typeof id === "string")
+    : [];
+};
+
+const eventWindowEvidence = (hits: unknown[]): unknown[] => {
+  if (
+    !hits.some(
+      (hit) =>
+        Array.isArray(recordFromUnknown(hit).sourceItems) ||
+        eventWindowIds(hit).length > 0
+    )
+  )
+    return hits;
+  return appendEvidence(
+    [],
+    hits.flatMap((hit) => {
+      const parent = recordFromUnknown(hit);
+      if (!Array.isArray(parent.sourceItems) || !parent.sourceItems.length)
+        return [hit];
+      const items = parent.sourceItems.map(recordFromUnknown);
+      const windowId = createHash("sha256")
+        .update(JSON.stringify(items.map((item) => item.sourceId)))
+        .digest("hex");
+      return items.flatMap((item) => {
+        if (
+          item.kind !== "memory_event" ||
+          typeof item.sourceId !== "string" ||
+          typeof item.text !== "string"
+        )
+          return [];
+        const identity = {
+          sourceType: "memory_event",
+          sourceId: item.sourceId,
+          sourceChunkIndex: 0
+        };
+        const lineage = candidateLineage(item);
+        const citation = {
+          ...identity,
+          visibility: item.visibility ?? parent.visibility,
+          ...lineage
+        };
+        return [
+          {
+            ...identity,
+            canonicalSourceIdentity: identity,
+            sourceTable: item.sourceTable,
+            summaryText: item.text,
+            actor: item.actor,
+            turnId: item.turnId,
+            sourcePosition: item.position,
+            visibility: item.visibility ?? parent.visibility,
+            ...lineage,
+            fullCanonicalEvent: true,
+            eventContextWindowIds: [windowId],
+            citation
+          }
+        ];
+      });
+    })
+  );
+};
+
+const mergedEventWindowMetadata = (
+  existing: unknown,
+  incoming: unknown
+): Record<string, unknown> => {
+  const ids = [
+    ...new Set([...eventWindowIds(existing), ...eventWindowIds(incoming)])
+  ];
+  if (!ids.length) return {};
+  const first = recordFromUnknown(recordFromUnknown(existing).provenance);
+  const second = recordFromUnknown(recordFromUnknown(incoming).provenance);
+  const matchedIds = [first.matchedSourceIds, second.matchedSourceIds].flatMap(
+    (value): unknown[] => (Array.isArray(value) ? (value as unknown[]) : [])
+  );
+  return {
+    eventContextWindowIds: ids,
+    provenance: {
+      ...first,
+      ...second,
+      contextRole:
+        first.contextRole === "matched" || second.contextRole === "matched"
+          ? "matched"
+          : (first.contextRole ?? second.contextRole),
+      matchedSourceIds: [...new Set(matchedIds)]
+    }
+  };
 };
 
 const citationsFromHits = (hits: unknown[]): unknown[] =>
@@ -1178,9 +1275,12 @@ export const evidenceFromExpansion = (
     const canonicalSourceIdentity = recordFromUnknown(
       record.canonicalSourceIdentity ?? record.canonical_source_identity
     );
+    const isCanonicalEvent = record.kind === "memory_event";
     const text =
       typeof record.text === "string"
-        ? codexIdePromptUserText(record.text).trim()
+        ? isCanonicalEvent
+          ? record.text
+          : codexIdePromptUserText(record.text).trim()
         : "";
     if (!text) {
       return [];
@@ -1228,7 +1328,9 @@ export const evidenceFromExpansion = (
     ]);
     const canonicalChunkIndex = Number.isInteger(canonicalChunkValue)
       ? Number(canonicalChunkValue)
-      : sourceChunkIndex;
+      : isCanonicalEvent && explicitSourceId
+        ? 0
+        : sourceChunkIndex;
     const expandedEvidenceId = `${nodeId ?? "expanded"}:source:${sourceId}:${sourceChunkIndex}`;
     const supportingContext = Array.isArray(record.supportingContext)
       ? record.supportingContext
@@ -1263,6 +1365,13 @@ export const evidenceFromExpansion = (
         retrievalStage: "expanded_source",
         visibility,
         summaryText: text,
+        ...(isCanonicalEvent
+          ? {
+              fullCanonicalEvent: true,
+              actor: record.actor,
+              turnId: record.turnId
+            }
+          : {}),
         ...lineage,
         ...(supportingContext ? { supportingContext } : {}),
         score: 1,
@@ -1405,7 +1514,12 @@ export const mergeMemoryAnswerCandidateLists = (
       ledger.set(key, {
         ...(current ?? {}),
         ...normalized,
+        ...(current?.fullCanonicalEvent === true &&
+        normalized.fullCanonicalEvent !== true
+          ? current
+          : {}),
         ...observedReferenceLineage(current, normalized),
+        ...mergedEventWindowMetadata(current, normalized),
         retrievalContributions: contributions,
         fusedScore: contributions.reduce<number>((sum, entry) => {
           const rank = recordFromUnknown(entry).rank;
@@ -1672,7 +1786,11 @@ const appendEvidence = (
       const index = seen.get(key)!;
       merged[index] = {
         ...recordFromUnknown(merged[index]),
-        ...observedReferenceLineage(merged[index], item)
+        ...(recordFromUnknown(item).fullCanonicalEvent === true
+          ? recordFromUnknown(item)
+          : {}),
+        ...observedReferenceLineage(merged[index], item),
+        ...mergedEventWindowMetadata(merged[index], item)
       };
     }
   }
@@ -1725,53 +1843,121 @@ const boundEvidence = (
   exhausted: MemoryAnswerBudgetKind[];
 } => {
   const bounded: unknown[] = [];
+  const admittedKeys = new Set<string>();
+  const admittedWindows = new Set<string>();
+  evidence = eventWindowEvidence(evidence);
   let tokenEstimate = 0;
   const exhausted: MemoryAnswerBudgetKind[] = [];
   if (evidence.length > config.maxCandidates) exhausted.push("candidates");
   if (evidence.length > config.maxEvidenceItems)
     exhausted.push("evidence_items");
-  for (const candidate of evidence.slice(
-    0,
-    Math.min(config.maxCandidates, config.maxEvidenceItems)
-  )) {
-    const safeCandidate = boundedUnknown(candidate, {
-      maxStringLength: 4_096,
-      maxArrayLength: 30
-    });
-    const record = recordFromUnknown(safeCandidate);
-    const summaryText = stringField(record, [
-      "summaryText",
-      "summary_text",
-      "text",
-      "content",
-      "body"
-    ]);
-    const lexicalAnchors = Array.isArray(
-      record.lexicalAnchors ?? record.lexical_anchors
+  for (const group of rankedEvidenceGroups(evidence)) {
+    const safeGroup = group.items
+      .filter(
+        (candidate) =>
+          !group.windowId || !admittedKeys.has(sourceKey(candidate))
+      )
+      .map((candidate) =>
+        recordFromUnknown(candidate).fullCanonicalEvent === true
+          ? sanitizeTeamIdentityMetadata(candidate)
+          : boundedUnknown(candidate, {
+              maxStringLength: 4_096,
+              maxArrayLength: 30
+            })
+      );
+    if (
+      bounded.length + safeGroup.length >
+      Math.min(config.maxCandidates, config.maxEvidenceItems)
     )
-      ? (record.lexicalAnchors ?? record.lexical_anchors)
-      : undefined;
-    const supportingContext = Array.isArray(record.supportingContext)
-      ? record.supportingContext
-      : undefined;
-    const budgetContent =
-      summaryText || lexicalAnchors || supportingContext
-        ? { summaryText, lexicalAnchors, supportingContext }
-        : safeCandidate;
-    const tokens = countTokensForModel(JSON.stringify(budgetContent), {
-      model: config.model
-    }).tokens;
-    if (tokenEstimate + tokens > config.maxEvidenceTokens) {
+      continue;
+    let groupTokens = 0;
+    for (const safeCandidate of safeGroup) {
+      const record = recordFromUnknown(safeCandidate);
+      const summaryText = stringField(record, [
+        "summaryText",
+        "summary_text",
+        "text",
+        "content",
+        "body"
+      ]);
+      const lexicalAnchors = Array.isArray(
+        record.lexicalAnchors ?? record.lexical_anchors
+      )
+        ? (record.lexicalAnchors ?? record.lexical_anchors)
+        : undefined;
+      const supportingContext = Array.isArray(record.supportingContext)
+        ? record.supportingContext
+        : undefined;
+      const budgetContent =
+        record.fullCanonicalEvent === true
+          ? safeCandidate
+          : summaryText || lexicalAnchors || supportingContext
+            ? { summaryText, lexicalAnchors, supportingContext }
+            : safeCandidate;
+      const tokens = countTokensForModel(JSON.stringify(budgetContent), {
+        model: config.model
+      }).tokens;
+      groupTokens += tokens;
+    }
+    if (tokenEstimate + groupTokens > config.maxEvidenceTokens) {
       if (!exhausted.includes("evidence_tokens")) {
         exhausted.push("evidence_tokens");
       }
       continue;
     }
-    bounded.push(safeCandidate);
-    tokenEstimate += tokens;
+    bounded.push(...safeGroup);
+    for (const candidate of safeGroup) admittedKeys.add(sourceKey(candidate));
+    if (group.windowId) admittedWindows.add(group.windowId);
+    tokenEstimate += groupTokens;
   }
-  return { evidence: bounded, tokenEstimate, exhausted };
+  if (
+    bounded.length === 0 &&
+    evidence.some((item) => eventWindowIds(item).length > 0)
+  ) {
+    throw new Error(
+      "Memory answer budget exhausted: no complete event context window fits evidence budget"
+    );
+  }
+  return {
+    evidence: retainEventWindowMemberships(bounded, admittedWindows),
+    tokenEstimate,
+    exhausted
+  };
 };
+
+const rankedEvidenceGroups = (
+  evidence: unknown[]
+): Array<{ items: unknown[]; windowId?: string }> => {
+  const groups: Array<{ items: unknown[]; windowId?: string }> = [];
+  const windows = new Map<string, { items: unknown[]; windowId: string }>();
+  for (const item of evidence) {
+    const ids = eventWindowIds(item);
+    if (!ids.length) groups.push({ items: [item] });
+    for (const windowId of ids) {
+      let group = windows.get(windowId);
+      if (!group) {
+        group = { items: [], windowId };
+        windows.set(windowId, group);
+        groups.push(group);
+      }
+      group.items.push(item);
+    }
+  }
+  return groups;
+};
+
+const retainEventWindowMemberships = (
+  evidence: unknown[],
+  admittedWindows: Set<string>
+): unknown[] =>
+  evidence.flatMap((item) => {
+    const ids = eventWindowIds(item);
+    if (!ids.length) return [item];
+    const retained = ids.filter((id) => admittedWindows.has(id));
+    return retained.length
+      ? [{ ...recordFromUnknown(item), eventContextWindowIds: retained }]
+      : [];
+  });
 
 const recordEvidenceBudgetExhaustions = (
   ledger: MemoryAnswerBudgetLedger,
@@ -2303,6 +2489,7 @@ const createMemoryAnswerDynamicToolHandler = (
               1,
               "score_scan"
             ),
+            include_event_context: true,
             retrieval_scope: options.retrievalScope,
             search_domain: searchDomain,
             session_id: sessionId,
@@ -2427,6 +2614,7 @@ const createMemoryAnswerDynamicToolHandler = (
           options.client.search({
             query: searchQuery,
             ...context,
+            include_event_context: true,
             retrieval_scope: options.retrievalScope,
             search_domain: searchDomain,
             session_id: sessionId,
@@ -2679,50 +2867,68 @@ const buildDynamicMemoryAnswerPrompt = (
     .join("\n");
 
   const render = (): string => {
-    const firstPassContext = boundedUnknown(
-      {
-        evidence: indexedEvidenceObservation(
-          mergeObservedEvidence(state.observedEvidence, state.evidence),
-          state.evidence
-        ),
-        citations: state.citations,
-        retrievals: state.retrievals.map(workerRetrievalDiagnostic),
-        retrievalHints: state.retrievalHints,
-        conversationContext: state.conversationContext,
-        evaluationController: isDefaultMemoryAnswerEvaluation(state.evaluation)
-          ? undefined
-          : state.evaluation,
-        orderedErrors: state.errors.slice(0, 20),
-        searchHistory: state.searches,
-        retrievalCoverage: {
-          scanPositiveStages: [...availableCandidateStages(state.retrievals)],
-          inspectedStages: [...inspectedSearchStages(state.searches)],
-          uninspectedScanPositiveStages: uninspectedAvailableCandidateStages(
-            state.retrievals,
-            state.searches
-          )
-        },
-        consumedBudgets: {
-          searches: state.ledger.searchAttempts,
-          expansions: state.ledger.expansionAttempts,
-          candidates: state.evidence.length,
-          evidenceTokens: state.ledger.evidenceTokenEstimate
-        },
-        remainingBudgets: {
-          searches: Math.max(
-            0,
-            config.maxSearches - state.ledger.searchAttempts
+    const firstPassContext = recordFromUnknown(
+      boundedUnknown(
+        {
+          evidence: indexedEvidenceObservation(
+            mergeObservedEvidence(state.observedEvidence, state.evidence),
+            state.evidence
           ),
-          expansions: Math.max(
-            0,
-            config.maxExpansions - state.ledger.expansionAttempts
+          citations: state.citations,
+          retrievals: state.retrievals.map(workerRetrievalDiagnostic),
+          retrievalHints: state.retrievalHints,
+          conversationContext: state.conversationContext,
+          evaluationController: isDefaultMemoryAnswerEvaluation(
+            state.evaluation
           )
+            ? undefined
+            : state.evaluation,
+          orderedErrors: state.errors.slice(0, 20),
+          searchHistory: state.searches,
+          retrievalCoverage: {
+            scanPositiveStages: [...availableCandidateStages(state.retrievals)],
+            inspectedStages: [...inspectedSearchStages(state.searches)],
+            uninspectedScanPositiveStages: uninspectedAvailableCandidateStages(
+              state.retrievals,
+              state.searches
+            )
+          },
+          consumedBudgets: {
+            searches: state.ledger.searchAttempts,
+            expansions: state.ledger.expansionAttempts,
+            candidates: state.evidence.length,
+            evidenceTokens: state.ledger.evidenceTokenEstimate
+          },
+          remainingBudgets: {
+            searches: Math.max(
+              0,
+              config.maxSearches - state.ledger.searchAttempts
+            ),
+            expansions: Math.max(
+              0,
+              config.maxExpansions - state.ledger.expansionAttempts
+            )
+          }
+        },
+        {
+          maxStringLength: 2_048,
+          maxArrayLength: Math.max(10, config.maxCandidates)
         }
-      },
-      {
-        maxStringLength: 2_048,
-        maxArrayLength: Math.max(10, config.maxCandidates)
-      }
+      )
+    );
+    const observations = indexedEvidenceObservation(
+      mergeObservedEvidence(state.observedEvidence, state.evidence),
+      state.evidence
+    );
+    const boundedObservations: unknown[] = Array.isArray(
+      firstPassContext.evidence
+    )
+      ? firstPassContext.evidence
+      : [];
+    firstPassContext.evidence = observations.map((observation, index) =>
+      recordFromUnknown(observation.item).fullCanonicalEvent === true
+        ? observation
+        : boundedObservations[index]
     );
     const initialEvidenceSection = [
       state.evidence.length > 0
@@ -2751,6 +2957,11 @@ const buildDynamicMemoryAnswerPrompt = (
     );
   };
 
+  const priorOperationalPromptFailure =
+    state.ledger.budgetExhaustions.includes("prompt_tokens") &&
+    state.ledger.eventContextPromptAdmissionOnly !== true;
+  let trimmedWindowsOnly = true;
+  let trimmedWindow = false;
   let prompt = render();
   let promptTokenEstimate = countTokensForModel(prompt, {
     model: config.model
@@ -2760,7 +2971,32 @@ const buildDynamicMemoryAnswerPrompt = (
     state.evidence.length > 0
   ) {
     markBudgetExhausted(state.ledger, "prompt_tokens");
-    state.evidence.pop();
+    const groups = rankedEvidenceGroups(state.evidence);
+    const group = groups.at(-1)!;
+    trimmedWindowsOnly &&= group.windowId !== undefined;
+    trimmedWindow ||= group.windowId !== undefined;
+    if (group.windowId) {
+      const remainingWindows = new Set(
+        groups.flatMap((entry) =>
+          entry.windowId && entry.windowId !== group.windowId
+            ? [entry.windowId]
+            : []
+        )
+      );
+      state.evidence = retainEventWindowMemberships(
+        state.evidence,
+        remainingWindows
+      );
+    } else {
+      state.evidence = state.evidence.filter(
+        (item) => !group.items.includes(item)
+      );
+    }
+    if (state.evidence.length === 0 && group.windowId) {
+      throw new Error(
+        "Memory answer prompt-token budget exhausted: no complete event context window fits"
+      );
+    }
     const bounded = boundEvidence(state.evidence, config);
     state.evidence = bounded.evidence;
     state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
@@ -2774,6 +3010,8 @@ const buildDynamicMemoryAnswerPrompt = (
         : `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)`
     );
   }
+  if (trimmedWindow && trimmedWindowsOnly && !priorOperationalPromptFailure)
+    state.ledger.eventContextPromptAdmissionOnly = true;
   return { prompt, promptTokens: promptTokenEstimate };
 };
 
@@ -3581,6 +3819,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
     maxSearchPasses: options.maxSearches > 1 ? 2 : 1
   }).searchPasses;
   const common = {
+    include_event_context: true,
     retrieval_scope: options.retrievalScope,
     search_domain: options.searchDomain,
     session_id: options.sessionId,
@@ -4188,10 +4427,108 @@ const runDynamicToolMemoryAnswer = async (
     }
     state.ledger.workerAttempts += 1;
     state.ledger.promptTokenEstimateConsumed += promptTokens.tokens;
-    const dynamicToolHandler = createMemoryAnswerDynamicToolHandler(
+    const handleDynamicTool = createMemoryAnswerDynamicToolHandler(
       state,
       options
     );
+    const dynamicToolHandler: typeof handleDynamicTool = async (call) => {
+      const previousEvidence = state.evidence;
+      const previousEvidenceTokens = state.ledger.evidenceTokenEstimate;
+      const previousObservedEvidence = state.observedEvidence;
+      const previousObservedTokens = state.observedEvidenceTokens;
+      const priorOperationalPromptFailure =
+        state.ledger.budgetExhaustions.includes("prompt_tokens") &&
+        state.ledger.eventContextPromptAdmissionOnly !== true;
+      let response = await handleDynamicTool(call);
+      const observation = recordFromUnknown(JSON.parse(response.text));
+      const field = Array.isArray(observation.hits)
+        ? "hits"
+        : "expandedEvidence";
+      const observedItems = observation[field];
+      let items: unknown[] = Array.isArray(observedItems)
+        ? (observedItems as unknown[]).map(
+            (entry) => recordFromUnknown(entry).item
+          )
+        : [];
+      if (
+        items.some(
+          (item) => recordFromUnknown(item).fullCanonicalEvent === true
+        )
+      ) {
+        let tokens = countTokensForModel(response.text, {
+          model: options.config.model
+        }).tokens;
+        let trimmedWindowsOnly = true;
+        let trimmedWindow = false;
+        while (
+          state.ledger.promptTokenEstimateConsumed + tokens >
+            options.config.maxPromptTokens &&
+          items.length > 0
+        ) {
+          markBudgetExhausted(state.ledger, "prompt_tokens");
+          const groups = rankedEvidenceGroups(items);
+          const last = groups.at(-1)!;
+          trimmedWindowsOnly &&= last.windowId !== undefined;
+          trimmedWindow ||= last.windowId !== undefined;
+          if (last.windowId) {
+            items = retainEventWindowMemberships(
+              items,
+              new Set(
+                groups.flatMap((group) =>
+                  group.windowId && group.windowId !== last.windowId
+                    ? [group.windowId]
+                    : []
+                )
+              )
+            );
+          } else {
+            items = items.filter((item) => !last.items.includes(item));
+          }
+          if (!items.length) break;
+          const bounded = boundEvidence(
+            appendEvidence(previousEvidence, items),
+            options.config
+          );
+          state.evidence = bounded.evidence;
+          state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
+          state.observedEvidence = previousObservedEvidence;
+          state.observedEvidenceTokens = previousObservedTokens;
+          observation[field] = observeEvidence(state, items, options.config);
+          observation.state = toolStateSummary(state, options.config);
+          response = dynamicToolResult(observation);
+          tokens = countTokensForModel(response.text, {
+            model: options.config.model
+          }).tokens;
+        }
+        if (
+          items.length === 0 ||
+          state.ledger.promptTokenEstimateConsumed + tokens >
+            options.config.maxPromptTokens
+        ) {
+          state.evidence = previousEvidence;
+          state.ledger.evidenceTokenEstimate = previousEvidenceTokens;
+          state.observedEvidence = previousObservedEvidence;
+          state.observedEvidenceTokens = previousObservedTokens;
+          markBudgetExhausted(state.ledger, "prompt_tokens");
+          const message =
+            "Memory answer prompt-token budget exhausted: complete event context observation cannot fit";
+          state.errors.push(message);
+          response = dynamicToolResult(
+            { kind: "budget_exhausted", message },
+            false
+          );
+        } else {
+          state.ledger.promptTokenEstimateConsumed += tokens;
+          if (
+            trimmedWindow &&
+            trimmedWindowsOnly &&
+            !priorOperationalPromptFailure
+          )
+            state.ledger.eventContextPromptAdmissionOnly = true;
+        }
+      }
+      return response;
+    };
     if (options.config.provider === "pi") {
       const result = await runAiClientJsonTask(
         prompt,
@@ -4330,6 +4667,8 @@ const runDynamicToolMemoryAnswer = async (
       "evidence_items",
       "evidence_tokens"
     ]);
+    if (state.ledger.eventContextPromptAdmissionOnly === true)
+      admissionBudgets.add("prompt_tokens");
     const operationalBudgetExhausted = state.ledger.budgetExhaustions.some(
       (kind) => !admissionBudgets.has(kind)
     );
