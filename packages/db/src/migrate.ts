@@ -99,7 +99,7 @@ export const runDbMigrations = async (
     );
     const hasAppliedHistory = ledger.rows[0]?.present
       ? (
-          await client.query(
+          await client.query<{ present: boolean }>(
             "select exists (select 1 from drizzle.__drizzle_migrations) as present"
           )
         ).rows[0]?.present === true

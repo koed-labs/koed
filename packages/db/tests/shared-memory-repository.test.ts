@@ -16,7 +16,6 @@ import { createPersonalSourceCorrectionRepository } from "../src/personal-source
 import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { createHighRiskActionRepository } from "../src/high-risk-action-repository.js";
-import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
