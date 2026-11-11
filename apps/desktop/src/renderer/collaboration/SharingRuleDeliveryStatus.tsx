@@ -1,4 +1,4 @@
-import type { SharingRuleDelivery } from "@koed/shared/collaboration";
+import type { SharingRuleDelivery } from "@koed-labs/shared/collaboration";
 
 const requestLabel = (intent: SharingRuleDelivery["intent"]) => {
   if ("scope" in intent)

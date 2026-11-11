@@ -4,8 +4,8 @@ import type {
   CollaborationSubscription,
   SharedMemoryRepresentation,
   SharedMemorySourcePage
-} from "@koed/shared/collaboration";
-import { CollaborationClientRuntime } from "@koed/shared/collaboration-client-runtime";
+} from "@koed-labs/shared/collaboration";
+import { CollaborationClientRuntime } from "@koed-labs/shared/collaboration-client-runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import { CollaborationActionGrantProjectionStore } from "./action-grant-projection-store.js";

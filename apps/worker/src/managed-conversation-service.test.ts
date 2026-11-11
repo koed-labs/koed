@@ -16,13 +16,13 @@ import type {
   ManagedConversationExecutionCheckpointRecord,
   ManagedConversationRuntimeBindingRecord,
   MemorySourceRepository
-} from "@koed/db";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+} from "@koed-labs/db";
+import type { EnvelopeEncryptionProvider } from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   CodexManagedConversationIdentityError,
   MemoryApiError
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 
 import {
   ManagedConversationSourceReplicaPendingError,
@@ -44,7 +44,7 @@ import { captureExecutionCheckpoint } from "./execution-checkpoint.js";
 import {
   createGitExecutionCheckoutDriver,
   type GitExecutionCheckoutDriver
-} from "@koed/shared/execution-checkout";
+} from "@koed-labs/shared/execution-checkout";
 
 describe("Managed provider identity instructions", () => {
   it("adds the persisted name to Codex and Claude launch configuration", () => {

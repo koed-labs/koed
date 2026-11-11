@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import {
   canonicalJsonDigest as crossIdentitySyncDigest,
   conversationSharingRuleCreationIntentSchema
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import type {
   ConversationSharingRuleCreationReview,
   OwnedSharingReason,
   SharedMemorySourceRef,
   SharingRuleDelivery
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import { failureMessage } from "./collaboration-primitives.js";
 

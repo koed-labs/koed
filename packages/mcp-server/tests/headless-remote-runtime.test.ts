@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readAiClientConnections } from "@koed/shared/ai-client-connections";
+import { readAiClientConnections } from "@koed-labs/shared/ai-client-connections";
 import { startHeadlessRemoteLocalAiRuntime } from "../src/headless-remote-runtime.js";
 import type { LocalAiRuntimeServiceFactory } from "../src/local-runtime-server.js";
 

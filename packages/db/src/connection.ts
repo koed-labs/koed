@@ -1,6 +1,6 @@
 import pg from "pg";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
-import { env } from "@koed/shared";
+import { env } from "@koed-labs/shared";
 import * as schema from "./schema.js";
 
 const { Pool } = pg;

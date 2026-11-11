@@ -1,11 +1,11 @@
 import {
   managedTerminalServerFrameSchema,
   MANAGED_TERMINAL_MAX_FRAME_BYTES
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   encodeDurableRealtimeStreamFrame,
   readBoundedDurableRealtimeStream
-} from "@koed/shared/durable-realtime";
+} from "@koed-labs/shared/durable-realtime";
 
 import type { WebTransportInteractiveStreamHandler } from "../realtime-transport/index.js";
 import type { ManagedTerminalRuntime } from "./terminal-runtime.js";

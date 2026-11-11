@@ -5,7 +5,7 @@ import {
   personalFolderAssignmentSchema,
   PdsConfigurationCompatibilityError,
   type PersonalSourceContextSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { evaluateSourceContextFrontier } from "./personal-source-context-graph.js";
 import type { PersonalSourceBindingRow } from "./personal-source-binding-state.js";
 type Axis = "git" | "folder";

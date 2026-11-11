@@ -11,7 +11,7 @@ import {
   type EnvelopeEncryptionProvider,
   type PersonalConfigurationFeature,
   type PdsSessionPackage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { MemorySourceRepository } from "../../src/index.js";
 import { personalSourceSelectionSql } from "../../src/personal-selection-sql.js";
 import { createPdsConfigurationRuntime } from "../../../../apps/worker/src/personal-device-sync-configuration.js";

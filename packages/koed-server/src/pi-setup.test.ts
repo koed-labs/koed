@@ -86,7 +86,7 @@ describe("Pi setup", () => {
         runtimeRoot,
         layout === "legacy-flat"
           ? "mcp-server/integrations/pi"
-          : "node_modules/@koed/mcp-server/integrations/pi"
+          : "node_modules/@koed-labs/mcp-server/integrations/pi"
       );
       mkdirSync(resolve(source, "extensions"), { recursive: true });
       writeFileSync(resolve(source, "package.json"), "{}\n");

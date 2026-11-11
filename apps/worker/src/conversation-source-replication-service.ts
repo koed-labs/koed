@@ -15,7 +15,7 @@ import type {
   ConversationItemInput,
   ConversationSourceSegmentRecord,
   MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   assertConversationSourceReplicationJsonlSegment,
   assertSupportedAiClientSourceAdapter,
@@ -53,7 +53,7 @@ import {
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type RecipientPublicKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   buildCodexTranscriptConversationItems,
   extractTranscriptSessionMetadata,
@@ -63,8 +63,8 @@ import {
   verifyCodexTranscriptContinuation,
   collectCodexTranscriptContinuationAncestors,
   type TranscriptJournalParserState
-} from "@koed/mcp-server/codex-transcript-parser";
-import { parseClaudeTranscriptJournalBytes } from "@koed/mcp-server/claude-transcript-parser";
+} from "@koed-labs/mcp-server/codex-transcript-parser";
+import { parseClaudeTranscriptJournalBytes } from "@koed-labs/mcp-server/claude-transcript-parser";
 import type { Logger } from "pino";
 
 const maxSegmentBytes = 16 * 1024 * 1024;

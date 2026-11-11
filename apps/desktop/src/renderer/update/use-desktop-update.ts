@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DesktopUpdateApi,
   DesktopUpdateState
-} from "@koed/shared/desktop-update-contract";
+} from "@koed-labs/shared/desktop-update-contract";
 
 export type DesktopUpdateController = {
   state: DesktopUpdateState | null;

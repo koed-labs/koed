@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   PDS_PROJECT_SELECTION_PROTOCOL,
   signPdsProjectSelection
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   runDbMigrations,

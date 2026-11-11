@@ -1,10 +1,10 @@
-import { verifyManagedJournalTerminal } from "@koed/db";
+import { verifyManagedJournalTerminal } from "@koed-labs/db";
 import { createFilesystemConversationSourceStorage } from "./conversation-source-storage.js";
 import {
   readConversationSourceSegmentBytes,
   requireConversationSourceJournalSurface
 } from "./conversation-source-journal-routes.js";
-import type { KoedWorkClass } from "@koed/shared";
+import type { KoedWorkClass } from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {

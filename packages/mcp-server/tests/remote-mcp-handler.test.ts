@@ -8,7 +8,7 @@ import {
   type RemoteKoedMcpHandlerOptions
 } from "../src/remote-mcp-handler.js";
 import type { KoedMcpRuntimeClient } from "../src/mcp-server-factory.js";
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 
 const taskId = "aaaabbbb-1111-4111-8111-111111111111";
 const task = (status: MemoryAnswerTask["status"]): MemoryAnswerTask =>

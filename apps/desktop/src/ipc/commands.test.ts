@@ -5,7 +5,7 @@ import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   collaborationSafeErrorMessages,
   personalDesktopResultSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   ManagedProjectDesktopHandler,
   PersonalMemoryDesktopHandler

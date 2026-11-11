@@ -1,7 +1,7 @@
 import { maintainUpstreamCapabilities } from "./upstream-capability-maintenance.js";
 import { startDeviceRequestService } from "./personal-device-request.js";
 import { redeemPairingLink } from "./personal-sync.js";
-import { createPdsApplicationSecretStore } from "@koed/shared";
+import { createPdsApplicationSecretStore } from "@koed-labs/shared";
 import {
   spawn as nodeSpawn,
   spawnSync as nodeSpawnSync,

@@ -5,7 +5,7 @@ import {
   parseCanonicalPdsJson,
   pdsSessionPackageDigest,
   signPdsRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createReloadablePdsSecureKeyProviderFromEnvironment,
   createPdsSecureRuntimeFromEnvironment,

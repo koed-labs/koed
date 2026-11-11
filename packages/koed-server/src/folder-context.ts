@@ -2,7 +2,7 @@ import {
   personalFolderRegistrySchema,
   readPersonalFolderDirectoryMarker,
   findPersonalFolderDirectory
-} from "@koed/shared/personal-local-folders";
+} from "@koed-labs/shared/personal-local-folders";
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -18,7 +18,7 @@ import {
   normalizeRecordedProjectDirectory,
   personalFolderObservationSchema,
   type PersonalFolderObservation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { inspectDeviceIdentityStatus } from "./device-identity.js";
 import { withProjectMetadataLock } from "./project-metadata-lock.js";
 import type { KoedServerPaths } from "./paths.js";

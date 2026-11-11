@@ -6,7 +6,7 @@ import type {
   PersonalDesktopApi,
   PersonalDesktopProject,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { SourceContextCorrectionDialog } from "./SourceContextCorrectionDialog.js";
 const uuid = (n: number) =>

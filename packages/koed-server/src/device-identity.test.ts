@@ -20,7 +20,7 @@ import {
   inspectDeviceIdentity,
   parseDeviceIdentityState,
   reconcileDeviceIdentityDeployment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { resolveKoedServerPaths } from "./paths.js";
 import { collectKoedServerStatus } from "./status.js";
 import {

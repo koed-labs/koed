@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { canonicalConversationItemKey } from "@koed/shared";
+import { canonicalConversationItemKey } from "@koed-labs/shared";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 
 type JsonRecord = Record<string, unknown>;

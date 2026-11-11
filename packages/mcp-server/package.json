@@ -1,5 +1,5 @@
 {
-  "name": "@koed/mcp-server",
+  "name": "@koed-labs/mcp-server",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
@@ -70,9 +70,9 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.226",
-    "@koed/core": "workspace:*",
-    "@koed/koed": "workspace:*",
-    "@koed/shared": "workspace:*",
+    "@koed-labs/core": "workspace:*",
+    "@koed-labs/koed": "workspace:*",
+    "@koed-labs/shared": "workspace:*",
     "@modelcontextprotocol/core": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "pino": "^10.3.1",

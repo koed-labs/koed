@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { assertAiClientDriverId, assertAiClientInstanceId } from "@koed/shared";
+import {
+  assertAiClientDriverId,
+  assertAiClientInstanceId
+} from "@koed-labs/shared";
 
 export interface LocalAiClientInstanceConfiguration {
   instanceId: string;

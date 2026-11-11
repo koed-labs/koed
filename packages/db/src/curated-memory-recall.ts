@@ -4,7 +4,7 @@ import {
   type MemoryActor,
   type MemoryEventRecord,
   type MemoryEventType
-} from "@koed/core";
+} from "@koed-labs/core";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import { activeCuratedMemoryEvidencePredicate } from "./curated-memory-policy.js";

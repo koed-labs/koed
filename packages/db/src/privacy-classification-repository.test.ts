@@ -11,7 +11,7 @@ import {
   type EnvelopeEncryptionProvider,
   type PrivacyClassificationResponse,
   type PrivacyLabelPolicy
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createPrivacyClassificationRepository,
   ownerScopedPrivacyContentFingerprint,

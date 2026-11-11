@@ -1,6 +1,9 @@
 import { createServer, type IncomingMessage } from "node:http";
 import { describe, expect, it } from "vitest";
-import type { EmbeddableSourceRecord, MemorySourceRepository } from "@koed/db";
+import type {
+  EmbeddableSourceRecord,
+  MemorySourceRepository
+} from "@koed-labs/db";
 import { retrievalSuccessCases, type RetrievalSuccessCase } from "./cases.js";
 import {
   idealRetrievalSuccessRun,

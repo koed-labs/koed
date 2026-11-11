@@ -10,7 +10,7 @@ import {
   CodeBlockTitle,
   CodeBlockActions,
   CodeBlockContent
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import {
   SecureMarkdown,
   type MarkdownPlatformAdapters

@@ -38,7 +38,7 @@ import { qualityLatencyMs, runRetrievalArena } from "./runner.js";
 import type { ArenaArm, RankedEvidence } from "./contracts.js";
 import type { ArenaPromptRunner } from "./judge.js";
 import { retrievalArenaPromptTemplateContents } from "./judge.js";
-import { loadPrompt } from "@koed/mcp-server";
+import { loadPrompt } from "@koed-labs/mcp-server";
 
 describe("Retrieval Arena dataset", () => {
   it("pins deterministic, disjoint development, validation, and held-out cases", () => {

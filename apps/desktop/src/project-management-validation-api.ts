@@ -6,7 +6,7 @@ import {
   personalConversationOrganizationResultSchema,
   personalProjectCommandResultSchema,
   personalSourceContextCommandResultSchema
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type {
   PersonalFolderContext,
   PersonalGitContext,
@@ -16,15 +16,15 @@ import type {
   PersonalProjectRule,
   PersonalSourceContextState,
   PersonalSourceCorrectionInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   personalFolderScopeId,
   personalRecallTargetsEqual,
   type PersonalDesktopApi,
   type PersonalDesktopProject,
   type PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
-import { repositoryScopeId } from "@koed/shared/repository-recall";
+} from "@koed-labs/shared/personal-desktop";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
 
 export const validationId = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;

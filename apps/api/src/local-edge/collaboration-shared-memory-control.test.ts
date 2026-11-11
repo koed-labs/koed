@@ -14,7 +14,7 @@ import {
   sharingRulePublisherTakeoverLocalIntentSchema,
   selectionSharingProgressSchema,
   type SharingRuleDelivery
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -4636,7 +4636,7 @@ describe("collaboration Shared Memory control", () => {
       ...delivery,
       state: "acknowledged",
       control: receipt as NonNullable<
-        import("@koed/shared").SharingRuleDelivery["control"]
+        import("@koed-labs/shared").SharingRuleDelivery["control"]
       >
     });
     const restarted = createCollaborationSharedMemoryControl({

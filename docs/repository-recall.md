@@ -262,7 +262,7 @@ Fresh repository recall pins discovered context directly; accepted requests reta
 their pinned context through retries. Existing Capture Target routes and bindings
 remain independent of Project membership and source correction.
 
-Renderer code imports the browser-safe `@koed/shared/repository-recall` entry point.
+Renderer code imports the browser-safe `@koed-labs/shared/repository-recall` entry point.
 The server entry point includes Node dependencies and must not enter the renderer bundle.
 
 ## Read-only repository assignment reviews

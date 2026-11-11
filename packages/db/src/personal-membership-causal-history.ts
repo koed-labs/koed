@@ -13,7 +13,7 @@ import {
   type PersonalMembershipEntitySnapshot,
   type PersonalMembershipRevision,
   type PersonalMembershipEntityKind
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type PersonalMembershipEntityRow = {
   owner_user_id: string;

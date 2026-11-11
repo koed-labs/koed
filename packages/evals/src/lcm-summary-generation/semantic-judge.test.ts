@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveLcmSummaryWorkerConfig } from "@koed/mcp-server";
+import { resolveLcmSummaryWorkerConfig } from "@koed-labs/mcp-server";
 import { runLcmSummaryBenchmark } from "./runner.js";
 import {
   LCM_SUMMARY_SEMANTIC_JUDGE_SCHEMA_VERSION,

@@ -26,7 +26,7 @@ import {
   signPdsTwoStageFinal,
   validatePdsGroupStatement,
   verifyPdsEnrollmentProof
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   decryptRecoveryKit,
   encryptRecoveryKit,

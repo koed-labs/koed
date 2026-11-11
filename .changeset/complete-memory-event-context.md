@@ -1,5 +1,5 @@
 ---
-"@koed/koed": minor
+"@koed-labs/koed": minor
 ---
 
 Preserve complete Personal Memory Events around retrieval matches, including

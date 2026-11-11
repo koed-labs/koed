@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
+import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
 import {
   RETRIEVAL_ARENA_DATASET_VERSION,
   retrievalArenaCases,
@@ -47,8 +47,8 @@ const mocks = vi.hoisted(() => ({
   }))
 }));
 
-vi.mock("@koed/mcp-server", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@koed/mcp-server")>()),
+vi.mock("@koed-labs/mcp-server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@koed-labs/mcp-server")>()),
   answerWithMemoryWorker: mocks.answerWithMemoryWorker,
   resolveMemoryAnswerWorkerConfig: mocks.resolveMemoryAnswerWorkerConfig
 }));

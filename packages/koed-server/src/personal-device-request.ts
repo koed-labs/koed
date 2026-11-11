@@ -17,7 +17,7 @@ import { join } from "node:path";
 import {
   createPdsApplicationSecretStore,
   isPrivateNetworkIpv4Address
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   encryptPersonalDevicePairingMessage as encrypt,
   decryptPersonalDevicePairingMessage as decrypt

@@ -1,4 +1,4 @@
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import { repositoryScopeId, type RepositoryIdentity } from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 import { projectConversationFolders } from "./project-conversation-folders.js";
 import {

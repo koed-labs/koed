@@ -4,12 +4,12 @@ import {
   personalInventoryConversationKey,
   personalInventoryReference,
   deduplicatePersonalInventoryConversations
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type {
   PersonalFolderObservation,
   PersonalGitContext,
   PersonalFolderReference
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   DesktopProject,
   DesktopProjectMetadata

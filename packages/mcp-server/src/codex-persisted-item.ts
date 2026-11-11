@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { approvalActivityMetadata } from "@koed/shared";
-import { approvalReviewTranscriptDisplayFromText } from "@koed/shared/personal-desktop";
+import { approvalActivityMetadata } from "@koed-labs/shared";
+import { approvalReviewTranscriptDisplayFromText } from "@koed-labs/shared/personal-desktop";
 import { adaptCodexAppServerConversationEvent } from "./codex-conversation-source-adapter.js";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 

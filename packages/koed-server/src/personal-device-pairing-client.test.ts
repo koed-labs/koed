@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { storeDesktopLocalCredential } from "@koed/shared";
+import { storeDesktopLocalCredential } from "@koed-labs/shared";
 import type { PersonalSyncResult } from "./personal-sync.js";
 import { redeemPersonalDevicePairing } from "./personal-device-pairing-client.js";
 

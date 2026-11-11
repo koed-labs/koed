@@ -1,4 +1,4 @@
-import { MEMORY_ANSWER_RETRIEVAL_META } from "@koed/mcp-server";
+import { MEMORY_ANSWER_RETRIEVAL_META } from "@koed-labs/mcp-server";
 
 export interface BridgeCallTelemetry {
   mcpCalls: number;

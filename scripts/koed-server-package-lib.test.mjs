@@ -20,6 +20,7 @@ import {
   buildPackageProvenance,
   canonicalComponentManifestBytes,
   normalizeDeployedWorkspaceDependencies,
+  readMigrationSet,
   pruneStandalonePackageMetadata,
   prunePnpmWorkspaceVirtualStorePaths,
   sha256File,
@@ -54,9 +55,9 @@ const createPackageRoot = () => {
   const runtime = resolve(root, "koed-runtime");
   for (const file of [
     "api/dist/index.js",
-    "node_modules/@koed/api/dist/browser-approval/index.html",
-    "node_modules/@koed/api/dist/browser-approval/assets/index-abc12345.js",
-    "node_modules/@koed/api/dist/browser-approval/assets/index-abc12345.css",
+    "node_modules/@koed-labs/api/dist/browser-approval/index.html",
+    "node_modules/@koed-labs/api/dist/browser-approval/assets/index-abc12345.js",
+    "node_modules/@koed-labs/api/dist/browser-approval/assets/index-abc12345.css",
     "worker/dist/index.js",
     "embedding-service/dist/index.js",
     "privacy-service/dist/index.js",
@@ -64,14 +65,14 @@ const createPackageRoot = () => {
     "mcp-server/dist/capture-hook.js",
     "mcp-server/dist/codex-memory-hook.js",
     "mcp-server/dist/prompts/codex-global-agent-guidance.md",
-    "node_modules/@koed/db/dist/index.js",
-    "node_modules/@koed/db/dist/connection.js",
-    "node_modules/@koed/db/dist/user-api-token-repository.js"
+    "node_modules/@koed-labs/db/dist/index.js",
+    "node_modules/@koed-labs/db/dist/connection.js",
+    "node_modules/@koed-labs/db/dist/user-api-token-repository.js"
   ]) {
     writeFile(resolve(runtime, file));
   }
   writeFile(
-    resolve(runtime, "node_modules/@koed/db/drizzle/meta/_journal.json"),
+    resolve(runtime, "node_modules/@koed-labs/db/drizzle/meta/_journal.json"),
     JSON.stringify({ version: "7", entries: [{ when: 20260708000000 }] })
   );
   writeFile(resolve(root, "README.txt"), "Standalone koed-server package\n");
@@ -193,6 +194,33 @@ test("builds canonical component manifests binding archive and payload metadata"
   ]);
 });
 
+test("component manifests reject excluded pnpm workspace self-symlinks", () => {
+  const root = tempDir();
+  const componentRoot = resolve(root, "component");
+  const selfLink = resolve(
+    componentRoot,
+    "koed-runtime/api/node_modules/.pnpm/node_modules/@koed-labs/api"
+  );
+  mkdirSync(dirname(selfLink), { recursive: true });
+  symlinkSync("../../../..", selfLink);
+  const archivePath = resolve(root, "base.tar.gz");
+  writeFile(archivePath, "fixture archive\n");
+
+  assert.throws(
+    () =>
+      buildComponentManifest({
+        componentRoot,
+        archivePath,
+        component: "base",
+        productVersion: "0.8.1",
+        target: { platform: "linux", architecture: "x64" },
+        runtimes: [],
+        requiredFiles: []
+      }),
+    /component payload must contain regular files only: .*@koed-labs\/api/
+  );
+});
+
 test("validates a previously released archive with the legacy launcher", () => {
   const root = createPackageRoot();
   renameSync(resolve(root, "bin", "koed"), resolve(root, "bin", "koed-server"));
@@ -225,7 +253,40 @@ test("builds provenance for package archive and manifest hashes", () => {
   assert.match(readFileSync(manifestPath, "utf8"), /"provenance"/);
 });
 
-test("omits pnpm workspace self-symlinks from manifest validation", () => {
+test("reads migration journals from both current deployed layouts", () => {
+  const root = createPackageRoot();
+  const runtime = resolve(root, "koed-runtime");
+  const shared = resolve(
+    runtime,
+    "node_modules/@koed-labs/db/drizzle/meta/_journal.json"
+  );
+  assert.deepEqual(readMigrationSet(runtime), {
+    latestMigrationTimestamp: 20260708000000,
+    journalSha256: sha256File(shared)
+  });
+  const local = resolve(
+    runtime,
+    "api/node_modules/@koed-labs/db/drizzle/meta/_journal.json"
+  );
+  writeFile(local, JSON.stringify({ entries: [{ when: 123 }] }));
+  assert.deepEqual(readMigrationSet(runtime), {
+    latestMigrationTimestamp: 123,
+    journalSha256: sha256File(local)
+  });
+  rmSync(local);
+  rmSync(shared);
+  const legacy = resolve(
+    runtime,
+    "node_modules/@koed/db/drizzle/meta/_journal.json"
+  );
+  writeFile(legacy, JSON.stringify({ entries: [{ when: 42 }] }));
+  assert.deepEqual(readMigrationSet(runtime), {
+    latestMigrationTimestamp: 42,
+    journalSha256: sha256File(legacy)
+  });
+});
+
+test("hashes pnpm self-link insertion, deletion and target changes", () => {
   const root = createPackageRoot();
   const selfLink = resolve(
     root,
@@ -234,31 +295,50 @@ test("omits pnpm workspace self-symlinks from manifest validation", () => {
     "node_modules",
     ".pnpm",
     "node_modules",
-    "@koed",
+    "@koed-labs",
     "api"
   );
+  writeManifest(root);
+  assert.equal(validatePackageRoot(root).ok, true);
   mkdirSync(dirname(selfLink), { recursive: true });
-  symlinkSync("../../../../../../../../../../apps/api", selfLink);
+  symlinkSync("../../../..", selfLink);
+  assert.equal(validatePackageRoot(root).ok, false);
   const manifest = writeManifest(root);
-
-  const result = validatePackageRoot(root);
-
-  assert.equal(result.ok, true, result.errors.join("\n"));
-  assert.equal(
-    manifest.files.some((entry) =>
-      entry.path.endsWith(
-        "koed-runtime/api/node_modules/.pnpm/node_modules/@koed/api"
-      )
-    ),
-    false
+  assert.ok(
+    manifest.files.some((entry) => entry.path.endsWith("@koed-labs/api"))
   );
-  assert.equal(
-    result.files.includes(
-      "koed-runtime/api/node_modules/.pnpm/node_modules/@koed/api"
-    ),
-    false
-  );
+  assert.equal(validatePackageRoot(root).ok, true);
+  rmSync(selfLink);
+  assert.equal(validatePackageRoot(root).ok, false);
+  symlinkSync("../../..", selfLink);
+  assert.equal(validatePackageRoot(root).ok, false);
 });
+
+for (const kind of ["directory", "wrong symlink"]) {
+  test(`does not omit self-link-shaped ${kind} from package integrity`, () => {
+    const root = createPackageRoot();
+    writeManifest(root);
+    const entry = resolve(
+      root,
+      "koed-runtime/api/node_modules/.pnpm/node_modules/@koed-labs/api"
+    );
+    mkdirSync(dirname(entry), { recursive: true });
+    if (kind === "directory") {
+      mkdirSync(entry);
+      writeFileSync(resolve(entry, "injected.js"), "injected");
+    } else {
+      symlinkSync("../../..", entry);
+    }
+    assert.equal(validatePackageRoot(root).ok, false);
+    const manifest = writeManifest(root);
+    const expected =
+      kind === "directory"
+        ? "koed-runtime/api/node_modules/.pnpm/node_modules/@koed-labs/api/injected.js"
+        : "koed-runtime/api/node_modules/.pnpm/node_modules/@koed-labs/api";
+    assert.ok(manifest.files.some((file) => file.path === expected));
+    assert.equal(validatePackageRoot(root).ok, true);
+  });
+}
 
 test("reports missing required runtime files", () => {
   const root = createPackageRoot();
@@ -276,28 +356,27 @@ test("reports missing required runtime files", () => {
   );
 });
 
-test("requires packaged API browser approval assets", () => {
-  const root = createPackageRoot();
-  rmSync(
-    resolve(
-      root,
-      "koed-runtime",
-      "node_modules",
-      "@koed",
-      "api",
-      "dist",
-      "browser-approval",
-      "assets"
-    ),
-    { recursive: true }
-  );
-  writeManifest(root);
+for (const extension of ["js", "css"]) {
+  test(`requires packaged API browser approval ${extension} assets`, () => {
+    const root = createPackageRoot();
+    rmSync(
+      resolve(
+        root,
+        `koed-runtime/node_modules/@koed-labs/api/dist/browser-approval/assets/index-abc12345.${extension}`
+      )
+    );
+    writeManifest(root);
 
-  const result = validatePackageRoot(root);
+    const result = validatePackageRoot(root);
 
-  assert.equal(result.ok, false);
-  assert.match(result.errors.join("\n"), /browser-approval\/assets/);
-});
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(`<fingerprinted>.${extension}`)
+      )
+    );
+  });
+}
 
 test("rejects retired Explorer, native runtime, model, and Python leftovers", () => {
   const root = createPackageRoot();
@@ -354,6 +433,39 @@ test("rejects a Claude Agent SDK provider runtime executable", () => {
   assert.match(
     result.errors.join("\n"),
     /Claude Agent SDK provider executable\/runtime/
+  );
+});
+
+test("prunes current and legacy workspace file stores but preserves unrelated entries", () => {
+  const root = tempDir();
+  const store = resolve(root, "node_modules/.pnpm");
+  for (const entry of [
+    "@koed-labs+core@file+local",
+    "@koed+core@file+local",
+    "@koed-labs+core@1.0.0",
+    "@other+core@file+local"
+  ]) {
+    writeFile(resolve(store, entry, "index.js"));
+  }
+  prunePnpmWorkspaceVirtualStorePaths(root);
+  assert.equal(existsSync(resolve(store, "@koed-labs+core@file+local")), false);
+  assert.equal(existsSync(resolve(store, "@koed+core@file+local")), false);
+  assert.equal(existsSync(resolve(store, "@koed-labs+core@1.0.0")), true);
+  assert.equal(existsSync(resolve(store, "@other+core@file+local")), true);
+});
+
+test("rejects unpruned current workspace file stores", () => {
+  const root = createPackageRoot();
+  writeFile(
+    resolve(
+      root,
+      "koed-runtime/api/node_modules/.pnpm/@koed-labs+core@file+local/index.js"
+    )
+  );
+  writeManifest(root);
+  assert.match(
+    validatePackageRoot(root).errors.join("\n"),
+    /@koed-labs\+core@file\+local/
   );
 });
 
@@ -446,19 +558,19 @@ test("normalizes deployed workspace dependencies and rejects file references", (
       "koed-runtime",
       "api",
       "node_modules",
-      "@koed",
+      "@koed-labs",
       "db",
       "package.json"
     ),
-    `${JSON.stringify({ name: "@koed/db", version: "0.1.0" })}\n`
+    `${JSON.stringify({ name: "@koed-labs/db", version: "0.1.0" })}\n`
   );
   writeFile(
     manifestPath,
     `${JSON.stringify({
-      name: "@koed/api",
+      name: "@koed-labs/api",
       version: "0.1.0",
       dependencies: {
-        "@koed/db": "@koed/db@file:///private/build/packages/db"
+        "@koed-labs/db": "@koed-labs/db@file:///private/build/packages/db"
       }
     })}\n`
   );
@@ -467,7 +579,7 @@ test("normalizes deployed workspace dependencies and rejects file references", (
 
   assert.equal(normalizeDeployedWorkspaceDependencies(manifestPath), true);
   const normalized = JSON.parse(readFileSync(manifestPath, "utf8"));
-  assert.equal(normalized.dependencies["@koed/db"], "0.1.0");
+  assert.equal(normalized.dependencies["@koed-labs/db"], "0.1.0");
   writeManifest(root);
   assert.equal(validatePackageRoot(root).ok, true);
 });

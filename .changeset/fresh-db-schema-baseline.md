@@ -1,5 +1,5 @@
 ---
-"@koed/koed": major
+"@koed-labs/koed": major
 "@koed-labs/server": major
 ---
 

@@ -3,7 +3,7 @@ import type {
   ConversationSharingRuleControlIntent,
   OwnedSharingReason,
   SharingRuleDelivery
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export const ownedSharingReasonChangePending = (
   reason: OwnedSharingReason,

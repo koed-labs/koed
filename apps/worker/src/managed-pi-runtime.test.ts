@@ -2,10 +2,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MemoryApiClient } from "@koed/mcp-server";
+import type { MemoryApiClient } from "@koed-labs/mcp-server";
 
 const mocks = vi.hoisted(() => ({ process: vi.fn() }));
-vi.mock("@koed/mcp-server", () => ({
+vi.mock("@koed-labs/mcp-server", () => ({
   completeTranscriptBoundary: () => 100,
   piSessionIdentity: () => ({ id: "native-session", cwd: "/source" }),
   processPiTranscriptSignal: mocks.process

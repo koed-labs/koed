@@ -1,4 +1,4 @@
-import type { AiClientCapabilityDescriptor } from "@koed/shared";
+import type { AiClientCapabilityDescriptor } from "@koed-labs/shared";
 import type { AiClientReadiness } from "../../types.js";
 
 export type AiClientCapabilitySummary = {

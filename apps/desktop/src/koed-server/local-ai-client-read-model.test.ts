@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   codeDefaultAssignmentFor,
   documentDefault
-} from "@koed/shared/ai-client-flow-defaults";
+} from "@koed-labs/shared/ai-client-flow-defaults";
 
 import { readLocalAiClientReadModel } from "./local-ai-client-read-model.js";
 

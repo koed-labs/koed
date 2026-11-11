@@ -4,7 +4,7 @@ import {
   sharingRuleSourceIdentityHash,
   SharedMemoryConflictError,
   type SharingRuleSourceIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 /** Prove the native authoritative source before retaining an opaque Personal
  * origin digest. The caller holds its owner/source authority transaction. */

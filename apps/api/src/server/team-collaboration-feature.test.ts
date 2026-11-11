@@ -1,5 +1,5 @@
 import { createCipheriv, createHash } from "node:crypto";
-import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared";
+import { COLLABORATION_CONTRACT_VERSION } from "@koed-labs/shared";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { buildCapabilitiesResponse } from "./capabilities.js";

@@ -3,7 +3,7 @@ import {
   grantAiClientConnection,
   revokeAiClientConnection,
   type AiClientConnectionId
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 import type { collectKoedServerStatus } from "./status.js";
 
 // Only these two operations change whether Koed reads an AI Client's

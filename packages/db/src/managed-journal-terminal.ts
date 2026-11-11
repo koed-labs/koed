@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   canonicalConversationItemKey,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import type pg from "pg";
 import type {

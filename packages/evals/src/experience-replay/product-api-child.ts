@@ -2,7 +2,7 @@ type ParentMessage = { type: "close" };
 
 let closing: Promise<void> | undefined;
 let app:
-  | Awaited<ReturnType<(typeof import("@koed/api"))["buildServer"]>>
+  | Awaited<ReturnType<(typeof import("@koed-labs/api"))["buildServer"]>>
   | undefined;
 
 const close = (): Promise<void> => {
@@ -23,7 +23,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 process.once("disconnect", () => void close().finally(() => process.exit(0)));
 
 try {
-  const { buildServer } = await import("@koed/api");
+  const { buildServer } = await import("@koed-labs/api");
   app = await buildServer({ runMemoryJobsInlineForTests: true });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const address = app.server.address();

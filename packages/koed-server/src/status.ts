@@ -11,7 +11,7 @@ import {
   revokeAiClientConnection,
   type AiClientConnectionId,
   type AiClientConnectionsRecord
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 import { resolveKoedServerConfig } from "./config.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
@@ -71,7 +71,7 @@ import {
   type LocalAiClientDefault,
   type LocalAiClientFlowKey,
   type LocalAiClientRuntimeAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
@@ -1541,7 +1541,7 @@ const inspectMcp = async (
         ? "Install and activate a compatible signed Koed app-runtime generation; status does not install or activate components."
         : appRuntime.kind === "packaged"
           ? "Install a compatible signed Koed app-runtime generation containing MCP Server and Supported Capture Hook artifacts."
-          : "Run pnpm --filter @koed/mcp-server build or koed setup core --json.",
+          : "Run pnpm --filter @koed-labs/mcp-server build or koed setup core --json.",
       {
         artifactSource: appRuntime.artifactSource,
         runtimeRoot: appRuntime.root,

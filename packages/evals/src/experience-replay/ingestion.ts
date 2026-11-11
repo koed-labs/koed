@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { codexCanonicalConversationItemKey } from "@koed/shared";
-import { NORMALIZED_IMPORT_SOURCE_ADAPTER } from "@koed/db";
+import { codexCanonicalConversationItemKey } from "@koed-labs/shared";
+import { NORMALIZED_IMPORT_SOURCE_ADAPTER } from "@koed-labs/db";
 import type {
   AtifSanitizationManifest,
   NormalizedTranscriptItem

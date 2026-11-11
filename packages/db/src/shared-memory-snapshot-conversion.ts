@@ -5,7 +5,7 @@ import {
   snapshotConversionScopeSchema,
   SharedMemoryConflictError,
   type SnapshotConversionScope
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { stopIndependentDirectSnapshot } from "./shared-memory-direct-reason.js";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 

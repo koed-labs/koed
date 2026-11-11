@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DeviceCredentialRecord } from "@koed/db";
+import type { DeviceCredentialRecord } from "@koed-labs/db";
 import {
   assertUpstreamOperationPathAllowed,
   readLocalEdgeUpstreamRegistry,

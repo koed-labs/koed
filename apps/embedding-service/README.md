@@ -15,7 +15,7 @@ Run the service locally after building and setting local model paths:
 
 ```bash
 MODEL_PATH=/path/to/embedding.gguf \
-pnpm --filter @koed/embedding-service dev
+pnpm --filter @koed-labs/embedding-service dev
 ```
 
 The TypeScript service launches `llama-server` directly and expects local

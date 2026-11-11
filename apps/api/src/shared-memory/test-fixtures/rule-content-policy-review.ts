@@ -1,7 +1,7 @@
 import {
   noPrivacyLabelsPolicy,
   sharingRuleContentPolicyReviewSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 /** A complete content-policy review for approval, authorization and delivery
  * boundary tests. Repository tests construct reviews from current authority. */

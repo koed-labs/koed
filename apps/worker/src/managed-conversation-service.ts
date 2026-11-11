@@ -3,7 +3,7 @@ import { assertManagedConversationTurnSettings } from "./managed-conversation-se
 import {
   managedConversationSettingsKey,
   parseManagedConversationSettings
-} from "@koed/shared/ai-client-contract";
+} from "@koed-labs/shared/ai-client-contract";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -21,7 +21,7 @@ import {
   type ManagedConversationRuntimeItemKind,
   type MemorySourceRepository,
   type WorkflowTokenUsageInput
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   assertCodexConversationProtocolCompatibility,
   checkCodexAppServerAvailability,
@@ -50,7 +50,7 @@ import {
   type ClaudeWatcherState,
   type CodexManagedConversationSealedSource,
   type CodexThreadTokenUsage
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 import {
   canonicalManagedConversationHandoffManifest,
   canonicalManagedConversationForkManifest,
@@ -72,7 +72,7 @@ import {
   type ManagedConversationFileOperation,
   type ManagedConversationFileOperationResult,
   type ManagedConversationTargetReadinessEvidence
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { Logger } from "pino";
 
 import {
@@ -99,7 +99,7 @@ import {
   createGitExecutionCheckoutDriver,
   type ExecutionCheckoutIdentity,
   type GitExecutionCheckoutDriver
-} from "@koed/shared/execution-checkout";
+} from "@koed-labs/shared/execution-checkout";
 import {
   ManagedConversationRuntimeRegistry,
   runWithManagedConversationLease,

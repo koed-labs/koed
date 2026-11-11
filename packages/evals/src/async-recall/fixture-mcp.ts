@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import {
   createKoedMcpServer,
   type KoedMcpRuntimeClient
-} from "@koed/mcp-server/mcp-server-factory";
+} from "@koed-labs/mcp-server/mcp-server-factory";
 import {
   serveStdio,
   StdioServerTransport

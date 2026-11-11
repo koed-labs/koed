@@ -10,8 +10,8 @@ import {
   type PersonalSelectionConsumerPage,
   type SharedMemoryCandidatePreview,
   type SharingDestinationReview
-} from "@koed/shared";
-import type { SharingRuleMutationIntent } from "@koed/shared";
+} from "@koed-labs/shared";
+import type { SharingRuleMutationIntent } from "@koed-labs/shared";
 import { openOpaqueCursor, sealOpaqueCursor } from "./opaque-cursor.js";
 
 const cursorSchema = z

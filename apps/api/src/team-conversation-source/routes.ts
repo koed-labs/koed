@@ -6,9 +6,9 @@ import type {
   PrivacySanitizedSourceChunkRecord,
   PrivacySanitizedSourceManifest,
   TeamConversationSourceAccessRecord
-} from "@koed/db";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
-import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
+} from "@koed-labs/db";
+import type { EnvelopeEncryptionProvider } from "@koed-labs/shared";
+import { defaultFreshAuthenticationMaxAgeMs } from "@koed-labs/db";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {

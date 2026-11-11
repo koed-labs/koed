@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type pg from "pg";
-import type { PersonalMembershipRevision } from "@koed/shared";
+import type { PersonalMembershipRevision } from "@koed-labs/shared";
 import type { PersonalMembershipEntityRow } from "./personal-membership-causal-history.js";
 
 /** Follow each causal branch to its closest inclusion. A removed rule retains

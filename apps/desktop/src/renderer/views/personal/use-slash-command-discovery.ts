@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SupportedAiClientDriverId } from "@koed/shared/ai-client-contract";
+import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 import type { ManagedConversationSlashCommand } from "./ai-client-slash-suggestions.js";
 
 const FETCH_DEBOUNCE_MS = 500;

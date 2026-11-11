@@ -8,7 +8,7 @@ import {
   sharedMemoryCandidatePreviewSchema,
   sharedMemoryPreviewSchema,
   sharingRuleDeliverySchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { SnapshotConversionReview } from "./SnapshotConversionReview.js";
 
 type Client = Parameters<typeof SnapshotConversionReview>[0]["client"];

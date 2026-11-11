@@ -6,7 +6,7 @@ import {
   runDbMigrations
 } from "../src/index.js";
 import type { ConversationItemInput } from "../src/index.js";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
 import {
   buildCodexTranscriptConversationItems,
   parseTranscriptJournalBytes,

@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { personalMembershipSourceFromSelectorKey } from "@koed/shared";
+import { personalMembershipSourceFromSelectorKey } from "@koed-labs/shared";
 import type { PersonalMembershipEntityRow } from "./personal-membership-causal-history.js";
 
 /** A canonical reference can create pending metadata only. Actual source receipt

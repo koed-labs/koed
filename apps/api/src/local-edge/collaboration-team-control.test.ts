@@ -8,7 +8,7 @@ import {
   type CollaborationCommandResult,
   type CollaborationRendererCommand,
   type CollaborationSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import {

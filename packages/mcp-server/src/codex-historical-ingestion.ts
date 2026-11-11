@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
-import type { HistoricalAdmissionDecision } from "@koed/shared";
+import type { HistoricalAdmissionDecision } from "@koed-labs/shared";
 
 import {
   completeAutomaticHistoricalRun,

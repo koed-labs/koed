@@ -161,7 +161,7 @@ appear above Home.
   drops at most three coins, the first reading drops none, and reduced motion
   drops none.
 
-Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
+Run `pnpm --filter @koed-labs/desktop test:browser:v1` for the isolated Electron
 presentation and onboarding checks. The validation entry also provides sidebar
 and Project management fixtures using the current production components. These
 fixtures do not configure local AI Clients or certify a live model response or

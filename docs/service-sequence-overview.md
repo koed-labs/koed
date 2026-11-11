@@ -1332,7 +1332,7 @@ sequenceDiagram
 5. The local LCM worker builds token-bounded prompts from exact source items or
    child summaries. The prompt requires secret-like literal redaction and, when
    ordered source items or child summaries conflict, prefers later items while
-   preserving older conflicts only as superseded context. `@koed/core` owns the
+   preserving older conflicts only as superseded context. `@koed-labs/core` owns the
    `lcm-semantic-summary-v1` schema and parser shared by the DB, MCP Server, and
    evaluation suites. LCM summaries use a JSON envelope containing a title,
    one canonical `summary_text`, and a bounded `lexical_anchors` list selected

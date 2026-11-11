@@ -5,7 +5,7 @@ import {
   parseConversationSourceOriginKeyRegistration,
   parseConversationSourceReplicationSourceDescriptor,
   parseSignedConversationSourceClosureManifest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 

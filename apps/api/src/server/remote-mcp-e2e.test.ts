@@ -9,8 +9,8 @@ import {
   createRemoteMcpOAuthRepository,
   runDbMigrations,
   type MemorySourceRepository
-} from "@koed/db";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+} from "@koed-labs/db";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

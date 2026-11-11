@@ -48,11 +48,15 @@ if (!process.env.DATABASE_URL?.trim()) {
 }
 
 const runMigrations = () => {
-  const result = spawnSync("pnpm", ["--filter", "@koed/db", "migrate:up"], {
-    cwd: process.cwd(),
-    env: process.env,
-    stdio: "inherit"
-  });
+  const result = spawnSync(
+    "pnpm",
+    ["--filter", "@koed-labs/db", "migrate:up"],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: "inherit"
+    }
+  );
   if (result.error) {
     throw result.error;
   }

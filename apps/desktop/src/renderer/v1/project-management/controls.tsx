@@ -12,7 +12,7 @@ import {
   SelectPopup,
   SelectTrigger,
   SelectValue
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { X } from "lucide-react";
 import "./project-management.css";
 

@@ -36,12 +36,12 @@ import {
 } from "./app-runtime-staging.mjs";
 
 const servicePackages = {
-  api: "@koed/api",
-  worker: "@koed/worker",
-  "embedding-service": "@koed/embedding-service",
-  "mcp-server": "@koed/mcp-server",
+  api: "@koed-labs/api",
+  worker: "@koed-labs/worker",
+  "embedding-service": "@koed-labs/embedding-service",
+  "mcp-server": "@koed-labs/mcp-server",
   "koed-server": "@koed-labs/server",
-  "privacy-service": "@koed/privacy-service"
+  "privacy-service": "@koed-labs/privacy-service"
 };
 const baseServices = [
   "api",

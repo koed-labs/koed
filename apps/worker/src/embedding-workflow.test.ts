@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { EmbeddableSourceRecord, MemorySourceRepository } from "@koed/db";
+import type {
+  EmbeddableSourceRecord,
+  MemorySourceRepository
+} from "@koed-labs/db";
 import {
   aggregateEmbeddingChunks,
   createEmbeddingWorkflow

@@ -3,7 +3,7 @@ import {
   MEMORY_RETRIEVAL_SEMANTIC_HINT_MAX_COUNT,
   memoryRetrievalExactHintsSchema,
   memoryRetrievalHintSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 
 const boundedHintListSchema = z

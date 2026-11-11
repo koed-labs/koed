@@ -11,7 +11,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { resolve } from "node:path";
-import { PINNED_PRIVACY_MODEL_REVISION } from "@koed/shared";
+import { PINNED_PRIVACY_MODEL_REVISION } from "@koed-labs/shared";
 import type { KoedServerPaths } from "./paths.js";
 import type { ComponentVariant } from "./component-contract.js";
 import type { PrivacyDownloadCompatibility } from "./privacy-download-compatibility.js";

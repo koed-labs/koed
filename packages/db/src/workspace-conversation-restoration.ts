@@ -8,7 +8,7 @@ import {
   type WorkspaceConversationExclusionReviewInput,
   type WorkspaceConversationRestorationIntent,
   type WorkspaceConversationRestorationReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 import {
   readWorkspaceConversationExclusionReview,

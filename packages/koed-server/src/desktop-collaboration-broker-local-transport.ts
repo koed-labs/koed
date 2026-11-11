@@ -24,12 +24,12 @@ import {
   type CollaborationSelection,
   type CollaborationSnapshot,
   type CollaborationSubscription
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   negotiateDurableRealtimeTransport,
   readBoundedSse,
   runDurableRealtime
-} from "@koed/shared/durable-realtime";
+} from "@koed-labs/shared/durable-realtime";
 
 export const collaborationCommandPath = "/v1/local-edge/collaboration/command";
 export const collaborationRealtimeSubscriptionsPath =

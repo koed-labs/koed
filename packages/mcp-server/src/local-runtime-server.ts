@@ -13,7 +13,7 @@ import path from "node:path";
 import {
   personalDesktopAskSubmitInputSchema,
   watchKoedLocalWork
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 import {
   resolveCodexTranscriptWatcherConfig,
@@ -61,7 +61,7 @@ import {
   isAiClientConnected,
   readAiClientConnections,
   type AiClientConnectionId
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 import { logger } from "./logger.js";
 
 // How often the runtime rechecks which AI Clients are connected.

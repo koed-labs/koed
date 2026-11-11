@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { CuratedMemorySourceRole } from "@koed/db";
+import type { CuratedMemorySourceRole } from "@koed-labs/db";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   curatedMemoryAssertionParamsSchema,

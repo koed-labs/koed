@@ -3,7 +3,7 @@ import {
   memoryAnswerTaskResponseSchema,
   memoryAnswerTaskSchema,
   type MemoryAnswerTask
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   readLocalRuntimeRegistration,
   type LocalRuntimeCapabilities,
@@ -350,8 +350,8 @@ export class LocalAiRuntimeClient {
   async askDesktop(
     input: {
       namedProjectId?: string;
-      folderSelection?: import("@koed/shared").PersonalFolderReference;
-      repositorySelection?: import("@koed/shared").PersonalGitContext;
+      folderSelection?: import("@koed-labs/shared").PersonalFolderReference;
+      repositorySelection?: import("@koed-labs/shared").PersonalGitContext;
       askThreadId?: string;
       idempotencyKey: string;
       query: string;

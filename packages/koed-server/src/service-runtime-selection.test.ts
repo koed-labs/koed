@@ -74,10 +74,10 @@ const requiredFiles = [
   "mcp-server/dist/cli.js",
   "mcp-server/dist/local-runtime-cli.js",
   "mcp-server/dist/capture-hook.js",
-  "node_modules/@koed/db/dist/index.js",
-  "node_modules/@koed/db/dist/connection.js",
-  "node_modules/@koed/db/dist/user-api-token-repository.js",
-  "node_modules/@koed/db/drizzle/meta/_journal.json"
+  "node_modules/@koed-labs/db/dist/index.js",
+  "node_modules/@koed-labs/db/dist/connection.js",
+  "node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+  "node_modules/@koed-labs/db/drizzle/meta/_journal.json"
 ];
 const requirements = {
   components: ["base"] as const,

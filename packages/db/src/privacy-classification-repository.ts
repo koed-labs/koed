@@ -21,7 +21,7 @@ import {
   type PrivacyClassificationResponse,
   type PrivacyDetectedSpan,
   type PrivacyLabelPolicy
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   decryptAuthorizedEncryptedFieldPayloadWithClient,
   decryptTeamEncryptedFieldAfterAuthorizationWithClient,

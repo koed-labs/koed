@@ -3,7 +3,7 @@ import type {
   PurgeArtifactKind,
   PurgeCompletionResult,
   RetentionLifecycleRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 
 interface RetentionPurgeLogger {
   info(bindings: Record<string, unknown>, message: string): void;

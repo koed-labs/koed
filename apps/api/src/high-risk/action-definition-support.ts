@@ -1,7 +1,7 @@
 import {
   collaborationApprovalReviewSchema,
   type CollaborationApprovalReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import {
   teamAdminRequestHash,

@@ -17,7 +17,7 @@ import type {
   DeviceCredentialAuthContext,
   ManagedConversationRepository,
   SharedMemoryRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   calculateCollaborationReconnectDelay,
   COLLABORATION_RECONNECT_BACKOFF_CAP_MS,
@@ -35,7 +35,7 @@ import {
   sharedMemorySessionSchema,
   type CollaborationRendererEvent,
   type PersonalMemoryEntry
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AuthHelpers } from "../auth/session.js";
 import { collaborationRealtimeProtocolVersion } from "../server/capabilities.js";
@@ -197,7 +197,7 @@ export interface CollaborationRealtimeServiceOptions {
     "getOwnerShare" | "listWorkspaceGrants"
   > | null;
   teamPresenceRepository?: Pick<
-    import("@koed/db").MemorySourceRepository,
+    import("@koed-labs/db").MemorySourceRepository,
     "getTeamRosterMember"
   > | null;
   pool: ListenPool | null;

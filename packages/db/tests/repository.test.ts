@@ -1,4 +1,4 @@
-import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
+import { unresolvedTeamRepositorySnapshot } from "@koed-labs/shared";
 import {
   createHash,
   createCipheriv,
@@ -23,7 +23,7 @@ import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   type MemoryEngineRepository,
   type SearchMemoryInput
-} from "@koed/core";
+} from "@koed-labs/core";
 import {
   createLocalWorkQueueRepository,
   createEncryptedPayloadRepository,
@@ -69,7 +69,7 @@ import {
   type ManagedKmsKeyring,
   type PdsPortableMemoryEmbeddingV1,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const databaseUrl = process.env.DATABASE_URL;
 const runDbTests = Boolean(databaseUrl);

@@ -1,8 +1,8 @@
 import type {
   OwnedRepositorySharingRule,
   RepositoryIdentity
-} from "@koed/shared";
-import { sharingSelectionDescriptor } from "@koed/shared/collaboration";
+} from "@koed-labs/shared";
+import { sharingSelectionDescriptor } from "@koed-labs/shared/collaboration";
 import {
   repoLabelFromRemoteDisplay,
   type DesktopProject

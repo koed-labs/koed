@@ -6,7 +6,7 @@ import {
   SelectPopup,
   SelectTrigger,
   SelectValue
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { useMemoryModel } from "../use-memory-model.js";
 import { Arrow } from "./ClientSetup.js";
 import type { ClientId } from "./model.js";

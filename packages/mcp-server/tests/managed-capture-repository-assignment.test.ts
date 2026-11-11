@@ -9,8 +9,8 @@ import {
   createMemorySourceRepository,
   runDbMigrations,
   updateSessionRepositoryOverride
-} from "@koed/db";
-import { repositoryScopeId } from "@koed/shared";
+} from "@koed-labs/db";
+import { repositoryScopeId } from "@koed-labs/shared";
 import { resolveCaptureRepositoryIdentity } from "../src/capture-repository-context.js";
 
 const databaseUrl = process.env.DATABASE_URL;

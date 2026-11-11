@@ -17,7 +17,7 @@ import {
   grantAiClientConnection,
   isAiClientConnected,
   readAiClientConnections
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 import {
   HEADLESS_REMOTE_CREDENTIAL_REF,
   checkHeadlessRemoteIntegration,

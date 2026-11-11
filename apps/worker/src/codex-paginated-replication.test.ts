@@ -4,7 +4,7 @@ import type {
   ConversationSourceArtifactRecord,
   ConversationSourceSegmentRecord,
   MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
@@ -12,13 +12,13 @@ import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   generateConversationSourceReplicationOriginKeyPair,
   signConversationSourceReplicationManifest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createConversationSourceReplicationService } from "./conversation-source-replication-service.js";
-import * as sharedRewritePolicy from "@koed/shared";
+import * as sharedRewritePolicy from "@koed-labs/shared";
 import {
   parseTranscriptJournalBytes,
   transcriptJournalParserState
-} from "@koed/mcp-server/codex-transcript-parser";
+} from "@koed-labs/mcp-server/codex-transcript-parser";
 
 const timestamp = "2026-10-07T00:00:00.000Z";
 const nativeId = "00000000-0000-4000-8000-000000000001";

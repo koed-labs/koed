@@ -12,7 +12,7 @@ test("the server image builds API-owned browser approval assets", () => {
   const dockerfile = readRepositoryFile("packages/koed-server/Dockerfile");
 
   assert.match(dockerfile, /pnpm source-runtime:prepare/);
-  assert.ok(SOURCE_RUNTIME_BUILD_SPEC.rootPackages.includes("@koed/api"));
+  assert.ok(SOURCE_RUNTIME_BUILD_SPEC.rootPackages.includes("@koed-labs/api"));
   assert.ok(
     SOURCE_RUNTIME_BUILD_SPEC.requiredOutputs.includes(
       "apps/api/dist/browser-approval/index.html"
@@ -26,8 +26,8 @@ test("the embedding image skips unrelated workspace lifecycle scripts", () => {
   const dockerfile = readRepositoryFile("apps/embedding-service/Dockerfile");
 
   assert.match(dockerfile, /pnpm install --frozen-lockfile --ignore-scripts/);
-  assert.match(dockerfile, /pnpm --filter @koed\/shared build/);
-  assert.match(dockerfile, /pnpm --filter @koed\/embedding-service build/);
+  assert.match(dockerfile, /pnpm --filter @koed-labs\/shared build/);
+  assert.match(dockerfile, /pnpm --filter @koed-labs\/embedding-service build/);
 });
 
 test("server Compose exposes approval pages through koed-server only", () => {

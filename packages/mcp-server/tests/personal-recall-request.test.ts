@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { personalFolderScopeId } from "@koed/shared";
+import { personalFolderScopeId } from "@koed-labs/shared";
 import { MemoryApiClient } from "../src/index.js";
 import { memoryAnswerAdapterInputSchema } from "../src/memory-tool-schemas.js";
 import { pinPersonalRecallRequest } from "../src/personal-recall-request.js";

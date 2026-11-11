@@ -4,7 +4,7 @@ import {
   personalMembershipEntitySnapshotSchema,
   type PersonalMembershipEntitySnapshot,
   type PersonalMembershipRevision
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   withPersonalConfigurationPublication,
   type PersonalConfigurationPublicationScope

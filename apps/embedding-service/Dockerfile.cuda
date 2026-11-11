@@ -13,9 +13,9 @@ COPY . .
 RUN pnpm install --frozen-lockfile --ignore-scripts \
   && find apps packages -name "*.tsbuildinfo" -delete \
   && rm -rf apps/*/dist packages/*/dist \
-  && pnpm --filter @koed/shared build \
-  && pnpm --filter @koed/embedding-service build \
-  && pnpm --filter @koed/embedding-service deploy --legacy --prod /deploy/embedding-service
+  && pnpm --filter @koed-labs/shared build \
+  && pnpm --filter @koed-labs/embedding-service build \
+  && pnpm --filter @koed-labs/embedding-service deploy --legacy --prod /deploy/embedding-service
 
 FROM node:22-trixie-slim AS runtime
 

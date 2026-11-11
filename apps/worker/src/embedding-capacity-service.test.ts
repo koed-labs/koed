@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { EmbeddingCapacityRepository } from "@koed/db";
+import type { EmbeddingCapacityRepository } from "@koed-labs/db";
 import { createEmbeddingCapacityService } from "./embedding-capacity-service.js";
 import { resolveWorkerEnv } from "./env-config.js";
 

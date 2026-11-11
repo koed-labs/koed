@@ -1,7 +1,7 @@
 import type {
   CollaborationApprovalReview,
   CollaborationApprovalTier
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type ActionApprovalDisposition =
   | CollaborationApprovalTier

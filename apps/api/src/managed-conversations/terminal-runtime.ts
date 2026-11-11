@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import type {
   MemorySourceRepository,
   ManagedTerminalExecutionAuthority
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   classifySourceContent,
   managedTerminalClientFrameSchema,
@@ -22,11 +22,11 @@ import {
   type ManagedTerminalContextReference,
   type ManagedTerminalRecord,
   type ManagedTerminalServerFrame
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createGitExecutionCheckoutDriver,
   type ExecutionCheckoutIdentity
-} from "@koed/shared/execution-checkout";
+} from "@koed-labs/shared/execution-checkout";
 import * as nodePty from "node-pty";
 
 import { verifyLoopbackListenerOwnership } from "./listener-ownership.js";

@@ -11,10 +11,10 @@ import {
   runDbMigrations,
   type ActorContext,
   type MemorySourceRepository
-} from "@koed/db";
-import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
-import { createEmbeddingWorkflow } from "@koed/worker/embedding-workflow";
-import type { MemorySearchResult, RetrievalMetadata } from "@koed/core";
+} from "@koed-labs/db";
+import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
+import { createEmbeddingWorkflow } from "@koed-labs/worker/embedding-workflow";
+import type { MemorySearchResult, RetrievalMetadata } from "@koed-labs/core";
 import type { AtifSanitizationResult } from "./atif/index.js";
 import {
   ExperienceReplayDatabaseTemplates,

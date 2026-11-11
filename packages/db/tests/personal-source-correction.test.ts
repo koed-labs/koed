@@ -9,7 +9,7 @@ import {
   it,
   vi
 } from "vitest";
-import { createMemoryEngine } from "@koed/core";
+import { createMemoryEngine } from "@koed-labs/core";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   type PersonalFolderObservation,
@@ -17,7 +17,7 @@ import {
   repositoryScopeId,
   type PersonalSourceCorrectionInput,
   type PersonalGitContext
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   runDbMigrations,

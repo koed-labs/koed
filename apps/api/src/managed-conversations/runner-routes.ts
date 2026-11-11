@@ -6,7 +6,7 @@ import {
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   managedConversationFileOperationResultSchema,
   type RecipientPublicKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type { ApiRouteContext } from "../server/context.js";
 import { resolveConversationSourceDownloadMaterial } from "../source-replication/download-material.js";

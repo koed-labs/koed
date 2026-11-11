@@ -19,7 +19,7 @@ import {
   type SharedMemoryRepresentation,
   type SharedMemorySourceRef,
   sharedMemorySourceRefSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type pg from "pg";
 import {
   seedSelectionSharingProgress,

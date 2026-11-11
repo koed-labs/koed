@@ -1,6 +1,6 @@
 import type { KeyObject } from "node:crypto";
 import { registerPersonalProjectSelectionRoutes } from "./project-selection-routes.js";
-import { pdsSessionPackageDigest } from "@koed/shared";
+import { pdsSessionPackageDigest } from "@koed-labs/shared";
 import { pdsConversationItemsForClosure } from "./local-source.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
@@ -24,8 +24,8 @@ import {
   readDesktopLocalCredentialAuthorization,
   verifyDesktopLocalCredentialAuthorization,
   type PdsGroupStatement
-} from "@koed/shared";
-import type { PersonalDeviceGroupRecord } from "@koed/db";
+} from "@koed-labs/shared";
+import type { PersonalDeviceGroupRecord } from "@koed-labs/db";
 import type { ApiRouteContext } from "../server/context.js";
 import { serializePdsPackageForEncryptedStorage } from "./secure-runtime.js";
 import {

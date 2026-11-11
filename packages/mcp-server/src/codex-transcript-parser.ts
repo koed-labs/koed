@@ -3,9 +3,9 @@ import {
   codexSourceTimeProjectDirectory
 } from "./historical-repository-context.js";
 import { createHash } from "node:crypto";
-import { splitCodexIdePrompt } from "@koed/core";
-import { approvalActivityMetadata } from "@koed/shared";
-import { approvalReviewTranscriptDisplayFromText } from "@koed/shared/personal-desktop";
+import { splitCodexIdePrompt } from "@koed-labs/core";
+import { approvalActivityMetadata } from "@koed-labs/shared";
+import { approvalReviewTranscriptDisplayFromText } from "@koed-labs/shared/personal-desktop";
 import {
   adaptCodexTranscriptV1,
   type CodexTranscriptObservation

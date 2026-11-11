@@ -5,7 +5,7 @@ import type {
   CreateRealtimeTransportTicketInput,
   RealtimeTransportAdmissionRecord,
   RealtimeTransportTicketRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import { createRealtimeTransportAdmissionService } from "./service.js";
 
 const backendIdentity = "11111111-1111-4111-8111-111111111111";

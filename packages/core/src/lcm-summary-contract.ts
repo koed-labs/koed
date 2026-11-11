@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   LCM_LEXICAL_ANCHOR_MAX_COUNT,
   LCM_LEXICAL_ANCHOR_MAX_LENGTH
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export const LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION = "lcm-semantic-summary-v1";
 export { LCM_LEXICAL_ANCHOR_MAX_COUNT, LCM_LEXICAL_ANCHOR_MAX_LENGTH };

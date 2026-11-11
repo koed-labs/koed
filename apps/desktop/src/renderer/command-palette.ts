@@ -1,7 +1,7 @@
 import type {
   CollaborationSelection,
   CollaborationSnapshot
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 
 import type { DesktopRoute } from "./navigation.js";
 

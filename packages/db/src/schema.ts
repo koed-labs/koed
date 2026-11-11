@@ -1,4 +1,4 @@
-import { noPrivacyLabelsPolicy, privacyLabels } from "@koed/shared";
+import { noPrivacyLabelsPolicy, privacyLabels } from "@koed-labs/shared";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -34,7 +34,7 @@ import type {
   PersonalFolderAssignment,
   PersonalFolderObservation,
   SyncProfileTransitionReceipt
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const privacyLabelPolicyCheck = (column: AnyPgColumn) => {
   const keys = sql.raw(
@@ -15122,7 +15122,7 @@ export const personalNamedProjects = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     projectId: uuid("project_id").notNull().defaultRandom(),
     name: text("name").notNull(),
-    kin: jsonb("kin").$type<import("@koed/shared").PersonalProjectKin>(),
+    kin: jsonb("kin").$type<import("@koed-labs/shared").PersonalProjectKin>(),
     createRequestId: uuid("create_request_id"),
     createRequestName: text("create_request_name"),
     version: integer("version").notNull().default(1),
@@ -15163,7 +15163,7 @@ export const personalProjectInclusions = pgTable(
     logicalSessionId: uuid("logical_session_id").notNull(),
     sourceReference:
       jsonb("source_reference").$type<
-        import("@koed/shared").PersonalSourceReference
+        import("@koed-labs/shared").PersonalSourceReference
       >(),
     version: integer("version").notNull().default(1),
     headRevisionId: uuid("head_revision_id").notNull(),
@@ -15200,12 +15200,12 @@ export const personalProjectRules = pgTable(
     ownerUserId: uuid("owner_user_id").notNull(),
     projectId: uuid("project_id").notNull(),
     target: jsonb("target")
-      .$type<import("@koed/shared").PersonalProjectRule["target"]>()
+      .$type<import("@koed-labs/shared").PersonalProjectRule["target"]>()
       .notNull(),
     targetScope: text("target_scope").notNull(),
     folderContext:
       jsonb("folder_context").$type<
-        import("@koed/shared").PersonalFolderContext
+        import("@koed-labs/shared").PersonalFolderContext
       >(),
     version: integer("version").notNull().default(1),
     headRevisionId: uuid("head_revision_id").notNull(),
@@ -15258,7 +15258,7 @@ export const personalProjectExclusions = pgTable(
     logicalSessionId: uuid("logical_session_id").notNull(),
     sourceReference:
       jsonb("source_reference").$type<
-        import("@koed/shared").PersonalSourceReference
+        import("@koed-labs/shared").PersonalSourceReference
       >(),
     version: integer("version").notNull().default(1),
     headRevisionId: uuid("head_revision_id").notNull(),
@@ -15439,11 +15439,11 @@ export const personalSourceBindings = pgTable(
       .default(sql`'{}'::text[]`),
     gitAssignment:
       jsonb("git_assignment").$type<
-        import("@koed/shared").PersonalGitAssignment
+        import("@koed-labs/shared").PersonalGitAssignment
       >(),
     folderAssignment:
       jsonb("folder_assignment").$type<
-        import("@koed/shared").PersonalFolderAssignment
+        import("@koed-labs/shared").PersonalFolderAssignment
       >(),
     createdAt: now(),
     updatedAt: updatedNow()
@@ -15499,8 +15499,8 @@ export const personalSourceContextRevisions = pgTable(
     replaces: text("replaces").array().notNull(),
     assignment: jsonb("assignment")
       .$type<
-        | import("@koed/shared").PersonalGitAssignment
-        | import("@koed/shared").PersonalFolderAssignment
+        | import("@koed-labs/shared").PersonalGitAssignment
+        | import("@koed-labs/shared").PersonalFolderAssignment
       >()
       .notNull(),
     witnessDeviceId: text("witness_device_id"),
@@ -15656,7 +15656,7 @@ export const personalMembershipEntities = pgTable(
       .default(sql`'{}'::text[]`),
     currentRevision:
       jsonb("current_revision").$type<
-        import("@koed/shared").PersonalMembershipRevision
+        import("@koed-labs/shared").PersonalMembershipRevision
       >(),
     createdAt: now(),
     updatedAt: updatedNow()
@@ -15706,7 +15706,7 @@ export const personalMembershipRevisions = pgTable(
     revisionId: text("revision_id").notNull(),
     replaces: text("replaces").array().notNull(),
     revision: jsonb("revision")
-      .$type<import("@koed/shared").PersonalMembershipRevision>()
+      .$type<import("@koed-labs/shared").PersonalMembershipRevision>()
       .notNull(),
     witnessDeviceId: text("witness_device_id").notNull(),
     verifiedRecordHash: text("verified_record_hash"),
@@ -15768,7 +15768,9 @@ export const personalMembershipResolutionReviews = pgTable(
     expectedProjectState: jsonb("expected_project_state").notNull(),
     revisionId: text("revision_id").notNull(),
     operation: jsonb("operation")
-      .$type<import("@koed/shared").PersonalMembershipRevision["operation"]>()
+      .$type<
+        import("@koed-labs/shared").PersonalMembershipRevision["operation"]
+      >()
       .notNull(),
     preview: jsonb("preview").notNull(),
     appliedAt: timestamp("applied_at", { withTimezone: true }),
@@ -15964,7 +15966,7 @@ export const personalSelectionCursors = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(),
     selection: jsonb("selection")
-      .$type<import("@koed/shared").PersonalSelectionConsumerSelection>()
+      .$type<import("@koed-labs/shared").PersonalSelectionConsumerSelection>()
       .notNull(),
     snapshotVersion: uuid("snapshot_version").notNull(),
     fromSnapshot: text("from_snapshot").notNull(),
@@ -16138,7 +16140,7 @@ export const personalProjectDefaults = pgTable(
     sourceKey: text("source_key").notNull(),
     sourceScope: text("source_scope").notNull(),
     target: jsonb("target")
-      .$type<import("@koed/shared").PersonalProjectRule["target"]>()
+      .$type<import("@koed-labs/shared").PersonalProjectRule["target"]>()
       .notNull(),
     state: text("state").notNull(),
     projectId: uuid("project_id"),

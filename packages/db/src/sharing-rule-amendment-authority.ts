@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   SharedMemoryConflictError,
   type SharedMemoryFidelityCeiling
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 
 type Policy = {

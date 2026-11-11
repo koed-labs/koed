@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createPdsApplicationSecretStore } from "@koed/shared";
+import { createPdsApplicationSecretStore } from "@koed-labs/shared";
 import {
   v1ConversationIntentSchema,
   v1ProfileSchema,

@@ -14,12 +14,12 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>()),
   query: sdk.query
 }));
-import { countTokensForModel } from "@koed/core";
+import { countTokensForModel } from "@koed-labs/core";
 import {
   MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_LENGTH
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   MEMORY_ANSWER_PROMPT_VERSION,
   MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,

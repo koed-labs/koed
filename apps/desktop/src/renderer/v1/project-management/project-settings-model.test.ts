@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import {
   createProjectManagementValidationApi,
   validationId

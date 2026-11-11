@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import {
   sanitizeAiClientDiagnostics,
   type AiClientCapabilityDescriptor
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   aiClientDiscoveryError,
   aiClientDriverFor,

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   desktopUpdateCommandChannel,
   desktopUpdateEventChannel
-} from "@koed/shared/desktop-update-contract";
+} from "@koed-labs/shared/desktop-update-contract";
 import { createDesktopUpdatePreloadApi } from "./update-preload.js";
 
 const state = {

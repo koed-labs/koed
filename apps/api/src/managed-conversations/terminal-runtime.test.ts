@@ -4,11 +4,11 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import type {
   ManagedTerminalRecord,
   ManagedTerminalServerFrame
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createManagedTerminalRuntime } from "./terminal-runtime.js";

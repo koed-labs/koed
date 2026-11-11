@@ -9,7 +9,7 @@ import {
   type WorkspaceConversationExclusionIntent,
   type WorkspaceConversationExclusionReviewInput,
   type WorkspaceConversationExclusionReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 
 type SqlClient = Pick<pg.PoolClient, "query">;

@@ -5,13 +5,13 @@ import {
   verifyPersonalConfigurationRecord,
   personalConfigurationRecordHash,
   personalConfigurationPackageId
-} from "@koed/shared";
-import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
+} from "@koed-labs/shared";
+import { pdsRepositoryKeyHistorySchema } from "@koed-labs/shared";
 import {
   verifyPdsRepositoryAssignmentWithKeyHistory,
   PdsConfigurationCompatibilityError,
   type RepositoryAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createHash,
   randomBytes,
@@ -23,7 +23,7 @@ import {
   pdsProjectSelectionPackageId,
   pdsProjectSelectionRecordSchema,
   verifyPdsProjectSelection
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -33,7 +33,7 @@ import type {
   MemorySourceRepository,
   PdsCheckpointConversationItem,
   PdsCheckpointSessionInput
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   PDS_ARTIFACT_PROTOCOL,
   PDS_PEER_RECEIPT_WAIT_MS,
@@ -75,7 +75,7 @@ import {
   type PdsSessionPackageRuntimeContext,
   type PdsSessionManifest,
   type SupportedEmbeddingModelConfig
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PdsWorkerSecureRuntime } from "./personal-device-sync-service.js";
 
 /** Must remain byte-for-byte schema-compatible with API secure runtime. */

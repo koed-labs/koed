@@ -5,7 +5,7 @@ import { realpath, stat } from "node:fs/promises";
 import {
   listCodexAppServerModels,
   type CodexAppServerModelOption
-} from "@koed/mcp-server/runtime-contracts";
+} from "@koed-labs/mcp-server/runtime-contracts";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const DEFAULT_TIMEOUT_MS = 30_000;

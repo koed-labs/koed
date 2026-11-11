@@ -27,11 +27,11 @@ import {
   type CollaborationSafeError,
   type CollaborationSnapshot,
   type CollaborationPendingSendRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createSecureUpstreamFetch,
   registeredPrivateNetworkPolicy
-} from "@koed/shared/secure-upstream-fetch";
+} from "@koed-labs/shared/secure-upstream-fetch";
 import {
   DESKTOP_COLLABORATION_BROKER_MAX_MESSAGE_BYTES,
   DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,

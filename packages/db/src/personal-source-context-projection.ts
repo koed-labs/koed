@@ -6,7 +6,7 @@ import {
   personalFolderAssignmentSchema,
   personalOwnerIdSchema,
   type PersonalFolderAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PersonalSourceBindingRow } from "./personal-source-binding-state.js";
 
 export const sourceContextViewRevisionId = (

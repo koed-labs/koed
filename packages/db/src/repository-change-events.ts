@@ -5,7 +5,7 @@ import {
   repositoryIdentityMatches,
   type RepositoryChangeInput,
   type RepositoryChange
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export const repositoryReviewFailure = (
   statusCode: number,

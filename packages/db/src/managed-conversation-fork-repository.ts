@@ -9,7 +9,7 @@ import {
   pdsEd25519PublicKey,
   type ManagedConversationForkManifest,
   type SignedManagedConversationForkManifest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type pg from "pg";
 
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";

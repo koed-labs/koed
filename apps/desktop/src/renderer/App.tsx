@@ -5,12 +5,12 @@ import {
   CollaborationSelection,
   CollaborationSnapshot,
   CollaborationThreadReference
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import type {
   PersonalDesktopApi,
   PersonalDesktopAskThread
-} from "@koed/shared/personal-desktop";
-import { Button, ToastProvider } from "@koed/ui";
+} from "@koed-labs/shared/personal-desktop";
+import { Button, ToastProvider } from "@koed-labs/ui";
 import { AlertTriangle, LoaderCircle } from "lucide-react";
 import {
   useCallback,

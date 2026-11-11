@@ -15,7 +15,7 @@ import {
   createMemorySourceRepository,
   createRemoteMcpOAuthRepository,
   runDbMigrations
-} from "@koed/db";
+} from "@koed-labs/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { workosAgentTestEnvironment } from "../../test-fixtures/workos-agent-auth.js";
 import { buildServer } from "./build-server.js";

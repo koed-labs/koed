@@ -2,7 +2,7 @@ import type {
   EmbeddingQueueCounts,
   EmbeddingStateSnapshot,
   HistoricalAdmissionPauseReason
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { Activity, ChevronDown, CircleAlert, CircleCheck } from "lucide-react";
 
 const count = (value: number): string => value.toLocaleString("en-US");

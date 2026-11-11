@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   decodePdsPersonalSourceContextSnapshot,
   type PersonalConfigurationRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { translatePersonalSourceSnapshotOwner } from "./personal-source-binding-receipt.js";
 import { type PersonalSourceBindingRow } from "./personal-source-binding-state.js";
 import {

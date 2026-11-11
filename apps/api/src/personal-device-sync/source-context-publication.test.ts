@@ -6,8 +6,8 @@ import {
   personalSourceContextSnapshotSchema,
   verifyAndDecryptPdsSessionSourcePackage,
   type PdsConversationSourceItem
-} from "@koed/shared";
-import type { PdsClosureSource } from "@koed/db";
+} from "@koed-labs/shared";
+import type { PdsClosureSource } from "@koed-labs/db";
 import { personalSourceDeviceFixture } from "../../../../packages/db/tests/fixtures/personal-source-device.js";
 import { createReloadablePdsSecureKeyProviderFromEnvironment } from "./secure-runtime.js";
 

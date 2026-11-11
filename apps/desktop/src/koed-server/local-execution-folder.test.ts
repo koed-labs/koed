@@ -13,7 +13,7 @@ import {
   ensureDeviceIdentity,
   resolveKoedServerPaths
 } from "@koed-labs/server";
-import { readAvailablePersonalFolders } from "@koed/shared/personal-local-folders";
+import { readAvailablePersonalFolders } from "@koed-labs/shared/personal-local-folders";
 import { prepareLocalExecutionFolder } from "./local-execution-folder.js";
 
 const roots: string[] = [];

@@ -1,6 +1,9 @@
-import { projectSelectionLookupResponseSchema } from "@koed/shared/project-selection";
+import { projectSelectionLookupResponseSchema } from "@koed-labs/shared/project-selection";
 import { expect, it, vi } from "vitest";
-import { normalizeGitRemoteUrl, type ProjectMetadataV1 } from "@koed/shared";
+import {
+  normalizeGitRemoteUrl,
+  type ProjectMetadataV1
+} from "@koed-labs/shared";
 import { resolveKoedServerPaths } from "@koed-labs/server";
 import { createProjectSelectionCommand } from "./project-selection-command.js";
 

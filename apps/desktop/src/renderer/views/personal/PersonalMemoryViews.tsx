@@ -5,12 +5,12 @@ import {
   DropdownMenuTrigger,
   DropdownMenuPopup,
   DropdownMenuItem
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import {
   ProjectOrganization,
   type ProjectNewConversationAction
 } from "./ProjectOrganization.js";
-import type { GitAnchorSharingReviewInput } from "@koed/shared/collaboration";
+import type { GitAnchorSharingReviewInput } from "@koed-labs/shared/collaboration";
 import { SourceContextCorrectionDialog } from "./SourceContextCorrectionDialog.js";
 import { ConversationProjectsDialog } from "./ProjectMembershipActions.js";
 import { SourceBrowser } from "./SourceBrowser.js";
@@ -49,8 +49,8 @@ import type {
   PersonalDesktopConversationEvent,
   PersonalDesktopProject,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
-import { PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
+import { PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS } from "@koed-labs/shared/personal-desktop";
 import type { MarkdownPlatformAdapters } from "../../markdown/SecureMarkdown.js";
 import {
   BookText,
@@ -155,7 +155,7 @@ import {
   managedConversationSettingsKey,
   type ManagedConversationSettingsChange,
   type AiClientPermissionMode
-} from "@koed/shared/ai-client-contract";
+} from "@koed-labs/shared/ai-client-contract";
 
 export type PersonalMemoryRoute =
   | { kind: "projects" }

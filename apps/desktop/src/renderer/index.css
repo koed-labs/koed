@@ -1,7 +1,7 @@
 @import "tailwindcss";
-@import "@koed/ui/tailwind.css";
-@import "@koed/ui/tokens.css";
-@import "@koed/ui/base.css";
+@import "@koed-labs/ui/tailwind.css";
+@import "@koed-labs/ui/tokens.css";
+@import "@koed-labs/ui/base.css";
 @import "./markdown/secure-markdown.css";
 @import "./conversation/source-diff.css";
 @source "../../../../packages/ui/src";

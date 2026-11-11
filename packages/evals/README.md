@@ -22,7 +22,7 @@ The first-party dataset is a hand-authored, versioned deterministic artifact con
 The no-credential CPU smoke path runs only the pinned BM25 arm:
 
 ```bash
-pnpm --filter @koed/evals eval:retrieval-arena -- --arm=bm25 --output=.koed/evals/retrieval-arena.json
+pnpm --filter @koed-labs/evals eval:retrieval-arena -- --arm=bm25 --output=.koed/evals/retrieval-arena.json
 ```
 
 ### Retrieval scale and resource reports
@@ -37,7 +37,7 @@ Scale load is deliberately separate from the hand-authored quality corpus. Gener
 Generate deterministic JSONL without retaining the corpus in runner memory:
 
 ```bash
-pnpm --filter @koed/evals eval:retrieval-scale -- generate-load \
+pnpm --filter @koed-labs/evals eval:retrieval-scale -- generate-load \
   --profile=development-smoke \
   --seed=launch-benchmark-2026-08 \
   --output=.koed/evals/retrieval-scale-load.jsonl
@@ -48,7 +48,7 @@ Create a dedicated, migrated, non-public PostgreSQL schema for the scale run. Th
 Load and attest the JSONL against the production Koed tables:
 
 ```bash
-pnpm --filter @koed/evals eval:retrieval-scale -- load \
+pnpm --filter @koed-labs/evals eval:retrieval-scale -- load \
   --profile=development-smoke \
   --seed=launch-benchmark-2026-08 \
   --input=.koed/evals/retrieval-scale-load.jsonl \
@@ -68,7 +68,7 @@ Prepare and embed the hand-authored Product cases before loading the synthetic b
 The emitted `koed-retrieval-scale-scope-v1` is built from fresh database queries. It rejects count drift, a missing vector row, or inconsistent User/session/project/source/embedding ownership. Re-attest an unchanged load without reloading it:
 
 ```bash
-pnpm --filter @koed/evals eval:retrieval-scale -- attest \
+pnpm --filter @koed-labs/evals eval:retrieval-scale -- attest \
   --profile=development-smoke \
   --seed=launch-benchmark-2026-08 \
   --database-url="$KOED_EVAL_PRODUCT_DATABASE_URL" \
@@ -83,7 +83,7 @@ The runtime identity must be the exact `runtimeIdentity` used by the live Produc
 Run the normal strict Product Arena against that loaded database. Use hand-authored Arena cases as the probes, at least the profile's minimum query count, and include the process inventory described below. Then create the scale-only aggregate:
 
 ```bash
-pnpm --filter @koed/evals eval:retrieval-scale -- report \
+pnpm --filter @koed-labs/evals eval:retrieval-scale -- report \
   --profile=development-smoke \
   --arena-report=.koed/evals/retrieval-arena-live.json \
   --scope-attestation=.koed/evals/retrieval-scale-scope.json \
@@ -95,7 +95,7 @@ The strict scale report rejects missing or failed Product queries, runtime ident
 Cleanup is transaction-scoped and deletes only rows marked by the exact profile/seed load identity:
 
 ```bash
-pnpm --filter @koed/evals eval:retrieval-scale -- cleanup \
+pnpm --filter @koed-labs/evals eval:retrieval-scale -- cleanup \
   --profile=development-smoke \
   --seed=launch-benchmark-2026-08 \
   --database-url="$KOED_EVAL_PRODUCT_DATABASE_URL" \
@@ -108,7 +108,7 @@ Point model-backed arms at the existing local Embedding Service:
 ```bash
 KOED_EVAL_EMBEDDING_SERVICE_URL=http://127.0.0.1:3800 \
   EMBEDDING_SERVICE_TOKEN=local-token \
-  pnpm --filter @koed/evals eval:retrieval-arena -- --layer=retrieval_only
+  pnpm --filter @koed-labs/evals eval:retrieval-arena -- --layer=retrieval_only
 ```
 
 Use `--strict-providers` to turn an unavailable requested provider into a failed run. Repeat `--split=...`, `--case=...`, `--arm=...`, or `--layer=...` to select subsets. `--runs=N` repeats every selected case. Dispersion and Student-t 95% confidence intervals use per-run means over the same completed cases, so case difficulty is never treated as run variance; each leaderboard exposes the paired case count, repeated-run sample count, and sample unit. Product/agentic arms require at least `--runs=3`. `productComparisons` pairs each ablation with `koed-production` by exact case/run and reports production-minus-ablation estimates and 95% confidence intervals for semantic quality, binary correctness, aggregate cost, and end-to-end latency. Bad answers remain failed runs but contribute zero quality and zero correctness instead of disappearing from the denominator.
@@ -120,14 +120,14 @@ KOED_EVAL_PRODUCT_API_URL=http://127.0.0.1:3300 \
 KOED_EVAL_PRODUCT_AUTHORIZATION='Bearer local-isolated-token' \
 KOED_EVAL_PRODUCT_DATABASE_URL='postgresql://localhost/koed_arena_isolated' \
 KOED_EVAL_PRODUCT_STATE_MANIFEST=/absolute/path/to/product-state.json \
-pnpm --filter @koed/evals eval:retrieval-arena -- \
+pnpm --filter @koed-labs/evals eval:retrieval-arena -- \
   --layer=product --arm=koed-production --runs=3 --strict-providers
 ```
 
 Use a disposable local runtime and isolated database. The eval-only seeder accepts explicit case IDs, sends each supported item through the authenticated Conversation Item capture and live Projection APIs, reads the resulting production rows back from that database, and writes a state manifest:
 
 ```bash
-pnpm --filter @koed/evals build
+pnpm --filter @koed-labs/evals build
 node packages/evals/dist/retrieval-arena/live-product-fixture-cli.js \
   --api-url=http://127.0.0.1:3300 \
   --authorization='Bearer local-isolated-token' \

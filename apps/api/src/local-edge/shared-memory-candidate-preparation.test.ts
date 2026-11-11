@@ -1,4 +1,4 @@
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   createLocalSharedMemoryCandidatePreparation,

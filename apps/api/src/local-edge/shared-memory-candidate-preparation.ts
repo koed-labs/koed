@@ -1,5 +1,5 @@
-import type { MemorySourceRepository } from "@koed/db";
-import { structuredLcmSummarySchema } from "@koed/core";
+import type { MemorySourceRepository } from "@koed-labs/db";
+import { structuredLcmSummarySchema } from "@koed-labs/core";
 import {
   classifyApprovalActivity,
   crossIdentitySyncDeterministicUuid,
@@ -8,7 +8,7 @@ import {
   type SharedMemoryCandidatePreview,
   type SharedMemoryRepresentation,
   type SharedMemorySourceItem
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 type LocalLcmRepresentation = Extract<
   SharedMemoryRepresentation,

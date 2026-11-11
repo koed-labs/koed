@@ -6,7 +6,7 @@ import {
   PRIVACY_WINDOW_CONTEXT_TOKENS,
   PRIVACY_WINDOW_CORE_TOKENS,
   PRIVACY_WINDOW_MAX_TOKENS
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   parseViterbiCalibration,
   ZERO_VITERBI_BIASES,

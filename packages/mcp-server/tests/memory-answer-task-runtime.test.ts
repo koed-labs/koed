@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import http from "node:http";
 import { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 import { MemoryAnswerTaskRuntime } from "../src/memory-answer-task-runtime.js";
 import type { MemoryAnswerTaskScheduler } from "../src/memory-answer-task-scheduler.js";
 import type { LocalRuntimeCallerContext } from "../src/local-runtime-protocol.js";

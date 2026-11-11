@@ -82,12 +82,12 @@ const writeWorkflowFixture = (root, releaseWorkflow = validReleaseWorkflow) => {
 const fixture = () => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-release-version-"));
   writeJson(root, productReleasePackagePath, {
-    name: "@koed/koed",
+    name: "@koed-labs/koed",
     version: "1.4.0"
   });
   const synchronizedPackageNames = new Map([
     ["package.json", "koed"],
-    ["apps/desktop/package.json", "@koed/desktop"]
+    ["apps/desktop/package.json", "@koed-labs/desktop"]
   ]);
   for (const [, relativePath] of synchronizedProductPackagePaths) {
     writeJson(root, relativePath, {
@@ -101,12 +101,12 @@ const fixture = () => {
     private: true
   });
   writeJson(root, "apps/api/package.json", {
-    name: "@koed/api",
+    name: "@koed-labs/api",
     version: "0.1.0"
   });
   writeJson(root, ".changeset/config.json", {
     access: "public",
-    fixed: [["@koed/koed", "@koed-labs/server"]],
+    fixed: [["@koed-labs/koed", "@koed-labs/server"]],
     ignore: internalWorkspacePackageNames
   });
   return root;
@@ -129,7 +129,7 @@ test("server source is private, singly named and coordinated", () => {
     /source workspace publication blocked/
   );
   assert.equal(config.access, "public");
-  assert.deepEqual(config.fixed, [["@koed/koed", "@koed-labs/server"]]);
+  assert.deepEqual(config.fixed, [["@koed-labs/koed", "@koed-labs/server"]]);
   assert.ok(!config.ignore.includes("@koed-labs/server"));
 });
 
@@ -161,7 +161,7 @@ test("refuses to synchronize a public server outside fixed-group version", () =>
     });
     assert.throws(
       () => syncProductPackageVersions(root),
-      /Fixed Changesets release versions differ: @koed-labs\/server is 1\.3\.2; @koed\/koed is 1\.4\.0/
+      /Fixed Changesets release versions differ: @koed-labs\/server is 1\.3\.2; @koed-labs\/koed is 1\.4\.0/
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -185,12 +185,12 @@ test("rejects an incomplete Changesets internal-package policy", () => {
   try {
     writeJson(root, ".changeset/config.json", {
       access: "public",
-      fixed: [["@koed/koed", "@koed-labs/server"]],
-      ignore: ["@koed/api"]
+      fixed: [["@koed-labs/koed", "@koed-labs/server"]],
+      ignore: ["@koed-labs/api"]
     });
     assert.throws(
       () => assertChangesetReleasePolicy(root),
-      /@koed\/embedding-service/
+      /@koed-labs\/embedding-service/
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -202,12 +202,12 @@ test("rejects a Changesets policy without coordinated fixed versions", () => {
   try {
     writeJson(root, ".changeset/config.json", {
       access: "public",
-      fixed: [["@koed/koed"]],
+      fixed: [["@koed-labs/koed"]],
       ignore: internalWorkspacePackageNames
     });
     assert.throws(
       () => assertChangesetReleasePolicy(root),
-      /must fixed-version @koed\/koed and @koed-labs\/server together/
+      /must fixed-version @koed-labs\/koed and @koed-labs\/server together/
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -229,18 +229,18 @@ test("rejects ignored packages in changeset frontmatter with actionable paths", 
     writeText(
       root,
       ".changeset/desktop.md",
-      '---\n"@koed/desktop": patch\n"@koed/koed": minor\n---\nNotes\n'
+      '---\n"@koed-labs/desktop": patch\n"@koed-labs/koed": minor\n---\nNotes\n'
     );
     writeText(
       root,
       ".changeset/api.md",
-      '---\n"@koed/api": patch\n---\nNotes\n'
+      '---\n"@koed-labs/api": patch\n---\nNotes\n'
     );
     assert.throws(
       () => assertChangesetReleasePolicy(root),
       (error) => {
-        assert.match(error.message, /desktop\.md.*@koed\/desktop/);
-        assert.match(error.message, /api\.md.*@koed\/api/);
+        assert.match(error.message, /desktop\.md.*@koed-labs\/desktop/);
+        assert.match(error.message, /api\.md.*@koed-labs\/api/);
         return true;
       }
     );
@@ -255,7 +255,7 @@ test("accepts valid and empty changesets without scanning note bodies", () => {
     writeText(
       root,
       ".changeset/valid.md",
-      '---\r\n"@koed/koed": patch\r\n"@koed-labs/server": patch\r\n---\r\n@koed/desktop: patch\r\n'
+      '---\r\n"@koed-labs/koed": patch\r\n"@koed-labs/server": patch\r\n---\r\n@koed-labs/desktop: patch\r\n'
     );
     writeText(root, ".changeset/empty.md", "---\n---\nNotes\n");
     writeText(root, ".changeset/README.md", "Not frontmatter");
@@ -271,7 +271,7 @@ test("accepts Changesets-compatible whitespace in frontmatter", () => {
     writeText(
       root,
       ".changeset/spaces.md",
-      '\n  ---\n"@koed/koed": patch\n  ---\nNotes\n'
+      '\n  ---\n"@koed-labs/koed": patch\n  ---\nNotes\n'
     );
     assert.equal(assertChangesetReleasePolicy(root), true);
   } finally {
@@ -285,7 +285,7 @@ test("rejects invalid release types before versioning", () => {
     writeText(
       root,
       ".changeset/broken.md",
-      '---\n"@koed/koed": typo\n---\nNotes\n'
+      '---\n"@koed-labs/koed": typo\n---\nNotes\n'
     );
     assert.throws(() => assertChangesetReleasePolicy(root), /broken\.md/);
   } finally {
@@ -299,7 +299,7 @@ test("rejects malformed changeset frontmatter", () => {
     writeText(
       root,
       ".changeset/broken.md",
-      '---\n"@koed/koed": [\n---\nNotes\n'
+      '---\n"@koed-labs/koed": [\n---\nNotes\n'
     );
     assert.throws(() => assertChangesetReleasePolicy(root), /broken\.md/);
     writeText(root, ".changeset/broken.md", "missing frontmatter\n");

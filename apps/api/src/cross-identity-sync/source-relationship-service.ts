@@ -2,7 +2,7 @@ import type {
   CrossIdentitySyncRelationshipRecord,
   CrossIdentitySyncRepository,
   DeploymentProfile
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS,
   CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES,
@@ -11,7 +11,7 @@ import {
   fetchBoundedJsonObject,
   upstreamApiUrl,
   type RecipientPublicKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import {
   readLocalEdgeUpstreamRegistry,

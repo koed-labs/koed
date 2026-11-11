@@ -4,7 +4,7 @@ import {
   crossIdentitySyncDigest,
   type EnvelopeEncryptionProvider,
   type SelectionSharingGoal
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createPersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
 import {
   createSelectionSharingJournal,

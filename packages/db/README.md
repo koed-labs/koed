@@ -1,6 +1,6 @@
 # Koed DB Package
 
-`@koed/db` owns Koed's Postgres schema, migrations, repository factories, and
+`@koed-labs/db` owns Koed's Postgres schema, migrations, repository factories, and
 Local Operator Scripts for API Token management. It is the shared persistence
 layer used by the API, Worker, tests, and operator commands.
 
@@ -42,26 +42,26 @@ backend Answer Synthesis.
 From the repository root:
 
 ```bash
-pnpm --filter @koed/db build
-pnpm --filter @koed/db test
-pnpm --filter @koed/db typecheck
+pnpm --filter @koed-labs/db build
+pnpm --filter @koed-labs/db test
+pnpm --filter @koed-labs/db typecheck
 ```
 
 Migration commands:
 
 ```bash
-pnpm --filter @koed/db migrate:generate
-pnpm --filter @koed/db migrate:check
-pnpm --filter @koed/db migrate:smoke
-pnpm --filter @koed/db migrate:up
+pnpm --filter @koed-labs/db migrate:generate
+pnpm --filter @koed-labs/db migrate:check
+pnpm --filter @koed-labs/db migrate:smoke
+pnpm --filter @koed-labs/db migrate:up
 ```
 
 API Token Local Operator Scripts:
 
 ```bash
-pnpm --filter @koed/db api-token:create --owner-email local@koed.ai --name "Client Integration"
-pnpm --filter @koed/db api-token:list
-pnpm --filter @koed/db api-token:revoke
+pnpm --filter @koed-labs/db api-token:create --owner-email local@koed.ai --name "Client Integration"
+pnpm --filter @koed-labs/db api-token:list
+pnpm --filter @koed-labs/db api-token:revoke
 ```
 
 ## Repository Guidance

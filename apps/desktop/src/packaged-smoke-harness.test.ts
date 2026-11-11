@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
 import { createUpdateDiscovery } from "./main/update-discovery.js";
-import type { DesktopUpdateState } from "@koed/shared/desktop-update-contract";
+import type { DesktopUpdateState } from "@koed-labs/shared/desktop-update-contract";
 
 const fixture = (
   packaged = true,

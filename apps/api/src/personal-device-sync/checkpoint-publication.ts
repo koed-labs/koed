@@ -1,8 +1,11 @@
 import {
   pdsSessionPackageDigest,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
-import type { MemorySourceRepository, PdsLocalClosureRecord } from "@koed/db";
+} from "@koed-labs/shared";
+import type {
+  MemorySourceRepository,
+  PdsLocalClosureRecord
+} from "@koed-labs/db";
 import type { PdsSecureKeyProvider } from "./local-source.js";
 import { pdsConversationItemsForClosure } from "./local-source.js";
 import {

@@ -16,11 +16,11 @@ import type {
   TeamConversationSourceGrantRecord,
   TeamConversationSourceRepository,
   UserRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   SHARED_MEMORY_AUTHORITY,
   SharedMemoryAuthorizationError
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   pendingShareSchema,
   sharingRulePublisherTakeoverReviewInputSchema,
@@ -34,7 +34,7 @@ import {
   sharedMemoryRepresentationsForCeiling,
   teamRepositorySnapshotReviewSchema,
   SharedMemoryConflictError
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";

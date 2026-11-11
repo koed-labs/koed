@@ -2,7 +2,7 @@ import {
   crossIdentitySyncDeterministicUuid,
   personalOwnerIdSchema,
   personalIdentifierSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PersonalMembershipEntityRow } from "./personal-membership-causal-history.js";
 
 export const personalMembershipNativeProjectId = (

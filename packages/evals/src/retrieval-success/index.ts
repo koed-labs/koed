@@ -9,9 +9,9 @@ import {
 
 const usage = [
   "Usage:",
-  "  pnpm --filter @koed/evals eval:retrieval-success -- --list-cases",
-  "  pnpm --filter @koed/evals eval:retrieval-success -- --run-deterministic [--out <report.json>]",
-  "  pnpm --filter @koed/evals eval:retrieval-success -- --score <runs.json> [--out <report.json>]",
+  "  pnpm --filter @koed-labs/evals eval:retrieval-success -- --list-cases",
+  "  pnpm --filter @koed-labs/evals eval:retrieval-success -- --run-deterministic [--out <report.json>]",
+  "  pnpm --filter @koed-labs/evals eval:retrieval-success -- --score <runs.json> [--out <report.json>]",
   "",
   "The score input is a JSON array of run records:",
   '[{"caseId":"fresh-tail-story-detail","runIndex":0,"answer":{"memoryStatus":"found","answerMarkdown":"The keeper was Tamar."},"evidence":[{"sourceId":"fresh-story-lamp-keeper","retrievalStage":"fresh_pending_search"}],"searches":[{"retrievalStage":"score_scan"},{"retrievalStage":"fresh_pending_search"}]}]'

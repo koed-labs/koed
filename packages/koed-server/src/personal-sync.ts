@@ -1,4 +1,4 @@
-import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
+import { pdsRepositoryKeyHistorySchema } from "@koed-labs/shared";
 import {
   createCipheriv,
   createDecipheriv,
@@ -40,7 +40,7 @@ import {
   signPdsRecord,
   validatePdsGroupStatement,
   validatePdsKeyBundle
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
 import {

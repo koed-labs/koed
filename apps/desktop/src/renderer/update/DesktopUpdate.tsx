@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Badge, Button } from "@koed/ui";
+import { Badge, Button } from "@koed-labs/ui";
 import { Group, Row } from "../v1/settings-controls.js";
 import { ArrowUpCircle, Check, Download, RefreshCw, X } from "lucide-react";
 import type { DesktopUpdateController } from "./use-desktop-update.js";

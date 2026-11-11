@@ -6,7 +6,7 @@ import Fastify, { type FastifyRequest } from "fastify";
 import { readFile } from "node:fs/promises";
 import { Redis } from "ioredis";
 import { z } from "zod";
-import { type Visibility } from "@koed/core";
+import { type Visibility } from "@koed-labs/core";
 import {
   createCollaborationRepository,
   createDbPool,
@@ -30,7 +30,7 @@ import {
   type RealtimeTransportTicketRepository,
   type RetentionLifecycleRepository,
   type RemoteMcpOAuthStore
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   createAuthHelpers,
   createHashSecret,
@@ -123,12 +123,12 @@ import {
   resolveSupportedEmbeddingModelConfig,
   resolveApiDataEncryptionKeyFromEnv,
   type SharedMemorySourceRef
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createHistoricalRawAdmission } from "../memory/historical-raw-admission.js";
 import {
   createSecureUpstreamFetch,
   registeredPrivateNetworkPolicy
-} from "@koed/shared/secure-upstream-fetch";
+} from "@koed-labs/shared/secure-upstream-fetch";
 import { registerTeamRoutes } from "../team/index.js";
 import { registerCrossIdentitySyncRoutes } from "../cross-identity-sync/index.js";
 import {

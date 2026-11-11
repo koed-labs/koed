@@ -1,13 +1,13 @@
 import {
   sharedMemoryGrantScopedSourceId,
   teamPresenceStatusCatalogue
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   defaultFreshAuthenticationMaxAgeMs,
   type DeviceCredentialAuthContext,
   type MemorySourceRepository,
   type TeamAccessRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { actorForAuthenticatedRequest } from "../auth/session.js";
 import { createHash } from "node:crypto";

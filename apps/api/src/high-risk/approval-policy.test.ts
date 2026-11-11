@@ -3,7 +3,7 @@ import {
   noPrivacyLabelsPolicy,
   sharingRuleDetailReviewSchema,
   unresolvedTeamRepositorySnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 
 import { highRiskActionDefinitions } from "./action-definitions.js";

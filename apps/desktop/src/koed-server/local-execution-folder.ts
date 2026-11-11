@@ -7,12 +7,12 @@ import {
   observeCaptureFolder,
   type KoedServerPaths
 } from "@koed-labs/server";
-import { inspectDeviceIdentityAtKoedHome } from "@koed/shared";
-import { repositoryScopeId } from "@koed/shared/repository-recall";
+import { inspectDeviceIdentityAtKoedHome } from "@koed-labs/shared";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
 import {
   personalFolderRegistrySchema,
   readAvailablePersonalFolders
-} from "@koed/shared/personal-local-folders";
+} from "@koed-labs/shared/personal-local-folders";
 
 /** Prepare a first launch from a known native checkout, never a history path.
  * An unavailable existing registration requires explicit inspection instead. */

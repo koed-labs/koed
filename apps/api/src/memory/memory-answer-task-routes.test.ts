@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthHelpers } from "../auth/index.js";
 import type { ApiRouteContext } from "../server/context.js";

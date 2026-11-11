@@ -4,7 +4,7 @@ import {
   COLLABORATION_DEFAULT_LIMITS,
   collaborationSnapshotSchema,
   type CollaborationRendererCommand
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import { V1App } from "./renderer/v1/App.js";
 import { installOnboardingValidation } from "./onboarding-validation.js";
 import {

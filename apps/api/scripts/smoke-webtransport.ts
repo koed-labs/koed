@@ -6,11 +6,11 @@ import { join } from "node:path";
 import {
   COLLABORATION_CONTRACT_VERSION,
   type WebTransportSessionAdmission
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   encodeDurableRealtimeStreamFrame,
   readFirstBoundedDurableRealtimeFrame
-} from "@koed/shared/durable-realtime";
+} from "@koed-labs/shared/durable-realtime";
 import { WebTransport } from "quico";
 import type { RealtimeTransportAdmissionService } from "../src/realtime-transport/service.js";
 import type { WebTransportDurableEventAdapter } from "../src/realtime-transport/webtransport-durable-adapter.js";

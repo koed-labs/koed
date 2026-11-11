@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { realtimeTransportTicketRequestSchema } from "@koed/shared";
+import { realtimeTransportTicketRequestSchema } from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import type {
   RealtimeTransportAdmissionService,

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   readLocalEdgeClientCredentialAuthorization,
   readUpstreamCredentialAuthorization
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { resolveKoedServerPaths } from "./paths.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { completeUpstreamDisconnectCleanup } from "./upstream-disconnect-cleanup.js";

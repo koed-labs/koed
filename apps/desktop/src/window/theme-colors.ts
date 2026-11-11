@@ -1,4 +1,4 @@
-// Packaging-local values mirrored from @koed/ui/theme and enforced by a sync test.
+// Packaging-local values mirrored from @koed-labs/ui/theme and enforced by a sync test.
 export const DESKTOP_THEME_LIGHT_BACKGROUND = "#fbfbfa";
 export const DESKTOP_THEME_DARK_BACKGROUND = "#181817";
 

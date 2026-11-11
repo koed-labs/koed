@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   MANAGED_DEVELOPMENT_PREVIEW_MAX_RECORDS,
   MANAGED_DEVELOPMENT_PREVIEW_POLICY_VERSION,
@@ -8,7 +8,7 @@ import {
   type ManagedDevelopmentPreviewAccess,
   type ManagedDevelopmentPreviewCandidate,
   type ManagedDevelopmentPreviewRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type {
   ManagedTerminalPreviewSignal,

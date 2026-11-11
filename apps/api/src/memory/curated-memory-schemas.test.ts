@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
+import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed-labs/shared";
 import {
   curatedMemoryProposalSchema,
   curatedMemorySearchQuerySchema,

@@ -1,4 +1,4 @@
-import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
+import { unresolvedTeamRepositorySnapshot } from "@koed-labs/shared";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +9,7 @@ import type {
   SyncPackageChunkRecord,
   SyncPackageUploadSessionRecord,
   SyncQueueEntryRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
@@ -29,7 +29,7 @@ import {
   type CapturedSessionSyncChunkV1,
   type CapturedSessionSyncPackageV2,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { EmbeddingWorkflow } from "./embedding-workflow.js";
 import {
   createCrossIdentitySyncService,

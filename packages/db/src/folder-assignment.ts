@@ -5,7 +5,7 @@ import {
   personalFolderObservationSchema,
   type PersonalFolderAssignment,
   type PersonalFolderObservation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 /** Pin once, even when a logical Conversation gets a new physical Session row. */
 export const recordFolderObservation = async (

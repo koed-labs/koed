@@ -1,5 +1,5 @@
-import { codexIdePromptUserText } from "@koed/core";
-import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
+import { codexIdePromptUserText } from "@koed-labs/core";
+import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed-labs/shared";
 import {
   personalSourceSelectionSql,
   projectPersonalSelectionQuery

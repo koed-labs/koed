@@ -33,10 +33,10 @@ const run = (command, commandArgs, { quietStdout = false } = {}) =>
   });
 
 try {
-  await run(pnpm, ["--filter", "@koed/shared", "build"], {
+  await run(pnpm, ["--filter", "@koed-labs/shared", "build"], {
     quietStdout: jsonMode
   });
-  await run(pnpm, ["--filter", "@koed/db", "build"], {
+  await run(pnpm, ["--filter", "@koed-labs/db", "build"], {
     quietStdout: jsonMode
   });
   await run(process.execPath, [

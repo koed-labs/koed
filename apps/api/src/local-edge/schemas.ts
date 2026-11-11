@@ -8,7 +8,7 @@ import {
   heartbeatMemoryAnswerTaskSchema,
   completeMemoryAnswerTaskSchema,
   failMemoryAnswerTaskSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const operationFamilySchema = z
   .string()

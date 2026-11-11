@@ -15,7 +15,7 @@ import {
   writeFileSync
 } from "node:fs";
 import path from "node:path";
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 import {
   MemoryAnswerDelivery,
   type MemoryAnswerExecutionPort

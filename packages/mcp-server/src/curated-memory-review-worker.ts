@@ -1,4 +1,4 @@
-import { countTokensForModel } from "@koed/core";
+import { countTokensForModel } from "@koed-labs/core";
 import { z } from "zod";
 import {
   resolveCodexAppServerBinary,

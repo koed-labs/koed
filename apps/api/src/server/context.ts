@@ -1,11 +1,11 @@
-import type { Visibility } from "@koed/core";
-import type { MemorySourceRepository, PersonalNoteRecord } from "@koed/db";
+import type { Visibility } from "@koed-labs/core";
+import type { MemorySourceRepository, PersonalNoteRecord } from "@koed-labs/db";
 import type {
   DeviceIdentityInspection,
   EnvelopeEncryptionProvider,
   HistoricalAdmissionDecision,
   KoedWorkClass
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { AuthHelpers } from "../auth/session.js";
 import type { CacheProvider } from "../infra/cache.js";
 import type { RateLimitHandler, RateLimitName } from "../infra/rate-limit.js";

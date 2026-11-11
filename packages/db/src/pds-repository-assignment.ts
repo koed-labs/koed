@@ -3,7 +3,7 @@ import {
   pdsRepositoryAssignmentSchema,
   repositoryAssignmentSchema,
   type PdsRepositoryAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   mapRepositoryAssignment,
   type RepositoryAssignmentRow

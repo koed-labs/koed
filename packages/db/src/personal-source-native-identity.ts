@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   crossIdentitySyncDeterministicUuid,
   personalSourceReferenceSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 /** Native UUIDs are storage identifiers. Signed logical source identifiers remain opaque. */
 export const personalSourceNativeLogicalId = (input: {

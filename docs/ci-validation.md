@@ -62,7 +62,7 @@ a check that cannot run.
 ## App-only packaged smoke
 
 Normal Desktop builds emit only the application into `apps/desktop/dist`.
-`pnpm --filter @koed/desktop build:validation` builds synthetic browser fixtures
+`pnpm --filter @koed-labs/desktop build:validation` builds synthetic browser fixtures
 separately into `dist-validation`, which is excluded from release packages.
 `test:browser` builds both outputs and runs its Electron journeys against the
 validation output. The Folder, Project transfer, and Conversation card journeys
@@ -74,6 +74,18 @@ package origin and preload bridge, and loads fixture assets from a temporary
 loopback server. CSP bypass is confined to the smoke renderer's debugger session.
 The packaged application remains unmodified, and the synthetic failure and
 redelivery scenarios continue to exercise its renderer and native bridge.
+
+### Linux smoke system packages
+
+The Linux Desktop smoke installs its system packages through
+`.github/scripts/install-linux-smoke-deps.sh`. Packages already on the runner
+image are left alone, missing ones are installed from cached package archives,
+and only what is still missing is fetched from the Ubuntu package mirrors and
+then cached. A warm run therefore does not need the mirrors. When the runner's
+configured mirrors are unreachable, a run with no cached archives retries
+against an independent mirror (`KOED_APT_FALLBACK_MIRROR`, by default
+`https://mirrors.edge.kernel.org/ubuntu`); apt verifies that mirror with the
+Ubuntu archive keyring, so package trust is unchanged.
 
 ### Runtime compatibility and ownership
 
@@ -98,7 +110,7 @@ secret provider. PDS initialization completes before the managed runtime resumes
 This ordering keeps a Keychain wait from hiding the startup window.
 
 Assembly audits allow the remote MCP client's exact dynamic import of the selected
-MCP runtime contracts only when the concrete `@koed/mcp-server` contracts entrypoint
+MCP runtime contracts only when the concrete `@koed-labs/mcp-server` contracts entrypoint
 is in the component dependency closure. Unowned dynamic imports fail closed.
 
 Relevant pull requests restore a macOS arm64 native payload using a key that

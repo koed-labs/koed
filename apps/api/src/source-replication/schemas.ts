@@ -2,7 +2,7 @@ import {
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
   aiClientSourceAdapterRegistry,
   isSupportedAiClientSourceAdapter
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 
 const uuid = z.uuid();

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   afterAll,
   afterEach,

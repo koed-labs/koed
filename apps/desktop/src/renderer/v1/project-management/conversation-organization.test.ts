@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   personalConversationOrganizationInputSchema,
   type PersonalProjectMembershipExplanation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import {
   inverseOrganizationEdit,

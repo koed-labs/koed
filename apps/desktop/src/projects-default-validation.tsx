@@ -1,7 +1,7 @@
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import { PersonalAskView } from "./renderer/views/personal/PersonalAskView.js";
 import { createManagedConversationValidationApi } from "./managed-conversation-validation-api.js";
-import { personalFolderExecutionId } from "@koed/shared/personal-desktop";
+import { personalFolderExecutionId } from "@koed-labs/shared/personal-desktop";
 import { useEffect, useState } from "react";
 import { createProjectSourceFixture } from "./project-source-fixture.js";
 import { PersonalMemoryStore } from "./renderer/state/personal-memory.js";

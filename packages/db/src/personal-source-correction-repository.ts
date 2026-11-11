@@ -7,7 +7,7 @@ import {
   personalSourceCorrectionApplySchema,
   personalSourceCorrectionPreviewSchema,
   type PersonalSourceCorrectionInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   personalMembershipTransactionRunner,

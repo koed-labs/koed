@@ -1,4 +1,4 @@
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import { repositoryScopeId, type RepositoryIdentity } from "@koed-labs/shared";
 // @vitest-environment happy-dom
 import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -7,7 +7,7 @@ import type {
   PersonalDesktopApi,
   PersonalDesktopProject,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import {
   ConversationProjectsDialog,

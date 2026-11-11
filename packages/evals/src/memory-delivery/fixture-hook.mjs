@@ -1,7 +1,7 @@
 /* global fetch */
 import process from "node:process";
 import { Buffer } from "node:buffer";
-import { runCodexMemoryHook } from "@koed/mcp-server/codex-memory-hook";
+import { runCodexMemoryHook } from "@koed-labs/mcp-server/codex-memory-hook";
 import { readFixture, recordEvent } from "./fixture-data.mjs";
 
 const fixture = readFixture();

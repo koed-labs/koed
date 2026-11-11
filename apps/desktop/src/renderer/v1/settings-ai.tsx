@@ -6,7 +6,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuPopup,
   DropdownMenuItem
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { Ellipsis } from "lucide-react";
 import { clients, type ClientId } from "./onboarding/model.js";
 import { aiClientHealth } from "./client-health.js";

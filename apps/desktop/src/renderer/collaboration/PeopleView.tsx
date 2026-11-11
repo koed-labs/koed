@@ -12,7 +12,7 @@ import {
   type CollaborationSnapshot,
   type CollaborationTeamPerson,
   deriveTeamPresenceSnapshot
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import {
   Archive,
   BellOff,

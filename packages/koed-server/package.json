@@ -30,7 +30,7 @@
     }
   },
   "dependencies": {
-    "@koed/shared": "workspace:*",
+    "@koed-labs/shared": "workspace:*",
     "@modelcontextprotocol/client": "2.0.0",
     "commander": "15.0.0",
     "proper-lockfile": "4.1.2",

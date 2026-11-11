@@ -10,7 +10,7 @@ import {
   resolveSupportedEmbeddingModelConfig,
   validateEnvelopeEncryptionProviderEnvironment,
   type KoedQueueBackend
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { HistoricalImportBatchConfig } from "./historical-admission.js";
 import {
   resolveWorkerLogDestinationConfig,

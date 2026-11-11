@@ -3,14 +3,14 @@ import {
   resolveMemoryAnswerWorkerConfig,
   type MemoryAnswerRetrievalClient,
   type MemoryAnswerWorkerConfig
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 import {
   EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
   EMBEDDING_RETRIEVAL_QUERY_TRANSFORM,
   formatEmbeddingRetrievalDocument,
   formatEmbeddingRetrievalQuery,
   resolveSupportedEmbeddingModelConfig
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";

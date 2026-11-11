@@ -5,7 +5,7 @@ import {
   environmentDefaultFor,
   localAiClientFlowKeys,
   memoryModelFlowKeys
-} from "@koed/shared/ai-client-flow-defaults";
+} from "@koed-labs/shared/ai-client-flow-defaults";
 import type {
   LocalAiClientReadModel,
   MemoryModelInput

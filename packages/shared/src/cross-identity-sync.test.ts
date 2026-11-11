@@ -1,4 +1,4 @@
-import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
+import { unresolvedTeamRepositorySnapshot } from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,

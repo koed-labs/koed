@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import type { Logger } from "pino";
-import { PDS_PEER_ROUTE_REFRESH_MS } from "@koed/shared";
+import { PDS_PEER_ROUTE_REFRESH_MS } from "@koed-labs/shared";
 
 /**
  * Secure runtime adapter owns private-key/group-secret operations and relay wire
@@ -75,9 +75,9 @@ export interface PdsWorkerSecureRuntime {
         observedAt: Date;
         sourceItemIds: string[];
         closedProfileTransition?:
-          | import("@koed/shared").PdsClosedProfileTransition
+          | import("@koed-labs/shared").PdsClosedProfileTransition
           | null;
-        pdsRepositoryAssignment?: import("@koed/shared").PdsRepositoryAssignment;
+        pdsRepositoryAssignment?: import("@koed-labs/shared").PdsRepositoryAssignment;
         sourceLogicalSessionId?: string;
         sourceContext?: unknown;
       }

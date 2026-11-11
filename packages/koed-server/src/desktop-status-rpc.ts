@@ -1,4 +1,4 @@
-import type { AiClientConnectionId } from "@koed/shared/ai-client-connections";
+import type { AiClientConnectionId } from "@koed-labs/shared/ai-client-connections";
 import {
   connectAiClientAfterSetup,
   verifyAiClientIntegration

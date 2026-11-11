@@ -6,12 +6,12 @@ import {
   createDbPool,
   runDbMigrations,
   createMemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   crossIdentitySyncDeterministicUuid,
   repositoryScopeId,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import { registerGraphRoutes } from "./graph-routes.js";
 

@@ -4,7 +4,7 @@ import {
   personalProjectCatalogReadySql
 } from "./personal-membership-selection-sql.js";
 import type pg from "pg";
-import { personalSourceCorrectionPreviewSchema } from "@koed/shared";
+import { personalSourceCorrectionPreviewSchema } from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import { personalProjectRuleMatchesSql } from "./personal-selection-sql.js";
 

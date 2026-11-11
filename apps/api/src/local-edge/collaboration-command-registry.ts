@@ -2,7 +2,7 @@ import {
   isPersonalCollaborationSelection,
   isTeamCollaborationSelection,
   type CollaborationRendererCommand
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type CollaborationCommandName = CollaborationRendererCommand["command"];
 type CommandFor<Name extends CollaborationCommandName> = Extract<

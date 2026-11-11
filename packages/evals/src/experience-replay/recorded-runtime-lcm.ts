@@ -1,5 +1,5 @@
-import { countTokensForModel } from "@koed/core";
-import type { ActorContext, MemorySourceRepository } from "@koed/db";
+import { countTokensForModel } from "@koed-labs/core";
+import type { ActorContext, MemorySourceRepository } from "@koed-labs/db";
 import {
   executeLcmSummaryNode,
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
@@ -8,7 +8,7 @@ import {
   runLcmSummary,
   type LcmSummaryRunner,
   type LcmSummaryWorkerConfig
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 import type { ResolvedExperienceReplayConfig } from "./core/index.js";
 import type { ScheduledLcmJobAttestation } from "./local-product-adapter.js";
 

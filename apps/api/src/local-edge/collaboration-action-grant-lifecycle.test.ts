@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { readCollaborationActionGrantCustodyCommitmentHash } from "@koed/shared";
+import { readCollaborationActionGrantCustodyCommitmentHash } from "@koed-labs/shared";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {

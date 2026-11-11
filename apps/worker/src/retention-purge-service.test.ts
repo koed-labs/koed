@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ClaimedPurgeJob, RetentionLifecycleRepository } from "@koed/db";
+import type {
+  ClaimedPurgeJob,
+  RetentionLifecycleRepository
+} from "@koed-labs/db";
 import { createRetentionPurgeService } from "./retention-purge-service.js";
 
 const claimed = {

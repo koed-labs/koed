@@ -4,7 +4,7 @@ import {
   personalIdentifierSchema,
   PdsConfigurationCompatibilityError,
   type PersonalConfigurationRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { bridgePersonalMembershipProject } from "./personal-membership-project-bridge.js";
 import {
   translatePersonalMembershipSnapshotOwner,

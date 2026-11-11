@@ -5,11 +5,11 @@ import {
   type PurgeJobRecord,
   type RetentionLifecycleRepository,
   type UserSessionContext
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   highRiskActionGrantCanonicalHash,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { AuthHelpers } from "../auth/session.js";

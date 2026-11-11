@@ -1,8 +1,8 @@
 import type {
   PersonalSourceCorrectionInput,
   PersonalSourceCorrectionPreview
-} from "@koed/shared";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import {
   excludedMembership,
   type OrganizationReview

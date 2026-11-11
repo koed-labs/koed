@@ -32,7 +32,7 @@ Options:
   --name <name>           API token name. Defaults to "${defaultTokenName}".
   --api-url <url>         Koed API URL. Defaults to ${defaultApiUrl}.
   --node-command <cmd>    Node command used by the Codex setup script. Defaults to "${defaultNodeCommand}".
-  --skip-build            Skip the @koed/mcp-server build step.
+  --skip-build            Skip the @koed-labs/mcp-server build step.
   --skip-verify           Skip capture verification.
   --skip-doctor           Skip the final doctor check.
   --without-memory-guidance  Do not install the recommended global guidance.
@@ -336,9 +336,9 @@ export const runCodexBootstrap = async ({
     }
     const resolvedPaths = resolveBootstrapPaths(environment);
     await runCommandFn({
-      label: "Build @koed/db",
+      label: "Build @koed-labs/db",
       command: "pnpm",
-      args: ["--filter", "@koed/db", "build"]
+      args: ["--filter", "@koed-labs/db", "build"]
     });
 
     if (!activeRepo) {
@@ -352,9 +352,9 @@ export const runCodexBootstrap = async ({
 
     if (!args.skipBuild) {
       await runCommandFn({
-        label: "Build @koed/mcp-server",
+        label: "Build @koed-labs/mcp-server",
         command: "pnpm",
-        args: ["--filter", "@koed/mcp-server", "build"]
+        args: ["--filter", "@koed-labs/mcp-server", "build"]
       });
     }
 

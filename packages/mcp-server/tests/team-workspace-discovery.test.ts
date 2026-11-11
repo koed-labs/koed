@@ -8,7 +8,7 @@ import {
   storeLocalEdgeClientCredential,
   repositoryScopeId,
   requirePortableTeamRepositoryContext
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { MemoryApiError, MemoryApiClient } from "../src/index.js";
 import { createMemoryAnswerTaskCoordinator } from "../src/memory-answer-task-coordinator.js";
 import { MemoryToolExecutor } from "../src/memory-tool-executor.js";

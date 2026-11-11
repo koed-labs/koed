@@ -20,8 +20,8 @@ import {
   DropdownMenuItem,
   DropdownMenuPopup,
   DropdownMenuTrigger
-} from "@koed/ui";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+} from "@koed-labs/ui";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import {

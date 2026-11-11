@@ -10,7 +10,7 @@ import { preparePersonalSourceContextSnapshot } from "../src/personal-source-con
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   type PersonalGitContext
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const databaseUrl = process.env.DATABASE_URL;
 describe.skipIf(!databaseUrl)(

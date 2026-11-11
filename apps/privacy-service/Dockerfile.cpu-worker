@@ -7,9 +7,9 @@ COPY . .
 RUN pnpm install --frozen-lockfile --ignore-scripts \
   && find apps packages -name "*.tsbuildinfo" -delete \
   && rm -rf apps/*/dist packages/*/dist \
-  && pnpm --filter @koed/shared build \
-  && pnpm --filter @koed/privacy-service build \
-  && pnpm --filter @koed/privacy-service deploy --legacy --prod /deploy/privacy-service
+  && pnpm --filter @koed-labs/shared build \
+  && pnpm --filter @koed-labs/privacy-service build \
+  && pnpm --filter @koed-labs/privacy-service deploy --legacy --prod /deploy/privacy-service
 
 FROM python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d AS runtime
 ARG TARGETARCH

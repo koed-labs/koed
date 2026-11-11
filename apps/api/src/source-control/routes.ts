@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
+import { defaultFreshAuthenticationMaxAgeMs } from "@koed-labs/db";
 import { z } from "zod";
 import {
   readDesktopLocalCredentialAuthorization,
   sourceControlOperationSchema,
   sourceControlResultSchema,
   verifyDesktopLocalCredentialAuthorization
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type { ApiRouteContext } from "../server/context.js";
 

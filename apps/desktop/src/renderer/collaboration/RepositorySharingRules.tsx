@@ -5,8 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   OwnedRepositorySharingRule,
   SharingRuleDelivery
-} from "@koed/shared";
-import { canonicalJsonDigest as crossIdentitySyncDigest } from "@koed/shared/collaboration";
+} from "@koed-labs/shared";
+import { canonicalJsonDigest as crossIdentitySyncDigest } from "@koed-labs/shared/collaboration";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import { SharingRuleDeliveryStatus } from "./SharingRuleDeliveryStatus.js";
 import { failureMessage } from "./collaboration-primitives.js";

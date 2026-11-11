@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Badge, Button, Card } from "@koed/ui";
+import { Badge, Button, Card } from "@koed-labs/ui";
 import { CircleCheck, CircleAlert, ShieldCheck, Terminal } from "lucide-react";
 import type { DesktopApi } from "../../types.js";
 import { getInstallSetupStore } from "../views/preferences/install-setup-store.js";

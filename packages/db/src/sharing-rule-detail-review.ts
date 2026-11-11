@@ -5,7 +5,7 @@ import {
   sharingRuleDetailReviewInputSchema,
   sharingRuleDetailReviewSchema,
   SharedMemoryConflictError
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import { readSharingRuleAmendmentAuthority } from "./sharing-rule-amendment-authority.js";
 

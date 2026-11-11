@@ -11,7 +11,7 @@ import {
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   type SharedMemorySourceRef
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type pg from "pg";

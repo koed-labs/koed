@@ -5,7 +5,7 @@
  * workflow moved into its own module. They live here so both modules can
  * import them without a cycle; behaviour is unchanged.
  */
-import { Dialog, DialogPopup } from "@koed/ui";
+import { Dialog, DialogPopup } from "@koed-labs/ui";
 import { X } from "lucide-react";
 import { type ReactNode, useRef } from "react";
 

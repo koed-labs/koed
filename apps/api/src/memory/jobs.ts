@@ -1,5 +1,5 @@
-import { scheduleCompaction, type Visibility } from "@koed/core";
-import type { MemorySourceRepository } from "@koed/db";
+import { scheduleCompaction, type Visibility } from "@koed-labs/core";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   embeddingQueueJobId,
   lcmCompactQueueName,
@@ -7,7 +7,7 @@ import {
   workClassPriority,
   type KoedJobQueue,
   type KoedWorkClass
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { withTimeout } from "../server/utils.js";
 
 export type EmbeddingSourceType = "memory_node" | "memory_event" | "message";

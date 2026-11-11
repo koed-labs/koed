@@ -4,11 +4,11 @@ import { EventEmitter } from "node:events";
 import {
   COLLABORATION_CONTRACT_VERSION,
   type WebTransportSessionAdmission
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   encodeDurableRealtimeStreamFrame,
   readFirstBoundedDurableRealtimeFrame
-} from "@koed/shared/durable-realtime";
+} from "@koed-labs/shared/durable-realtime";
 import { describe, expect, it, vi } from "vitest";
 import type { RealtimeTransportAdmissionService } from "./service.js";
 import type { WebTransportDurableEventAdapter } from "./webtransport-durable-adapter.js";

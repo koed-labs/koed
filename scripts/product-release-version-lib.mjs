@@ -13,23 +13,23 @@ export const synchronizedProductPackagePaths = [
 
 export const publicProductReleasePackage = "@koed-labs/server";
 export const productReleaseFixedGroup = [
-  "@koed/koed",
+  "@koed-labs/koed",
   publicProductReleasePackage
 ];
 
 export const internalWorkspacePackageNames = [
-  "@koed/api",
-  "@koed/app-runtime-stage",
-  "@koed/core",
-  "@koed/db",
-  "@koed/desktop",
-  "@koed/embedding-service",
-  "@koed/evals",
-  "@koed/mcp-server",
-  "@koed/privacy-service",
-  "@koed/shared",
-  "@koed/ui",
-  "@koed/worker"
+  "@koed-labs/api",
+  "@koed-labs/app-runtime-stage",
+  "@koed-labs/core",
+  "@koed-labs/db",
+  "@koed-labs/desktop",
+  "@koed-labs/embedding-service",
+  "@koed-labs/evals",
+  "@koed-labs/mcp-server",
+  "@koed-labs/privacy-service",
+  "@koed-labs/shared",
+  "@koed-labs/ui",
+  "@koed-labs/worker"
 ];
 
 const readJson = (root, relativePath) =>
@@ -67,7 +67,7 @@ export const syncProductPackageVersions = (root) => {
   ).version;
   if (serverVersion !== version) {
     throw new Error(
-      `Fixed Changesets release versions differ: ${publicProductReleasePackage} is ${String(serverVersion)}; @koed/koed is ${version}. Run Changesets before synchronizing release artifacts.`
+      `Fixed Changesets release versions differ: ${publicProductReleasePackage} is ${String(serverVersion)}; @koed-labs/koed is ${version}. Run Changesets before synchronizing release artifacts.`
     );
   }
   const changed = [];
@@ -144,7 +144,7 @@ export const assertChangesetReleasePolicy = (root) => {
   const classifiedPackages = new Set(internalWorkspacePackageNames);
   const unclassifiedPackages = discoverWorkspacePackageNames(root).filter(
     (packageName) =>
-      packageName !== "@koed/koed" &&
+      packageName !== "@koed-labs/koed" &&
       packageName !== publicProductReleasePackage &&
       !classifiedPackages.has(packageName)
   );
@@ -164,7 +164,7 @@ export const assertChangesetReleasePolicy = (root) => {
   );
   if (!coordinatedGroup) {
     throw new Error(
-      `Changesets must fixed-version @koed/koed and ${publicProductReleasePackage} together.`
+      `Changesets must fixed-version @koed-labs/koed and ${publicProductReleasePackage} together.`
     );
   }
   if (config.access !== "public") {
@@ -189,8 +189,10 @@ export const assertChangesetReleasePolicy = (root) => {
       `Changesets must ignore internal Koed workspace packages:\n- ${missing.join("\n- ")}`
     );
   }
-  if (ignored.has("@koed/koed")) {
-    throw new Error("Changesets must not ignore the @koed/koed release unit.");
+  if (ignored.has("@koed-labs/koed")) {
+    throw new Error(
+      "Changesets must not ignore the @koed-labs/koed release unit."
+    );
   }
   assertChangesetPackages(root, ignored);
   return true;

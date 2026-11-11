@@ -13,7 +13,10 @@ import {
   statSync
 } from "node:fs";
 import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
-import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
+import {
+  nodeCliInvocation,
+  nodeCliProcessEnvironment
+} from "@koed-labs/shared";
 import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
@@ -415,7 +418,7 @@ export const setupPi = async (
       : [
           resolve(
             runtime.root,
-            "node_modules/@koed/mcp-server/integrations/pi"
+            "node_modules/@koed-labs/mcp-server/integrations/pi"
           ),
           resolve(runtime.root, "mcp-server/integrations/pi")
         ];

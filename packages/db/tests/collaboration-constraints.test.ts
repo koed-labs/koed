@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { createCollaborationRepository } from "../src/collaboration-repository.js";

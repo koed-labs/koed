@@ -17,9 +17,9 @@ import {
   sharedMemorySourceCapabilitiesSchema,
   sharedMemorySourceRefSchema,
   teamRepositorySnapshotReviewSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
-import { SHARED_MEMORY_AUTHORITY } from "@koed/db";
+import { SHARED_MEMORY_AUTHORITY } from "@koed-labs/db";
 
 export const SHARED_MEMORY_WORKSPACE_INDEX_DEFAULT_LIMIT = 50;
 export const SHARED_MEMORY_WORKSPACE_INDEX_MAX_LIMIT = 100;

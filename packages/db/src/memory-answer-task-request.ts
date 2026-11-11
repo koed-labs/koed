@@ -8,7 +8,7 @@ import {
   repositoryScopeId,
   requirePortableTeamRepositoryContext,
   type PersonalSelectionSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { CreateFinalMemoryQuestionInput } from "./memory-question-repository.js";
 
 const inputFrom = (request: unknown): Record<string, unknown> | null => {

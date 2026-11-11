@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, expect, it, vi } from "vitest";
-import { normalizeGitRemoteUrl, repositoryIdentitySchema } from "@koed/shared";
+import {
+  normalizeGitRemoteUrl,
+  repositoryIdentitySchema
+} from "@koed-labs/shared";
 import {
   resolveHistoricalCaptureRepositoryIdentity,
   codexSourceTimeRepositoryIdentity,

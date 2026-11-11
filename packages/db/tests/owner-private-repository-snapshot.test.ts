@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   type TeamRepositorySnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   readOwnerPrivateRepositorySnapshotMetadata,
   writeOwnerPrivateRepositorySnapshot

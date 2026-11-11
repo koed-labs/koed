@@ -10,8 +10,8 @@ import {
   Input,
   Spinner,
   Switch
-} from "@koed/ui";
-import type { CollaborationSnapshot } from "@koed/shared/collaboration";
+} from "@koed-labs/ui";
+import type { CollaborationSnapshot } from "@koed-labs/shared/collaboration";
 import type { DesktopThemePreference } from "../../../window/theme-preference.js";
 import {
   AlertTriangle,
