@@ -37991,14 +37991,23 @@ describeDb("memory repository visibility", () => {
         captureMethod: "transcript"
       }
     );
+    process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "5";
+    process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD = "6000";
+    process.env.MEMORY_LCM_FRESH_EVENT_TAIL = "0";
     const engine = createMemoryEngine(repo);
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 6; index += 1) {
       await captureUserEvent(engine, owner.id, {
         projectId: "pds-lcm-project",
         sessionId: session.id,
         content: `Portable LCM source event ${index + 1}`
       });
     }
+    await pool.query(
+      `update memory_events set captured_at=timestamptz '2026-01-01' +
+         ((payload->>'content') ~ '6$')::int * interval '1 second' + interval '123 microseconds'
+       where session_id=$1`,
+      [session.id]
+    );
     await pool.query(
       `insert into pds_logical_replicas
        (group_id,owner_user_id,source_fingerprint,closure_hash,
@@ -38074,45 +38083,86 @@ describeDb("memory repository visibility", () => {
     const logicalSourceIds = sources.rows.map(
       (_, index) => `logical-lcm-source-${index}-${randomUUID()}`
     );
-    for (const [index, source] of sources.rows.entries()) {
-      await pool.query(
-        `insert into pds_memory_event_mappings
+    const leaf = await repo.getVisibleLcmNodeForSummarization(
+      { userId: owner.id },
+      leafNodeId
+    );
+    expect(leaf?.lcmAlgorithmVersion).toBe("depth0-source-items-context-v2");
+    const contextSources = (leaf?.contextItems ?? []).map((item, index) => ({
+      memory_event_id: item.sourceId!,
+      source_order: sources.rows.length + index
+    }));
+    expect(contextSources).toHaveLength(1);
+    expect(sources.rows.map((source) => source.memory_event_id)).not.toContain(
+      contextSources[0]!.memory_event_id
+    );
+    const logicalContextIds = contextSources.map(
+      (_, index) => `logical-lcm-context-${index}-${randomUUID()}`
+    );
+    const mapSources = async (
+      mappedSources: typeof sources.rows,
+      mappedLogicalIds: string[]
+    ) => {
+      for (const [index, source] of mappedSources.entries()) {
+        await pool.query(
+          `insert into pds_memory_event_mappings
          (group_id,memory_event_id,logical_event_id,source_fingerprint,
           source_closure_hash,content_hash,source_ordinals)
          values ($1,$2,$3,$4,$5,$6,array[$7]::text[])`,
-        [
-          group.groupDbId,
-          source.memory_event_id,
-          logicalSourceIds[index],
-          createHash("sha256")
-            .update(`source-${source.memory_event_id}`)
-            .digest("base64url"),
-          createHash("sha256")
-            .update(`closure-${source.memory_event_id}`)
-            .digest("base64url"),
-          createHash("sha256")
-            .update(`content-${source.memory_event_id}`)
-            .digest("base64url"),
-          String(source.source_order)
-        ]
-      );
-    }
+          [
+            group.groupDbId,
+            source.memory_event_id,
+            mappedLogicalIds[index],
+            createHash("sha256")
+              .update(`source-${source.memory_event_id}`)
+              .digest("base64url"),
+            createHash("sha256")
+              .update(`closure-${source.memory_event_id}`)
+              .digest("base64url"),
+            createHash("sha256")
+              .update(`content-${source.memory_event_id}`)
+              .digest("base64url"),
+            String(source.source_order)
+          ]
+        );
+      }
+    };
+    await mapSources(sources.rows, logicalSourceIds);
     const contract = {
       artifactClass: "lcm_node/v1" as const,
       nodeKind: "leaf" as const,
-      lcmAlgorithmVersion: "depth0-source-items-v1",
+      lcmAlgorithmVersion: "depth0-source-items-context-v2",
       summaryPromptVersion: "lcm-summary-leaf-v1",
       summaryModel: "gpt-5.4-mini",
       structuredOutputSchema: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
-      sourceSelectionPolicy: "depth0-source-items-v1"
+      sourceSelectionPolicy: "depth0-source-items-context-v2"
     };
     const compatibilityContractHash = pdsArtifactCompatibilityHash(contract);
+    await expect(
+      repo.claimLcmNodesForSummarization(
+        { userId: owner.id },
+        {
+          claimantId: "unmapped-context-client",
+          compatibilityContractHash,
+          pdsContracts: {
+            leaf: contract,
+            rollup: { ...contract, nodeKind: "rollup" }
+          },
+          leaseMs: 60_000,
+          limit: 1
+        }
+      )
+    ).resolves.toEqual([]);
+    await mapSources(contextSources, logicalContextIds);
     const workIdentity = createHash("sha256")
       .update(
         canonicalizePdsJson({
           artifactClass: "lcm_node/v1",
           nodeKind: "leaf",
           orderedSourceIds: logicalSourceIds,
+          ...(logicalContextIds.length
+            ? { contextEventIds: logicalContextIds }
+            : {}),
           compatibilityContractHash,
           correctedRevision: "0"
         })
@@ -38152,6 +38202,10 @@ describeDb("memory repository visibility", () => {
       }
     );
     if (!summaryClaim) throw new Error("Expected PDS-backed LCM claim");
+    expect(summaryClaim.workIdentity).toBe(workIdentity);
+    expect(summaryClaim.compatibilityContractHash).toBe(
+      compatibilityContractHash
+    );
 
     await pool.query(
       `update pds_semantic_work_claims

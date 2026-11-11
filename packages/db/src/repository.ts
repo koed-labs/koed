@@ -9605,6 +9605,18 @@ export const createMemorySourceRepository = (
           if (
             topology.rows.length === node.sourceItems.length &&
             groupIds.size === 1 &&
+            (contextTopology.rows.length !== (node.contextItems?.length ?? 0) ||
+              contextTopology.rows.some(
+                (row) => !groupIds.has(row.group_db_id)
+              ))
+          ) {
+            // Portable covered sources must wait for their context dependency
+            // mappings instead of escaping PDS authority through a local claim.
+            continue;
+          }
+          if (
+            topology.rows.length === node.sourceItems.length &&
+            groupIds.size === 1 &&
             contextTopology.rows.length === (node.contextItems?.length ?? 0) &&
             contextTopology.rows.every((row) => groupIds.has(row.group_db_id))
           ) {
@@ -12661,10 +12673,14 @@ export const createMemorySourceRepository = (
           pool,
           {
             userId: actor.userId,
-            hits: results.map((result) => ({
-              ...result,
-              embeddingId: selectedEmbeddingIds.get(retrievalContextKey(result))
-            })),
+            hits: results
+              .filter((result) => result.sourceType === "memory_event")
+              .map((result) => ({
+                ...result,
+                embeddingId: selectedEmbeddingIds.get(
+                  retrievalContextKey(result)
+                )
+              })),
             selection: personalSourceSelection,
             searchDomain,
             sessionId: input.sessionId,
@@ -12699,10 +12715,7 @@ export const createMemorySourceRepository = (
           }
         );
         results = results.flatMap((result) => {
-          if (
-            result.sourceType !== "memory_event" &&
-            result.sourceType !== "memory_node"
-          ) {
+          if (result.sourceType !== "memory_event") {
             return [result];
           }
           const sourceItems = context.get(retrievalContextKey(result)) ?? [];
@@ -12716,9 +12729,7 @@ export const createMemorySourceRepository = (
           return [
             {
               ...result,
-              ...(result.sourceType === "memory_event"
-                ? { summaryText: matched[0]!.text ?? "" }
-                : {}),
+              summaryText: matched[0]!.text ?? "",
               sourceItems
             }
           ];
@@ -13089,12 +13100,14 @@ export const createMemorySourceRepository = (
                select $1,me.id
                from (
                  select next_event.* from memory_events next_event
+                 cross join memory_events source_boundary
                  where next_event.session_id=$2
-                   and (next_event.captured_at,next_event.id)>($3::timestamptz,$4::uuid)
+                   and source_boundary.id=$3
+                   and (next_event.captured_at,next_event.id)>(source_boundary.captured_at,source_boundary.id)
                  order by next_event.captured_at,next_event.id
                  limit 1
                ) me
-               where me.owner_user_id=$5 and me.visibility=$6
+               where me.owner_user_id=$4 and me.visibility=$5
                  and me.invalidated_at is null and me.personal_deleted_at is null
                  and me.include_in_lcm=true
                  and pds_session_recall_ready(me.session_id)
@@ -13102,7 +13115,6 @@ export const createMemorySourceRepository = (
               [
                 nodeId,
                 boundary.session_id,
-                boundary.captured_at,
                 boundary.id,
                 ownerUserId,
                 input.visibility

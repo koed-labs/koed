@@ -12,7 +12,7 @@ const readDrizzleFile = (path: string) =>
   readFile(resolve(drizzleDir, path), "utf8");
 
 describe("fresh-install migration baseline", () => {
-  it("contains exactly one clean initial migration", async () => {
+  it("starts with the clean initial migration", async () => {
     const [journalText, baselineSql] = await Promise.all([
       readDrizzleFile("meta/_journal.json"),
       readDrizzleFile("0000_clean_initial_schema.sql")
@@ -21,7 +21,6 @@ describe("fresh-install migration baseline", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries).toHaveLength(1);
     expect(journal.entries[0]).toMatchObject({
       idx: 0,
       tag: "0000_clean_initial_schema"

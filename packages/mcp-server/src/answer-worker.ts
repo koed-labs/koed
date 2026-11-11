@@ -738,6 +738,14 @@ type MemoryAnswerBudgetKind =
   | "evidence_tokens"
   | "prompt_tokens";
 
+class MemoryAnswerEvidenceBudgetError extends Error {
+  constructor(readonly exhausted: MemoryAnswerBudgetKind[]) {
+    super(
+      `Memory answer budget exhausted: no complete event context window fits evidence budget (${exhausted.join(", ")})`
+    );
+  }
+}
+
 const markBudgetExhausted = (
   ledger: MemoryAnswerBudgetLedger,
   kind: MemoryAnswerBudgetKind
@@ -759,6 +767,9 @@ const markBudgetExhaustionFromError = (
   ledger: MemoryAnswerBudgetLedger,
   error: unknown
 ): void => {
+  if (error instanceof MemoryAnswerEvidenceBudgetError) {
+    for (const kind of error.exhausted) markBudgetExhausted(ledger, kind);
+  }
   if (/wall-time budget/i.test(errorMessage(error))) {
     markBudgetExhausted(ledger, "wall_time");
   }
@@ -925,6 +936,16 @@ const eventWindowEvidence = (hits: unknown[]): unknown[] => {
     [],
     hits.flatMap((hit) => {
       const parent = recordFromUnknown(hit);
+      const sourceType =
+        stringField(parent, ["sourceType", "source_type"]) ??
+        stringField(recordFromUnknown(parent.canonicalSourceIdentity), [
+          "sourceType",
+          "source_type"
+        ]);
+      if (sourceType !== "memory_event" && Array.isArray(parent.sourceItems)) {
+        const { sourceItems: _contextItems, ...summary } = parent;
+        return [summary];
+      }
       if (!Array.isArray(parent.sourceItems) || !parent.sourceItems.length)
         return [hit];
       const items = parent.sourceItems.map(recordFromUnknown);
@@ -1868,8 +1889,19 @@ const boundEvidence = (
     if (
       bounded.length + safeGroup.length >
       Math.min(config.maxCandidates, config.maxEvidenceItems)
-    )
+    ) {
+      if (
+        bounded.length + safeGroup.length > config.maxCandidates &&
+        !exhausted.includes("candidates")
+      )
+        exhausted.push("candidates");
+      if (
+        bounded.length + safeGroup.length > config.maxEvidenceItems &&
+        !exhausted.includes("evidence_items")
+      )
+        exhausted.push("evidence_items");
       continue;
+    }
     let groupTokens = 0;
     for (const safeCandidate of safeGroup) {
       const record = recordFromUnknown(safeCandidate);
@@ -1914,9 +1946,7 @@ const boundEvidence = (
     bounded.length === 0 &&
     evidence.some((item) => eventWindowIds(item).length > 0)
   ) {
-    throw new Error(
-      "Memory answer budget exhausted: no complete event context window fits evidence budget"
-    );
+    throw new MemoryAnswerEvidenceBudgetError(exhausted);
   }
   return {
     evidence: retainEventWindowMemberships(bounded, admittedWindows),
@@ -5086,7 +5116,9 @@ export const answerWithMemoryWorker = async (
         providerCode === "provider_execution_failure")
         ? providerCode
         : undefined;
-    const exhaustedBudgets = failureState?.ledger.budgetExhaustions ?? [];
+    const exhaustedBudgets =
+      failureState?.ledger.budgetExhaustions ??
+      (error instanceof MemoryAnswerEvidenceBudgetError ? error.exhausted : []);
     const limiting = limitingBudgets(exhaustedBudgets);
     const retrievalIncomplete =
       (failureState ? retrievalErrors(failureState).length : 0) > 0 ||

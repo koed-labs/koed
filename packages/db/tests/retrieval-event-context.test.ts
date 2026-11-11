@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi
+} from "vitest";
 import {
   createDbPool,
   createMemorySourceRepository,
@@ -13,8 +21,12 @@ describe.skipIf(!databaseUrl)("canonical retrieval event context", () => {
   const repo = createMemorySourceRepository(pool);
   beforeAll(() => runDbMigrations(pool));
   afterAll(() => pool.end());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
-  it("discards selected event and node embeddings invalidated before canonical hydration", async () => {
+  it("discards selected event embeddings invalidated before canonical hydration", async () => {
     const owner = await repo.createUser({
       email: `context-race-${randomUUID()}@example.com`
     });
@@ -74,7 +86,7 @@ describe.skipIf(!databaseUrl)("canonical retrieval event context", () => {
     const hydrate = async <T>(event: T) => event;
     expect(
       (await retrieveCanonicalEventContext(pool, input, hydrate)).size
-    ).toBe(2);
+    ).toBe(1);
     await pool.query(
       "update memory_events set payload=jsonb_set(payload,'{content}','\"Unrelated replacement content\"') where id=$1",
       [event.id]
@@ -116,7 +128,7 @@ describe.skipIf(!databaseUrl)("canonical retrieval event context", () => {
       "Following assistant response",
       "Last event"
     ];
-    const events = [];
+    const events: Awaited<ReturnType<typeof repo.createMemoryEvent>>[] = [];
     for (const [index, content] of contents.entries()) {
       events.push(
         await repo.createMemoryEvent(
@@ -232,14 +244,7 @@ describe.skipIf(!databaseUrl)("canonical retrieval event context", () => {
       },
       hydrate
     );
-    expect(
-      nodeContext.get(`memory_node:${node.id}`)?.map((item) => item.sourceId)
-    ).toEqual([events[2]!.id, events[3]!.id, events[4]!.id]);
-    expect(
-      nodeContext.get(`memory_node:${node.id}`)?.[1]?.provenance
-    ).toMatchObject({
-      contextRole: "matched"
-    });
+    expect(nodeContext).toEqual(new Map());
     await pool.query(
       "update memory_events set include_in_embedding=false,include_in_lcm=false where id=$1",
       [events[3]!.id]
@@ -266,28 +271,100 @@ describe.skipIf(!databaseUrl)("canonical retrieval event context", () => {
       [session.id]
     );
     const tieOrder = events.map((event) => event.id).sort();
-    const expectedIds = new Set<string>();
-    for (const event of [events[2]!, events[3]!]) {
-      const position = tieOrder.indexOf(event.id);
-      for (const id of tieOrder.slice(
-        Math.max(0, position - 1),
-        position + 2
-      )) {
-        if (id !== events[1]!.id) expectedIds.add(id);
-      }
-    }
+    const position = tieOrder.indexOf(events[2]!.id);
+    const expectedIds = tieOrder
+      .slice(Math.max(0, position - 1), position + 2)
+      .filter((id) => id !== events[1]!.id);
     const tied = await retrieveCanonicalEventContext(
       pool,
       {
         ...input,
-        hits: [
-          { nodeId: node.id, sourceType: "memory_node", sourceId: node.id }
-        ]
+        hits: [hits[0]!]
       },
       hydrate
     );
     expect(
-      tied.get(`memory_node:${node.id}`)?.map((item) => item.sourceId)
-    ).toEqual(tieOrder.filter((id) => expectedIds.has(id)));
+      tied.get(`memory_event:${events[2]!.id}`)?.map((item) => item.sourceId)
+    ).toEqual(expectedIds);
+  });
+
+  it("retains an LCM summary for a node backed by a large event span", async () => {
+    vi.stubEnv("EMBEDDING_MODEL", "qwen3-0.6b");
+    vi.stubEnv("EMBEDDING_SERVICE_URL", "http://embedding.invalid");
+    const owner = await repo.createUser({
+      email: `node-summary-${randomUUID()}@example.com`
+    });
+    const summaryText = "Canonical LCM summary for the full Conversation span.";
+    const node = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        summaryText,
+        captureMethod: "transcript",
+        sourceRuntime: "codex"
+      }
+    );
+    for (let index = 0; index < 65; index += 1) {
+      const event = await repo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          projectId: "large-node-span",
+          actor: "user",
+          eventType: "captured",
+          rawEventType: "user_prompt",
+          content: `Complete source event ${index}.`,
+          visibility: "personal"
+        }
+      );
+      await pool.query(
+        "insert into memory_node_sources(memory_node_id,memory_event_id,source_order) values($1,$2,$3)",
+        [node.id, event.id, index]
+      );
+    }
+    const source = await repo.getEmbeddableSource("memory_node", node.id);
+    expect(source).not.toBeNull();
+    const vector = Array.from({ length: 1024 }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    await repo.upsertSourceEmbedding({
+      source: source!,
+      vector,
+      model: "qwen3-0.6b",
+      version: "qwen3-0.6b",
+      dimensions: 1024,
+      modelArtifactHash: "a".repeat(64),
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2"
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "qwen3-0.6b",
+          dimensions: 1024,
+          vectors: [vector]
+        }),
+        { status: 200 }
+      )
+    );
+    const result = await repo.searchMemoryNodes(
+      { userId: owner.id },
+      {
+        scope: "personal",
+        query: "Conversation summary",
+        retrievalStage: "leaf_search",
+        includeEventContext: true
+      }
+    );
+    const hit = result.results.find(
+      (candidate) => candidate.sourceId === node.id
+    );
+    expect(hit).toMatchObject({
+      sourceType: "memory_node",
+      sourceId: node.id,
+      summaryText
+    });
+    expect(hit?.sourceItems).toBeUndefined();
   });
 });

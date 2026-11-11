@@ -50,6 +50,8 @@ export async function retrieveCanonicalEventContext(
   },
   hydrate: (event: RetrievalContextEvent) => Promise<RetrievalContextEvent>
 ): Promise<Map<string, LcmSourceItem[]>> {
+  const hits = input.hits.filter((hit) => hit.sourceType === "memory_event");
+  if (hits.length === 0) return new Map();
   const searchDomain = input.searchDomain;
   if (
     searchDomain !== "global" &&
@@ -85,43 +87,36 @@ export async function retrieveCanonicalEventContext(
         where embedding.id = h."embeddingId" and embedding.invalidated_at is null
           and embedding.personal_deleted_at is null
           and embedding.owner_user_id = $2 and embedding.visibility = 'personal'
-          and ((h."sourceType" = 'memory_event' and embedding.memory_event_id = h."sourceId"::uuid)
-            or (h."sourceType" = 'memory_node' and embedding.memory_node_id = h."sourceId"::uuid))
+          and embedding.memory_event_id = h."sourceId"::uuid
       )
     ), candidate_ids as (
       select h."sourceType" || ':' || h."sourceId" as result_id,
         h."sourceId"::uuid as id
       from current_hits h where h."sourceType" = 'memory_event'
-      union
-      select h."sourceType" || ':' || h."sourceId", mns.memory_event_id
-      from current_hits h
-      join memory_nodes mn on mn.id = h."sourceId"::uuid
-      join memory_node_sources mns on mns.memory_node_id = mn.id
-      where h."sourceType" = 'memory_node'
-        and mn.owner_user_id = $2 and mn.visibility = 'personal'
-        and mn.invalidated_at is null and mn.personal_deleted_at is null
-        and mns.memory_event_id is not null
     ), seeds as (
-      select distinct candidate_ids.result_id, me.id, me.session_id
+      select distinct candidate_ids.result_id, me.id, me.session_id, me.captured_at
       from candidate_ids
       join memory_events me on me.id = candidate_ids.id
       left join sessions s on s.id = me.session_id
       where ${authorized}
-    ), ordered as (
-      select me.id,
-        lag(me.id) over event_order as preceding_id,
-        lead(me.id) over event_order as following_id
-      from memory_events me
-      where me.session_id in (select session_id from seeds)
-      window event_order as (partition by me.session_id
-        order by me.captured_at, me.id)
     ), context_ids as (
       select seeds.result_id, seeds.id as matched_source_id, neighbors.*
       from seeds
-      left join ordered on ordered.id = seeds.id
+      left join lateral (
+        select adjacent.id from memory_events adjacent
+        where adjacent.session_id=seeds.session_id
+          and (adjacent.captured_at,adjacent.id)<(seeds.captured_at,seeds.id)
+        order by adjacent.captured_at desc,adjacent.id desc limit 1
+      ) preceding on true
+      left join lateral (
+        select adjacent.id from memory_events adjacent
+        where adjacent.session_id=seeds.session_id
+          and (adjacent.captured_at,adjacent.id)>(seeds.captured_at,seeds.id)
+        order by adjacent.captured_at,adjacent.id limit 1
+      ) following on true
       cross join lateral (values
-        (seeds.id, 'matched'), (ordered.preceding_id, 'preceding'),
-        (ordered.following_id, 'following')
+        (seeds.id, 'matched'), (preceding.id, 'preceding'),
+        (following.id, 'following')
       ) neighbors(id, context_role)
     )
     select me.id, me.owner_user_id, me.visibility, me.session_id, me.turn_id,
@@ -133,7 +128,7 @@ export async function retrieveCanonicalEventContext(
     where ${authorized}
     order by me.session_id, me.captured_at, me.id, context_ids.result_id`,
     [
-      JSON.stringify(input.hits),
+      JSON.stringify(hits),
       input.userId,
       input.sourceAfter,
       input.sourceBefore,

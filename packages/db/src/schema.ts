@@ -1852,6 +1852,11 @@ export const memoryEvents = pgTable(
       .where(
         sql`${table.visibility} = 'personal' and ${table.invalidatedAt} is null`
       ),
+    index("memory_events_session_capture_order_idx").on(
+      table.sessionId,
+      table.capturedAt,
+      table.id
+    ),
     index("memory_events_personal_project_expr_idx")
       .on(
         table.ownerUserId,

@@ -437,6 +437,9 @@ const runPromptBudgetRegression = (
 
 describe("memory answer worker", () => {
   const eventWindow = (matched = "event-b") => ({
+    sourceType: "memory_event",
+    sourceId: matched,
+    sourceChunkIndex: 0,
     nodeId: `hit-${matched}`,
     visibility: "personal",
     sourceItems: ["event-a", "event-b", "event-c"].map(
@@ -459,6 +462,141 @@ describe("memory answer worker", () => {
         }
       })
     )
+  });
+
+  it.each([5, 60])(
+    "uses an LCM node summary with %i contextual source events as one summary candidate",
+    async (count) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-node-summary-context-")
+      );
+      try {
+        const summary =
+          "LCM_SUMMARY_DECISION: deploy the scoped device credentials.";
+        const node = {
+          sourceType: "memory_node",
+          sourceId: "summary-node",
+          sourceChunkIndex: 0,
+          nodeId: "summary-node",
+          visibility: "personal",
+          summaryText: summary,
+          citation: {
+            sourceType: "memory_node",
+            sourceId: "summary-node",
+            sourceChunkIndex: 0,
+            nodeId: "summary-node",
+            visibility: "personal"
+          },
+          sourceItems: Array.from({ length: count }, (_, index) => ({
+            ...eventWindow().sourceItems[0],
+            sourceId: `context-${index}`,
+            text: `CONTEXT_EVENT_ONLY_${index} ${"large event content ".repeat(500)}`
+          }))
+        };
+        const capture = path.join(directory, "prompts.jsonl");
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: {
+              query: "What should we deploy?",
+              evidence: [node]
+            }
+          },
+          {
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              async expand() {
+                throw new Error(
+                  "The node summary answers the question without expansion."
+                );
+              }
+            },
+            responseDetail: "internal",
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  useTools: false,
+                  capturePromptsPath: capture,
+                  requiredPromptSnippets: [summary],
+                  answer: answerObject("Deploy the scoped device credentials.")
+                })
+            })
+          }
+        );
+        expect(response.localMemoryWorker.usedFallback).toBe(false);
+        expect(response.localMemoryWorker.memoryStatus).toBe("found");
+        expect(response.localMemoryWorker.candidateCount).toBe(1);
+        expect(response.evidenceBundle?.evidence).toEqual([
+          expect.objectContaining({
+            sourceType: "memory_node",
+            sourceId: "summary-node",
+            summaryText: summary
+          })
+        ]);
+        expect(
+          JSON.parse(fs.readFileSync(capture, "utf8").trim()) as string
+        ).not.toContain("CONTEXT_EVENT_ONLY");
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("reports count admission limits when an oversized event window is skipped beside useful summary evidence", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-window-cap-diagnostic-")
+    );
+    try {
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What was decided?",
+            evidence: [
+              {
+                sourceType: "memory_node",
+                sourceId: "summary",
+                sourceChunkIndex: 0,
+                summaryText: "Useful retained summary."
+              },
+              eventWindow()
+            ]
+          }
+        },
+        {
+          client: {
+            async search() {
+              return { hits: [] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_CANDIDATES: "3",
+            MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "2",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                useTools: false
+              })
+          })
+        }
+      );
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      const retrieval = response.evidenceBundle?.retrieval as {
+        trace?: { budgets?: { exhausted?: string[] } };
+      };
+      expect(retrieval.trace?.budgets?.exhausted).toEqual(
+        expect.arrayContaining(["candidates", "evidence_items"])
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("deduplicates complete overlapping event windows with canonical neighbor citations and stable handles", async () => {

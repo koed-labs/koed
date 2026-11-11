@@ -19049,6 +19049,33 @@
           "method": "btree",
           "with": {}
         },
+        "memory_events_session_capture_order_idx": {
+          "name": "memory_events_session_capture_order_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "captured_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "memory_events_personal_project_expr_idx": {
           "name": "memory_events_personal_project_expr_idx",
           "columns": [

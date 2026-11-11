@@ -52,6 +52,15 @@ subsequent context invalidation also invalidates dependent leaves, rollups and
 embeddings. Incompatible peers must not reuse contextual artifacts as though
 they were historical no-context leaves.
 
+Upgrade the API and local summary workers together. The new context policy
+changes summary input revisions and worker compatibility hashes for both leaves
+and rollups. An in-flight pre-upgrade submission can lose its claim and must be
+reclaimed through the normal lease/retry path. Existing completed summaries are
+not rewritten. Devices using different leaf algorithm versions cannot reuse
+each other's leaf artifacts; update peers before expecting cross-device reuse.
+Preserving absent-field historical artifact identities does not make old and new
+leaf algorithm contracts equivalent.
+
 ## 1. Scope and trust boundary
 
 PDS has one protocol identifier: `koed/pds/v1`. A receiver accepts only that
