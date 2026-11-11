@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   grantAiClientConnection,
   revokeAiClientConnection
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,

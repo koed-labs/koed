@@ -13,7 +13,7 @@ import {
   validatePdsSourceContextOriginBinding,
   type PersonalSourceContextSnapshot,
   type PersonalFolderAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   retainSourceContextRevision,
   loadSourceContextFrontier

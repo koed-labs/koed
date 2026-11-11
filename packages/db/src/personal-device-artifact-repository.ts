@@ -17,14 +17,14 @@ import {
   type PdsPortableLcmNodeV1,
   type PdsPortableMemoryEmbeddingV1,
   type PdsPortableMemoryEventV1
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { CURRENT_CONVERSATION_PROJECTION_VERSION } from "./conversation-semantic-projection.js";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   TOKEN_COUNTER_CONTRACT_VERSION
-} from "@koed/core";
+} from "@koed-labs/core";
 import { embeddingTableForDimensions } from "./embedding-coverage.js";
-import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
+import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
 
 export type PdsSemanticWorkClass =
   | "projection"

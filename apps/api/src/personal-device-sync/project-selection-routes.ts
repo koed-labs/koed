@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { associatedSelectionFromPdsState } from "@koed/shared";
-import type { PdsProjectSelectionState } from "@koed/shared";
+import { associatedSelectionFromPdsState } from "@koed-labs/shared";
+import type { PdsProjectSelectionState } from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 const id = z

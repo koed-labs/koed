@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { codexIdePromptUserText, countTokensForModel } from "@koed/core";
+import { codexIdePromptUserText, countTokensForModel } from "@koed-labs/core";
 import {
   MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_COUNT,
@@ -12,7 +12,7 @@ import {
   type PersonalSelectionSnapshot,
   planRepositorySearch,
   resolveSupportedEmbeddingModelConfig
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createSdkMcpServer,
   query as queryClaude,

@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isLoopbackHostname } from "@koed/shared";
+import { isLoopbackHostname } from "@koed-labs/shared";
 import { z } from "zod";
 
 export const LOCAL_AI_RUNTIME_PROTOCOL_VERSION = 1 as const;

@@ -2,7 +2,7 @@ import {
   normalizePersonalSelection,
   personalSelectionLegacyScope,
   type PersonalSelectionSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { MemoryApiClient } from "./index.js";
 import {
   memoryAnswerInputSchema,

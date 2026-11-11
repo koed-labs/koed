@@ -8,7 +8,7 @@ import {
   createNamedProject,
   resolveKoedServerPaths
 } from "@koed-labs/server";
-import { repositoryScopeId } from "@koed/shared";
+import { repositoryScopeId } from "@koed-labs/shared";
 import { pinRepositoryRecallContext } from "../src/repository-recall-context.js";
 import { resolveRequestedProjectRoot } from "../src/repository-recall-context.js";
 
@@ -62,7 +62,7 @@ it("pins the requested Project before acceptance and preserves it through cwd, a
       { search_domain: "project" } as {
         search_domain: string;
         project_id?: string;
-        repository_context?: import("@koed/shared").RepositoryIdentity;
+        repository_context?: import("@koed-labs/shared").RepositoryIdentity;
       },
       { cwd: subdirectory },
       env

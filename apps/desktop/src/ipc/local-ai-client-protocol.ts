@@ -1,12 +1,12 @@
 import { z } from "zod";
-import { supportedAiClientDriverIds } from "@koed/shared/ai-client-contract";
+import { supportedAiClientDriverIds } from "@koed-labs/shared/ai-client-contract";
 
 export const localAiClientCommandChannel = "koed:local-ai-client:command";
 
 import {
   localAiClientFlowKeys,
   memoryModelFlowKeys
-} from "@koed/shared/ai-client-flow-defaults";
+} from "@koed-labs/shared/ai-client-flow-defaults";
 export { localAiClientFlowKeys };
 export type LocalAiClientFlowKey = (typeof localAiClientFlowKeys)[number];
 

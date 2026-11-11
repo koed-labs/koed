@@ -15,7 +15,7 @@ import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   type PersonalGitContext,
   type PersonalFolderObservation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

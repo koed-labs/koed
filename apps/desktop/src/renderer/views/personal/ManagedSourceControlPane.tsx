@@ -5,7 +5,7 @@ import type {
   SourceControlComment,
   SourceControlRemote,
   SourceControlReviewRequest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { GitBranch, LoaderCircle, RefreshCw, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";

@@ -6,7 +6,7 @@ import {
   sign
 } from "node:crypto";
 import type pg from "pg";
-import { pdsFinalizedStatementHash } from "@koed/shared";
+import { pdsFinalizedStatementHash } from "@koed-labs/shared";
 import {
   validatePeerLifecycleFixture,
   type createPeerLifecycleFixture
@@ -22,7 +22,7 @@ import {
   PDS_PROTOCOL,
   type PersonalConfigurationFeature,
   type PdsConfigurationCapabilityRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createPersonalDeviceSyncRepository,
   createMemorySourceRepository

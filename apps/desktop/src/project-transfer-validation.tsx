@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { personalFolderScopeId } from "@koed/shared/personal-desktop";
-import { repositoryScopeId } from "@koed/shared/repository-recall";
-import type { PersonalGitContext } from "@koed/shared";
+import { personalFolderScopeId } from "@koed-labs/shared/personal-desktop";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
+import type { PersonalGitContext } from "@koed-labs/shared";
 import type {
   PersonalDesktopApi,
   PersonalDesktopProject,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { PersonalMemoryStore } from "./renderer/state/personal-memory.js";
 import { ProjectOrganization } from "./renderer/views/personal/ProjectOrganization.js";
 

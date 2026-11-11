@@ -18,7 +18,7 @@ import { resolve } from "node:path";
 import {
   readDesktopLocalCredentialAuthorization,
   storeDesktopLocalCredential
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   afterAll,
   afterEach,
@@ -237,10 +237,10 @@ const createPackagedAppRuntime = (root: string) => {
     "koed-runtime/mcp-server/dist/local-runtime-cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
     "koed-runtime/mcp-server/dist/prompts/codex-global-agent-guidance.md",
-    "koed-runtime/node_modules/@koed/db/dist/index.js",
-    "koed-runtime/node_modules/@koed/db/dist/connection.js",
-    "koed-runtime/node_modules/@koed/db/dist/user-api-token-repository.js",
-    "koed-runtime/node_modules/@koed/db/drizzle/meta/_journal.json"
+    "koed-runtime/node_modules/@koed-labs/db/dist/index.js",
+    "koed-runtime/node_modules/@koed-labs/db/dist/connection.js",
+    "koed-runtime/node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+    "koed-runtime/node_modules/@koed-labs/db/drizzle/meta/_journal.json"
   ]) {
     const path = resolve(root, entry);
     mkdirSync(resolve(path, ".."), { recursive: true });
@@ -1328,9 +1328,9 @@ describe("start supervisor", () => {
     expect(commands.map((command) => command.args.join(" "))).toContain(
       `${resolve(root, "scripts/source-runtime-build.mjs")} check --lease-pid ${process.pid}`
     );
-    expect(commands.some((command) => command.args.includes("@koed/api"))).toBe(
-      false
-    );
+    expect(
+      commands.some((command) => command.args.includes("@koed-labs/api"))
+    ).toBe(false);
     expect(spawned[0]?.command).toBe(process.execPath);
     expect(spawned[0]?.args).toEqual([resources.serviceEntry]);
     expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(resources.llamaServer);

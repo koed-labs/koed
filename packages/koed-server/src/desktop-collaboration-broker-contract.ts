@@ -6,7 +6,7 @@ import {
   collaborationRemoteBackendUrlSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export const DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION = 1;
 export const DESKTOP_COLLABORATION_BROKER_MAX_MESSAGE_BYTES = 32 * 1024 * 1024;

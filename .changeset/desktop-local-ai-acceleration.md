@@ -1,5 +1,5 @@
 ---
-"@koed/koed": minor
+"@koed-labs/koed": minor
 "@koed-labs/server": minor
 ---
 

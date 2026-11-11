@@ -4,11 +4,11 @@ import {
   sharingRuleSourceIdentitySchema,
   sharingSelectionTargetSchema,
   personalSelectionConsumerPageSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   SelectionSharingGoal,
   SelectionSharingProgress
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { resolveConsumerSelection } from "./personal-selection-consumer-state.js";
 import { personalProjectIdentityMatchesSql } from "./personal-membership-selection-sql.js";
 import { personalSourceSelectionSql } from "./personal-selection-sql.js";

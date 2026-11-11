@@ -1,5 +1,5 @@
 import { ClassificationError } from "./errors.js";
-import { PRIVACY_WINDOW_MAX_TOKENS } from "@koed/shared";
+import { PRIVACY_WINDOW_MAX_TOKENS } from "@koed-labs/shared";
 import {
   validateBatchInput,
   PRIVACY_SHORT_BATCH_POSITIONS,

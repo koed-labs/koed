@@ -1,7 +1,7 @@
-import { privacyLabels, type PrivacyLabel } from "@koed/shared";
+import { privacyLabels, type PrivacyLabel } from "@koed-labs/shared";
 
 export const PRIVACY_LABELS = privacyLabels;
-export type { PrivacyLabel } from "@koed/shared";
+export type { PrivacyLabel } from "@koed-labs/shared";
 
 // This order is the immutable id2label order in the pinned model config.
 const MODEL_LABELS: readonly PrivacyLabel[] = [

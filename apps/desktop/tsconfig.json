@@ -9,17 +9,17 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "paths": {
       "@koed-labs/server": ["../../packages/koed-server/dist/index.d.ts"],
-      "@koed/shared": ["../../packages/shared/dist/index.d.ts"],
-      "@koed/shared/collaboration": [
+      "@koed-labs/shared": ["../../packages/shared/dist/index.d.ts"],
+      "@koed-labs/shared/collaboration": [
         "../../packages/shared/dist/collaboration-contract.d.ts"
       ],
-      "@koed/shared/personal-desktop": [
+      "@koed-labs/shared/personal-desktop": [
         "../../packages/shared/dist/personal-desktop-contract.d.ts"
       ],
-      "@koed/shared/private-network": [
+      "@koed-labs/shared/private-network": [
         "../../packages/shared/dist/private-network.d.ts"
       ],
-      "@koed/ui/theme": ["../../packages/ui/dist/theme.d.ts"],
+      "@koed-labs/ui/theme": ["../../packages/ui/dist/theme.d.ts"],
       "*": ["../../*"]
     },
     "outDir": "dist-types",

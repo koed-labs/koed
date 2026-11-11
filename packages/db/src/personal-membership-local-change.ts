@@ -1,7 +1,7 @@
 import { bridgePersonalMembershipExclusion } from "./personal-membership-exclusion-bridge.js";
 import { bridgePersonalMembershipRule } from "./personal-membership-rule-bridge.js";
 import type pg from "pg";
-import { PdsConfigurationCompatibilityError } from "@koed/shared";
+import { PdsConfigurationCompatibilityError } from "@koed-labs/shared";
 import { bridgePersonalMembershipCatalog } from "./personal-membership-catalog-bridge.js";
 import { bridgePersonalDirectMembership } from "./personal-membership-direct-bridge.js";
 

@@ -19,7 +19,7 @@ import {
   PINNED_PRIVACY_MODEL_FILES,
   PINNED_PRIVACY_MODEL_ID,
   PINNED_PRIVACY_MODEL_REVISION
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 // Immutable release metadata published by apps/privacy-service/src/provenance.ts.
 export const PRIVACY_MODEL_ID = PINNED_PRIVACY_MODEL_ID;

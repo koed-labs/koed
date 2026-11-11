@@ -4,7 +4,7 @@ import type {
   HistoricalIngestionProgress,
   LocalAiClientFlowKey,
   LocalAiClientRuntimeAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type KoedServerComponentState =
   | "not_configured"

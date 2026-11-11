@@ -8,7 +8,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
+import {
+  nodeCliInvocation,
+  nodeCliProcessEnvironment
+} from "@koed-labs/shared";
 
 import { startPiWorkerTools } from "./pi-worker-tools.js";
 

@@ -12,7 +12,7 @@ import {
   signConversationSourceReplicationManifest,
   type ConversationSourceOriginKeyPair,
   type ConversationSourcePriorGenerationClosure
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createEmbeddingCapacityRepository,

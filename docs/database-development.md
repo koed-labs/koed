@@ -11,7 +11,7 @@ future stable changes add ordered migrations and upgrade from the stable schema.
 When changing the schema:
 
 1. Edit `packages/db/src/schema.ts`.
-2. Generate a migration with `pnpm --filter @koed/db migrate:generate`.
+2. Generate a migration with `pnpm --filter @koed-labs/db migrate:generate`.
 3. Review the generated SQL in `packages/db/drizzle/`.
 4. Check migration metadata with `pnpm db:migrate:check`.
 5. Run current-build migration acceptance with
@@ -20,7 +20,7 @@ When changing the schema:
 
 Migration generation formats only `packages/db/drizzle/meta/*.json` with the
 repository's Oxfmt configuration. To format existing metadata separately, run
-`pnpm --filter @koed/db migrate:format`.
+`pnpm --filter @koed-labs/db migrate:format`.
 
 `pnpm db:migrate:acceptance` uses `DATABASE_URL` to connect to a Postgres
 server and creates a separate disposable database for every acceptance case.

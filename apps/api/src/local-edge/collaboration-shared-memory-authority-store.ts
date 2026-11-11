@@ -3,7 +3,7 @@ import {
   type CollaborationSharedMemoryAuthorityBindingRepository,
   type CollaborationSharedMemoryAuthorityStoreOptions,
   type DbPool
-} from "@koed/db";
+} from "@koed-labs/db";
 
 import type { CollaborationSharedMemoryAuthorityStore } from "./collaboration-shared-memory-control.js";
 

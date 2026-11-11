@@ -45,15 +45,15 @@ import {
   type LocalEdgeClientCredentialAuthorization,
   type SharedMemoryActionGrantBinding,
   type SharedMemoryCandidatePreview
-} from "@koed/shared";
-import * as shared from "@koed/shared";
+} from "@koed-labs/shared";
+import * as shared from "@koed-labs/shared";
 import { z } from "zod";
 import type {
   MemorySourceRepository,
   createSelectionSharingJournal,
   SelectionSharingSourceLease,
   CollaborationSharedMemoryAuthorityStore as DbAuthorityStore
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   deliverSelectionSharingSources,
   type SelectionSharingDeliveryTransport
@@ -745,7 +745,7 @@ export interface CollaborationSharedMemoryControlOptions {
   actionGrantControl?: Pick<CollaborationActionGrantControl, "dispatch">;
   reconcileSelectionSharing?(
     localOwnerUserId: string,
-    readInventory: import("@koed/db").SelectionSharingInventoryReader
+    readInventory: import("@koed-labs/db").SelectionSharingInventoryReader
   ): Promise<unknown>;
   selectionReviewRepository?: Pick<
     MemorySourceRepository,
@@ -4544,7 +4544,7 @@ const selectionPublisherTransport = async (
 
 const readPublisherInventory = async (
   options: CollaborationSharedMemoryControlOptions,
-  lease: import("@koed/db").SelectionSharingProgressLease
+  lease: import("@koed-labs/db").SelectionSharingProgressLease
 ) => {
   if (!("publisherTakeover" in lease.data.intent))
     throw new ControlFailure("invalid_input");

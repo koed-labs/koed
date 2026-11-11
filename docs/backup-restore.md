@@ -54,7 +54,7 @@ The acceptance command needs `CREATEDB` and creates/drops its own test database.
 Apply migrations to the stopped target with:
 
 ```bash
-DATABASE_URL='<target Postgres URL>' pnpm --filter @koed/db migrate:up
+DATABASE_URL='<target Postgres URL>' pnpm --filter @koed-labs/db migrate:up
 ```
 
 ## Compose Backup And Restore

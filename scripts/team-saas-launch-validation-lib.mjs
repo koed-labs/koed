@@ -302,7 +302,7 @@ export const automatedLaunchTestCommands = [
     command: "pnpm",
     args: [
       "--filter",
-      "@koed/db",
+      "@koed-labs/db",
       "exec",
       "vitest",
       "run",
@@ -316,7 +316,7 @@ export const automatedLaunchTestCommands = [
     command: "pnpm",
     args: [
       "--filter",
-      "@koed/api",
+      "@koed-labs/api",
       "exec",
       "vitest",
       "run",
@@ -332,7 +332,7 @@ export const automatedLaunchTestCommands = [
     command: "pnpm",
     args: [
       "--filter",
-      "@koed/api",
+      "@koed-labs/api",
       "exec",
       "vitest",
       "run",
@@ -377,7 +377,7 @@ export const automatedLaunchTestCommands = [
     command: "pnpm",
     args: [
       "--filter",
-      "@koed/db",
+      "@koed-labs/db",
       "exec",
       "vitest",
       "run",
@@ -390,7 +390,7 @@ export const automatedLaunchTestCommands = [
   {
     id: "desktop-electron-interactions",
     command: "pnpm",
-    args: ["--filter", "@koed/desktop", "test:browser"]
+    args: ["--filter", "@koed-labs/desktop", "test:browser"]
   }
 ];
 

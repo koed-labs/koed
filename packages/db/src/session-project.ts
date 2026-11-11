@@ -2,7 +2,7 @@ import {
   repositoryScopeId,
   repositoryIdentityMatches,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PersonalProjectReference } from "./types.js";
 
 type CapturedProject = {

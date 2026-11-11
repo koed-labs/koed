@@ -7,7 +7,7 @@ import {
   createRemoteMcpOAuthRepository,
   runDbMigrations,
   type MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAuthHelpers, createHashSecret } from "./session.js";
 import { createRemoteMcpOAuthProvider } from "./remote-mcp-oauth.js";

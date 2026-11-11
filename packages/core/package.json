@@ -1,5 +1,5 @@
 {
-  "name": "@koed/core",
+  "name": "@koed-labs/core",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
@@ -23,7 +23,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@koed/shared": "workspace:*",
+    "@koed-labs/shared": "workspace:*",
     "js-tiktoken": "^1.0.21",
     "zod": "^4.4.3"
   }

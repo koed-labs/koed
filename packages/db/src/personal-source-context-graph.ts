@@ -4,7 +4,7 @@ import {
   personalFolderContextRevisionSchema,
   type PersonalGitAssignment,
   type PersonalFolderAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 type Assignment = PersonalGitAssignment | PersonalFolderAssignment;
 export type SourceContextRevision<T = Assignment> = {

@@ -658,7 +658,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   `pnpm api-token:create`. Docker Compose derives service-internal database URLs
   from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`. Hosted
   `koed-server` traffic should use the runtime Postgres role; use the migration
-  role only for `pnpm --filter @koed/db migrate:up`. See
+  role only for `pnpm --filter @koed-labs/db migrate:up`. See
   [hosted-database-roles.md](hosted-database-roles.md).
 - `API_NODE_ENV`: runtime environment for the internal API app. Use
   `production` for deployed `koed-server` runs.

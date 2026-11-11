@@ -5,7 +5,7 @@ import {
   COLLABORATION_MESSAGE_BURST_WINDOW_MS,
   COLLABORATION_MESSAGE_SUSTAINED_MAX_COUNT,
   COLLABORATION_TEAM_MESSAGE_MAX_PER_MINUTE
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import {
   MemoryRateLimitStore,

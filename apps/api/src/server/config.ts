@@ -2,7 +2,7 @@ import {
   resolveApiDataEncryptionKeyFromEnv,
   resolveKoedQueueBackend,
   type KoedQueueBackend
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {

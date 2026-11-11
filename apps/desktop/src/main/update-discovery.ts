@@ -3,7 +3,7 @@ import {
   desktopStableVersionPattern,
   desktopUpdateStateSchema,
   type DesktopUpdateState
-} from "@koed/shared/desktop-update-contract";
+} from "@koed-labs/shared/desktop-update-contract";
 
 export interface DiscoveryOptions {
   eligible: boolean;

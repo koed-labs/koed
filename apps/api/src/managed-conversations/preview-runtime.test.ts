@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import type { ManagedTerminalRuntime } from "./terminal-runtime.js";
 import { describe, expect, it, vi } from "vitest";
 

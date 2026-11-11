@@ -5,7 +5,7 @@ import {
   errors,
   jwtVerify
 } from "jose";
-import { fetchBoundedJsonObject } from "@koed/shared";
+import { fetchBoundedJsonObject } from "@koed-labs/shared";
 import { z } from "zod";
 import { DelegatedAuthenticationError } from "./remote-mcp-oauth.js";
 

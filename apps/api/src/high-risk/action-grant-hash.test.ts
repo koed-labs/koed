@@ -2,7 +2,7 @@ import {
   highRiskActionGrantCanonicalHash,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
   sharedMemoryRevokeActionGrantBinding
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 
 import {

@@ -11,8 +11,8 @@ import {
   type CollaborationRepository,
   type CollaborationSubscriptionRecord,
   type CollaborationThreadRecord
-} from "@koed/db";
-import * as shared from "@koed/shared";
+} from "@koed-labs/db";
+import * as shared from "@koed-labs/shared";
 import {
   crossIdentitySyncDigest,
   repositorySharingRuleCreationReviewSchema,
@@ -43,7 +43,7 @@ import {
   type SharedMemorySession,
   type SharedMemorySessionReference,
   type SharedMemorySourcePage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 

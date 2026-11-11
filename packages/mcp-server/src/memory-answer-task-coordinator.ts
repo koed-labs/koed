@@ -13,7 +13,7 @@ import {
   type ClaimedMemoryAnswerTask,
   type MemoryAnswerTask,
   type MemoryAnswerTaskExecutionAuthority
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { MemoryApiClient } from "./index.js";
 import { pinPersonalRecallRequest } from "./personal-recall-request.js";
 import type { MemoryAnswerRetrievalClient } from "./answer-worker.js";

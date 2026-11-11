@@ -4,7 +4,7 @@ import {
   personalSourceCorrectionInputSchema,
   personalSourceCorrectionApplySchema,
   personalConversationOrganizationInputSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 
 const sourceParams = z.object({ sessionId: z.uuid() }).strict();

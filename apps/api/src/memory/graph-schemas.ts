@@ -8,12 +8,12 @@ import {
   personalFolderContextSchema,
   personalFolderReferenceSchema,
   personalMembershipReasonSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 import {
   personalConversationPresentationSchema,
   personalConversationSourceReferenceSchema
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { queryBooleanSchema, visibilitySchema } from "./common-schemas.js";
 import { searchDomainSchema } from "./retrieval-schemas.js";
 

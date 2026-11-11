@@ -15,7 +15,7 @@ import {
   type CollaborationRendererCommand,
   type CollaborationSafeError,
   type CollaborationSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 import { openOpaqueCursor, sealOpaqueCursor } from "./opaque-cursor.js";
 

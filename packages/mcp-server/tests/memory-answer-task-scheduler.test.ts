@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { snapshotPinnedPersonalSelection } from "@koed/shared";
+import { snapshotPinnedPersonalSelection } from "@koed-labs/shared";
 import {
   AnswerExecutionCapacity,
   BlockingAnswerAdmission

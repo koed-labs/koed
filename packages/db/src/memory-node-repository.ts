@@ -22,7 +22,7 @@ import {
   presentMemoryText
 } from "./presentation.js";
 import { truncateDisplayText } from "./value-helpers.js";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import type { EnvelopeEncryptionProvider } from "@koed-labs/shared";
 import type {
   ActorContext,
   CreateMemoryNodeInput,

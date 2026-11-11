@@ -1,4 +1,4 @@
-import { canonicalConversationItemKey } from "@koed/shared";
+import { canonicalConversationItemKey } from "@koed-labs/shared";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";

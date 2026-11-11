@@ -6,7 +6,7 @@ import {
   type CollaborationApprovalTier,
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type pg from "pg";
 import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";

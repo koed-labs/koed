@@ -2,8 +2,8 @@ import type {
   ActorContext,
   ConversationItemRecord,
   MemorySourceRepository
-} from "@koed/db";
-import type { MemorySearchResult, RetrievalMetadata } from "@koed/core";
+} from "@koed-labs/db";
+import type { MemorySearchResult, RetrievalMetadata } from "@koed-labs/core";
 import type { NormalizedImportClient } from "./ingestion.js";
 import type {
   ProductApiHandle,

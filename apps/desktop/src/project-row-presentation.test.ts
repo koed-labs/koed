@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import type { RepositoryIdentity } from "@koed/shared";
-import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import type { RepositoryIdentity } from "@koed-labs/shared";
+import type { PersonalDesktopProjectThread } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "./project-memory-ui.js";
 import { projectRowPresentation } from "./project-row-presentation.js";
 

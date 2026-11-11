@@ -7,12 +7,12 @@ import type {
   CollaborationRepository,
   CollaborationSubscriptionRecord,
   DbPool
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationRendererEventSchema,
   type CollaborationRendererEvent
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {

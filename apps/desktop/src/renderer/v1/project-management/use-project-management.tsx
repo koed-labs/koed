@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Button } from "@koed/ui";
+import { Button } from "@koed-labs/ui";
 import { Check, X } from "lucide-react";
 import type {
   PersonalConversationOrganizationInput,
   PersonalConversationOrganizationResult
-} from "@koed/shared";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { SidebarManagement } from "../ProjectSidebar.js";

@@ -16,7 +16,7 @@ import {
   sharingRulePublisherTakeoverAppliedScopeSchema,
   type ConversationSharingRuleCreationIntent,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   afterAll,
   afterEach,

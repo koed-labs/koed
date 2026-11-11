@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { sharingRulePublisherTakeoverReviewSchema } from "@koed/shared";
+import { sharingRulePublisherTakeoverReviewSchema } from "@koed-labs/shared";
 
 /** Protocol boundary fixture. Repository checks obtain reviews from real rules. */
 export const publisherTakeoverReviewFixture = (ids: {

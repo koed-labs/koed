@@ -7,7 +7,7 @@ import {
   generateConversationSourceReplicationOriginKeyPair,
   signConversationSourceClosureManifest,
   type ConversationSourceClosureManifest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";

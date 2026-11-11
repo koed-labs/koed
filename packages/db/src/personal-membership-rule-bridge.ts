@@ -6,7 +6,7 @@ import {
   personalMembershipSelectorKey,
   personalMembershipRuleScopeFromSelectorKey,
   type PersonalMembershipRevision
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   retainLocalPersonalMembershipSnapshot,
   type PersonalMembershipEntityRow

@@ -79,7 +79,7 @@ state.
 
 ```bash
 pnpm --filter @koed-labs/server build
-pnpm --filter @koed/desktop start
+pnpm --filter @koed-labs/desktop start
 ```
 
 Repo-script aliases:
@@ -167,7 +167,7 @@ The onboarding transcript, mandatory agent maker, and memory demonstration are
 replaced by this staged flow. Restarting setup preserves Personal Memory,
 Projects, Conversations, and saved customization.
 
-For isolated renderer checks, `pnpm --filter @koed/desktop test:browser:v1`
+For isolated renderer checks, `pnpm --filter @koed-labs/desktop test:browser:v1`
 builds the validation entry and runs Electron checks, including deterministic
 bridge scenarios for setup failure/retry, client connection outcomes, completion,
 and Settings restart. These fixtures are excluded from the production entry.
@@ -273,7 +273,7 @@ packaging, signing, runtime distribution, or packaged smoke support.
   repository. Until that repository is public, the renderer keeps a copy in
   `src/renderer/v1/pixelkin/vendor/`. Do not edit it by hand: change
   `pixelkin-lab`, then run
-  `pnpm --filter @koed/desktop pixelkin:sync <path to pixelkin-lab>`. A test
+  `pnpm --filter @koed-labs/desktop pixelkin:sync <path to pixelkin-lab>`. A test
   fails if the copy differs from the commit recorded in `vendor/SOURCE.json`.
 
 ### Privacy asset management before startup

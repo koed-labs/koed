@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { PINNED_PRIVACY_MODEL_REVISION } from "@koed/shared";
+import { PINNED_PRIVACY_MODEL_REVISION } from "@koed-labs/shared";
 import { resolveKoedServerPaths } from "./paths.js";
 import { writePrivacyInstallationRecord } from "./privacy-installation-record.js";
 import { describe, expect, it, vi } from "vitest";

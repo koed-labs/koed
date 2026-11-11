@@ -14,7 +14,7 @@ answer bridge, or any other persistent service.
 ## Build
 
 ```bash
-pnpm --filter @koed/mcp-server build
+pnpm --filter @koed-labs/mcp-server build
 ```
 
 ## Codex configuration
@@ -114,7 +114,7 @@ tool lists.
 Run protocol and runtime tests with:
 
 ```bash
-pnpm --filter @koed/mcp-server test
+pnpm --filter @koed-labs/mcp-server test
 ```
 
 ## Capture

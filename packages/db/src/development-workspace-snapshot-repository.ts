@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
-import type { EncryptedPayloadEnvelope } from "@koed/shared";
+import type { EncryptedPayloadEnvelope } from "@koed-labs/shared";
 import type pg from "pg";
 
 import type { ActorContext } from "./types.js";

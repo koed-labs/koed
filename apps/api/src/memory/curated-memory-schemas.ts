@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   CURATED_MEMORY_REVIEW_MAX_EVIDENCE,
   personalSelectionSnapshotSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { queryBooleanSchema } from "./common-schemas.js";
 import { searchDomainSchema } from "./retrieval-schemas.js";
 

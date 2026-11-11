@@ -1,7 +1,7 @@
 import {
   conversationToolKindAndLabel,
   type PersonalDesktopConversationEvent
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { parseSourcePatch, type SourcePatchDetails } from "./source-diff.js";
 
 export type DesktopConversationEvent = PersonalDesktopConversationEvent & {

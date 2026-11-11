@@ -3,14 +3,14 @@ import type {
   RealtimeTransportAdmissionRecord,
   RealtimeTransportPrincipalState,
   RealtimeTransportTicketRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   REALTIME_TRANSPORT_TICKET_TTL_SECONDS,
   REALTIME_TRANSPORT_TICKET_VERSION,
   type RealtimeTransportId,
   type RealtimeTransportOperationFamily,
   type RealtimeTransportTicketResponse
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { HashSecret } from "../auth/session.js";
 
 export interface RealtimeTransportAdapterDescriptor {

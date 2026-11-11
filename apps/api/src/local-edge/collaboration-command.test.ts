@@ -1,4 +1,4 @@
-import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
+import { unresolvedTeamRepositorySnapshot } from "@koed-labs/shared";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -8,13 +8,13 @@ import type {
   CollaborationRepository,
   CollaborationThreadRecord,
   CrossIdentitySyncRelationshipRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationSafeErrorMessages
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";

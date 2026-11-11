@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks";
 import {
   runCodexAppServerJsonTask,
   type CodexAppServerRunResult
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 import { z } from "zod";
 import type { SanitizedAtifTrajectory } from "./atif/index.js";
 import type { ReplayCondition } from "./core/index.js";

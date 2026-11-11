@@ -8,7 +8,7 @@ import {
   signPersonalConfigurationRecord,
   PERSONAL_CONFIGURATION_PROTOCOL,
   type PersonalMembershipEntitySnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

@@ -12,21 +12,25 @@ import { delimiter, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export const appRuntimePackages = [
-  { directory: "api", package: "@koed/api", entries: ["dist/index.js"] },
-  { directory: "worker", package: "@koed/worker", entries: ["dist/index.js"] },
+  { directory: "api", package: "@koed-labs/api", entries: ["dist/index.js"] },
+  {
+    directory: "worker",
+    package: "@koed-labs/worker",
+    entries: ["dist/index.js"]
+  },
   {
     directory: "embedding-service",
-    package: "@koed/embedding-service",
+    package: "@koed-labs/embedding-service",
     entries: ["dist/index.js"]
   },
   {
     directory: "privacy-service",
-    package: "@koed/privacy-service",
+    package: "@koed-labs/privacy-service",
     entries: ["dist/index.js"]
   },
   {
     directory: "mcp-server",
-    package: "@koed/mcp-server",
+    package: "@koed-labs/mcp-server",
     entries: [
       "dist/cli.js",
       "dist/capture-hook.js",
@@ -42,7 +46,7 @@ export const appRuntimePackages = [
 ];
 
 const codexGuidanceSource =
-  "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md";
+  "node_modules/@koed-labs/mcp-server/dist/prompts/codex-global-agent-guidance.md";
 const codexGuidanceTarget =
   "mcp-server/dist/prompts/codex-global-agent-guidance.md";
 
@@ -220,24 +224,24 @@ export const finalizeStagedAppRuntime = (runtimeRoot) => {
   }
 
   const requiredSharedFiles = [
-    "node_modules/@koed/api/dist/browser-approval/index.html",
-    "node_modules/@koed/db/dist/index.js",
-    "node_modules/@koed/db/dist/connection.js",
-    "node_modules/@koed/db/dist/user-api-token-repository.js",
-    "node_modules/@koed/db/drizzle/meta/_journal.json",
-    "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
+    "node_modules/@koed-labs/api/dist/browser-approval/index.html",
+    "node_modules/@koed-labs/db/dist/index.js",
+    "node_modules/@koed-labs/db/dist/connection.js",
+    "node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+    "node_modules/@koed-labs/db/drizzle/meta/_journal.json",
+    "node_modules/@koed-labs/mcp-server/dist/prompts/mcp-server-instructions.md",
     codexGuidanceSource,
-    "node_modules/@koed/mcp-server/integrations/pi/package.json",
-    "node_modules/@koed/mcp-server/integrations/pi/extensions/koed.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/extensions/structured-result.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/koed-home.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/runtime-client.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.d.mts",
-    "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.d.mts",
-    "node_modules/@koed/mcp-server/integrations/pi/managed-rpc-host.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/managed-permissions.mjs"
+    "node_modules/@koed-labs/mcp-server/integrations/pi/package.json",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/extensions/koed.mjs",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/extensions/structured-result.mjs",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/koed-home.mjs",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/runtime-client.mjs",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/memory-answer-delivery-policy.mjs",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/memory-answer-delivery-policy.d.mts",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/pi-memory-delivery.mjs",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/pi-memory-delivery.d.mts",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/managed-rpc-host.mjs",
+    "node_modules/@koed-labs/mcp-server/integrations/pi/managed-permissions.mjs"
   ];
   const missing = requiredSharedFiles.filter(
     (entry) => !existsSync(resolve(runtimeRoot, entry))
@@ -297,7 +301,7 @@ export const stageSharedAppRuntime = ({ repoRoot, runtimeRoot }) => {
       "--config.node-linker=hoisted",
       "--config.inject-workspace-packages=true",
       "--filter",
-      "@koed/app-runtime-stage",
+      "@koed-labs/app-runtime-stage",
       "deploy",
       "--frozen-lockfile",
       "--prod",

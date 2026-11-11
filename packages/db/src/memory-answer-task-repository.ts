@@ -14,7 +14,7 @@ import type {
   MemoryAnswerTask as MemoryAnswerTaskRecord,
   MemoryAnswerTaskOrigin,
   MemoryAnswerTaskStatus
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   createMemoryQuestionRepository,

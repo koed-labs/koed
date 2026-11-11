@@ -13,7 +13,7 @@ Run the integration tests against **two distinct disposable databases**, with No
 ```sh
 P1_SOURCE_ORIGIN_DATABASE_URL=postgresql:///peer_origin \
 P1_SOURCE_RECEIVER_DATABASE_URL=postgresql:///peer_receiver \
-pnpm --filter @koed/db exec vitest run tests/personal-peer-lifecycle.test.ts tests/personal-peer-online-sync.test.ts --no-file-parallelism
+pnpm --filter @koed-labs/db exec vitest run tests/personal-peer-lifecycle.test.ts tests/personal-peer-online-sync.test.ts --no-file-parallelism
 ```
 
 The databases must have different database names, even if they are on different servers. The database suite skips if either URL is absent; a skipped run is not validation. Migrations are applied to both databases, and test rows are retained; do not point it at production or valued data.

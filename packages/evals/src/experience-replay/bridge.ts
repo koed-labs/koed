@@ -14,7 +14,7 @@ import {
   LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS,
   LOCAL_AI_RUNTIME_MAX_BODY_BYTES,
   LocalAiRuntimeClient
-} from "@koed/mcp-server/runtime-contracts";
+} from "@koed-labs/mcp-server/runtime-contracts";
 import {
   BridgeTelemetryCollector,
   registerBridgeTelemetry,

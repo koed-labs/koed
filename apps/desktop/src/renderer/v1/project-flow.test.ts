@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import type { V1ConversationIntent } from "../../ipc/v1-state-protocol.js";
 import {

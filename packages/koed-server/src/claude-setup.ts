@@ -14,7 +14,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
+import {
+  nodeCliInvocation,
+  nodeCliProcessEnvironment
+} from "@koed-labs/shared";
 import {
   resolveKoedAppRuntime,
   resolveKoedAppRuntimeExecution

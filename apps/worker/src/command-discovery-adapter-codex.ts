@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listCodexAppServerSkills } from "@koed/mcp-server";
+import { listCodexAppServerSkills } from "@koed-labs/mcp-server";
 import {
   createCommandDiscoveryAdapter,
   environmentForCommandDiscoveryInstance,

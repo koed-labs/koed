@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { codexIdePromptUserText } from "@koed/core";
+import { codexIdePromptUserText } from "@koed-labs/core";
 import {
   CodexAppServerTurnError,
   type CodexAppServerRawEvent,

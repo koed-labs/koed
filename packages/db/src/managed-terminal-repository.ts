@@ -4,8 +4,8 @@ import type {
   CreateManagedTerminalInput,
   ManagedTerminalLifecycleState,
   ManagedTerminalRecord
-} from "@koed/shared";
-import { createManagedTerminalInputSchema } from "@koed/shared";
+} from "@koed-labs/shared";
+import { createManagedTerminalInputSchema } from "@koed-labs/shared";
 import pg from "pg";
 
 import type { ActorContext } from "./types.js";

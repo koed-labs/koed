@@ -1,4 +1,4 @@
-import { Button } from "@koed/ui";
+import { Button } from "@koed-labs/ui";
 import { useEffect, useId, useState } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { RendererPlatform } from "../../services/platform.js";

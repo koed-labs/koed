@@ -36,7 +36,7 @@ import {
   type SelectionSharingAttempt,
   type EnvelopeEncryptionProvider,
   type EncryptedPayloadEnvelope
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const progressTable = "collaboration_sharing_selection_progress";
 const pagesTable = "collaboration_sharing_selection_pages";

@@ -1,5 +1,5 @@
 import type { LocalAiClientFlowKey } from "../../../ipc/local-ai-client-protocol.js";
-import { Button } from "@koed/ui";
+import { Button } from "@koed-labs/ui";
 import type {
   Draft,
   Flow,

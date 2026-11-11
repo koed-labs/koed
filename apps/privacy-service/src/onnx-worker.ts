@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   PINNED_PRIVACY_MODEL_FILES,
   PRIVACY_WINDOW_MAX_TOKENS
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { ClassificationError } from "./errors.js";
 import {
   validateBatchInput,

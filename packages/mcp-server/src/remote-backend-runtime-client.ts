@@ -5,7 +5,7 @@ import {
   isTeamMemoryAnswerTaskCapability,
   requirePortableTeamRepositoryContext,
   type MemoryAnswerTask
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { MemoryAnswerDelivery } from "../integrations/pi/memory-answer-delivery.mjs";
 import type { MemoryApiClient } from "./index.js";
 import { LocalAiRuntimeError } from "./local-runtime-client.js";

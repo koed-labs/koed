@@ -62,7 +62,7 @@ a check that cannot run.
 ## App-only packaged smoke
 
 Normal Desktop builds emit only the application into `apps/desktop/dist`.
-`pnpm --filter @koed/desktop build:validation` builds synthetic browser fixtures
+`pnpm --filter @koed-labs/desktop build:validation` builds synthetic browser fixtures
 separately into `dist-validation`, which is excluded from release packages.
 `test:browser` builds both outputs and runs its Electron journeys against the
 validation output. The Folder, Project transfer, and Conversation card journeys
@@ -98,7 +98,7 @@ secret provider. PDS initialization completes before the managed runtime resumes
 This ordering keeps a Keychain wait from hiding the startup window.
 
 Assembly audits allow the remote MCP client's exact dynamic import of the selected
-MCP runtime contracts only when the concrete `@koed/mcp-server` contracts entrypoint
+MCP runtime contracts only when the concrete `@koed-labs/mcp-server` contracts entrypoint
 is in the component dependency closure. Unowned dynamic imports fail closed.
 
 Relevant pull requests restore a macOS arm64 native payload using a key that

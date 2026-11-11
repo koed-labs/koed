@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import {
   COLLABORATION_CONTRACT_VERSION,
   type WebTransportDurableAttach
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   readBoundedDurableRealtimeStream,
   type DurableRealtimeStreamFrame
-} from "@koed/shared/durable-realtime";
+} from "@koed-labs/shared/durable-realtime";
 import { describe, expect, it, vi } from "vitest";
 import type {
   CollaborationRealtimeEventSink,

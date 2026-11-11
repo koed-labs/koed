@@ -6,8 +6,8 @@ import { registerLocalEdgeRoutes } from "./routes.js";
 vi.mock("./collaboration-command.js", () => ({
   registerCollaborationCommandRoute: vi.fn()
 }));
-vi.mock("@koed/shared", async (original) => ({
-  ...(await original<typeof import("@koed/shared")>()),
+vi.mock("@koed-labs/shared", async (original) => ({
+  ...(await original<typeof import("@koed-labs/shared")>()),
   verifyLocalEdgeClientCredentialAuthorization: (
     _home: string,
     authorization: string

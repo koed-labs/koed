@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import {
   lcmLexicalAnchorGroundingPayloads,
   validateLcmLexicalAnchors
-} from "@koed/core";
+} from "@koed-labs/core";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   lcmSummaryClaimParamsSchema,

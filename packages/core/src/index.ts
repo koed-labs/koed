@@ -1,6 +1,6 @@
 import { getEncoding, type Tiktoken } from "js-tiktoken";
 import { z } from "zod";
-import type { PersonalSelectionSnapshot } from "@koed/shared";
+import type { PersonalSelectionSnapshot } from "@koed-labs/shared";
 
 export {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,

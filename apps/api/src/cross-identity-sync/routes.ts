@@ -3,8 +3,8 @@ import {
   syncProfileTransitionRequestSchema,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest
-} from "@koed/shared";
-import type { DeviceCredentialAuthContext } from "@koed/db";
+} from "@koed-labs/shared";
+import type { DeviceCredentialAuthContext } from "@koed-labs/db";
 import { crossIdentitySyncTargetProfiles } from "./deployment-role.js";
 import type { ApiRouteContext } from "../server/context.js";
 import {

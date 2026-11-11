@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { sharingRulePublisherSchema } from "@koed/shared";
+import { sharingRulePublisherSchema } from "@koed-labs/shared";
 
 /** Call only from owner-authorized queries. Never add publisher identity to a
  * Team representation, recall result, or reader-facing grant DTO. */

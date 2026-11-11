@@ -23,7 +23,7 @@ export async function runPrivacyInferenceProbe(
     throw new Error("Invalid Privacy inference verification arguments.");
   const moduleUrl = (file: string) =>
     pathToFileURL(
-      resolve(root, "node_modules/@koed/privacy-service/dist", file)
+      resolve(root, "node_modules/@koed-labs/privacy-service/dist", file)
     ).href;
   const [{ resolveConfig }, { createPrivacyRuntime }, { parityOutput }] =
     await Promise.all([

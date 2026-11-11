@@ -5,7 +5,7 @@ import {
   personalConversationOrganizationResultSchema,
   type PersonalConversationOrganizationInput,
   type PersonalConversationOrganizationSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   createPersonalMembershipRepository,

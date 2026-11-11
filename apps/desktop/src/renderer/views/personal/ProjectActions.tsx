@@ -6,7 +6,7 @@ import {
   DialogHeader,
   DialogPopup,
   DialogTitle
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";

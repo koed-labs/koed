@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { resolve } from "node:path";
 
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   generateRecipientKeyMaterial,
   readLocalEdgeUpstreamRegistry,
@@ -11,7 +11,7 @@ import {
   upstreamAdvertisesCapability,
   upstreamBackendById,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { Logger } from "pino";
 
 import {

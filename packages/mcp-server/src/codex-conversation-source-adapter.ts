@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { codexCanonicalConversationItemKey } from "@koed/shared";
+import { codexCanonicalConversationItemKey } from "@koed-labs/shared";
 
-export { codexCanonicalConversationItemKey } from "@koed/shared";
+export { codexCanonicalConversationItemKey } from "@koed-labs/shared";
 
 import type { CodexAppServerRawEvent } from "./codex-app-server-runner.js";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";

@@ -72,7 +72,7 @@ const packagedRuntime = (root: string): KoedAppRuntime => ({
   mcpCli: resolve(root, "mcp-server/dist/cli.js"),
   localAiRuntime: resolve(root, "mcp-server/dist/local-runtime-cli.js"),
   captureHook: resolve(root, "mcp-server/dist/capture-hook.js"),
-  dbPackageRoot: resolve(root, "node_modules/@koed/db"),
+  dbPackageRoot: resolve(root, "node_modules/@koed-labs/db"),
   missing: []
 });
 
@@ -185,10 +185,10 @@ describe("local Embedding Service runtime", () => {
       "mcp-server/dist/local-runtime-cli.js",
       "mcp-server/dist/capture-hook.js",
       "mcp-server/dist/prompts/codex-global-agent-guidance.md",
-      "node_modules/@koed/db/dist/index.js",
-      "node_modules/@koed/db/dist/connection.js",
-      "node_modules/@koed/db/dist/user-api-token-repository.js",
-      "node_modules/@koed/db/drizzle/meta/_journal.json"
+      "node_modules/@koed-labs/db/dist/index.js",
+      "node_modules/@koed-labs/db/dist/connection.js",
+      "node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+      "node_modules/@koed-labs/db/drizzle/meta/_journal.json"
     ]) {
       const file = resolve(appRuntimeRoot, entry);
       mkdirSync(resolve(file, ".."), { recursive: true });

@@ -18,7 +18,7 @@ import {
   validatePdsGroupStatement,
   validatePdsKeyBundle,
   validatePdsTombstone
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const token = () => randomBytes(32).toString("base64url");
 const id = () => randomBytes(16).toString("base64url");

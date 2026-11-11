@@ -1,5 +1,8 @@
 import { expect, it } from "vitest";
-import { planRepositorySearch, type RepositoryIdentity } from "@koed/shared";
+import {
+  planRepositorySearch,
+  type RepositoryIdentity
+} from "@koed-labs/shared";
 import {
   canonicalGlobalCandidateKey,
   classifyRepositoryEvidence,

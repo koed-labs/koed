@@ -11,7 +11,7 @@ import {
   type RepositoryIdentity,
   type PersonalFolderObservation,
   type ConversationSourceRewriteFrontier
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   verifyCodexTranscriptRewrite,
   verifyCodexTranscriptContinuation,

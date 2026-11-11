@@ -2,7 +2,7 @@ import {
   AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
   AUTOMATIC_HISTORICAL_WINDOW_DAYS,
   type HistoricalAdmissionDecision
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type { HistoricalCandidateSelection } from "./historical-ingestion-coordinator.js";
 import { MemoryApiClient, MemoryApiError } from "./index.js";

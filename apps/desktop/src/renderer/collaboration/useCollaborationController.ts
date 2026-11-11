@@ -2,7 +2,7 @@ import type {
   CollaborationThread,
   CollaborationSelection,
   CollaborationSnapshot
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import type { MarkdownPlatformAdapters } from "../markdown/SecureMarkdown.js";
 import {
   useCallback,

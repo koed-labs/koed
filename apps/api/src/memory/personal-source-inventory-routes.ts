@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import {
   partitionPersonalInventory,
   personalSourceInventoryCursorSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import { graphThreadIndexResponseSchema } from "./graph-schemas.js";
 

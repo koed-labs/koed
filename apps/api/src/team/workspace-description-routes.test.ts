@@ -1,4 +1,7 @@
-import type { MemorySourceRepository, TeamWorkspaceRecord } from "@koed/db";
+import type {
+  MemorySourceRepository,
+  TeamWorkspaceRecord
+} from "@koed-labs/db";
 import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";

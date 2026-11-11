@@ -3,7 +3,7 @@ import {
   fetchBoundedJsonObject,
   isLoopbackHostname,
   type AssociatedRepositorySelection
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { KoedServerPaths } from "./paths.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";

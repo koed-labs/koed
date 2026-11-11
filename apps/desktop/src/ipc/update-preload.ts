@@ -4,7 +4,7 @@ import {
   desktopUpdateRequestSchema,
   desktopUpdateStateSchema,
   type DesktopUpdateApi
-} from "@koed/shared/desktop-update-contract";
+} from "@koed-labs/shared/desktop-update-contract";
 
 type Invoke = (channel: string, value: unknown) => Promise<unknown>;
 type Events = {

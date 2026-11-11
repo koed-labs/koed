@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type pg from "pg";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
 

@@ -1,4 +1,4 @@
-import { fetchBoundedJsonObject } from "@koed/shared";
+import { fetchBoundedJsonObject } from "@koed-labs/shared";
 import {
   LOCAL_AI_RUNTIME_PROTOCOL_VERSION,
   readLocalRuntimeRegistration

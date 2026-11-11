@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
-import { createMemoryEngine } from "@koed/core";
+import { createMemoryEngine } from "@koed-labs/core";
 import {
   personalMemoryNodeSelectionSql,
   personalCuratedMemorySelectionSql
@@ -15,7 +15,7 @@ import {
   snapshotPinnedPersonalSelection,
   personalGitContextSchema,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createDbPool,

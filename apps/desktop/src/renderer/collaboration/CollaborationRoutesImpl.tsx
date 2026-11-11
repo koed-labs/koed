@@ -19,8 +19,8 @@ import {
   type SharedMemorySession,
   type SharedMemorySourceItem,
   type SharedMemorySourcePage
-} from "@koed/shared/collaboration";
-import type { PersonalDesktopNote } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/collaboration";
+import type { PersonalDesktopNote } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import {
   LcmSummaryFrame,
@@ -122,7 +122,7 @@ export type CollaborationModalState =
   | {
       kind: "review_git_anchor_sharing";
       selectionTitle?: string;
-      target: import("@koed/shared/collaboration").GitAnchorSharingReviewInput["target"];
+      target: import("@koed-labs/shared/collaboration").GitAnchorSharingReviewInput["target"];
     }
   | { kind: "create_or_join" }
   | { kind: "create_team" }

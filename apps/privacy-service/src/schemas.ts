@@ -1,7 +1,7 @@
 import {
   privacyClassificationRequestSchema,
   type PrivacyClassificationRequest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PrivacyServiceConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 

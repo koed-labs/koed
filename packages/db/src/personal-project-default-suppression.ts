@@ -1,7 +1,7 @@
-import { personalProjectDefaultIdentity } from "@koed/shared/personal-project-default";
+import { personalProjectDefaultIdentity } from "@koed-labs/shared/personal-project-default";
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
-import { personalProjectRuleTargetSchema } from "@koed/shared";
+import { personalProjectRuleTargetSchema } from "@koed-labs/shared";
 
 /** Caller holds the existing owner membership transaction. Retaining a choice
  * cannot delete Memory or prevent a later explicit inclusion. */

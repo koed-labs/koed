@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AiClientCapabilityDescriptor,
   AiClientModelCapability
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { MemoryApiClient } from "../src/index.js";
 import {
   aiClientDriverRegistry,

@@ -14,7 +14,7 @@ import {
   type OwnedShareItem,
   type SharedMemoryGrant,
   type SharedMemoryPreview
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import type {
   PersonalDesktopApi,
   PersonalDesktopConversationEvent,
@@ -22,7 +22,7 @@ import type {
   PersonalDesktopProject,
   PersonalDesktopProjectMetadata,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { VirtualizedTimeline } from "./renderer/conversation/VirtualizedTimeline.js";
 import { Profiler, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
@@ -308,7 +308,7 @@ const parityEvents: PersonalDesktopConversationEvent[] = [
           kind: "tool_call",
           sequence: 3,
           toolName: "exec",
-          content: "pnpm --filter @koed/desktop test"
+          content: "pnpm --filter @koed-labs/desktop test"
         },
         {
           kind: "tool_result",
@@ -331,14 +331,14 @@ const parityEvents: PersonalDesktopConversationEvent[] = [
   }),
   personalEvent(493, {
     actor: "tool",
-    content: "pnpm --filter @koed/desktop test",
+    content: "pnpm --filter @koed-labs/desktop test",
     contentPreview: "Desktop tests passed",
     eventType: "tool_call",
     metadata: { toolName: "exec_command" },
     toolDisplay: {
       kind: "command",
       label: "Ran command",
-      preview: "pnpm --filter @koed/desktop test",
+      preview: "pnpm --filter @koed-labs/desktop test",
       toolName: "exec_command",
       status: "completed",
       callId: "call-command-browser-validation"

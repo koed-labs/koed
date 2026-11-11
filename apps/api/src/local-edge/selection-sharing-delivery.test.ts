@@ -6,8 +6,8 @@ import {
   crossIdentitySyncDeterministicUuid,
   sharedMemoryCandidatePreviewSchema,
   repositorySharingRuleCreationLocalIntentSchema
-} from "@koed/shared";
-import type { SelectionSharingSourceLease } from "@koed/db";
+} from "@koed-labs/shared";
+import type { SelectionSharingSourceLease } from "@koed-labs/db";
 import {
   deliverSelectionSharingSources,
   type SelectionSharingDeliveryTransport

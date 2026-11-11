@@ -18,7 +18,7 @@ import {
 import type {
   PersonalDesktopAskThread,
   PersonalDesktopConversationRecent
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { useState, type ReactNode } from "react";
 import { relativeTime } from "../../project-memory-ui.js";
 

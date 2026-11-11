@@ -637,7 +637,12 @@ const main = async () => {
     )
   );
 
-  runCommand("corepack", ["pnpm", "--filter", "@koed/mcp-server", "build"]);
+  runCommand("corepack", [
+    "pnpm",
+    "--filter",
+    "@koed-labs/mcp-server",
+    "build"
+  ]);
   const runtimeHome = fs.mkdtempSync(
     path.join(os.tmpdir(), "koed-lcm-runtime-")
   );

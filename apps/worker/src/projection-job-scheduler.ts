@@ -1,10 +1,10 @@
-import type { Visibility } from "@koed/core";
-import type { MemorySourceRepository } from "@koed/db";
+import type { Visibility } from "@koed-labs/core";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   workClassPriority,
   type KoedJobQueue,
   type KoedWorkClass
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { EmbeddingQueueJobData } from "./job-workflows.js";
 
 export interface ProjectionCompactionJobData {

@@ -6,8 +6,8 @@ import type {
   PdsSessionPackage,
   PdsProjectSelectionRevision,
   PdsProjectSelectionRecord
-} from "@koed/shared";
-import type { PdsClosureSource } from "@koed/db";
+} from "@koed-labs/shared";
+import type { PdsClosureSource } from "@koed-labs/db";
 
 export interface PdsSecureSourceKeyContext {
   sourceContextVersion?: "1";

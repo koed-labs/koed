@@ -3,7 +3,7 @@ import type {
   HistoricalImportRunRecord,
   HistoricalImportSourceRecord,
   MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {

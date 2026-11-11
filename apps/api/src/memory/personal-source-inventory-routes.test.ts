@@ -4,13 +4,13 @@ import {
   repositoryScopeId,
   personalSourceInventoryCursorSchema,
   type RepositoryIdentity
-} from "@koed/shared";
-import type { LcmGraphProjectThreads } from "@koed/db";
+} from "@koed-labs/shared";
+import type { LcmGraphProjectThreads } from "@koed-labs/db";
 import type { ApiRouteContext } from "../server/context.js";
 import { registerPersonalSourceInventoryRoutes } from "./personal-source-inventory-routes.js";
 import { loadPersonalInventory } from "../../../desktop/src/koed-server/personal-inventory.js";
 import { PersonalMemoryStore } from "../../../desktop/src/renderer/state/personal-memory.js";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 
 const owner = "00000000-0000-4000-8000-000000000001";
 const other = "00000000-0000-4000-8000-000000000002";

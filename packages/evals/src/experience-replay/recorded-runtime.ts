@@ -1,4 +1,4 @@
-import { countTokensForModel } from "@koed/core";
+import { countTokensForModel } from "@koed-labs/core";
 import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";

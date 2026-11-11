@@ -6,13 +6,13 @@ import {
   personalMembershipEntitySnapshotSchema,
   type PersonalMembershipEntitySnapshot,
   type PersonalMembershipRevision
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   withPersonalConfigurationPublication,
   type PersonalConfigurationPublicationScope
 } from "./personal-configuration-authority.js";
 import { bridgePersonalDirectMembership } from "./personal-membership-direct-bridge.js";
-import { PdsConfigurationCompatibilityError } from "@koed/shared";
+import { PdsConfigurationCompatibilityError } from "@koed-labs/shared";
 import { bridgePersonalMembershipCatalog } from "./personal-membership-catalog-bridge.js";
 
 /** Catalog preparation is independent from capture and source-context publication.

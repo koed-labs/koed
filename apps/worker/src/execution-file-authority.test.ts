@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import type { ManagedConversationExecutionCheckpointRecord } from "@koed/db";
+import type { ManagedConversationExecutionCheckpointRecord } from "@koed-labs/db";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { captureExecutionCheckpoint } from "./execution-checkpoint.js";
@@ -12,7 +12,7 @@ import {
   executeCheckpointFileOperation,
   resolveCheckpointFileMention
 } from "./execution-file-authority.js";
-import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
+import { createGitExecutionCheckoutDriver } from "@koed-labs/shared/execution-checkout";
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, {

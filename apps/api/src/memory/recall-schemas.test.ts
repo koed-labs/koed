@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_LENGTH
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { searchMemorySchema } from "./recall-schemas.js";
 
 describe("searchMemorySchema", () => {

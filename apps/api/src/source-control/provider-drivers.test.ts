@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   SourceControlConnection,
   SourceControlProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import {
   sourceControlProviderDriver,

@@ -1,4 +1,4 @@
-import { createMemoryEngine } from "@koed/core";
+import { createMemoryEngine } from "@koed-labs/core";
 import {
   resolveNativeSharingSource,
   resolvePublisherTakeoverSource,
@@ -35,7 +35,7 @@ import {
   type PdsSessionPackage,
   type PdsSessionCheckpointManifest,
   type SelectionSharingGoal
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

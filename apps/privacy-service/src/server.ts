@@ -16,7 +16,7 @@ import {
   SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS,
   privacyClassificationResponseSchema,
   type PrivacyClassificationResponse
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createServer,
   type IncomingMessage,

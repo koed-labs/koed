@@ -3,7 +3,7 @@ import {
   repositoryIdentitySchema,
   personalSelectionSnapshotSchema,
   memoryRetrievalExactHintsSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { queryBooleanSchema } from "./common-schemas.js";
 import {
   retrievalScopeSchema,

@@ -1,7 +1,7 @@
-import { planRepositorySearch } from "@koed/shared";
-import { answerMemory, searchMemory } from "@koed/core";
+import { planRepositorySearch } from "@koed-labs/shared";
+import { answerMemory, searchMemory } from "@koed-labs/core";
 import { actorForAuthenticatedRequest } from "../auth/session.js";
-import type { SharedMemorySemanticCandidate } from "@koed/db";
+import type { SharedMemorySemanticCandidate } from "@koed-labs/db";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import { searchMemorySchema } from "./recall-schemas.js";

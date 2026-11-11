@@ -13,8 +13,8 @@ import {
 import {
   AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
   AUTOMATIC_HISTORICAL_WINDOW_DAYS
-} from "@koed/shared/historical-ingestion-progress";
-import { Button, Spinner } from "@koed/ui";
+} from "@koed-labs/shared/historical-ingestion-progress";
+import { Button, Spinner } from "@koed-labs/ui";
 import { Power } from "lucide-react";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { AiClientLogo } from "../../views/personal/AiClientLogo.js";

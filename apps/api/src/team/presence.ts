@@ -1,11 +1,11 @@
 import type {
   TeamManagementMemberRecord,
   TeamRosterMemberRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   coarsePresenceFromTeamPresence,
   deriveTeamPresenceSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 type PresenceSource = Pick<
   TeamRosterMemberRecord,

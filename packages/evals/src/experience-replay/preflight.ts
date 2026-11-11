@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mcpRecallPolicyVersion } from "@koed/mcp-server";
+import { mcpRecallPolicyVersion } from "@koed-labs/mcp-server";
 import {
   createBenchmarkRunPlan,
   createOracleCampaignProtocol,

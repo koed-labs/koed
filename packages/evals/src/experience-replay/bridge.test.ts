@@ -7,7 +7,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LocalAiRuntimeClient } from "@koed/mcp-server/runtime-contracts";
+import { LocalAiRuntimeClient } from "@koed-labs/mcp-server/runtime-contracts";
 import {
   isBenchmarkDockerPeer,
   resolveDockerBridgeHost,

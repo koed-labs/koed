@@ -3,7 +3,7 @@ import type http from "node:http";
 import {
   memoryAnswerTaskIsTerminal,
   type MemoryAnswerTask
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
 import {

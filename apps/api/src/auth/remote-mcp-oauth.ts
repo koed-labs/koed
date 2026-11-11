@@ -1,5 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { RemoteMcpOAuthStore, RemoteMcpOAuthCredential } from "@koed/db";
+import type {
+  RemoteMcpOAuthStore,
+  RemoteMcpOAuthCredential
+} from "@koed-labs/db";
 import type { OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import {
   InvalidClientMetadataError,

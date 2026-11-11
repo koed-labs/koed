@@ -3,7 +3,7 @@ import type {
   SharedMemoryFidelityCeiling,
   SharingRuleDetailReview,
   SharingRuleDelivery
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import {
   Modal,

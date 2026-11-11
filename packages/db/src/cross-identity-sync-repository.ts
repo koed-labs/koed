@@ -11,7 +11,7 @@ import {
 import {
   createTeamRepositorySnapshot,
   teamRepositorySnapshotSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import pg from "pg";
 import {
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
@@ -34,7 +34,7 @@ import {
   type EncryptedJsonPackage,
   type EnvelopeEncryptionProvider,
   type RecipientKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { upsertEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import { safeConversationMetadataForEncryptedStorage } from "./conversation-item-repository.js";
 import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";

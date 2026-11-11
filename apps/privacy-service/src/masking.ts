@@ -177,4 +177,4 @@ export const maskClassification = (
   output.push(source.subarray(cursor));
   return { maskedText: Buffer.concat(output).toString("utf8"), spans };
 };
-import type { PrivacyDetectedSpan } from "@koed/shared";
+import type { PrivacyDetectedSpan } from "@koed-labs/shared";

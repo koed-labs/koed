@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { approvalActivityMetadata } from "@koed/shared";
+import { approvalActivityMetadata } from "@koed-labs/shared";
 
 export const codexTranscriptAdapterVersion = "codex-transcript-v1";
 

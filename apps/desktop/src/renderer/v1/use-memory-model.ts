@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   localAiClientDefaultSpec,
   memoryModelFlowKeys
-} from "@koed/shared/ai-client-flow-defaults";
+} from "@koed-labs/shared/ai-client-flow-defaults";
 import type { DesktopApi } from "../../types.js";
 import type {
   LocalAiClientReadModel,

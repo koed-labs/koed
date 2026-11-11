@@ -6,7 +6,7 @@ import {
   createMemorySourceRepository,
   updateSessionRepositoryOverride
 } from "../src/index.js";
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import { repositoryScopeId, type RepositoryIdentity } from "@koed-labs/shared";
 const url = process.env.DATABASE_URL;
 describe.skipIf(!url)("fixed repository assignment reviews", () => {
   const pool = createDbPool({ connectionString: url });

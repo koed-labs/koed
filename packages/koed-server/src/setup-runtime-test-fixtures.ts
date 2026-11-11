@@ -17,10 +17,10 @@ const baseRuntimeFiles = [
   "mcp-server/dist/capture-hook.js",
   "mcp-server/dist/codex-memory-hook.js",
   "mcp-server/dist/prompts/codex-global-agent-guidance.md",
-  "node_modules/@koed/db/dist/index.js",
-  "node_modules/@koed/db/dist/connection.js",
-  "node_modules/@koed/db/dist/user-api-token-repository.js",
-  "node_modules/@koed/db/drizzle/meta/_journal.json"
+  "node_modules/@koed-labs/db/dist/index.js",
+  "node_modules/@koed-labs/db/dist/connection.js",
+  "node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+  "node_modules/@koed-labs/db/drizzle/meta/_journal.json"
 ] as const;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const piPackageSource = resolve(
@@ -32,7 +32,7 @@ const collectPiFiles = (directory: string, relative = ""): string[] =>
     const child = relative ? `${relative}/${entry.name}` : entry.name;
     return entry.isDirectory()
       ? collectPiFiles(resolve(directory, entry.name), child)
-      : [`node_modules/@koed/mcp-server/integrations/pi/${child}`];
+      : [`node_modules/@koed-labs/mcp-server/integrations/pi/${child}`];
   });
 const runtimeFiles = [...baseRuntimeFiles, ...collectPiFiles(piPackageSource)];
 
@@ -50,7 +50,10 @@ export async function stagePinnedSetupRuntime(
       readFileSync(
         resolve(
           piPackageSource,
-          path.replace("node_modules/@koed/mcp-server/integrations/pi/", "")
+          path.replace(
+            "node_modules/@koed-labs/mcp-server/integrations/pi/",
+            ""
+          )
         )
       )
     ])

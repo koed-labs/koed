@@ -1,4 +1,4 @@
-import { resolvePiToolProvenance } from "@koed/shared";
+import { resolvePiToolProvenance } from "@koed-labs/shared";
 import { sharingRulePublisherSql } from "./sharing-rule-publisher.js";
 import { readSharingRulePublisher } from "./sharing-rule-publisher.js";
 import { readPublisherTakeoverReview } from "./sharing-rule-publisher-takeover.js";
@@ -58,7 +58,7 @@ import {
   type WorkspaceConversationExclusion,
   type WorkspaceConversationExclusionReviewInput,
   type WorkspaceConversationExclusionReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   representationPublicationAuthoritySql,
   cumulativeRepresentationAuthorizationSql,
@@ -70,14 +70,17 @@ import {
   sharingRuleMemberSourceSql,
   workspaceSourceIsNotExcludedSql
 } from "./shared-memory-publication-authority-sql.js";
-import { planRepositorySearch, type PrivacyLabelPolicy } from "@koed/shared";
-import { sharingRuleDetailAppliedScopeSchema } from "@koed/shared";
+import {
+  planRepositorySearch,
+  type PrivacyLabelPolicy
+} from "@koed-labs/shared";
+import { sharingRuleDetailAppliedScopeSchema } from "@koed-labs/shared";
 import type {
   SharingRuleDetailReviewInput,
   SharingRuleDetailReview,
   SharingRuleDetailIntent,
   SharingRuleDetailResult
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { readSharingRuleDetailReview } from "./sharing-rule-detail-review.js";
 import { readSharingRuleContentPolicyReview } from "./sharing-rule-content-policy-review.js";
 import type {
@@ -87,12 +90,12 @@ import type {
   SharingRuleContentPolicyResult,
   SharingRuleContentPolicyAppliedScope,
   SharingRuleDetailAppliedScope
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   sharingRuleContentPolicyAppliedScopeSchema,
   sharingRuleApprovedAmendmentFields,
   resolveSharingRuleContentPolicy
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { applySharingRuleContentPolicyAmendment } from "./sharing-rule-content-policy-amendment.js";
 import { applySharingRuleDetailAmendment } from "./sharing-rule-detail-amendment.js";
 import { resolveOwnedSharingRuleContentPolicy } from "./sharing-rule-content-policy.js";
@@ -108,13 +111,13 @@ import {
   unresolvedTeamRepositorySnapshot,
   type TeamRepositorySnapshot,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import pg from "pg";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   structuredLcmSummarySchema
-} from "@koed/core";
+} from "@koed-labs/core";
 import {
   repositorySharingRuleCreationReviewInputSchema,
   repositorySharingRuleControlIntentSchema,
@@ -205,7 +208,7 @@ import {
   type SharedMemorySemanticClassificationField,
   type SharedMemorySourceItemInput,
   type SharedMemorySourceItemType
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   decryptAuthorizedEncryptedFieldPayloadWithClient,
   decryptAuthorizedEncryptedFieldPayloadsWithClient,

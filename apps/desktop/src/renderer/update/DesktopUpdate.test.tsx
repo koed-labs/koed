@@ -11,7 +11,7 @@ import {
 import type {
   DesktopUpdateApi,
   DesktopUpdateState
-} from "@koed/shared/desktop-update-contract";
+} from "@koed-labs/shared/desktop-update-contract";
 
 const currentState: DesktopUpdateState = {
   installedVersion: "0.10.0",

@@ -7,7 +7,7 @@ import type {
   ManagedTerminalRecord,
   ManagedTerminalServerFrame,
   ManagedTerminalShellProfile
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";

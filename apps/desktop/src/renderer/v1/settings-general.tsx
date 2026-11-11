@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Button, Switch } from "@koed/ui";
+import { Button, Switch } from "@koed-labs/ui";
 import { Laptop, Sun, Moon, Check } from "lucide-react";
 import type { DesktopApi, DesktopLaunchAtStartupState } from "../../types.js";
 import type { ThemeStore } from "../state/theme.js";

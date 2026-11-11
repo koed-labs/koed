@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import {
   normalizeGitRemoteUrl,
   type AssociatedRepositorySelection
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   discoverProjectMetadata,
   setProjectAssociationLookup,

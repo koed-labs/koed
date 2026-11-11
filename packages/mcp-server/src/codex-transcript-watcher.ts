@@ -1,5 +1,5 @@
 import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
-import { repositoryIdentitySchema } from "@koed/shared";
+import { repositoryIdentitySchema } from "@koed-labs/shared";
 import {
   recordedCaptureFolderObservation,
   currentCaptureFolderObservation
@@ -48,7 +48,7 @@ import {
   readCodexTranscriptTurnBoundary,
   watcherWakePath
 } from "./codex-transcript-watcher-signal.js";
-import type { ProjectMetadataV1 } from "@koed/shared";
+import type { ProjectMetadataV1 } from "@koed-labs/shared";
 import { readProjectMetadataForRoot } from "./project-team-workspace-links.js";
 import type { CodexHistoricalCandidate } from "./codex-historical-ingestion.js";
 import { CodexCompressedTranscriptReader } from "./codex-compressed-transcript.js";

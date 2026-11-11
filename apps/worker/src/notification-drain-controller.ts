@@ -3,4 +3,4 @@ export {
   type NotificationDrainClient,
   type NotificationDrainController,
   type NotificationDrainPool
-} from "@koed/shared";
+} from "@koed-labs/shared";

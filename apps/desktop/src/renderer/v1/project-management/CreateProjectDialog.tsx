@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Button, DialogFooter, Input } from "@koed/ui";
+import { Button, DialogFooter, Input } from "@koed-labs/ui";
 import { ProjectError, ProjectPopup } from "./controls.js";
 import { projectErrorMessage } from "./use-organization-review.js";
 

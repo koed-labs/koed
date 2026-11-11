@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   classifyApprovalActivity,
   crossIdentitySyncDeterministicUuid
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
 import { approvalConversationItemSql } from "./approval-activity-sql.js";

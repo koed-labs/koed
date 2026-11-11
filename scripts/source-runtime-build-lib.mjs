@@ -19,11 +19,11 @@ export const SOURCE_RUNTIME_SCHEMA_VERSION = 1;
 
 export const SOURCE_RUNTIME_BUILD_SPEC = Object.freeze({
   rootPackages: [
-    "@koed/api",
-    "@koed/worker",
-    "@koed/mcp-server",
-    "@koed/embedding-service",
-    "@koed/privacy-service"
+    "@koed-labs/api",
+    "@koed-labs/worker",
+    "@koed-labs/mcp-server",
+    "@koed-labs/embedding-service",
+    "@koed-labs/privacy-service"
   ],
   extraInputs: [
     "package.json",

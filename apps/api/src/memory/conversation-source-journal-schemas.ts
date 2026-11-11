@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   repositoryIdentitySchema,
   personalFolderObservationSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const boundedOffset = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const boundedLine = z.number().int().min(0).max(2_147_483_647);

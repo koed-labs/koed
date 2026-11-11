@@ -65,7 +65,7 @@ node packages/koed-server/dist/cli.js remove pi --json
 ```
 
 Setup reads the Koed-owned integration package from the selected app runtime.
-Packaged installations use `koed-runtime/node_modules/@koed/mcp-server/integrations/pi`
+Packaged installations use `koed-runtime/node_modules/@koed-labs/mcp-server/integrations/pi`
 (the older flat `koed-runtime/mcp-server/integrations/pi` layout remains supported).
 Contributor checkouts use `packages/mcp-server/integrations/pi`. Explicit runtime
 overrides remain authoritative; setup does not substitute checkout files for a

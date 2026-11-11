@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
-import { personalRecallTargetsEqual } from "@koed/shared/personal-desktop";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import { personalRecallTargetsEqual } from "@koed-labs/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { TransferMutation } from "./project-transfer-model.js";

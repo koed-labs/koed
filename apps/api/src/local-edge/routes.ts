@@ -1,8 +1,8 @@
-import type { DeviceCredentialRecord } from "@koed/db";
+import type { DeviceCredentialRecord } from "@koed-labs/db";
 import {
   fetchBoundedJsonObject,
   verifyLocalEdgeClientCredentialAuthorization
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import { enforceCollaborationAdmission } from "../collaboration/admission.js";

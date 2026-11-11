@@ -1,7 +1,7 @@
 import {
   crossIdentitySyncDigest,
   unresolvedTeamRepositorySnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 import {
   applyRemoteSyncRevocationSchema,

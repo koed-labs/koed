@@ -11,7 +11,7 @@ import {
   repositoryRecallContextSchema,
   repositoryScopeId,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export const pinRepositoryRecallContext = async <
   Input extends {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type pg from "pg";
-import { SharedMemoryConflictError } from "@koed/shared";
+import { SharedMemoryConflictError } from "@koed-labs/shared";
 import {
   freezeSharedMemorySemanticRecallBoundaryWithClient,
   createSharedMemoryAuthorityReadContext,

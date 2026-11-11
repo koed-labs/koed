@@ -6,7 +6,7 @@ import {
   type PersonalGitAssignment,
   type PersonalFolderAssignment,
   type PersonalSourceContextSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   retainSourceContextRevision,
   type SourceContextRevision

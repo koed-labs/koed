@@ -6,7 +6,7 @@ import {
   formatEmbeddingRetrievalDocument,
   formatEmbeddingRetrievalQuery,
   resolveSupportedEmbeddingModelConfig
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   ArenaArm,
   ArenaArmContext,

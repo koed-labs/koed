@@ -7,7 +7,7 @@ import {
   SelectPopup,
   SelectTrigger,
   SelectValue
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import type {
   AccelerationPreference,
   DesktopAccelerationApi

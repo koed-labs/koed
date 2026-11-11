@@ -21,7 +21,7 @@ import {
   type PersonalNamedProject,
   type PersonalProjectKin,
   type PersonalDirectMembership
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 
 const uuid = personalOwnerIdSchema;

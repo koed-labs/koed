@@ -13,7 +13,7 @@ import {
   validateLcmLexicalAnchors,
   type RejectedLcmLexicalAnchor,
   type StructuredLcmSummary
-} from "@koed/core";
+} from "@koed-labs/core";
 import {
   CodexAppServerTurnError,
   resolveCodexAppServerBinary,
@@ -51,7 +51,7 @@ export {
   parseStructuredLcmSummary,
   validateLcmLexicalAnchors,
   type StructuredLcmSummary
-} from "@koed/core";
+} from "@koed-labs/core";
 
 export interface LcmSummaryWorkerConfig {
   provider: AiClientProvider;

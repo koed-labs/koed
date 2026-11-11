@@ -8,7 +8,7 @@ import {
   type PersonalSelectionConsumerPage,
   type SharedMemoryCandidatePreview,
   type SharingDestinationReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   reviewGitAnchorSharing,
   resolveCompletedGitAnchorSharingReview,

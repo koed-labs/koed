@@ -10,12 +10,12 @@ import type {
   CollaborationCommandResult,
   CollaborationRendererCommand,
   CollaborationRendererEvent
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
 import { createV1StatePreloadApi } from "./ipc/v1-state-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";

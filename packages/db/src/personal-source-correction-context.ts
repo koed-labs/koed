@@ -16,7 +16,7 @@ import {
   personalGitAssignmentSchema,
   type PersonalSourceCorrectionInput,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 
 export type PersonalCorrectionSourceRow = {

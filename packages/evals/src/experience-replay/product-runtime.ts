@@ -7,7 +7,7 @@ import {
   startLocalAiRuntime,
   type LocalAiRuntimeHandle,
   type StartLocalAiRuntimeOptions
-} from "@koed/mcp-server/runtime-contracts";
+} from "@koed-labs/mcp-server/runtime-contracts";
 import {
   startBenchmarkBridge,
   type BenchmarkBridgeHandle,

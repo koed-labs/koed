@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ManagedConversationExecutionRecord } from "@koed/db";
+import type { ManagedConversationExecutionRecord } from "@koed-labs/db";
 import { assertManagedConversationTurnSettings } from "./managed-conversation-settings.js";
 import { combineManagedConversationRepositories } from "./managed-conversation-authority-client.js";
 

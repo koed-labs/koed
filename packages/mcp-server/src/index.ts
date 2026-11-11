@@ -19,7 +19,7 @@ import {
   type FailMemoryAnswerTaskInput,
   type HeartbeatMemoryAnswerTaskInput,
   type MemoryAnswerTask
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { BackgroundApiRequestScheduler } from "./background-api-requests.js";
 import {
@@ -676,7 +676,7 @@ export class MemoryApiClient {
       expectedParentClosureHash: string;
       sourceGenerationId: string;
       originKeyId: string;
-      sourceRewrite?: import("@koed/shared").ConversationSourceRewriteFrontier;
+      sourceRewrite?: import("@koed-labs/shared").ConversationSourceRewriteFrontier;
     }
   ): Promise<Record<string, unknown>> {
     return this.request(
@@ -1514,7 +1514,7 @@ export const memoryAccessCheck = async (
     .catch(() => null);
   return {
     ...access,
-    server: "@koed/mcp-server",
+    server: "@koed-labs/mcp-server",
     configuredApiUrl: client.config.apiUrl,
     hasApiToken: Boolean(client.config.apiToken),
     defaultAutomaticCaptureScope: "personal",

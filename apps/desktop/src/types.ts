@@ -6,7 +6,7 @@ import type {
   EmbeddingStateSnapshot,
   HistoricalIngestionProgress,
   PersonalDesktopApi
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "./window/theme-preference.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
@@ -19,7 +19,7 @@ import type {
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { CliInstallApi } from "./cli-install/protocol.js";
-import type { DesktopUpdateApi } from "@koed/shared/desktop-update-contract";
+import type { DesktopUpdateApi } from "@koed-labs/shared/desktop-update-contract";
 import type {
   AccelerationChoice,
   DesktopAccelerationApi

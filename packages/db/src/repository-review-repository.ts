@@ -7,7 +7,7 @@ import {
   type RepositoryChangeInput,
   type RepositoryReviewOptions,
   type RepositoryReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   mapRepositoryAssignment,
   type RepositoryAssignmentRow

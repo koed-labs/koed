@@ -4,8 +4,8 @@ import {
   personalProjectDefaultDecisionSchema,
   type PersonalProjectDefaultDecision,
   type PersonalConfigurationRecord
-} from "@koed/shared";
-import { personalProjectDefaultIdentity } from "@koed/shared/personal-project-default";
+} from "@koed-labs/shared";
+import { personalProjectDefaultIdentity } from "@koed-labs/shared/personal-project-default";
 import {
   withPersonalConfigurationPublication,
   type PersonalConfigurationPublicationScope

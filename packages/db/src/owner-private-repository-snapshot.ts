@@ -5,7 +5,7 @@ import {
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type TeamRepositorySnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 type Binding = {
   sessionId: string;

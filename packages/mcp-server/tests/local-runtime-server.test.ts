@@ -4,7 +4,7 @@ import {
   grantAiClientConnection,
   revokeAiClientConnection,
   type AiClientConnectionId
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 import {
   ensureDeviceIdentity,
   readSourceFolderObservation,

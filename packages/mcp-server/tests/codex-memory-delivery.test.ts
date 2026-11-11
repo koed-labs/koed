@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { buildSync } from "esbuild";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 import {
   CODEX_DELIVERY_NONCE,
   CodexMemoryDelivery,
@@ -189,7 +189,7 @@ describe("Codex protected native-call delivery", () => {
       platform: "node",
       format: "esm",
       alias: {
-        "@koed/shared": fileURLToPath(
+        "@koed-labs/shared": fileURLToPath(
           new URL("../../shared/src/index.ts", import.meta.url)
         )
       },

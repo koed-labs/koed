@@ -5,7 +5,7 @@ import {
   personalFolderAssignmentSchema,
   type PersonalGitAssignment,
   type PersonalFolderAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type PersonalSourceBindingRow = {
   binding_id: string;

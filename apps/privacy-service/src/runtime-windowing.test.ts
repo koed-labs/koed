@@ -5,7 +5,7 @@ import {
   HuggingFacePrivacyRuntime,
   PRIVACY_WINDOW_MAX_TOKENS
 } from "./runtime.js";
-import { PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES } from "@koed/shared";
+import { PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES } from "@koed-labs/shared";
 
 class FakeTensor {
   constructor(

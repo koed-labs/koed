@@ -1,4 +1,4 @@
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { V1ConversationIntent } from "../../ipc/v1-state-protocol.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import type { projectExecutionFolders } from "../../project-source-navigation.js";

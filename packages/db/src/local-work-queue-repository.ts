@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
-import { defaultKoedQueuePriority } from "@koed/shared";
+import { defaultKoedQueuePriority } from "@koed-labs/shared";
 
 export type LocalWorkQueueStatus =
   | "pending"

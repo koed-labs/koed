@@ -7,7 +7,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger
-} from "@koed/ui";
+} from "@koed-labs/ui";
 
 export type ConversationFolderPickerProps = {
   folders: readonly { id: string; path: string }[];

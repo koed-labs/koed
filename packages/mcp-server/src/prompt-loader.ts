@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/core";
+import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed-labs/core";
 
 export const PROMPT_OVERRIDE_DIR_ENV = "KOED_PROMPT_DIR";
 

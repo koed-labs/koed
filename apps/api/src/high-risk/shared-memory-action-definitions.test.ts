@@ -1,6 +1,6 @@
 import { contentPolicyReviewFixture } from "../shared-memory/test-fixtures/rule-content-policy-review.js";
 import { publisherTakeoverReviewFixture } from "../shared-memory/test-fixtures/publisher-takeover-review.js";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import { randomUUID } from "node:crypto";
 import {
   sharedMemoryCandidatePreviewActionGrantBinding,
@@ -24,7 +24,7 @@ import {
   sharingRulePublisherTakeoverReviewInputSchema,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { admitHighRiskActionGrant } from "./action-definitions.js";

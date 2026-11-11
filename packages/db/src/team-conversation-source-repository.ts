@@ -1,7 +1,7 @@
 import { workspaceSourceIsNotExcludedSql } from "./shared-memory-publication-authority-sql.js";
 import { requireWorkspaceSourceNotExcluded } from "./workspace-conversation-exclusion.js";
 import type pg from "pg";
-import { isPrivacyMaterializationSourceAdapter } from "@koed/shared";
+import { isPrivacyMaterializationSourceAdapter } from "@koed-labs/shared";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 import type {
   ActorContext,

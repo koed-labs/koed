@@ -5,11 +5,11 @@ import { mkdirSync } from "node:fs";
 import {
   assertSecureHttpTransport,
   isTeamMemoryAnswerTaskCapability
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createSecureUpstreamFetch,
   registeredPrivateNetworkPolicy
-} from "@koed/shared/secure-upstream-fetch";
+} from "@koed-labs/shared/secure-upstream-fetch";
 import type { KoedServerPaths } from "./paths.js";
 import { upstreamDisconnectCleanupPending } from "./upstream-disconnect-cleanup.js";
 

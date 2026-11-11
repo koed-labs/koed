@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
-import { normalizeGitRemoteUrl } from "@koed/shared";
+import { normalizeGitRemoteUrl } from "@koed-labs/shared";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";

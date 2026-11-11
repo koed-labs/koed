@@ -3,7 +3,7 @@ import type {
   EmbeddingBackend
 } from "./acceleration-contract.js";
 import type { RuntimeLifecycleObservation } from "./runtime-lifecycle.js";
-import { fetchBoundedJsonObject } from "@koed/shared";
+import { fetchBoundedJsonObject } from "@koed-labs/shared";
 
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value)

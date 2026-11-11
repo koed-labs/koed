@@ -1,5 +1,5 @@
 {
-  "name": "@koed/privacy-service",
+  "name": "@koed-labs/privacy-service",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
@@ -15,6 +15,6 @@
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
-    "@koed/shared": "workspace:*"
+    "@koed-labs/shared": "workspace:*"
   }
 }

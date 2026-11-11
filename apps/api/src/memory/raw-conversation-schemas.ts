@@ -9,7 +9,7 @@ import {
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
   rawConversationTransportChunkGroupId,
   sanitizeForPostgresStorage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { metadataSchema } from "./common-schemas.js";
 
 const rawVisibilitySchema = z.literal("personal");

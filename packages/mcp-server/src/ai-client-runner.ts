@@ -14,7 +14,7 @@ import {
   type AiClientDiagnostic,
   type AiClientModelCapability,
   type AiClientRecoveryActionId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   query,
   type ModelInfo,

@@ -7,7 +7,7 @@ import {
 import type {
   PersonalDesktopApi,
   PersonalDesktopAskTurn
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { Check, Layers, LoaderCircle, MessageSquare, Plus } from "lucide-react";
 import {
   DropdownMenu,
@@ -15,7 +15,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import {
   projectExecutionFolders,
   type ProjectSourceInventory

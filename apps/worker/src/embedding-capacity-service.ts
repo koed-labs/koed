@@ -3,9 +3,9 @@ import type {
   EmbeddingCalibrationMode,
   EmbeddingCapacityProfileInput,
   EmbeddingCapacityRepository
-} from "@koed/db";
-import { EMBEDDING_CAPACITY_CONTRACT_REVISION } from "@koed/db";
-import { fetchBoundedJsonObject } from "@koed/shared";
+} from "@koed-labs/db";
+import { EMBEDDING_CAPACITY_CONTRACT_REVISION } from "@koed-labs/db";
+import { fetchBoundedJsonObject } from "@koed-labs/shared";
 import { Agent } from "undici";
 import { embedTexts } from "./embedding-workflow.js";
 import type { WorkerEnvConfig } from "./env-config.js";

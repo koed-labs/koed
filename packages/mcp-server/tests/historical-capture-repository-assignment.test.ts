@@ -8,7 +8,7 @@ import {
   createMemorySourceRepository,
   runDbMigrations,
   updateSessionRepositoryOverride
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   resolveHistoricalCaptureRepositoryIdentity,
   codexSourceTimeRepositoryIdentity

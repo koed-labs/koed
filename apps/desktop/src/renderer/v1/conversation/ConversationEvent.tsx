@@ -26,7 +26,7 @@ import {
   TraceCollapsible,
   TraceCollapsibleTrigger,
   TraceCollapsibleContent
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { SourceDiff } from "../../conversation/SourceDiff.js";
 import type { MarkdownPlatformAdapters } from "../../markdown/SecureMarkdown.js";
 import {

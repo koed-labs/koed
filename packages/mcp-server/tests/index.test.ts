@@ -9,7 +9,7 @@ import {
   repositoryScopeId,
   storeLocalEdgeClientCredential,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   MemoryApiClient,
   allTools,

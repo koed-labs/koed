@@ -3,7 +3,7 @@ import type {
   LegalHoldRecord,
   RetentionLifecycleRepository,
   UserRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import Fastify from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";

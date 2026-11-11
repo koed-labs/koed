@@ -3,10 +3,13 @@ import {
   personalInventoryConversationKey,
   deduplicatePersonalInventoryConversations,
   personalRecallTargetsEqual
-} from "@koed/shared/personal-desktop";
-import { repositoryScopeId } from "@koed/shared/repository-recall";
-import type { PersonalProjectCommand, PersonalProjectRule } from "@koed/shared";
-import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
+import type {
+  PersonalProjectCommand,
+  PersonalProjectRule
+} from "@koed-labs/shared";
+import type { PersonalDesktopProjectThread } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 
 type Thread = PersonalDesktopProjectThread;

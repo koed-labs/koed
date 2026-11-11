@@ -1,7 +1,7 @@
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   type StructuredLcmSummary
-} from "@koed/core";
+} from "@koed-labs/core";
 import {
   lcmSummaryBenchmarkCases,
   type LcmSummaryBenchmarkCase

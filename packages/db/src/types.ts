@@ -1,4 +1,4 @@
-import type { MemoryModelFlowKey } from "@koed/shared/ai-client-flow-defaults";
+import type { MemoryModelFlowKey } from "@koed-labs/shared/ai-client-flow-defaults";
 import type {
   PersonalSelectionConsumerRepository,
   PersonalInventorySelectionRepository
@@ -17,17 +17,17 @@ import type {
   RepositoryAssignment,
   PersonalFolderAssignment,
   PersonalSelectionSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   LcmSourceItem,
   MemoryActor,
   MemoryEngineRepository
-} from "@koed/core";
+} from "@koed-labs/core";
 import type {
   KoedWorkClass,
   PdsEmbeddingContractV1,
   PdsLcmNodeContractV1
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
 import type { PersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import type { PersonalDeviceArtifactRepository } from "./personal-device-artifact-repository.js";
@@ -709,7 +709,7 @@ export interface CapturePolicyRecord {
 }
 
 export interface EffectiveCapturePolicy {
-  captureTarget?: import("@koed/shared").PersonalCaptureTargetBinding;
+  captureTarget?: import("@koed-labs/shared").PersonalCaptureTargetBinding;
   captureState: CaptureState;
   visibility: Visibility;
   paused: boolean;
@@ -1323,7 +1323,7 @@ export interface LocalEmbeddingStatus {
 }
 
 export interface PersonalProjectReference {
-  repositoryIdentity?: import("@koed/shared").RepositoryIdentity;
+  repositoryIdentity?: import("@koed-labs/shared").RepositoryIdentity;
   expectedAssignmentVersion?: number;
   id: string;
   name: string;

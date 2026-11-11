@@ -1,5 +1,5 @@
 {
-  "name": "@koed/db",
+  "name": "@koed-labs/db",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
@@ -36,8 +36,8 @@
     "migrate:format": "oxfmt --config ../../.oxfmtrc.json --write \"drizzle/meta/*.json\""
   },
   "dependencies": {
-    "@koed/core": "workspace:*",
-    "@koed/shared": "workspace:*",
+    "@koed-labs/core": "workspace:*",
+    "@koed-labs/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "pg": "^8.20.0"
   },

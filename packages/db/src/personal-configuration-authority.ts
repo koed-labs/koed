@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   verifyPersonalConfigurationRecord,
   type PersonalConfigurationRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { lockPersonalSourceContextOwner } from "./personal-source-binding-state.js";
 
 export const lockPersonalConfigurationGroup = async (

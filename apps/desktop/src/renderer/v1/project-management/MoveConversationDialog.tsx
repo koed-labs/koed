@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Badge, Button, Checkbox, DialogFooter } from "@koed/ui";
+import { Badge, Button, Checkbox, DialogFooter } from "@koed-labs/ui";
 import { ChevronRight, CircleAlert, Folder, GitFork } from "lucide-react";
 import {
   effective,

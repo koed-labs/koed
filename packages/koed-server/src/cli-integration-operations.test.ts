@@ -8,7 +8,7 @@ import {
   grantAiClientConnection,
   isAiClientConnected,
   readAiClientConnections
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 import { runIntegrationCommand } from "./cli-integration-operations.js";
 import { resolveKoedServerPaths } from "./paths.js";
 

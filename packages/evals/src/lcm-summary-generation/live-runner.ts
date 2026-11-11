@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveLcmSummaryWorkerConfig } from "@koed/mcp-server";
+import { resolveLcmSummaryWorkerConfig } from "@koed-labs/mcp-server";
 import {
   lcmSummaryOptionValue,
   parseLcmSummaryRunsOption,

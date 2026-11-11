@@ -16,12 +16,12 @@ import {
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import type { ManagedConversationLaunchOptions } from "../../../ipc/managed-conversation-protocol.js";
 import type {
   AiClientPermissionMode,
   SupportedAiClientDriverId
-} from "@koed/shared/ai-client-contract";
+} from "@koed-labs/shared/ai-client-contract";
 import { AiClientLogo } from "./AiClientLogo.js";
 import "./conversation-settings.css";
 

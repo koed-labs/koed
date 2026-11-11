@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import { repositoryScopeId, type RepositoryIdentity } from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiRouteContext } from "../server/context.js";
 import { registerCaptureRoutes } from "./capture-routes.js";

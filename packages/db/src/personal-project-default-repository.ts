@@ -1,7 +1,7 @@
 import {
   personalProjectDefaultIdentity,
   personalProjectDefaultName
-} from "@koed/shared/personal-project-default";
+} from "@koed-labs/shared/personal-project-default";
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
@@ -12,7 +12,7 @@ import {
   personalFolderAssignmentSchema,
   type PersonalFolderContext,
   type PersonalProjectRule
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   appendPersonalMembershipRevision,

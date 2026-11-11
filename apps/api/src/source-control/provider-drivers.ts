@@ -12,7 +12,7 @@ import {
   type SourceControlConnection,
   type SourceControlProvider,
   type SourceControlReviewRequest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type SourceControlCredential =
   | { scheme: "bearer"; token: string }

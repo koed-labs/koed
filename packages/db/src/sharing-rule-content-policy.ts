@@ -5,7 +5,7 @@ import {
   resolveSharingRuleContentPolicy,
   SharedMemoryConflictError,
   type PrivacyLabelPolicy
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 type RuleContentPolicyState = {
   content_privacy_labels: unknown;

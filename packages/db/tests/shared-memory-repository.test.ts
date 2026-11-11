@@ -11,9 +11,9 @@ import {
   evaluatePersonalMembershipRevisions,
   signPersonalConfigurationRecord,
   canonicalizePdsJson
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createPersonalSourceCorrectionRepository } from "../src/personal-source-correction-repository.js";
-import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
+import { unresolvedTeamRepositorySnapshot } from "@koed-labs/shared";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { createHighRiskActionRepository } from "../src/high-risk-action-repository.js";
 import { performance } from "node:perf_hooks";
@@ -63,7 +63,7 @@ import {
   type SharedMemorySemanticMaskedField,
   type SharedMemorySourceRef,
   type SharedMemorySourceItemInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   afterAll,
   afterEach,
@@ -14998,7 +14998,7 @@ describeDb("Shared Memory repository", () => {
 
   const executeWorkspaceRestoration = (
     fixture: WorkspaceFixture,
-    intent: import("@koed/shared").WorkspaceConversationRestorationIntent & {
+    intent: import("@koed-labs/shared").WorkspaceConversationRestorationIntent & {
       authority?: SharedMemoryAuthorityContext;
     }
   ) =>
@@ -15018,7 +15018,7 @@ describeDb("Shared Memory repository", () => {
 
   const executeDetailAmendment = (
     fixture: WorkspaceFixture,
-    intent: import("@koed/shared").SharingRuleDetailIntent
+    intent: import("@koed-labs/shared").SharingRuleDetailIntent
   ) =>
     executeNativeRuleOperation(
       fixture,
@@ -15311,7 +15311,7 @@ describeDb("Shared Memory repository", () => {
       return value!;
     };
     const execute = (
-      intent: import("@koed/shared").SharingRuleContentPolicyIntent
+      intent: import("@koed-labs/shared").SharingRuleContentPolicyIntent
     ) =>
       executeNativeRuleOperation(
         fixture,
@@ -15672,8 +15672,9 @@ describeDb("Shared Memory repository", () => {
     expect(await read("memory_events")).toMatchObject({
       representation: { sourceRevision: 1 }
     });
-    const execute = (intent: import("@koed/shared").SharingRuleDetailIntent) =>
-      executeDetailAmendment(fixture, intent);
+    const execute = (
+      intent: import("@koed-labs/shared").SharingRuleDetailIntent
+    ) => executeDetailAmendment(fixture, intent);
     const review = async (maximumFidelity: SharedMemoryFidelityCeiling) => {
       const value = await repository.getSharingRuleDetailReview(owner, {
         ruleId: rule.ruleId,

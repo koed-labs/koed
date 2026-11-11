@@ -1,5 +1,5 @@
-import { memoryEmbedQueueName, workClassPriority } from "@koed/shared";
-import { createDbPool, createMemorySourceRepository } from "@koed/db";
+import { memoryEmbedQueueName, workClassPriority } from "@koed-labs/shared";
+import { createDbPool, createMemorySourceRepository } from "@koed-labs/db";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 import type { EmbeddingQueueJobData } from "./job-workflows.js";
 import { createWorkerQueueProducer } from "./queue.js";

@@ -11,9 +11,9 @@ COPY . .
 RUN pnpm install --frozen-lockfile --ignore-scripts \
   && find apps packages -name "*.tsbuildinfo" -delete \
   && rm -rf apps/*/dist packages/*/dist \
-  && pnpm --filter @koed/shared build \
-  && pnpm --filter @koed/privacy-service build \
-  && pnpm --filter @koed/privacy-service deploy --legacy --prod /deploy/privacy-service
+  && pnpm --filter @koed-labs/shared build \
+  && pnpm --filter @koed-labs/privacy-service build \
+  && pnpm --filter @koed-labs/privacy-service deploy --legacy --prod /deploy/privacy-service
 
 FROM node:22-bookworm-slim AS runtime
 

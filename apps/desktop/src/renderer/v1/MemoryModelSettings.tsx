@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Button, Card } from "@koed/ui";
+import { Button, Card } from "@koed-labs/ui";
 import { ProjectChoice } from "./project-management/controls.js";
 import { useMemoryModel, type MemoryModelApi } from "./use-memory-model.js";
 import "./memory-model-settings.css";

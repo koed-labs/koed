@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { listCodexAppServerSkills } from "@koed/mcp-server";
+import { listCodexAppServerSkills } from "@koed-labs/mcp-server";
 import {
   createCodexCommandDiscoveryAdapter,
   listCodexDraftCommands
 } from "./command-discovery-adapter-codex.js";
 
-vi.mock("@koed/mcp-server", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@koed/mcp-server")>()),
+vi.mock("@koed-labs/mcp-server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@koed-labs/mcp-server")>()),
   listCodexAppServerSkills: vi.fn()
 }));
 

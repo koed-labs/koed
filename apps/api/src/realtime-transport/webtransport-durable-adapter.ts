@@ -4,9 +4,9 @@ import {
   webTransportDurableAttachSchema,
   type RealtimeTransportOperationFamily,
   type WebTransportDurableAttach
-} from "@koed/shared";
-import type { RealtimeTransportAdmissionRecord } from "@koed/db";
-import { encodeDurableRealtimeStreamFrame } from "@koed/shared/durable-realtime";
+} from "@koed-labs/shared";
+import type { RealtimeTransportAdmissionRecord } from "@koed-labs/db";
+import { encodeDurableRealtimeStreamFrame } from "@koed-labs/shared/durable-realtime";
 import type {
   CollaborationRealtimeEventSink,
   CollaborationRealtimeTransportPrincipal,

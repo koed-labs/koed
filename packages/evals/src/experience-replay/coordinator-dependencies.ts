@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, rm, rmdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { getLatestMigrationTimestamp } from "@koed/db";
+import { getLatestMigrationTimestamp } from "@koed-labs/db";
 import type { AtifSanitizationResult } from "./atif/index.js";
 import type {
   ExperienceReplayCoordinatorDependencies,

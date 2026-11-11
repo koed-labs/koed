@@ -2,11 +2,11 @@ import type { Dirent } from "node:fs";
 import { opendir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
-import type { SupportedAiClientDriverId } from "@koed/shared/ai-client-contract";
+import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 import {
   environmentForLocalAiClientInstance,
   resolveLocalAiClientInstance
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 
 export type ManagedConversationSlashCommand = {
   name: string;

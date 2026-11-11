@@ -15,8 +15,8 @@ import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 const runtime = resolve(process.argv[2]);
-const mcp = join(runtime, "node_modules/@koed/mcp-server");
-const operator = join(runtime, "node_modules/@koed/koed-server/dist");
+const mcp = join(runtime, "node_modules/@koed-labs/mcp-server");
+const operator = join(runtime, "node_modules/@koed-labs/koed-server/dist");
 const load = (file) => import(pathToFileURL(file).href);
 const { repairCodexIntegration } = await load(join(operator, "setup.js"));
 const { installPiPackageTransaction } = await load(

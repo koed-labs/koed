@@ -184,7 +184,7 @@ export const startProductApiProcess = async (
   );
   if (!existsSync(childFile)) {
     throw new Error(
-      "Koed API child is not built; build @koed/evals before starting the product runtime"
+      "Koed API child is not built; build @koed-labs/evals before starting the product runtime"
     );
   }
   const spawnChild = options.spawnChild ?? spawn;

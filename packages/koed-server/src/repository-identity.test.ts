@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { normalizeGitRemoteUrl, repositoryIdentitySchema } from "@koed/shared";
+import {
+  normalizeGitRemoteUrl,
+  repositoryIdentitySchema
+} from "@koed-labs/shared";
 import { resolveRepositoryIdentity } from "./repository-identity.js";
 import {
   acknowledgeRepositoryChange,

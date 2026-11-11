@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { countTokensForModel } from "@koed/core";
+import { countTokensForModel } from "@koed-labs/core";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   acquireLocalSummaryLock,

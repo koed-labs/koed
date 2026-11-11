@@ -1,4 +1,4 @@
-import { Button } from "@koed/ui";
+import { Button } from "@koed-labs/ui";
 import {
   ArrowUpRight,
   ChevronRight,

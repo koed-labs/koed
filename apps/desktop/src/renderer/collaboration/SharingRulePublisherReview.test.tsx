@@ -6,7 +6,7 @@ import {
   sharingRulePublisherTakeoverLocalReviewSchema,
   sharingRuleDeliverySchema,
   type GitAnchorSharingReviewPage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   SharingRulePublisherReview,
   type PublisherReviewClient

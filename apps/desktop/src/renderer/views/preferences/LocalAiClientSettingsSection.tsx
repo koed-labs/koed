@@ -1,6 +1,6 @@
 import { AlertTriangle, Check, Copy, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { Button, Input, Spinner } from "@koed/ui";
+import { Button, Input, Spinner } from "@koed-labs/ui";
 import type { DesktopApi } from "../../../types.js";
 import { FlowSettingsFieldset } from "./FlowSettingsFieldset.js";
 import { assignmentFrom, flows } from "./local-ai-client-settings-helpers.js";

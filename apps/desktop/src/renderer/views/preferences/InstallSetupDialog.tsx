@@ -4,7 +4,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import {
   InstallSetupContent,
   type InstallSetupContentProps

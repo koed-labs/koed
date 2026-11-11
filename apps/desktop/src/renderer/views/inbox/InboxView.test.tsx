@@ -3,7 +3,7 @@
 import type {
   CollaborationSnapshot,
   CollaborationThread
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

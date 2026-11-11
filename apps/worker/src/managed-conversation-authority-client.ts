@@ -10,13 +10,13 @@ import type {
   ManagedConversationHandoffTargetMaterial,
   ManagedConversationRuntimeItemRecord,
   MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   fetchBoundedJsonObject,
   upstreamApiUrl,
   type EnvelopeEncryptionProvider,
   type RecipientPublicKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const requestTimeoutMs = 60_000;
 const ordinaryResponseBytes = 4 * 1024 * 1024;
