@@ -216,6 +216,10 @@ least 20% smaller.
 
 ## Scheduled and manual validation
 
+Ordinary pushes to `main` do not run the CI validation workflow again. Pull
+requests, scheduled runs, and manual dispatch still run CI; the separate release
+and native cache maintenance workflows retain their default-branch duties.
+
 The weekly scheduled CI run selects full clean-install validation. It bypasses
 the completed native payload cache and installs the pinned embedding model over
 HTTPS into an empty `KOED_HOME`.
@@ -228,6 +232,14 @@ source build; the completed payload is validated before it is saved. Manual
 cache maintenance must also be dispatched from the default branch. After a
 cache-input workflow change lands, dispatch cache maintenance on `main` before
 using the next relevant pull request as a warm-cache performance measurement.
+
+A separate Linux Desktop CPU core cache workflow runs on `main` when core inputs
+change, on Tuesday and Friday, and by manual dispatch from the default branch.
+It uses the same Ubuntu runner, cache key, build and verification as CI: a miss
+builds the core, and every restored or built core is verified before and after
+runtime validation, before any save. Pull requests retain their cache-miss build
+and verification fallback. This CPU-only Desktop cache is distinct from the
+combined Linux CPU/CUDA payload cache and release artifacts.
 
 Manual `CI` dispatch supports:
 
