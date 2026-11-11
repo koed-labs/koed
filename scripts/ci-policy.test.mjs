@@ -724,7 +724,7 @@ test("Linux smoke system packages install from cached archives before the packag
   );
 });
 
-test("pull requests run Linux jobs on Blacksmith and other events on GitHub runners", () => {
+test("pull requests run Linux jobs on Blacksmith except the native runtime build", () => {
   const jobs = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs;
   const expected = {
     changes: ["blacksmith-2vcpu-ubuntu-2404", "ubuntu-24.04"],
@@ -741,13 +741,9 @@ test("pull requests run Linux jobs on Blacksmith and other events on GitHub runn
       name
     );
   }
-  // The native runtime keeps its Ubuntu 22.04 (glibc 2.35) build floor. Full
-  // validation restores the payload cache that GitHub-hosted runs save, so it
-  // stays on the GitHub-hosted runner.
-  assert.equal(
-    jobs["native-runtime-linux-x64"]["runs-on"],
-    "${{ github.event_name == 'pull_request' && needs.changes.outputs.run_full_validation != 'true' && 'blacksmith-4vcpu-ubuntu-2204' || 'ubuntu-22.04' }}"
-  );
+  // The native runtime build bundles system libraries and licence files from
+  // the GitHub-hosted Ubuntu 22.04 image, which the Blacksmith image lacks.
+  assert.equal(jobs["native-runtime-linux-x64"]["runs-on"], "ubuntu-22.04");
   for (const name of [
     "relevant-packaged-smoke",
     "release-candidate-validation"
