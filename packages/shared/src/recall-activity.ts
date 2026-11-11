@@ -225,6 +225,8 @@ export type RecallActivityDetail = z.infer<typeof recallActivityDetailSchema>;
 
 export const recallActivityOverviewInputSchema = recallActivityFiltersSchema
   .extend({
+    // Opt in so existing consumers keep their day/week/month response shape.
+    bucket: z.literal("hour").optional(),
     timezone: z
       .string()
       .min(1)
@@ -246,16 +248,21 @@ export const recallActivityOverviewInputSchema = recallActivityFiltersSchema
     (value) =>
       Date.parse(value.to) > Date.parse(value.from) &&
       Date.parse(value.to) - Date.parse(value.from) <= 3660 * 86_400_000 &&
+      (value.bucket !== "hour" ||
+        Date.parse(value.to) - Date.parse(value.from) <= 25 * 3_600_000) &&
       (value.minDurationMs === undefined ||
         value.maxDurationMs === undefined ||
         value.minDurationMs <= value.maxDurationMs),
-    { message: "Choose a time range of up to ten years" }
+    {
+      message:
+        "Choose a time range of up to ten years, or 25 hours for hourly buckets"
+    }
   );
 export const recallActivityOverviewSchema = z
   .object({
     asOf: instant,
     timezone: z.string(),
-    bucket: z.enum(["day", "week", "month"]),
+    bucket: z.enum(["hour", "day", "week", "month"]),
     tokens: recallUsageTotalsSchema,
     linkedQuestions: z.number().int().nonnegative(),
     tokenTimeline: z

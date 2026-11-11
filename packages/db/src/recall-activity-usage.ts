@@ -9,7 +9,8 @@ import type {
 import type { ActorContext } from "./types.js";
 import {
   personalRecallPredicate,
-  recallActivityFilter
+  recallActivityFilter,
+  recallActivityBuckets
 } from "./recall-activity-query.js";
 
 export const recallUsageEligibility = `u.visibility = 'personal'
@@ -149,11 +150,7 @@ export const loadRecallTokenOverview = async (
     input,
     false
   );
-  const from = bind(input.from),
-    to = bind(input.to),
-    timezone = bind(input.timezone),
-    unit = bind(bucket),
-    step = bind(`1 ${bucket}`);
+  const buckets = recallActivityBuckets(input, bucket, bind);
   const result = await pool.query<
     Pick<RecallActivityOverview, "tokens" | "linkedQuestions" | "tokenTimeline">
   >(
@@ -164,20 +161,19 @@ export const loadRecallTokenOverview = async (
            then ref.source_id::uuid end
        join workflow_token_usage u on u.id = ref.workflow_token_usage_id and u.owner_user_id = q.owner_user_id
        where ${predicates.join(" and ")} and ${recallUsageEligibility} and ${compatibleQuestionUsage}
-         and u.observed_at >= ${from}::timestamptz and u.observed_at < ${to}::timestamptz
+         and u.observed_at >= ${buckets.from}::timestamptz and u.observed_at < ${buckets.to}::timestamptz
      ), summary as (select ${usageAggregates} from eligible u),
      totals as (
-       select date_trunc(${unit}, observed_at at time zone ${timezone}) as bucket,
+       select ${buckets.group("observed_at")} as bucket,
          sum(total_tokens)::float8 as tokens, count(*)::int as attempts,
          bool_or(total_tokens is null or usage_accuracy <> 'provider_reported') as partial
        from eligible group by 1
      ), buckets as (
-       select generate_series(date_trunc(${unit}, ${from}::timestamptz at time zone ${timezone}),
-         date_trunc(${unit}, (${to}::timestamptz - interval '1 microsecond') at time zone ${timezone}), ${step}::interval) as bucket
+       select ${buckets.series} as bucket
      ) select (select row_to_json(summary) from summary) as tokens,
          (select count(distinct question_id)::int from eligible) as "linkedQuestions",
          jsonb_agg(jsonb_build_object(
-           'start', to_char(b.bucket at time zone ${timezone} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+           'start', to_char(${buckets.start}, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
            'totalTokens', t.tokens, 'recordedAttempts', coalesce(t.attempts, 0), 'partial', coalesce(t.partial, true))
            order by b.bucket) as "tokenTimeline"
        from buckets b left join totals t using (bucket)`,

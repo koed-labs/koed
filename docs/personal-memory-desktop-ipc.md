@@ -172,3 +172,9 @@ The overview returns result counts, the found percentage with its exact
 denominator, known-duration coverage, and a median over individual measurements.
 Each question includes nullable versioned metadata; legacy rows remain unknown.
 These fields carry no caller authority or stable installation identity.
+
+Overview requests can opt into `bucket: "hour"` for ranges of up to 25 hours.
+This covers local calendar days across daylight-saving changes. Existing callers
+that omit the field retain automatic day/week/month buckets. Desktop uses hourly
+buckets for Today and groups full-range daily totals for longer preset charts;
+pagination never determines chart totals.

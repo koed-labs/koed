@@ -147,7 +147,7 @@ export function useRecallActivity(
           overview: null,
           loading: false,
           error:
-            "Recall activity is unavailable. Connect to your Personal Memory backend.",
+            "Recall activity is unavailable. Connect to your memory backend.",
           overviewError: true,
           accessLost: true
         });
@@ -179,7 +179,11 @@ export function useRecallActivity(
               callerName,
               minDurationMs,
               maxDurationMs,
-              timezone
+              timezone,
+              bucket:
+                Date.parse(to) - Date.parse(from) <= 25 * 3_600_000
+                  ? "hour"
+                  : undefined
             })
           : Promise.resolve(overviewRef.current.value)
       ]);

@@ -1,10 +1,12 @@
 import { useId } from "react";
+import { ScrollArea } from "@koed/ui";
 
 export function RecallTimeline({
   title,
   points,
   timezone,
-  unit
+  unit,
+  hourly = false
 }: {
   title: string;
   points: {
@@ -14,6 +16,7 @@ export function RecallTimeline({
   }[];
   timezone: string;
   unit: string;
+  hourly?: boolean;
 }) {
   const id = useId();
   const breakdownKeys = Object.keys(
@@ -36,11 +39,18 @@ export function RecallTimeline({
     })
     .join(" ");
   const label = (start: string) =>
-    new Date(start).toLocaleDateString(undefined, {
+    new Date(start).toLocaleString(undefined, {
       timeZone: timezone,
       month: "short",
       day: "numeric",
-      year: "numeric"
+      year: "numeric",
+      ...(hourly
+        ? {
+            hour: "2-digit" as const,
+            minute: "2-digit" as const,
+            timeZoneName: "short" as const
+          }
+        : {})
     });
   return (
     <figure className="recall-chart" aria-labelledby={id}>
@@ -88,7 +98,7 @@ export function RecallTimeline({
       </div>
       <details>
         <summary>View timeline values</summary>
-        <div className="recall-timeline-values">
+        <ScrollArea className="recall-timeline-values">
           <table>
             <thead>
               <tr>
@@ -115,7 +125,7 @@ export function RecallTimeline({
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollArea>
       </details>
     </figure>
   );

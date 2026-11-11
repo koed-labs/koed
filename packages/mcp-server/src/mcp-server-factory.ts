@@ -111,14 +111,29 @@ const backendToolCapabilities = async (
 
 const defaultCallerContext = (
   context: Parameters<NonNullable<Parameters<McpServer["registerTool"]>[2]>>[1],
-  cwd: string
+  cwd: string,
+  legacyServer?: McpServer["server"]
 ): LocalRuntimeCallerContext => {
   const envelope = (context.mcpReq.envelope ?? {}) as Record<string, unknown>;
   const asRecord = (value: unknown): Record<string, unknown> | undefined =>
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : undefined;
-  const info = asRecord(envelope[CLIENT_INFO_META_KEY]);
+  // Legacy stdio clients declare identity once during initialize. Modern
+  // requests must use their own envelope, never the previous request's identity.
+  const info = asRecord(
+    legacyServer
+      ? legacyServer.getClientVersion()
+      : envelope[CLIENT_INFO_META_KEY]
+  );
+  const protocolVersion = legacyServer
+    ? legacyServer.getNegotiatedProtocolVersion()
+    : envelope[PROTOCOL_VERSION_META_KEY];
+  const clientCapabilities = asRecord(
+    legacyServer
+      ? legacyServer.getClientCapabilities()
+      : envelope[CLIENT_CAPABILITIES_META_KEY]
+  );
   const clientInfo = Object.fromEntries(
     ["name", "version", "title"].flatMap((key) => {
       const value = info?.[key];
@@ -129,15 +144,9 @@ const defaultCallerContext = (
   );
   return {
     cwd,
-    ...(typeof envelope[PROTOCOL_VERSION_META_KEY] === "string"
-      ? { protocolVersion: envelope[PROTOCOL_VERSION_META_KEY] as string }
-      : {}),
+    ...(typeof protocolVersion === "string" ? { protocolVersion } : {}),
     ...(Object.keys(clientInfo).length ? { clientInfo } : {}),
-    ...(asRecord(envelope[CLIENT_CAPABILITIES_META_KEY])
-      ? {
-          clientCapabilities: asRecord(envelope[CLIENT_CAPABILITIES_META_KEY])!
-        }
-      : {})
+    ...(clientCapabilities ? { clientCapabilities } : {})
   };
 };
 
@@ -309,7 +318,11 @@ export const createKoedMcpServer = async (
             string,
             unknown
           >;
-          const fallback = defaultCallerContext(context, process.cwd());
+          const fallback = defaultCallerContext(
+            context,
+            process.cwd(),
+            _requestContext.era === "legacy" ? server.server : undefined
+          );
           const directory = callerContextResolver
             ? fallback.cwd
             : resolveMcpConversationDirectory({

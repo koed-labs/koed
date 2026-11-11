@@ -13,7 +13,7 @@ import {
   useSidebar
 } from "@koed/ui";
 import {
-  Activity,
+  ChartNoAxesColumn,
   ChevronLeft,
   ChevronRight,
   Folder,
@@ -135,20 +135,20 @@ function ShellContent(props: Props) {
               props.onHome,
               props.route.kind === "home"
             )}
-            {railButton(
-              "Recall activity",
-              <Activity />,
-              () => props.onSelect({ kind: "recall" }),
-              props.route.kind === "recall"
-            )}
           </SidebarMenu>
         </SidebarHeader>
         <SidebarFooter>
           <SidebarMenu>
             {railButton(
+              "Recall activity",
+              <ChartNoAxesColumn size={19} strokeWidth={2} />,
+              () => props.onSelect({ kind: "recall" }),
+              props.route.kind === "recall"
+            )}
+            {railButton(
               "Settings",
               <>
-                <Settings />
+                <Settings size={19} strokeWidth={2} />
                 <DesktopUpdateDot update={props.update} />
               </>,
               props.onSettings

@@ -1086,6 +1086,8 @@ export function V1App({
             <RecallActivityPage
               key={scopeKey}
               api={personalMemoryApi ?? null}
+              agent={agent}
+              projects={projects}
               adapters={{
                 openExternal: platform.openExternal,
                 writeClipboard: platform.copyText

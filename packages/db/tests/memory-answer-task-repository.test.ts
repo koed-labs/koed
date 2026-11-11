@@ -461,6 +461,101 @@ describeDb("durable Memory Answer task repository", () => {
     ).toBeNull();
   });
 
+  it.each([
+    {
+      timezone: "Europe/London",
+      from: "2026-03-29T00:00:00Z",
+      to: "2026-03-29T23:00:00Z",
+      hours: 23
+    },
+    {
+      timezone: "Europe/London",
+      from: "2026-10-24T23:00:00Z",
+      to: "2026-10-26T00:00:00Z",
+      hours: 25
+    },
+    {
+      timezone: "Asia/Kolkata",
+      from: "2026-11-10T18:30:00Z",
+      to: "2026-11-11T18:30:00Z",
+      hours: 24
+    }
+  ])(
+    "uses distinct hourly Recall and usage buckets for $hours-hour days in $timezone",
+    async (range) => {
+      const { actor, repository } = await createActor("recall-hourly");
+      const ids: string[] = [];
+      // Include both ends to prove the range is half-open. On the autumn date,
+      // the middle records fall in the two different occurrences of 01:00.
+      for (const offset of [0, 1, 2, range.hours]) {
+        const question = await repository.createFinalMemoryQuestion(actor, {
+          idempotencyKey: randomUUID(),
+          query: "Synthetic hourly boundary",
+          origin: "mcp_memory_answer",
+          searchDomain: "global",
+          status: "answered",
+          answerMarkdown: "Synthetic"
+        });
+        const instant = new Date(
+          Date.parse(range.from) + offset * 3_600_000
+        ).toISOString();
+        await pool.query(
+          "update memory_questions set created_at=$2 where id=$1",
+          [question.id, instant]
+        );
+        const key = randomUUID();
+        await repository.recordWorkflowTokenUsage(actor, {
+          workflowType: "mcp_memory_answer",
+          questionId: question.id,
+          totalTokens: 10,
+          inputTokens: 8,
+          outputTokens: 2,
+          idempotencyKey: key
+        });
+        await pool.query(
+          "update workflow_token_usage set observed_at=$2 where idempotency_key=$1",
+          [key, instant]
+        );
+        ids.push(question.id);
+      }
+      const stats = await repository.getRecallActivityOverview(actor, {
+        from: range.from,
+        to: range.to,
+        timezone: range.timezone,
+        bucket: "hour"
+      });
+      const legacy = await repository.getRecallActivityOverview(actor, {
+        from: range.from,
+        to: range.to,
+        timezone: range.timezone
+      });
+      expect(legacy.bucket).toBe("day");
+      expect(legacy.recordedQuestions).toBe(stats.recordedQuestions);
+      expect(stats.bucket).toBe("hour");
+      expect(stats.questions).toHaveLength(range.hours);
+      expect(stats.tokenTimeline).toHaveLength(range.hours);
+      expect(new Set(stats.questions.map((point) => point.start)).size).toBe(
+        range.hours
+      );
+      expect(stats.questions.slice(0, 3).map((point) => point.count)).toEqual([
+        1, 1, 1
+      ]);
+      expect(stats.questions.slice(3).every((point) => point.count === 0)).toBe(
+        true
+      );
+      expect(stats.recordedQuestions).toBe(3);
+      expect(stats.tokens.totalTokens).toBe(30);
+      expect(
+        stats.tokenTimeline.slice(0, 3).map((point) => point.totalTokens)
+      ).toEqual([10, 10, 10]);
+      expect(
+        stats.tokenTimeline
+          .slice(3)
+          .every((point) => point.totalTokens === null)
+      ).toBe(true);
+    }
+  );
+
   it("reclaims expired leases, fences stale owners, and resolves cancellation races", async () => {
     const { actor } = await createActor("lease-owner");
     const tasks = createMemoryAnswerTaskRepository(pool, {

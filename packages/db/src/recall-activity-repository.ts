@@ -1,7 +1,8 @@
 import { recallQuestionMetadataSchema } from "@koed/shared";
 import {
   personalRecallPredicate,
-  recallActivityFilter
+  recallActivityFilter,
+  recallActivityBuckets
 } from "./recall-activity-query.js";
 import {
   recallActivityOverviewInputSchema,
@@ -50,12 +51,9 @@ export const createRecallActivityRepository = (
     const input = recallActivityOverviewInputSchema.parse(rawInput);
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     const days = (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000;
-    const bucket = days <= 90 ? "day" : days <= 730 ? "week" : "month";
-    const unit = bind(bucket);
-    const timezone = bind(input.timezone);
-    const from = bind(input.from);
-    const to = bind(input.to);
-    const step = bind(`1 ${bucket}`);
+    const bucket =
+      input.bucket ?? (days <= 90 ? "day" : days <= 730 ? "week" : "month");
+    const buckets = recallActivityBuckets(input, bucket, bind);
     const result = await pool.query<{
       recordedQuestions: number;
       recordedErrors: number;
@@ -70,7 +68,7 @@ export const createRecallActivityRepository = (
            (q.recall_metadata->'timing'->>'durationMs')::bigint as duration
          from memory_questions q where ${predicates.join(" and ")}
        ), totals as (
-         select date_trunc(${unit}, created_at at time zone ${timezone}) as bucket,
+         select ${buckets.group("created_at")} as bucket,
            count(*)::int as count, count(*) filter (where status = 'error')::int as errors,
            count(*) filter (where outcome='found')::int as found,
            count(*) filter (where outcome='not_found')::int as not_found,
@@ -79,10 +77,7 @@ export const createRecallActivityRepository = (
            count(*) filter (where outcome is null)::int as unknown
          from eligible group by 1
        ), buckets as (
-         select generate_series(
-           date_trunc(${unit}, ${from}::timestamptz at time zone ${timezone}),
-           date_trunc(${unit}, (${to}::timestamptz - interval '1 microsecond') at time zone ${timezone}),
-           ${step}::interval) as bucket
+         select ${buckets.series} as bucket
        ) select (select count(*)::int from eligible) as "recordedQuestions",
           (select count(*)::int from eligible where status = 'error') as "recordedErrors",
           (select count(duration)::int from eligible) as "knownDurations",
@@ -96,7 +91,7 @@ export const createRecallActivityRepository = (
             'foundPercentage',100.0 * count(*) filter(where outcome='found') / nullif(count(*) filter(where outcome in ('found','not_found')),0)
           ) from eligible) as "memoryResults",
           jsonb_agg(jsonb_build_object(
-            'start', to_char(b.bucket at time zone ${timezone} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+            'start', to_char(${buckets.start}, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
             'count', coalesce(t.count, 0), 'errors', coalesce(t.errors, 0),
             'found',coalesce(t.found,0),'notFound',coalesce(t.not_found,0),
             'insufficient',coalesce(t.insufficient,0),'pendingSummary',coalesce(t.pending_summary,0),'unknown',coalesce(t.unknown,0)) order by b.bucket) as questions

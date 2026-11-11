@@ -12,7 +12,10 @@ the encrypted question content. It contains the Memory-found result, descriptive
 calling AI Client name/version when supplied, and measured task timing when
 available. No historical backfill is performed. Missing metadata stays unknown.
 MCP adapters forward bounded client information; the Local AI Runtime and API
-own persistence. Client information is self-reported description, never authority
+own persistence. The stdio adapter reads caller identity from the connection's
+`initialize` handshake for legacy MCP clients, or from each request's envelope
+for modern clients. Modern requests never inherit a prior request's identity.
+Client information is self-reported description, never authority
 or a stable installation identity. It may differ from the synthesis worker.
 
 Found percentage is `found / (found + not_found)`. Partial evidence, pending
@@ -38,6 +41,16 @@ questions, not submissions, attempts, or a complete failure rate. Recorded error
 are not recall misses. Question dates use final record creation time; token dates
 use usage observation time. Neither is request latency. The selected display
 timezone determines chart buckets, with half-open query ranges.
+
+Desktop presents a summary above independently scrolling recorded activity and
+a Recall-over-time chart. The default range is seven local calendar days. Today
+uses hourly server buckets (23 or 25 on daylight-saving transition days), seven
+days uses daily buckets, and thirty days groups daily server totals into ten
+three-day intervals. Custom ranges retain bounded day/week/month aggregation.
+Chart totals cover the entire filtered range, independently of the displayed
+50-row page. The question search is labelled as page-only and does not change
+aggregate metrics or decrypt additional history. Known usage history and coverage
+notes remain available under About these metrics.
 
 Only explicitly linked usage contributes to list totals and charts. Most older
 durable-task history has no question link and remains unknown. Opening one
