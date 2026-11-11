@@ -559,7 +559,7 @@ jobs:
       - changes
       - static-checks
     if: needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2204' || 'ubuntu-22.04' }}
+    runs-on: ${{ github.event_name == 'pull_request' && needs.changes.outputs.run_full_validation != 'true' && 'blacksmith-4vcpu-ubuntu-2204' || 'ubuntu-22.04' }}
     timeout-minutes: 120
 
     steps:
