@@ -558,8 +558,6 @@ jobs:
     needs:
       - changes
       - static-checks
-      - tests
-      - build
     if: needs.changes.outputs.run_linux_native == 'true' || needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 120

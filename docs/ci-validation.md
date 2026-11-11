@@ -19,6 +19,11 @@ Every pull-request update runs these gates in order:
    workflow change. `CI required` still waits for `Static checks`, `Tests`,
    `Build`, and the policy-selected packaged validation, so a failure in any of
    them blocks merge even though the smoke does not wait for them.
+4. `Native runtime Linux x64` starts once static checks pass, in parallel with
+   `Tests` and `Build`, whenever the same policy selects packaged validation. It
+   installs and builds on its own Linux runner and consumes no output from
+   `Tests` or `Build`. `CI required` waits for all three, so a failure in any of
+   them still blocks merge.
 
 The exact path policy is implemented in `.github/scripts/ci-policy.mjs` and
 covered by `scripts/ci-policy.test.mjs`. Documentation-only changes skip macOS,
