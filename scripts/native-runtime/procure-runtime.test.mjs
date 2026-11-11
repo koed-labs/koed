@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
+  readFileSync,
   mkdtempSync,
   lstatSync,
   rmSync,
@@ -13,6 +15,7 @@ import test from "node:test";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  aliasMacosPostgresModules,
   llamaLauncher,
   pgvectorBuildArgs,
   stageFlattenedRuntimeFiles
@@ -133,6 +136,35 @@ test("forced unavailable backend exits without falling back", () => {
     assert.equal(result.status, 69);
     assert.match(result.stderr, /backend 'cuda' is not installed/);
     assert.equal(result.stdout, "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("macOS PostgreSQL modules get the .so name the runtime contract requires", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-pg-modules-"));
+  try {
+    writeFileSync(resolve(root, "pgcrypto.dylib"), "pgcrypto-module");
+    aliasMacosPostgresModules(root, "darwin");
+    assert.equal(
+      readFileSync(resolve(root, "pgcrypto.so"), "utf8"),
+      "pgcrypto-module"
+    );
+    assert.equal(lstatSync(resolve(root, "pgcrypto.so")).isFile(), true);
+    assert.equal(existsSync(resolve(root, "pgcrypto.dylib")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("macOS PostgreSQL module aliasing fails when the module is missing", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-pg-modules-"));
+  try {
+    assert.throws(
+      () => aliasMacosPostgresModules(root, "darwin"),
+      /did not produce pgcrypto\.so\/pgcrypto\.dylib/
+    );
+    aliasMacosPostgresModules(root, "linux");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
