@@ -1267,6 +1267,7 @@ export interface LcmNodeForSummarization {
   depth: number;
   summaryText: string;
   sourceItems: LcmSourceItem[];
+  contextItems?: LcmSourceItem[];
   sourceTokenEstimate: number | null;
   summaryTokenEstimate: number | null;
   summaryModel: string | null;

@@ -118,6 +118,7 @@ export interface CapturedSessionSyncSummaryNodeV1 {
   summaryStructuredJson: Record<string, unknown>;
   summaryStructuredSchemaVersion: string;
   sourceOriginEventIds: string[];
+  contextOriginEventIds?: string[];
   childOriginNodeIds: string[];
   sourceHash: string;
   sourceEventCount: number;
@@ -464,6 +465,9 @@ const validateCapturedSessionSyncPackageV2 = (
           "summaryStructuredJson",
           "summaryStructuredSchemaVersion",
           "sourceOriginEventIds",
+          ...(node && Object.hasOwn(node, "contextOriginEventIds")
+            ? ["contextOriginEventIds"]
+            : []),
           "childOriginNodeIds",
           "sourceHash",
           "sourceEventCount",
@@ -499,6 +503,13 @@ const validateCapturedSessionSyncPackageV2 = (
         new Set(node.sourceOriginEventIds).size ===
           node.sourceOriginEventIds.length &&
         node.sourceOriginEventIds.every(uuid) &&
+        (node.contextOriginEventIds === undefined ||
+          (node.kind === "leaf" &&
+            Array.isArray(node.contextOriginEventIds) &&
+            node.contextOriginEventIds.length === 1 &&
+            node.contextOriginEventIds.every(
+              (id) => uuid(id) && !node.sourceOriginEventIds.includes(id)
+            ))) &&
         Array.isArray(node.childOriginNodeIds) &&
         node.childOriginNodeIds.length <=
           CAPTURED_SESSION_SYNC_MAX_SUMMARY_NODES &&

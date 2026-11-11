@@ -7778,6 +7778,78 @@ describeDb("Shared Memory repository", () => {
     expect(persisted.rowCount).toBe(0);
   });
 
+  it("requires LCM context dependencies to belong to the frozen authorized source revision", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "context-covered");
+    const context = await createSource(fixture, 1, "context-suffix");
+    await putOwnerPolicy(fixture, source);
+    const contextEventId = context.seededEvents[0]!.eventId;
+    // Compose two valid synced events into one Conversation, with the suffix
+    // initially newer than the revision approved for publication.
+    await pool.query("update memory_events set session_id=$1 where id=$2", [
+      source.localSessionId,
+      contextEventId
+    ]);
+    await pool.query(
+      "update conversation_items set session_id=$1 where id=any($2::uuid[])",
+      [source.localSessionId, context.seededEvents[0]!.contributorIds]
+    );
+    await pool.query(
+      "update memory_nodes set session_id=$1 where id=any($2::uuid[])",
+      [source.localSessionId, [context.leaf.nodeId, context.rollup.nodeId]]
+    );
+    await pool.query(
+      `insert into sync_event_mappings
+       (sync_relationship_id,origin_event_id,revision_hash,local_memory_event_id,source_cursor)
+       select $1,origin_event_id,revision_hash,local_memory_event_id,2
+       from sync_event_mappings where sync_relationship_id=$2 and active=true`,
+      [source.syncRelationshipId, context.syncRelationshipId]
+    );
+    await pool.query(
+      "insert into memory_node_context_events (memory_node_id,memory_event_id) values ($1,$2)",
+      [source.leaf.nodeId, contextEventId]
+    );
+    for (const representation of ["lcm_leaves", "lcm_rollups"] as const) {
+      await expect(
+        createPersistedPreview(
+          fixture,
+          source,
+          representation,
+          1,
+          source.currentLabel,
+          allRepresentations,
+          "snapshot"
+        )
+      ).rejects.toThrow(
+        "LCM context dependency is outside the authorized source revision"
+      );
+    }
+    expect(
+      (
+        await pool.query(
+          "select 1 from shared_source_artifacts where logical_memory_id=$1",
+          [source.logicalMemoryId]
+        )
+      ).rowCount
+    ).toBe(0);
+    await pool.query(
+      "update sync_event_mappings set source_cursor=1 where sync_relationship_id=$1 and local_memory_event_id=$2",
+      [source.syncRelationshipId, contextEventId]
+    );
+    for (const representation of ["lcm_leaves", "lcm_rollups"] as const) {
+      const preview = await createPersistedPreview(
+        fixture,
+        source,
+        representation,
+        1,
+        source.currentLabel,
+        allRepresentations,
+        "snapshot"
+      );
+      expect(preview.sourceRevision).toBe(1);
+    }
+  });
+
   it("rejects cross-session leaf and rollup provenance without creating a fallback", async () => {
     const fixture = await createWorkspaceFixture();
     const source = await createSource(fixture, 1, "cross-session-primary");

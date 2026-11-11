@@ -120,6 +120,39 @@ Team Workspace.
 
 The removed `MEMORY_ANSWER_TIMEOUT_MS` name has no compatibility alias.
 
+## Evidence Selection And Budgets
+
+Personal Memory synthesis requests canonical event context by default. Embedding
+chunks locate matches; the local worker receives the complete matched Memory
+Event plus its immediate preceding and following events in the same authorised
+Conversation. Neighbours use the existing `captured_at,id` order. Deleted,
+ineligible or inaccessible neighbours are gaps, not permission to substitute a
+more distant event. Project, Session, time, PDS-readiness and encryption
+boundaries still apply. Team recall retains its separately authorised shared
+representations; this does not grant access to personal neighbouring events.
+
+LCM leaf and rollup hits remain summary evidence. They are not replaced by all
+of their underlying events or admitted as one large raw-event window. The worker
+can request source expansion separately when it needs the underlying detail.
+
+Each event keeps its own source identity, actor and citation. Overlapping windows
+are deduplicated, and complete windows are admitted against existing evidence
+and prompt-token budgets. Canonical event text is not shortened to a preview to
+make it fit. If no complete window fits, the worker reports insufficient bounded
+context rather than presenting a cut statement as complete evidence. Direct
+diagnostic searches may opt in with `include_event_context: true`; ordinary
+diagnostic search behaviour is unchanged.
+
+Adjacency is determined before eligibility checks: a directly adjacent row that
+is excluded or inaccessible creates a gap, even when a more distant eligible
+event exists. This conservative boundary avoids joining non-adjacent statements.
+The order matches existing LCM compaction (`captured_at,id`); it is not a new
+source-sequence chronology policy. Capture timestamps can be supplied by the
+source rather than set to ingestion time; equal timestamps still use the event
+ID, not source sequence, as the tie-breaker. Time filters retain the source event
+time fallback. Reordering historical Conversations or changing timestamp
+tie-breaking requires a separate compaction and sync compatibility decision.
+
 ## AI Client Delivery
 
 Every route below uses the same durable task and the explicit submit-and-collect

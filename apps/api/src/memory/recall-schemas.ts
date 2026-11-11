@@ -41,7 +41,8 @@ export const searchMemorySchema = z
       ])
       .optional(),
     parent_node_ids: z.array(z.string().uuid()).max(20).optional(),
-    strict_limit: queryBooleanSchema.optional()
+    strict_limit: queryBooleanSchema.optional(),
+    include_event_context: z.boolean().optional()
   })
   .superRefine((input, context) => {
     if (input.personal_selection && input.team_workspace_id)

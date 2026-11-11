@@ -27,6 +27,12 @@ export const invalidateDerivedMemoryForMemoryEvents = async (
 
         union
 
+        select context.memory_node_id as id
+        from memory_node_context_events context
+        where context.memory_event_id = any($1::uuid[])
+
+        union
+
         select mnc.parent_memory_node_id as id
         from memory_node_children mnc
         join affected_nodes affected
