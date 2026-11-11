@@ -1,5 +1,56 @@
 # Koed
 
+## 1.0.0
+
+### Major Changes
+
+- 567b3f6: Stable database setup now starts from a single fresh-install schema. Existing pre-release and alpha database histories are not supported as in-place upgrade sources, and no alpha-to-stable conversion is provided. The old database is left untouched; Operators must retain a backup separately and initialize a fresh database for the stable release.
+
+- 74eeb0a: Align Koed workspace package names under the `@koed-labs` namespace. Update integrations and tooling that reference the former `@koed` package names.
+
+### Minor Changes
+
+- 07a1a00: Preserve complete Personal Memory Events around retrieval matches, including
+  authorised neighbouring events, with whole-window token admission and distinct
+  source citations. Give new LCM leaves one context-only next event to complete
+  boundary statements or tool results without advancing summary coverage.
+
+  Track context dependencies through summary claims, invalidation, device sync,
+  cross-identity sync and Team sharing boundaries. Add a database migration and
+  regression coverage without changing existing embeddings or rewriting completed
+  summaries.
+
+  Upgrade the API and local summary workers together: context-aware revisions and
+  compatibility hashes fence pre-upgrade work, and different leaf algorithm
+  versions do not share derived leaf artifacts. Interrupted work uses normal
+  claim/retry handling; completed summaries are retained.
+
+- f514fb7: Recover recorded Desktop CLI launchers after app relocation with explicit consent, support cancellation of absent pending installs, disable Linux launcher installation until durable paths can be verified, and migrate managed PATH blocks when the launcher directory or shell changes.
+
+- 69d7729: Add hardware detection during Desktop setup and CPU/GPU controls under Services → Hardware Acceleration. Support Metal and optional CUDA with verified switching, CPU fallback, and restart recovery.
+
+- f514fb7: Upgrade Desktop to Electron 45 and update its measured component runtime identity. Require macOS 14 or later for packaged Desktop. Report native clipboard failures in the renderer.
+
+- 624e5e9: Publish Koed Desktop for Linux x64 as an AppImage with a SHA-256 checksum on each GitHub Release. Verify the download with `sha256sum --check koed-desktop-linux-x64.sha256`, make the AppImage executable, and run it in a graphical session; direct launch also needs FUSE 2.
+
+- f514fb7: Support standalone Node 24 through 26 with newly built N-API component releases. Existing components retain their original compatibility constraints and may need reinstalling from a compatible release.
+
+- f514fb7: Add a versioned standalone Server installer for macOS arm64 and Linux x64, published with each release as `install-koed-server.sh`. It installs the matching `@koed-labs/server` package with a compatible or private Node, provisions Base, the native runtime and the embedding model through the release provider, starts the server and verifies readiness without Homebrew, `sudo` or AI Client configuration. The release provider now supports macOS arm64 native runtime assets.
+
+### Patch Changes
+
+- 774417a: Move Desktop Settings to the shared sidebar layout for General, AI models, Services, About, and their detail pages. Use theme-matched Koed logos in Desktop navigation and Settings. Hide the unused profile button in the sidebar. Let users choose one Memory Model during onboarding or in Settings for Memory Answers, LCM summaries, captured-session titles, and Curated Memory reviews.
+
+  Fix an issue where a clean Desktop setup from a checkout could reject its own API Token during final checks.
+
+  Preselect the first ready AI Client and a named Memory Model during onboarding. Prefer GPT-6 Luna for Codex and Haiku 5.5 for Claude Code with Medium reasoning. Restore recognizable Koed settings when Codex reorders its configuration during setup.
+
+- 74eeb0a: Remove the obsolete `db:migrate:reconcile-projects` root command, which pointed to a nonexistent migration script.
+
+- 9f8e8d3: Bump resolution of kins on home page. Implement clean loading screen whilst koed-server backend initialises.
+
+- 5e32bd9: Make `koed pair` and `koed personal-sync` opt-in for this single-device release. They are hidden from `koed --help` and refuse to run unless `KOED_PERSONAL_DEVICE_SYNC_ENABLED=true` is set. Existing Personal Device Groups and stored data are unchanged.
+
 ## 0.11.1
 
 ### Patch Changes
