@@ -23,6 +23,39 @@ describe.skipIf(!adminUrl)("fresh-only migration history protection", () => {
     }
   };
 
+  it("preserves all preconfigured timeout settings after fresh migrations", async () => {
+    await withDisposableDatabase(async (pool) => {
+      const settings = [
+        ["statement_timeout", "17s"],
+        ["lock_timeout", "3s"],
+        ["idle_in_transaction_session_timeout", "29s"],
+        ["transaction_timeout", "41s"]
+      ] as const;
+      for (const [name, value] of settings) {
+        await pool.query(`set ${name} = '${value}'`);
+      }
+
+      await runDbMigrations(pool);
+
+      const actual = await pool.query(
+        "select name, setting from pg_settings where name = any($1)",
+        [settings.map(([name]) => name)]
+      );
+      expect(
+        Object.fromEntries(
+          actual.rows.map(({ name, setting }) => [name, setting])
+        )
+      ).toEqual(
+        Object.fromEntries(
+          settings.map(([name, value]) => [
+            name,
+            String(Number.parseInt(value, 10) * 1000)
+          ])
+        )
+      );
+    });
+  }, 120_000);
+
   it("rejects populated schema without history without changing its marker", async () => {
     await withDisposableDatabase(async (pool) => {
       await pool.query(

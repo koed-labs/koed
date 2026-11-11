@@ -6,10 +6,10 @@
 -- Dumped from database version 17.10 (Homebrew)
 -- Dumped by pg_dump version 17.10 (Homebrew)
 
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET transaction_timeout = 0;
+SET LOCAL statement_timeout = 0;
+SET LOCAL lock_timeout = 0;
+SET LOCAL idle_in_transaction_session_timeout = 0;
+SET LOCAL transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SET check_function_bodies = false;
