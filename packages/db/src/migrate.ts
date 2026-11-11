@@ -85,9 +85,29 @@ export const runDbMigrations = async (
         )
       ) {
         throw new Error(
-          "Database migration history does not match this build. Preserve the database and reconcile a verified unreleased Project history with the Local Operator Script before retrying."
+          "Alpha databases are unsupported as in-place upgrade sources; database left untouched. Use a fresh database for this migration baseline."
         );
       }
+    }
+    const applicationRelations = await client.query<{ present: boolean }>(
+      `select exists (
+         select 1 from pg_class relation
+         join pg_namespace namespace on namespace.oid = relation.relnamespace
+         where namespace.nspname = 'public'
+           and relation.relkind in ('r', 'p', 'v', 'm', 'f')
+       ) as present`
+    );
+    const hasAppliedHistory = ledger.rows[0]?.present
+      ? (
+          await client.query(
+            "select exists (select 1 from drizzle.__drizzle_migrations) as present"
+          )
+        ).rows[0]?.present === true
+      : false;
+    if (!hasAppliedHistory && applicationRelations.rows[0]?.present) {
+      throw new Error(
+        "Alpha databases are unsupported as in-place upgrade sources; database left untouched. Use a fresh database for this migration baseline."
+      );
     }
     await migrate(createDb(client), config);
   } finally {

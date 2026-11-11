@@ -1,1 +1,0 @@
-ALTER TABLE "conversation_items" ADD COLUMN "agent_seal_waiting_at" timestamp with time zone;

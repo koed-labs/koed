@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDbPool } from "./connection.js";
 import { createRemoteMcpOAuthRepository } from "./remote-mcp-oauth-repository.js";
+import { runDbMigrations } from "./migrate.js";
 
 const databaseUrl = process.env.KOED_OAUTH_TEST_DATABASE_URL;
 
 describe.skipIf(!databaseUrl)("remote MCP OAuth retention", () => {
-  const schema = `oauth_retention_${randomUUID().replaceAll("-", "")}`;
+  const database = `koed_oauth_${randomUUID().replaceAll("-", "")}`;
   const url = new URL(databaseUrl ?? "postgresql://localhost/postgres");
   const admin = createDbPool({ connectionString: url.toString() });
-  url.searchParams.set("options", `-csearch_path=${schema}`);
+  url.pathname = `/${database}`;
   const pool = createDbPool({ connectionString: url.toString() });
   const store = createRemoteMcpOAuthRepository(pool);
   const now = new Date("2030-01-01T00:00:00Z");
@@ -20,25 +20,14 @@ describe.skipIf(!databaseUrl)("remote MCP OAuth retention", () => {
   const otherOwner = randomUUID();
 
   beforeAll(async () => {
-    await admin.query(`create schema ${schema}`);
-    await pool.query(
-      "create table users (id uuid primary key, disabled_at timestamptz, deleted_at timestamptz); create table audit_events (actor_user_id uuid, owner_user_id uuid, visibility text, action text, target_table text, target_id uuid, metadata jsonb)"
-    );
-    await pool.query("insert into users (id) values ($1),($2)", [
+    await admin.query(`create database "${database}"`);
+    await runDbMigrations(pool);
+    await pool.query("insert into users (id, email) values ($1, $2),($3, $4)", [
       owner,
-      otherOwner
+      `owner-${owner}@example.test`,
+      otherOwner,
+      `other-${otherOwner}@example.test`
     ]);
-    const migration = await readFile(
-      new URL("../drizzle/0043_remote_mcp_oauth.sql", import.meta.url),
-      "utf8"
-    );
-    await pool.query(migration.replaceAll('"public".', `"${schema}".`));
-    await pool.query(
-      await readFile(
-        new URL("../drizzle/0046_external_agent_grants.sql", import.meta.url),
-        "utf8"
-      )
-    );
   });
   beforeEach(async () => {
     await pool.query(
@@ -47,7 +36,7 @@ describe.skipIf(!databaseUrl)("remote MCP OAuth retention", () => {
   });
   afterAll(async () => {
     await pool.end();
-    await admin.query(`drop schema if exists ${schema} cascade`);
+    await admin.query(`drop database if exists "${database}" with (force)`);
     await admin.end();
   });
 
