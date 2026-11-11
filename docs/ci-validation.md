@@ -261,7 +261,9 @@ using the next relevant pull request as a warm-cache performance measurement.
 
 A separate Linux Desktop CPU core cache workflow runs on `main` when core inputs
 change, on Tuesday and Friday, and by manual dispatch from the default branch.
-It uses the same Ubuntu runner, cache key, build and verification as CI: a miss
+It runs on the same Blacksmith Ubuntu 22.04 runner as the pull-request job, so
+it saves to the Blacksmith cache that pull requests restore from, and uses the
+same cache key, build and verification as CI: a miss
 builds the core, and every restored or built core is verified before and after
 runtime validation, before any save. Pull requests retain their cache-miss build
 and verification fallback. This CPU-only Desktop cache is distinct from the

@@ -30,7 +30,13 @@ test("default-branch CPU core warmer matches CI cache and validates before savin
   assert.ok("workflow_dispatch" in warmer.on);
   const job = warmer.jobs["maintain-native-core-cache"];
   assert.match(job.if, /github\.event\.repository\.default_branch/);
-  assert.equal(job["runs-on"], ci.jobs["native-runtime-linux-x64"]["runs-on"]);
+  // Pull requests restore from the Blacksmith cache, so the warmer must save there.
+  assert.equal(job["runs-on"], "blacksmith-4vcpu-ubuntu-2204");
+  assert.ok(
+    ci.jobs["native-runtime-linux-x64"]["runs-on"].includes(
+      `'pull_request' && '${job["runs-on"]}'`
+    )
+  );
   assert.equal(warmer.env.NODE_VERSION, ci.env.NODE_VERSION);
   assert.equal(warmer.env.PNPM_VERSION, ci.env.PNPM_VERSION);
   const names = [
