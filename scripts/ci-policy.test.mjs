@@ -724,6 +724,44 @@ test("Linux smoke system packages install from cached archives before the packag
   );
 });
 
+test("pull requests run Linux jobs on Blacksmith and other events on GitHub runners", () => {
+  const jobs = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs;
+  const expected = {
+    changes: ["blacksmith-2vcpu-ubuntu-2404", "ubuntu-24.04"],
+    "node-26-consumer": ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
+    "static-checks": ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
+    tests: ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
+    build: ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
+    // The native runtime keeps its Ubuntu 22.04 (glibc 2.35) build floor.
+    "native-runtime-linux-x64": [
+      "blacksmith-4vcpu-ubuntu-2204",
+      "ubuntu-22.04"
+    ],
+    "ci-required": ["blacksmith-2vcpu-ubuntu-2404", "ubuntu-24.04"]
+  };
+  for (const [name, [pullRequest, other]] of Object.entries(expected)) {
+    assert.equal(
+      jobs[name]["runs-on"],
+      `\${{ github.event_name == 'pull_request' && '${pullRequest}' || '${other}' }}`,
+      name
+    );
+  }
+  for (const name of [
+    "relevant-packaged-smoke",
+    "release-candidate-validation"
+  ]) {
+    assert.equal(jobs[name]["runs-on"], "macos-15", name);
+  }
+  assert.deepEqual(
+    Object.keys(jobs).toSorted(),
+    [
+      ...Object.keys(expected),
+      "relevant-packaged-smoke",
+      "release-candidate-validation"
+    ].toSorted()
+  );
+});
+
 test("Linux smoke is required for app and full validation", () => {
   for (const policy of [
     { run_app_smoke: "true", run_full_validation: "false" },

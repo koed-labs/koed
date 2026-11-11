@@ -64,6 +64,15 @@ as complete. Do not require `CI required` before a commit containing that job is
 available on GitHub, because doing so would leave every pull request waiting on
 a check that cannot run.
 
+### Runners
+
+On pull requests every Linux job runs on Blacksmith runners; scheduled and
+manual runs use GitHub-hosted runners. `Native runtime Linux x64` stays on
+Ubuntu 22.04 on both so the packaged runtime keeps its glibc 2.35 floor. The
+macOS jobs and the release workflow stay on GitHub-hosted runners. Blacksmith
+runners use their own Actions cache, so pull-request caches are separate from
+the caches that GitHub-hosted runs save.
+
 ## App-only packaged smoke
 
 Normal Desktop builds emit only the application into `apps/desktop/dist`.
