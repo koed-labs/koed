@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import cookie from "@fastify/cookie";
 import Fastify from "fastify";
 import { Window } from "happy-dom";
 import {
   createDbPool,
   createRemoteMcpOAuthRepository,
+  runDbMigrations,
   type MemorySourceRepository
 } from "@koed/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -30,9 +30,9 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
   const admin = createDbPool({
     connectionString: databaseUrl ?? "postgresql://localhost/postgres"
   });
-  const schema = `oauth_routes_${randomUUID().replaceAll("-", "")}`;
+  const database = `koed_oauth_routes_${randomUUID().replaceAll("-", "")}`;
   const scopedUrl = new URL(databaseUrl ?? "postgresql://localhost/postgres");
-  scopedUrl.searchParams.set("options", `-csearch_path=${schema}`);
+  scopedUrl.pathname = `/${database}`;
   const pool = createDbPool({ connectionString: scopedUrl.toString() });
   const oauth = createRemoteMcpOAuthProvider({
     store: createRemoteMcpOAuthRepository(pool),
@@ -47,7 +47,7 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
             email: string;
             display_name: string | null;
           }>(
-            "select u.id,u.email,u.display_name from user_sessions s join users u on u.id = s.user_id where s.secret_hash = $1 and s.expires_at > now() and s.revoked_at is null and u.disabled_at is null and u.deleted_at is null",
+            "select u.id,u.email,u.display_name from user_sessions s join users u on u.id = s.user_id where s.session_hash = $1 and s.expires_at > now() and s.revoked_at is null and u.disabled_at is null and u.deleted_at is null",
             [hash]
           );
           const row = result.rows[0];
@@ -62,34 +62,15 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
   let base: string;
   let clientId: string;
   beforeAll(async () => {
-    await admin.query(`create schema ${schema}`);
-    await pool.query(
-      "create table users (id uuid primary key,email text,display_name text,disabled_at timestamptz,deleted_at timestamptz); create table user_sessions(secret_hash text,user_id uuid,expires_at timestamptz,revoked_at timestamptz); create table audit_events(actor_user_id uuid,owner_user_id uuid,visibility text,action text,target_table text,target_id uuid,metadata jsonb)"
-    );
+    await admin.query(`create database "${database}"`);
+    await runDbMigrations(pool);
     await pool.query(
       "insert into users(id,email) values($1,'user@koed.example')",
       [userId]
     );
     await pool.query(
-      "insert into user_sessions(secret_hash,user_id,expires_at) values($1,$2,now()+interval '1 day'),($3,$2,now()+interval '1 day')",
+      "insert into user_sessions(session_hash,user_id,expires_at) values($1,$2,now()+interval '1 day'),($3,$2,now()+interval '1 day')",
       [hashSecret("session-one"), userId, hashSecret("session-two")]
-    );
-    const migration = await readFile(
-      new URL(
-        "../../../../packages/db/drizzle/0043_remote_mcp_oauth.sql",
-        import.meta.url
-      ),
-      "utf8"
-    );
-    await pool.query(migration.replaceAll('"public".', `"${schema}".`));
-    await pool.query(
-      await readFile(
-        new URL(
-          "../../../../packages/db/drizzle/0046_external_agent_grants.sql",
-          import.meta.url
-        ),
-        "utf8"
-      )
     );
     await app.register(cookie);
     registerBrowserWriteCsrfProtection(
@@ -121,7 +102,7 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
   afterAll(async () => {
     await app.close();
     await pool.end();
-    await admin.query(`drop schema if exists ${schema} cascade`);
+    await admin.query(`drop database if exists "${database}" with (force)`);
     await admin.end();
   }, 30_000);
 
