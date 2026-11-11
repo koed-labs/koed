@@ -708,9 +708,20 @@ test("Linux smoke system packages install from cached archives before the packag
   const cached = script.indexOf(
     "dpkg -i --skip-same-version --refuse-downgrade"
   );
-  const mirrors = script.indexOf("apt-get update");
+  const mirrors = script.indexOf("if ! apt_fetch; then");
   assert.ok(cached > 0 && mirrors > cached);
   assert.match(script, /Dir::Cache::Archives="\$\{archives\}"/);
+
+  const fallback = script.indexOf("KOED_APT_FALLBACK_MIRROR");
+  assert.ok(fallback > mirrors, "fallback mirror must follow the default");
+  assert.match(
+    script,
+    /deb \[signed-by=\$\{keyring\}\] \$\{mirror\} \$\{pocket\} main universe/
+  );
+  assert.match(
+    script,
+    /keyring=\/usr\/share\/keyrings\/ubuntu-archive-keyring\.gpg/
+  );
 });
 
 test("Linux smoke is required for app and full validation", () => {
