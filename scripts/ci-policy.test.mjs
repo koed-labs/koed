@@ -717,11 +717,6 @@ test("pull requests run Linux jobs on Blacksmith and other events on GitHub runn
     "static-checks": ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
     tests: ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
     build: ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
-    // The native runtime keeps its Ubuntu 22.04 (glibc 2.35) build floor.
-    "native-runtime-linux-x64": [
-      "blacksmith-4vcpu-ubuntu-2204",
-      "ubuntu-22.04"
-    ],
     "ci-required": ["blacksmith-2vcpu-ubuntu-2404", "ubuntu-24.04"]
   };
   for (const [name, [pullRequest, other]] of Object.entries(expected)) {
@@ -731,6 +726,13 @@ test("pull requests run Linux jobs on Blacksmith and other events on GitHub runn
       name
     );
   }
+  // The native runtime keeps its Ubuntu 22.04 (glibc 2.35) build floor. Full
+  // validation restores the payload cache that GitHub-hosted runs save, so it
+  // stays on the GitHub-hosted runner.
+  assert.equal(
+    jobs["native-runtime-linux-x64"]["runs-on"],
+    "${{ github.event_name == 'pull_request' && needs.changes.outputs.run_full_validation != 'true' && 'blacksmith-4vcpu-ubuntu-2204' || 'ubuntu-22.04' }}"
+  );
   for (const name of [
     "relevant-packaged-smoke",
     "release-candidate-validation"
@@ -741,6 +743,7 @@ test("pull requests run Linux jobs on Blacksmith and other events on GitHub runn
     Object.keys(jobs).toSorted(),
     [
       ...Object.keys(expected),
+      "native-runtime-linux-x64",
       "relevant-packaged-smoke",
       "release-candidate-validation"
     ].toSorted()
