@@ -8,6 +8,13 @@
       "when": 1793893680845,
       "tag": "0000_clean_initial_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794397863394,
+      "tag": "0001_lcm_boundary_context",
+      "breakpoints": true
     }
   ]
 }

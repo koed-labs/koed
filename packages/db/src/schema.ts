@@ -1852,6 +1852,11 @@ export const memoryEvents = pgTable(
       .where(
         sql`${table.visibility} = 'personal' and ${table.invalidatedAt} is null`
       ),
+    index("memory_events_session_capture_order_idx").on(
+      table.sessionId,
+      table.capturedAt,
+      table.id
+    ),
     index("memory_events_personal_project_expr_idx")
       .on(
         table.ownerUserId,
@@ -2231,6 +2236,21 @@ export const memoryNodeSources = pgTable(
       "memory_node_sources_one_source_check",
       sql`${table.memoryEventId} is not null or ${table.messageId} is not null or ${table.toolEventId} is not null`
     )
+  ]
+);
+
+export const memoryNodeContextEvents = pgTable(
+  "memory_node_context_events",
+  {
+    memoryNodeId: uuid("memory_node_id")
+      .primaryKey()
+      .references(() => memoryNodes.id, { onDelete: "cascade" }),
+    memoryEventId: uuid("memory_event_id")
+      .notNull()
+      .references(() => memoryEvents.id, { onDelete: "cascade" })
+  },
+  (table) => [
+    index("memory_node_context_events_event_idx").on(table.memoryEventId)
   ]
 );
 

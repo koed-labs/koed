@@ -493,6 +493,7 @@ export interface SearchMemoryInput {
     | "raw_fallback_search";
   parentNodeIds?: string[];
   strictLimit?: boolean;
+  includeEventContext?: boolean;
 }
 
 export type AnswerMemoryInput = SearchMemoryInput;
@@ -568,6 +569,7 @@ export interface MemorySearchResult extends MemoryCandidateProvenance {
   parentNodeIds?: string[];
   visibility: Visibility;
   summaryText: string;
+  sourceItems?: LcmSourceItem[];
   lexicalAnchors?: string[];
   exactAnchorMatches?: string[];
   lcmNodeSummaryStatus?: "pending" | "summarized";
@@ -679,6 +681,7 @@ export interface MemoryEngineRepository {
       retrievalStage?: SearchMemoryInput["retrievalStage"];
       parentNodeIds?: string[];
       strictLimit?: boolean;
+      includeEventContext?: boolean;
     }
   ): Promise<{
     results: MemorySearchResult[];

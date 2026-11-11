@@ -85,6 +85,7 @@ import { createHistoricalImportRepository } from "./historical-import-repository
 import { embeddingTableForDimensions } from "./embedding-coverage.js";
 import { createCollaborationRepository } from "./collaboration-repository.js";
 import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
+import { loadLcmContextItems, type LcmContextEvent } from "./lcm-context.js";
 import { createCrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
 import {
   createCuratedMemoryRepository,
@@ -105,6 +106,10 @@ import { createManagedTerminalRepository } from "./managed-terminal-repository.j
 import { createDevelopmentWorkspaceSnapshotRepository } from "./development-workspace-snapshot-repository.js";
 import { createManagedConversationTransferRepository } from "./managed-conversation-transfer-repository.js";
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
+import {
+  retrieveCanonicalEventContext,
+  retrievalContextKey
+} from "./retrieval-event-context.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
 import { createMemoryAnswerTaskRepository } from "./memory-answer-task-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
@@ -3827,7 +3832,8 @@ const mapMemoryEvent = (row: {
 const mapLcmNodeForSummarization = async (
   pool: pg.Pool | pg.PoolClient,
   row: LcmNodeForSummarizationRow,
-  provider: EnvelopeEncryptionProvider | undefined
+  provider: EnvelopeEncryptionProvider | undefined,
+  hydrateContext?: (event: LcmContextEvent) => Promise<LcmSourceItem>
 ): Promise<LcmNodeForSummarization> => {
   const hydratedRow = await hydrateMemoryNodeRow(pool, provider, row);
   let sourceItems = Array.isArray(hydratedRow.source_items_json)
@@ -3917,6 +3923,10 @@ const mapLcmNodeForSummarization = async (
     depth: hydratedRow.depth,
     summaryText: hydratedRow.summary_text,
     sourceItems,
+    contextItems:
+      hydratedRow.kind === "leaf" && hydrateContext
+        ? await loadLcmContextItems(pool, hydratedRow.id, hydrateContext)
+        : [],
     sourceTokenEstimate: hydratedRow.source_token_estimate,
     summaryTokenEstimate: hydratedRow.summary_token_estimate,
     summaryModel: hydratedRow.summary_model,
@@ -3935,6 +3945,8 @@ const lcmSummaryInputRevisionHash = (node: LcmNodeForSummarization): string =>
         kind: node.kind,
         depth: node.depth,
         sourceItems: node.sourceItems,
+        contextPolicy: "immediate-next-memory-event-v1",
+        contextItems: node.contextItems ?? [],
         lcmAlgorithmVersion: node.lcmAlgorithmVersion
       })
     )
@@ -4059,6 +4071,34 @@ export const createMemorySourceRepository = (
       return requireOwnerPrivateReplicaEnvelopeEncryptionProvider();
     }
     return requireEnvelopeEncryptionProvider();
+  };
+  const hydrateLcmContextEvent = async (
+    event: LcmContextEvent
+  ): Promise<LcmSourceItem> => {
+    let payload = event.payload;
+    if (payload.contentEncrypted === true) {
+      const decrypted = await decryptAuthorizedMemoryEventPayload(
+        pool,
+        await resolveMemoryEventEncryptionProvider(event.id),
+        { ownerUserId: event.owner_user_id, memoryEventId: event.id }
+      );
+      if (!decrypted) throw new Error("LCM context event cannot be decrypted");
+      payload = decrypted;
+    }
+    return {
+      kind: "memory_event",
+      sourceTable: "memory_events",
+      sourceId: event.id,
+      visibility: event.visibility,
+      actor: payload.actor,
+      turnId: event.turn_id,
+      createdAt: event.captured_at.toISOString(),
+      occurredAt: (event.source_event_time ?? event.captured_at).toISOString(),
+      capturedAt: event.captured_at.toISOString(),
+      text: memoryEventLcmContent(payload) ?? "",
+      payload: lcmSourcePayloadForEvent({ ...event, payload }),
+      position: 0
+    };
   };
   const hydrateRepositoryMemoryNodeRow = async <
     T extends HydratableMemoryNodeRow
@@ -9379,7 +9419,8 @@ export const createMemorySourceRepository = (
         row,
         encryptedMemoryNodeColumns(row).size > 0
           ? await resolveMemoryNodeEncryptionProvider(row.id)
-          : options.envelopeEncryptionProvider
+          : options.envelopeEncryptionProvider,
+        hydrateLcmContextEvent
       );
     },
 
@@ -9467,7 +9508,8 @@ export const createMemorySourceRepository = (
             row,
             encryptedMemoryNodeColumns(row).size > 0
               ? await resolveMemoryNodeEncryptionProvider(row.id)
-              : options.envelopeEncryptionProvider
+              : options.envelopeEncryptionProvider,
+            hydrateLcmContextEvent
           );
           if (
             candidate.summaryModel === null ||
@@ -9549,9 +9591,34 @@ export const createMemorySourceRepository = (
             [node.id]
           );
           const groupIds = new Set(topology.rows.map((row) => row.group_db_id));
+          const contextTopology = await pool.query<{
+            group_db_id: string;
+            logical_event_id: string;
+          }>(
+            `select mapping.group_id as group_db_id,mapping.logical_event_id
+               from memory_node_context_events context
+               join pds_memory_event_mappings mapping
+                 on mapping.memory_event_id=context.memory_event_id
+              where context.memory_node_id=$1`,
+            [node.id]
+          );
           if (
             topology.rows.length === node.sourceItems.length &&
-            groupIds.size === 1
+            groupIds.size === 1 &&
+            (contextTopology.rows.length !== (node.contextItems?.length ?? 0) ||
+              contextTopology.rows.some(
+                (row) => !groupIds.has(row.group_db_id)
+              ))
+          ) {
+            // Portable covered sources must wait for their context dependency
+            // mappings instead of escaping PDS authority through a local claim.
+            continue;
+          }
+          if (
+            topology.rows.length === node.sourceItems.length &&
+            groupIds.size === 1 &&
+            contextTopology.rows.length === (node.contextItems?.length ?? 0) &&
+            contextTopology.rows.every((row) => groupIds.has(row.group_db_id))
           ) {
             compatibilityContractHash =
               pdsArtifactCompatibilityHash(pdsContract);
@@ -9563,6 +9630,13 @@ export const createMemorySourceRepository = (
                   orderedSourceIds: topology.rows.map(
                     (row) => row.logical_source_id
                   ),
+                  ...(contextTopology.rows.length
+                    ? {
+                        contextEventIds: contextTopology.rows.map(
+                          (row) => row.logical_event_id
+                        )
+                      }
+                    : {}),
                   compatibilityContractHash,
                   correctedRevision: "0"
                 })
@@ -9796,7 +9870,8 @@ export const createMemorySourceRepository = (
             row,
             encryptedMemoryNodeColumns(row).size > 0
               ? await resolveMemoryNodeEncryptionProvider(row.id)
-              : options.envelopeEncryptionProvider
+              : options.envelopeEncryptionProvider,
+            hydrateLcmContextEvent
           )
         : null;
     },
@@ -9918,7 +9993,8 @@ export const createMemorySourceRepository = (
             currentNode as LcmNodeForSummarizationRow,
             encryptedMemoryNodeColumns(currentNode).size > 0
               ? await resolveMemoryNodeEncryptionProvider(currentNode.id)
-              : options.envelopeEncryptionProvider
+              : options.envelopeEncryptionProvider,
+            hydrateLcmContextEvent
           );
           const currentRevisionHash =
             lcmSummaryInputRevisionHash(currentForSummary);
@@ -9945,7 +10021,10 @@ export const createMemorySourceRepository = (
           );
           const anchorValidation = validateLcmLexicalAnchors(
             claimedStructuredSummary.lexical_anchors,
-            lcmLexicalAnchorGroundingPayloads(currentForSummary.sourceItems)
+            lcmLexicalAnchorGroundingPayloads([
+              ...currentForSummary.sourceItems,
+              ...(currentForSummary.contextItems ?? [])
+            ])
           );
           if (anchorValidation.rejected.length > 0) {
             throw new Error(
@@ -12246,11 +12325,13 @@ export const createMemorySourceRepository = (
           stagePriority: number;
           baseScore: number;
           repositoryContexts: unknown[];
+          selectedEmbeddingId: string | null;
         }
       >();
       const addRow = (
         row: {
           id: string;
+          embedding_id: string | null;
           source_type:
             | "memory_node"
             | "memory_event"
@@ -12285,9 +12366,9 @@ export const createMemorySourceRepository = (
         const key =
           searchDomain === "global"
             ? canonicalGlobalCandidateKey(row)
-            : normalizedText
-              ? `${row.visibility}:${normalizedText}`
-              : `${row.source_type}:${row.source_id}`;
+            : input.includeEventContext || !normalizedText
+              ? `${row.source_type}:${row.source_id}`
+              : `${row.visibility}:${normalizedText}`;
         const baseScore =
           Number(row.score) * weight +
           Math.min(exactAnchorMatches.length, 4) * 0.25;
@@ -12387,6 +12468,7 @@ export const createMemorySourceRepository = (
             priority > existing.stagePriority)
         ) {
           merged.set(key, {
+            selectedEmbeddingId: row.embedding_id,
             nodeId: row.id,
             sourceType: row.source_type,
             sourceId: row.source_id,
@@ -12547,7 +12629,13 @@ export const createMemorySourceRepository = (
         }
       }
 
-      const results = [...merged.values()]
+      const selectedEmbeddingIds = new Map(
+        [...merged.values()].map((result) => [
+          retrievalContextKey(result),
+          result.selectedEmbeddingId
+        ])
+      );
+      let results: MemorySearchResult[] = [...merged.values()]
         .sort(
           (left, right) =>
             right.score - left.score ||
@@ -12579,6 +12667,74 @@ export const createMemorySourceRepository = (
           provenance: result.provenance,
           observedReferences: result.observedReferences
         }));
+
+      if (input.includeEventContext && results.length > 0) {
+        const context = await retrieveCanonicalEventContext(
+          pool,
+          {
+            userId: actor.userId,
+            hits: results
+              .filter((result) => result.sourceType === "memory_event")
+              .map((result) => ({
+                ...result,
+                embeddingId: selectedEmbeddingIds.get(
+                  retrievalContextKey(result)
+                )
+              })),
+            selection: personalSourceSelection,
+            searchDomain,
+            sessionId: input.sessionId,
+            projectId: input.projectId,
+            sourceAfter,
+            sourceBefore
+          },
+          async (event) => {
+            if (
+              event.payload.content !== ENCRYPTED_MEMORY_EVENT_TEXT &&
+              event.payload.contentEncrypted !== true
+            ) {
+              return event;
+            }
+            if (!hasMemoryEventEncryptionProvider) {
+              throw new Error(
+                "Encryption provider is required to retrieve canonical Memory Events"
+              );
+            }
+            const payload = await decryptAuthorizedMemoryEventPayload(
+              pool,
+              await resolveMemoryEventEncryptionProvider(event.id),
+              { ownerUserId: event.owner_user_id, memoryEventId: event.id }
+            );
+            if (!payload || payload.content === ENCRYPTED_MEMORY_EVENT_TEXT) {
+              throw new Error("Encrypted canonical Memory Event is missing");
+            }
+            return {
+              ...event,
+              payload: { ...payload, contentEncrypted: false }
+            };
+          }
+        );
+        results = results.flatMap((result) => {
+          if (result.sourceType !== "memory_event") {
+            return [result];
+          }
+          const sourceItems = context.get(retrievalContextKey(result)) ?? [];
+          const matched = sourceItems.filter(
+            (item) => item.provenance?.contextRole === "matched"
+          );
+          // A stale or inaccessible source must not survive as an embedding fragment.
+          if (matched.length === 0) {
+            return [];
+          }
+          return [
+            {
+              ...result,
+              summaryText: matched[0]!.text ?? "",
+              sourceItems
+            }
+          ];
+        });
+      }
 
       for (const stage of stageDiagnostics) {
         const count = results.filter(
@@ -12835,7 +12991,7 @@ export const createMemorySourceRepository = (
               source_hash,
               work_class
             )
-            values ($1, $2, $3, $4, 'leaf', 0, $5, $5, 'mcp', 'depth0-source-items-v1', $6::jsonb, $7, $8, $9, $10, $11, $12, $13)
+            values ($1, $2, $3, $4, 'leaf', 0, $5, $5, 'mcp', 'depth0-source-items-context-v2', $6::jsonb, $7, $8, $9, $10, $11, $12, $13)
             on conflict (source_hash) where source_hash is not null
             do update set
               owner_user_id = excluded.owner_user_id,
@@ -12845,6 +13001,11 @@ export const createMemorySourceRepository = (
               summary_text = excluded.summary_text,
               body_text = excluded.body_text,
               source_items_json = excluded.source_items_json,
+              lcm_algorithm_version = excluded.lcm_algorithm_version,
+              summary_model = null,
+              summary_prompt_version = null,
+              summary_structured_json = null,
+              summary_structured_schema_version = null,
               source_event_count = excluded.source_event_count,
               source_token_estimate = excluded.source_token_estimate,
               summary_token_estimate = excluded.summary_token_estimate,
@@ -12925,6 +13086,41 @@ export const createMemorySourceRepository = (
             );
           }
           leafNodeIds.push(nodeId);
+
+          // Select the true neighbor before checking eligibility. A removed or
+          // excluded neighbor must never be replaced by a later event.
+          await client.query(
+            `delete from memory_node_context_events where memory_node_id=$1`,
+            [nodeId]
+          );
+          const boundary = span.at(-1)!;
+          if (boundary.session_id !== null) {
+            await client.query(
+              `insert into memory_node_context_events (memory_node_id,memory_event_id)
+               select $1,me.id
+               from (
+                 select next_event.* from memory_events next_event
+                 cross join memory_events source_boundary
+                 where next_event.session_id=$2
+                   and source_boundary.id=$3
+                   and (next_event.captured_at,next_event.id)>(source_boundary.captured_at,source_boundary.id)
+                 order by next_event.captured_at,next_event.id
+                 limit 1
+               ) me
+               where me.owner_user_id=$4 and me.visibility=$5
+                 and me.invalidated_at is null and me.personal_deleted_at is null
+                 and me.include_in_lcm=true
+                 and pds_session_recall_ready(me.session_id)
+                 and ${semanticMemoryEventEligibleSql("me")}`,
+              [
+                nodeId,
+                boundary.session_id,
+                boundary.id,
+                ownerUserId,
+                input.visibility
+              ]
+            );
+          }
 
           for (
             let sourceOrder = 0;
