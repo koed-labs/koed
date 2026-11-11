@@ -671,6 +671,48 @@ test("Linux smoke clears stale output, verifies checksum, and gates direct FUSE 
   );
 });
 
+test("Linux smoke system packages install from cached archives before the package mirrors", () => {
+  const names = [
+    "Restore Linux Desktop smoke package archives",
+    "Install Linux Desktop smoke dependencies",
+    "Save Linux Desktop smoke package archives"
+  ];
+  const steps = names.map((name) => {
+    const step = linuxJob.steps.find((item) => item.name === name);
+    assert.ok(step, `missing step: ${name}`);
+    return step;
+  });
+  const [restore, install, save] = steps;
+  assert.deepEqual(
+    steps.map((step) => linuxJob.steps.indexOf(step)),
+    steps.map((step) => linuxJob.steps.indexOf(step)).toSorted((a, b) => a - b)
+  );
+  assert.match(restore.uses, /^actions\/cache\/restore@/);
+  assert.match(save.uses, /^actions\/cache\/save@/);
+  assert.deepEqual(save.with, restore.with);
+  assert.match(
+    install.run,
+    /^\.github\/scripts\/install-linux-smoke-deps\.sh "\$\{RUNNER_TEMP\}\/koed-linux-smoke-packages" /
+  );
+  assert.doesNotMatch(install.run, /apt-get/);
+  assert.match(save.if, /steps\.smoke-packages\.outputs\.downloaded == 'true'/);
+  assert.match(
+    save.if,
+    /steps\.smoke-package-cache\.outputs\.cache-hit != 'true'/
+  );
+
+  const script = readFileSync(
+    resolve(".github/scripts/install-linux-smoke-deps.sh"),
+    "utf8"
+  );
+  const cached = script.indexOf(
+    "dpkg -i --skip-same-version --refuse-downgrade"
+  );
+  const mirrors = script.indexOf("apt-get update");
+  assert.ok(cached > 0 && mirrors > cached);
+  assert.match(script, /Dir::Cache::Archives="\$\{archives\}"/);
+});
+
 test("Linux smoke is required for app and full validation", () => {
   for (const policy of [
     { run_app_smoke: "true", run_full_validation: "false" },
