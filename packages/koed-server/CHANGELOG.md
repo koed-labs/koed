@@ -1,5 +1,22 @@
 # @koed/koed-server
 
+## 1.0.0
+
+### Major Changes
+
+- 567b3f6: Stable database setup now starts from a single fresh-install schema. Existing pre-release and alpha database histories are not supported as in-place upgrade sources, and no alpha-to-stable conversion is provided. The old database is left untouched; Operators must retain a backup separately and initialize a fresh database for the stable release.
+- 74eeb0a: Align Koed workspace package names under the `@koed-labs` namespace. Update integrations and tooling that reference the former `@koed` package names.
+
+### Minor Changes
+
+- 69d7729: Add hardware detection during Desktop setup and CPU/GPU controls under Services → Hardware Acceleration. Support Metal and optional CUDA with verified switching, CPU fallback, and restart recovery.
+- f514fb7: Support standalone Node 24 through 26 with newly built N-API component releases. Existing components retain their original compatibility constraints and may need reinstalling from a compatible release.
+- f514fb7: Add a versioned standalone Server installer for macOS arm64 and Linux x64, published with each release as `install-koed-server.sh`. It installs the matching `@koed-labs/server` package with a compatible or private Node, provisions Base, the native runtime and the embedding model through the release provider, starts the server and verifies readiness without Homebrew, `sudo` or AI Client configuration. The release provider now supports macOS arm64 native runtime assets.
+
+### Patch Changes
+
+- 5e32bd9: Make `koed pair` and `koed personal-sync` opt-in for this single-device release. They are hidden from `koed --help` and refuse to run unless `KOED_PERSONAL_DEVICE_SYNC_ENABLED=true` is set. Existing Personal Device Groups and stored data are unchanged.
+
 ## 0.11.1
 
 ## 0.11.0
