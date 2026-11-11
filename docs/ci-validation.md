@@ -75,6 +75,15 @@ loopback server. CSP bypass is confined to the smoke renderer's debugger session
 The packaged application remains unmodified, and the synthetic failure and
 redelivery scenarios continue to exercise its renderer and native bridge.
 
+### Linux smoke system packages
+
+The Linux Desktop smoke installs its system packages through
+`.github/scripts/install-linux-smoke-deps.sh`. Packages already on the runner
+image are left alone, missing ones are installed from cached package archives,
+and only what is still missing is fetched from the Ubuntu package mirrors and
+then cached. A warm run therefore does not need the mirrors; a run with no
+cached archives still does.
+
 ### Runtime compatibility and ownership
 
 The component release builder records Node's actual modules ABI and the exact

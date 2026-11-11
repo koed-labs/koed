@@ -687,9 +687,25 @@ jobs:
           path: ${{ runner.temp }}/koed-native-core
           key: linux-native-core-v1-jammy-node${{ env.NODE_VERSION }}-${{ hashFiles('scripts/native-runtime/*.linux-x64.json', 'scripts/native-runtime/build-core-linux-x64.mjs', 'scripts/native-runtime/core-artifact.mjs', 'scripts/native-runtime/procure-runtime.mjs', 'scripts/native-runtime/content-policy.mjs', 'scripts/native-runtime/manifest-lib.mjs', 'scripts/native-runtime/loader-validation-lib.mjs', 'scripts/deterministic-tar-gzip.mjs', 'packages/koed-server/src/artifact-canonical-json.mjs') }}
 
-      - name: Install Linux Desktop smoke dependencies
+      - name: Restore Linux Desktop smoke package archives
+        id: smoke-package-cache
         if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
-        run: sudo apt-get update && sudo apt-get install -y xvfb libfuse2 libgtk-3-0 libnss3 libasound2 libgbm1 libxss1
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-linux-smoke-packages
+          key: linux-desktop-smoke-packages-v1-jammy
+
+      - name: Install Linux Desktop smoke dependencies
+        id: smoke-packages
+        if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
+        run: .github/scripts/install-linux-smoke-deps.sh "${RUNNER_TEMP}/koed-linux-smoke-packages" xvfb libfuse2 libgtk-3-0 libnss3 libasound2 libgbm1 libxss1
+
+      - name: Save Linux Desktop smoke package archives
+        if: (needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true') && steps.smoke-packages.outputs.downloaded == 'true' && steps.smoke-package-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ runner.temp }}/koed-linux-smoke-packages
+          key: linux-desktop-smoke-packages-v1-jammy
 
       - name: Build workspace and Linux release AppImage
         if: needs.changes.outputs.run_app_smoke == 'true' || needs.changes.outputs.run_full_validation == 'true'
