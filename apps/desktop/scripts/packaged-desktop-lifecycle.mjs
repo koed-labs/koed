@@ -58,7 +58,13 @@ export const launchPackagedDesktop = ({
   koedHome,
   timeoutMs = 180_000
 }) => {
-  const childEnv = createPackagedDesktopEnvironment(env);
+  const childEnv = {
+    ...createPackagedDesktopEnvironment(env),
+    // Desktop drains supervisor stderr and attaches it to startup failures.
+    // Keep this off harness-spawned CLI and daemon processes, whose stderr
+    // pipes are not drained after the step that spawned them returns.
+    KOED_SUPERVISOR_STARTUP_TRACE: "1"
+  };
   const child = spawn(
     executable,
     [

@@ -19,6 +19,13 @@ import { validateReviewedRuntimeIdentities } from "./reviewed-build-identity-run
 import { compareVersions } from "./release-promotion-lib.mjs";
 import { verifyPackagedDesktopCatalog } from "../apps/desktop/scripts/verify-packaged-component-catalog.mjs";
 import { verifyDraftNativePins } from "./native-runtime-pins.mjs";
+import {
+  linuxAppImageName,
+  linuxAsarEntry,
+  linuxChecksumName,
+  linuxEvidenceName,
+  verifyLinuxDesktopEvidence
+} from "./linux-desktop-build-evidence.mjs";
 import { readFrozenInventoryEvidence } from "./native-runtime/frozen-inventory-evidence.mjs";
 import { coreRecipeId } from "./native-runtime/core-artifact.mjs";
 import { verifyApprovedMacosCore } from "./native-runtime/verify-approved-macos-core.mjs";
@@ -101,6 +108,23 @@ export const validateReviewedBuildIdentity = (expected) => {
       expected.desktop.asarEntry !== "Koed.app/Contents/Resources/app.asar")
   )
     fail("Invalid protected Desktop identity.");
+  if (expected.linuxDesktop !== undefined) {
+    const linux = expected.linuxDesktop;
+    if (
+      !linux ||
+      linux.asset !== linuxAppImageName(expected.version) ||
+      linux.checksum !== linuxChecksumName ||
+      linux.evidence !== linuxEvidenceName ||
+      linux.asarEntry !== linuxAsarEntry ||
+      !expected.assets.some((asset) => asset.name === linux.asset) ||
+      !expected.assets.some((asset) => asset.name === linux.checksum) ||
+      !expected.assets.some((asset) => asset.name === linux.evidence) ||
+      expected.artifacts.filter(
+        (artifact) => artifact.name === "koed-desktop-linux-final-assets"
+      ).length !== 1
+    )
+      fail("Invalid protected Linux Desktop identity.");
+  }
   return expected;
 };
 
@@ -334,6 +358,14 @@ export const verifyReleaseCandidate = async (
   const original = JSON.stringify(input);
   const snapshot = structuredClone(input);
   const expected = validateReviewedBuildIdentity(snapshot.expected);
+  if (
+    expected.linuxDesktop === undefined &&
+    expected.assets.some(
+      (asset) =>
+        /\.AppImage$/i.test(asset.name) || asset.name === linuxEvidenceName
+    )
+  )
+    fail("Unreviewed Linux Desktop asset; refusing candidate.");
   for (const field of [
     "repository",
     "commit",
@@ -406,6 +438,15 @@ export const verifyReleaseCandidate = async (
         nativeCatalog
       );
     const desktop = inspectDesktop(expected, root, catalogPath);
+    const linuxDesktop =
+      expected.linuxDesktop === undefined
+        ? null
+        : verifyLinuxDesktopEvidence({
+            expected,
+            evidencePath: resolve(root, expected.linuxDesktop.evidence),
+            checksumPath: resolve(root, expected.linuxDesktop.checksum),
+            catalogPath
+          });
     const registry = await readers.getRegistryVersion(
       "@koed-labs/server",
       expected.version
@@ -447,6 +488,7 @@ export const verifyReleaseCandidate = async (
       ).length,
       npm,
       desktop,
+      linuxDesktop,
       registry: registry ? "verified" : "unpublished"
     };
   } finally {

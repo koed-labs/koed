@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   copyFileSync,
   existsSync,
@@ -84,6 +85,15 @@ const identifyToolchain = () => ({
     })
   )
 });
+
+export const copyCpuRedistributables = (redistributables, destination) => {
+  for (const [name, path] of Object.entries(redistributables)) {
+    const target = resolve(destination, name);
+    copyFileSync(path, target);
+    // Cache extraction applies the runner's umask to host-provided licenses.
+    if (name.endsWith(".txt")) chmodSync(target, 0o644);
+  }
+};
 
 export const buildLinuxCore = ({ outDir, sourceDir, runtimeVersion }) => {
   const out = resolve(outDir);
@@ -205,8 +215,10 @@ export const buildLinuxCore = ({ outDir, sourceDir, runtimeVersion }) => {
       throw new Error("CPU-only procurement produced CUDA content.");
     pruneNativeRuntimeBuildArtifacts(builtRoot);
     stripNativeRuntimeBinaries({ runtimeRoot: builtRoot, platform: "linux" });
-    for (const [name, path] of Object.entries(redistributables))
-      copyFileSync(path, resolve(builtRoot, "llama.cpp/cpu", name));
+    copyCpuRedistributables(
+      redistributables,
+      resolve(builtRoot, "llama.cpp/cpu")
+    );
     // PostgreSQL tools must find their selected libpq after relocation.
     for (const file of collectPlatformBinaries({
       runtimeRoot: resolve(builtRoot, "postgres"),

@@ -2,6 +2,49 @@
 
 See [Desktop updates](desktop-updates.md) for update notices and how to update.
 
+## Linux x64 Desktop release candidate
+
+Linux Desktop release packaging targets x86-64 with glibc 2.35 or newer. The
+native runtime is built on Ubuntu 22.04; a full Linux Desktop release rehearsal,
+including direct FUSE launch, has not yet been verified. Do not treat this as a
+published or supported distribution until release qualification succeeds.
+
+No Linux distribution has been qualified for this Desktop release yet. The
+planned build baseline is Ubuntu 22.04 x64, not a claim of successful testing
+on Ubuntu or other distributions. Linux ARM64, musl-based systems, and Desktop
+auto-update are outside this release scope.
+
+For a qualified release, download both assets from the official release into
+the same directory. Check the checksum before running the AppImage; a checksum
+alone does not authenticate the download or its publisher. A graphical session
+and Electron's Linux system libraries are required. The release workflow
+installs GTK 3, NSS, ALSA, GBM and XSS libraries for its Linux smoke environment;
+package names and availability vary by distribution. Direct AppImage launch
+also needs FUSE 2 and access to `/dev/fuse`:
+
+```bash
+sha256sum --check koed-desktop-linux-x64.sha256
+chmod +x Koed-<version>-x86_64.AppImage
+./Koed-<version>-x86_64.AppImage
+```
+
+Replace `<version>` with the actual release version. Stop if checksum
+verification fails. Where FUSE is unavailable, AppImage extraction
+(`--appimage-extract`) can be used to inspect or run the extracted
+`squashfs-root/AppRun`; running it still requires a graphical session and
+compatible libraries. This fallback does not establish that direct FUSE launch
+works and must be verified on the target machine.
+
+Each AppImage launch mounts the app at a new temporary path. Desktop
+identifies its installation by the AppImage file, so keep it at the same
+path. Moving or renaming the AppImage makes Desktop treat it as a different
+installation, as moving an installed app would on macOS.
+
+On first run, follow Desktop's guided setup and confirm provisioning when
+prompted. The local runtime is installed under `KOED_HOME`; setup also provisions
+the required embedding model. Model downloads require network access. See
+[Native Runtime Assets](native-runtime-assets.md) for runtime details.
+
 ## Headless Remote Integration
 
 An AI Client can use an existing backend without Electron or local database,

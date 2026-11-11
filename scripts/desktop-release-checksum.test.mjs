@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import process from "node:process";
 import {
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
+  truncateSync,
   mkdirSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,8 +15,70 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   writeDesktopReleaseChecksum,
-  resolveDesktopReleaseApp
+  resolveDesktopReleaseApp,
+  writeLinuxDesktopReleaseChecksum,
+  verifyLinuxDesktopReleaseChecksum
 } from "./desktop-release-checksum.mjs";
+test("Linux checksum names and verifies exact AppImage; rejects tampering and ambiguity", (t) => {
+  const root = fixture(t);
+  const options = { releaseVersion: "1.2.3", releaseDirectory: root };
+  const asset = join(root, "Koed-1.2.3-x86_64.AppImage");
+  assert.throws(() => writeLinuxDesktopReleaseChecksum(options));
+  assert.throws(
+    () =>
+      writeLinuxDesktopReleaseChecksum({
+        ...options,
+        releaseVersion: "../bad"
+      }),
+    /version/i
+  );
+  writeFileSync(asset, "appimage");
+  const checksum = writeLinuxDesktopReleaseChecksum(options);
+  assert.equal(
+    readFileSync(checksum, "utf8"),
+    `${createHash("sha256").update("appimage").digest("hex")}  Koed-1.2.3-x86_64.AppImage\n`
+  );
+  assert.doesNotThrow(() => verifyLinuxDesktopReleaseChecksum(options));
+  const original = readFileSync(checksum, "utf8");
+  writeFileSync(checksum, original + original);
+  assert.throws(() => verifyLinuxDesktopReleaseChecksum(options));
+  writeFileSync(checksum, original.replace("Koed-1.2.3", "Koed-1.2.4"));
+  assert.throws(() => verifyLinuxDesktopReleaseChecksum(options));
+  writeFileSync(checksum, original);
+  writeFileSync(asset, "tampered");
+  assert.throws(() => verifyLinuxDesktopReleaseChecksum(options));
+});
+test("Linux checksum covers bytes across read boundaries", (t) => {
+  const root = fixture(t);
+  const options = { releaseVersion: "1.2.3", releaseDirectory: root };
+  const bytes = Buffer.alloc(2 * 1024 * 1024 + 17, 0x61);
+  bytes[1024 * 1024] = 0x62;
+  writeFileSync(join(root, "Koed-1.2.3-x86_64.AppImage"), bytes);
+  const checksum = writeLinuxDesktopReleaseChecksum(options);
+  assert.equal(
+    readFileSync(checksum, "utf8"),
+    `${createHash("sha256").update(bytes).digest("hex")}  Koed-1.2.3-x86_64.AppImage\n`
+  );
+  assert.doesNotThrow(() => verifyLinuxDesktopReleaseChecksum(options));
+});
+test("Linux size budget accepts 512 MiB and rejects larger or missing images", (t) => {
+  const root = fixture(t);
+  const asset = join(root, "Koed-1.2.3-x86_64.AppImage");
+  const run = () =>
+    spawnSync(
+      process.execPath,
+      ["scripts/desktop-release-checksum.mjs", "size-linux", root, "1.2.3"],
+      { encoding: "utf8" }
+    );
+  assert.notEqual(run().status, 0);
+  writeFileSync(asset, "x");
+  truncateSync(asset, 536_870_912);
+  assert.equal(run().status, 0);
+  truncateSync(asset, 536_870_913);
+  const over = run();
+  assert.notEqual(over.status, 0);
+  assert.match(over.stderr, /release budget/);
+});
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "koed-checksum-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

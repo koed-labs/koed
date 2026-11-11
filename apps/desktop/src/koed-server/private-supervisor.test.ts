@@ -1,7 +1,14 @@
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
-import { connectSupervisor, requestSupervisor } from "./private-supervisor.js";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  connectSupervisor,
+  desktopSupervisorManagementTimeoutMs,
+  desktopSupervisorStartupTimeoutMs,
+  requestSupervisor
+} from "./private-supervisor.js";
 
 const childFixture = () => {
   const child = Object.assign(new EventEmitter(), {
@@ -115,5 +122,38 @@ describe("private supervisor transport", () => {
     });
     await expect(connected).rejects.toThrow("handshake");
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+});
+
+describe("Desktop supervisor startup deadline", () => {
+  it("outlasts the supervisor's own readiness wait", () => {
+    // The runtime handshake waits for startKoedServer readiness, so Desktop
+    // must not give up before the supervisor's readiness deadline plus the
+    // startup work that precedes it.
+    const source = readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../../../../packages/koed-server/src/start.ts"
+      ),
+      "utf8"
+    );
+    const start = source.indexOf("export const startKoedServer = async ({");
+    expect(start).toBeGreaterThan(-1);
+    const match = /timeoutMs = ([\d_]+),/.exec(source.slice(start));
+    expect(match).not.toBeNull();
+    const readinessMs = Number((match?.[1] ?? "").replaceAll("_", ""));
+    expect(readinessMs).toBeGreaterThan(0);
+    expect(desktopSupervisorStartupTimeoutMs).toBeGreaterThanOrEqual(
+      readinessMs + 60_000
+    );
+  });
+
+  it("gives stopped management sessions room for AppImage verification", () => {
+    // Bundle verification over a cold AppImage mount measured 21s in CI and
+    // the generation pin reads the bundle again before the handshake.
+    expect(desktopSupervisorManagementTimeoutMs).toBeGreaterThanOrEqual(90_000);
+    expect(desktopSupervisorManagementTimeoutMs).toBeLessThan(
+      desktopSupervisorStartupTimeoutMs
+    );
   });
 });

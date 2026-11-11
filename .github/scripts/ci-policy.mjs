@@ -102,6 +102,9 @@ export const evaluateCiPolicy = ({
   const manualFull =
     eventName === "workflow_dispatch" &&
     ["full", "clean-install"].includes(requestedValidation);
+  const manualLinuxNative =
+    eventName === "workflow_dispatch" &&
+    event.inputs?.build_native_runtime_linux_x64 === "true";
   const scheduledFull = eventName === "schedule";
   const changedPackaging =
     eventName === "pull_request" && packagingRelevant(changedFiles);
@@ -114,7 +117,7 @@ export const evaluateCiPolicy = ({
   const runAppSmoke =
     !trustedSkipPackaged &&
     !runFullValidation &&
-    (changedPackaging || forceFullCi || manualApp);
+    (changedPackaging || forceFullCi || manualApp || manualLinuxNative);
 
   return {
     packaging_relevant: String(changedPackaging),
@@ -128,10 +131,7 @@ export const evaluateCiPolicy = ({
         (eventName === "workflow_dispatch" &&
           requestedValidation === "clean-install")
     ),
-    run_linux_native: String(
-      eventName === "workflow_dispatch" &&
-        event.inputs?.build_native_runtime_linux_x64 === "true"
-    )
+    run_linux_native: String(manualLinuxNative)
   };
 };
 

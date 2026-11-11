@@ -8,12 +8,19 @@ import {
 } from "./release-candidate-verification.mjs";
 
 import { reviewedRuntimeIdentities } from "./reviewed-build-identity-runtimes.mjs";
+import {
+  linuxAppImageName,
+  linuxAsarEntry,
+  linuxChecksumName,
+  linuxEvidenceName
+} from "./linux-desktop-build-evidence.mjs";
 
 const sourceNames = [
   "koed-component-catalog",
   "koed-server-app-runtime-linux-x64",
   "koed-server-app-runtime-macos-arm64",
   "koed-desktop-final-assets",
+  "koed-desktop-linux-final-assets",
   "koed-native-runtime-linux-x64",
   "koed-linux-native-packages",
   "koed-macos-native-packages",
@@ -118,6 +125,29 @@ export const createReviewedBuildIdentity = ({
   );
   if (desktop.length !== 1)
     throw new Error("One final Desktop ZIP is required.");
+  const images = assets.filter((asset) =>
+    /^Koed-.*-x86_64\.AppImage$/.test(asset.name)
+  );
+  if (
+    images.length !== 1 ||
+    images[0].name !== linuxAppImageName(version) ||
+    !assets.some((asset) => asset.name === linuxChecksumName) ||
+    !assets.some((asset) => asset.name === linuxEvidenceName)
+  )
+    throw new Error(
+      "One version-matched Linux AppImage, checksum and build evidence are required."
+    );
+  const linuxFiles = readdirSync(
+    resolve(root, "koed-desktop-linux-final-assets")
+  );
+  if (
+    [images[0].name, linuxChecksumName, linuxEvidenceName].some(
+      (name) => !linuxFiles.includes(name)
+    )
+  )
+    throw new Error(
+      "Linux AppImage, checksum and build evidence must belong to the final artifact."
+    );
   return validateReviewedBuildIdentity({
     schemaVersion: 1,
     repository,
@@ -133,6 +163,12 @@ export const createReviewedBuildIdentity = ({
     desktop: {
       asset: desktop[0].name,
       asarEntry: "Koed.app/Contents/Resources/app.asar"
+    },
+    linuxDesktop: {
+      asset: images[0].name,
+      checksum: linuxChecksumName,
+      evidence: linuxEvidenceName,
+      asarEntry: linuxAsarEntry
     }
   });
 };

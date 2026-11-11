@@ -3,10 +3,13 @@
 import { listPackage } from "@electron/asar";
 import {
   cpSync,
+  accessSync,
+  constants,
   readdirSync,
   existsSync,
   readFileSync,
   mkdirSync,
+  realpathSync,
   statSync,
   writeFileSync
 } from "node:fs";
@@ -25,7 +28,9 @@ import {
   createSmokeHome,
   smokeExecutionPlan,
   withSmokeFailureDiagnostics,
-  withPackagedNativeAssetsMasked
+  withPackagedNativeAssetsMasked,
+  withExtractedAppImage,
+  assertDirectAppImagePrerequisites
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
 import { verifyDisabledDesktopUpdateNotice } from "./desktop-update-notice-smoke.mjs";
@@ -77,6 +82,20 @@ export const parseArgs = (argv) => {
     }
     if (value === "--skip-renderer-faults") {
       options.skipRendererFaults = true;
+      continue;
+    }
+    if (value === "--appimage-direct") {
+      options.appImageDirect = true;
+      continue;
+    }
+    if (value === "--appimage") {
+      if (options.appImage)
+        throw new Error("--appimage may only be supplied once.");
+      const path = argv[index + 1]?.trim();
+      if (!path || path.startsWith("--"))
+        throw new Error("--appimage requires a path.");
+      options.appImage = resolve(path);
+      index += 1;
       continue;
     }
     if (value === "--verify-acceleration") {
@@ -132,6 +151,12 @@ export const parseArgs = (argv) => {
   if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs <= 0) {
     throw new Error("--poll-interval-ms must be a positive integer.");
   }
+  if (options.appImageDirect && !options.appImage)
+    throw new Error("--appimage-direct requires --appimage.");
+  if (options.appImageDirect && options.missingAssets)
+    throw new Error("--appimage-direct conflicts with --missing-assets.");
+  if (options.appImage && options.build)
+    throw new Error("--appimage conflicts with --build.");
   if (options.maskNativeAssets && !options.missingAssets) {
     throw new Error("--mask-native-assets requires --missing-assets.");
   }
@@ -143,6 +168,8 @@ const usage = `Usage: pnpm desktop:package:smoke -- [options]
 Options:
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
+  --appimage <path>         Extract and smoke this exact trusted AppImage
+  --appimage-direct         Launch AppImage GUI through FUSE (requires --appimage)
   --missing-assets          Expect packaged native runtime assets to be missing
   --mask-native-assets      Temporarily hide packaged native assets for the missing-assets check
   --skip-renderer-faults    Skip renderer fault injection when the local display cannot expose CDP targets
@@ -238,7 +265,7 @@ const pickExecutable = (appRoot) => {
   throw new Error(`Could not find packaged app executable under ${appRoot}`);
 };
 
-const resolvePackagedLayout = () => {
+export const resolvePackagedLayout = (extractedRoot) => {
   const explicitAppPath =
     process.env.KOED_DESKTOP_PACKAGE_SMOKE_APP_PATH?.trim();
   const explicitResourcesPath =
@@ -246,7 +273,17 @@ const resolvePackagedLayout = () => {
   const explicitExecutable =
     process.env.KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE?.trim();
   const explicitRunner = process.env.KOED_DESKTOP_PACKAGE_SMOKE_RUNNER?.trim();
+  if (
+    extractedRoot &&
+    (explicitAppPath ||
+      explicitResourcesPath ||
+      explicitExecutable ||
+      explicitRunner)
+  ) {
+    throw new Error("AppImage mode conflicts with packaged layout overrides.");
+  }
   const appPath =
+    extractedRoot ??
     explicitAppPath ??
     (process.platform === "darwin"
       ? resolve(desktopRoot, "release", "mac", "Koed.app")
@@ -260,14 +297,16 @@ const resolvePackagedLayout = () => {
   }
   const resourcesPath =
     explicitResourcesPath ??
-    (process.platform === "darwin"
+    (!extractedRoot && process.platform === "darwin"
       ? resolve(appPath, "Contents", "Resources")
       : resolve(appPath, "resources"));
   const executable =
     explicitExecutable ??
-    (process.platform === "darwin"
-      ? resolve(appPath, "Contents", "MacOS", "Koed")
-      : pickExecutable(appPath));
+    (extractedRoot
+      ? resolve(appPath, "koed")
+      : process.platform === "darwin"
+        ? resolve(appPath, "Contents", "MacOS", "Koed")
+        : pickExecutable(appPath));
   const runner =
     explicitRunner ??
     resolve(
@@ -310,6 +349,15 @@ const isolatedSmokeApiPort = (koedHome) =>
       )
   );
 
+// Direct AppImage smoke runs CLI steps from an extracted copy but launches the
+// GUI through FUSE. The AppImage runtime gives the GUI APPIMAGE/APPDIR, and
+// Desktop identifies its installation by the image file; give CLI steps the
+// same identity, so both resolve to one installation as they do for a User.
+let appImageInstallationEnv = {};
+export const setAppImageInstallationEnv = (value) => {
+  appImageInstallationEnv = value;
+};
+
 export const createSmokeEnv = (koedHome, extraEnv = {}) => {
   const env = {
     ...process.env,
@@ -342,11 +390,26 @@ export const createSmokeEnv = (koedHome, extraEnv = {}) => {
     MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED: "false",
     ...extraEnv
   };
+  for (const key of [
+    "DATABASE_URL",
+    "REDIS_URL",
+    "EMBEDDING_SERVICE_URL",
+    "PRIVACY_SERVICE_URL",
+    "KOED_EXTERNAL_DATABASE_URL",
+    "KOED_EXTERNAL_REDIS_URL",
+    "KOED_EXTERNAL_EMBEDDING_SERVICE_URL",
+    "KOED_EXTERNAL_PRIVACY_SERVICE_URL"
+  ])
+    delete env[key];
+  delete env.APPIMAGE_EXTRACT_AND_RUN;
+  delete env.APPIMAGE;
+  delete env.APPDIR;
+  delete env.ARGV0;
   delete env.KOED_REPO_ROOT;
   delete env.KOED_SERVER_CLI;
   delete env.KOED_PACKAGED_RESOURCES_PATH;
   delete env.KOED_ALLOW_PACKAGED_SOURCE_FALLBACK;
-  return env;
+  return { ...env, ...appImageInstallationEnv };
 };
 
 const parseJsonOutput = (label, output) => {
@@ -1350,6 +1413,72 @@ const installTeamEmbeddingModel = (layout, koedHome) => {
   }
 };
 
+// Measurement only: time the startup bundle verification on the extracted copy
+// and on a real FUSE mount of the same AppImage, to attribute direct-launch
+// slowness. Never fails the smoke on its own.
+export const mountAppImage = (image, timeoutMs = 60_000) =>
+  new Promise((resolveMount, rejectMount) => {
+    const child = spawn(image, ["--appimage-mount"], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      rejectMount(new Error("AppImage mount timed out."));
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      const line = stdout.split("\n")[0];
+      if (stdout.includes("\n") && line.trim()) {
+        clearTimeout(timer);
+        resolveMount({
+          mountPoint: line.trim(),
+          unmount: () => {
+            child.kill("SIGTERM");
+          }
+        });
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectMount(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      rejectMount(new Error(`AppImage mount exited (${code}).`));
+    });
+  });
+
+const measureBundleVerification = async (layout, image) => {
+  const { verifyDesktopRuntimeBundle } =
+    await import("../../../packages/koed-server/dist/desktop-runtime-capability.js");
+  const time = (resourcesPath) => {
+    const started = performance.now();
+    const capability = verifyDesktopRuntimeBundle(resourcesPath, {});
+    return {
+      ms: Math.round(performance.now() - started),
+      files: capability.manifest.files.length
+    };
+  };
+  try {
+    const extracted = time(layout.resourcesPath);
+    const mount = await mountAppImage(image);
+    try {
+      const fuse = time(resolve(mount.mountPoint, "resources"));
+      const fuseAgain = time(resolve(mount.mountPoint, "resources"));
+      console.error(
+        `[packaged-smoke] bundle verification (${extracted.files} files): extracted ${extracted.ms}ms, FUSE ${fuse.ms}ms, FUSE repeat ${fuseAgain.ms}ms`
+      );
+    } finally {
+      mount.unmount();
+    }
+  } catch (error) {
+    console.error(
+      `[packaged-smoke] bundle verification measurement failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+};
+
 const seedTeamSmokeDesktopGeneration = async (layout, koedHome) => {
   const [
     { pinDesktopBundleGenerationForStart },
@@ -1361,9 +1490,28 @@ const seedTeamSmokeDesktopGeneration = async (layout, koedHome) => {
     import("../../../packages/koed-server/dist/paths.js")
   ]);
   const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
-  const capability = verifyDesktopRuntimeBundle(layout.resourcesPath);
-  const pin = await pinDesktopBundleGenerationForStart(paths, capability);
-  await pin.release();
+  // Seeding runs in this process; give it the same installation identity as
+  // the CLI steps and the GUI, including verification inside the pin.
+  const restore = withProcessEnv(appImageInstallationEnv);
+  try {
+    const capability = verifyDesktopRuntimeBundle(layout.resourcesPath);
+    const pin = await pinDesktopBundleGenerationForStart(paths, capability);
+    await pin.release();
+  } finally {
+    restore();
+  }
+};
+
+export const withProcessEnv = (overrides) => {
+  const previous = Object.fromEntries(
+    Object.keys(overrides).map((key) => [key, process.env[key]])
+  );
+  Object.assign(process.env, overrides);
+  return () => {
+    for (const [key, value] of Object.entries(previous))
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+  };
 };
 
 const prepareTeamSmokeHome = async (layout, koedHome, options) => {
@@ -1375,6 +1523,9 @@ const prepareTeamSmokeHome = async (layout, koedHome, options) => {
   await seedTeamSmokeDesktopGeneration(layout, koedHome);
 };
 
+export const smokeGuiExecutable = (layout) =>
+  layout.guiExecutable ?? layout.executable;
+
 const smokeTeamFailClosed = async (layout, options, daemonPids) => {
   const koedHome = createSmokeHome("koed-desktop-team-smoke-");
   let desktop;
@@ -1383,7 +1534,7 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
       async () => {
         await prepareTeamSmokeHome(layout, koedHome, options);
         desktop = launchPackagedDesktop({
-          executable: layout.executable,
+          executable: smokeGuiExecutable(layout),
           env: createSmokeEnv(koedHome, {
             KOED_TEAM_COLLABORATION_ENABLED: "true"
           }),
@@ -1440,11 +1591,33 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
   }
 };
 
-const run = async () => {
+const run = async (extractedRoot) => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     console.log(usage);
     return;
+  }
+  if (options.appImage && !extractedRoot) {
+    if (process.platform !== "linux")
+      throw new Error("AppImage smoke requires Linux.");
+    if (options.appImageDirect) {
+      let fuseAvailable = false;
+      try {
+        accessSync("/dev/fuse", constants.R_OK | constants.W_OK);
+        fuseAvailable = true;
+      } catch {
+        /* Report missing or inaccessible FUSE below. */
+      }
+      assertDirectAppImagePrerequisites({
+        platform: process.platform,
+        uid: process.getuid?.(),
+        fuseAvailable
+      });
+    }
+    console.error(
+      `[packaged-smoke] ${options.appImageDirect ? "direct FUSE" : "extracted"} AppImage: ${options.appImage}`
+    );
+    return withExtractedAppImage(options.appImage, run);
   }
   const timings = {};
   const totalStartedAt = beginPhase("complete smoke");
@@ -1455,7 +1628,15 @@ const run = async () => {
     timings,
     "package surface verification",
     async () => {
-      const packagedLayout = resolvePackagedLayout();
+      const packagedLayout = resolvePackagedLayout(extractedRoot);
+      if (options.appImageDirect) {
+        await measureBundleVerification(packagedLayout, options.appImage);
+        packagedLayout.guiExecutable = options.appImage;
+        setAppImageInstallationEnv({
+          APPIMAGE: realpathSync(options.appImage),
+          APPDIR: realpathSync(extractedRoot)
+        });
+      }
       assertPackagedJsSurface(packagedLayout);
       return packagedLayout;
     }
@@ -1521,7 +1702,7 @@ const run = async () => {
           if (validationBuild.status !== 0)
             throw new Error("Renderer validation build failed");
           return smokePackagedRendererFaults({
-            executable: layout.executable,
+            executable: smokeGuiExecutable(layout),
             env: createSmokeEnv(koedHome, {
               ELECTRON_RUN_AS_NODE: undefined
             }),
@@ -1529,7 +1710,7 @@ const run = async () => {
           });
         });
     desktop = launchPackagedDesktop({
-      executable: layout.executable,
+      executable: smokeGuiExecutable(layout),
       env: createSmokeEnv(koedHome),
       koedHome,
       timeoutMs: options.timeoutMs
@@ -1599,7 +1780,8 @@ const run = async () => {
     const diagnostics = preserveFailureDiagnostics({
       layout,
       koedHome,
-      diagnosticsDir: options.diagnosticsDir
+      diagnosticsDir: options.diagnosticsDir,
+      desktopOutput: desktop?.output
     });
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}\n\n${diagnostics}`,
@@ -1628,9 +1810,31 @@ const run = async () => {
   }
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  run().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+// A finished smoke must not be kept alive by a leaked process or pipe. Report
+// what survived and fail fast instead of hanging until the CI job timeout.
+const failIfStillAliveAfterCompletion = (graceMs = 30_000) => {
+  const guard = setTimeout(() => {
+    console.error(
+      `[packaged-smoke] still running ${graceMs}ms after completion; surviving processes and handles:`
+    );
+    spawnSync("ps", ["-eo", "pid,ppid,etime,comm,args"], {
+      stdio: ["ignore", 2, 2]
+    });
+    const handles = process
+      .getActiveResourcesInfo()
+      .filter((name) => name !== "Timeout");
+    console.error(`[packaged-smoke] active resources: ${handles.join(", ")}`);
     process.exit(1);
-  });
+  }, graceMs);
+  guard.unref();
+};
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  run().then(
+    () => failIfStillAliveAfterCompletion(),
+    (error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+  );
 }

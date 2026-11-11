@@ -22,12 +22,12 @@ export function resolveInstalledDesktopResources(input: {
     throw new Error("Desktop CLI must run from its packaged installation");
   }
   const executable = realpathSync(input.executable);
-  // electron-builder sanitizes the Linux package name `@koed/desktop` to `@koeddesktop`.
+  // electron-builder.yml sets the Linux executableName to `koed`.
   const matches =
     input.platform === "darwin"
       ? executable === realpathSync(resolve(resources, "../MacOS/Koed"))
       : input.platform === "linux"
-        ? executable === realpathSync(resolve(resources, "../@koeddesktop"))
+        ? executable === realpathSync(resolve(resources, "../koed"))
         : false;
   if (!matches) {
     throw new Error("Desktop CLI executable and module installation mismatch");

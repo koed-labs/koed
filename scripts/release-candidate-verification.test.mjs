@@ -25,6 +25,8 @@ import {
   refreshCandidatePackage,
   hash
 } from "./test-utils/release-candidate-fixture.mjs";
+import { writeLinuxDesktopEvidence } from "./linux-desktop-build-evidence.mjs";
+import { writeLinuxDesktopReleaseChecksum } from "./desktop-release-checksum.mjs";
 import * as officialCandidate from "./release-candidate-verification.mjs";
 
 const candidate = {
@@ -264,6 +266,249 @@ test("pin-only candidate verifies real npm/Desktop inventories without executing
     f.cleanup();
   }
 });
+
+const linuxImage = "Koed-1.2.3-x86_64.AppImage";
+const linuxChecksum = "koed-desktop-linux-x64.sha256";
+const linuxEvidence = "koed-desktop-linux-x64.evidence.json";
+const linuxIdentity = () => ({
+  asset: linuxImage,
+  checksum: linuxChecksum,
+  evidence: linuxEvidence,
+  asarEntry: "resources/app.asar"
+});
+const linuxArtifact = {
+  id: 4,
+  name: "koed-desktop-linux-final-assets",
+  digest: `sha256:${"c".repeat(64)}`
+};
+
+// Produces evidence with the real build-side writer. The stand-in AppImage is a
+// script honouring --appimage-extract by copying the Desktop fixture ASAR.
+const addLinuxCandidate = async (f) => {
+  const asar = resolve(f.root, "desktop/Koed.app/Contents/Resources/app.asar");
+  const release = mkdtempSync(resolve(f.root, "linux-release-"));
+  writeFileSync(
+    resolve(release, linuxImage),
+    `#!/bin/sh\nset -e\nmkdir -p squashfs-root/resources\ncp '${asar}' squashfs-root/resources/app.asar\n`,
+    { mode: 0o755 }
+  );
+  writeLinuxDesktopReleaseChecksum({
+    releaseVersion: "1.2.3",
+    releaseDirectory: release
+  });
+  const catalogPath = resolve(release, "catalog.json");
+  writeFileSync(catalogPath, f.contents.get("component-manifest-hashes.json"));
+  await writeLinuxDesktopEvidence({
+    releaseDirectory: release,
+    catalogPath,
+    version: "1.2.3",
+    repository: "org/repo",
+    commit: f.expected.commit,
+    runId: 42,
+    runAttempt: 1
+  });
+  for (const name of [linuxImage, linuxChecksum, linuxEvidence]) {
+    f.contents.set(name, readFileSync(resolve(release, name)));
+    f.release.assets.push({ id: 100 + f.release.assets.length, name });
+  }
+  rehash(f);
+  f.expected.linuxDesktop = linuxIdentity();
+  f.expected.artifacts.push({ ...linuxArtifact });
+  const getArtifact = f.readers.getArtifact;
+  f.readers.getArtifact = async (repo, id) =>
+    id === linuxArtifact.id
+      ? {
+          ...linuxArtifact,
+          expired: false,
+          workflow_run: { id: 42, head_sha: f.expected.commit }
+        }
+      : getArtifact(repo, id);
+};
+const rewriteEvidence = (f, change) => {
+  const evidence = JSON.parse(f.contents.get(linuxEvidence).toString("utf8"));
+  change(evidence);
+  f.contents.set(linuxEvidence, Buffer.from(JSON.stringify(evidence)));
+  rehash(f);
+};
+
+test("protected Linux Desktop identity must bind exact assets and retained artifact", async () => {
+  const f = await setup();
+  try {
+    f.expected.linuxDesktop = linuxIdentity();
+    assert.throws(
+      () => candidate.validateReviewedBuildIdentity(f.expected),
+      /Linux Desktop identity/
+    );
+    f.expected.assets.push(
+      { name: linuxImage, sha256: "a".repeat(64) },
+      { name: linuxChecksum, sha256: "b".repeat(64) },
+      { name: linuxEvidence, sha256: "e".repeat(64) }
+    );
+    assert.throws(
+      () => candidate.validateReviewedBuildIdentity(f.expected),
+      /Linux Desktop identity/
+    );
+    f.expected.artifacts.push({ ...linuxArtifact });
+    assert.doesNotThrow(() =>
+      candidate.validateReviewedBuildIdentity(f.expected)
+    );
+    for (const [field, value] of [
+      ["asset", "Koed-1.2.4-x86_64.AppImage"],
+      ["checksum", "other.sha256"],
+      ["evidence", "other.json"],
+      ["asarEntry", "../resources/app.asar"]
+    ]) {
+      const original = f.expected.linuxDesktop[field];
+      f.expected.linuxDesktop[field] = value;
+      assert.throws(
+        () => candidate.validateReviewedBuildIdentity(f.expected),
+        /Linux Desktop identity/
+      );
+      f.expected.linuxDesktop[field] = original;
+    }
+    f.expected.assets = f.expected.assets.filter(
+      (a) => a.name !== linuxEvidence
+    );
+    assert.throws(
+      () => candidate.validateReviewedBuildIdentity(f.expected),
+      /Linux Desktop identity/
+    );
+    f.expected.assets.push({ name: linuxEvidence, sha256: "e".repeat(64) });
+    f.expected.artifacts.push({ ...linuxArtifact, id: 5 });
+    assert.throws(
+      () => candidate.validateReviewedBuildIdentity(f.expected),
+      /Linux Desktop identity/
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("candidate with reviewed Linux build evidence verifies without executing the AppImage", async () => {
+  const f = await setup({ desktop: true });
+  try {
+    await addLinuxCandidate(f);
+    const result = await candidate.verifyReleaseCandidate(f.input, f.readers);
+    assert.equal(result.desktop.catalogVerified, true);
+    assert.equal(result.linuxDesktop.asset, linuxImage);
+    assert.equal(result.linuxDesktop.catalogVerified, true);
+    assert.equal(result.linuxDesktop.trust, "reviewed-build-extraction");
+    assert.equal(
+      result.linuxDesktop.appImageSha256,
+      hash(f.contents.get(linuxImage))
+    );
+    assert.equal(
+      result.linuxDesktop.asarSha256,
+      hash(
+        readFileSync(
+          resolve(f.root, "desktop/Koed.app/Contents/Resources/app.asar")
+        )
+      )
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+for (const [name, damage, pattern] of [
+  [
+    "evidence for different AppImage bytes",
+    (f) => rewriteEvidence(f, (e) => (e.appImage.sha256 = "f".repeat(64))),
+    /AppImage bytes do not match/
+  ],
+  [
+    "evidence from another commit",
+    (f) => rewriteEvidence(f, (e) => (e.commit = "f".repeat(40))),
+    /reviewed build identity mismatch/
+  ],
+  [
+    "evidence from another run",
+    (f) => rewriteEvidence(f, (e) => (e.runId = 43)),
+    /reviewed build identity mismatch/
+  ],
+  [
+    "evidence from a later attempt",
+    (f) => rewriteEvidence(f, (e) => (e.runAttempt = 2)),
+    /reviewed build identity mismatch/
+  ],
+  [
+    "evidence for another version",
+    (f) => rewriteEvidence(f, (e) => (e.version = "1.2.4")),
+    /reviewed build identity mismatch/
+  ],
+  [
+    "evidence for another catalog",
+    (f) => rewriteEvidence(f, (e) => (e.catalogSha256 = "f".repeat(64))),
+    /component catalog mismatch/
+  ],
+  [
+    "evidence without catalog verification",
+    (f) => rewriteEvidence(f, (e) => (e.catalogVerified = false)),
+    /unverified catalog/
+  ],
+  [
+    "evidence with unexpected fields",
+    (f) => rewriteEvidence(f, (e) => (e.extra = true)),
+    /unexpected shape/
+  ],
+  [
+    "evidence with a different ASAR entry",
+    (f) => rewriteEvidence(f, (e) => (e.asar.entry = "resources/other.asar")),
+    /invalid ASAR identity/
+  ],
+  [
+    "malformed evidence",
+    (f) => {
+      f.contents.set(linuxEvidence, Buffer.from("{"));
+      rehash(f);
+    },
+    /not valid JSON/
+  ],
+  [
+    "checksum naming different bytes",
+    (f) => {
+      f.contents.set(
+        linuxChecksum,
+        Buffer.from(`${"f".repeat(64)}  ${linuxImage}\n`)
+      );
+      rehash(f);
+    },
+    /checksum file does not match/
+  ],
+  [
+    "AppImage altered after review",
+    (f) => f.contents.set(linuxImage, Buffer.from("tampered")),
+    /Candidate asset digest mismatch/
+  ]
+])
+  test(`Linux candidate rejects ${name}`, async () => {
+    const f = await setup({ desktop: true });
+    try {
+      await addLinuxCandidate(f);
+      damage(f);
+      await assert.rejects(
+        candidate.verifyReleaseCandidate(f.input, f.readers),
+        pattern
+      );
+    } finally {
+      f.cleanup();
+    }
+  });
+
+for (const asset of [linuxImage, linuxEvidence])
+  test(`candidate with unreviewed ${asset} fails closed without Linux identity`, async () => {
+    const f = await setup();
+    try {
+      f.contents.set(asset, Buffer.from("untrusted"));
+      rehash(f);
+      await assert.rejects(
+        candidate.verifyReleaseCandidate(f.input, f.readers),
+        /Unreviewed Linux Desktop asset/
+      );
+    } finally {
+      f.cleanup();
+    }
+  });
 
 test("candidate verification accepts current-attempt identity and rejects a stale attempt", async () => {
   const f = await setup();

@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertKoedReleaseVersion } from "../packages/koed/release-version.mjs";
@@ -20,6 +29,60 @@ export function writeDesktopReleaseChecksum({
   const path = resolve(releaseDirectory, "koed-desktop-macos-arm64.sha256");
   writeFileSync(path, lines.join(""));
   return path;
+}
+
+function linuxChecksumPaths({ releaseVersion, releaseDirectory }) {
+  assertKoedReleaseVersion(releaseVersion);
+  const name = `Koed-${releaseVersion}-x86_64.AppImage`;
+  return {
+    name,
+    asset: resolve(releaseDirectory, name),
+    checksum: resolve(releaseDirectory, "koed-desktop-linux-x64.sha256")
+  };
+}
+
+function linuxChecksumLine(paths) {
+  const fd = openSync(paths.asset, "r");
+  try {
+    if (!fstatSync(fd).isFile())
+      throw new Error("AppImage must be a regular file.");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (let count; (count = readSync(fd, buffer, 0, buffer.length, null)) > 0;)
+      hash.update(buffer.subarray(0, count));
+    return `${hash.digest("hex")}  ${paths.name}\n`;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function writeLinuxDesktopReleaseChecksum(options) {
+  const paths = linuxChecksumPaths(options);
+  writeFileSync(paths.checksum, linuxChecksumLine(paths));
+  return paths.checksum;
+}
+
+// Linux Desktop bundles only the native CPU core, not the CUDA add-on, so the
+// AppImage stays close to the macOS DMG. This provisional budget must be
+// validated against an Electron 45 release build; it also guards against CUDA.
+export const linuxDesktopReleaseBudgetBytes = 512 * 1024 ** 2;
+
+export function verifyLinuxDesktopReleaseSize(options) {
+  const paths = linuxChecksumPaths(options);
+  const stat = statSync(paths.asset);
+  if (!stat.isFile() || stat.size === 0)
+    throw new Error("Linux AppImage is not a nonempty regular file.");
+  if (stat.size > linuxDesktopReleaseBudgetBytes)
+    throw new Error(
+      `Linux AppImage is ${stat.size} bytes, over the ${linuxDesktopReleaseBudgetBytes}-byte release budget.`
+    );
+}
+
+export function verifyLinuxDesktopReleaseChecksum(options) {
+  const paths = linuxChecksumPaths(options);
+  if (readFileSync(paths.checksum, "utf8") !== linuxChecksumLine(paths)) {
+    throw new Error("Invalid Linux AppImage checksum or asset.");
+  }
 }
 
 export function resolveDesktopReleaseApp(releaseDirectory) {
@@ -47,9 +110,20 @@ if (
         releaseDirectory: directory,
         releaseVersion: version
       });
+    } else if (
+      ["checksum-linux", "verify-linux", "size-linux"].includes(mode) &&
+      directory &&
+      version &&
+      process.argv.length === 5
+    ) {
+      const options = { releaseDirectory: directory, releaseVersion: version };
+      if (mode === "checksum-linux") writeLinuxDesktopReleaseChecksum(options);
+      else if (mode === "verify-linux")
+        verifyLinuxDesktopReleaseChecksum(options);
+      else verifyLinuxDesktopReleaseSize(options);
     } else
       throw new Error(
-        "Usage: desktop-release-checksum.mjs app|checksum <release-directory> [version]"
+        "Usage: desktop-release-checksum.mjs app|checksum|checksum-linux|verify-linux|size-linux <release-directory> [version]"
       );
   } catch (error) {
     console.error(error.message);

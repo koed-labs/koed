@@ -64,10 +64,38 @@ test("Linux native artifact CI installs and requires the pinned CUDA toolkit", (
   const releaseJob = releaseWorkflow
     .split("  native-runtime-linux-x64-release-assets:")[1]
     .split("  signed-desktop-release-assets:")[0];
-  assert.doesNotMatch(
-    `${linuxJob}\n${cacheWorkflow}\n${releaseJob}`,
-    /key:[^\n]*(?:loader-validation|validate-runtime)/
+  for (const [job, expectedCount] of [
+    [linuxJob, 2],
+    [cacheWorkflow, 2],
+    [releaseJob, 1]
+  ]) {
+    const cudaKeys = job.match(
+      /key: native-runtime-payload-v1-linux-x64-cuda-12\.4-[^\n]*/g
+    );
+    assert.equal(cudaKeys?.length, expectedCount);
+    for (const key of cudaKeys) {
+      assert.doesNotMatch(key, /loader-validation|validate-runtime/);
+    }
+  }
+  const coreVerification = linuxJob
+    .split("- name: Verify Linux native CPU core")[1]
+    .split("- name: Save Linux native CPU core")[0];
+  const validationPosition = coreVerification.indexOf(
+    "pnpm native-runtime:validate"
   );
+  assert.ok(validationPosition > 0);
+  assert.ok(
+    coreVerification.indexOf(
+      "verifyFrozenCore(process.argv[1])",
+      validationPosition
+    ) > validationPosition,
+    "verify after validation before save"
+  );
+  const coreKeys = linuxJob.match(/key: linux-native-core-v1-[^\n]*/g);
+  assert.equal(coreKeys?.length, 2);
+  for (const key of coreKeys) {
+    assert.match(key, /scripts\/native-runtime\/loader-validation-lib\.mjs/);
+  }
   assert.doesNotMatch(releaseJob, /cuda-toolkit|Cold-build/);
   assert.equal(
     releaseJob.match(

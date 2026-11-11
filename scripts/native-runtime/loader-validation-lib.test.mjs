@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -125,6 +132,43 @@ test("resolves Linux libraries only through their packaged runtime directories",
       environment: {}
     }).LD_LIBRARY_PATH,
     undefined
+  );
+});
+
+test("symlinked runtime uses canonical paths for Linux loader policy", (t) => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-loader-link-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const runtime = resolve(root, "runtime");
+  const link = resolve(root, "koed-runtime");
+  mkdirSync(resolve(runtime, "llama.cpp/cuda"), { recursive: true });
+  mkdirSync(resolve(runtime, "postgres/bin"), { recursive: true });
+  const cuda = resolve(runtime, "llama.cpp/cuda/libggml-cuda.so");
+  const postgres = resolve(runtime, "postgres/bin/postgres");
+  writeFileSync(cuda, Buffer.from("7f454c46", "hex"));
+  writeFileSync(postgres, Buffer.from("7f454c46", "hex"));
+  symlinkSync(runtime, link, "dir");
+  const binaries = collectPlatformBinaries({
+    runtimeRoot: link,
+    platform: "linux"
+  });
+  const realCuda = realpathSync(cuda);
+  const realPostgres = realpathSync(postgres);
+  assert.ok(binaries.includes(realCuda));
+  assert.deepEqual(
+    linuxLoaderIssues({
+      file: realCuda,
+      runtimeRoot: link,
+      output: "libcuda.so.1 => not found"
+    }),
+    []
+  );
+  assert.equal(
+    linuxLoaderEnvironment({
+      file: realPostgres,
+      runtimeRoot: link,
+      environment: {}
+    }).LD_LIBRARY_PATH,
+    resolve(realpathSync(runtime), "postgres/lib")
   );
 });
 

@@ -118,6 +118,19 @@ const privacy = createRequire(path.join(process.argv[3], 'package.json'));
   const onnx = privacy('onnxruntime-node');
   assert.equal(typeof onnx.InferenceSession.create, 'function');
   const msgpackr = base('msgpackr');
+  if (process.platform === 'linux') {
+    const msgpackrRequire = createRequire(base.resolve('msgpackr'));
+    const extractorEntry = msgpackrRequire.resolve('msgpackr-extract');
+    assert.equal(extractorEntry, path.join(root, 'components/base/node_modules/msgpackr-extract/index.js'));
+    const extractorRequire = createRequire(extractorEntry);
+    const loader = extractorRequire('node-gyp-build-optional-packages');
+    const selected = loader.resolve(path.dirname(extractorEntry));
+    assert.equal(selected, path.join(root, 'components/base/node_modules/@msgpackr-extract/msgpackr-extract-linux-x64/node.napi.glibc.node'));
+    const extractor = msgpackrRequire('msgpackr-extract');
+    const input = Uint8Array.from([0xa3, 0x66, 0x6f, 0x6f]);
+    assert.equal(extractor.extractStrings(0, input.length, input.buffer), 'foo');
+    assert.equal(msgpackr.isNativeAccelerationEnabled, true);
+  }
   const value = { id: 7, name: 'native-addon-fixture', values: [1, 2, 3] };
   const packr = new msgpackr.Packr({ useRecords: false });
   assert.deepEqual(packr.unpack(packr.pack(value)), value);

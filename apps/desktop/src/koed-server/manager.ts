@@ -35,6 +35,7 @@ import {
 } from "./lifecycle-observer.js";
 import {
   connectSupervisor,
+  desktopSupervisorManagementTimeoutMs,
   DesktopSupervisorStartupError,
   requestSupervisor,
   type PrivateSupervisorSession
@@ -5189,7 +5190,7 @@ export const createKoedServerManager = ({
         child,
         packagedResourcesPath,
         mode,
-        30_000
+        desktopSupervisorManagementTimeoutMs
       );
     } catch (error) {
       await drainSupervisorStderr(child);

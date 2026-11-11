@@ -29,7 +29,7 @@ const linuxInstallation = () => {
     resources,
     "app.asar/node_modules/@koed-labs/server/dist/desktop-cli-entrypoint.js"
   );
-  const executable = resolve(root, "@koeddesktop");
+  const executable = resolve(root, "koed");
   mkdirSync(resolve(entry, ".."), { recursive: true });
   mkdirSync(resolve(executable, ".."), { recursive: true });
   writeFileSync(entry, "");

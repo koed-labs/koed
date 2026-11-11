@@ -67,6 +67,92 @@ test("trust, smoke, composition, hashes precede immutable release upload", () =>
     /koed-desktop-macos-arm64\.sha256/
   );
 });
+test("Linux Desktop can access the complete native catalog before embedding pins", () => {
+  const linux = jobs["linux-desktop-release-assets"];
+  const embed = linux.steps.find(
+    (s) => s.name === "Embed native package pins in the release build"
+  );
+  assert.equal(
+    embed.env.NATIVE_CATALOG,
+    "${{ needs.macos-native-packages.outputs.catalog }}"
+  );
+  assert.ok(linux.needs.includes("macos-native-packages"));
+});
+test("Linux release builds and smokes verified runtime and retains exact final assets", () => {
+  const linux = jobs["linux-desktop-release-assets"];
+  assert.ok(linux, "missing Linux Desktop release job");
+  assert.equal(linux["runs-on"], "ubuntu-22.04");
+  for (const dependency of [
+    "release",
+    "component-manifest-catalog",
+    "linux-native-packages"
+  ])
+    assert.ok(linux.needs.includes(dependency));
+  // Desktop bundles only the pinned CPU core, never the combined CPU and
+  // CUDA runtime (ADR 0067).
+  assert.ok(!linux.needs.includes("native-runtime-linux-x64-release-assets"));
+  const steps = linux.steps;
+  const commands = steps.map((s) => s.run ?? "").join("\n");
+  assert.ok(steps.some((s) => s.with?.name === "koed-linux-native-packages"));
+  assert.ok(
+    !steps.some((s) => s.with?.name === "koed-native-runtime-linux-x64")
+  );
+  assert.doesNotMatch(commands, /koed-native-runtime-linux-x64-/);
+  const core = steps.find(
+    (s) => s.name === "Verify and extract Linux CPU core"
+  );
+  assert.ok(core, "missing CPU core verification step");
+  assert.match(
+    core.env.NATIVE_CATALOG,
+    /linux-native-packages\.outputs\.catalog/
+  );
+  assert.match(core.run, /\.core\.sha256/);
+  assert.match(core.run, /\.core\.manifestSha256/);
+  assert.match(core.run, /koed-native-core-\$\{recipe\}-linux-x64\.tar\.gz/);
+  assert.match(core.run, /verifyFrozenCore/);
+  const build = steps.find((s) => s.name === "Build Linux Desktop artifacts");
+  assert.equal(
+    build.env.KOED_NATIVE_RUNTIME_SOURCE_DIR,
+    "${{ runner.temp }}/koed-linux-runtime/koed-runtime"
+  );
+  assert.ok(
+    steps.indexOf(core) < steps.indexOf(build),
+    "CPU core must be verified before Desktop packaging"
+  );
+  assert.match(commands, /sha256sum --check/);
+  assert.match(commands, /native-runtime:validate/);
+  assert.match(commands, /verify-frozen-component-assets/);
+  assert.match(commands, /desktop:package:linux:release/);
+  assert.match(commands, /--appimage-direct/);
+  assert.match(commands, /verify-linux/);
+  const retained = steps.findIndex(
+    (s) => s.with?.name === "koed-desktop-linux-final-assets"
+  );
+  const upload = steps.findIndex((s) =>
+    s.run?.includes("ensure-release-assets.mjs")
+  );
+  const sizeGate = steps.findIndex((s) => s.run?.includes("size-linux"));
+  assert.ok(sizeGate >= 0 && sizeGate < retained);
+  assert.ok(retained >= 0 && upload > retained);
+  assert.match(steps[retained].with.path, /Koed-.*-x86_64\.AppImage/);
+  assert.match(steps[retained].with.path, /koed-desktop-linux-x64\.sha256/);
+  // Trusted-build evidence (ADR 0068) comes from the final AppImage, never
+  // the unpacked directory, and is retained and published with it.
+  const evidence = steps.findIndex((s) =>
+    s.run?.includes("linux-desktop-build-evidence.mjs")
+  );
+  const packaged = steps.findIndex((s) =>
+    s.run?.includes("desktop:package:linux:release")
+  );
+  assert.ok(evidence >= packaged && evidence < retained);
+  assert.doesNotMatch(steps[evidence].run, /linux-unpacked\/resources/);
+  assert.match(
+    steps[retained].with.path,
+    /koed-desktop-linux-x64\.evidence\.json/
+  );
+  assert.match(steps[upload].run, /koed-desktop-linux-x64\.evidence\.json/);
+});
+
 test("macOS native build freezes once and both consumers bind the same immutable artifact", () => {
   const freeze = jobs["frozen-macos-native-runtime"];
   const stage = jobs["macos-native-packages"];

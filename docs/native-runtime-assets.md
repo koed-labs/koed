@@ -14,6 +14,24 @@ Koed uses:
 
 Packaged Desktop never silently falls back to source-checkout `vendor` paths. Developer source fallbacks require explicit opt-in with `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1`.
 
+## Linux Desktop release qualification
+
+`pnpm desktop:package:linux:release` checks for a Linux x64 Node.js execution
+environment before building or staging. Use a native Linux x64 host for release
+qualification: the guard does not detect emulation, and emulated hosts are not
+qualified. The command also requires a validated native runtime source via
+`KOED_NATIVE_RUNTIME_SOURCE_DIR`; the later artifact checks still apply. The
+generic `pnpm desktop:package:linux` directory build is unchanged.
+
+The Linux x64 Desktop release job stages the versioned Linux native runtime
+archive after checking its SHA-256 sidecar and validating the extracted tree.
+The runtime build targets glibc 2.35 or newer; this is not evidence that Desktop
+has passed release rehearsal on every distribution. Candidate verification
+binds the AppImage to evidence recorded by the reviewed build
+([ADR 0068](adr/0068-linux-appimage-trusted-build-evidence.md)). See
+[Running Koed](running-koed.md#linux-x64-desktop-release-candidate) for candidate
+launch prerequisites and qualification status.
+
 ## Packaged asset layout
 
 Packaged native resources live under Electron `Contents/Resources/koed-runtime` or equivalent Linux resources path:

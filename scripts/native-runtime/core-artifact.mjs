@@ -400,6 +400,44 @@ export const freezeCore = ({ runtimeRoot, configuration, recipe }) => {
   return manifest;
 };
 
+const inventoryMismatchDetails = (expected, actual) => {
+  if (
+    !Array.isArray(expected) ||
+    expected.some(
+      (entry) =>
+        !entry || typeof entry !== "object" || typeof entry.path !== "string"
+    )
+  )
+    return " Invalid manifest inventory.";
+  const expectedByPath = new Map(expected.map((entry) => [entry.path, entry]));
+  const actualByPath = new Map(actual.map((entry) => [entry.path, entry]));
+  const paths = [
+    ...new Set([...expectedByPath.keys(), ...actualByPath.keys()])
+  ].sort();
+  const differences = [];
+  for (const path of paths) {
+    const before = expectedByPath.get(path);
+    const after = actualByPath.get(path);
+    let detail;
+    if (!before) detail = "unexpected";
+    else if (!after) detail = "missing";
+    else if (canonicalArtifactJson(before) !== canonicalArtifactJson(after)) {
+      const fields = ["type", "mode", "bytes", "sha256", "target"];
+      const changed = fields.filter((field) => before[field] !== after[field]);
+      detail = `changed ${changed.join(", ") || "other fields"}`;
+    }
+    if (detail) {
+      if (differences.length === 10)
+        return ` ${differences.join("; ")}; diagnostics truncated`;
+      const encodedPath = JSON.stringify(path);
+      differences.push(
+        `${encodedPath.length > 200 ? `${encodedPath.slice(0, 200)}...` : encodedPath}: ${detail}`
+      );
+    }
+  }
+  return differences.length ? ` ${differences.join("; ")}` : "";
+};
+
 export const verifyFrozenCore = (runtimeRoot) => {
   const manifestPath = resolve(runtimeRoot, coreManifestName);
   const stat = lstatSync(manifestPath);
@@ -418,16 +456,17 @@ export const verifyFrozenCore = (runtimeRoot) => {
     manifest.recipeId !== coreRecipeId(manifest.recipe)
   )
     throw new Error("Native core recipe or canonical manifest changed.");
+  const actualInventory = coreInventory(runtimeRoot, manifest.target.platform);
   if (
     canonicalArtifactJson(manifest.inventory) !==
-      canonicalArtifactJson(
-        coreInventory(runtimeRoot, manifest.target.platform)
-      ) ||
+      canonicalArtifactJson(actualInventory) ||
     (manifest.target.platform === "macos" &&
       manifest.recipe.frozenInventorySha256 !==
         coreRecipeId(manifest.inventory))
   )
-    throw new Error("Native core inventory changed after freezing.");
+    throw new Error(
+      `Native core inventory changed after freezing.${inventoryMismatchDetails(manifest.inventory, actualInventory)}`
+    );
   if (manifest.target.platform === "macos")
     assertMacLicenses(runtimeRoot, manifest.inventory);
   for (const path of [

@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
+import * as linuxCoreBuilder from "./build-core-linux-x64.mjs";
 import {
   coreInventory,
   coreRecipeId,
@@ -26,7 +30,7 @@ test.afterEach(() =>
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true }))
 );
-const fixture = () => {
+const fixture = (prepare = () => {}) => {
   mkdirSync("scratch", { recursive: true });
   const root = mkdtempSync(resolve("scratch", "core-artifact-"));
   roots.push(root);
@@ -72,6 +76,7 @@ const fixture = () => {
     logic: { build: "a".repeat(64) },
     packaging: { epoch: 0 }
   };
+  prepare(runtimeRoot, root);
   freezeCore({ runtimeRoot, configuration, recipe });
   return { root, runtimeRoot, recipe };
 };
@@ -103,6 +108,85 @@ test("frozen core repackaging preserves bytes across output paths and product ve
     if (before === undefined) delete process.env.KOED_NATIVE_RUNTIME_VERSION;
     else process.env.KOED_NATIVE_RUNTIME_VERSION = before;
   }
+});
+
+test(
+  "cache tar extraction masks group-writable frozen license modes",
+  { skip: process.getuid?.() === 0 },
+  () => {
+    const { root } = fixture((runtime) => {
+      const license = resolve(runtime, "llama.cpp/cpu/libgomp-GPL-3.txt");
+      writeFileSync(license, "license");
+      chmodSync(license, 0o664);
+    });
+    const archive = resolve(root, "cache.tar");
+    const restored = resolve(root, "restored");
+    mkdirSync(restored);
+    let result = spawnSync(
+      "tar",
+      ["-cf", archive, "-C", root, "koed-runtime"],
+      { encoding: "utf8" }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    result = spawnSync(
+      "sh",
+      ["-c", 'umask 022; exec tar -xf "$1" -C "$2"', "sh", archive, restored],
+      { encoding: "utf8" }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const runtime = resolve(restored, "koed-runtime");
+    assert.equal(
+      statSync(resolve(runtime, "llama.cpp/cpu/libgomp-GPL-3.txt")).mode &
+        0o777,
+      0o644
+    );
+    assert.throws(
+      () => verifyFrozenCore(runtime),
+      /libgomp-GPL-3\.txt.*changed mode/
+    );
+  }
+);
+
+test("CPU license modes survive an unprivileged cache tar roundtrip and remain verified", () => {
+  const { root, runtimeRoot } = fixture((runtime, root) => {
+    const sources = {};
+    for (const name of ["libgomp-copyright.txt", "libgomp-GPL-3.txt"]) {
+      const source = resolve(root, name);
+      writeFileSync(source, "license");
+      chmodSync(source, 0o664);
+      sources[name] = source;
+    }
+    assert.equal(typeof linuxCoreBuilder.copyCpuRedistributables, "function");
+    linuxCoreBuilder.copyCpuRedistributables(
+      sources,
+      resolve(runtime, "llama.cpp/cpu")
+    );
+  });
+  for (const name of ["libgomp-copyright.txt", "libgomp-GPL-3.txt"])
+    assert.equal(
+      statSync(resolve(runtimeRoot, "llama.cpp/cpu", name)).mode & 0o777,
+      0o644
+    );
+  const archive = resolve(root, "cache.tar");
+  const restored = resolve(root, "restored");
+  mkdirSync(restored);
+  let result = spawnSync("tar", ["-cf", archive, "-C", root, "koed-runtime"], {
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  result = spawnSync(
+    "sh",
+    ["-c", 'umask 022; exec tar -xf "$1" -C "$2"', "sh", archive, restored],
+    { encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const restoredRuntime = resolve(restored, "koed-runtime");
+  verifyFrozenCore(restoredRuntime);
+  chmodSync(resolve(restoredRuntime, "llama.cpp/cpu/libgomp-GPL-3.txt"), 0o664);
+  assert.throws(
+    () => verifyFrozenCore(restoredRuntime),
+    /libgomp-GPL-3\.txt.*changed mode/
+  );
 });
 
 test("recipe identity covers source, toolchain, build logic and packaging inputs", () => {
@@ -158,6 +242,117 @@ for (const change of [
     );
   });
 }
+
+test("inventory mismatch reports bounded paths and changed fields without file contents", () => {
+  const { runtimeRoot } = fixture();
+  writeFileSync(
+    resolve(runtimeRoot, "llama.cpp/cpu/llama-server"),
+    "secret changed content"
+  );
+  rmSync(resolve(runtimeRoot, "postgres/bin/pg_dump"));
+  for (let i = 0; i < 20; i++)
+    writeFileSync(
+      resolve(runtimeRoot, `postgres/extra-${String(i).padStart(2, "0")}`),
+      "extra"
+    );
+  assert.throws(
+    () => verifyFrozenCore(runtimeRoot),
+    (error) => {
+      assert.match(
+        error.message,
+        /llama\.cpp\/cpu\/llama-server.*(?:bytes|sha256)/
+      );
+      assert.match(error.message, /postgres\/bin\/pg_dump.*missing/);
+      assert.match(error.message, /postgres\/extra-00.*unexpected/);
+      assert.match(error.message, /truncated/);
+      assert.doesNotMatch(
+        error.message,
+        /secret changed content|postgres\/extra-19/
+      );
+      assert.ok(error.message.length < 4096);
+      return true;
+    }
+  );
+});
+
+test("truncation is reported only when more than ten differences exist", () => {
+  const { runtimeRoot } = fixture();
+  for (let i = 0; i < 10; i++)
+    writeFileSync(resolve(runtimeRoot, `postgres/extra-${i}`), "extra");
+  assert.throws(
+    () => verifyFrozenCore(runtimeRoot),
+    (error) => {
+      assert.doesNotMatch(error.message, /truncated/);
+      return true;
+    }
+  );
+  writeFileSync(resolve(runtimeRoot, "postgres/extra-10"), "extra");
+  assert.throws(() => verifyFrozenCore(runtimeRoot), /diagnostics truncated/);
+});
+
+test("CI verification blocks save when validation changes the core", () => {
+  for (const mutate of [false, true]) {
+    const { root, runtimeRoot } = fixture();
+    const temp = resolve(root, "runner");
+    mkdirSync(resolve(temp, "koed-native-core"), { recursive: true });
+    cpSync(runtimeRoot, resolve(temp, "koed-native-core/koed-runtime"), {
+      recursive: true,
+      verbatimSymlinks: true
+    });
+    const bin = resolve(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      resolve(bin, "pnpm"),
+      `#!/bin/sh\n${mutate ? 'printf changed > "$RUNNER_TEMP/koed-native-core/koed-runtime/postgres/bin/postgres"' : ":"}\n`,
+      { mode: 0o755 }
+    );
+    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+    const step = workflow
+      .split("- name: Verify Linux native CPU core\n")[1]
+      .split("\n      - name:")[0];
+    const script = step.split("        run: |\n")[1].replace(/^ {10}/gm, "");
+    const marker = resolve(root, "saved");
+    const result = spawnSync(
+      "bash",
+      ["-c", `${script}\nprintf saved > "$SAVE_MARKER"`],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RUNNER_TEMP: temp,
+          SAVE_MARKER: marker,
+          PATH: `${bin}:${process.env.PATH}`
+        }
+      }
+    );
+    assert.equal(result.status, mutate ? 1 : 0, result.stderr);
+    assert.equal(existsSync(marker), !mutate);
+    if (mutate)
+      assert.match(
+        result.stderr,
+        /Native core inventory changed after freezing/
+      );
+  }
+});
+
+test("inventory diagnostic remains bounded for escaped filenames", () => {
+  const { runtimeRoot } = fixture();
+  for (let i = 0; i < 10; i++)
+    writeFileSync(
+      resolve(runtimeRoot, `postgres/${i}${"\x01".repeat(110)}`),
+      "extra"
+    );
+  assert.throws(
+    () => verifyFrozenCore(runtimeRoot),
+    (error) => {
+      assert.ok(
+        error.message.length < 4096,
+        `diagnostic length: ${error.message.length}`
+      );
+      return true;
+    }
+  );
+});
 
 test("native inventory rejects hard links, absolute links and link chains", () => {
   const { runtimeRoot } = fixture();

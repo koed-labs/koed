@@ -45,6 +45,15 @@ extraResources:
 directories:
   output: release
 
+linux:
+  # Derived default (@koed/desktop) is not a valid executable name.
+  executableName: koed
+  icon: assets/koed-icon.png
+  category: Development
+  artifactName: "Koed-${version}-${arch}.${ext}"
+  target:
+    - AppImage
+
 mac:
   minimumSystemVersion: "14.0"
   artifactName: "Koed-${version}-${arch}.${ext}"

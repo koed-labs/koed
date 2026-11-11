@@ -249,7 +249,7 @@ export const createDesktopComponentManagerBridge = (input: {
   const desktopRuntimeCapability = capability;
   const owner = deriveDesktopRuntimeOwner(
     input.paths.koedHome,
-    capability.resourcesPath
+    capability.installationPath
   );
   const context: ComponentCommandContext = {
     paths: input.paths,

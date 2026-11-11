@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
@@ -11,6 +12,202 @@ import {
 import { evaluateRequiredJobs } from "../.github/scripts/ci-required.mjs";
 
 const REPOSITORY_FULL_NAME = "koed-labs/koed";
+
+const linuxJob = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs[
+  "native-runtime-linux-x64"
+];
+
+function runsFor(condition, outputs, { nativeHit, coreHit, failed = false }) {
+  if (!condition) return !failed;
+  const expression = condition
+    .replace(
+      /needs\.changes\.outputs\.(run_linux_native|run_app_smoke|run_full_validation)/g,
+      (_, key) => JSON.stringify(outputs[key])
+    )
+    .replace(
+      /steps\.native-cache\.outputs\.cache-hit/g,
+      JSON.stringify(nativeHit)
+    )
+    .replace(
+      /steps\.native-core-cache\.outputs\.cache-hit/g,
+      JSON.stringify(coreHit)
+    )
+    .replace(/failure\(\)/g, String(failed));
+  assert.match(expression, /^[\s()'"a-z!&|=]+$/);
+  const matches = Function(`"use strict"; return (${expression});`)();
+  return (condition.includes("failure()") || !failed) && matches;
+}
+
+test("Linux combined payload and CPU smoke respect policy and cache scenarios", () => {
+  const combined = [
+    "Restore verified Linux native runtime payload",
+    "Install native runtime build dependencies",
+    "Install pinned CUDA build toolkit",
+    "Cold-build native runtime payload",
+    "Validate native runtime payload before use or save",
+    "Save verified Linux native runtime payload",
+    "Package native runtime artifact",
+    "Validate packaged native runtime artifact"
+  ];
+  const misses = new Set(combined.slice(1, 4).concat(combined[5]));
+  const cpu = [
+    "Restore Linux native CPU core",
+    "Build Linux native CPU core on a cache miss",
+    "Verify Linux native CPU core",
+    "Save Linux native CPU core",
+    "Build workspace and Linux release AppImage",
+    "Upload unreleased Linux AppImage for manual testing",
+    "Run Linux directory and extracted AppImage smoke"
+  ];
+  const step = (name) => {
+    const found = linuxJob.steps.find((item) => item.name === name);
+    assert.ok(found, `missing step ${name}`);
+    return found;
+  };
+  const scenarios = [
+    { native: false, smoke: true, full: false },
+    { native: false, smoke: false, full: true },
+    { native: true, smoke: false, full: false },
+    { native: true, smoke: true, full: false },
+    { native: true, smoke: false, full: true },
+    { native: false, smoke: false, full: false }
+  ];
+  for (const { native, smoke, full } of scenarios) {
+    const outputs = {
+      run_linux_native: String(native),
+      run_app_smoke: String(smoke),
+      run_full_validation: String(full)
+    };
+    for (const nativeHit of [true, false]) {
+      for (const coreHit of [true, false]) {
+        const cache = {
+          nativeHit: String(nativeHit),
+          coreHit: String(coreHit)
+        };
+        const jobRuns = runsFor(linuxJob.if, outputs, cache);
+        assert.equal(jobRuns, native || smoke || full);
+        for (const name of combined) {
+          assert.equal(
+            jobRuns && runsFor(step(name).if, outputs, cache),
+            (native || full) && (!misses.has(name) || !nativeHit),
+            `${name}: ${JSON.stringify({ outputs, nativeHit, coreHit })}`
+          );
+        }
+        for (const name of cpu) {
+          assert.equal(
+            jobRuns && runsFor(step(name).if, outputs, cache),
+            (smoke || full) &&
+              ((!name.includes("on a cache miss") &&
+                name !== "Save Linux native CPU core") ||
+                !coreHit),
+            `${name}: ${JSON.stringify({ outputs, nativeHit, coreHit })}`
+          );
+        }
+        assert.equal(
+          jobRuns &&
+            runsFor(
+              step("Upload verified Linux native runtime artifact").if,
+              outputs,
+              cache
+            ),
+          native
+        );
+        const diagnostics = step("Upload Linux Desktop smoke diagnostics");
+        assert.equal(jobRuns && runsFor(diagnostics.if, outputs, cache), false);
+        assert.equal(
+          jobRuns &&
+            runsFor(diagnostics.if, outputs, { ...cache, failed: true }),
+          smoke || full
+        );
+      }
+    }
+  }
+});
+
+test("Linux payload failures prevent save, packaging and successful required CI", () => {
+  assert.ok([undefined, false].includes(linuxJob["continue-on-error"]));
+  const names = [
+    "Validate native runtime payload before use or save",
+    "Save verified Linux native runtime payload",
+    "Package native runtime artifact",
+    "Validate packaged native runtime artifact",
+    "Upload verified Linux native runtime artifact"
+  ];
+  const steps = names.map((name) => {
+    const step = linuxJob.steps.find((item) => item.name === name);
+    assert.ok(step, `missing step ${name}`);
+    assert.ok([undefined, false].includes(step["continue-on-error"]), name);
+    assert.doesNotMatch(step.if ?? "", /always\(\)|failure\(\)/, name);
+    return step;
+  });
+  assert.deepEqual(
+    steps.map((step) => linuxJob.steps.indexOf(step)),
+    steps.map((step) => linuxJob.steps.indexOf(step)).toSorted((a, b) => a - b)
+  );
+  const outputs = {
+    run_linux_native: "true",
+    run_app_smoke: "true",
+    run_full_validation: "false"
+  };
+  const failed = { nativeHit: "false", coreHit: "false", failed: true };
+  for (const step of steps.slice(1))
+    assert.equal(runsFor(step.if, outputs, failed), false, step.name);
+
+  const required = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs[
+    "ci-required"
+  ];
+  assert.ok(required.needs.includes("native-runtime-linux-x64"));
+  assert.ok([undefined, false].includes(required["continue-on-error"]));
+  const requiredStep = required.steps.find(
+    (step) => step.run === "node .github/scripts/ci-required.mjs"
+  );
+  assert.ok(requiredStep);
+  assert.ok([undefined, false].includes(requiredStep["continue-on-error"]));
+  assert.equal(
+    requiredStep.env.LINUX_NATIVE_RESULT,
+    "${{ needs.native-runtime-linux-x64.result }}"
+  );
+  assert.equal(
+    evaluateRequiredJobs({
+      policy: outputs,
+      results: {
+        changes: "success",
+        static_checks: "success",
+        node_26_consumer: "success",
+        tests: "success",
+        build: "success",
+        relevant_packaged_smoke: "success",
+        release_candidate_validation: "skipped",
+        native_runtime_linux_x64: "failure"
+      }
+    }).ok,
+    false
+  );
+});
+
+test("Linux payload validation preserves validator failure after diagnostics", () => {
+  const step = linuxJob.steps.find(
+    (item) => item.name === "Validate native runtime payload before use or save"
+  );
+  mkdirSync(resolve("scratch"), { recursive: true });
+  const directory = mkdtempSync(resolve("scratch/ci-policy-"));
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `node() { echo '{}'; return 7; }\njq() { return 0; }\n${step.run}`
+      ],
+      {
+        env: { ...process.env, RUNNER_TEMP: directory },
+        encoding: "utf8"
+      }
+    );
+    assert.equal(result.status, 7, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 const pullRequest = ({
   head = "feature",
@@ -130,6 +327,15 @@ test("release workflow dispatches full CI for the generated version branch", () 
     }).run_full_validation,
     "true"
   );
+});
+
+test("manual Linux native validation also selects Desktop smoke", () => {
+  const result = evaluateCiPolicy({
+    eventName: "workflow_dispatch",
+    event: { inputs: { build_native_runtime_linux_x64: "true" } }
+  });
+  assert.equal(result.run_linux_native, "true");
+  assert.equal(result.run_app_smoke, "true");
 });
 
 test("unknown paths fail closed into packaged validation", () => {
@@ -439,6 +645,30 @@ test("push, manual, scheduled, and Linux dispatch policies are explicit", () => 
   );
 });
 
+test("Linux smoke clears stale output, verifies checksum, and gates direct FUSE launch", () => {
+  const ci = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const job = ci
+    .split("  native-runtime-linux-x64:")[1]
+    .split("  ci-required:")[0];
+  assert.match(
+    job,
+    /rm -rf[^\n]*linux-unpacked[\s\S]*desktop:package:linux:release[\s\S]*verify-linux[\s\S]*--appimage-direct/
+  );
+});
+
+test("Linux smoke is required for app and full validation", () => {
+  for (const policy of [
+    { run_app_smoke: "true", run_full_validation: "false" },
+    { run_app_smoke: "false", run_full_validation: "true" }
+  ]) {
+    const evaluation = evaluateRequiredJobs({
+      policy: { ...policy, run_linux_native: "false" },
+      results: {}
+    });
+    assert.equal(evaluation.expected.native_runtime_linux_x64, true);
+  }
+});
+
 test("required CI job depends on and forwards Node 26 consumer result", () => {
   const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
   const job = workflow.jobs["ci-required"];
@@ -531,7 +761,8 @@ test("stable required result accepts only policy-correct success and skips", () 
       },
       results: {
         ...baseResults,
-        release_candidate_validation: "success"
+        release_candidate_validation: "success",
+        native_runtime_linux_x64: "success"
       }
     }).ok,
     true

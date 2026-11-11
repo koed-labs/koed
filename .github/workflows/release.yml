@@ -882,6 +882,154 @@ jobs:
           node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
             release-artifacts/native-runtime-linux-x64/*
 
+  linux-desktop-release-assets:
+    name: Linux x64 Desktop release assets
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    needs:
+      [
+        release,
+        component-manifest-catalog,
+        linux-native-packages,
+        macos-native-packages
+      ]
+    if: github.ref == 'refs/heads/main' && needs.release.outputs.desktop_assets_enabled == 'true'
+    env:
+      KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download frozen catalog
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: koed-component-catalog
+          path: release-components
+      # Linux Desktop bundles only the CPU core (ADR 0067). The optional CUDA
+      # add-on stays a separate release asset, installed with
+      # `koed runtime install --provider release --with-cuda`.
+      - name: Download Linux native packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: koed-linux-native-packages
+          path: release-native
+      - *embed-native-pins
+      - name: Build koed-server CLI
+        run: pnpm --filter @koed-labs/server build
+      - name: Verify and extract Linux CPU core
+        env:
+          NATIVE_CATALOG: ${{ needs.linux-native-packages.outputs.catalog }}
+        run: |
+          set -euo pipefail
+          recipe=$(jq -r '.core.recipeId' <<<"${NATIVE_CATALOG}")
+          sha=$(jq -r '.core.sha256' <<<"${NATIVE_CATALOG}")
+          manifest_sha=$(jq -r '.core.manifestSha256' <<<"${NATIVE_CATALOG}")
+          for value in "${recipe}" "${sha}" "${manifest_sha}"; do
+            [[ "${value}" =~ ^[a-f0-9]{64}$ ]]
+          done
+          archive="koed-native-core-${recipe}-linux-x64.tar.gz"
+          cd release-native
+          echo "${sha}  ${archive}" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/koed-linux-runtime"
+          python3 -c 'import sys, tarfile
+          archive, destination = sys.argv[1:]
+          if not hasattr(tarfile, "data_filter"):
+              raise RuntimeError("Safe tar extraction filter unavailable")
+          with tarfile.open(archive, "r:gz") as tar:
+              for member in tar.getmembers():
+                  if member.name.rstrip("/") != "koed-runtime" and not member.name.startswith("koed-runtime/"):
+                      raise ValueError("Unexpected runtime archive path")
+              tar.extractall(destination, filter="data")' "${archive}" "${RUNNER_TEMP}/koed-linux-runtime"
+          cd ..
+          root="${RUNNER_TEMP}/koed-linux-runtime/koed-runtime"
+          echo "${manifest_sha}  ${root}/native-core-manifest.json" | sha256sum --check --strict
+          node --input-type=module -e 'import { verifyFrozenCore } from "./scripts/native-runtime/core-artifact.mjs"; verifyFrozenCore(process.argv[1]);' "${root}"
+          pnpm native-runtime:validate -- --runtime-root "${root}" --platform linux --json
+      - name: Install Linux Desktop smoke dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb libfuse2 libgtk-3-0 libnss3 libasound2 libgbm1 libxss1
+      - name: Build Linux Desktop artifacts
+        env:
+          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-linux-runtime/koed-runtime
+        run: |
+          set -euo pipefail
+          node scripts/verify-frozen-component-assets.mjs release-components "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}"
+          pnpm build
+          pnpm desktop:package:linux:release
+          node scripts/verify-frozen-component-assets.mjs release-components "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}"
+          node scripts/desktop-release-checksum.mjs verify-linux apps/desktop/release "${{ needs.release.outputs.version }}"
+          # Trusted-build evidence (ADR 0068): extract the ASAR from the final
+          # AppImage, verify its catalog and record hashes for candidate binding.
+          node scripts/linux-desktop-build-evidence.mjs apps/desktop/release "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}" | tee -a "${GITHUB_STEP_SUMMARY}"
+      - name: Smoke Linux Desktop and exact AppImage
+        env:
+          KOED_EMBEDDING_ACCELERATION: cpu
+        run: |
+          set -euo pipefail
+          version="${{ needs.release.outputs.version }}"
+          image="${GITHUB_WORKSPACE}/apps/desktop/release/Koed-${version}-x86_64.AppImage"
+          node scripts/desktop-release-checksum.mjs verify-linux apps/desktop/release "${version}"
+          cd apps/desktop
+          xvfb-run -a node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-linux-smoke-diagnostics"
+          node ../../scripts/desktop-release-checksum.mjs verify-linux release "${version}"
+          xvfb-run -a node scripts/smoke-packaged-desktop-app.mjs --json --appimage "${image}" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-linux-smoke-diagnostics"
+          node ../../scripts/desktop-release-checksum.mjs verify-linux release "${version}"
+          xvfb-run -a node scripts/smoke-packaged-desktop-app.mjs --json --appimage "${image}" --appimage-direct --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-linux-smoke-diagnostics"
+          node ../../scripts/desktop-release-checksum.mjs verify-linux release "${version}"
+      - name: Upload Linux Desktop smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-linux-desktop-release-smoke-diagnostics
+          path: ${{ runner.temp }}/koed-linux-smoke-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Inspect Linux Desktop composition and report size
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { inventoryDesktopPayload } from "./apps/desktop/scripts/privacy-payload-inventory.mjs";
+            const root = "apps/desktop/release/linux-unpacked";
+            const exclusions = JSON.parse(readFileSync(`${root}/resources/koed-runtime/desktop-privacy-exclusions.json`, "utf8"));
+            const inventory = inventoryDesktopPayload(root, exclusions.packages);
+            if (inventory.privacyFiles.length) throw new Error("Linux Desktop contains Privacy-only payload.");
+          '
+          node scripts/desktop-release-checksum.mjs size-linux apps/desktop/release "${{ needs.release.outputs.version }}"
+          du -h apps/desktop/release/linux-unpacked/resources/* "apps/desktop/release/Koed-${{ needs.release.outputs.version }}-x86_64.AppImage" | tee -a "${GITHUB_STEP_SUMMARY}"
+      - name: Retain final Linux Desktop bytes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-linux-final-assets
+          path: |
+            apps/desktop/release/Koed-${{ needs.release.outputs.version }}-x86_64.AppImage
+            apps/desktop/release/koed-desktop-linux-x64.sha256
+            apps/desktop/release/koed-desktop-linux-x64.evidence.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Upload Linux Desktop assets to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/ensure-release-assets.mjs "${{ needs.release.outputs.tag }}" \
+            "apps/desktop/release/Koed-${{ needs.release.outputs.version }}-x86_64.AppImage" \
+            apps/desktop/release/koed-desktop-linux-x64.sha256 \
+            apps/desktop/release/koed-desktop-linux-x64.evidence.json
+
   signed-desktop-release-assets:
     name: Signed Desktop release assets
     runs-on: macos-15
@@ -1112,6 +1260,7 @@ jobs:
         macos-native-packages,
         frozen-macos-native-runtime,
         signed-desktop-release-assets,
+        linux-desktop-release-assets,
         privacy-release-qualification
       ]
     if: needs.release.outputs.desktop_assets_enabled == 'true'
@@ -1141,7 +1290,7 @@ jobs:
           mkdir -p scratch
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > scratch/build-artifacts.json
           jq -e --argjson id "${FROZEN_MACOS_ARTIFACT_ID}" '[.artifacts[] | select(.name == "koed-private-frozen-macos-native-runtime" and .id == $id and .expired == false)] | length == 1' scratch/build-artifacts.json > /dev/null
-          ids="$(jq -r '[.artifacts[] | select(.name == "koed-component-catalog" or .name == "koed-server-app-runtime-linux-x64" or .name == "koed-server-app-runtime-macos-arm64" or .name == "koed-desktop-final-assets" or .name == "koed-native-runtime-linux-x64" or .name == "koed-linux-native-packages" or .name == "koed-macos-native-packages" or .name == "koed-release-metadata") | .id] | join(",")' scratch/build-artifacts.json)"
+          ids="$(jq -r '[.artifacts[] | select(.name == "koed-component-catalog" or .name == "koed-server-app-runtime-linux-x64" or .name == "koed-server-app-runtime-macos-arm64" or .name == "koed-desktop-final-assets" or .name == "koed-desktop-linux-final-assets" or .name == "koed-native-runtime-linux-x64" or .name == "koed-linux-native-packages" or .name == "koed-macos-native-packages" or .name == "koed-release-metadata") | .id] | join(",")' scratch/build-artifacts.json)"
           test -n "${ids}"
           echo "ids=${ids}" >> "${GITHUB_OUTPUT}"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -1221,6 +1370,7 @@ jobs:
       - standalone-koed-server-release-metadata
       - native-runtime-linux-x64-release-assets
       - signed-desktop-release-assets
+      - linux-desktop-release-assets
       - reviewed-release-identity
       - verify-release-candidate
       - privacy-release-qualification
@@ -1334,7 +1484,10 @@ jobs:
             "koed-native-runtime-linux-x64-${VERSION}.provenance.json" \
             "Koed-${VERSION}-arm64.dmg" \
             "Koed-${VERSION}-arm64.zip" \
-            'koed-desktop-macos-arm64.sha256'; do
+            'koed-desktop-macos-arm64.sha256' \
+            "Koed-${VERSION}-x86_64.AppImage" \
+            'koed-desktop-linux-x64.sha256' \
+            'koed-desktop-linux-x64.evidence.json'; do
             if ! asset_present "${pattern}"; then
               echo "Missing required release asset: ${pattern}" >&2
               exit 1
