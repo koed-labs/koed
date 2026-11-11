@@ -1,3 +1,21 @@
+import {
+  recallActivityOverviewInputSchema,
+  recallActivityOverviewSchema,
+  type RecallActivityOverviewInput,
+  type RecallActivityOverview
+} from "./recall-activity.js";
+import {
+  recallActivityDetailInputSchema,
+  recallActivityDetailSchema,
+  type RecallActivityDetail
+} from "./recall-activity.js";
+import {
+  recallActivityListInputSchema,
+  recallActivityPageSchema,
+  type RecallActivityListInput,
+  type RecallActivityPage
+} from "./recall-activity.js";
+export * from "./recall-activity.js";
 export { selectPersonalMembershipHead } from "./personal-membership-contract.js";
 export {
   personalConversationOrganizationInputSchema,
@@ -708,6 +726,27 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.recall.overview"),
+      input: recallActivityOverviewInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.recall.detail"),
+      input: recallActivityDetailInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.recall.list"),
+      input: recallActivityListInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.projects.status"),
       input: z.object({}).strict()
     })
@@ -968,6 +1007,33 @@ const failedResult = <Operation extends string>(operation: Operation) =>
     .strict();
 
 export const personalDesktopResultSchema = z.union([
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.recall.overview"),
+      ok: z.literal(true),
+      data: recallActivityOverviewSchema
+    })
+    .strict(),
+  failedResult("personal.recall.overview"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.recall.detail"),
+      ok: z.literal(true),
+      data: recallActivityDetailSchema
+    })
+    .strict(),
+  failedResult("personal.recall.detail"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.recall.list"),
+      ok: z.literal(true),
+      data: recallActivityPageSchema
+    })
+    .strict(),
+  failedResult("personal.recall.list"),
   z
     .object({
       ...resultBase,
@@ -1316,6 +1382,15 @@ export const conversationToolKindAndLabel = (
 };
 
 export interface PersonalDesktopApi {
+  recallActivityOverview?: (
+    input: RecallActivityOverviewInput
+  ) => Promise<RecallActivityOverview>;
+  loadRecallActivity?: (input: {
+    questionId: string;
+  }) => Promise<RecallActivityDetail>;
+  listRecallActivity?: (
+    input: RecallActivityListInput
+  ) => Promise<RecallActivityPage>;
   manageMembershipSync?: (
     input: z.infer<typeof personalMembershipSyncCommandSchema>
   ) => Promise<z.infer<typeof personalMembershipSyncCommandResultSchema>>;

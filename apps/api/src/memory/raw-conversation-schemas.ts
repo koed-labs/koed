@@ -658,6 +658,7 @@ const tokenUsageSourceReferenceSchema = z.object({
   type: z.enum([
     "question",
     "answer_job",
+    "memory_answer_task",
     "lcm_node",
     "message",
     "tool_event",
@@ -674,6 +675,7 @@ export const tokenUsageSchema = z.object({
   conversationItemId: z.string().uuid().optional(),
   questionId: z.string().uuid().optional(),
   answerJobId: z.string().min(1).optional(),
+  memoryAnswerTaskId: z.string().uuid().optional(),
   lcmNodeId: z.string().uuid().optional(),
   messageId: z.string().uuid().optional(),
   toolEventId: z.string().uuid().optional(),

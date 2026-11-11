@@ -144,6 +144,323 @@ describeDb("durable Memory Answer task repository", () => {
     ).toMatchObject({ task: { id: accepted.id } });
   });
 
+  it("links usage across retried worker jobs and preserves it after task expiry", async () => {
+    const { actor, repository } = await createActor("usage-owner");
+    const { actor: otherActor } = await createActor("other-usage-owner");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      invocationKey: randomUUID(),
+      maxQueued: 16,
+      request: {
+        input: {
+          query: "retry usage",
+          search_domain: "global",
+          repository_context: null
+        }
+      }
+    });
+    const first = (
+      await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: "run-a",
+        leaseMs: 60_000
+      })
+    ).task!;
+    const usage = (jobId: string, amount: number) => ({
+      workflowType: "mcp_memory_answer",
+      workflowId: jobId,
+      answerJobId: jobId,
+      memoryAnswerTaskId: accepted.id,
+      totalTokens: amount,
+      idempotencyKey: `usage:${jobId}`
+    });
+    const runA = usage(randomUUID(), 11),
+      runB = usage(randomUUID(), 17);
+    await repository.recordWorkflowTokenUsage(actor, runA);
+    await repository.recordWorkflowTokenUsage(actor, runA);
+    await expect(
+      repository.recordWorkflowTokenUsage(otherActor, usage(randomUUID(), 99))
+    ).rejects.toThrow(/not found|not authorized/);
+    const workspace = await pool.query<{ id: string }>(
+      `with team as (insert into teams (name, created_by_user_id) values ('Usage boundary', $1) returning id)
+       insert into team_workspaces (team_id, name) select id, 'Usage boundary' from team returning id`,
+      [actor.userId]
+    );
+    await pool.query(
+      "update memory_answer_tasks set team_workspace_id=$2, team_authorization='{}'::jsonb where id=$1",
+      [accepted.id, workspace.rows[0]!.id]
+    );
+    await expect(
+      repository.recordWorkflowTokenUsage(actor, usage(randomUUID(), 99))
+    ).rejects.toThrow(/not authorized/);
+    await pool.query(
+      "update memory_answer_tasks set team_workspace_id=null, team_authorization=null, lease_until=now()-interval '1 second' where id=$1",
+      [accepted.id]
+    );
+    const second = (
+      await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: "run-b",
+        leaseMs: 60_000
+      })
+    ).task!;
+    await repository.recordWorkflowTokenUsage(actor, runB);
+    const completion = {
+      taskId: accepted.id,
+      finalQuestion: {
+        idempotencyKey: randomUUID(),
+        query: "retry usage",
+        searchDomain: "global" as const,
+        status: "answered" as const,
+        answerMarkdown: "Retried answer",
+        recallMetadata: {
+          version: 1 as const,
+          memoryStatus: "found" as const,
+          caller: { name: "pi", version: "fixture" }
+        }
+      },
+      result: { markdown: "Retried answer" }
+    };
+    expect(
+      await tasks.completeMemoryAnswerTask(actor, {
+        ...completion,
+        leaseOwner: first.leaseOwner,
+        fenceGeneration: first.fenceGeneration
+      })
+    ).toBeNull();
+    const links = async () =>
+      (
+        await pool.query<{ count: string; total: string | null }>(
+          `select count(*)::text as count, sum(u.total_tokens)::text as total
+       from workflow_token_usage u join workflow_token_usage_source_references r on r.workflow_token_usage_id=u.id
+       where u.owner_user_id=$1 and r.source_type='question'`,
+          [actor.userId]
+        )
+      ).rows[0];
+    expect(await links()).toEqual({ count: "0", total: null });
+    const completed = await tasks.completeMemoryAnswerTask(actor, {
+      ...completion,
+      leaseOwner: second.leaseOwner,
+      fenceGeneration: second.fenceGeneration
+    });
+    expect(completed?.questionId).toBeTruthy();
+    const retainedMetadata = async () =>
+      (
+        await pool.query<{
+          recall_metadata: {
+            timing: {
+              acceptedAt: string;
+              completedAt: string;
+              durationMs: number;
+            };
+            caller: { name: string };
+            memoryStatus: string;
+          };
+        }>("select recall_metadata from memory_questions where id=$1", [
+          completed!.questionId
+        ])
+      ).rows[0]!.recall_metadata;
+    const metadata = await retainedMetadata();
+    expect(metadata.memoryStatus).toBe("found");
+    expect(metadata.caller.name).toBe("pi");
+    expect(metadata.timing.acceptedAt).toBe(accepted.createdAt);
+    expect(metadata.timing.completedAt).toBe(completed!.completedAt);
+    expect(metadata.timing.durationMs).toBe(
+      Date.parse(completed!.completedAt!) - Date.parse(accepted.createdAt)
+    );
+    expect(await links()).toEqual({ count: "2", total: "28" });
+    expect(
+      await tasks.completeMemoryAnswerTask(actor, {
+        ...completion,
+        leaseOwner: second.leaseOwner,
+        fenceGeneration: second.fenceGeneration
+      })
+    ).toBeNull();
+    await pool.query(
+      "update memory_answer_tasks set expires_at=now()-interval '1 second' where id=$1",
+      [accepted.id]
+    );
+    await tasks.deleteExpiredMemoryAnswerTasks(actor);
+    expect(await tasks.getMemoryAnswerTask(actor, accepted.id)).toBeNull();
+    expect(await retainedMetadata()).toEqual(metadata);
+    expect(await links()).toEqual({ count: "2", total: "28" });
+    expect(
+      await repository.getMemoryQuestion(actor, completed!.questionId!)
+    ).not.toBeNull();
+  });
+
+  it("aggregates forward-only Recall results, callers and individual durations", async () => {
+    const { actor, repository } = await createActor("recall-metadata");
+    const { actor: other } = await createActor("other-recall-owner");
+    const outcomes = [
+      "found",
+      "found",
+      "not_found",
+      "insufficient",
+      "pending_summary",
+      null,
+      null
+    ] as const;
+    const ids: string[] = [];
+    for (let index = 0; index < outcomes.length; index++) {
+      const durationMs = [1000, 3000, 9000][index];
+      const question = await repository.createFinalMemoryQuestion(actor, {
+        idempotencyKey: randomUUID(),
+        query: "Synthetic metadata question",
+        origin: "mcp_memory_answer",
+        searchDomain: "global",
+        ...(index === 5
+          ? { status: "error" as const, errorMessage: "Synthetic error" }
+          : {
+              status: "answered" as const,
+              answerMarkdown: "Synthetic answer"
+            }),
+        recallMetadata:
+          index === 6
+            ? undefined
+            : {
+                version: 1,
+                memoryStatus: index === 5 ? "found" : outcomes[index]!,
+                caller:
+                  index === 4
+                    ? null
+                    : {
+                        name: ["codex", "claude-code", "pi"][index % 3]!,
+                        version: "fixture"
+                      },
+                ...(durationMs === undefined
+                  ? {}
+                  : {
+                      timing: {
+                        acceptedAt: "2026-11-10T10:00:00.000Z",
+                        completedAt: new Date(
+                          Date.parse("2026-11-10T10:00:00Z") + durationMs
+                        ).toISOString(),
+                        durationMs
+                      }
+                    })
+              },
+        localMemoryWorker: { provider: "claude", memoryStatus: "found" }
+      });
+      ids.push(question.id);
+      await pool.query(
+        "update memory_questions set created_at='2026-11-10T10:00:00Z' where id=$1",
+        [question.id]
+      );
+    }
+    const range = { from: "2026-11-01T00:00:00Z", to: "2026-12-01T00:00:00Z" };
+    const overview = await repository.getRecallActivityOverview(actor, {
+      ...range,
+      timezone: "UTC"
+    });
+    expect(overview.memoryResults).toEqual({
+      found: 2,
+      not_found: 1,
+      insufficient: 1,
+      pending_summary: 1,
+      unknown: 2,
+      foundPercentage: 200 / 3
+    });
+    expect(overview.medianDurationMs).toBe(3000);
+    expect(overview.knownDurations).toBe(3);
+    const filtered = await repository.listRecallActivity(actor, {
+      ...range,
+      limit: 50,
+      memoryStatus: "found",
+      callerName: "codex",
+      maxDurationMs: 1000
+    });
+    expect(filtered.questions.map((q) => q.id)).toEqual([ids[0]]);
+    const unknown = await repository.getRecallActivityOverview(actor, {
+      ...range,
+      timezone: "UTC",
+      memoryStatus: "unknown"
+    });
+    expect(unknown.memoryResults.foundPercentage).toBeNull();
+    expect(unknown.medianDurationMs).toBeNull();
+    expect(
+      (
+        await repository.listRecallActivity(actor, {
+          ...range,
+          limit: 50,
+          callerName: ""
+        })
+      ).questions
+    ).toHaveLength(2);
+    expect(await repository.getRecallActivity(actor, ids[0]!)).toMatchObject({
+      worker: "claude",
+      question: { metadata: { caller: { name: "codex" } } }
+    });
+    expect(
+      (await repository.getRecallActivity(actor, ids[5]!))?.memoryStatus
+    ).toBeNull();
+    expect(await repository.getRecallActivity(other, ids[0]!)).toBeNull();
+  });
+
+  it("uses DST-aware half-open dates and usage observation time for Recall timelines", async () => {
+    const { actor, repository } = await createActor("recall-dates");
+    const ids: string[] = [];
+    for (const createdAt of [
+      "2026-03-28T23:59:59Z",
+      "2026-03-29T00:00:00Z",
+      "2026-03-29T23:30:00Z",
+      "2026-03-30T23:00:00Z"
+    ]) {
+      const question = await repository.createFinalMemoryQuestion(actor, {
+        idempotencyKey: randomUUID(),
+        query: "Synthetic boundary",
+        origin: "mcp_memory_answer",
+        searchDomain: "global",
+        status: "answered",
+        answerMarkdown: "Synthetic"
+      });
+      await pool.query(
+        "update memory_questions set created_at=$2 where id=$1",
+        [question.id, createdAt]
+      );
+      ids.push(question.id);
+    }
+    const key = randomUUID();
+    await repository.recordWorkflowTokenUsage(actor, {
+      workflowType: "mcp_memory_answer",
+      questionId: ids[2],
+      totalTokens: 15,
+      inputTokens: 10,
+      outputTokens: 5,
+      idempotencyKey: key
+    });
+    await pool.query(
+      "update workflow_token_usage set observed_at='2026-03-29T22:30:00Z' where idempotency_key=$1",
+      [key]
+    );
+    const range = {
+      from: "2026-03-29T00:00:00Z",
+      to: "2026-03-30T23:00:00Z",
+      timezone: "Europe/London"
+    };
+    const overview = await repository.getRecallActivityOverview(actor, range);
+    expect(overview.recordedQuestions).toBe(2);
+    expect(overview.questions.map((q) => [q.start, q.count])).toEqual([
+      ["2026-03-29T00:00:00.000000Z", 1],
+      ["2026-03-29T23:00:00.000000Z", 1]
+    ]);
+    const firstDay = await repository.getRecallActivityOverview(actor, {
+      ...range,
+      to: "2026-03-29T23:00:00Z"
+    });
+    expect(firstDay.recordedQuestions).toBe(1);
+    expect(firstDay.tokens.totalTokens).toBe(15);
+    expect(
+      (
+        await repository.getRecallActivityOverview(actor, {
+          ...range,
+          from: "2026-03-29T23:00:00Z"
+        })
+      ).tokens.totalTokens
+    ).toBeNull();
+  });
+
   it("reclaims expired leases, fences stale owners, and resolves cancellation races", async () => {
     const { actor } = await createActor("lease-owner");
     const tasks = createMemoryAnswerTaskRepository(pool, {

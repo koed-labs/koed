@@ -1,4 +1,5 @@
 import {
+  recallQuestionReportedMetadataSchema,
   personalFolderReferenceSchema,
   personalGitContextSchema
 } from "@koed/shared";
@@ -24,6 +25,7 @@ const finalMemoryQuestionBaseSchema = z.object({
   attempt_count: z.number().int().positive().optional(),
   response: z.record(z.string(), z.unknown()).optional(),
   retrieval: z.record(z.string(), z.unknown()).optional(),
+  recall_metadata: recallQuestionReportedMetadataSchema.optional(),
   local_memory_worker: z.record(z.string(), z.unknown()).optional()
 });
 

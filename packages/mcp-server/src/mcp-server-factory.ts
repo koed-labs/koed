@@ -118,14 +118,21 @@ const defaultCallerContext = (
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : undefined;
+  const info = asRecord(envelope[CLIENT_INFO_META_KEY]);
+  const clientInfo = Object.fromEntries(
+    ["name", "version", "title"].flatMap((key) => {
+      const value = info?.[key];
+      return typeof value === "string" && value.length <= 160
+        ? [[key, value]]
+        : [];
+    })
+  );
   return {
     cwd,
     ...(typeof envelope[PROTOCOL_VERSION_META_KEY] === "string"
       ? { protocolVersion: envelope[PROTOCOL_VERSION_META_KEY] as string }
       : {}),
-    ...(asRecord(envelope[CLIENT_INFO_META_KEY])
-      ? { clientInfo: asRecord(envelope[CLIENT_INFO_META_KEY])! }
-      : {}),
+    ...(Object.keys(clientInfo).length ? { clientInfo } : {}),
     ...(asRecord(envelope[CLIENT_CAPABILITIES_META_KEY])
       ? {
           clientCapabilities: asRecord(envelope[CLIENT_CAPABILITIES_META_KEY])!

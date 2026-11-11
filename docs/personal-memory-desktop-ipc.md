@@ -143,3 +143,32 @@ The solo presentation retains the existing managed Conversation controller for
 streaming, approval, draft recovery and command delivery. Its model and reasoning
 controls use the same capabilities, and its onboarding uses the existing local
 setup and AI Client commands with their existing consent requirements.
+
+## Recall activity operations
+
+The production v1 renderer uses `personal.recall.list`,
+`personal.recall.detail`, and `personal.recall.overview` through the typed
+Personal Desktop contract. Main process access is restricted to the corresponding
+Personal API Token endpoints under `/v1/memory/recall-activity`; the renderer
+receives neither credentials nor a generic HTTP or database capability.
+
+List requests apply metadata filters before keyset pagination and decrypt at most
+50 selected question texts. The cursor preserves PostgreSQL timestamp precision.
+Refresh can omit content and request hydration for a bounded set of changed IDs;
+returned null text means unhydrated, not an empty question. Detail returns bounded
+answer/evidence and usage projections without raw provider payloads. Historical
+job matches are labelled and do not affect list/chart totals.
+
+The v1 page subscribes to the existing `ask_questions_changed` wire event. Its
+name remains compatible with older consumers, and it covers both question
+origins. The event carries IDs, not question content, and is only a refresh hint;
+every read reauthorizes and reapplies the Personal Memory predicate. Refreshes
+coalesce, pause while hidden, reject stale responses, and use a visible fallback
+of at least 60 seconds with failure backoff.
+
+Recall filters also accept a recorded Memory-found result, calling AI Client name
+(an empty name selects unknown callers), and minimum/maximum measured duration.
+The overview returns result counts, the found percentage with its exact
+denominator, known-duration coverage, and a median over individual measurements.
+Each question includes nullable versioned metadata; legacy rows remain unknown.
+These fields carry no caller authority or stable installation identity.

@@ -217,6 +217,7 @@ export const registerMemoryAnswerTaskRoutes = (
         attemptCount: question.attempt_count,
         response: question.response,
         retrieval: question.retrieval,
+        recallMetadata: question.recall_metadata,
         localMemoryWorker: question.local_memory_worker
       };
       const finalQuestion =

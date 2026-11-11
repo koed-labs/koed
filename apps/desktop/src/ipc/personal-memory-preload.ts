@@ -1,5 +1,8 @@
 import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
+  recallActivityListInputSchema,
+  recallActivityOverviewInputSchema,
+  recallActivityDetailInputSchema,
   personalDesktopChangeSchema,
   personalDesktopLocalFolderPrepareInputSchema,
   personalDesktopProjectCreateInputSchema,
@@ -54,7 +57,11 @@ const invokePersonalMemory = async (
 const requireSuccess = <Result extends PersonalDesktopResult>(
   result: Result
 ): Extract<Result, { ok: true }> => {
-  if (!result.ok) throw new Error(result.error.message);
+  if (!result.ok)
+    throw Object.assign(new Error(result.error.message), {
+      code: result.error.code,
+      retryable: result.error.retryable
+    });
   return result as Extract<Result, { ok: true }>;
 };
 
@@ -63,6 +70,50 @@ export const createPersonalMemoryPreloadApi = (
   events: { on: On; removeListener: RemoveListener }
 ): PersonalDesktopApi =>
   Object.freeze({
+    recallActivityOverview: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["recallActivityOverview"]>
+      >[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.recall.overview",
+          input: recallActivityOverviewInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.recall.overview")
+        throw new Error("Invalid Recall overview result.");
+      return result.data;
+    },
+    loadRecallActivity: async (value: { questionId: string }) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.recall.detail",
+          input: recallActivityDetailInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.recall.detail")
+        throw new Error("Invalid Recall detail result.");
+      return result.data;
+    },
+    listRecallActivity: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["listRecallActivity"]>
+      >[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.recall.list",
+          input: recallActivityListInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.recall.list")
+        throw new Error("Invalid Recall activity result.");
+      return result.data;
+    },
     projectStatus: async () => {
       const result = requireSuccess(
         await invokePersonalMemory(invoke, {

@@ -214,6 +214,7 @@ const workflowTokenUsageSourceReferences = (
   };
   add("question", usage.questionId);
   add("answer_job", usage.answerJobId);
+  add("memory_answer_task", usage.memoryAnswerTaskId);
   add("lcm_node", usage.lcmNodeId);
   add("message", usage.messageId);
   add("tool_event", usage.toolEventId);
@@ -254,8 +255,40 @@ const validateWorkflowTokenUsageSourceReferences = async (
     }
 
     validateUuidSourceReference(reference);
+    if (reference.type === "memory_answer_task") {
+      // This API accepts Personal credentials. Team task authority cannot be
+      // inferred from ownership or from a deleted Workspace's null foreign key.
+      const task = await db.query<{ question_id: string | null }>(
+        `select question_id from memory_answer_tasks
+          where id = $1 and owner_user_id = $2 and visibility = 'personal'
+            and team_authorization is null and team_workspace_id is null
+            and status in ('running', 'cancel_requested')
+            and expires_at > now()`,
+        [reference.id, input.ownerUserId]
+      );
+      if (input.visibility !== "personal" || !task.rows[0]) {
+        throw new Error(
+          "Memory Answer task source reference not found or not authorized"
+        );
+      }
+      if (
+        input.references.some(
+          (candidate) =>
+            candidate.type === "question" &&
+            candidate.id !== task.rows[0]!.question_id
+        )
+      ) {
+        throw new Error(
+          "Question source reference does not belong to Memory Answer task"
+        );
+      }
+      continue;
+    }
     const tableByType: Record<
-      Exclude<WorkflowTokenUsageSourceReferenceType, "answer_job">,
+      Exclude<
+        WorkflowTokenUsageSourceReferenceType,
+        "answer_job" | "memory_answer_task"
+      >,
       string
     > = {
       question: "memory_questions",

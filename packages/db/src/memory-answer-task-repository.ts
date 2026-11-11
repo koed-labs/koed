@@ -795,7 +795,7 @@ export const createMemoryAnswerTaskRepository = (
           `update memory_answer_tasks
               set status = 'completed', question_id = $5,
                   result_snapshot = $6::jsonb, lease_owner = null,
-                  lease_until = null, completed_at = now(), status_message = 'completed',
+                  lease_until = null, completed_at = clock_timestamp(), status_message = 'completed',
                   last_error_code = null, last_error_message = null,
                   updated_at = now(), version = version + 1
             where owner_user_id = $1 and id = $2 and visibility = 'personal'
@@ -815,6 +815,52 @@ export const createMemoryAnswerTaskRepository = (
           await client.query("rollback");
           return null;
         }
+        // Preserve the server's acceptance/completion boundaries before task expiry.
+        // This includes queueing, retries and persistence, not client request latency.
+        const completedAt = result.rows[0]!.completed_at;
+        const durationMs = completedAt
+          ? completedAt.getTime() - current.created_at.getTime()
+          : -1;
+        if (
+          !current.team_authorization &&
+          !current.team_workspace_id &&
+          completedAt &&
+          durationMs >= 0 &&
+          durationMs <= 604_800_000
+        ) {
+          await client.query(
+            `update memory_questions
+            set recall_metadata = jsonb_set(coalesce(recall_metadata, '{"version":1,"memoryStatus":null}'::jsonb), '{timing}', $3::jsonb)
+            where owner_user_id=$1 and id=$2`,
+            [
+              actor.userId,
+              question.id,
+              JSON.stringify({
+                acceptedAt: current.created_at.toISOString(),
+                completedAt: completedAt.toISOString(),
+                durationMs
+              })
+            ]
+          );
+        }
+        // Link every persisted run of this task, not only the final worker job.
+        // These durable references deliberately have no FK to the expiring task.
+        await client.query(
+          `insert into workflow_token_usage_source_references
+            (workflow_token_usage_id, source_type, source_id)
+           select usage.id, 'question', $3
+             from workflow_token_usage_source_references task_ref
+             join workflow_token_usage usage on usage.id = task_ref.workflow_token_usage_id
+            where task_ref.source_type = 'memory_answer_task' and task_ref.source_id = $2
+              and usage.owner_user_id = $1 and usage.visibility = 'personal'
+              and not exists (
+                select 1 from workflow_token_usage_source_references other
+                 where other.workflow_token_usage_id = usage.id
+                   and other.source_type = 'question' and other.source_id <> $3
+              )
+           on conflict do nothing`,
+          [actor.userId, input.taskId, question.id]
+        );
         await client.query(
           `delete from encrypted_field_payloads
             where owner_user_id = $1 and visibility = 'personal'

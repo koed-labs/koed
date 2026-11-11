@@ -253,6 +253,7 @@ export const registerQuestionRoutes = (
               evidence: input.evidence,
               citations: input.citations,
               retrieval: input.retrieval,
+              recallMetadata: input.recall_metadata,
               localMemoryWorker: input.local_memory_worker
             }
           : {
@@ -273,6 +274,7 @@ export const registerQuestionRoutes = (
               errorMessage: input.error_message,
               response: input.response,
               retrieval: input.retrieval,
+              recallMetadata: input.recall_metadata,
               localMemoryWorker: input.local_memory_worker
             }
       );

@@ -1,3 +1,5 @@
+import { AiClientUsageError } from "./ai-client-usage-error.js";
+import { createPiTokenUsageAccumulator } from "./pi-token-usage.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   execFile,
@@ -607,6 +609,7 @@ export const runPiRpcTask = async (
     let resultValue: unknown;
     let providerFailure: Error | undefined;
     let actualModel = config.model;
+    const usage = createPiTokenUsageAccumulator();
     const done = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         terminateProcessTree(child);
@@ -662,6 +665,7 @@ export const runPiRpcTask = async (
           if (!line) continue;
           try {
             const event = JSON.parse(line) as Record<string, unknown>;
+            usage.observe(event);
             config.onProgress?.("Pi provider activity");
             const message = event.message as
               | Record<string, unknown>
@@ -751,8 +755,14 @@ export const runPiRpcTask = async (
       return {
         text: JSON.stringify(resultValue),
         model: actualModel,
+        tokenUsage: usage.value(),
         providerEvents: events
       };
+    } catch (error) {
+      throw new AiClientUsageError(error, {
+        model: actualModel,
+        tokenUsage: usage.value()
+      });
     } finally {
       terminateProcessTree(child);
     }

@@ -41,6 +41,27 @@ caller's personal visibility before insert. `answer_job` references are local
 Koed worker job identities and must match the usage row's `workflow_id`; they do
 not point at a separate backend synthesis table in the current build.
 
+Personal Memory Answer task executions also submit `memoryAnswerTaskId`, stored
+as a validated `memory_answer_task` source reference. The API checks Personal
+ownership and excludes Team-bound tasks, including retained Team authority after
+Workspace deletion. Fenced task completion links every recorded run of that task
+to its final question in the same transaction. Worker job IDs remain per-run,
+and attempt idempotency remains per-attempt. Task expiry does not remove usage
+or its question references. Historical rows are not backfilled.
+
+The executor waits for all attempted usage submissions to settle before returning
+to the task scheduler, even when a sibling write fails. Telemetry failures are
+logged and dropped; they do not retry synthesis or create a late-arrival queue.
+
+Memory Answer usage attributes the actual Codex, Claude Code, or pi synthesis
+worker through its provider's execution identity and transport. Native incomplete
+counts remain `provider_partial`; missing counts remain null. Worker identity is
+not the identity of the AI Client requesting recall. Both Desktop Ask and external
+Memory Answer currently select the `mcp_memory_answer` settings flow, so usage
+retains that workflow key. Trusted `metadata.questionOrigin` distinguishes
+`desktop_ask` from `mcp_memory_answer` without changing workflow grouping or
+selecting the unused manual flow. Historical attribution is not rewritten.
+
 Idempotency is scoped to the owning user. Personal rows are unique by
 `(owner_user_id, idempotency_key)`.
 
@@ -126,3 +147,37 @@ The internal diagnostic endpoint
 `GET /v1/memory/token-usage/rollups` returns visible usage grouped by requested
 dimensions. By default it includes only `provider_reported` `turn_delta` rows.
 Callers must pass `include_estimates=true` to include estimate-aware rows.
+
+## Failure-path accounting
+
+The Recall activity implementation audits Codex app-server, Claude Agent SDK,
+and pi RPC with synthetic native-protocol fixtures. These checks do not make
+billable provider calls. Reported usage is submitted even when cancellation,
+an escaping completion callback, or final question persistence prevents the
+answer from being returned. Task completion still awaits all submissions.
+Telemetry failures are logged and dropped without rerunning Answer Synthesis.
+
+- Codex preserves the latest observed turn usage on provider failure, timeout,
+  and session closure. Failed inner attempts remain separate from task retries.
+- Claude retains usage from error results and results followed by an SDK
+  exception. Each independent query uses its latest cumulative result once.
+  If cancellation prevents a result, unique main-loop assistant message IDs
+  can supply partial input/cache counts; their output placeholders are ignored.
+  Input includes native uncached, cache-read, and cache-creation counts. The
+  result replaces these partial observations rather than adding to them.
+  This follows the [Agent SDK usage definitions](https://code.claude.com/docs/en/agent-sdk/cost-tracking).
+- pi accumulates terminal assistant `message_end` usage independently of the
+  bounded diagnostic event buffer. Streaming updates and replayed identified
+  messages are excluded. Input includes native input, cache-read, and
+  cache-write counts; reported total and output retain their native meaning.
+  Reasoning is an output subset. Error and cancellation paths carry observed
+  usage through the same worker accounting as successful responses. The
+  [pi message definitions](https://pi.dev/docs/latest/message-types) describe
+  these native fields. pi's requesting extension reaches the Local AI Runtime
+  directly; that route does not imply MCP or identify the synthesis worker.
+
+No provider report means unknown consumption. A process killed before it emits
+usage cannot be reconstructed, and an unavailable telemetry backend can still
+lose a submitted record. Cancelled or failed tasks without a final question
+remain outside the page's linked totals. These are coverage limits, not zero
+usage. Historical records are not rewritten to repair earlier normalization.

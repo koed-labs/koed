@@ -11994,6 +11994,10 @@ export const memoryQuestions = pgTable(
     citations: jsonb("citations").$type<unknown>(),
     retrieval: jsonb("retrieval").$type<unknown>(),
     localMemoryWorker: jsonb("local_memory_worker").$type<unknown>(),
+    recallMetadata:
+      jsonb("recall_metadata").$type<
+        import("@koed/shared").RecallQuestionMetadata
+      >(),
     response: jsonb("response").$type<unknown>(),
     status: memoryQuestionStatus("status").notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
@@ -12279,7 +12283,7 @@ export const workflowTokenUsageSourceReferences = pgTable(
     ),
     check(
       "workflow_token_usage_source_references_type_check",
-      sql`${table.sourceType} in ('question', 'answer_job', 'lcm_node', 'message', 'tool_event', 'memory_event')`
+      sql`${table.sourceType} in ('question', 'answer_job', 'memory_answer_task', 'lcm_node', 'message', 'tool_event', 'memory_event')`
     )
   ]
 );

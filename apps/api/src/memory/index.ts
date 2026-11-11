@@ -16,6 +16,7 @@ export { registerLocalAgentSettingsRoutes } from "./local-agent-settings-routes.
 export { registerLcmRoutes } from "./lcm-routes.js";
 export { registerMemoryAnswerTaskRoutes } from "./memory-answer-task-routes.js";
 export { registerQuestionRoutes } from "./questions-routes.js";
+export { registerRecallActivityRoutes } from "./recall-activity-routes.js";
 export { registerRawConversationRoutes } from "./raw-conversation-routes.js";
 export { registerRecallRoutes } from "./recall-routes.js";
 export type { GraphUpdatePayload } from "./graph-stream.js";

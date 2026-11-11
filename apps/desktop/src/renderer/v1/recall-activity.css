@@ -1,0 +1,337 @@
+.recall-activity {
+  padding: 24px 28px;
+  color: var(--v1-fg);
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.recall-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.recall-heading h1 {
+  font-size: 23px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.recall-heading p,
+.recall-coverage,
+.recall-activity small {
+  color: var(--v1-muted);
+}
+.recall-coverage {
+  max-width: 85ch;
+  line-height: 1.6;
+  margin: 20px 0;
+}
+.recall-intro {
+  margin: 8px 0 20px;
+  font-size: 12px;
+}
+.recall-heading p {
+  font-size: 13px;
+  margin: 0;
+}
+.recall-activity {
+  font-size: 13px;
+}
+.recall-more-filters {
+  flex-basis: 100%;
+}
+.recall-more-filters summary,
+.recall-metric-notes summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.recall-filter-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  padding-top: 16px;
+}
+.recall-filter-fields label {
+  flex: 1 1 170px;
+}
+.recall-filter-fields input:not([type="checkbox"]),
+.recall-filter-fields select {
+  width: 100%;
+  max-width: none;
+}
+.recall-filter-fields input[type="checkbox"] {
+  accent-color: var(--v1-accent);
+  margin-right: 6px;
+}
+.recall-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.recall-metric-notes {
+  font-size: 12px;
+  margin: 16px 0 24px;
+}
+.recall-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--v1-hairline);
+  border-radius: 10px;
+  margin-bottom: 24px;
+}
+.recall-filters label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.recall-activity input,
+.recall-activity select,
+.recall-activity button {
+  border: 1px solid var(--v1-border);
+  background: var(--v1-surface);
+  color: var(--v1-fg);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font: inherit;
+}
+.recall-activity input {
+  min-width: 0;
+  max-width: 220px;
+}
+.recall-activity button {
+  cursor: pointer;
+}
+.recall-activity button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.recall-activity :focus-visible {
+  outline: 2px solid var(--v1-accent);
+  outline-offset: 3px;
+}
+.recall-table-wrap {
+  overflow-x: auto;
+}
+.recall-activity table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+.recall-activity caption {
+  text-align: left;
+  color: var(--v1-muted);
+  margin-bottom: 12px;
+}
+.recall-activity th,
+.recall-activity td {
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--v1-hairline);
+  vertical-align: top;
+}
+.recall-activity th {
+  font-size: 12px;
+  color: var(--v1-muted);
+  font-weight: 500;
+}
+.recall-question {
+  min-width: 180px;
+  max-width: 600px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.recall-activity td small {
+  display: block;
+  margin-top: 4px;
+}
+.recall-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+.recall-pagination small {
+  margin-left: auto;
+}
+.recall-activity .recall-question-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--v1-accent-text);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.v1-app.recall-detail {
+  height: auto;
+  max-height: calc(100dvh - 48px);
+  width: min(860px, calc(100vw - 48px));
+  max-width: 860px;
+  margin: 0;
+  padding: 24px;
+  border: 1px solid var(--v1-border);
+  border-radius: 12px;
+  background: var(--v1-card);
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+}
+.recall-detail .recall-heading {
+  align-items: start;
+}
+.recall-detail .recall-heading h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+.recall-detail .recall-question {
+  max-width: none;
+}
+.recall-status {
+  display: inline-block;
+  font-size: 11px;
+  border: 1px solid var(--v1-border);
+  border-radius: 5px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.recall-activity > div[aria-busy] .recall-table-wrap {
+  max-height: 62vh;
+  overflow: auto;
+  border: 1px solid var(--v1-hairline);
+  border-radius: 10px;
+}
+.recall-activity thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--v1-card);
+}
+.recall-activity tbody tr:hover {
+  background: var(--v1-card);
+}
+.recall-activity td {
+  font-variant-numeric: tabular-nums;
+}
+.recall-detail section {
+  margin-top: 24px;
+}
+.recall-detail details {
+  padding: 12px 0;
+}
+.recall-detail summary {
+  cursor: pointer;
+}
+.recall-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+  margin: 20px 0;
+}
+.recall-facts dt {
+  color: var(--v1-muted);
+  font-size: 12px;
+}
+.recall-facts dd {
+  margin: 4px 0 0;
+}
+.recall-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+.recall-cards > div {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--v1-hairline);
+  border-radius: 10px;
+  background: var(--v1-card);
+}
+.recall-cards strong {
+  font-size: clamp(22px, 2vw, 30px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.recall-chart {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--v1-hairline);
+  border-radius: 10px;
+}
+.recall-chart figcaption {
+  font-size: 12px;
+}
+.recall-chart figcaption {
+  margin-bottom: 16px;
+  font-weight: 500;
+}
+.recall-chart svg {
+  width: 100%;
+  overflow: visible;
+}
+.recall-chart-line {
+  fill: none;
+  stroke: var(--v1-accent);
+  stroke-width: 2;
+}
+.recall-chart circle {
+  fill: var(--v1-accent);
+}
+.recall-chart-axis {
+  stroke: var(--v1-border);
+}
+.recall-chart text {
+  fill: var(--v1-muted);
+  font-size: 11px;
+}
+.recall-chart summary {
+  cursor: pointer;
+  color: var(--v1-muted);
+  margin-top: 12px;
+}
+.recall-timeline-values {
+  max-height: 280px;
+  overflow: auto;
+}
+@media (max-width: 760px) {
+  .recall-activity {
+    padding: 16px;
+  }
+  .recall-filters label {
+    flex: 1 1 140px;
+  }
+  .recall-activity input {
+    max-width: 100%;
+  }
+}
+@media (max-width: 1180px) {
+  .recall-charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .recall-activity {
+    padding: 20px;
+  }
+}
+
+.recall-chart-scale {
+  margin: 0 0 8px;
+  color: var(--v1-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.recall-chart-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--v1-muted);
+  font-size: 11px;
+}

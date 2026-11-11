@@ -40,6 +40,7 @@ import { ThemeStore } from "../state/theme.js";
 import { useDesktopStatus } from "../state/use-status.js";
 import { StoreConversation } from "../views/personal/PersonalMemoryViews.js";
 import { NavigationShell } from "./NavigationShell.js";
+import { RecallActivityPage } from "./RecallActivityPage.js";
 import { useProjectManagement } from "./project-management/use-project-management.js";
 import { ConversationTags } from "./project-management/ConversationTags.js";
 import { buildProjectSidebar } from "./project-sidebar-model.js";
@@ -990,7 +991,9 @@ export function V1App({
           title={
             route.kind === "home"
               ? "Home"
-              : (conversationThread?.name ?? "Conversation")
+              : route.kind === "recall"
+                ? "Recall activity"
+                : (conversationThread?.name ?? "Conversation")
           }
           projectName={conversationProject?.name}
           onSelect={setRoute}
@@ -1079,6 +1082,15 @@ export function V1App({
                 thread={conversationThread}
               />
             </>
+          ) : route.kind === "recall" ? (
+            <RecallActivityPage
+              key={scopeKey}
+              api={personalMemoryApi ?? null}
+              adapters={{
+                openExternal: platform.openExternal,
+                writeClipboard: platform.copyText
+              }}
+            />
           ) : route.kind === "conversation" ? (
             <p role="status">
               {servicesStarting

@@ -1,3 +1,4 @@
+import type { RecallActivityRepository } from "./recall-activity-repository.js";
 import type { MemoryModelFlowKey } from "@koed/shared/ai-client-flow-defaults";
 import type {
   PersonalSelectionConsumerRepository,
@@ -1488,6 +1489,7 @@ export interface WorkflowTokenUsageInput {
   conversationItemId?: string;
   questionId?: string;
   answerJobId?: string;
+  memoryAnswerTaskId?: string;
   lcmNodeId?: string;
   messageId?: string;
   toolEventId?: string;
@@ -1522,6 +1524,7 @@ export interface WorkflowTokenUsageInput {
 export type WorkflowTokenUsageSourceReferenceType =
   | "question"
   | "answer_job"
+  | "memory_answer_task"
   | "lcm_node"
   | "message"
   | "tool_event"
@@ -2020,6 +2023,7 @@ export interface MemorySourceRepository
     PersonalDeviceSyncRelayRepository,
     MemoryNodeRepository,
     MemoryQuestionRepository,
+    RecallActivityRepository,
     MemoryAnswerTaskRepository,
     SharedMemoryRepository,
     TeamConversationSourceRepository,

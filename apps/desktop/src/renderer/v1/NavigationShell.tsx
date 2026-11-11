@@ -12,7 +12,13 @@ import {
   SidebarTrigger,
   useSidebar
 } from "@koed/ui";
-import { ChevronLeft, ChevronRight, Folder, Settings } from "lucide-react";
+import {
+  Activity,
+  ChevronLeft,
+  ChevronRight,
+  Folder,
+  Settings
+} from "lucide-react";
 import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
 import {
   DesktopUpdateDot,
@@ -127,7 +133,13 @@ function ShellContent(props: Props) {
               "Koed, home",
               <KoedLogo className="v1-logo" />,
               props.onHome,
-              true
+              props.route.kind === "home"
+            )}
+            {railButton(
+              "Recall activity",
+              <Activity />,
+              () => props.onSelect({ kind: "recall" }),
+              props.route.kind === "recall"
             )}
           </SidebarMenu>
         </SidebarHeader>

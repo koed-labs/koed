@@ -1098,6 +1098,52 @@ describe("Codex app-server runner", () => {
     }
   });
 
+  it("preserves observed usage when cancellation closes a running session", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-cancel-usage-")
+    );
+    const realHome = path.join(directory, "real-home");
+    fs.mkdirSync(realHome);
+    let activity = 0,
+      observed!: () => void;
+    const observation = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const session = new CodexAppServerThreadSession({
+      appServerBinary: writeFakeAppServer(directory, { turnStatus: "running" }),
+      model: "gpt-5.4-mini",
+      reasoningEffort: "low",
+      cwd: directory,
+      env: {
+        ...process.env,
+        CODEX_HOME: realHome,
+        FAKE_REAL_CODEX_HOME: realHome
+      },
+      clientName: "koed-test",
+      baseInstructions: "Return the answer.",
+      developerInstructions: "",
+      onProviderActivity: () => {
+        if (++activity >= 2) observed();
+      }
+    });
+    try {
+      const run = session
+        .runTurn("Cancel after reported usage", 3000)
+        .catch((error: unknown) => error);
+      await observation;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      session.close();
+      const failure = await run;
+      expect(failure).toBeInstanceOf(CodexAppServerTurnError);
+      expect(failure).toMatchObject({
+        tokenUsage: { last: { totalTokens: 3 } }
+      });
+    } finally {
+      await session.closeAndWait();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("closes a thread session on timeout while preserving failed turn metadata", async () => {
     const tempDirectory = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-app-server-thread-session-timeout-test-")

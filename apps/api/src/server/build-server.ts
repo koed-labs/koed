@@ -96,6 +96,7 @@ import {
   registerLcmRoutes,
   registerMemoryAnswerTaskRoutes,
   registerQuestionRoutes,
+  registerRecallActivityRoutes,
   registerRawConversationRoutes,
   registerRecallRoutes,
   shouldIgnoreGraphStreamPayload,
@@ -2061,6 +2062,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerRecallRoutes(app, routeContext);
   registerLocalAgentSettingsRoutes(app, routeContext);
   registerQuestionRoutes(app, routeContext);
+  registerRecallActivityRoutes(app, routeContext);
   registerMemoryAnswerTaskRoutes(app, routeContext);
   registerLcmRoutes(app, routeContext);
   registerGraphRoutes(app, routeContext);
