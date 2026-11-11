@@ -97,8 +97,7 @@
     "verify": "node scripts/verify.mjs",
     "fmt": "oxfmt --write .",
     "fmt:check": "oxfmt --check .",
-    "test:repository-review-fixture": "node --test scripts/repository-review-fixture.test.mjs",
-    "db:migrate:reconcile-projects": "pnpm --filter @koed-labs/db migrate:reconcile-projects"
+    "test:repository-review-fixture": "node --test scripts/repository-review-fixture.test.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
