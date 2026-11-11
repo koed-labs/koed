@@ -34,7 +34,7 @@ test("default-branch CPU core warmer matches CI cache and validates before savin
   assert.equal(job["runs-on"], "blacksmith-4vcpu-ubuntu-2204");
   assert.ok(
     ci.jobs["native-runtime-linux-x64"]["runs-on"].includes(
-      `'pull_request' && '${job["runs-on"]}'`
+      `&& '${job["runs-on"]}' ||`
     )
   );
   assert.equal(warmer.env.NODE_VERSION, ci.env.NODE_VERSION);
