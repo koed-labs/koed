@@ -179,7 +179,7 @@
   gap: 8px;
   font-size: 13px;
 }
-.v1-home-action button {
+.v1-home-action button:not([data-slot="button"]) {
   min-height: 36px;
   padding: 0 14px;
   border: 1px solid var(--v1-border);
@@ -586,13 +586,6 @@
     animation: none;
   }
 }
-/* In a short window the Kin need the room more than the hatching sub line. */
-@media (max-height: 700px) {
-  .v1-home[data-mood="ingesting"] .v1-home-caption .v1-home-sub {
-    display: none;
-  }
-}
-
 /* Connect or Repair, from a keycap or the quiet stage's caption. */
 button.v1-home-pill {
   border: 0;
@@ -860,4 +853,167 @@ button.v1-home-pill[data-repair]:hover {
   to {
     text-indent: var(--marquee);
   }
+}
+
+/* Startup stays quiet until services have had a chance to become ready. */
+.v1-home[data-mood="loading"],
+.v1-home[data-mood="attention"] {
+  padding: 16px 22px 20px;
+}
+.v1-home-startup,
+.v1-home-recovery {
+  background:
+    radial-gradient(
+      ellipse 48% 20% at 50% 92%,
+      color-mix(in srgb, var(--v1-accent) 14%, transparent),
+      transparent
+    ),
+    var(--v1-rail);
+}
+.v1-home-stage.v1-home-startup {
+  padding: 65px 30px 40px;
+  min-height: 460px;
+}
+.v1-home-startup-copy {
+  text-align: center;
+  position: relative;
+  z-index: 1;
+}
+.v1-home-startup h1,
+.v1-home-recovery h1 {
+  font-size: 28px;
+  line-height: 1.15;
+  letter-spacing: -1px;
+  font-weight: 550;
+  margin: 0 0 14px;
+}
+.v1-home-startup .v1-home-sub,
+.v1-home-recovery .v1-home-sub {
+  font-size: 14px;
+  line-height: 1.7;
+}
+.v1-home-startup-spinner {
+  flex: 1;
+  min-height: 290px;
+  display: grid;
+  place-items: center;
+}
+.v1-home-spinner {
+  width: 96px;
+  height: 96px;
+  color: var(--v1-muted);
+  animation-duration: 1.35s;
+}
+.v1-home-startup-caption {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 12px;
+  opacity: 0.17;
+}
+.v1-home-startup-caption span {
+  width: 145px;
+  height: 12px;
+  background: var(--v1-muted);
+  border-radius: 5px;
+}
+.v1-home-startup-caption span + span {
+  width: 190px;
+  height: 6px;
+}
+.v1-home-stage.v1-home-recovery {
+  padding: 30px;
+  justify-content: center;
+}
+.v1-home-recovery-kin {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  max-width: 100%;
+  z-index: 1;
+}
+.v1-home-recovery-shadow {
+  position: absolute;
+  bottom: 5%;
+  width: 62%;
+  height: 8%;
+  background: radial-gradient(
+    ellipse,
+    color-mix(in srgb, var(--v1-fg) 14%, transparent),
+    transparent 70%
+  );
+  filter: blur(7px);
+}
+.v1-home-recovery .v1-home-caption {
+  margin-top: 0;
+}
+.v1-home-recovery .v1-home-problems {
+  margin: 25px auto 0;
+  border-radius: 14px;
+  background: transparent;
+}
+.v1-home-recovery .v1-home-problems li {
+  padding: 17px 20px;
+  gap: 26px;
+}
+.v1-home-recovery .v1-home-dot {
+  display: none;
+}
+.v1-home-recovery .v1-home-problems strong {
+  font-size: 13px;
+  font-weight: 550;
+}
+.v1-home-recovery .v1-home-problems li > div span {
+  font-size: 12px;
+}
+.v1-home-recovery .v1-home-problems li > div:not(.v1-home-action) {
+  flex: 1 1 160px;
+}
+.v1-home-recovery-error {
+  color: var(--v1-heat-4);
+  font-size: 13px;
+  margin-top: 12px;
+}
+@media (max-width: 650px) {
+  .v1-home[data-mood="loading"],
+  .v1-home[data-mood="attention"] {
+    padding: 10px;
+  }
+  .v1-home-stage.v1-home-startup {
+    border-radius: 18px;
+    padding: 45px 12px 40px;
+    min-height: 420px;
+  }
+  .v1-home-startup-spinner {
+    min-height: 240px;
+  }
+  .v1-home-startup h1,
+  .v1-home-recovery h1 {
+    font-size: 23px;
+  }
+  .v1-home-stage.v1-home-recovery {
+    padding: 15px;
+    border-radius: 18px;
+  }
+  .v1-home-recovery-kin .v1-pixelkin {
+    width: 190px !important;
+    height: 190px !important;
+  }
+  .v1-home-recovery .v1-home-problems li {
+    justify-content: center;
+    gap: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v1-home-spinner {
+    animation: none;
+  }
+}
+
+.v1-home-startup-progress {
+  position: relative;
+  z-index: 1;
+  width: min(460px, 100%);
+  text-align: center;
 }

@@ -21,6 +21,7 @@ const inventoryLoad = vi.hoisted(() => ({
   calls: 0,
   load: null as null | ((options?: { silent?: boolean }) => unknown),
   durableRefresh: vi.fn(),
+  backgroundLoad: null as null | (() => Promise<unknown>),
   conversationProps: null as null | Record<string, unknown>,
   collaborationListener: null as
     | null
@@ -99,7 +100,7 @@ vi.mock("../../collaboration/renderer-client.js", () => ({
       inventoryLoad.collaborationListener = listener;
       return () => undefined;
     },
-    load: async () => ({}),
+    load: async () => inventoryLoad.backgroundLoad?.() ?? {},
     dispose: () => undefined
   })
 }));
@@ -201,6 +202,7 @@ describe("V1App launch integration", () => {
     inventoryLoad.collaborationListener = null;
     inventoryLoad.conversationProps = null;
     inventoryLoad.durableRefresh.mockClear();
+    inventoryLoad.backgroundLoad = null;
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
@@ -255,7 +257,9 @@ describe("V1App launch integration", () => {
         />
       )
     );
-    expect(container.textContent).toContain("Services are stopped");
+    expect(container.textContent).not.toContain("Services are stopped");
+    expect(container.textContent).toContain("Making room for your Projects");
+    expect(container.textContent).not.toContain("needs a hand");
     expect(container.textContent).not.toContain("No conversations yet");
     expect(container.textContent).toContain(
       "Pin conversations to keep them here"
@@ -353,6 +357,75 @@ describe("V1App launch integration", () => {
       )
     );
   };
+  it("reveals recovery after the initial grace and does not hide it on returning Home", async () => {
+    vi.useFakeTimers();
+    desktopStatus.status = homeStatus({
+      lifecycle: { state: "stopped", message: "Stopped" }
+    });
+    await renderOwner();
+    expect(container!.textContent).toContain("Making room for your Projects");
+    expect(container!.textContent).not.toContain("needs a hand");
+    await act(async () => vi.advanceTimersByTime(30_000));
+    expect(container!.textContent).toContain("Ada needs a hand");
+    expect(container!.querySelector(".v1-home-spinner")).toBeNull();
+    await act(async () =>
+      container!
+        .querySelector<HTMLButtonElement>('[aria-label="Koed, home"]')!
+        .click()
+    );
+    expect(container!.textContent).toContain("Ada needs a hand");
+  });
+
+  it("keeps background startup conflicts out of Home while retaining diagnostics", async () => {
+    const failure = new Error("This item changed. Reload it and try again.");
+    inventoryLoad.backgroundLoad = async () => {
+      throw failure;
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await renderOwner();
+    expect(container!.textContent).toContain("External captured Conversation");
+    expect(container!.textContent).not.toContain(failure.message);
+    expect(warn).toHaveBeenCalledWith(
+      "Could not connect background updates.",
+      failure
+    );
+  });
+
+  it("does not let a successful background connection clear an inventory error", async () => {
+    let connect!: () => void;
+    inventoryLoad.backgroundLoad = () =>
+      new Promise<void>((resolve) => {
+        connect = resolve;
+      });
+    inventoryLoad.load = () => {
+      throw new Error("Project inventory could not load");
+    };
+    await renderOwner();
+    expect(container!.textContent).toContain(
+      "Project inventory could not load"
+    );
+    await act(async () => connect());
+    expect(container!.textContent).toContain(
+      "Project inventory could not load"
+    );
+  });
+
+  it("ignores background connection failures after their startup scope is disposed", async () => {
+    let reject!: (cause: Error) => void;
+    inventoryLoad.backgroundLoad = () =>
+      new Promise((_, fail) => {
+        reject = fail;
+      });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await renderOwner();
+    await act(async () => root!.unmount());
+    root = undefined;
+    await act(async () =>
+      reject(new Error("This item changed. Reload it and try again."))
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   const failedInventory = { ...snapshot, error: "Inventory is unavailable" };
   it("shows the inventory once a background load recovers from a failed initial load", async () => {
     inventoryLoad.load = (options) =>

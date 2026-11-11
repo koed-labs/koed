@@ -158,12 +158,14 @@ export function selectHomeView(
       }
     });
   }
+  // Wait for inventory before choosing an empty-stage presentation. Startup
+  // status can arrive before existing Projects have been loaded.
+  if (!projects) return { kind: "loading" };
   if (ingestion.active)
-    // Hatching is only for the stretch before the first Project appears.
+    // Keep the startup spinner until the first Project appears.
     return projects?.length
       ? { kind: "projects", warnings, ingestion }
       : { kind: "ingesting", warnings, ingestion };
-  if (!projects) return { kind: "loading" };
   return projects.length
     ? { kind: "projects", warnings }
     : { kind: "empty", warnings };

@@ -20,14 +20,16 @@ export function Pixelkin({
   hopOnChange = false,
   expression = null,
   hopKey,
-  spin = null
+  spin = null,
+  presentation = "avatar"
 }: {
+  presentation?: "avatar" | "stage";
   look?: AgentLook;
   size?: number;
   className?: string;
   hopOnChange?: boolean;
   // Holds one expression instead of the personality's changing moods.
-  expression?: "neutral" | "surprised" | "happy" | null;
+  expression?: "neutral" | "surprised" | "happy" | "sad" | null;
   // Each change makes the Kin hop once.
   hopKey?: number;
   // Turned by dragging; the caller feeds it pointer events.
@@ -41,7 +43,7 @@ export function Pixelkin({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!engine || !canvas) return;
-    const actor = createPixelkinActor(canvas, look, size);
+    const actor = createPixelkinActor(canvas, look, size, presentation);
     actorRef.current = actor;
     const remove = addPixelkin(actor);
     return () => {
@@ -54,6 +56,7 @@ export function Pixelkin({
     const actor = actorRef.current;
     if (!actor) return;
     actor.size = size;
+    actor.presentation = presentation;
     if (shownKey.current !== lookKey) {
       shownKey.current = lookKey;
       setPixelkinKin(actor, look);
@@ -61,7 +64,7 @@ export function Pixelkin({
     }
     wakePixelkins();
     // lookKey captures every look field.
-  }, [lookKey, size, hopOnChange]);
+  }, [lookKey, size, hopOnChange, presentation]);
   useEffect(() => {
     const actor = actorRef.current;
     if (actor) setPixelkinExpression(actor, expression);
@@ -101,6 +104,7 @@ export function Pixelkin({
     <canvas
       ref={canvasRef}
       className={`v1-pixelkin ${className}`}
+      data-presentation={presentation}
       data-kin-shape={look.body.shape}
       data-kin-colour={look.palette.base}
       style={{ width: size, height: size }}

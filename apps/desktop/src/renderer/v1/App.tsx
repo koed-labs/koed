@@ -26,11 +26,8 @@ import {
 } from "../state/managed-conversation-runtime.js";
 import { V1Settings, type V1SettingsTab } from "./settings.js";
 import { Home } from "./home/Home.js";
-import {
-  homeClients,
-  homeProjectEntries,
-  selectHomeView
-} from "./home/home-model.js";
+import { useHomeStartup } from "./home/use-home-startup.js";
+import { homeClients, homeProjectEntries } from "./home/home-model.js";
 import "./app-layout.css";
 import "./app.css";
 import { ConversationPresentationContext } from "../conversation-presentation.js";
@@ -167,18 +164,10 @@ export function V1App({
   const platform = useMemo(() => createRendererPlatform(), []);
   const {
     status,
+    busyCommand,
     error: statusError,
     revision: statusRevision
   } = useDesktopStatus(statusStore);
-  const serviceError =
-    statusError && status?.api.state !== "healthy"
-      ? "Service status is unavailable. Try again."
-      : status?.lifecycle?.state === "stopped"
-        ? "Services are stopped. Start them in Settings."
-        : status?.lifecycle?.state === "unavailable"
-          ? "Services are unavailable. Check Settings."
-          : null;
-  const servicesStarting = !serviceError && status?.api.state !== "healthy";
   const inventoryReady = Boolean(scopeKey && inventoryScope === scopeKey);
   const store = useMemo(
     () =>
@@ -462,15 +451,14 @@ export function V1App({
         else store?.refreshFromDurableEvent();
       }
     });
-    void collaborationClient
-      .load()
-      .then(() => {
-        if (!active || scopeKeyRef.current !== scopeKey) return;
-        setError(null);
-      })
-      .catch((cause) =>
-        setError(cause instanceof Error ? cause.message : String(cause))
-      );
+    // This connection supplies background updates, not an action the User
+    // needs to retry. Authority can change during startup; keep those failures
+    // diagnostic rather than inserting a conflict alert above Home. Its success
+    // must not clear an unrelated inventory or action error either.
+    void collaborationClient.load().catch((cause) => {
+      if (!active || scopeKeyRef.current !== scopeKey) return;
+      console.warn("Could not connect background updates.", cause);
+    });
     return () => {
       active = false;
       unsubscribe();
@@ -734,6 +722,27 @@ export function V1App({
     projectId: string;
     key: number;
   } | null>(null);
+  const startingKoed =
+    busyCommand === "start" || busyCommand === "start_daemon";
+  const { view: homeView, startupPending } = useHomeStartup(
+    status,
+    homeEntriesLoaded ? homeEntries : null,
+    {
+      enabled: Boolean(profile?.onboarding.completed && onboardingComplete),
+      starting: startingKoed
+    }
+  );
+  const serviceError =
+    startupPending || startingKoed
+      ? null
+      : statusError && status?.api.state !== "healthy"
+        ? "Service status is unavailable. Try again."
+        : status?.lifecycle?.state === "stopped"
+          ? "Services are stopped. Start them in Settings."
+          : status?.lifecycle?.state === "unavailable"
+            ? "Services are unavailable. Check Settings."
+            : null;
+  const servicesStarting = !serviceError && status?.api.state !== "healthy";
   const homeConversations = useMemo(() => {
     const conversations = new Map<
       string,
@@ -1080,10 +1089,8 @@ export function V1App({
             </p>
           ) : (
             <Home
-              view={selectHomeView(
-                status,
-                homeEntriesLoaded ? homeEntries : null
-              )}
+              view={homeView}
+              statusError={statusError}
               clients={homeClients(status)}
               entries={homeEntries}
               agent={agent}

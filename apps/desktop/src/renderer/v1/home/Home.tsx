@@ -14,6 +14,8 @@ import {
   AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
   AUTOMATIC_HISTORICAL_WINDOW_DAYS
 } from "@koed/shared/historical-ingestion-progress";
+import { Button, Spinner } from "@koed/ui";
+import { Power } from "lucide-react";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { AiClientLogo } from "../../views/personal/AiClientLogo.js";
 import {
@@ -403,7 +405,6 @@ function ProblemAction({
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
-      void statusStore.refresh();
     }
   };
   return (
@@ -411,28 +412,30 @@ function ProblemAction({
       {confirming ? (
         <>
           <span>This changes software on this Mac. Continue?</span>
-          <button
-            type="button"
-            className="v1-home-primary"
-            onClick={() => void run()}
-          >
+          <Button type="button" variant="outline" onClick={() => void run()}>
             Continue
-          </button>
-          <button type="button" onClick={() => setConfirming(false)}>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setConfirming(false)}
+          >
             Cancel
-          </button>
+          </Button>
         </>
       ) : (
-        <button
+        <Button
           type="button"
-          className={primary ? "v1-home-primary" : undefined}
+          variant="outline"
+          size={primary ? "lg" : "default"}
           disabled={busy}
           onClick={() =>
             action.requiresConsent ? setConfirming(true) : void run()
           }
         >
+          {busy ? <Spinner /> : action.command === "start" ? <Power /> : null}
           {busy ? "Working…" : action.label}
-        </button>
+        </Button>
       )}
       {error && <span role="alert">{error}</span>}
     </div>
@@ -750,6 +753,7 @@ function ProjectsStage({
               </span>
             )}
             <Pixelkin
+              presentation="stage"
               look={projectKinLook(entry.id, entry.kin)}
               size={layout.placements[rank]!.size}
               expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
@@ -876,6 +880,7 @@ function SoloStage({
         {...hostSpin.handlers}
       >
         <Pixelkin
+          presentation="stage"
           look={agent.look}
           size={layout.placements[0]!.size}
           expression={expression}
@@ -906,30 +911,6 @@ function SoloStage({
 // New sidebar Conversations travel from their AI Client as golden coins.
 const COIN_FLIGHT_MS = 1_600;
 const MAX_CONCURRENT_COINS = 4;
-const COIN_ROWS = [
-  "..XXXX..",
-  ".XHGGGX.",
-  "XHGGGGDX",
-  "XGGDDGDX",
-  "XGGDDGDX",
-  "XGGGGDDX",
-  ".XDDDDX.",
-  "..XXXX.."
-];
-const COIN_FILL: Record<string, string> = {
-  X: "#7a4a12",
-  H: "#fff4c2",
-  G: "#ffd166",
-  D: "#e0a03a"
-};
-const COIN_RUNS = COIN_ROWS.flatMap((row, y) =>
-  [...row.matchAll(/([XHGD])\1*/g)].map((run) => ({
-    x: run.index,
-    y,
-    width: run[0].length,
-    fill: COIN_FILL[run[1]!]!
-  }))
-);
 
 type Coin = {
   key: number;
@@ -991,24 +972,52 @@ function FlyingCoin({ coin, onDone }: { coin: Coin; onDone: () => void }) {
   }, [coin]);
   return (
     <span className="v1-home-coin" ref={ref}>
-      <PixelCoin />
+      <CoinArtwork />
     </span>
   );
 }
 
-function PixelCoin() {
+// Vector edges retain detail while the coins scale, flatten and tumble.
+function CoinArtwork() {
   return (
-    <svg viewBox="0 0 8 8" shapeRendering="crispEdges">
-      {COIN_RUNS.map(({ x, y, width, fill }) => (
-        <rect
-          key={`${x}-${y}`}
-          x={x}
-          y={y}
-          width={width}
-          height={1}
-          style={{ fill }}
-        />
-      ))}
+    <svg
+      viewBox="0 0 32 32"
+      shapeRendering="geometricPrecision"
+      aria-hidden="true"
+    >
+      <ellipse cx="16" cy="17" rx="14.25" ry="14" fill="#7a4a12" />
+      <circle
+        cx="16"
+        cy="15"
+        r="14"
+        fill="#e0a03a"
+        stroke="#7a4a12"
+        strokeWidth="1.5"
+      />
+      <circle
+        cx="16"
+        cy="14.5"
+        r="12.5"
+        fill="#ffd166"
+        stroke="#fff4c2"
+        strokeWidth="0.75"
+      />
+      <circle cx="16" cy="14.5" r="10.25" fill="#e0a03a" />
+      <circle cx="16" cy="15.25" r="9.5" fill="#ffd166" />
+      <path
+        d="M6.5 11a10 10 0 0 1 12-6"
+        fill="none"
+        stroke="#fff4c2"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <rect x="12.5" y="11.5" width="7" height="7" rx="1" fill="#7a4a12" />
+      <path
+        d="M13 18.5h5.5a1 1 0 0 0 1-1V12"
+        fill="none"
+        stroke="#fff4c2"
+        strokeWidth="0.75"
+      />
     </svg>
   );
 }
@@ -1374,7 +1383,7 @@ function FloorCoin({
         onOpen(conversation.key);
       }}
     >
-      <PixelCoin />
+      <CoinArtwork />
       {/* The coin is too small for a legible logo; the tooltip carries it. */}
       <span className="v1-home-floor-tip" role="tooltip">
         {conversation.client && (
@@ -1695,9 +1704,11 @@ export function Home({
   onOpenConversation,
   onDropConversation,
   conversations,
-  conversationScope = "home"
+  conversationScope = "home",
+  statusError = null
 }: {
   view: HomeView;
+  statusError?: string | null;
   clients: readonly HomeClient[];
   entries: readonly HomeProjectEntry[];
   agent: { name: string; look: AgentLook };
@@ -1729,85 +1740,87 @@ export function Home({
     conversations,
     conversationScope
   );
-  if (view.kind === "loading")
+  if (view.kind === "loading" || view.kind === "ingesting") {
+    const ingestion = view.kind === "ingesting" ? view.ingestion : null;
+    const stalled =
+      ingestion?.clients
+        .filter((client) => client.stuck)
+        .map(({ name }) => name) ?? [];
     return (
-      <section className="v1-home" aria-busy="true">
-        <SoloStage
-          agent={agent}
-          expression="neutral"
-          label="Checking on your Projects"
-          caption={<p className="v1-home-sub">Checking on your Projects…</p>}
-        />
+      <section className="v1-home" data-mood="loading" aria-busy="true">
+        {view.kind === "ingesting" && (
+          <HomeWarnings problems={view.warnings} statusStore={statusStore} />
+        )}
+        <div className="v1-home-stage v1-home-startup">
+          <div className="v1-home-startup-copy">
+            <h1>Making room for your Projects</h1>
+            <p className="v1-home-sub">
+              {stalled.length
+                ? `${stalled.join(" and ")} history has stalled, so ${agent.name} keeps retrying. Projects still appear as they’re found.`
+                : "Your stage will be ready in a moment."}
+            </p>
+          </div>
+          <div className="v1-home-startup-spinner">
+            <Spinner className="v1-home-spinner" strokeWidth={1.25} />
+          </div>
+          {ingestion ? (
+            <div
+              className="v1-home-startup-progress"
+              title={`Up to ${AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI Client from the last ${AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.`}
+            >
+              <IngestionProgress ingestion={ingestion} />
+            </div>
+          ) : (
+            <div className="v1-home-startup-caption" aria-hidden="true">
+              <span />
+              <span />
+            </div>
+          )}
+        </div>
       </section>
     );
+  }
   if (view.kind === "attention")
     return (
       <section className="v1-home" data-mood="attention">
-        <SoloStage
-          agent={agent}
-          // Koed has to be running again first; client changes can wait.
-          keycaps={<Keycaps clients={clients} />}
-          expression="surprised"
-          label={`${agent.name} needs a hand`}
-          wide
-          caption={
-            <>
-              <h1>{agent.name} needs a hand</h1>
-              <p className="v1-home-sub">
-                Your Projects can’t load until this is sorted. Nothing has been
-                lost.
+        <div className="v1-home-stage v1-home-recovery">
+          <div
+            className="v1-home-recovery-kin"
+            role="img"
+            aria-label={`${agent.name} looks concerned`}
+          >
+            <Pixelkin
+              look={agent.look}
+              size={290}
+              presentation="stage"
+              expression="sad"
+            />
+            <span className="v1-home-recovery-shadow" aria-hidden="true" />
+          </div>
+          <div className="v1-home-caption">
+            <h1>{agent.name} needs a hand</h1>
+            <p className="v1-home-sub">
+              Your Projects can’t load until this is sorted.
+              <br />
+              Nothing has been lost.
+            </p>
+            <ProblemList
+              problems={view.problems}
+              primary={view.primary}
+              statusStore={statusStore}
+            />
+            {statusError && (
+              <p className="v1-home-recovery-error" role="alert">
+                {statusError}
               </p>
-              <ProblemList
-                problems={view.problems}
-                primary={view.primary}
-                statusStore={statusStore}
-              />
-            </>
-          }
-        />
+            )}
+          </div>
+        </div>
       </section>
     );
   const warnings = (
     <HomeWarnings problems={view.warnings} statusStore={statusStore} />
   );
-  if (view.kind === "ingesting") {
-    const stuck = view.ingestion.clients
-      .filter((client) => client.stuck)
-      .map(({ name }) => name);
-    return (
-      <section className="v1-home" data-mood="ingesting">
-        {warnings}
-        <SoloStage
-          agent={agent}
-          keycaps={
-            <Keycaps
-              clients={clients}
-              ingestion={view.ingestion}
-              statusStore={statusStore}
-            />
-          }
-          expression={stuck.length ? "neutral" : "happy"}
-          label="Reading your recent conversations"
-          floorCoins={floorCoins}
-          caption={
-            <>
-              <h1>Hatching your Projects</h1>
-              <p
-                className="v1-home-sub"
-                title={`Up to ${AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI Client from the last ${AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.`}
-              >
-                {stuck.length
-                  ? `${stuck.join(" and ")} history has stalled, so ${agent.name} keeps retrying. Projects still appear as they’re found.`
-                  : `${agent.name} is reading your recent conversations. Projects appear as they’re found.`}
-              </p>
-              <IngestionProgress ingestion={view.ingestion} />
-            </>
-          }
-        />
-        {conversationCoins}
-      </section>
-    );
-  }
   // The next step on an empty stage is connecting a detected client.
   const connectable = clients
     .filter(({ state }) => state === "detected")
