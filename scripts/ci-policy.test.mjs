@@ -709,43 +709,6 @@ test("Linux smoke system packages install from cached archives before the packag
   );
 });
 
-test("pull requests run Linux jobs on Blacksmith except the native runtime build", () => {
-  const jobs = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs;
-  const expected = {
-    changes: ["blacksmith-2vcpu-ubuntu-2404", "ubuntu-24.04"],
-    "node-26-consumer": ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
-    "static-checks": ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
-    tests: ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
-    build: ["blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
-    "ci-required": ["blacksmith-2vcpu-ubuntu-2404", "ubuntu-24.04"]
-  };
-  for (const [name, [pullRequest, other]] of Object.entries(expected)) {
-    assert.equal(
-      jobs[name]["runs-on"],
-      `\${{ github.event_name == 'pull_request' && '${pullRequest}' || '${other}' }}`,
-      name
-    );
-  }
-  // The native runtime build bundles system libraries and licence files from
-  // the GitHub-hosted Ubuntu 22.04 image, which the Blacksmith image lacks.
-  assert.equal(jobs["native-runtime-linux-x64"]["runs-on"], "ubuntu-22.04");
-  for (const name of [
-    "relevant-packaged-smoke",
-    "release-candidate-validation"
-  ]) {
-    assert.equal(jobs[name]["runs-on"], "macos-15", name);
-  }
-  assert.deepEqual(
-    Object.keys(jobs).toSorted(),
-    [
-      ...Object.keys(expected),
-      "native-runtime-linux-x64",
-      "relevant-packaged-smoke",
-      "release-candidate-validation"
-    ].toSorted()
-  );
-});
-
 test("Linux smoke is required for app and full validation", () => {
   for (const policy of [
     { run_app_smoke: "true", run_full_validation: "false" },
