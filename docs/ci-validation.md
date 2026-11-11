@@ -61,14 +61,14 @@ a check that cannot run.
 
 ### Runners
 
-On pull requests every Linux job runs on Blacksmith runners; scheduled and
-manual runs use GitHub-hosted runners. `Native runtime Linux x64` stays on
-Ubuntu 22.04 on both so the packaged runtime keeps its glibc 2.35 floor, and
-stays GitHub-hosted when full validation is selected, because that tier
-restores the native runtime payload cache that GitHub-hosted runs save. The
-macOS jobs and the release workflow stay on GitHub-hosted runners. Blacksmith
-runners use their own Actions cache, so pull-request caches are separate from
-the caches that GitHub-hosted runs save.
+On pull requests the Linux jobs run on Blacksmith runners, except `Native
+runtime Linux x64`; scheduled and manual runs use GitHub-hosted runners. The
+native runtime build bundles system libraries and their licence files from the
+GitHub-hosted Ubuntu 22.04 image and records them in its recipe, and the
+Blacksmith image does not carry all of those files, so that job always runs on
+GitHub-hosted `ubuntu-22.04`. The macOS jobs and the release workflow also stay
+on GitHub-hosted runners. Blacksmith runners use their own Actions cache, so
+their caches are separate from the caches that GitHub-hosted runs save.
 
 ## App-only packaged smoke
 
