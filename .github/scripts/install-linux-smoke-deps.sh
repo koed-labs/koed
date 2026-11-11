@@ -50,12 +50,35 @@ if [ "${#missing[@]}" -eq 0 ]; then
   exit 0
 fi
 
+# Fetch and install what is still missing. Extra arguments select the package
+# sources. Each apt call is time-boxed so unreachable mirrors fail quickly.
+apt_fetch() {
+  sudo timeout 120 apt-get "$@" update &&
+    sudo timeout 300 apt-get "$@" install -y --no-install-recommends \
+      -o Dir::Cache::Archives="${archives}" \
+      "${missing[@]}"
+}
+
 echo "Fetching with apt: ${missing[*]}"
 sudo mkdir -p "${archives}/partial"
-sudo apt-get update
-sudo apt-get install -y --no-install-recommends \
-  -o Dir::Cache::Archives="${archives}" \
-  "${missing[@]}"
+if ! apt_fetch; then
+  # The runner's configured mirrors are unreachable. Retry against an
+  # independent mirror; apt still verifies it with the Ubuntu archive keyring.
+  mirror="${KOED_APT_FALLBACK_MIRROR:-https://mirrors.edge.kernel.org/ubuntu}"
+  codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
+  keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+  sources="$(mktemp)"
+  for pocket in "${codename}" "${codename}-updates" "${codename}-security"; do
+    echo "deb [signed-by=${keyring}] ${mirror} ${pocket} main universe"
+  done >"${sources}"
+  chmod 644 "${sources}"
+  echo "Configured mirrors failed; retrying with ${mirror}."
+  apt_fetch \
+    -o Dir::Etc::sourcelist="${sources}" \
+    -o Dir::Etc::sourceparts=- \
+    -o APT::Get::List-Cleanup=0
+  rm -f "${sources}"
+fi
 sudo rm -rf "${archives}/partial" "${archives}/lock"
 sudo chown -R "$(id -u):$(id -g)" "${archives}"
 

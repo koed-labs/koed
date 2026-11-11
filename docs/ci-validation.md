@@ -81,8 +81,11 @@ The Linux Desktop smoke installs its system packages through
 `.github/scripts/install-linux-smoke-deps.sh`. Packages already on the runner
 image are left alone, missing ones are installed from cached package archives,
 and only what is still missing is fetched from the Ubuntu package mirrors and
-then cached. A warm run therefore does not need the mirrors; a run with no
-cached archives still does.
+then cached. A warm run therefore does not need the mirrors. When the runner's
+configured mirrors are unreachable, a run with no cached archives retries
+against an independent mirror (`KOED_APT_FALLBACK_MIRROR`, by default
+`https://mirrors.edge.kernel.org/ubuntu`); apt verifies that mirror with the
+Ubuntu archive keyring, so package trust is unchanged.
 
 ### Runtime compatibility and ownership
 
