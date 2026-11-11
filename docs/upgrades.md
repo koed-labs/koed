@@ -1,27 +1,37 @@
 # Upgrades
 
-Before upgrading:
+## Stable baseline and upgrades
 
-1. Stop writes from AI-client integrations.
-2. Back up Postgres.
-3. Save the current image/version identifier.
-4. Pull or build the new version.
-5. Start the API so it can run Drizzle migrations, or run migrations manually.
+Stable installs start with a fresh, empty database. The sole initial migration,
+`0000_clean_initial_schema`, establishes that baseline. Existing alpha databases
+are not supported upgrade sources: Koed does not migrate, convert, or preserve
+their contents in place. Back up alpha data only if needed for reference or
+independent recovery; do not restore it as a stable-install conversion path.
 
-Manual migration command:
+After installing this stable baseline, future stable releases evolve through
+ordered migrations from that baseline. Use backups for supported recovery of a
+compatible installation, not to bridge alpha schema history into stable.
+
+For a fresh installation or a supported stable upgrade, the migration command
+is:
 
 ```bash
 pnpm --filter @koed/db migrate:up
 ```
 
-For this alpha, supported forward migration follows complete Drizzle journal
-through `0033_fixed_scarlet_witch`. The discarded experimental `0013_ordinary_sir_ram`
-Team Chat schema is not an upgrade source and no compatibility objects are
-installed for it. Migration `0033` adds explicit Managed Conversation execution
-owner identity and backfills historical rows as `${provider}.default` without a
-foreign key. If discarded experimental migration was applied, restore a
-pre-`0013` backup (or start with a fresh database) before upgrading. Do not use
-an older application binary as rollback; restore backup taken before upgrade.
+Do not point an older application binary at a database with newer migrations.
+For rollback, restore a compatible backup together with its matching application
+and configuration.
+
+## Alpha-only migration history
+
+Historical alpha migration references below describe alpha-only procedures and
+are not a supported path to the stable baseline. The discarded experimental
+`0013_ordinary_sir_ram` Team Chat schema was not an upgrade source. Migration
+`0033_fixed_scarlet_witch` added Managed Conversation execution owner identity
+and backfilled historical rows as `${provider}.default` without a foreign key.
+These historical transformations are not repeated or applied to alpha databases
+by stable installation.
 
 CI executes `pnpm db:migrate:acceptance`, including backup/restore and
 interrupted-transaction recovery, against disposable databases.

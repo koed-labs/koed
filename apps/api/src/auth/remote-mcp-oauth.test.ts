@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import express from "express";
-import { createDbPool, createRemoteMcpOAuthRepository } from "@koed/db";
+import {
+  createDbPool,
+  createRemoteMcpOAuthRepository,
+  runDbMigrations
+} from "@koed/db";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { verifyBearerToken } from "@modelcontextprotocol/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -22,9 +25,9 @@ describe.skipIf(!databaseUrl)(
     const admin = createDbPool({
       connectionString: databaseUrl ?? "postgresql://localhost/postgres"
     });
-    const schema = `oauth_test_${randomUUID().replaceAll("-", "")}`;
+    const database = `koed_oauth_api_${randomUUID().replaceAll("-", "")}`;
     const scopedUrl = new URL(databaseUrl ?? "postgresql://localhost/postgres");
-    scopedUrl.searchParams.set("options", `-csearch_path=${schema}`);
+    scopedUrl.pathname = `/${database}`;
     const pool = createDbPool({ connectionString: scopedUrl.toString() });
     const store = createRemoteMcpOAuthRepository(pool);
     let time = new Date();
@@ -37,30 +40,16 @@ describe.skipIf(!databaseUrl)(
     let base: string;
 
     beforeAll(async () => {
-      await admin.query(`create schema ${schema}`);
+      await admin.query(`create database "${database}"`);
+      await runDbMigrations(pool);
       await pool.query(
-        `create table users (id uuid primary key, disabled_at timestamptz, deleted_at timestamptz); create table audit_events (actor_user_id uuid,owner_user_id uuid,visibility text,action text,target_table text,target_id uuid,metadata jsonb)`
-      );
-      await pool.query(`insert into users (id) values ($1),($2)`, [
-        userId,
-        otherUserId
-      ]);
-      const migration = await readFile(
-        new URL(
-          "../../../../packages/db/drizzle/0043_remote_mcp_oauth.sql",
-          import.meta.url
-        ),
-        "utf8"
-      );
-      await pool.query(migration.replaceAll('"public".', `"${schema}".`));
-      await pool.query(
-        await readFile(
-          new URL(
-            "../../../../packages/db/drizzle/0046_external_agent_grants.sql",
-            import.meta.url
-          ),
-          "utf8"
-        )
+        `insert into users (id, email) values ($1, $2),($3, $4)`,
+        [
+          userId,
+          `user-${userId}@example.test`,
+          otherUserId,
+          `other-${otherUserId}@example.test`
+        ]
       );
       const app = express();
       app.use(
@@ -89,7 +78,7 @@ describe.skipIf(!databaseUrl)(
           server.close((error) => (error ? reject(error) : resolve()))
         );
       await pool.end();
-      await admin.query(`drop schema if exists ${schema} cascade`);
+      await admin.query(`drop database if exists "${database}" with (force)`);
       await admin.end();
     }, 30_000);
 
