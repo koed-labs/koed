@@ -5,4 +5,4 @@ export {
   failMemoryAnswerTaskSchema,
   heartbeatMemoryAnswerTaskSchema,
   memoryAnswerTaskParamsSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";

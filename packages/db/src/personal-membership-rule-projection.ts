@@ -4,7 +4,7 @@ import type pg from "pg";
 import {
   personalMembershipRuleScopeFromSelectorKey,
   personalMembershipSelectorKey
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PersonalMembershipEntityRow } from "./personal-membership-causal-history.js";
 import {
   personalMembershipNativeEntityId,

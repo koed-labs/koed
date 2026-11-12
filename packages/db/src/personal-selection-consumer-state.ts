@@ -3,7 +3,7 @@ import type pg from "pg";
 import {
   personalSelectionConsumerSelectionSchema,
   type PersonalSelectionConsumerSelection
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   resolvePersonalSourceSelection,

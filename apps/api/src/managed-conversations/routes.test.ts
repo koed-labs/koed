@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
-import { storeDesktopLocalCredential } from "@koed/shared";
+import { storeDesktopLocalCredential } from "@koed-labs/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiRouteContext } from "../server/context.js";

@@ -5,7 +5,7 @@ import {
   collaborationRendererCommandSchema,
   collaborationSafeErrorMessages,
   type CollaborationRendererEvent
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
   desktopCollaborationBrokerParentMessageSchema,

@@ -79,7 +79,9 @@ const childEnvironment = Object.fromEntries(
 
 for (const filePath of [mcpCliPath, captureHookPath]) {
   if (!existsSync(filePath)) {
-    console.error(`${filePath} does not exist. Build @koed/mcp-server first.`);
+    console.error(
+      `${filePath} does not exist. Build @koed-labs/mcp-server first.`
+    );
     process.exit(1);
   }
 }

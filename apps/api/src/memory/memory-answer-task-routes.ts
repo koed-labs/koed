@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { MemorySourceRepository } from "@koed/db";
-import type { MemoryAnswerTaskExecutionAuthority } from "@koed/shared";
-import { memoryAnswerInputSchema } from "@koed/mcp-server/runtime-contracts";
+import type { MemorySourceRepository } from "@koed-labs/db";
+import type { MemoryAnswerTaskExecutionAuthority } from "@koed-labs/shared";
+import { memoryAnswerInputSchema } from "@koed-labs/mcp-server/runtime-contracts";
 import { finalMemoryQuestionSchema } from "./questions-schemas.js";
 import {
   issueMemoryAnswerAuthorizationBoundary,

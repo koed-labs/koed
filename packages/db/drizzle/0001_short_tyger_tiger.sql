@@ -1,2 +1,0 @@
-ALTER TABLE "memory_questions" ADD COLUMN "origin" text DEFAULT 'explorer' NOT NULL;--> statement-breakpoint
-ALTER TABLE "memory_questions" ADD CONSTRAINT "memory_questions_origin_check" CHECK ("memory_questions"."origin" in ('explorer', 'mcp_memory_answer'));

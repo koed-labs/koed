@@ -1,4 +1,4 @@
-import { Button, Spinner } from "@koed/ui";
+import { Button, Spinner } from "@koed-labs/ui";
 import "./cli-install-settings.css";
 import {
   Check,

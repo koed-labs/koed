@@ -18,7 +18,7 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import {
   ChevronDown,
   ChevronRight,

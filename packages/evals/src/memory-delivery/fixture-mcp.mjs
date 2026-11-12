@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { createKoedMcpServer } from "@koed/mcp-server/mcp-server-factory";
+import { createKoedMcpServer } from "@koed-labs/mcp-server/mcp-server-factory";
 import { z } from "zod";
 import { readFixture, recordEvent } from "./fixture-data.mjs";
 

@@ -9,7 +9,7 @@ import {
   generateConversationSourceReplicationOriginKeyPair,
   generateRecipientKeyMaterial,
   type ConversationSourceReplicationSourceDescriptor
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";

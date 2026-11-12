@@ -260,7 +260,10 @@ export const sourceAuditExclusion = (packageName, file) => {
     return "native-addon-build-tooling";
   if (packageName === "sharp" && file.startsWith("install/"))
     return "native-addon-install-tooling";
-  if (packageName === "@koed/mcp-server" && file.startsWith("integrations/pi/"))
+  if (
+    packageName === "@koed-labs/mcp-server" &&
+    file.startsWith("integrations/pi/")
+  )
     return "external-pi-integration";
   return null;
 };
@@ -382,7 +385,7 @@ const dynamicRules = [
       requiresClosure: (closure) =>
         closure.some(
           ({ manifest, packageRoot }) =>
-            manifest.name === "@koed/mcp-server" &&
+            manifest.name === "@koed-labs/mcp-server" &&
             existsSync(resolve(packageRoot, "dist/runtime-contracts.js"))
         ),
       missingClosure:
@@ -476,7 +479,7 @@ const dynamicRules = [
   },
   {
     match: (packageName, file) =>
-      packageName === "@koed/privacy-service" &&
+      packageName === "@koed-labs/privacy-service" &&
       file === "dist/validation-cache.js",
     policy: policies["maintained-local-source-file-set"]
   },
@@ -516,12 +519,13 @@ const dynamicRules = [
   },
   {
     match: (packageName, file) =>
-      packageName === "@koed/privacy-service" && file === "dist/runtime.js",
+      packageName === "@koed-labs/privacy-service" &&
+      file === "dist/runtime.js",
     policy: policies["declared-provider-dependency"]
   },
   {
     match: (packageName, file) =>
-      packageName === "@koed/mcp-server" &&
+      packageName === "@koed-labs/mcp-server" &&
       file === "integrations/pi/managed-rpc-host.mjs",
     policy: policies["external-ai-client-sdk-path"]
   },
@@ -545,7 +549,7 @@ const unresolvedRules = [
       const edgeSpecifier = edge.specifier;
       return (
         edge.kind === "asset" &&
-        packageName === "@koed/embedding-service" &&
+        packageName === "@koed-labs/embedding-service" &&
         file === "dist/env-config.js" &&
         edgeSpecifier === "../.env"
       );
@@ -567,7 +571,7 @@ const unresolvedRules = [
     match: (packageName, file, edge) => {
       return (
         edge.kind === "asset" &&
-        packageName === "@koed/privacy-service" &&
+        packageName === "@koed-labs/privacy-service" &&
         file === "dist/validation-cache.js"
       );
     },

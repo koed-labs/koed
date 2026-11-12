@@ -9,7 +9,7 @@ import {
   personalFolderAssignmentSchema,
   PdsConfigurationCompatibilityError,
   type PersonalSourceContextSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   lockPersonalCorrectionSource,
   personalCorrectionContext

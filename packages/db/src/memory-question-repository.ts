@@ -1,13 +1,13 @@
 import {
   recallQuestionMetadataSchema,
   type RecallQuestionMetadata
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   personalFolderReferenceSchema,
   personalFolderScopeId,
   personalGitContextSchema,
   repositoryScopeId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import pg from "pg";
@@ -21,7 +21,7 @@ import {
 } from "./encrypted-payload-repository.js";
 import { truncateDisplayText } from "./value-helpers.js";
 import { SharedMemoryAuthorizationError } from "./shared-memory-repository.js";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import type { EnvelopeEncryptionProvider } from "@koed-labs/shared";
 import type {
   ActorContext,
   DesktopAskThreadCursor,
@@ -58,8 +58,8 @@ export interface MemoryQuestionRepository {
     actor: MemoryQuestionActorContext,
     input: {
       namedProjectId?: string;
-      folderSelection?: import("@koed/shared").PersonalFolderReference;
-      repositorySelection?: import("@koed/shared").PersonalGitContext;
+      folderSelection?: import("@koed-labs/shared").PersonalFolderReference;
+      repositorySelection?: import("@koed-labs/shared").PersonalGitContext;
       askThreadId?: string;
       idempotencyKey: string;
       query: string;

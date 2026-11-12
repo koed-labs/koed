@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { personalIdentifierSchema } from "@koed/shared";
+import { personalIdentifierSchema } from "@koed-labs/shared";
 import type { PersonalConfigurationLocalDevice } from "./personal-configuration-membership.js";
 
 /** Call only after current owned group/member/key checks on private runtime input.

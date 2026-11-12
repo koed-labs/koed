@@ -1,10 +1,10 @@
 import {
   syncProfileTransitionReceiptSchema,
   capturedSessionSyncUploadPackageManifestSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
@@ -33,7 +33,7 @@ import {
   type CapturedSessionSyncPackageV2,
   type EnvelopeEncryptionProvider,
   type RecipientPublicKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { EmbeddingWorkflow } from "./embedding-workflow.js";
 
 interface SyncLogger {

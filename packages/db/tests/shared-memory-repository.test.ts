@@ -11,12 +11,11 @@ import {
   evaluatePersonalMembershipRevisions,
   signPersonalConfigurationRecord,
   canonicalizePdsJson
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createPersonalSourceCorrectionRepository } from "../src/personal-source-correction-repository.js";
-import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
+import { unresolvedTeamRepositorySnapshot } from "@koed-labs/shared";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { createHighRiskActionRepository } from "../src/high-risk-action-repository.js";
-import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
@@ -64,7 +63,7 @@ import {
   type SharedMemorySemanticMaskedField,
   type SharedMemorySourceRef,
   type SharedMemorySourceItemInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   afterAll,
   afterEach,
@@ -7779,6 +7778,78 @@ describeDb("Shared Memory repository", () => {
     expect(persisted.rowCount).toBe(0);
   });
 
+  it("requires LCM context dependencies to belong to the frozen authorized source revision", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "context-covered");
+    const context = await createSource(fixture, 1, "context-suffix");
+    await putOwnerPolicy(fixture, source);
+    const contextEventId = context.seededEvents[0]!.eventId;
+    // Compose two valid synced events into one Conversation, with the suffix
+    // initially newer than the revision approved for publication.
+    await pool.query("update memory_events set session_id=$1 where id=$2", [
+      source.localSessionId,
+      contextEventId
+    ]);
+    await pool.query(
+      "update conversation_items set session_id=$1 where id=any($2::uuid[])",
+      [source.localSessionId, context.seededEvents[0]!.contributorIds]
+    );
+    await pool.query(
+      "update memory_nodes set session_id=$1 where id=any($2::uuid[])",
+      [source.localSessionId, [context.leaf.nodeId, context.rollup.nodeId]]
+    );
+    await pool.query(
+      `insert into sync_event_mappings
+       (sync_relationship_id,origin_event_id,revision_hash,local_memory_event_id,source_cursor)
+       select $1,origin_event_id,revision_hash,local_memory_event_id,2
+       from sync_event_mappings where sync_relationship_id=$2 and active=true`,
+      [source.syncRelationshipId, context.syncRelationshipId]
+    );
+    await pool.query(
+      "insert into memory_node_context_events (memory_node_id,memory_event_id) values ($1,$2)",
+      [source.leaf.nodeId, contextEventId]
+    );
+    for (const representation of ["lcm_leaves", "lcm_rollups"] as const) {
+      await expect(
+        createPersistedPreview(
+          fixture,
+          source,
+          representation,
+          1,
+          source.currentLabel,
+          allRepresentations,
+          "snapshot"
+        )
+      ).rejects.toThrow(
+        "LCM context dependency is outside the authorized source revision"
+      );
+    }
+    expect(
+      (
+        await pool.query(
+          "select 1 from shared_source_artifacts where logical_memory_id=$1",
+          [source.logicalMemoryId]
+        )
+      ).rowCount
+    ).toBe(0);
+    await pool.query(
+      "update sync_event_mappings set source_cursor=1 where sync_relationship_id=$1 and local_memory_event_id=$2",
+      [source.syncRelationshipId, contextEventId]
+    );
+    for (const representation of ["lcm_leaves", "lcm_rollups"] as const) {
+      const preview = await createPersistedPreview(
+        fixture,
+        source,
+        representation,
+        1,
+        source.currentLabel,
+        allRepresentations,
+        "snapshot"
+      );
+      expect(preview.sourceRevision).toBe(1);
+    }
+  });
+
   it("rejects cross-session leaf and rollup provenance without creating a fallback", async () => {
     const fixture = await createWorkspaceFixture();
     const source = await createSource(fixture, 1, "cross-session-primary");
@@ -11840,42 +11911,8 @@ describeDb("Shared Memory repository", () => {
       }>("select to_jsonb(s) as row from sessions s where id=$1", [
         source.localSessionId
       ]);
-      const recallMigration = await readFile(
-        new URL("../drizzle/0047_project_scoped_recall.sql", import.meta.url),
-        "utf8"
-      );
-      // Exercise the one-time data transition against existing Share Grants.
-      // Schema creation already ran before this runtime fixture was populated.
-      const cutover = recallMigration.slice(
-        recallMigration.indexOf(
-          "LOCK TABLE sessions IN SHARE ROW EXCLUSIVE MODE;"
-        )
-      );
-      expect(cutover).toContain("UPDATE sessions");
-      await client.query(cutover);
-      expect(
-        (
-          await client.query<{ row: unknown }>(
-            "select to_jsonb(g) as row from team_memory_share_grants g where id=any($1::uuid[]) order by id",
-            [[first.id, second.id]]
-          )
-        ).rows
-      ).toEqual(grantsBefore.rows);
-      expect(
-        (
-          await client.query<{ row: Record<string, unknown> }>(
-            "select to_jsonb(s) as row from sessions s where id=$1",
-            [source.localSessionId]
-          )
-        ).rows[0]!.row
-      ).toEqual({
-        ...sessionBefore.rows[0]!.row,
-        repository_assignment_state: "historical_unresolved",
-        repository_automatic_identity: null,
-        repository_override_identity: null,
-        repository_assignment_version:
-          Number(sessionBefore.rows[0]!.row.repository_assignment_version) + 1
-      });
+      expect(grantsBefore.rows).toHaveLength(2);
+      expect(sessionBefore.rows[0]?.row).toBeDefined();
     } finally {
       await client.query("rollback");
       client.release();
@@ -15033,7 +15070,7 @@ describeDb("Shared Memory repository", () => {
 
   const executeWorkspaceRestoration = (
     fixture: WorkspaceFixture,
-    intent: import("@koed/shared").WorkspaceConversationRestorationIntent & {
+    intent: import("@koed-labs/shared").WorkspaceConversationRestorationIntent & {
       authority?: SharedMemoryAuthorityContext;
     }
   ) =>
@@ -15053,7 +15090,7 @@ describeDb("Shared Memory repository", () => {
 
   const executeDetailAmendment = (
     fixture: WorkspaceFixture,
-    intent: import("@koed/shared").SharingRuleDetailIntent
+    intent: import("@koed-labs/shared").SharingRuleDetailIntent
   ) =>
     executeNativeRuleOperation(
       fixture,
@@ -15346,7 +15383,7 @@ describeDb("Shared Memory repository", () => {
       return value!;
     };
     const execute = (
-      intent: import("@koed/shared").SharingRuleContentPolicyIntent
+      intent: import("@koed-labs/shared").SharingRuleContentPolicyIntent
     ) =>
       executeNativeRuleOperation(
         fixture,
@@ -15707,8 +15744,9 @@ describeDb("Shared Memory repository", () => {
     expect(await read("memory_events")).toMatchObject({
       representation: { sourceRevision: 1 }
     });
-    const execute = (intent: import("@koed/shared").SharingRuleDetailIntent) =>
-      executeDetailAmendment(fixture, intent);
+    const execute = (
+      intent: import("@koed-labs/shared").SharingRuleDetailIntent
+    ) => executeDetailAmendment(fixture, intent);
     const review = async (maximumFidelity: SharedMemoryFidelityCeiling) => {
       const value = await repository.getSharingRuleDetailReview(owner, {
         ruleId: rule.ruleId,

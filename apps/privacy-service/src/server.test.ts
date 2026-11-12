@@ -3,7 +3,7 @@ import {
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
   createPrivacyServiceClient,
   PrivacyServiceUnavailableError
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PrivacyServiceConfig } from "./config.js";
 import {
   DeterministicPrivacyRuntime,

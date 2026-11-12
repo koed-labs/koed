@@ -1,4 +1,4 @@
-import type { SharedMemorySourceItem } from "@koed/shared/collaboration";
+import type { SharedMemorySourceItem } from "@koed-labs/shared/collaboration";
 import { describe, expect, it } from "vitest";
 
 import { sharedMemoryConversationEvents } from "./shared-memory-conversation.js";

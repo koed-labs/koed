@@ -2,7 +2,7 @@ import {
   PINNED_PRIVACY_MODEL_REVISION,
   PINNED_PRIVACY_MODEL_ID,
   PINNED_PRIVACY_CLASSIFIER_HASH
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ComponentVariant } from "./component-contract.js";
 import type { ComponentCommandContext } from "./component-commands.js";
 import { runComponentStatus } from "./component-commands.js";

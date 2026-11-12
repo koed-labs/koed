@@ -1,6 +1,6 @@
 import type pg from "pg";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SharedMemoryConflictError } from "@koed/shared";
+import { SharedMemoryConflictError } from "@koed-labs/shared";
 import {
   assertMemoryAnswerTeamAuthorityWithClient,
   freezeMemoryAnswerTeamAuthorityWithClient,

@@ -4,7 +4,7 @@ import {
   encodeDurableRealtimeStreamFrame,
   readBoundedDurableRealtimeStream,
   type DurableRealtimeStreamFrame
-} from "@koed/shared/durable-realtime";
+} from "@koed-labs/shared/durable-realtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type { WebTransportReliableStream } from "../realtime-transport/webtransport-durable-adapter.js";

@@ -1,4 +1,4 @@
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 
 export function collectMemoryAnswerTask(
   port: {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { personalFolderReferenceSchema } from "@koed/shared/personal-source";
+import { personalFolderReferenceSchema } from "@koed-labs/shared/personal-source";
 
 export const v1StateChannel = "koed:v1-state:command";
 const id = z.string().trim().min(1).max(512);

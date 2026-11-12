@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { resolveTeamCollaborationEnabled } from "@koed/shared";
+import { resolveTeamCollaborationEnabled } from "@koed-labs/shared";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import type { RuntimeRequirements } from "./component-contract.js";
 import { parseEnvFile } from "./env-file.js";

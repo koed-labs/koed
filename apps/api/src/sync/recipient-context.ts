@@ -1,7 +1,7 @@
 import {
   generateRecipientKeyMaterial,
   toRecipientPublicKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 
 export const resolveSyncRecipientContext = async (

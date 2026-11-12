@@ -3,7 +3,7 @@ import {
   deduplicatePersonalInventoryConversations,
   personalFolderScopeId,
   type PersonalSelectionSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import { listSelectedPersonalThreads } from "./personal-selection-inventory.js";
 import { graphThreadIndexResponseSchema } from "./graph-schemas.js";

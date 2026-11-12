@@ -45,7 +45,7 @@ koed-runtime/
     dist/capture-hook.js
     dist/prompts/codex-global-agent-guidance.md
   node_modules/                     # one shared production dependency graph
-    @koed/db/
+    @koed-labs/db/
       dist/index.js
       dist/connection.js
       dist/user-api-token-repository.js
@@ -133,10 +133,10 @@ koed-server-<version>-<platform>-<arch>/
 Required `koed-runtime` files:
 
 - `api/dist/index.js`
-- `api/node_modules/@koed/db/dist/index.js`
-- `api/node_modules/@koed/db/dist/connection.js`
-- `api/node_modules/@koed/db/dist/user-api-token-repository.js`
-- `api/node_modules/@koed/db/drizzle/meta/_journal.json`
+- `api/node_modules/@koed-labs/db/dist/index.js`
+- `api/node_modules/@koed-labs/db/dist/connection.js`
+- `api/node_modules/@koed-labs/db/dist/user-api-token-repository.js`
+- `api/node_modules/@koed-labs/db/drizzle/meta/_journal.json`
 - `worker/dist/index.js`
 - `embedding-service/dist/index.js`
 - `mcp-server/dist/cli.js`
@@ -306,10 +306,10 @@ Each standalone package should include a manifest:
       "embedding-service/dist/index.js",
       "mcp-server/dist/cli.js",
       "mcp-server/dist/capture-hook.js",
-      "node_modules/@koed/db/dist/index.js",
-      "node_modules/@koed/db/dist/connection.js",
-      "node_modules/@koed/db/dist/user-api-token-repository.js",
-      "node_modules/@koed/db/drizzle/meta/_journal.json"
+      "node_modules/@koed-labs/db/dist/index.js",
+      "node_modules/@koed-labs/db/dist/connection.js",
+      "node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+      "node_modules/@koed-labs/db/drizzle/meta/_journal.json"
     ]
   },
   "database": {

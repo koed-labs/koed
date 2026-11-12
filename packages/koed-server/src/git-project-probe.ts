@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
 import { statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { normalizeGitRemoteUrl, type NormalizedGitRemote } from "@koed/shared";
+import {
+  normalizeGitRemoteUrl,
+  type NormalizedGitRemote
+} from "@koed-labs/shared";
 
 export interface GitProjectProbeResult {
   status: "git" | "non_git" | "failed" | "ambiguous";

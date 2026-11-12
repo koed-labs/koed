@@ -2,7 +2,7 @@ import {
   partitionPersonalInventory,
   personalFolderScopeId,
   repositoryScopeId
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type {
   PersonalFolderObservation,
   PersonalFolderContext,
@@ -10,12 +10,12 @@ import type {
   PersonalProjectRule,
   PersonalDirectMembership,
   RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   PersonalDesktopProject,
   PersonalDesktopProjectThread,
   PersonalDesktopProjectMetadata
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { mergeProjectSources } from "./project-memory-ui.js";
 
 const uuid = (n: number) =>

@@ -5,7 +5,7 @@ import {
   type StdioServerHandle
 } from "@modelcontextprotocol/server/stdio";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import releaseManifest from "@koed/koed/package.json" with { type: "json" };
+import releaseManifest from "@koed-labs/koed/package.json" with { type: "json" };
 import {
   createKoedMcpServer,
   KOED_MCP_PROTOCOL_VERSION,

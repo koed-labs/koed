@@ -5,8 +5,8 @@ import { registerPersonalSourceInventoryRoutes } from "./personal-source-invento
 import { registerPersonalProjectRoutes } from "./personal-project-routes.js";
 import { registerRepositoryReviewRoutes } from "./repository-review-routes.js";
 import type { FastifyInstance } from "fastify";
-import { createEncryptedJsonPackage } from "@koed/shared";
-import { ConversationPresentationVersionConflictError } from "@koed/db";
+import { createEncryptedJsonPackage } from "@koed-labs/shared";
+import { ConversationPresentationVersionConflictError } from "@koed-labs/db";
 import { z } from "zod";
 import { actorForAuthenticatedRequest } from "../auth/session.js";
 import type { ApiRouteContext } from "../server/context.js";

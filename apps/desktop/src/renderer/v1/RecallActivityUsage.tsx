@@ -1,5 +1,5 @@
-import { ScrollArea } from "@koed/ui";
-import type { RecallActivityDetail as Detail } from "@koed/shared/personal-desktop";
+import { ScrollArea } from "@koed-labs/ui";
+import type { RecallActivityDetail as Detail } from "@koed-labs/shared/personal-desktop";
 import {
   recallCallerPresentation,
   recallDurationLabel,

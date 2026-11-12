@@ -53,10 +53,10 @@ const minimalGraph = (
   extras = {}
 ) => {
   for (const [service, packageName] of [
-    ["api", "@koed/api"],
-    ["worker", "@koed/worker"],
-    ["embedding-service", "@koed/embedding-service"],
-    ["mcp-server", "@koed/mcp-server"],
+    ["api", "@koed-labs/api"],
+    ["worker", "@koed-labs/worker"],
+    ["embedding-service", "@koed-labs/embedding-service"],
+    ["mcp-server", "@koed-labs/mcp-server"],
     ["koed-server", "@koed-labs/server"]
   ]) {
     packageFixture(
@@ -69,7 +69,7 @@ const minimalGraph = (
   }
   packageFixture(
     sourceRoot,
-    "@koed/privacy-service",
+    "@koed-labs/privacy-service",
     privacyDependencies,
     { "dist/index.js": privacySource },
     extras
@@ -424,7 +424,7 @@ test("projects hermetic base and privacy closures from shared production graph",
   );
   packageFixture(
     sourceRoot,
-    "@koed/privacy-service",
+    "@koed-labs/privacy-service",
     {
       "privacy-only": "1.0.0",
       "shared-fixture": "1.0.0",
@@ -437,16 +437,16 @@ test("projects hermetic base and privacy closures from shared production graph",
   );
   packageFixture(
     sourceRoot,
-    "@koed/api",
+    "@koed-labs/api",
     { "base-only": "1.0.0", "shared-fixture": "1.0.0" },
     {
       "dist/index.js": "export {};\n"
     }
   );
   for (const [service, packageName] of [
-    ["worker", "@koed/worker"],
-    ["embedding-service", "@koed/embedding-service"],
-    ["mcp-server", "@koed/mcp-server"],
+    ["worker", "@koed-labs/worker"],
+    ["embedding-service", "@koed-labs/embedding-service"],
+    ["mcp-server", "@koed-labs/mcp-server"],
     ["koed-server", "@koed-labs/server"]
   ]) {
     packageFixture(
@@ -563,12 +563,12 @@ test("rejects missing literal imports and package edges", () => {
   roots.push(workspace);
   const sourceRoot = resolve(workspace, "shared-runtime");
   for (const [service, packageName] of [
-    ["api", "@koed/api"],
-    ["worker", "@koed/worker"],
-    ["embedding-service", "@koed/embedding-service"],
-    ["mcp-server", "@koed/mcp-server"],
+    ["api", "@koed-labs/api"],
+    ["worker", "@koed-labs/worker"],
+    ["embedding-service", "@koed-labs/embedding-service"],
+    ["mcp-server", "@koed-labs/mcp-server"],
     ["koed-server", "@koed-labs/server"],
-    ["privacy-service", "@koed/privacy-service"]
+    ["privacy-service", "@koed-labs/privacy-service"]
   ]) {
     packageFixture(
       sourceRoot,
@@ -622,7 +622,7 @@ test("uses Node ESM exact paths while preserving CommonJS extension inference", 
       minimalGraph(sourceRoot, source);
       packageFixture(
         sourceRoot,
-        "@koed/privacy-service",
+        "@koed-labs/privacy-service",
         {},
         {
           "dist/index.js": source,
@@ -650,7 +650,7 @@ test("uses Node ESM exact paths while preserving CommonJS extension inference", 
   minimalGraph(sourceRoot, 'require("./target");');
   packageFixture(
     sourceRoot,
-    "@koed/privacy-service",
+    "@koed-labs/privacy-service",
     {},
     {
       "dist/index.js": 'require("./target");',
@@ -683,7 +683,7 @@ test("URL assets require exact existing paths and never infer extensions", async
       minimalGraph(sourceRoot, source);
       packageFixture(
         sourceRoot,
-        "@koed/privacy-service",
+        "@koed-labs/privacy-service",
         {},
         {
           "dist/index.js": source,
@@ -723,7 +723,7 @@ test("URL assets require exact existing paths and never infer extensions", async
     minimalGraph(sourceRoot, source);
     packageFixture(
       sourceRoot,
-      "@koed/privacy-service",
+      "@koed-labs/privacy-service",
       {},
       {
         "dist/index.js": source,
@@ -746,12 +746,12 @@ test("rejects template dynamic imports and unresolved native/assets", () => {
   roots.push(workspace);
   const sourceRoot = resolve(workspace, "shared-runtime");
   for (const [service, packageName] of [
-    ["api", "@koed/api"],
-    ["worker", "@koed/worker"],
-    ["embedding-service", "@koed/embedding-service"],
-    ["mcp-server", "@koed/mcp-server"],
+    ["api", "@koed-labs/api"],
+    ["worker", "@koed-labs/worker"],
+    ["embedding-service", "@koed-labs/embedding-service"],
+    ["mcp-server", "@koed-labs/mcp-server"],
     ["koed-server", "@koed-labs/server"],
-    ["privacy-service", "@koed/privacy-service"]
+    ["privacy-service", "@koed-labs/privacy-service"]
   ]) {
     packageFixture(
       sourceRoot,
@@ -789,7 +789,7 @@ test("rejects symlinked source root and scoped package ancestors", () => {
   const realRoot = resolve(workspace, "real-runtime");
   packageFixture(
     realRoot,
-    "@koed/api",
+    "@koed-labs/api",
     {},
     { "dist/index.js": "export {};\n" }
   );
@@ -808,7 +808,7 @@ test("rejects symlinked source root and scoped package ancestors", () => {
   const externalScope = resolve(workspace, "external-scope");
   packageFixture(
     externalScope,
-    "@koed/api",
+    "@koed-labs/api",
     {},
     { "dist/index.js": "export {};\n" }
   );
@@ -832,12 +832,12 @@ test("fails closed on unowned non-literal dynamic imports", () => {
   roots.push(workspace);
   const sourceRoot = resolve(workspace, "shared-runtime");
   for (const [service, packageName] of [
-    ["api", "@koed/api"],
-    ["worker", "@koed/worker"],
-    ["embedding-service", "@koed/embedding-service"],
-    ["mcp-server", "@koed/mcp-server"],
+    ["api", "@koed-labs/api"],
+    ["worker", "@koed-labs/worker"],
+    ["embedding-service", "@koed-labs/embedding-service"],
+    ["mcp-server", "@koed-labs/mcp-server"],
     ["koed-server", "@koed-labs/server"],
-    ["privacy-service", "@koed/privacy-service"]
+    ["privacy-service", "@koed-labs/privacy-service"]
   ]) {
     packageFixture(
       sourceRoot,
@@ -1235,7 +1235,7 @@ test("rejects #imports directory targets even when index.js exists", () => {
   );
   packageFixture(
     sourceRoot,
-    "@koed/privacy-service",
+    "@koed-labs/privacy-service",
     {},
     {
       "dist/index.js": 'import "#entry";\n',
@@ -1344,12 +1344,12 @@ test("rejects external or escaping symlinks in projected package trees", () => {
   roots.push(workspace);
   const sourceRoot = resolve(workspace, "shared-runtime");
   for (const [service, packageName] of [
-    ["api", "@koed/api"],
-    ["worker", "@koed/worker"],
-    ["embedding-service", "@koed/embedding-service"],
-    ["mcp-server", "@koed/mcp-server"],
+    ["api", "@koed-labs/api"],
+    ["worker", "@koed-labs/worker"],
+    ["embedding-service", "@koed-labs/embedding-service"],
+    ["mcp-server", "@koed-labs/mcp-server"],
     ["koed-server", "@koed-labs/server"],
-    ["privacy-service", "@koed/privacy-service"]
+    ["privacy-service", "@koed-labs/privacy-service"]
   ]) {
     packageFixture(
       sourceRoot,
@@ -1361,7 +1361,7 @@ test("rejects external or escaping symlinks in projected package trees", () => {
   }
   symlinkSync(
     workspace,
-    resolve(sourceRoot, "node_modules/@koed/privacy-service/escape")
+    resolve(sourceRoot, "node_modules/@koed-labs/privacy-service/escape")
   );
 
   assert.throws(
@@ -1390,7 +1390,7 @@ test("remote MCP dynamic contract import requires its concrete component target"
       closure
     );
   const closure = [
-    { manifest: { name: "@koed/mcp-server" }, packageRoot: root }
+    { manifest: { name: "@koed-labs/mcp-server" }, packageRoot: root }
   ];
   assert.match(classify(edge, closure).error, /entrypoint is absent/);
   write(resolve(root, "dist/runtime-contracts.js"), "export {};\n");

@@ -11,7 +11,7 @@ import {
   createManagedKmsEnvelopeEncryptionProvider,
   type EnvelopeEncryptionProvider,
   type ManagedKmsKeyring
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import pg from "pg";
 

@@ -4,7 +4,7 @@ import type {
   ConversationSourceArtifactRecord,
   ConversationSourceSegmentRecord,
   MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
@@ -12,7 +12,7 @@ import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   generateConversationSourceReplicationOriginKeyPair,
   signConversationSourceReplicationManifest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createConversationSourceReplicationService } from "./conversation-source-replication-service.js";
 
 const digest = (value: Uint8Array): string =>

@@ -1,4 +1,4 @@
-import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
+import { unresolvedTeamRepositorySnapshot } from "@koed-labs/shared";
 import {
   createHash,
   createCipheriv,
@@ -23,7 +23,7 @@ import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   type MemoryEngineRepository,
   type SearchMemoryInput
-} from "@koed/core";
+} from "@koed-labs/core";
 import {
   createLocalWorkQueueRepository,
   createEncryptedPayloadRepository,
@@ -69,7 +69,7 @@ import {
   type ManagedKmsKeyring,
   type PdsPortableMemoryEmbeddingV1,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const databaseUrl = process.env.DATABASE_URL;
 const runDbTests = Boolean(databaseUrl);
@@ -10767,7 +10767,7 @@ describeDb("memory repository visibility", () => {
         idempotencyKey: `sync-lcm-event-${randomUUID()}`
       }
     );
-    await encryptedRepo.createMemoryEvent(
+    const unrelatedEvent = await encryptedRepo.createMemoryEvent(
       { userId: owner.id },
       {
         eventType: "captured",
@@ -10886,6 +10886,28 @@ describeDb("memory repository visibility", () => {
     expect(leafSummaryNode?.kind).toBe("leaf");
     expect(Array.isArray(leafSummaryNode?.sourceOriginEventIds)).toBe(true);
     expect(leafSummaryNode?.childOriginNodeIds).toEqual([]);
+    const originalContext = await pool.query<{ memory_event_id: string }>(
+      "select memory_event_id from memory_node_context_events where memory_node_id=$1",
+      [leafNodeId]
+    );
+    await pool.query(
+      "insert into memory_node_context_events (memory_node_id,memory_event_id) values ($1,$2) on conflict (memory_node_id) do update set memory_event_id=excluded.memory_event_id",
+      [leafNodeId, unrelatedEvent.id]
+    );
+    await expect(
+      encryptedRepo.readCapturedSessionSyncDelta({ relationshipId })
+    ).rejects.toThrow("context crosses its Captured Session boundary");
+    if (originalContext.rows[0]) {
+      await pool.query(
+        "update memory_node_context_events set memory_event_id=$2 where memory_node_id=$1",
+        [leafNodeId, originalContext.rows[0].memory_event_id]
+      );
+    } else {
+      await pool.query(
+        "delete from memory_node_context_events where memory_node_id=$1",
+        [leafNodeId]
+      );
+    }
     await encryptedRepo.acknowledgeSourceSyncPackage({
       repositorySnapshotHash: crossIdentitySyncDigest(
         unresolvedTeamRepositorySnapshot()
@@ -12924,6 +12946,164 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({
       rows: [{ target_summary_revision_hash: emptySummaryHash }]
     });
+    const contextOriginId = randomUUID();
+    const contextItemId = randomUUID();
+    const contextContributorBase = {
+      ...contributorBase,
+      originItemId: contextItemId,
+      content: "Boundary context completes the fact.",
+      rawText: "Boundary context completes the fact.",
+      rawJson: { content: "Boundary context completes the fact." }
+    };
+    const contextEventBase = {
+      ...event,
+      originEventId: contextOriginId,
+      revisionHash: undefined,
+      content: "Boundary context completes the fact.",
+      capturedAt: "2026-07-12T00:03:02.000Z",
+      metadata: {
+        includeInLcm: true,
+        semanticItemManifest: [{ sourceIds: [contextItemId] }]
+      },
+      contributors: [
+        {
+          ...contextContributorBase,
+          revisionHash: crossIdentitySyncDigest(contextContributorBase)
+        }
+      ]
+    };
+    const contextEvent = {
+      ...contextEventBase,
+      revisionHash: crossIdentitySyncDigest(contextEventBase)
+    };
+    const contextualSummaryBase = {
+      ...replacementSummaryBase,
+      contextOriginEventIds: [contextOriginId]
+    };
+    const contextualSummary = {
+      ...contextualSummaryBase,
+      revisionHash: crossIdentitySyncDigest(contextualSummaryBase)
+    };
+    const contextPackage: CapturedSessionSyncPackageV2 = {
+      ...syncPackage,
+      packageId: randomUUID(),
+      packageSequence: 4,
+      fromCursor: 2,
+      toCursor: 3,
+      changes: [
+        {
+          cursor: 3,
+          operation: "upsert",
+          originEventId: contextOriginId,
+          revisionHash: contextEvent.revisionHash,
+          event: contextEvent
+        }
+      ],
+      summaryNodes: [contextualSummary],
+      summaryRevisionHash: crossIdentitySyncDigest([contextualSummary])
+    };
+    const applyContextPackage = async (value: CapturedSessionSyncPackageV2) => {
+      const id = randomUUID();
+      const digest = crossIdentitySyncDigest(value);
+      await pool.query(
+        `insert into sync_package_upload_sessions
+         (id,sync_relationship_id,protocol_package_id,request_hash,package_manifest,
+          package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,
+          expected_chunk_count,idempotency_key)
+         values ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,1,1,$10)`,
+        [
+          id,
+          relationshipId,
+          value.packageId,
+          crossIdentitySyncPackageRequestHash(value),
+          JSON.stringify(
+            testSyncPackageUploadManifest({
+              packageDigest: digest,
+              summaryRevisionHash: value.changes.some(
+                (change) => change.operation === "delete"
+              )
+                ? null
+                : value.summaryRevisionHash,
+              recordCount: value.changes.length + value.summaryNodes.length
+            })
+          ),
+          digest,
+          value.packageSequence,
+          value.fromCursor,
+          value.toCursor,
+          id
+        ]
+      );
+      try {
+        return await encryptedRepo.applyCapturedSessionSyncPackage({
+          relationshipId,
+          uploadSessionId: id,
+          package: value
+        });
+      } catch (error) {
+        await pool.query(
+          "delete from sync_package_upload_sessions where id=$1",
+          [id]
+        );
+        throw error;
+      }
+    };
+    const forgedSummaryBase = {
+      ...contextualSummaryBase,
+      contextOriginEventIds: [randomUUID()]
+    };
+    const forgedSummary = {
+      ...forgedSummaryBase,
+      revisionHash: crossIdentitySyncDigest(forgedSummaryBase)
+    };
+    await expect(
+      applyContextPackage({
+        ...contextPackage,
+        packageId: randomUUID(),
+        summaryNodes: [forgedSummary],
+        summaryRevisionHash: crossIdentitySyncDigest([forgedSummary])
+      })
+    ).rejects.toThrow("unavailable synchronized Memory Events");
+    const contextApplied = await applyContextPackage(contextPackage);
+    const dependency = await pool.query(
+      `select memory_event_id from memory_node_context_events where memory_node_id=$1`,
+      [contextApplied.summaryNodeIds[0]]
+    );
+    expect(dependency.rows).toEqual([
+      { memory_event_id: contextApplied.eventIds[0] }
+    ]);
+    await expect(
+      pool.query(
+        "select memory_event_id from memory_node_sources where memory_node_id=$1",
+        [contextApplied.summaryNodeIds[0]]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ memory_event_id: replacementSummaryApplied.eventIds[0] }]
+    });
+    await applyContextPackage({
+      ...contextPackage,
+      packageId: randomUUID(),
+      packageSequence: 5,
+      fromCursor: 3,
+      toCursor: 4,
+      summaryNodes: [],
+      summaryRevisionHash: emptySummaryHash,
+      changes: [
+        {
+          cursor: 4,
+          operation: "delete",
+          originEventId: contextOriginId,
+          revisionHash: "a".repeat(64),
+          event: null
+        }
+      ]
+    });
+    await expect(
+      pool.query(
+        "select invalidated_at is not null as invalidated from memory_nodes where id=$1",
+        [contextApplied.summaryNodeIds[0]]
+      )
+    ).resolves.toMatchObject({ rows: [{ invalidated: true }] });
     const replacementChallengeHash = randomBytes(32).toString("hex");
     await encryptedRepo.createDeviceEnrollmentChallenge({
       challengeHash: replacementChallengeHash,
@@ -12958,7 +13138,7 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({ id: relationshipId });
     const interruptedUploadId = randomUUID();
     await pool.query(
-      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,4,1,2,1,1,'revocation-interrupt')",
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,$5::jsonb,$6,6,1,2,1,1,'revocation-interrupt')",
       [
         interruptedUploadId,
         relationshipId,
@@ -17677,6 +17857,73 @@ describeDb("memory repository visibility", () => {
         process.env.MEMORY_LCM_FRESH_EVENT_TAIL = previousFreshTail;
       }
     }
+  });
+
+  it("resolves matched embedding fragments to complete canonical event evidence", async () => {
+    const owner = await repo.createUser({
+      email: `canonical-chunk-${randomUUID()}@example.com`
+    });
+    const event = await captureUserEvent(createMemoryEngine(repo), owner.id, {
+      projectId: "canonical-chunk",
+      content: "The recorded fact is 4254, not a fragment of that value."
+    });
+    const source = await repo.getEmbeddableSource("memory_event", event.id);
+    const dimensions = 1024;
+    const vector = Array.from({ length: dimensions }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
+      source: source!,
+      dimensions,
+      vector,
+      model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+      version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+      sourceText: "The recorded fact is 4",
+      chunkIndex: 0,
+      chunkCount: 1
+    });
+    mockEmbeddingQuery();
+    const input = {
+      scope: "personal" as const,
+      query: "recorded fact",
+      retrievalStage: "raw_fallback_search" as const,
+      limit: 10
+    };
+    const diagnostic = await repo.searchMemoryNodes(
+      { userId: owner.id },
+      input
+    );
+    expect(
+      diagnostic.results.find((hit) => hit.sourceId === event.id)?.summaryText
+    ).toBe("The recorded fact is 4");
+    const canonical = await repo.searchMemoryNodes(
+      { userId: owner.id },
+      {
+        ...input,
+        includeEventContext: true
+      }
+    );
+    const hit = canonical.results.find(
+      (candidate) => candidate.sourceId === event.id
+    );
+    expect(hit?.summaryText).toBe(event.content);
+    expect(
+      hit?.sourceItems?.map((item) => ({
+        sourceId: item.sourceId,
+        actor: item.actor,
+        text: item.text,
+        contextRole: item.provenance?.contextRole
+      }))
+    ).toEqual([
+      {
+        sourceId: event.id,
+        actor: "user",
+        text: event.content,
+        contextRole: "matched"
+      }
+    ]);
+    expect(hit?.citation.sourceId).toBe(event.id);
   });
 
   it("stores multiple embedding chunks for one logical source", async () => {
@@ -37114,6 +37361,9 @@ describeDb("memory repository visibility", () => {
          (group_id,owner_user_id,package_id,source_manifest_hash,state,
           lease_owner,lease_until)
          values ($1,$2,$3,$4,'downloading',$5,now()+interval '1 minute')
+         on conflict (group_id,package_id) do update
+         set state='downloading',lease_owner=excluded.lease_owner,
+           lease_until=excluded.lease_until
          returning id`,
         [
           group.groupDbId,
@@ -37321,6 +37571,150 @@ describeDb("memory repository visibility", () => {
     const importedLcm = await importRecord(lcmRecord);
     expect(importedLcm.state).toBe("ready");
     expect(typeof importedLcm.localSourceId).toBe("string");
+
+    const contextEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        projectId: "portable-context",
+        sessionId: session.id,
+        actor: "assistant",
+        eventType: "captured",
+        rawEventType: "agent_turn",
+        content: "The next event finishes the boundary sentence.",
+        visibility: "personal",
+        captureMethod: "transcript",
+        sourceEventTime: "2026-07-29T00:02:00.000Z",
+        sourceSequence: 1
+      }
+    );
+    const contextLogicalId = createHash("sha256")
+      .update(contextEvent.id)
+      .digest("base64url");
+    await pool.query(
+      `insert into pds_memory_event_mappings
+       (group_id,memory_event_id,logical_event_id,source_fingerprint,
+        source_closure_hash,content_hash,source_ordinals)
+       values ($1,$2,$3,$4,$5,$6,array['1']::text[])`,
+      [
+        group.groupDbId,
+        contextEvent.id,
+        contextLogicalId,
+        sourceFingerprint,
+        sourceClosureHash,
+        contextLogicalId
+      ]
+    );
+    const contextualContent = {
+      ...lcmContent,
+      contextEventIds: [contextLogicalId]
+    };
+    const contextualNodeId = pdsPortableLcmNodeId({
+      nodeKind: "leaf",
+      orderedSourceIds: lcmContent.orderedSourceIds,
+      contextEventIds: [contextLogicalId],
+      compatibilityContractHash: pdsArtifactCompatibilityHash(lcmContract),
+      correctedRevision: "0"
+    });
+    const contextualRecord = createRecord(lcmContract, contextualNodeId, {
+      artifactClass: "lcm_node/v1",
+      items: [
+        {
+          ...contextualContent,
+          logicalNodeId: contextualNodeId,
+          contentHash: pdsPortableLcmNodeContentHash(contextualContent)
+        }
+      ]
+    });
+    const contextualNode = await importRecord(contextualRecord);
+    expect(contextualNode.state).toBe("ready");
+    expect(contextualNode.localSourceId).not.toBe(importedLcm.localSourceId);
+    const dependencies = await pool.query<{
+      covered: string[];
+      context: string[];
+    }>(
+      `select
+        array(select memory_event_id::text from memory_node_sources where memory_node_id=$1) as covered,
+        array(select memory_event_id::text from memory_node_context_events where memory_node_id=$1) as context`,
+      [contextualNode.localSourceId]
+    );
+    expect(dependencies.rows[0]).toEqual({
+      covered: [importedEvent.localSourceId],
+      context: [contextEvent.id]
+    });
+    await pool.query(
+      "update memory_events set include_in_lcm=false where id=$1",
+      [contextEvent.id]
+    );
+    await expect(importRecord(contextualRecord)).rejects.toThrow(
+      "context closure is incomplete"
+    );
+    await pool.query(
+      "update memory_events set include_in_lcm=true where id=$1",
+      [contextEvent.id]
+    );
+    const laterEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        projectId: "portable-context",
+        sessionId: session.id,
+        actor: "assistant",
+        eventType: "captured",
+        rawEventType: "agent_turn",
+        content: "A later event is not boundary context.",
+        visibility: "personal",
+        captureMethod: "transcript",
+        sourceEventTime: "2026-07-29T00:03:00.000Z",
+        sourceSequence: 2
+      }
+    );
+    const laterLogicalId = createHash("sha256")
+      .update(laterEvent.id)
+      .digest("base64url");
+    await pool.query(
+      `insert into pds_memory_event_mappings
+       (group_id,memory_event_id,logical_event_id,source_fingerprint,
+        source_closure_hash,content_hash,source_ordinals)
+       values ($1,$2,$3,$4,$5,$6,array['2']::text[])`,
+      [
+        group.groupDbId,
+        laterEvent.id,
+        laterLogicalId,
+        sourceFingerprint,
+        sourceClosureHash,
+        laterLogicalId
+      ]
+    );
+    const nonadjacentContent = {
+      ...lcmContent,
+      contextEventIds: [laterLogicalId]
+    };
+    const nonadjacentNodeId = pdsPortableLcmNodeId({
+      nodeKind: "leaf",
+      orderedSourceIds: lcmContent.orderedSourceIds,
+      contextEventIds: [laterLogicalId],
+      compatibilityContractHash: pdsArtifactCompatibilityHash(lcmContract),
+      correctedRevision: "0"
+    });
+    const nonadjacentRecord = createRecord(lcmContract, nonadjacentNodeId, {
+      artifactClass: "lcm_node/v1",
+      items: [
+        {
+          ...nonadjacentContent,
+          logicalNodeId: nonadjacentNodeId,
+          contentHash: pdsPortableLcmNodeContentHash(nonadjacentContent)
+        }
+      ]
+    });
+    await expect(importRecord(nonadjacentRecord)).rejects.toThrow(
+      "context closure is incomplete"
+    );
+    await pool.query(
+      "update memory_events set include_in_lcm=false where id=$1",
+      [contextEvent.id]
+    );
+    await expect(importRecord(nonadjacentRecord)).rejects.toThrow(
+      "context closure is incomplete"
+    );
 
     const mappings = await pool.query<{ count: string }>(
       `select count(*)::text as count from (
@@ -37597,14 +37991,23 @@ describeDb("memory repository visibility", () => {
         captureMethod: "transcript"
       }
     );
+    process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "5";
+    process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD = "6000";
+    process.env.MEMORY_LCM_FRESH_EVENT_TAIL = "0";
     const engine = createMemoryEngine(repo);
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 6; index += 1) {
       await captureUserEvent(engine, owner.id, {
         projectId: "pds-lcm-project",
         sessionId: session.id,
         content: `Portable LCM source event ${index + 1}`
       });
     }
+    await pool.query(
+      `update memory_events set captured_at=timestamptz '2026-01-01' +
+         ((payload->>'content') ~ '6$')::int * interval '1 second' + interval '123 microseconds'
+       where session_id=$1`,
+      [session.id]
+    );
     await pool.query(
       `insert into pds_logical_replicas
        (group_id,owner_user_id,source_fingerprint,closure_hash,
@@ -37680,45 +38083,86 @@ describeDb("memory repository visibility", () => {
     const logicalSourceIds = sources.rows.map(
       (_, index) => `logical-lcm-source-${index}-${randomUUID()}`
     );
-    for (const [index, source] of sources.rows.entries()) {
-      await pool.query(
-        `insert into pds_memory_event_mappings
+    const leaf = await repo.getVisibleLcmNodeForSummarization(
+      { userId: owner.id },
+      leafNodeId
+    );
+    expect(leaf?.lcmAlgorithmVersion).toBe("depth0-source-items-context-v2");
+    const contextSources = (leaf?.contextItems ?? []).map((item, index) => ({
+      memory_event_id: item.sourceId!,
+      source_order: sources.rows.length + index
+    }));
+    expect(contextSources).toHaveLength(1);
+    expect(sources.rows.map((source) => source.memory_event_id)).not.toContain(
+      contextSources[0]!.memory_event_id
+    );
+    const logicalContextIds = contextSources.map(
+      (_, index) => `logical-lcm-context-${index}-${randomUUID()}`
+    );
+    const mapSources = async (
+      mappedSources: typeof sources.rows,
+      mappedLogicalIds: string[]
+    ) => {
+      for (const [index, source] of mappedSources.entries()) {
+        await pool.query(
+          `insert into pds_memory_event_mappings
          (group_id,memory_event_id,logical_event_id,source_fingerprint,
           source_closure_hash,content_hash,source_ordinals)
          values ($1,$2,$3,$4,$5,$6,array[$7]::text[])`,
-        [
-          group.groupDbId,
-          source.memory_event_id,
-          logicalSourceIds[index],
-          createHash("sha256")
-            .update(`source-${source.memory_event_id}`)
-            .digest("base64url"),
-          createHash("sha256")
-            .update(`closure-${source.memory_event_id}`)
-            .digest("base64url"),
-          createHash("sha256")
-            .update(`content-${source.memory_event_id}`)
-            .digest("base64url"),
-          String(source.source_order)
-        ]
-      );
-    }
+          [
+            group.groupDbId,
+            source.memory_event_id,
+            mappedLogicalIds[index],
+            createHash("sha256")
+              .update(`source-${source.memory_event_id}`)
+              .digest("base64url"),
+            createHash("sha256")
+              .update(`closure-${source.memory_event_id}`)
+              .digest("base64url"),
+            createHash("sha256")
+              .update(`content-${source.memory_event_id}`)
+              .digest("base64url"),
+            String(source.source_order)
+          ]
+        );
+      }
+    };
+    await mapSources(sources.rows, logicalSourceIds);
     const contract = {
       artifactClass: "lcm_node/v1" as const,
       nodeKind: "leaf" as const,
-      lcmAlgorithmVersion: "depth0-source-items-v1",
+      lcmAlgorithmVersion: "depth0-source-items-context-v2",
       summaryPromptVersion: "lcm-summary-leaf-v1",
       summaryModel: "gpt-5.4-mini",
       structuredOutputSchema: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
-      sourceSelectionPolicy: "depth0-source-items-v1"
+      sourceSelectionPolicy: "depth0-source-items-context-v2"
     };
     const compatibilityContractHash = pdsArtifactCompatibilityHash(contract);
+    await expect(
+      repo.claimLcmNodesForSummarization(
+        { userId: owner.id },
+        {
+          claimantId: "unmapped-context-client",
+          compatibilityContractHash,
+          pdsContracts: {
+            leaf: contract,
+            rollup: { ...contract, nodeKind: "rollup" }
+          },
+          leaseMs: 60_000,
+          limit: 1
+        }
+      )
+    ).resolves.toEqual([]);
+    await mapSources(contextSources, logicalContextIds);
     const workIdentity = createHash("sha256")
       .update(
         canonicalizePdsJson({
           artifactClass: "lcm_node/v1",
           nodeKind: "leaf",
           orderedSourceIds: logicalSourceIds,
+          ...(logicalContextIds.length
+            ? { contextEventIds: logicalContextIds }
+            : {}),
           compatibilityContractHash,
           correctedRevision: "0"
         })
@@ -37758,6 +38202,10 @@ describeDb("memory repository visibility", () => {
       }
     );
     if (!summaryClaim) throw new Error("Expected PDS-backed LCM claim");
+    expect(summaryClaim.workIdentity).toBe(workIdentity);
+    expect(summaryClaim.compatibilityContractHash).toBe(
+      compatibilityContractHash
+    );
 
     await pool.query(
       `update pds_semantic_work_claims

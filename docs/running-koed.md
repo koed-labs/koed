@@ -76,7 +76,7 @@ After upgrading an existing database, an Operator can inventory legacy
 approval-derived semantic data without mutation:
 
 ```bash
-pnpm --filter @koed/db approval-activity:inventory
+pnpm --filter @koed-labs/db approval-activity:inventory
 ```
 
 The bounded report is stable across repeated runs and counts affected Memory
@@ -85,7 +85,7 @@ snapshot or continuous shares. Ambiguous scopes stop correction and require
 Operator review. After reviewing the inventory, apply the idempotent correction:
 
 ```bash
-pnpm --filter @koed/db approval-activity:correct
+pnpm --filter @koed-labs/db approval-activity:correct
 ```
 
 Correction removes semantic derivatives, schedules eligible rebuild/deletion
@@ -268,7 +268,7 @@ fallback, repeat with another empty home, cancel CUDA before activation, choose
 services before changing `KOED_HOME`; keep test homes until diagnostics are no
 longer needed. Do not remove an existing home to make these tests fresh.
 
-Release assembly uses one `@koed/app-runtime-stage` production deployment as
+Release assembly uses one `@koed-labs/app-runtime-stage` production deployment as
 source for base and optional privacy payloads. `scripts/component-assembly.mjs`
 projects manifest dependency closures into independent component roots; shared
 packages are copied into both trees when needed, and each tree carries its own
@@ -1070,7 +1070,7 @@ Use the shared input toolbar chip to choose an eligible local Folder.
 Changing the Project or Folder retains the draft.
 Chat uses its own automatic Conversation Folder.
 
-Run `pnpm --filter @koed/desktop test:browser` for the maintained native browser journeys.
+Run `pnpm --filter @koed-labs/desktop test:browser` for the maintained native browser journeys.
 They use synthetic Memory and simulated AI Clients in disposable Electron profiles.
 
 ### Managed Conversation permissions
@@ -1748,14 +1748,14 @@ mode; source-checkout Desktop keeps the bare developer default and uses explicit
 external dependency configuration.
 
 ```bash
-pnpm --filter @koed/desktop start
+pnpm --filter @koed-labs/desktop start
 ```
 
 For local packaged-native smoke with Homebrew/Linuxbrew-provided assets, stage the native runtime first and pass it into packaging:
 
 ```bash
 pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force
-KOED_NATIVE_RUNTIME_SOURCE_DIR=/tmp/koed-native-runtime pnpm --filter @koed/desktop package:mac
+KOED_NATIVE_RUNTIME_SOURCE_DIR=/tmp/koed-native-runtime pnpm --filter @koed-labs/desktop package:mac
 ```
 
 The Homebrew staging helper copies Homebrew/Linuxbrew Postgres/pgvector and llama.cpp assets only. It no longer requires or packages an Embedding Service Python virtualenv, and it does not create release-quality redistributable native runtime assets.
@@ -1763,7 +1763,7 @@ The Homebrew staging helper copies Homebrew/Linuxbrew Postgres/pgvector and llam
 For renderer development only:
 
 ```bash
-pnpm --filter @koed/desktop dev
+pnpm --filter @koed-labs/desktop dev
 ```
 
 ## LCM Smoke Test

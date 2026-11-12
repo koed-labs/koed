@@ -1,17 +1,17 @@
 import {
   recallActivityOverviewInputSchema,
   recallActivityOverviewSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   recallActivityDetailInputSchema,
   recallActivityDetailSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance } from "fastify";
 import {
   recallActivityCursorSchema,
   recallActivityListInputSchema,
   recallActivityPageSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 
 export const registerRecallActivityRoutes = (

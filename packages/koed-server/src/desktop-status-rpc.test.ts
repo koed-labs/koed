@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isAiClientConnected,
   readAiClientConnections
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 const setup = vi.hoisted(() => ({
   home: "",
   verified: true,

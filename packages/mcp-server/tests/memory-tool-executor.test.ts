@@ -1,9 +1,9 @@
-import { personalFolderScopeId } from "@koed/shared";
+import { personalFolderScopeId } from "@koed-labs/shared";
 import {
   repositoryScopeId,
   snapshotPinnedPersonalSelection,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";

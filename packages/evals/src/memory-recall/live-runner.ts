@@ -11,7 +11,7 @@ import {
 
 const usage = [
   "Usage:",
-  "  pnpm --filter @koed/evals eval:memory-recall:live -- --database-url <postgres-url> [--tool-choice-runs 1] [--retrieval-runs 1] [--out report.json]",
+  "  pnpm --filter @koed-labs/evals eval:memory-recall:live -- --database-url <postgres-url> [--tool-choice-runs 1] [--retrieval-runs 1] [--out report.json]",
   "",
   "Runs one professional recall benchmark report with two sections:",
   "  1. KOE-99 tool-choice live benchmark against a fake Koed MCP server.",

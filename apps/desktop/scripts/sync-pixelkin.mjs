@@ -3,7 +3,7 @@
 // renderer. Until that repository is public, this copy is how Koed gets the
 // engine; vendor/SOURCE.json records the version and commit it came from.
 //
-//   pnpm --filter @koed/desktop pixelkin:sync ../pixelkin-lab
+//   pnpm --filter @koed-labs/desktop pixelkin:sync ../pixelkin-lab
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -17,7 +17,7 @@ const vendor = new URL("../src/renderer/v1/pixelkin/vendor/", import.meta.url);
 const [source, ...flags] = process.argv.slice(2);
 if (!source) {
   console.error(
-    "Usage: pnpm --filter @koed/desktop pixelkin:sync <pixelkin-lab checkout> [--allow-dirty]"
+    "Usage: pnpm --filter @koed-labs/desktop pixelkin:sync <pixelkin-lab checkout> [--allow-dirty]"
   );
   process.exit(1);
 }

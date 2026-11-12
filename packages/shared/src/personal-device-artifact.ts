@@ -111,6 +111,7 @@ export interface PdsPortableLcmNodeV1 {
   logicalNodeId: string;
   nodeKind: "leaf" | "rollup";
   orderedSourceIds: string[];
+  contextEventIds?: string[];
   summaryText: string;
   summaryTokenCount: string;
   structuredSummary: Record<string, unknown> | null;
@@ -362,6 +363,7 @@ export const pdsPortableMemoryEmbeddingWorkIdentity = (input: {
 export const pdsPortableLcmNodeId = (input: {
   nodeKind: "leaf" | "rollup";
   orderedSourceIds: string[];
+  contextEventIds?: string[];
   compatibilityContractHash: string;
   correctedRevision: string;
 }): string => sha256(canonicalizePdsJson(input));
@@ -693,6 +695,7 @@ const validateArtifactItem = (
       "logicalNodeId",
       "nodeKind",
       "orderedSourceIds",
+      ...(Object.hasOwn(item, "contextEventIds") ? ["contextEventIds"] : []),
       "summaryText",
       "summaryTokenCount",
       "structuredSummary",
@@ -721,6 +724,14 @@ const validateArtifactItem = (
       item.orderedSourceIds,
       "LCM ordered source IDs"
     ).map((id) => hashString(id, "LCM source ID")),
+    ...(Object.hasOwn(item, "contextEventIds")
+      ? {
+          contextEventIds: stringArray(
+            item.contextEventIds,
+            "LCM context event IDs"
+          ).map((id) => hashString(id, "LCM context event ID"))
+        }
+      : {}),
     summaryText: boundedString(
       item.summaryText,
       "LCM summary text",
@@ -744,6 +755,16 @@ const validateArtifactItem = (
   };
   const { logicalNodeId: _id, contentHash, ...content } = normalized;
   void _id;
+  if (
+    normalized.contextEventIds &&
+    (normalized.nodeKind !== "leaf" ||
+      normalized.contextEventIds.length !== 1 ||
+      normalized.contextEventIds.some((id) =>
+        normalized.orderedSourceIds.includes(id)
+      ))
+  ) {
+    throw new TypeError("PDS LCM context dependency is invalid");
+  }
   if (
     Date.parse(normalized.sourceSpanEnd) <
       Date.parse(normalized.sourceSpanStart) ||
@@ -856,6 +877,22 @@ export const validatePdsArtifactRecord = (
     pdsArtifactPayloadHash(payload) !== parsedManifest.payloadHash
   ) {
     throw new TypeError("PDS artifact content binding is invalid");
+  }
+  if (
+    parsedClass === "lcm_node/v1" &&
+    (payload.items as PdsPortableLcmNodeV1[]).some(
+      (item) =>
+        item.contextEventIds &&
+        pdsPortableLcmNodeId({
+          nodeKind: item.nodeKind,
+          orderedSourceIds: item.orderedSourceIds,
+          contextEventIds: item.contextEventIds,
+          compatibilityContractHash: parsedManifest.compatibilityContractHash,
+          correctedRevision: item.correctedRevision
+        }) !== item.logicalNodeId
+    )
+  ) {
+    throw new TypeError("PDS LCM context identity is invalid");
   }
   if (
     parsedClass === "memory_embedding/v1" &&

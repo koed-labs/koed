@@ -3,7 +3,7 @@ import {
   graphEventsQuerySchema,
   graphEventDetailQuerySchema
 } from "./graph-schemas.js";
-import type { PersonalSelectionSnapshot } from "@koed/shared";
+import type { PersonalSelectionSnapshot } from "@koed-labs/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
@@ -19,7 +19,7 @@ import {
   personalProjectAddBackSchema,
   personalProjectAddSessionSchema,
   personalProjectExplainSessionsSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import { listSelectedPersonalThreads } from "./personal-selection-inventory.js";
 

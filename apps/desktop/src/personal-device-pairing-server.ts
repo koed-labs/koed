@@ -14,7 +14,7 @@ import {
   canonicalizePdsJson,
   pdsEd25519PublicKey,
   PDS_PROTOCOL
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { isPersonalDevicePairingUuid } from "./personal-device-pairing-link.js";
 import {
   listPersonalDevicePairingNetworkAddresses,

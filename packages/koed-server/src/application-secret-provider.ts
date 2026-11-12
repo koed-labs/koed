@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   createPdsApplicationSecretStore,
   type PdsApplicationSecretStore
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { resolveKoedHome } from "./paths.js";
 
 export type PdsSecretProviderOperation = "get" | "put" | "delete";

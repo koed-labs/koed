@@ -6,9 +6,9 @@ import {
   DialogDescription,
   ScrollArea,
   Skeleton
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { MessageSquare, Layers, Clock3, Zap } from "lucide-react";
-import type { RecallActivityOverview } from "@koed/shared/personal-desktop";
+import type { RecallActivityOverview } from "@koed-labs/shared/personal-desktop";
 import {
   recallDurationLabel,
   recallTokenLabel

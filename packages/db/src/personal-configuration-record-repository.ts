@@ -10,7 +10,7 @@ import {
   personalConfigurationRecordHash,
   personalOwnerIdSchema,
   type PersonalConfigurationRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   lockPersonalConfigurationGroup,
   verifyCurrentPersonalConfigurationAuthor

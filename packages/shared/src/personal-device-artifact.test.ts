@@ -217,71 +217,125 @@ describe("portable Personal artifacts", () => {
     }
   );
 
-  it("binds a completed LCM node to ordered logical sources and summary contract", () => {
-    const keys = generateKeyPairSync("ed25519");
-    const contract: PdsLcmNodeContractV1 = {
-      artifactClass: "lcm_node/v1",
-      nodeKind: "leaf",
-      lcmAlgorithmVersion: "depth0-source-items-v1",
-      summaryPromptVersion: "lcm-summary-leaf-v1",
-      summaryModel: "gpt-5.4-mini",
-      structuredOutputSchema: "lcm-semantic-summary-v1",
-      sourceSelectionPolicy: "depth0-source-items-v1"
-    };
-    const content = {
-      nodeKind: "leaf" as const,
-      orderedSourceIds: [hash(20), hash(21)],
-      summaryText: "A concise semantic summary.",
-      summaryTokenCount: "6",
-      structuredSummary: {
-        schema_version: "lcm-semantic-summary-v1",
-        title: "Summary",
-        summary_text: "A concise semantic summary.",
-        lexical_anchors: ["semantic summary"]
-      },
-      correctedRevision: "0",
-      sourceSpanStart: "2026-07-29T00:00:00.000Z",
-      sourceSpanEnd: "2026-07-29T00:01:00.000Z"
-    };
-    const contentHash = pdsPortableLcmNodeContentHash(content);
-    const logicalNodeId = pdsPortableLcmNodeId({
-      nodeKind: "leaf",
-      orderedSourceIds: content.orderedSourceIds,
-      compatibilityContractHash: pdsArtifactCompatibilityHash(contract),
-      correctedRevision: "0"
-    });
-    expect(
-      pdsPortableLcmNodeId({
+  it.each([undefined, [hash(23)]])(
+    "binds a completed LCM node and its context dependencies (%j)",
+    (contextEventIds) => {
+      const keys = generateKeyPairSync("ed25519");
+      const contract: PdsLcmNodeContractV1 = {
+        artifactClass: "lcm_node/v1",
+        nodeKind: "leaf",
+        lcmAlgorithmVersion: "depth0-source-items-v1",
+        summaryPromptVersion: "lcm-summary-leaf-v1",
+        summaryModel: "gpt-5.4-mini",
+        structuredOutputSchema: "lcm-semantic-summary-v1",
+        sourceSelectionPolicy: "depth0-source-items-v1"
+      };
+      const content = {
+        nodeKind: "leaf" as const,
+        orderedSourceIds: [hash(20), hash(21)],
+        ...(contextEventIds ? { contextEventIds } : {}),
+        summaryText: "A concise semantic summary.",
+        summaryTokenCount: "6",
+        structuredSummary: {
+          schema_version: "lcm-semantic-summary-v1",
+          title: "Summary",
+          summary_text: "A concise semantic summary.",
+          lexical_anchors: ["semantic summary"]
+        },
+        correctedRevision: "0",
+        sourceSpanStart: "2026-07-29T00:00:00.000Z",
+        sourceSpanEnd: "2026-07-29T00:01:00.000Z"
+      };
+      const contentHash = pdsPortableLcmNodeContentHash(content);
+      const logicalNodeId = pdsPortableLcmNodeId({
         nodeKind: "leaf",
         orderedSourceIds: content.orderedSourceIds,
+        ...(contextEventIds ? { contextEventIds } : {}),
         compatibilityContractHash: pdsArtifactCompatibilityHash(contract),
         correctedRevision: "0"
-      })
-    ).toBe(logicalNodeId);
-    expect(
-      pdsPortableLcmNodeContentHash({
-        ...content,
-        summaryText: "A different valid output for the same claimed work."
-      })
-    ).not.toBe(contentHash);
-    const record = createPdsArtifactRecord({
-      groupId: "group-1",
-      workIdentity: hash(22),
-      sourcePackageId: hash(4),
-      sourceManifestHash: hash(5),
-      sourceFingerprint: hash(1),
-      sourceClosureHash: hash(2),
-      producerDeviceId: "device-1",
-      producerSigningKeyId: "signing-key-1",
-      claimGeneration: "1",
-      compatibilityContract: contract,
-      payload: {
-        artifactClass: "lcm_node/v1",
-        items: [{ logicalNodeId, ...content, contentHash }]
-      },
-      createdAt: "2026-07-29T00:00:00.000Z",
-      producerSigningPrivateKey: keys.privateKey
-    });
-    expect(verifyPdsArtifactRecord(record, keys.publicKey)).toEqual(record);
-  });
+      });
+      expect(
+        pdsPortableLcmNodeId({
+          nodeKind: "leaf",
+          orderedSourceIds: content.orderedSourceIds,
+          ...(contextEventIds ? { contextEventIds } : {}),
+          compatibilityContractHash: pdsArtifactCompatibilityHash(contract),
+          correctedRevision: "0"
+        })
+      ).toBe(logicalNodeId);
+      if (contextEventIds) {
+        expect(
+          pdsPortableLcmNodeId({
+            nodeKind: "leaf",
+            orderedSourceIds: content.orderedSourceIds,
+            contextEventIds: [hash(24)],
+            compatibilityContractHash: pdsArtifactCompatibilityHash(contract),
+            correctedRevision: "0"
+          })
+        ).not.toBe(logicalNodeId);
+        expect(
+          pdsPortableLcmNodeContentHash({
+            ...content,
+            contextEventIds: [hash(24)]
+          })
+        ).not.toBe(contentHash);
+      }
+      expect(
+        pdsPortableLcmNodeContentHash({
+          ...content,
+          summaryText: "A different valid output for the same claimed work."
+        })
+      ).not.toBe(contentHash);
+      const record = createPdsArtifactRecord({
+        groupId: "group-1",
+        workIdentity: hash(22),
+        sourcePackageId: hash(4),
+        sourceManifestHash: hash(5),
+        sourceFingerprint: hash(1),
+        sourceClosureHash: hash(2),
+        producerDeviceId: "device-1",
+        producerSigningKeyId: "signing-key-1",
+        claimGeneration: "1",
+        compatibilityContract: contract,
+        payload: {
+          artifactClass: "lcm_node/v1",
+          items: [{ logicalNodeId, ...content, contentHash }]
+        },
+        createdAt: "2026-07-29T00:00:00.000Z",
+        producerSigningPrivateKey: keys.privateKey
+      });
+      expect(verifyPdsArtifactRecord(record, keys.publicKey)).toEqual(record);
+      if (contextEventIds) {
+        for (const invalidContext of [[hash(20)], [hash(23), hash(24)], []]) {
+          expect(() =>
+            createPdsArtifactRecord({
+              groupId: "group-1",
+              workIdentity: hash(22),
+              sourcePackageId: hash(4),
+              sourceManifestHash: hash(5),
+              sourceFingerprint: hash(1),
+              sourceClosureHash: hash(2),
+              producerDeviceId: "device-1",
+              producerSigningKeyId: "signing-key-1",
+              claimGeneration: "1",
+              compatibilityContract: contract,
+              payload: {
+                artifactClass: "lcm_node/v1",
+                items: [
+                  {
+                    logicalNodeId,
+                    ...content,
+                    contextEventIds: invalidContext,
+                    contentHash
+                  }
+                ]
+              },
+              createdAt: "2026-07-29T00:00:00.000Z",
+              producerSigningPrivateKey: keys.privateKey
+            })
+          ).toThrow();
+        }
+      }
+    }
+  );
 });

@@ -2,12 +2,12 @@ import type {
   EmbeddableSourceRecord,
   EmbeddableSourceType,
   MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   fetchBoundedJsonObject,
   teamSemanticEmbeddingGeneration,
   type KoedWorkClass
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { Agent } from "undici";
 import type { WorkerEnvConfig } from "./env-config.js";
 

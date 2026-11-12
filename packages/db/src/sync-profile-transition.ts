@@ -4,7 +4,7 @@ import {
   syncProfileTransitionReceiptSchema,
   type SyncProfileTransitionRequest,
   type SyncProfileTransitionReceipt
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { CrossIdentitySyncRelationshipRecord } from "./cross-identity-sync-repository.js";
 
 function conflict(): never {

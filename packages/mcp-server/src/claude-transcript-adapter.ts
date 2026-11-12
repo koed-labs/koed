@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import { canonicalConversationItemKey } from "@koed/shared";
+import { canonicalConversationItemKey } from "@koed-labs/shared";
 
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 import type { ClaudeTranscriptWatcherSignal } from "./claude-transcript-watcher-signal.js";

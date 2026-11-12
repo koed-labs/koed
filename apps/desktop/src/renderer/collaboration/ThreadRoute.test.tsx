@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest";
 import type {
   CollaborationMessagePage,
   CollaborationThread
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 
 vi.mock("@legendapp/list/react", async () => {

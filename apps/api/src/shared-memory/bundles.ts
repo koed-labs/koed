@@ -1,4 +1,4 @@
-import type { ActorContext, MemorySourceRepository } from "@koed/db";
+import type { ActorContext, MemorySourceRepository } from "@koed-labs/db";
 
 type BundleRepository = Pick<
   MemorySourceRepository,

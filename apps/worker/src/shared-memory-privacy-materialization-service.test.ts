@@ -6,7 +6,7 @@ import {
   type SharedMemoryDecryptedSemanticTarget,
   type SharedMemoryPendingSemanticTarget,
   type SharedMemoryRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
@@ -22,7 +22,7 @@ import {
   type PrivacyClassificationResponse,
   type PrivacyLabel,
   type PrivacyLabelPolicy
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { createSharedMemoryPrivacyMaterializationService } from "./shared-memory-privacy-materialization-service.js";

@@ -1,10 +1,13 @@
-import { repositoryScopeId } from "@koed/shared/repository-recall";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
 import {
   deduplicatePersonalInventoryConversations,
   personalInventoryReference
-} from "@koed/shared/personal-desktop";
-import type { RepositoryAssignment, RepositoryIdentity } from "@koed/shared";
-import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
+import type {
+  RepositoryAssignment,
+  RepositoryIdentity
+} from "@koed-labs/shared";
+import type { PersonalDesktopProjectThread } from "@koed-labs/shared/personal-desktop";
 
 export type DesktopThreadGroup = {
   id: string;
@@ -36,11 +39,11 @@ export type DesktopThreadGroup = {
 
 export type DesktopProjectGroup = {
   ownerUserId?: string;
-  namedProject?: import("@koed/shared").PersonalNamedProject;
-  projectReference?: import("@koed/shared").PersonalProjectReference;
-  inclusionRules?: import("@koed/shared").PersonalProjectRule[];
-  directInclusions?: import("@koed/shared").PersonalDirectMembership[];
-  folder?: import("@koed/shared").PersonalFolderContext;
+  namedProject?: import("@koed-labs/shared").PersonalNamedProject;
+  projectReference?: import("@koed-labs/shared").PersonalProjectReference;
+  inclusionRules?: import("@koed-labs/shared").PersonalProjectRule[];
+  directInclusions?: import("@koed-labs/shared").PersonalDirectMembership[];
+  folder?: import("@koed-labs/shared").PersonalFolderContext;
   id: string;
   name: string;
   repository?: RepositoryIdentity;

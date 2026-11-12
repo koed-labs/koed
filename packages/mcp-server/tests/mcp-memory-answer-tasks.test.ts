@@ -5,7 +5,7 @@ import {
   serveStdio,
   type StdioServerHandle
 } from "@modelcontextprotocol/server/stdio";
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createKoedMcpServer,

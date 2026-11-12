@@ -19,7 +19,7 @@ import {
   removeExecutionCheckpointRefs,
   restoreExecutionCheckpoint
 } from "./execution-checkpoint.js";
-import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
+import { createGitExecutionCheckoutDriver } from "@koed-labs/shared/execution-checkout";
 
 const roots: string[] = [];
 const executionId = "b900056f-3845-4cab-b555-44b8fc1c9a16";

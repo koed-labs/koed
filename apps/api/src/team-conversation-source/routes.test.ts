@@ -11,7 +11,7 @@ import type {
   PrivacySanitizedSourceChunkRecord,
   TeamConversationSourceGrantRecord,
   UserRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";

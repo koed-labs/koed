@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COLLABORATION_HISTORY_PAGE_MAX_ITEMS } from "@koed/shared";
+import { COLLABORATION_HISTORY_PAGE_MAX_ITEMS } from "@koed-labs/shared";
 
 import {
   createCollaborationChannelSchema,

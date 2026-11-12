@@ -379,16 +379,16 @@ test("actual Linux staging preserves frozen manifest bytes and guard rejects tam
   );
   const required = [
     "api/dist/index.js",
-    "node_modules/@koed/db/dist/index.js",
-    "node_modules/@koed/db/drizzle/meta/_journal.json",
+    "node_modules/@koed-labs/db/dist/index.js",
+    "node_modules/@koed-labs/db/drizzle/meta/_journal.json",
     "worker/dist/index.js",
     "embedding-service/dist/index.js",
     "mcp-server/dist/cli.js",
     "mcp-server/dist/capture-hook.js",
     "mcp-server/dist/codex-memory-hook.js",
     "mcp-server/dist/prompts/codex-global-agent-guidance.md",
-    "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
-    "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md"
+    "node_modules/@koed-labs/mcp-server/dist/prompts/mcp-server-instructions.md",
+    "node_modules/@koed-labs/mcp-server/dist/prompts/codex-global-agent-guidance.md"
   ];
   const base = join(root, "base");
   for (const path of required) {

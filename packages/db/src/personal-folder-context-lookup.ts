@@ -3,7 +3,7 @@ import {
   personalFolderContextSchema,
   type PersonalFolderReference,
   type PersonalFolderContext
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 const assertFolderOwner = (
   actor: ActorContext,

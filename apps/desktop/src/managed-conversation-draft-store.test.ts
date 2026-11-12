@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createPdsApplicationSecretStore } from "@koed/shared";
+import { createPdsApplicationSecretStore } from "@koed-labs/shared";
 import { safeStorage } from "electron";
 
 vi.mock("electron", () => ({

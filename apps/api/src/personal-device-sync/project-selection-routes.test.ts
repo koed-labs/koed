@@ -5,7 +5,7 @@ import { ZodError } from "zod";
 import {
   signPdsProjectSelection,
   PDS_PROJECT_SELECTION_PROTOCOL
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { registerPersonalDeviceSyncRoutes } from "./routes.js";
 import type { ApiRouteContext } from "../server/context.js";
 

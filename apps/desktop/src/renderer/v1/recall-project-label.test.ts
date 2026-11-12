@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { RepositoryIdentity } from "@koed/shared";
-import { repositoryScopeId } from "@koed/shared/repository-recall";
+import type { RepositoryIdentity } from "@koed-labs/shared";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import { recallProjectLabel } from "./recall-project-label.js";
 

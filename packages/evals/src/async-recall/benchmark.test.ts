@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { memoryAnswerTaskSchema } from "@koed/shared";
+import { memoryAnswerTaskSchema } from "@koed-labs/shared";
 import { scoreRecallTrace, type RecallEvent } from "./benchmark.js";
 import { asyncRecallCases } from "./cases.js";
 import { RecallFixture } from "./fixture.js";

@@ -11,7 +11,7 @@ import {
 import {
   createTeamRepositorySnapshot,
   teamRepositorySnapshotSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import pg from "pg";
 import {
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
@@ -34,10 +34,11 @@ import {
   type EncryptedJsonPackage,
   type EnvelopeEncryptionProvider,
   type RecipientKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { upsertEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import { safeConversationMetadataForEncryptedStorage } from "./conversation-item-repository.js";
 import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
+import { semanticMemoryEventEligibleSql } from "./approval-activity-sql.js";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import {
@@ -1127,6 +1128,47 @@ export const createCrossIdentitySyncRepository = (
         order by parent_memory_node_id,child_order`,
       [nodeIds]
     );
+    const contextResult = await pool.query<Row>(
+      `select dependency.memory_node_id,dependency.memory_event_id,me.session_id,
+              me.owner_user_id,me.visibility,
+              (me.invalidated_at is null and me.personal_deleted_at is null
+                and me.include_in_lcm=true and pds_session_recall_ready(me.session_id)
+                and ${semanticMemoryEventEligibleSql("me")}) as eligible,
+              latest_change.operation as sync_operation,
+              latest_change.memory_event_id as sync_memory_event_id
+         from memory_node_context_events dependency
+         join memory_events me on me.id=dependency.memory_event_id
+         left join lateral (
+           select change.operation,change.memory_event_id
+             from sync_semantic_changes change
+            where change.session_id=$2 and change.origin_event_id=me.id
+            order by change.cursor desc limit 1
+         ) latest_change on true
+        where dependency.memory_node_id=any($1::uuid[])`,
+      [nodeIds, input.sessionId]
+    );
+    const contextIdsByNode = new Map<string, string[]>();
+    const syncEligibleContextIds = new Set<string>();
+    for (const row of contextResult.rows) {
+      if (
+        String(row.session_id) !== input.sessionId ||
+        String(row.owner_user_id) !== input.actor.userId ||
+        row.visibility !== "personal"
+      ) {
+        throw new SyncStateConflictError(
+          "LCM summary context crosses its Captured Session boundary"
+        );
+      }
+      const nodeId = String(row.memory_node_id);
+      contextIdsByNode.set(nodeId, [String(row.memory_event_id)]);
+      if (
+        row.eligible === true &&
+        row.sync_operation === "upsert" &&
+        optionalString(row.sync_memory_event_id) === String(row.memory_event_id)
+      ) {
+        syncEligibleContextIds.add(String(row.memory_event_id));
+      }
+    }
     const sourceIdsByNode = new Map<string, string[]>();
     const syncEligibleSourceIds = new Set<string>();
     for (const row of sourceResult.rows) {
@@ -1168,6 +1210,9 @@ export const createCrossIdentitySyncRepository = (
       if (
         sourceIds.length > 0 &&
         sourceIds.every((sourceId) => syncEligibleSourceIds.has(sourceId)) &&
+        (contextIdsByNode.get(nodeId) ?? []).every((id) =>
+          syncEligibleContextIds.has(id)
+        ) &&
         (row.kind !== "rollup" ||
           (childIds.length > 0 &&
             childIds.every((childId) => syncEligibleNodeIds.has(childId))))
@@ -1278,6 +1323,9 @@ export const createCrossIdentitySyncRepository = (
         summaryStructuredJson,
         summaryStructuredSchemaVersion,
         sourceOriginEventIds,
+        ...(contextIdsByNode.has(originNodeId)
+          ? { contextOriginEventIds: contextIdsByNode.get(originNodeId)! }
+          : {}),
         childOriginNodeIds,
         sourceHash,
         sourceEventCount,
@@ -4260,19 +4308,27 @@ export const createCrossIdentitySyncRepository = (
         if (summarySnapshotIncluded) {
           const originEventIds = [
             ...new Set(
-              input.package.summaryNodes.flatMap(
-                (node) => node.sourceOriginEventIds
-              )
+              input.package.summaryNodes.flatMap((node) => [
+                ...node.sourceOriginEventIds,
+                ...(node.contextOriginEventIds ?? [])
+              ])
             )
           ];
           const eventMappingResult = await client.query<Row>(
-            `select origin_event_id,local_memory_event_id
-               from sync_event_mappings
-              where sync_relationship_id=$1
-                and active=true
-                and origin_event_id=any($2::uuid[])
-                and local_memory_event_id is not null`,
-            [relationship.id, originEventIds]
+            `select mapping.origin_event_id,mapping.local_memory_event_id
+               from sync_event_mappings mapping
+               join memory_events event on event.id=mapping.local_memory_event_id
+              where mapping.sync_relationship_id=$1
+                and mapping.active=true
+                and mapping.origin_event_id=any($2::uuid[])
+                and event.session_id=$3 and event.owner_user_id=$4
+                and event.invalidated_at is null and event.personal_deleted_at is null`,
+            [
+              relationship.id,
+              originEventIds,
+              sessionId,
+              relationship.localUserId
+            ]
           );
           const localEventIdByOrigin = new Map(
             eventMappingResult.rows.map((row) => [
@@ -4518,6 +4574,24 @@ export const createCrossIdentitySyncRepository = (
           }
           for (const node of input.package.summaryNodes) {
             const localNodeId = localNodeIdByOrigin.get(node.originNodeId)!;
+            for (const contextId of node.contextOriginEventIds ?? []) {
+              const contextEventId = localEventIdByOrigin.get(contextId)!;
+              const eligible = await client.query(
+                `select id from memory_events me where id=$1 and include_in_lcm=true
+                   and ${semanticMemoryEventEligibleSql("me")}`,
+                [contextEventId]
+              );
+              if (!eligible.rowCount) {
+                throw new SyncStateConflictError(
+                  "LCM summary context is ineligible"
+                );
+              }
+              await client.query(
+                `insert into memory_node_context_events (memory_node_id,memory_event_id)
+                 values ($1,$2) on conflict do nothing`,
+                [localNodeId, contextEventId]
+              );
+            }
             for (
               let sourceOrder = 0;
               sourceOrder < node.sourceOriginEventIds.length;

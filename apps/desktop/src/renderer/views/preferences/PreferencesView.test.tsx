@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { CollaborationSnapshot } from "@koed/shared/collaboration";
+import type { CollaborationSnapshot } from "@koed-labs/shared/collaboration";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

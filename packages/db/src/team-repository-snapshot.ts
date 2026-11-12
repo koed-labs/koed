@@ -6,7 +6,7 @@ import {
   unresolvedTeamRepositorySnapshot,
   type EnvelopeEncryptionProvider,
   type TeamRepositorySnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   mapRepositoryAssignment,
   type RepositoryAssignmentRow

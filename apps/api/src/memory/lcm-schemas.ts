@@ -1,7 +1,7 @@
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   structuredLcmSummarySchema
-} from "@koed/core";
+} from "@koed-labs/core";
 import { z } from "zod";
 
 const compatibilityHashSchema = z

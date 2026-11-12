@@ -8,15 +8,15 @@ import type {
   CreateCollaborationThreadInput,
   MemorySourceRepository,
   PersonalNoteRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   CollaborationIdempotencyConflictError,
   CollaborationVersionConflictError
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";

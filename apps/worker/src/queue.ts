@@ -4,14 +4,14 @@ import {
   type DbPool,
   type LocalWorkQueueJobRecord,
   type LocalWorkQueueRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   defaultKoedQueuePriority,
   workerQueueNames,
   type KoedJobQueue,
   type KoedQueueBackend,
   type WorkerQueueName
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { EmbeddingQueueJobData } from "./job-workflows.js";
 
 interface WorkerQueueLogger {

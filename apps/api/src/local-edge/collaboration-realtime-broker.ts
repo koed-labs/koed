@@ -3,8 +3,8 @@ import type {
   CollaborationRepository,
   CollaborationSubscriptionRecord,
   DbPool
-} from "@koed/db";
-import { collaborationSubscriptionPrincipalHash } from "@koed/db";
+} from "@koed-labs/db";
+import { collaborationSubscriptionPrincipalHash } from "@koed-labs/db";
 import {
   calculateCollaborationReconnectDelay,
   COLLABORATION_CONTRACT_VERSION,
@@ -24,8 +24,8 @@ import {
   type CollaborationRendererEvent,
   type CollaborationSafeError,
   type LocalEdgeClientCredentialAuthorization
-} from "@koed/shared";
-import * as shared from "@koed/shared";
+} from "@koed-labs/shared";
+import * as shared from "@koed-labs/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -554,7 +554,7 @@ const hmacHex = (secret: string, domain: string, values: string[]): string => {
   return digest.digest("hex");
 };
 
-export { calculateCollaborationReconnectDelay } from "@koed/shared";
+export { calculateCollaborationReconnectDelay } from "@koed-labs/shared";
 
 const defaultSleep = (milliseconds: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {

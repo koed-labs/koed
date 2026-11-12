@@ -19,7 +19,7 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter
-} from "@koed/ui";
+} from "@koed-labs/ui";
 
 export const sections = {
   general: {

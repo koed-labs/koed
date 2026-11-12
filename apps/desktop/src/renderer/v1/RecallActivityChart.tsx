@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
-import { Card, CardHeader, CardTitle, Skeleton } from "@koed/ui";
-import type { RecallActivityOverview } from "@koed/shared/personal-desktop";
+import { Card, CardHeader, CardTitle, Skeleton } from "@koed-labs/ui";
+import type { RecallActivityOverview } from "@koed-labs/shared/personal-desktop";
 import { recallChartModel } from "./recall-activity-model.js";
 
 export function RecallActivityChart({

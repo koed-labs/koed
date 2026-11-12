@@ -6,7 +6,7 @@ import {
   canonicalizePdsJson,
   pdsRelayBodyDigest,
   pdsRelayRequestSigningBytes
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import { registerPersonalDeviceSyncRelayRoutes } from "./relay-routes.js";
 

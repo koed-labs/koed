@@ -3,7 +3,7 @@ import type {
   CodexManagedConversationSession,
   PiManagedConversationSession,
   ManagedConversationCommandSession
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 
 export type ManagedConversationProvider = "codex" | "claude" | "pi";
 

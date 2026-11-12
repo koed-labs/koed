@@ -1,4 +1,4 @@
-import { readAvailablePersonalFolders } from "@koed/shared/personal-local-folders";
+import { readAvailablePersonalFolders } from "@koed-labs/shared/personal-local-folders";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { mkdir, readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -6,8 +6,8 @@ import type {
   DeviceCredentialAuthContext,
   ManagedConversationRuntimeBindingRecord,
   MemorySourceRepository
-} from "@koed/db";
-import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
+} from "@koed-labs/db";
+import { defaultFreshAuthenticationMaxAgeMs } from "@koed-labs/db";
 import { z } from "zod";
 import {
   aiClientCapabilityIds,
@@ -31,15 +31,15 @@ import {
   upstreamApiUrl,
   upstreamBackendById,
   verifyDesktopLocalCredentialAuthorization
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import {
   createCommandDiscoveryAdapter,
   type ManagedConversationSlashCommand
-} from "@koed/worker/command-discovery-adapter";
-import { listCodexDraftCommands } from "@koed/worker/command-discovery-adapter-codex";
-import { listClaudeDraftCommands } from "@koed/worker/command-discovery-adapter-claude";
-import { createPiCommandDiscoveryAdapter } from "@koed/worker/command-discovery-adapter-pi";
+} from "@koed-labs/worker/command-discovery-adapter";
+import { listCodexDraftCommands } from "@koed-labs/worker/command-discovery-adapter-codex";
+import { listClaudeDraftCommands } from "@koed-labs/worker/command-discovery-adapter-claude";
+import { createPiCommandDiscoveryAdapter } from "@koed-labs/worker/command-discovery-adapter-pi";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   managedConversationTransferRequestHash,

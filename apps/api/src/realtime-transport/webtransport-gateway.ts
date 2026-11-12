@@ -8,12 +8,12 @@ import {
   webTransportInteractiveAttachSchema,
   webTransportSessionAdmissionSchema,
   type WebTransportInteractiveAttach
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   encodeDurableRealtimeStreamFrame,
   readFirstBoundedDurableRealtimeFrame
-} from "@koed/shared/durable-realtime";
-import type { RealtimeTransportAdmissionRecord } from "@koed/db";
+} from "@koed-labs/shared/durable-realtime";
+import type { RealtimeTransportAdmissionRecord } from "@koed-labs/db";
 import type { CollaborationRealtimeTransportPrincipal } from "../collaboration/index.js";
 import type { RealtimeTransportAdmissionService } from "./service.js";
 import type {

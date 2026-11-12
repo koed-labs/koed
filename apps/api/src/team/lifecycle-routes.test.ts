@@ -5,11 +5,11 @@ import type {
   TeamRecord,
   TeamWorkspaceRecord,
   UserRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";

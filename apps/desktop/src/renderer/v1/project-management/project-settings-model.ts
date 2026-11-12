@@ -1,12 +1,12 @@
 import type {
   PersonalProjectBatchInput,
   PersonalProjectMembershipExplanation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   PERSONAL_PROJECT_INSPECTION_BATCH_SIZE,
   personalRecallTargetsEqual,
   type PersonalDesktopApi
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import {
   projectTransferInclusions,

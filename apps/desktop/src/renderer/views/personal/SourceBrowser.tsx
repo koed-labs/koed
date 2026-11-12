@@ -1,4 +1,4 @@
-import { personalFolderScopeId } from "@koed/shared/personal-desktop";
+import { personalFolderScopeId } from "@koed-labs/shared/personal-desktop";
 import {
   filterProjectSourceConversations,
   systemConversationViews,

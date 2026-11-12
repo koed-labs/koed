@@ -9,7 +9,7 @@ import type {
   CollaborationMessagePage,
   CollaborationSnapshot,
   CollaborationThread
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import {
   Check,
   CheckCheck,

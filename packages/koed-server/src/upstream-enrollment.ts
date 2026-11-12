@@ -12,11 +12,11 @@ import {
   upstreamCredentialReferenceFor,
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createSecureUpstreamFetch,
   registeredPrivateNetworkPolicy
-} from "@koed/shared/secure-upstream-fetch";
+} from "@koed-labs/shared/secure-upstream-fetch";
 import type { KoedServerPaths } from "./paths.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import {

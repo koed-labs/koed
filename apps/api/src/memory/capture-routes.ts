@@ -1,5 +1,5 @@
-import { capturePersonalEvent } from "@koed/core";
-import { repositoryScopeId } from "@koed/shared";
+import { capturePersonalEvent } from "@koed-labs/core";
+import { repositoryScopeId } from "@koed-labs/shared";
 import type { FastifyInstance } from "fastify";
 import { publicUser } from "../auth/session.js";
 import type { ApiRouteContext } from "../server/context.js";

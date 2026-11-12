@@ -1,4 +1,4 @@
-import { parseCanonicalPdsJson } from "@koed/shared";
+import { parseCanonicalPdsJson } from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 import {
   pdsCanonicalRelayRecipients,

@@ -1,5 +1,5 @@
-import type { RepositoryIdentity } from "@koed/shared";
-import { repositoryScopeId } from "@koed/shared/repository-recall";
+import type { RepositoryIdentity } from "@koed-labs/shared";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
 import { projectConversationFolders } from "./project-conversation-folders.js";
 import {
   repoLabelFromRemoteDisplay,

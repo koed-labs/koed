@@ -2,7 +2,7 @@ import type {
   RecallActivityListInput,
   RecallActivityOverview,
   RecallActivityOverviewInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 
 // Workspace deletion clears the FK, but keeps Team authority. Both exclusions

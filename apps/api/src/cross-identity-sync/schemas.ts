@@ -1,12 +1,12 @@
 import { z } from "zod";
-import { teamRepositorySnapshotSchema } from "@koed/shared";
+import { teamRepositorySnapshotSchema } from "@koed-labs/shared";
 import {
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CHUNKS,
   CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES,
   capturedSessionSyncUploadPackageManifestSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/i);
 const uuidSchema = z.uuid();

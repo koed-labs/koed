@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import {
   createPdsApplicationSecretStore,
   type PdsApplicationSecretStore
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export interface PdsDesktopSecretStore {
   readonly providerKind?: "application_managed" | "operator_managed";

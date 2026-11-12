@@ -8,7 +8,7 @@ import {
   generateConversationSourceReplicationOriginKeyPair,
   readCollaborationActionGrantCustodyCommitmentHash,
   type LocalEdgeUpstreamBackend
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";

@@ -7,7 +7,7 @@ import {
   createMemorySourceRepository,
   createRemoteMcpOAuthRepository,
   runDbMigrations
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   CLIENT_CAPABILITIES_META_KEY,
   CLIENT_INFO_META_KEY,

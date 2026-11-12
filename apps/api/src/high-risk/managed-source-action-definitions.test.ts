@@ -4,7 +4,7 @@ import {
   calculateConversationSourceDownloadScopeHash,
   calculateConversationSourceDiscoveryRequestHash,
   calculateConversationSourceDiscoveryScopeHash
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { admitHighRiskActionGrant } from "./action-definitions.js";

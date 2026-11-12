@@ -3,7 +3,7 @@ import path from "node:path";
 import {
   readHistoricalIngestionProgressRecord,
   type HistoricalIngestionProgressRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const STATE_VERSION = 1;
 

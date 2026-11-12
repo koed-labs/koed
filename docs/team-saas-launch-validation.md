@@ -189,7 +189,7 @@ still removes an automatically provisioned test database.
 
 ## Desktop And Manual Gates
 
-`pnpm --filter @koed/desktop test:browser` exercises the built Electron
+`pnpm --filter @koed-labs/desktop test:browser` exercises the built Electron
 collaboration surface, including Team and Workspace navigation, Shared Memory,
 companion discussion, invitations, realtime update application, reconnect, and
 revocation state clearing. It is local UI evidence; it does not replace a

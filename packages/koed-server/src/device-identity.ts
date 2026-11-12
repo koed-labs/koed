@@ -20,7 +20,7 @@ import {
   type DeviceIdentityInspection,
   type DeviceIdentityState,
   type HostProofStore
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { KoedServerPaths } from "./paths.js";
 
 const lockStaleMs = 30_000;

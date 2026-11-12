@@ -152,7 +152,7 @@ test("automated launch commands select only their intended test files", () => {
 
   assert.deepEqual(dbCommand?.args.slice(0, 5), [
     "--filter",
-    "@koed/db",
+    "@koed-labs/db",
     "exec",
     "vitest",
     "run"
@@ -163,7 +163,7 @@ test("automated launch commands select only their intended test files", () => {
 
   assert.deepEqual(apiCommand?.args.slice(0, 5), [
     "--filter",
-    "@koed/api",
+    "@koed-labs/api",
     "exec",
     "vitest",
     "run"
@@ -187,7 +187,7 @@ test("automated launch commands select only their intended test files", () => {
   assert.ok(workflowPerformanceCommand?.args.includes("--testNamePattern"));
   assert.deepEqual(desktopCommand?.args, [
     "--filter",
-    "@koed/desktop",
+    "@koed-labs/desktop",
     "test:browser"
   ]);
 });

@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { Badge, Button } from "@koed/ui";
+import { Badge, Button } from "@koed-labs/ui";
 import { Folder, GitFork } from "lucide-react";
-import type { PersonalSourceContextState } from "@koed/shared";
+import type { PersonalSourceContextState } from "@koed-labs/shared";
 import {
   personalInventoryConversationKey,
   type PersonalDesktopApi,
   type PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import { effective } from "../../views/personal/SourceContextCompare.js";
 import { sourceLabel } from "./source-label.js";

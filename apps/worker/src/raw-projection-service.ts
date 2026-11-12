@@ -1,10 +1,13 @@
-import type { Visibility } from "@koed/core";
-import type { EmbeddableSourceType, MemorySourceRepository } from "@koed/db";
+import type { Visibility } from "@koed-labs/core";
+import type {
+  EmbeddableSourceType,
+  MemorySourceRepository
+} from "@koed-labs/db";
 import {
   lcmCompactQueueName,
   memoryEmbedQueueName,
   type KoedWorkClass
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { Logger } from "pino";
 import {
   decideHistoricalAdmission,

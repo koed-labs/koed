@@ -6,7 +6,7 @@ import {
   repositoryIdentitySchema,
   type RepositoryAssignment,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type RepositoryAssignmentRow = {
   repository_assignment_state: "recorded" | "historical_unresolved";

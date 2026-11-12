@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Input } from "@koed/ui";
+import { Button, Input } from "@koed-labs/ui";
 import { Filter, Info, RefreshCw, Search, X } from "lucide-react";
 import type {
   PersonalDesktopApi,
   RecallActivityListInput
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type { MarkdownPlatformAdapters } from "../markdown/SecureMarkdown.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import { Pixelkin } from "./pixelkin/Pixelkin.js";

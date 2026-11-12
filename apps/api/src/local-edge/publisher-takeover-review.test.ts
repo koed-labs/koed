@@ -7,7 +7,7 @@ import {
   sharingRulePublisherTakeoverAppliedScopeSchema,
   sharedMemoryPublisherTakeoverActionGrantBinding,
   type SharingRulePublisherTakeoverLocalReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { publisherTakeoverReviewFixture } from "../shared-memory/test-fixtures/publisher-takeover-review.js";
 import {
   resolvePublisherTakeoverReview,

@@ -23,7 +23,7 @@ import {
   collaborationRendererEventSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import { z } from "zod";
 import type {

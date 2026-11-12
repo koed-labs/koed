@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import os from "node:os";
-import { loadPrompt } from "@koed/mcp-server";
+import { loadPrompt } from "@koed-labs/mcp-server";
 import { z } from "zod";
 import type {
   ArenaArm,

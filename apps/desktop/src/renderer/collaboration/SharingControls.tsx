@@ -3,13 +3,13 @@ import {
   DropdownMenuItem,
   DropdownMenuPopup,
   DropdownMenuTrigger
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { ChevronRight, Ellipsis } from "lucide-react";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type {
   SharedMemoryFidelityCeiling,
   SharedMemoryRepresentation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import "./sharing-controls.css";
 
 export const sharingDetailTitle = (detail: SharedMemoryRepresentation) =>

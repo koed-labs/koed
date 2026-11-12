@@ -4,7 +4,7 @@ import {
   sharedSourceArtifactId,
   SharedMemoryConflictError,
   type SharedSourceArtifactV1
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 /** Rebind policy metadata without selecting or synthesizing any source content.
  * Source, revision, body, manifest and original sync provenance stay identical. */

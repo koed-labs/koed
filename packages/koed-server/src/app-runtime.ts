@@ -144,7 +144,7 @@ const packagedRuntime = (
   const mcpCli = resolve(root, "mcp-server/dist/cli.js");
   const localAiRuntime = resolve(root, "mcp-server/dist/local-runtime-cli.js");
   const captureHook = resolve(root, "mcp-server/dist/capture-hook.js");
-  const dbPackageRoot = resolve(root, "node_modules/@koed/db");
+  const dbPackageRoot = resolve(root, "node_modules/@koed-labs/db");
   const required = [
     ...(selection ? [] : ["authenticated base generation"]),
     ...(requirements.processes.includes("api") ? [apiEntry] : []),

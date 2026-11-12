@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
   MEMORY_RETRIEVAL_HINT_MAX_LENGTH
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { searchMemorySchema } from "./recall-schemas.js";
 
 describe("searchMemorySchema", () => {
@@ -46,6 +46,24 @@ describe("searchMemorySchema", () => {
         personal_selection: selection
       }).personal_selection
     ).toEqual(selection);
+  });
+  it("accepts explicit whole-event context without coercing arbitrary flags", () => {
+    expect(
+      searchMemorySchema.parse({
+        query: "event context",
+        include_event_context: true
+      }).include_event_context
+    ).toBe(true);
+    expect(
+      searchMemorySchema.parse({ query: "diagnostic default" })
+        .include_event_context
+    ).toBeUndefined();
+    expect(() =>
+      searchMemorySchema.parse({
+        query: "event context",
+        include_event_context: "true"
+      })
+    ).toThrow();
   });
   it("accepts an opaque Team run boundary and rejects it without a Workspace", () => {
     expect(

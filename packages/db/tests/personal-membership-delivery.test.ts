@@ -1,4 +1,4 @@
-import { createMemoryEngine } from "@koed/core";
+import { createMemoryEngine } from "@koed-labs/core";
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
 import {
@@ -17,7 +17,7 @@ import {
   personalMembershipInclusionIdentity,
   PERSONAL_CONFIGURATION_PROTOCOL,
   type PersonalConfigurationFeature
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

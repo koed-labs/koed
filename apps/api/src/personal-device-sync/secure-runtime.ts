@@ -1,12 +1,12 @@
-import type { PdsConfigurationCapabilityRecord } from "@koed/shared";
-import type { PdsClosureSource } from "@koed/db";
+import type { PdsConfigurationCapabilityRecord } from "@koed-labs/shared";
+import type { PdsClosureSource } from "@koed-labs/db";
 import {
   PdsRelayClient,
   requirePdsConfigurationCapability,
   createPdsRepositoryAssignmentFromSourceContext
-} from "@koed/shared";
-import { pdsRepositoryKeyHistorySchema } from "@koed/shared";
-import { createPdsRepositoryAssignment } from "@koed/shared";
+} from "@koed-labs/shared";
+import { pdsRepositoryKeyHistorySchema } from "@koed-labs/shared";
+import { createPdsRepositoryAssignment } from "@koed-labs/shared";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
 import {
@@ -20,12 +20,12 @@ import {
   pdsEd25519PublicKey,
   PDS_PROJECT_SELECTION_PROTOCOL,
   signPdsProjectSelection
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   AiClientSourceRuntime,
   PdsSessionCheckpointManifest,
   PdsSessionPackage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PdsAuthoritySigner } from "./routes.js";
 import type {
   PdsSecureKeyProvider,

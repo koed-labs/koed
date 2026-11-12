@@ -1,7 +1,7 @@
-import { planRepositorySearch } from "@koed/shared";
-import { answerMemory, searchMemory } from "@koed/core";
+import { planRepositorySearch } from "@koed-labs/shared";
+import { answerMemory, searchMemory } from "@koed-labs/core";
 import { actorForAuthenticatedRequest } from "../auth/session.js";
-import type { SharedMemorySemanticCandidate } from "@koed/db";
+import type { SharedMemorySemanticCandidate } from "@koed-labs/db";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import { searchMemorySchema } from "./recall-schemas.js";
@@ -308,7 +308,8 @@ export const registerRecallRoutes = (
         strictLimit: input.strict_limit,
         repositoryContext: input.repository_context,
         maxSearchPasses: input.max_search_passes,
-        personalSelection: input.personal_selection
+        personalSelection: input.personal_selection,
+        includeEventContext: input.include_event_context
       });
       const indexProof = retrievalIndexProof(
         await resolveRetrievalCapability({
@@ -505,7 +506,8 @@ export const registerRecallRoutes = (
         exactHints: input.exact_hints,
         retrievalStage: input.retrieval_stage,
         parentNodeIds: input.parent_node_ids,
-        strictLimit: input.strict_limit
+        strictLimit: input.strict_limit,
+        includeEventContext: input.include_event_context ?? true
       });
       const indexProof = retrievalIndexProof(
         await resolveRetrievalCapability({

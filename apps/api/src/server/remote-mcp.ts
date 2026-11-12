@@ -1,13 +1,13 @@
 import { Readable } from "node:stream";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { MemoryApiClient } from "@koed/mcp-server";
+import { MemoryApiClient } from "@koed-labs/mcp-server";
 import {
   createRemoteKoedMcpHandler,
   LocalAiRuntimeError,
   RemoteBackendRuntimeClient,
   REMOTE_MCP_MAX_BODY_BYTES
-} from "@koed/mcp-server/runtime-contracts";
+} from "@koed-labs/mcp-server/runtime-contracts";
 import type { AuthHelpers } from "../auth/index.js";
 
 const remoteBackendId = "remote";

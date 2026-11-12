@@ -10,7 +10,7 @@ import {
   startLocalAiRuntime,
   type LocalAiRuntimeServiceFactory,
   type LocalAiRuntimeToolExecutor
-} from "@koed/mcp-server/runtime-contracts";
+} from "@koed-labs/mcp-server/runtime-contracts";
 import type {
   HarborRunRequest,
   SubprocessExecutor,

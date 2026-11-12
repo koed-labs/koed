@@ -17,14 +17,15 @@ import {
   type PdsPortableLcmNodeV1,
   type PdsPortableMemoryEmbeddingV1,
   type PdsPortableMemoryEventV1
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { CURRENT_CONVERSATION_PROJECTION_VERSION } from "./conversation-semantic-projection.js";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   TOKEN_COUNTER_CONTRACT_VERSION
-} from "@koed/core";
+} from "@koed-labs/core";
 import { embeddingTableForDimensions } from "./embedding-coverage.js";
-import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
+import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
+import { semanticMemoryEventEligibleSql } from "./approval-activity-sql.js";
 
 export type PdsSemanticWorkClass =
   | "projection"
@@ -1126,6 +1127,40 @@ export const createPersonalDeviceArtifactRepository = (
       if (fingerprints.size !== 1 || closures.size !== 1) continue;
       const sourceFingerprint = sources.rows[0]!.source_fingerprint;
       const sourceClosureHash = sources.rows[0]!.source_closure_hash;
+      const contexts = await pool.query<{
+        logical_event_id: string | null;
+        source_fingerprint: string | null;
+        source_closure_hash: string | null;
+      }>(
+        `select mapping.logical_event_id,mapping.source_fingerprint,
+                mapping.source_closure_hash
+           from memory_node_context_events context
+           left join memory_events me on me.id=context.memory_event_id
+             and me.invalidated_at is null and me.personal_deleted_at is null
+           left join pds_memory_event_mappings mapping
+             on mapping.memory_event_id=me.id
+            and mapping.group_id=(select g.id from personal_device_groups g
+              join local_personal_identities i on i.id=g.local_personal_identity_id
+              where g.group_id=$2 and i.owner_user_id=$3 and g.state='active')
+          where context.memory_node_id=$1`,
+        [row.id, input.groupId, input.userId]
+      );
+      if (
+        contexts.rows.some(
+          (context) =>
+            !context.logical_event_id ||
+            context.source_fingerprint !== sourceFingerprint ||
+            context.source_closure_hash !== sourceClosureHash
+        )
+      )
+        continue;
+      const contextBinding = contexts.rows.length
+        ? {
+            contextEventIds: contexts.rows.map(
+              (context) => context.logical_event_id!
+            )
+          }
+        : {};
       const retained = await pool.query<{
         package_id: string;
         source_manifest_hash: string;
@@ -1168,6 +1203,7 @@ export const createPersonalDeviceArtifactRepository = (
       const nodeWithoutIdentity = {
         nodeKind: row.kind,
         orderedSourceIds,
+        ...contextBinding,
         summaryText: row.summary_text,
         summaryTokenCount: String(row.summary_token_estimate),
         structuredSummary: row.summary_structured_json,
@@ -1181,6 +1217,7 @@ export const createPersonalDeviceArtifactRepository = (
       const logicalNodeId = pdsPortableLcmNodeId({
         nodeKind: row.kind,
         orderedSourceIds,
+        ...contextBinding,
         compatibilityContractHash,
         correctedRevision
       });
@@ -1878,27 +1915,39 @@ export const createPersonalDeviceArtifactRepository = (
         const existing = await client.query<{
           memory_node_id: string;
           content_hash: string;
+          invalidated: boolean;
         }>(
-          `select memory_node_id,content_hash
-           from pds_lcm_node_mappings
-           where group_id=$1 and logical_node_id=$2`,
+          `select mapping.memory_node_id,mapping.content_hash,
+             (node.invalidated_at is not null or node.personal_deleted_at is not null) as invalidated
+           from pds_lcm_node_mappings mapping
+           join memory_nodes node on node.id=mapping.memory_node_id
+           where mapping.group_id=$1 and mapping.logical_node_id=$2`,
           [groupDbId, node.logicalNodeId]
         );
         if (existing.rows[0]) {
+          if (node.contextEventIds?.length && existing.rows[0].invalidated) {
+            throw new Error(
+              "PDS LCM artifact context dependency was invalidated"
+            );
+          }
           if (existing.rows[0].content_hash !== node.contentHash) {
             throw new Error("PDS artifact logical LCM identity conflict");
           }
-          await client.query("commit");
-          return {
-            state: "ready",
-            localSourceId: existing.rows[0].memory_node_id
-          };
+          if (!node.contextEventIds?.length) {
+            await client.query("commit");
+            return {
+              state: "ready",
+              localSourceId: existing.rows[0].memory_node_id
+            };
+          }
         }
         const compatible =
           contract.structuredOutputSchema ===
             LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION &&
           ((contract.nodeKind === "leaf" &&
-            contract.lcmAlgorithmVersion === "depth0-source-items-v1") ||
+            (contract.lcmAlgorithmVersion === "depth0-source-items-v1" ||
+              contract.lcmAlgorithmVersion ===
+                "depth0-source-items-context-v2")) ||
             (contract.nodeKind === "rollup" &&
               contract.lcmAlgorithmVersion === "depth1-child-rollup-v1")) &&
           contract.sourceSelectionPolicy === contract.lcmAlgorithmVersion;
@@ -1967,6 +2016,49 @@ export const createPersonalDeviceArtifactRepository = (
           throw new Error("PDS LCM artifact source closure is incomplete");
         }
         const localSessionId = sourceRows.rows[0].session_id;
+        const contextIds = node.contextEventIds ?? [];
+        const contextRows = await client.query<{ id: string }>(
+          `select me.id
+             from (
+               select covered.captured_at,covered.id from memory_events covered
+               where covered.id=any($7::uuid[])
+               order by covered.captured_at desc,covered.id desc limit 1
+             ) boundary
+             cross join lateral (
+               select next_event.* from memory_events next_event
+               where next_event.session_id=$6
+                 and (next_event.captured_at,next_event.id)>(boundary.captured_at,boundary.id)
+               order by next_event.captured_at,next_event.id limit 1
+             ) me
+             join pds_memory_event_mappings mapping on mapping.memory_event_id=me.id
+            where mapping.group_id=$1
+              and mapping.logical_event_id=any($2::text[])
+              and mapping.source_fingerprint=$3 and mapping.source_closure_hash=$4
+              and me.owner_user_id=$5 and me.session_id=$6
+              and me.visibility='personal' and me.invalidated_at is null
+              and me.personal_deleted_at is null and me.include_in_lcm=true
+              and pds_session_recall_ready(me.session_id)
+              and ${semanticMemoryEventEligibleSql("me")}`,
+          [
+            groupDbId,
+            contextIds,
+            manifest.sourceFingerprint,
+            manifest.sourceClosureHash,
+            input.userId,
+            localSessionId,
+            sourceRows.rows.map((row) => row.local_source_id)
+          ]
+        );
+        if (contextRows.rows.length !== contextIds.length) {
+          throw new Error("PDS LCM artifact context closure is incomplete");
+        }
+        if (existing.rows[0]) {
+          await client.query("commit");
+          return {
+            state: "ready",
+            localSourceId: existing.rows[0].memory_node_id
+          };
+        }
         const retained = await client.query<{ id: string }>(
           `insert into pds_portable_artifacts
            (group_id,owner_user_id,local_session_id,artifact_id,work_identity,
@@ -2107,6 +2199,14 @@ export const createPersonalDeviceArtifactRepository = (
           throw new Error("PDS LCM artifact identity conflict");
         }
         if (node.nodeKind === "leaf") {
+          for (const contextRow of contextRows.rows) {
+            await client.query(
+              `insert into memory_node_context_events (memory_node_id,memory_event_id)
+               values ($1,$2) on conflict (memory_node_id) do update
+               set memory_event_id=excluded.memory_event_id`,
+              [localMemoryNodeId, contextRow.id]
+            );
+          }
           for (const [index, sourceRow] of sourceRows.rows.entries()) {
             await client.query(
               `insert into memory_node_sources

@@ -1,4 +1,4 @@
-import { Dialog, DialogPopup } from "@koed/ui";
+import { Dialog, DialogPopup } from "@koed-labs/ui";
 import { Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 

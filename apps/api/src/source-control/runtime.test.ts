@@ -3,8 +3,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MemorySourceRepository } from "@koed/db";
-import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
+import type { MemorySourceRepository } from "@koed-labs/db";
+import { createGitExecutionCheckoutDriver } from "@koed-labs/shared/execution-checkout";
 
 import { createSourceControlRuntime } from "./runtime.js";
 

@@ -9,7 +9,7 @@ import {
   crossIdentitySyncDeterministicUuid,
   logicalMemorySourceRevisionIdentity,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import {
   decryptAuthorizedEncryptedFieldPayloadWithClient,

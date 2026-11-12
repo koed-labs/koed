@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Badge, Button, Checkbox, DialogFooter, Input } from "@koed/ui";
+import { Badge, Button, Checkbox, DialogFooter, Input } from "@koed-labs/ui";
 import {
   Check,
   ChevronRight,
@@ -12,8 +12,8 @@ import {
   Smile,
   Settings2
 } from "lucide-react";
-import type { PersonalProjectBatchInput } from "@koed/shared";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalProjectBatchInput } from "@koed-labs/shared";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { ProjectSyncDetails } from "../../views/personal/ProjectSyncDetails.js";

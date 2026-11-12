@@ -6,9 +6,9 @@ import {
   CardTitle,
   ScrollArea,
   Skeleton
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { ArrowUpRight, Search } from "lucide-react";
-import type { RecallActivityQuestion } from "@koed/shared/personal-desktop";
+import type { RecallActivityQuestion } from "@koed-labs/shared/personal-desktop";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
 import {
   recallDurationLabel,

@@ -4,8 +4,8 @@ import {
   pdsSessionPackageDigest,
   type PdsSessionCheckpointManifest,
   type PdsSessionPackage
-} from "@koed/shared";
-import type { PdsClosureSource, MemorySourceRepository } from "@koed/db";
+} from "@koed-labs/shared";
+import type { PdsClosureSource, MemorySourceRepository } from "@koed-labs/db";
 import {
   createPdsCheckpointPublicationService,
   publishPdsCheckpointCandidate

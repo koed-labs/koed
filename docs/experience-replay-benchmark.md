@@ -52,8 +52,8 @@ From a clean checkout of the exact commit being evaluated:
 
 ```bash
 pnpm install
-pnpm --filter @koed/evals eval:experience-replay:harbor:test
-pnpm --filter @koed/evals build
+pnpm --filter @koed-labs/evals eval:experience-replay:harbor:test
+pnpm --filter @koed-labs/evals build
 ```
 
 Recorded runs additionally require:
@@ -181,12 +181,12 @@ chmod 600 "$qualification_manifest"
 5. Qualify and cache one successful source experience:
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   preflight --config "$config" --codex-subscription \
   --oracle-qualify \
   --oracle-qualification-manifest "$qualification_manifest" \
   --oracle-corpus "$corpus_dir"
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config "$config" --codex-subscription \
   --oracle-qualify \
   --oracle-qualification-manifest "$qualification_manifest" \
@@ -212,12 +212,12 @@ chmod 600 "$campaign_manifest"
    preflight and run:
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   preflight --config "$config" --codex-subscription \
   --oracle-campaign \
   --oracle-campaign-manifest "$campaign_manifest" \
   --oracle-corpus "$corpus_dir"
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config "$config" --codex-subscription \
   --oracle-campaign \
   --oracle-campaign-manifest "$campaign_manifest" \
@@ -342,11 +342,11 @@ the explicitly pinned public reference implementation. Do not include hidden
 tests or verifier output:
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   preflight --config <resolved-quick-config.json> --codex-subscription \
   --oracle-seeded-proof --oracle-brief <brief.txt> \
   --oracle-corpus <absolute-private-corpus-directory>
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config <resolved-quick-config.json> --codex-subscription \
   --oracle-seeded-proof --oracle-brief <brief.txt> \
   --oracle-corpus <absolute-private-corpus-directory>
@@ -363,11 +363,11 @@ arm must use `memory_answer` successfully, but the tested agent chooses its
 query, scope, response detail, and whether follow-up recall is useful.
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   preflight --config <resolved-quick-config.json> --codex-subscription \
   --oracle-repeated-study --oracle-corpus <absolute-private-corpus-directory> \
   --oracle-repeats <1..100>
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config <resolved-quick-config.json> --codex-subscription \
   --oracle-repeated-study --oracle-corpus <absolute-private-corpus-directory> \
   --oracle-repeats <1..100>
@@ -443,7 +443,7 @@ in the private corpus provenance.
 ```
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config <resolved-full-config.json> --codex-subscription \
   --oracle-qualify \
   --oracle-qualification-manifest <absolute-private-0600-file> \
@@ -495,12 +495,12 @@ task universe, so every shard starts from the same experienced-User database.
 ```
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   preflight --config <resolved-full-config.json> --codex-subscription \
   --oracle-campaign \
   --oracle-campaign-manifest <absolute-private-0600-file> \
   --oracle-corpus <absolute-private-collection-directory>
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config <resolved-full-config.json> --codex-subscription \
   --oracle-campaign \
   --oracle-campaign-manifest <absolute-private-0600-file> \
@@ -518,7 +518,7 @@ them through an explicit private manifest:
 ```
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   campaign-merge --merge-manifest <manifest.json> \
   --output <absolute-new-merged-directory>
 ```
@@ -548,15 +548,15 @@ jq --arg output "$run_root/run" '.output_dir = $output' \
   packages/evals/src/experience-replay/fixtures/smoke.config.json \
   > "$run_root/config.json"
 
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   preflight --config "$run_root/config.json"
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config "$run_root/config.json"
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   resume --run "$run_root/run"
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   report --run "$run_root/run"
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   sanitize --run "$run_root/run"
 ```
 
@@ -607,9 +607,9 @@ image build provenance, registry digest, separate verifier environment builds
 and capacity. A paid run then requires explicit confirmation:
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   preflight --config <resolved-config.json> --confirm-paid-run
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config <resolved-config.json> --confirm-paid-run
 ```
 
@@ -617,10 +617,10 @@ Run the two-source product-path proof by adding the same flag to preflight and
 run:
 
 ```bash
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   preflight --config <resolved-quick-config.json> --confirm-paid-run \
   --product-path-proof
-pnpm --filter @koed/evals eval:experience-replay -- \
+pnpm --filter @koed-labs/evals eval:experience-replay -- \
   run --config <resolved-quick-config.json> --confirm-paid-run \
   --product-path-proof
 ```
@@ -721,8 +721,8 @@ can re-adopt them; completed runs remove them.
 Run the benchmark checks with:
 
 ```bash
-pnpm --filter @koed/evals test
-pnpm --filter @koed/evals eval:experience-replay:harbor:test
+pnpm --filter @koed-labs/evals test
+pnpm --filter @koed-labs/evals eval:experience-replay:harbor:test
 ```
 
 After a completed smoke run, PostgreSQL must contain no database whose name

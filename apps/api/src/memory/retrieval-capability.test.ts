@@ -1,7 +1,7 @@
 import {
   EMBEDDING_RETRIEVAL_DOCUMENT_TRANSFORM,
   resolveSupportedEmbeddingModelConfig
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

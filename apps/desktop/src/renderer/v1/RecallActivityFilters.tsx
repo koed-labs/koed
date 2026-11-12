@@ -7,12 +7,12 @@ import {
   SelectPopup,
   SelectTrigger,
   SelectValue
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import {
   recallActivityListInputSchema,
   type RecallActivityListInput,
   type RecallActivityQuestion
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import {
   localRecallDate,

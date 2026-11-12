@@ -3,12 +3,12 @@ import {
   createLocalWorkQueueRepository,
   type DbPool,
   type LocalWorkQueueRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   defaultKoedQueuePriority,
   type KoedJobQueue,
   type KoedQueueBackend
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export interface MemoryJobQueueFactoryOptions {
   backend: KoedQueueBackend;

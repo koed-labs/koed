@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { MemorySourceRepository } from "@koed/db";
-import type { KoedJobQueue } from "@koed/shared";
+import type { MemorySourceRepository } from "@koed-labs/db";
+import type { KoedJobQueue } from "@koed-labs/shared";
 import {
   createWorkerJobWorkflow,
   embeddingJobData,

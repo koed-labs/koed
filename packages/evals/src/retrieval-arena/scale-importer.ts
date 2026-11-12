@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { createDbPool, type DbPool } from "@koed/db";
+import { createDbPool, type DbPool } from "@koed-labs/db";
 import {
   generateRetrievalScaleLoad,
   retrievalScaleLoadRecordSchema,

@@ -13,73 +13,73 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "paths": {
-      "@koed/api": ["./apps/api/src/server/index.ts"],
-      "@koed/core": ["./packages/core/src/index.ts"],
-      "@koed/db": ["./packages/db/src/index.ts"],
+      "@koed-labs/api": ["./apps/api/src/server/index.ts"],
+      "@koed-labs/core": ["./packages/core/src/index.ts"],
+      "@koed-labs/db": ["./packages/db/src/index.ts"],
       "@koed-labs/server": ["./packages/koed-server/src/index.ts"],
-      "@koed/mcp-server": ["./packages/mcp-server/src/index.ts"],
-      "@koed/mcp-server/mcp-server-factory": [
+      "@koed-labs/mcp-server": ["./packages/mcp-server/src/index.ts"],
+      "@koed-labs/mcp-server/mcp-server-factory": [
         "./packages/mcp-server/src/mcp-server-factory.ts"
       ],
-      "@koed/mcp-server/codex-transcript-parser": [
+      "@koed-labs/mcp-server/codex-transcript-parser": [
         "./packages/mcp-server/src/codex-transcript-parser.ts"
       ],
-      "@koed/mcp-server/claude-transcript-parser": [
+      "@koed-labs/mcp-server/claude-transcript-parser": [
         "./packages/mcp-server/src/claude-transcript-parser.ts"
       ],
-      "@koed/mcp-server/runtime-contracts": [
+      "@koed-labs/mcp-server/runtime-contracts": [
         "./packages/mcp-server/src/runtime-contracts.ts"
       ],
-      "@koed/shared": ["./packages/shared/src/index.ts"],
-      "@koed/shared/personal-project-default": [
+      "@koed-labs/shared": ["./packages/shared/src/index.ts"],
+      "@koed-labs/shared/personal-project-default": [
         "./packages/shared/src/personal-project-default.ts"
       ],
-      "@koed/shared/personal-local-folders": [
+      "@koed-labs/shared/personal-local-folders": [
         "./packages/shared/src/personal-local-folders.ts"
       ],
-      "@koed/shared/ai-client-connections": [
+      "@koed-labs/shared/ai-client-connections": [
         "./packages/shared/src/ai-client-connections.ts"
       ],
-      "@koed/shared/ai-client-contract": [
+      "@koed-labs/shared/ai-client-contract": [
         "./packages/shared/src/ai-client-contract.ts"
       ],
-      "@koed/shared/collaboration": [
+      "@koed-labs/shared/collaboration": [
         "./packages/shared/src/collaboration-contract.ts"
       ],
-      "@koed/shared/collaboration-client-runtime": [
+      "@koed-labs/shared/collaboration-client-runtime": [
         "./packages/shared/src/collaboration-client-runtime.ts"
       ],
-      "@koed/shared/durable-realtime": [
+      "@koed-labs/shared/durable-realtime": [
         "./packages/shared/src/durable-realtime.ts"
       ],
-      "@koed/shared/execution-checkout": [
+      "@koed-labs/shared/execution-checkout": [
         "./packages/shared/src/execution-checkout.ts"
       ],
-      "@koed/shared/personal-desktop": [
+      "@koed-labs/shared/personal-desktop": [
         "./packages/shared/src/personal-desktop-contract.ts"
       ],
-      "@koed/shared/secure-upstream-fetch": [
+      "@koed-labs/shared/secure-upstream-fetch": [
         "./packages/shared/src/secure-upstream-fetch.ts"
       ],
-      "@koed/worker/embedding-workflow": [
+      "@koed-labs/worker/embedding-workflow": [
         "./apps/worker/src/embedding-workflow.ts"
       ],
-      "@koed/worker/command-discovery-adapter": [
+      "@koed-labs/worker/command-discovery-adapter": [
         "./apps/worker/src/command-discovery-adapter.ts"
       ],
-      "@koed/worker/command-discovery-adapter-codex": [
+      "@koed-labs/worker/command-discovery-adapter-codex": [
         "./apps/worker/src/command-discovery-adapter-codex.ts"
       ],
-      "@koed/worker/command-discovery-adapter-claude": [
+      "@koed-labs/worker/command-discovery-adapter-claude": [
         "./apps/worker/src/command-discovery-adapter-claude.ts"
       ],
-      "@koed/worker/command-discovery-adapter-pi": [
+      "@koed-labs/worker/command-discovery-adapter-pi": [
         "./apps/worker/src/command-discovery-adapter-pi.ts"
       ],
-      "@koed/shared/repository-recall": [
+      "@koed-labs/shared/repository-recall": [
         "./packages/shared/src/repository-recall.ts"
       ],
-      "@koed/shared/repository-review": [
+      "@koed-labs/shared/repository-review": [
         "./packages/shared/src/repository-review.ts"
       ],
       "*": ["./*"]

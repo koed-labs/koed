@@ -20,7 +20,7 @@ import {
   type PersonalGitContext,
   type PersonalFolderReference,
   type PersonalFolderContext
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   personalSourceSelectionSql,
   personalProjectRuleMatchesSql,

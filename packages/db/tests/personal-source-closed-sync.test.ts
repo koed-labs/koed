@@ -11,7 +11,7 @@ import {
   isPdsSessionCheckpointManifest,
   verifyPdsRepositoryAssignmentWithKeyHistory,
   personalSourceContextSnapshotSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

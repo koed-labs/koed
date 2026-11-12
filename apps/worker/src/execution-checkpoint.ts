@@ -4,8 +4,8 @@ import { lstat, mkdtemp, readdir, rm, rmdir } from "node:fs/promises";
 import { devNull } from "node:os";
 import { resolve } from "node:path";
 
-import type { ExecutionCheckoutIdentity } from "@koed/shared/execution-checkout";
-import { classifySourceContent, sourceContentLimits } from "@koed/shared";
+import type { ExecutionCheckoutIdentity } from "@koed-labs/shared/execution-checkout";
+import { classifySourceContent, sourceContentLimits } from "@koed-labs/shared";
 
 const objectIdPattern = /^[0-9a-f]{40,64}$/;
 const uuidPattern =

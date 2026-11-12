@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 import type {
   ManagedTerminalExecutionAuthority,
   MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   sourceControlConnectionSchema,
   sourceControlOperationSchema,
@@ -26,8 +26,8 @@ import {
   type SourceControlProvider,
   type SourceControlRemote,
   type SourceControlResult
-} from "@koed/shared";
-import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
+} from "@koed-labs/shared";
+import { createGitExecutionCheckoutDriver } from "@koed-labs/shared/execution-checkout";
 import { z } from "zod";
 
 import { withAuthenticatedGitRepository } from "./authenticated-git.js";

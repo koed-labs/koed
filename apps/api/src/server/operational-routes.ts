@@ -2,7 +2,7 @@ import {
   capturePersonalEvent,
   searchMemory,
   type Visibility
-} from "@koed/core";
+} from "@koed-labs/core";
 import {
   CONSERVATIVE_EMBEDDING_TOKENS_PER_SECOND,
   EMBEDDING_CAPACITY_CONTRACT_REVISION,
@@ -14,7 +14,7 @@ import {
   type EmbeddingSemanticBacklog,
   type EmbeddingTelemetryWindow,
   type MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile, statfs } from "node:fs/promises";
 import {
@@ -30,7 +30,7 @@ import {
   type HistoricalAdmissionDecision,
   type KoedJobQueue,
   type RealtimeTransportOffer
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance } from "fastify";
 import { Redis } from "ioredis";
 import { z } from "zod";

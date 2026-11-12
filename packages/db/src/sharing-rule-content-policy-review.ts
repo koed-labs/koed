@@ -6,7 +6,7 @@ import {
   sharingRuleContentPolicyReviewInputSchema,
   sharingRuleContentPolicyReviewSchema,
   type PrivacyLabelPolicy
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import { readSharingRuleAmendmentAuthority } from "./sharing-rule-amendment-authority.js";
 import { readSharingRuleContentPolicyState } from "./sharing-rule-content-policy.js";

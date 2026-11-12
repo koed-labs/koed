@@ -6,7 +6,7 @@ import {
   piSessionIdentity,
   processPiTranscriptSignal,
   type MemoryApiClient
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)

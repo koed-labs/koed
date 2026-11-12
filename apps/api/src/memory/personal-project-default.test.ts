@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { personalProjectDefaultIdentity } from "@koed/shared/personal-project-default";
+import { personalProjectDefaultIdentity } from "@koed-labs/shared/personal-project-default";
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ import {
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   classifyPersonalInventory,
   personalFolderScopeId,
@@ -17,7 +17,7 @@ import {
   type PersonalFolderObservation,
   type RepositoryIdentity,
   type PersonalGitContext
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { registerPersonalProjectRoutes } from "./personal-project-routes.js";
 import { registerPersonalFolderRoutes } from "./personal-folder-routes.js";
 import { registerPersonalSourceInventoryRoutes } from "./personal-source-inventory-routes.js";

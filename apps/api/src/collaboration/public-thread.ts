@@ -1,8 +1,8 @@
-import type { CollaborationThreadRecord } from "@koed/db";
+import type { CollaborationThreadRecord } from "@koed-labs/db";
 import {
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export const publicCollaborationThread = (
   thread: CollaborationThreadRecord

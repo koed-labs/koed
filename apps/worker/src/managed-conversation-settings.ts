@@ -1,11 +1,11 @@
 import type {
   MemorySourceRepository,
   ManagedConversationExecutionRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   aiClientPermissionContractFor,
   isSupportedAiClientDriverId
-} from "@koed/shared/ai-client-contract";
+} from "@koed-labs/shared/ai-client-contract";
 
 /** Revalidate at dispatch: a queued turn must not outlive its capability evidence. */
 export async function assertManagedConversationTurnSettings(

@@ -19,7 +19,7 @@ const fixture = (mode: string) => {
   mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(resolve(parent, "privacy-probe-fixture-"));
   roots.push(root);
-  const modules = resolve(root, "node_modules/@koed/privacy-service/dist");
+  const modules = resolve(root, "node_modules/@koed-labs/privacy-service/dist");
   mkdirSync(modules, { recursive: true });
   writeFileSync(resolve(root, "package.json"), '{"type":"module"}');
   writeFileSync(

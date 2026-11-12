@@ -9,7 +9,7 @@ import {
   type ClaimedMemoryAnswerTask as SharedClaimedMemoryAnswerTask,
   type MemoryAnswerTask,
   type MemoryAnswerTaskStatus
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 import { AnswerExecutionCapacity } from "./answer-admission.js";
 import type { MemoryApiClient } from "./index.js";
@@ -18,7 +18,7 @@ import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { logger } from "./logger.js";
 
 export type MemoryAnswerTaskView = MemoryAnswerTask;
-export type { MemoryAnswerTaskExecutionAuthority } from "@koed/shared";
+export type { MemoryAnswerTaskExecutionAuthority } from "@koed-labs/shared";
 
 export interface MemoryAnswerTaskExecutionContext {
   getExecutionAuthority(): MemoryAnswerTaskExecutionAuthority;

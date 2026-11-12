@@ -18,7 +18,7 @@ import {
 export {
   resolveTeamCollaborationEnabled,
   teamCollaborationFeatureEnvironmentName
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const disabledPathPrefixes = [
   "/ops/support/teams",

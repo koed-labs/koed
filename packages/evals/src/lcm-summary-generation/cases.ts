@@ -1,4 +1,4 @@
-import type { LcmSummaryNode } from "@koed/mcp-server";
+import type { LcmSummaryNode } from "@koed-labs/mcp-server";
 
 export interface LcmSummaryTermMatch {
   exactPhrases?: string[];

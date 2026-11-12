@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PRIVACY_CLASSIFICATION_CONTRACT_VERSION } from "@koed/shared";
+import { PRIVACY_CLASSIFICATION_CONTRACT_VERSION } from "@koed-labs/shared";
 import { validateClassifyRequest } from "./schemas.js";
 
 const limits = { maxFields: 2, maxFieldBytes: 5, maxRequestFieldBytes: 7 };

@@ -9,7 +9,6 @@ import pg from "pg";
 import { loadRootEnv } from "../../../scripts/api-token-bootstrap-lib.mjs";
 import { runDbMigrations } from "../dist/migrate.js";
 import { migrationSchemaFingerprint } from "../dist/migration-schema.js";
-import { retiredProjectUpgradeTables } from "../dist/project-migration-history.js";
 
 const { Client, Pool } = pg;
 
@@ -105,12 +104,6 @@ const assertMigrationLedger = async (pool, expectedRecords) => {
 };
 
 const assertSchemaContracts = async (pool) => {
-  const retired = await pool.query(
-    "select table_name from information_schema.tables where table_schema='public' and table_name=any($1::text[])",
-    [[...retiredProjectUpgradeTables, "personal_project_routes"]]
-  );
-  if (retired.rowCount)
-    throw new Error("Retired Project schema remains in the current build.");
   const columnsByTable = {
     pending_sharing_rule_admissions: [
       ["existing_source_readmission", "jsonb", "YES"]

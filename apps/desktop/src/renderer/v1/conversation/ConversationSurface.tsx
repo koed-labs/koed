@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { ArrowDown, RotateCcw } from "lucide-react";
-import { Button, Spinner, TooltipProvider } from "@koed/ui";
+import { Button, Spinner, TooltipProvider } from "@koed-labs/ui";
 import {
   VirtualizedTimeline,
   type VirtualizedTimelineHandle

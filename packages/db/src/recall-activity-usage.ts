@@ -5,7 +5,7 @@ import type {
   RecallUsageTotals,
   RecallActivityOverview,
   RecallActivityOverviewInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   personalRecallPredicate,

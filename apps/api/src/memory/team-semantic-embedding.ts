@@ -2,7 +2,7 @@ import {
   formatEmbeddingRetrievalQuery,
   resolveSupportedEmbeddingModelConfig,
   teamSemanticEmbeddingGeneration
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export class TeamSemanticEmbeddingError extends Error {
   readonly statusCode: 502 | 503;

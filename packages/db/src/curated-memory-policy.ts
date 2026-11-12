@@ -1,6 +1,6 @@
 import type pg from "pg";
 import { contributingCuratedMemorySourceSql } from "./curated-memory-source-roles.js";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import type { EnvelopeEncryptionProvider } from "@koed-labs/shared";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import {
   ENCRYPTED_CURATED_MEMORY_TEXT,

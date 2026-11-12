@@ -46,7 +46,7 @@ directories:
   output: release
 
 linux:
-  # Derived default (@koed/desktop) is not a valid executable name.
+  # Derived default (@koed-labs/desktop) is not a valid executable name.
   executableName: koed
   icon: assets/koed-icon.png
   category: Development

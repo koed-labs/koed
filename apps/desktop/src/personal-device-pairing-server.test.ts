@@ -4,7 +4,7 @@ import {
   decryptPersonalDevicePairingMessage,
   encryptPersonalDevicePairingMessage
 } from "./personal-device-pairing-crypto.js";
-import { canonicalizePdsJson, PDS_PROTOCOL } from "@koed/shared";
+import { canonicalizePdsJson, PDS_PROTOCOL } from "@koed-labs/shared";
 import {
   resolvePersonalDevicePairingPort,
   startPersonalDevicePairingServer,

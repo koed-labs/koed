@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { PRIVACY_MAX_FIELD_TOKENS } from "@koed/shared";
+import { PRIVACY_MAX_FIELD_TOKENS } from "@koed-labs/shared";
 import { ClassificationError } from "./errors.js";
 import type { RawPrivacyClassification } from "./runtime.js";
 import {

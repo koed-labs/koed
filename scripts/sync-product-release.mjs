@@ -58,7 +58,7 @@ if (consumeChangesets && fs.existsSync(changesetDir)) {
 
     const changesetPath = path.join(changesetDir, entry);
     const changeset = fs.readFileSync(changesetPath, "utf8");
-    if (changeset.includes('"@koed/koed"')) {
+    if (changeset.includes('"@koed-labs/koed"')) {
       fs.unlinkSync(changesetPath);
       console.log(`Removed consumed product changeset ${entry}`);
     }

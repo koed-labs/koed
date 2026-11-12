@@ -1,4 +1,4 @@
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
   assertSupportedAiClientSourceAdapter,
@@ -6,7 +6,7 @@ import {
   parseConversationSourceOriginKeyRegistration,
   parseSignedConversationSourceClosureManifest,
   parseConversationSourceReplicationSourceDescriptor
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const portableProjectIdPattern = /^lp_[0-9a-f]{32}$/;
 

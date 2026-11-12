@@ -1,4 +1,4 @@
-import type { DeviceCredentialRecord } from "@koed/db";
+import type { DeviceCredentialRecord } from "@koed-labs/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
   assertSecureHttpTransport,
@@ -9,7 +9,7 @@ import {
   type LocalEdgeUpstreamBackend,
   type LocalEdgeUpstreamRegistry,
   type LocalEdgeUpstreamRoutePolicyKey
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { CapturePolicy } from "../server/context.js";
 
 export {

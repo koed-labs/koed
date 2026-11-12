@@ -8,7 +8,7 @@ import {
   verifyPdsRelayRequestProof,
   PDS_CONFIGURATION_CAPABILITY_PATH,
   type PdsConfigurationCapabilityRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PdsRelayAuthContext } from "./personal-device-sync-relay-repository.js";
 
 type Authenticate = (

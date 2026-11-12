@@ -2,7 +2,7 @@ import type {
   PersonalDesktopApi,
   PersonalDesktopNote,
   PersonalDesktopNoteSummary
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import {
   SecureMarkdown,
   type MarkdownPlatformAdapters

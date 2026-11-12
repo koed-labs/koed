@@ -7,7 +7,7 @@ import type {
   RecallActivityQuestion,
   RecallActivityOverview,
   RecallActivityListInput
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { RecallActivityPage } from "./RecallActivityPage.js";
 
 it("keeps overview totals independent of pagination and page-only search, and applies server filters before pagination", async () => {

@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   crossIdentitySyncDeterministicUuid,
   SharedMemoryConflictError
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 
 type Client = Pick<pg.PoolClient, "query">;

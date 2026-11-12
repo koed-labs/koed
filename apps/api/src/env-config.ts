@@ -4,7 +4,7 @@ import { config as loadDotenv } from "dotenv";
 import {
   requireEnv,
   validateEnvelopeEncryptionProviderEnvironment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { resolveTeamCollaborationEnabled } from "./server/team-collaboration-feature.js";
 
 export interface ApiEnvConfig {

@@ -1,5 +1,5 @@
 {
-  "name": "@koed/embedding-service",
+  "name": "@koed-labs/embedding-service",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
@@ -14,6 +14,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@koed/shared": "workspace:*"
+    "@koed-labs/shared": "workspace:*"
   }
 }

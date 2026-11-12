@@ -64,11 +64,11 @@ classification and runtime-control credentials:
 pnpm install
 pnpm --filter @koed-labs/server build
 pnpm models:install:privacy
-pnpm --filter @koed/privacy-service build
+pnpm --filter @koed-labs/privacy-service build
 export KOED_PRIVACY_TRANSFORMERS_CACHE="${KOED_HOME:-$HOME/.koed}/models/privacy/transformers-cache"
 export PRIVACY_SERVICE_TOKEN="$(openssl rand -base64 32)"
 export PRIVACY_RUNTIME_CONTROL_TOKEN="$(openssl rand -base64 32)"
-pnpm --filter @koed/privacy-service start
+pnpm --filter @koed-labs/privacy-service start
 ```
 
 `KOED_HOME` defaults to `~/.koed`. When starting the service separately from

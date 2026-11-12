@@ -8,7 +8,7 @@ import {
   signPersonalConfigurationRecord,
   verifyPersonalConfigurationRecord,
   PERSONAL_CONFIGURATION_PROTOCOL
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { personalSourceDeviceFixture } from "./fixtures/personal-source-device.js";
 
 describe("Personal source protocol boundaries", () => {

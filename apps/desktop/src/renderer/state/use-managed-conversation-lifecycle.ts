@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   personalDesktopProjectThreadSchema,
   type PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import {
   parseManagedConversationIdentity,

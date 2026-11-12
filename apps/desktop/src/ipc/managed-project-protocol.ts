@@ -1,23 +1,23 @@
-import { managedConversationDiffSchema } from "@koed/shared/managed-conversation-diff";
+import { managedConversationDiffSchema } from "@koed-labs/shared/managed-conversation-diff";
 import {
   managedConversationFileOperationResultSchema,
   managedConversationFileOperationSchema
-} from "@koed/shared/managed-conversation-files";
+} from "@koed-labs/shared/managed-conversation-files";
 import {
   managedDevelopmentPreviewCandidateSchema,
   managedDevelopmentPreviewRecordSchema
-} from "@koed/shared/managed-development-preview";
+} from "@koed-labs/shared/managed-development-preview";
 import {
   createManagedTerminalInputSchema,
   managedTerminalClientFrameSchema,
   managedTerminalRecordSchema,
   managedTerminalServerFrameSchema,
   managedTerminalShellProfileSchema
-} from "@koed/shared/managed-terminal";
+} from "@koed-labs/shared/managed-terminal";
 import {
   sourceControlOperationSchema,
   sourceControlResultSchema
-} from "@koed/shared/source-control";
+} from "@koed-labs/shared/source-control";
 import { z } from "zod";
 
 export const managedProjectCommandChannel = "koed:managed-project:command";

@@ -6,7 +6,7 @@ import {
   requireReviewedProjectSelectionHeads,
   type PdsProjectSelectionRecord,
   type PdsProjectSelectionState
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 type Scope = {
   userId: string;

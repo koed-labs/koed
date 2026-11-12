@@ -9,9 +9,11 @@ const dockerfile = readFileSync(
 );
 
 test("API deployment builds MCP prompt assets before compiling and deploying the API", () => {
-  const mcpBuild = dockerfile.indexOf("pnpm --filter @koed/mcp-server build");
-  const apiBuild = dockerfile.indexOf("pnpm --filter @koed/api build");
-  const deploy = dockerfile.indexOf("pnpm --filter @koed/api deploy");
+  const mcpBuild = dockerfile.indexOf(
+    "pnpm --filter @koed-labs/mcp-server build"
+  );
+  const apiBuild = dockerfile.indexOf("pnpm --filter @koed-labs/api build");
+  const deploy = dockerfile.indexOf("pnpm --filter @koed-labs/api deploy");
   assert.ok(mcpBuild >= 0, "MCP build must run its prompt-copy step");
   assert.ok(mcpBuild < apiBuild && apiBuild < deploy);
 });
@@ -23,6 +25,6 @@ test("API image verifies deployed route imports without a source-checkout fallba
   );
   assert.ok(
     dockerfile.indexOf("RUN cd /deploy/api") >
-      dockerfile.indexOf("pnpm --filter @koed/api deploy")
+      dockerfile.indexOf("pnpm --filter @koed-labs/api deploy")
   );
 });

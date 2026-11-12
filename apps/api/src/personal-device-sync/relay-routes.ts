@@ -15,7 +15,7 @@ import {
   verifyPdsRelayRequestProof,
   validatePdsPackageAck,
   validatePdsTombstoneAck
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 
 const MAX_RAW_BYTES = 1024 * 1024;

@@ -1,5 +1,5 @@
-import type { MemorySourceRepository, ActorContext } from "@koed/db";
-import type { PersonalSelectionSnapshot } from "@koed/shared";
+import type { MemorySourceRepository, ActorContext } from "@koed-labs/db";
+import type { PersonalSelectionSnapshot } from "@koed-labs/shared";
 
 type InventoryRepository = Pick<
   MemorySourceRepository,

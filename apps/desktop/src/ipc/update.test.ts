@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { desktopUpdateCommandChannel } from "@koed/shared/desktop-update-contract";
+import { desktopUpdateCommandChannel } from "@koed-labs/shared/desktop-update-contract";
 import { registerDesktopUpdateIpc } from "./update.js";
 
 const state = {

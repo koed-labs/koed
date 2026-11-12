@@ -12,13 +12,13 @@ import type {
   PersonalDesktopProject,
   PersonalDesktopProjectMetadata,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
-import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
+import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed-labs/shared/personal-desktop";
 import {
   personalFolderExecutionId,
   personalFolderScopeId,
   repositoryScopeId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

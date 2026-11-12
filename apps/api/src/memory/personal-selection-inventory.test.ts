@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PersonalSelectionSnapshot } from "@koed/shared";
+import type { PersonalSelectionSnapshot } from "@koed-labs/shared";
 import { listSelectedPersonalThreads } from "./personal-selection-inventory.js";
 
 const actor = { userId: "00000000-0000-4000-8000-000000000001" };

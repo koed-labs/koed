@@ -1,4 +1,4 @@
-import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
+import { unresolvedTeamRepositorySnapshot } from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
@@ -385,6 +385,42 @@ describe("Cross-Identity Sync protocol", () => {
         summaryRevisionHash: crossIdentitySyncDigest(nodesWithoutPrompt)
       })
     ).toBe(false);
+  });
+
+  it("binds optional context dependencies without treating them as summary coverage", () => {
+    const value = packageFixture();
+    const node = value.summaryNodes[0]!;
+    const contextual = {
+      ...node,
+      contextOriginEventIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
+    };
+    contextual.revisionHash =
+      crossIdentitySyncSummaryNodeRevisionHash(contextual);
+    const contextualPackage = {
+      ...value,
+      summaryNodes: [contextual],
+      summaryRevisionHash: crossIdentitySyncDigest([contextual])
+    };
+    expect(isCapturedSessionSyncPackageV2(contextualPackage)).toBe(true);
+    expect(contextual.revisionHash).not.toBe(node.revisionHash);
+    for (const contextOriginEventIds of [
+      [],
+      node.sourceOriginEventIds,
+      [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+      ]
+    ]) {
+      const invalid = { ...contextual, contextOriginEventIds };
+      invalid.revisionHash = crossIdentitySyncSummaryNodeRevisionHash(invalid);
+      expect(
+        isCapturedSessionSyncPackageV2({
+          ...value,
+          summaryNodes: [invalid],
+          summaryRevisionHash: crossIdentitySyncDigest([invalid])
+        })
+      ).toBe(false);
+    }
   });
 
   it("rejects invalid chunk boundaries", () => {

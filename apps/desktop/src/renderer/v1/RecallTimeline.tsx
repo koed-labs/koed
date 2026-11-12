@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { ScrollArea } from "@koed/ui";
+import { ScrollArea } from "@koed-labs/ui";
 
 export function RecallTimeline({
   title,

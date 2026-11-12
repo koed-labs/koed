@@ -1,7 +1,11 @@
 # Backup And Restore
 
 Postgres is the source of truth. Redis contains queues and is not restored as
-authoritative state. A supported backup includes collaboration rows, encrypted
+authoritative state. Stable installation starts from a fresh database using
+`0000_clean_initial_schema`; existing alpha databases are not supported
+upgrade or conversion sources. Backups support recovery of a compatible
+installation, not alpha-to-stable conversion or preservation of alpha contents
+in a stable install. A supported backup includes collaboration rows, encrypted
 field companions, Share Grants and representations, owner-private replicas,
 Cross-Identity Sync relationships/cursors, retention and hold state, durable
 outbox rows, replay watermarks, key references, and vectors. Never repair a
@@ -50,7 +54,7 @@ The acceptance command needs `CREATEDB` and creates/drops its own test database.
 Apply migrations to the stopped target with:
 
 ```bash
-DATABASE_URL='<target Postgres URL>' pnpm --filter @koed/db migrate:up
+DATABASE_URL='<target Postgres URL>' pnpm --filter @koed-labs/db migrate:up
 ```
 
 ## Compose Backup And Restore

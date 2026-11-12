@@ -8,8 +8,8 @@ import {
 
 const usage = [
   "Usage:",
-  "  pnpm --filter @koed/evals eval:tool-choice -- --list-cases",
-  "  pnpm --filter @koed/evals eval:tool-choice -- --score <runs.json> [--out <report.json>]",
+  "  pnpm --filter @koed-labs/evals eval:tool-choice -- --list-cases",
+  "  pnpm --filter @koed-labs/evals eval:tool-choice -- --score <runs.json> [--out <report.json>]",
   "",
   "The score input is a JSON array of run records:",
   '[{"caseId":"project-prior-decision","runIndex":0,"calls":[{"toolName":"memory_answer","arguments":{"search_domain":"project","response_detail":"answer_only","include_evidence":false}}],"finalResponse":"..."}]'

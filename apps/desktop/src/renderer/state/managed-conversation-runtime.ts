@@ -1,4 +1,4 @@
-import type { CollaborationRendererEvent } from "@koed/shared/collaboration";
+import type { CollaborationRendererEvent } from "@koed-labs/shared/collaboration";
 
 import type {
   ManagedConversationResult,

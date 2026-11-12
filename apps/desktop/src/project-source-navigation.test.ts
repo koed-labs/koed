@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { personalFolderScopeId, repositoryScopeId } from "@koed/shared";
+import { personalFolderScopeId, repositoryScopeId } from "@koed-labs/shared";
 import { mergeProjectSources } from "./project-memory-ui.js";
 import { createProjectSourceFixture } from "./project-source-fixture.js";
 import {

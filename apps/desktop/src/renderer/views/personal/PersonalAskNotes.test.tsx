@@ -3,7 +3,7 @@ import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   personalFolderExecutionId,
   type PersonalDesktopApi
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

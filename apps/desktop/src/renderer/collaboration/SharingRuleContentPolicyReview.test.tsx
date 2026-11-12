@@ -8,7 +8,7 @@ import {
   sharingRuleContentPolicyReviewSchema,
   sharingRuleDeliverySchema,
   type PrivacyLabelPolicy
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { SharingRuleContentPolicyReview } from "./SharingRuleContentPolicyReview.js";
 
 type Client = Parameters<typeof SharingRuleContentPolicyReview>[0]["client"];

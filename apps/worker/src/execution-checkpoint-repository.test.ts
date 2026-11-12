@@ -8,8 +8,8 @@ import {
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations
-} from "@koed/db";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+} from "@koed-labs/db";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -18,7 +18,7 @@ import {
   restoreExecutionCheckpoint,
   type ExecutionCheckpointCapture
 } from "./execution-checkpoint.js";
-import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
+import { createGitExecutionCheckoutDriver } from "@koed-labs/shared/execution-checkout";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDb = databaseUrl ? describe : describe.skip;

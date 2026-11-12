@@ -41,7 +41,7 @@ export const writeControlPlanePackageMetadata = ({
 
 export const requiredRuntimeFiles = [
   "api/dist/index.js",
-  "node_modules/@koed/api/dist/browser-approval/index.html",
+  "node_modules/@koed-labs/api/dist/browser-approval/index.html",
   "worker/dist/index.js",
   "embedding-service/dist/index.js",
   "privacy-service/dist/index.js",
@@ -49,16 +49,16 @@ export const requiredRuntimeFiles = [
   "mcp-server/dist/capture-hook.js",
   "mcp-server/dist/codex-memory-hook.js",
   "mcp-server/dist/prompts/codex-global-agent-guidance.md",
-  "node_modules/@koed/db/dist/index.js",
-  "node_modules/@koed/db/dist/connection.js",
-  "node_modules/@koed/db/dist/user-api-token-repository.js",
-  "node_modules/@koed/db/drizzle/meta/_journal.json"
+  "node_modules/@koed-labs/db/dist/index.js",
+  "node_modules/@koed-labs/db/dist/connection.js",
+  "node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+  "node_modules/@koed-labs/db/drizzle/meta/_journal.json"
 ];
 
 export const excludedPackagePatterns = [
   /(^|\/)pnpm-lock\.yaml$/,
   /(^|\/)node_modules\/\.pnpm\/lock\.yaml$/,
-  /(^|\/)node_modules\/\.pnpm\/@koed\+[^/]*@file\+[^/]*(?:\/|$)/,
+  /(^|\/)node_modules\/\.pnpm\/@koed(?:-labs)?\+[^/]*@file\+[^/]*(?:\/|$)/,
   /(^|\/)\.claude(?:\/|$)/,
   /^koed-runtime\/explorer-dist(?:\/|$)/,
   /^koed-server\/dist\/explorer-static-(?:proxy|server)(?:\.|$)/,
@@ -101,7 +101,7 @@ export const prunePnpmWorkspaceVirtualStorePaths = (root, directory = root) => {
     if (
       entry.isDirectory() &&
       directory.endsWith("/.pnpm") &&
-      /^@koed\+[^/]*@file\+/.test(entry.name)
+      /^@koed(?:-labs)?\+[^/]*@file\+/.test(entry.name)
     ) {
       rmSync(path, { recursive: true, force: false });
       continue;
@@ -126,7 +126,10 @@ export const normalizeDeployedWorkspaceDependencies = (manifestPath) => {
     const dependencies = manifest[section];
     if (!dependencies || typeof dependencies !== "object") continue;
     for (const [name, version] of Object.entries(dependencies)) {
-      if (!name.startsWith("@koed/") || !String(version).includes("@file:")) {
+      if (
+        !name.startsWith("@koed-labs/") ||
+        !String(version).includes("@file:")
+      ) {
         continue;
       }
       const dependencyManifest = readJson(
@@ -175,38 +178,21 @@ const deployedManifestFileDependencyErrors = (root) =>
     );
   });
 
-const pnpmWorkspaceSelfSymlinkPattern =
-  /^(?<root>koed-server|koed-runtime\/api|koed-runtime\/worker|koed-runtime\/embedding-service|koed-runtime\/privacy-service|koed-runtime\/mcp-server)\/node_modules\/\.pnpm\/node_modules\/@koed\/(?<name>[^/]+)$/;
-
-const packageSelfNames = {
-  "koed-server": "koed-server",
-  "koed-runtime/api": "api",
-  "koed-runtime/worker": "worker",
-  "koed-runtime/embedding-service": "embedding-service",
-  "koed-runtime/privacy-service": "privacy-service",
-  "koed-runtime/mcp-server": "mcp-server"
-};
-
-export const isPnpmWorkspaceSelfSymlink = (path) => {
-  const match = path.match(pnpmWorkspaceSelfSymlinkPattern);
-  if (!match?.groups) return false;
-  return match.groups.name === packageSelfNames[match.groups.root];
-};
-
 export const platformKey = (platform = process.platform) => {
   if (platform === "darwin") return "macos";
   if (platform === "win32") return "windows";
   return platform;
 };
 
-export const listFiles = (root, dir = root) =>
+const walkFiles = (root, dir) =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = resolve(dir, entry.name);
     const relativePath = relative(root, path).replaceAll("\\", "/");
-    if (isPnpmWorkspaceSelfSymlink(relativePath)) return [];
-    if (entry.isDirectory()) return listFiles(root, path);
+    if (entry.isDirectory()) return walkFiles(root, path);
     return [relativePath];
   });
+
+export const listFiles = (root, dir = root) => walkFiles(root, dir);
 
 export const sha256File = (path) => {
   const hash = createHash("sha256");
@@ -235,7 +221,7 @@ export const buildComponentManifest = ({
   requiredFiles
 }) => {
   const root = resolve(componentRoot);
-  const files = listFiles(root)
+  const files = walkFiles(root, root)
     .sort()
     .map((path) => {
       const stat = lstatSync(resolve(root, path));
@@ -296,28 +282,13 @@ export const readPackageVersion = (repoRoot, packagePath) =>
   readJson(resolve(repoRoot, packagePath)).version;
 
 export const readMigrationSet = (runtimeRoot) => {
-  const legacyJournalPath = resolve(
-    runtimeRoot,
-    "api",
-    "node_modules",
-    "@koed",
-    "db",
-    "drizzle",
-    "meta",
-    "_journal.json"
-  );
-  const sharedJournalPath = resolve(
-    runtimeRoot,
-    "node_modules",
-    "@koed",
-    "db",
-    "drizzle",
-    "meta",
-    "_journal.json"
-  );
-  const journalPath = existsSync(legacyJournalPath)
-    ? legacyJournalPath
-    : sharedJournalPath;
+  const journalPaths = [
+    "api/node_modules/@koed-labs/db/drizzle/meta/_journal.json",
+    "node_modules/@koed-labs/db/drizzle/meta/_journal.json",
+    "api/node_modules/@koed/db/drizzle/meta/_journal.json",
+    "node_modules/@koed/db/drizzle/meta/_journal.json"
+  ].map((path) => resolve(runtimeRoot, path));
+  const journalPath = journalPaths.find(existsSync) ?? journalPaths[1];
   const text = readFileSync(journalPath, "utf8");
   const hash = createHash("sha256").update(text).digest("hex");
   const journal = JSON.parse(text);
@@ -552,10 +523,15 @@ export const validatePackageRoot = (packageRoot) => {
       existsSync(resolve(runtimeRoot, file)) ? null : `${runtimePath}/${file}`
     )
   ].filter(Boolean);
+  const browserScope = requiredFiles.some((file) =>
+    file.startsWith("node_modules/@koed-labs/api/")
+  )
+    ? "@koed-labs"
+    : "@koed";
   const browserAssetRoot = resolve(
     runtimeRoot,
     "node_modules",
-    "@koed",
+    browserScope,
     "api",
     "dist",
     "browser-approval",
@@ -567,10 +543,10 @@ export const validatePackageRoot = (packageRoot) => {
   const browserApprovalErrors = [
     browserAssets.some((file) => /-[A-Za-z0-9_-]{6,}\.js$/.test(file))
       ? null
-      : "koed-runtime/node_modules/@koed/api/dist/browser-approval/assets/<fingerprinted>.js",
+      : `${runtimePath}/node_modules/${browserScope}/api/dist/browser-approval/assets/<fingerprinted>.js`,
     browserAssets.some((file) => /-[A-Za-z0-9_-]{6,}\.css$/.test(file))
       ? null
-      : "koed-runtime/node_modules/@koed/api/dist/browser-approval/assets/<fingerprinted>.css"
+      : `${runtimePath}/node_modules/${browserScope}/api/dist/browser-approval/assets/<fingerprinted>.css`
   ].filter(Boolean);
   const files = existsSync(root) ? listFiles(root) : [];
   const excluded = files.filter((file) =>

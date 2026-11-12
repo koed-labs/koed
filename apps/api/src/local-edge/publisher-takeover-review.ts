@@ -4,8 +4,8 @@ import {
   type CollaborationRendererCommand,
   type SharingRulePublisherTakeoverLocalReview,
   type SharingRulePublisherTakeoverReviewInput
-} from "@koed/shared";
-import type { createSelectionSharingJournal } from "@koed/db";
+} from "@koed-labs/shared";
+import type { createSelectionSharingJournal } from "@koed-labs/db";
 
 type SourceReader = ReturnType<
   typeof createSelectionSharingJournal

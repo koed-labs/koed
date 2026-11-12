@@ -1,9 +1,9 @@
 import type pg from "pg";
-import type { ExpandedMemoryNode } from "@koed/core";
+import type { ExpandedMemoryNode } from "@koed-labs/core";
 import type {
   EnvelopeEncryptionProvider,
   PersonalSelectionSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createCuratedMemoryPolicyMethods } from "./curated-memory-policy.js";
 import { createCuratedMemoryProposalTransitionMethods } from "./curated-memory-proposal-transitions.js";
 import { createCuratedMemoryRecallMethods } from "./curated-memory-recall.js";

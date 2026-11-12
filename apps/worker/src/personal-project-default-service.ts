@@ -1,4 +1,4 @@
-import type { PersonalProjectDefaultRepository } from "@koed/db";
+import type { PersonalProjectDefaultRepository } from "@koed-labs/db";
 import {
   createNotificationDrainController,
   type NotificationDrainPool

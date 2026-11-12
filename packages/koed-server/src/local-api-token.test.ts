@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readDesktopLocalCredentialAuthorization } from "@koed/shared";
+import { readDesktopLocalCredentialAuthorization } from "@koed-labs/shared";
 import { writeLocalAppCredential } from "./credentials.js";
 import {
   provisionLocalApiToken,

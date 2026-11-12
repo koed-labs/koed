@@ -5,7 +5,7 @@ import type {
   ConversationSourceArtifactRecord,
   ConversationSourceDownloadAuthorizationRecord,
   ConversationSourceSegmentRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
   calculateConversationSourceDownloadRequestHash,
@@ -17,7 +17,7 @@ import {
   generateConversationSourceReplicationOriginKeyPair,
   generateRecipientKeyMaterial,
   signConversationSourceReplicationManifest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";

@@ -1,4 +1,4 @@
-import { Badge, Button, Card } from "@koed/ui";
+import { Badge, Button, Card } from "@koed-labs/ui";
 import { Activity, Clipboard, FileText, RefreshCw } from "lucide-react";
 import type { ComponentStatus, KoedServerStatus } from "../../types.js";
 import { AccelerationSettings } from "./AccelerationSettings.js";

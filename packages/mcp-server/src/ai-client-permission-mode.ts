@@ -1,7 +1,7 @@
 import {
   type AiClientCapabilitySupport,
   type SupportedAiClientDriverId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type AiClientPermissionMode =
   | "supervised"

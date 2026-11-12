@@ -15,7 +15,7 @@ import {
   projectFolderFilterGetSchema,
   projectFolderFilterSchema
 } from "../ipc/project-folder-filter.js";
-import { readAvailablePersonalFolders } from "@koed/shared/personal-local-folders";
+import { readAvailablePersonalFolders } from "@koed-labs/shared/personal-local-folders";
 import {
   PersonalMemoryBoundaryError,
   type PersonalMemoryErrorCode
@@ -26,7 +26,7 @@ import {
   personalProjectsData
 } from "./personal-inventory.js";
 import { createProjectCommands } from "./project-commands.js";
-import { projectSelectionLookupResponseSchema } from "@koed/shared/project-selection";
+import { projectSelectionLookupResponseSchema } from "@koed-labs/shared/project-selection";
 import { createPrivacyInstallBridge } from "./privacy-install.js";
 import {
   cachedProcessIdentity,
@@ -106,7 +106,7 @@ import {
   type PersonalDesktopChange,
   type PersonalDesktopRequest,
   type PersonalDesktopResult
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   discoverProjectMetadata,
   listProjectMetadata,
@@ -282,8 +282,8 @@ export interface KoedServerManagerOptions {
     askDesktop(
       input: {
         namedProjectId?: string;
-        folderSelection?: import("@koed/shared").PersonalFolderReference;
-        repositorySelection?: import("@koed/shared").PersonalGitContext;
+        folderSelection?: import("@koed-labs/shared").PersonalFolderReference;
+        repositorySelection?: import("@koed-labs/shared").PersonalGitContext;
         askThreadId?: string;
         idempotencyKey: string;
         query: string;
@@ -1663,8 +1663,8 @@ export const createKoedServerManager = ({
   const callLocalDesktopAsk = async (
     input: {
       namedProjectId?: string;
-      folderSelection?: import("@koed/shared").PersonalFolderReference;
-      repositorySelection?: import("@koed/shared").PersonalGitContext;
+      folderSelection?: import("@koed-labs/shared").PersonalFolderReference;
+      repositorySelection?: import("@koed-labs/shared").PersonalGitContext;
       askThreadId?: string;
       idempotencyKey: string;
       query: string;

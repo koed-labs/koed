@@ -1,4 +1,4 @@
-import type { RecallActivityOverview } from "@koed/shared/personal-desktop";
+import type { RecallActivityOverview } from "@koed-labs/shared/personal-desktop";
 
 export type RecallRange = "1" | "7" | "30" | "custom";
 export const localRecallDate = (date: Date) =>

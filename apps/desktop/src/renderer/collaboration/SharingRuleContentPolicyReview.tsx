@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import {
   noPrivacyLabelsPolicy,
   privacyLabels
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import type {
   PrivacyLabel,
   PrivacyLabelPolicy,
   SharingRuleContentPolicyReview as ContentReview,
   SharingRuleDelivery
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import { failureMessage } from "./collaboration-primitives.js";
 

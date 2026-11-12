@@ -19,7 +19,7 @@ import {
   type PersonalProjectCommand,
   createPdsApplicationSecretStore,
   storeDesktopLocalCredential
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // These manager unit tests use synthetic paths. Real receipt persistence is

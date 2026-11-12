@@ -12,13 +12,13 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createDbPool } from "@koed/db";
+import { createDbPool } from "@koed-labs/db";
 import type { FastifyInstance, InjectOptions } from "fastify";
 import {
   resolveCuratedMemoryReviewConfig,
   reviewCuratedMemoryProposal,
   type CuratedMemoryReviewBundle
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 import { curatedMemoryIntakeCases } from "./cases.js";
 import {
   scoreCuratedMemoryIntakeRun,
@@ -67,7 +67,7 @@ interface JsonResponse {
 type BuildServer = () => Promise<FastifyInstance>;
 
 const loadBuildServer = async (): Promise<BuildServer> => {
-  const apiPackageName = "@koed/api";
+  const apiPackageName = "@koed-labs/api";
   const apiModule: unknown = await import(apiPackageName);
   if (
     !apiModule ||
@@ -75,7 +75,7 @@ const loadBuildServer = async (): Promise<BuildServer> => {
     !("buildServer" in apiModule) ||
     typeof apiModule.buildServer !== "function"
   ) {
-    throw new Error("@koed/api does not export buildServer");
+    throw new Error("@koed-labs/api does not export buildServer");
   }
   return apiModule.buildServer as BuildServer;
 };

@@ -1,9 +1,9 @@
-import type { RepositoryIdentity } from "@koed/shared";
+import type { RepositoryIdentity } from "@koed-labs/shared";
 import {
   personalInventoryReference,
   type RecallActivityQuestion
-} from "@koed/shared/personal-desktop";
-import { repositoryScopeId } from "@koed/shared/repository-recall";
+} from "@koed-labs/shared/personal-desktop";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
 import {
   projectForLocalProject,
   repoLabelFromRemoteDisplay,

@@ -5,15 +5,15 @@ import {
   type PersonalDesktopProject,
   type PersonalDesktopConversationEvent,
   type PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 
 import { mergeConversationEvents } from "../../desktop-conversation.js";
 import {
   partitionPersonalInventory,
   classifyPersonalInventory,
   repositoryScopeId
-} from "@koed/shared/personal-desktop";
-import type { PersonalFolderObservation } from "@koed/shared";
+} from "@koed-labs/shared/personal-desktop";
+import type { PersonalFolderObservation } from "@koed-labs/shared";
 import {
   mergeProjectSources,
   type DesktopProject,

@@ -25,8 +25,8 @@ import {
   PROTOCOL_VERSION_META_KEY,
   type McpRequestContext
 } from "@modelcontextprotocol/server";
-import releaseManifest from "@koed/koed/package.json" with { type: "json" };
-import { assertKoedReleaseVersion } from "@koed/koed/release-version";
+import releaseManifest from "@koed-labs/koed/package.json" with { type: "json" };
+import { assertKoedReleaseVersion } from "@koed-labs/koed/release-version";
 import { z } from "zod";
 import {
   allTools,

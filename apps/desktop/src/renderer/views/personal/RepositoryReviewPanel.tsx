@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { Button } from "@koed/ui";
+import { Button } from "@koed-labs/ui";
 import { RefreshCw } from "lucide-react";
 import type {
   RepositoryChange,
   RepositoryReview
-} from "@koed/shared/repository-review";
+} from "@koed-labs/shared/repository-review";
 import type { RendererPlatform } from "../../services/platform.js";
 
 export function RepositoryReviewPanel({

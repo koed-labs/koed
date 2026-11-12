@@ -7,9 +7,9 @@ import {
   TabsList,
   TabsPanel,
   TabsTab
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { RefreshCw, Trash2 } from "lucide-react";
-import type { PersonalSourceCorrectionInput } from "@koed/shared";
+import type { PersonalSourceCorrectionInput } from "@koed-labs/shared";
 import {
   effective,
   SourceContextStatus,

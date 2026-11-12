@@ -4,9 +4,9 @@ import type {
   DeviceCredentialAuthContext,
   HighRiskActionGrantBindingRecord,
   UserSessionContext
-} from "@koed/db";
+} from "@koed-labs/db";
 import Fastify from "fastify";
-import { sharedMemoryPreviewActionGrantBinding } from "@koed/shared";
+import { sharedMemoryPreviewActionGrantBinding } from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 

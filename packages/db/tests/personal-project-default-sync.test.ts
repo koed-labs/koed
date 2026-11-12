@@ -7,8 +7,8 @@ import {
   type PdsSessionPackage,
   type PersonalGitContext,
   type PersonalFolderObservation
-} from "@koed/shared";
-import { personalProjectDefaultIdentity } from "@koed/shared/personal-project-default";
+} from "@koed-labs/shared";
+import { personalProjectDefaultIdentity } from "@koed-labs/shared/personal-project-default";
 import {
   createDbPool,
   createMemorySourceRepository,

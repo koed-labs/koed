@@ -6,7 +6,7 @@ import type {
   DeviceCredentialAuthContext,
   MemorySourceRepository,
   UserSessionContext
-} from "@koed/db";
+} from "@koed-labs/db";
 import type { AuthLogKind } from "../server/logging.js";
 import {
   DelegatedAuthenticationError,

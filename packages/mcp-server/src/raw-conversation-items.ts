@@ -5,7 +5,7 @@ import {
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
   rawConversationTransportChunkGroupId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type { MemoryApiClient } from "./index.js";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";

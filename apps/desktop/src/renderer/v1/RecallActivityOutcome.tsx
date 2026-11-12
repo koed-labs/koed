@@ -1,6 +1,6 @@
-import { Badge } from "@koed/ui";
+import { Badge } from "@koed-labs/ui";
 import { AlertCircle, CheckCircle2, CircleDashed, Clock3 } from "lucide-react";
-import type { RecallActivityQuestion } from "@koed/shared/personal-desktop";
+import type { RecallActivityQuestion } from "@koed-labs/shared/personal-desktop";
 
 const outcomeLabels = {
   found: "Memory found",

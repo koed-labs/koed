@@ -1,4 +1,4 @@
-import type { CollaborationSnapshot } from "@koed/shared/collaboration";
+import type { CollaborationSnapshot } from "@koed-labs/shared/collaboration";
 import { useCallback, useSyncExternalStore } from "react";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 

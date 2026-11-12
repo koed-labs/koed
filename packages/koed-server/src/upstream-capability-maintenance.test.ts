@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSecureUpstreamFetch } from "@koed/shared/secure-upstream-fetch";
+import { createSecureUpstreamFetch } from "@koed-labs/shared/secure-upstream-fetch";
 import { resolveKoedServerPaths } from "./paths.js";
 import { maintainUpstreamCapabilities } from "./upstream-capability-maintenance.js";
 import {

@@ -6,7 +6,7 @@ import {
   SharedMemoryConflictError,
   type RepositorySharingRuleCreationIntent,
   type SharingRulePublisherTakeoverReviewInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { readSharingRulePublisher } from "./sharing-rule-publisher.js";
 import {
   workspaceSourceIsNotExcludedSql,

@@ -1,4 +1,4 @@
-import { aiClientCapabilityIds } from "@koed/shared";
+import { aiClientCapabilityIds } from "@koed-labs/shared";
 import type {
   LocalMemoryAgentFlowKey,
   LocalMemoryAgentSettingRecord,

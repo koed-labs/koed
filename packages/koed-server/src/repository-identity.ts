@@ -3,7 +3,7 @@ import {
   isPortableGitRemote,
   type AssociatedRepositorySelection,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { GitProjectProbeResult } from "./git-project-probe.js";
 
 export const resolveRepositoryIdentity = (input: {

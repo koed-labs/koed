@@ -4,7 +4,7 @@ import type {
   RecallActivityListInput,
   RecallActivityOverview,
   RecallActivityPage
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 
 type View = {
   key: string;

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   memoryAnswerToolDescriptionVersion,
   memoryServerInstructionsVersion
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 import { asyncRecallCases } from "./cases.js";
 import { scoreRecallTrace, type RecallEvent } from "./benchmark.js";
 

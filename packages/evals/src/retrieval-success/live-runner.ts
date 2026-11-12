@@ -2,21 +2,21 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import type { MemorySearchResult } from "@koed/core";
+import type { MemorySearchResult } from "@koed-labs/core";
 import {
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations,
   type EmbeddableSourceRecord,
   type MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   answerWithMemoryWorker,
   resolveMemoryAnswerWorkerConfig,
   type MemoryAnswerRetrievalClient,
   type MemoryAnswerWorkerResponse
-} from "@koed/mcp-server";
-import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
+} from "@koed-labs/mcp-server";
+import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
 import { retrievalSuccessCases, type RetrievalSuccessCase } from "./cases.js";
 import {
   scoreRetrievalSuccessRun,
@@ -107,8 +107,8 @@ export interface LiveRetrievalSuccessComparisonReport {
 
 const usage = [
   "Usage:",
-  "  pnpm --filter @koed/evals eval:retrieval-success:live -- --database-url <postgres-url> [--runs 1] [--case id1,id2] [--out report.json]",
-  "  pnpm --filter @koed/evals eval:retrieval-success:live -- --embedding-provider service --embedding-service-url http://127.0.0.1:8000 --embedding-service-token <token> --database-url <postgres-url>",
+  "  pnpm --filter @koed-labs/evals eval:retrieval-success:live -- --database-url <postgres-url> [--runs 1] [--case id1,id2] [--out report.json]",
+  "  pnpm --filter @koed-labs/evals eval:retrieval-success:live -- --embedding-provider service --embedding-service-url http://127.0.0.1:8000 --embedding-service-token <token> --database-url <postgres-url>",
   "",
   "Options:",
   "  --embedding-provider deterministic|service   Defaults to deterministic.",

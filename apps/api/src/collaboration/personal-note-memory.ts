@@ -2,8 +2,8 @@ import type {
   CollaborationRepository,
   MemorySourceRepository,
   PersonalNoteRecord
-} from "@koed/db";
-import type { KoedWorkClass } from "@koed/shared";
+} from "@koed-labs/db";
+import type { KoedWorkClass } from "@koed-labs/shared";
 
 import type { MemoryJobStatus } from "../memory/jobs.js";
 

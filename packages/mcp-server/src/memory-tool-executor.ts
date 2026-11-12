@@ -1,4 +1,7 @@
-import { recallMemoryStatusSchema, recallCallerSchema } from "@koed/shared";
+import {
+  recallMemoryStatusSchema,
+  recallCallerSchema
+} from "@koed-labs/shared";
 import {
   pinRepositoryRecallContext,
   resolveRequestedProjectRoot,
@@ -14,7 +17,7 @@ import {
   requirePortableTeamRepositoryContext,
   personalDesktopAskSubmitInputSchema,
   type PersonalSelectionSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   answerWithMemoryWorker,
   type MemoryAnswerConversationTurn,
@@ -106,8 +109,8 @@ export interface TrustedMemoryAnswerExecutionOptions {
 
 export interface DesktopAskExecutionInput {
   namedProjectId?: string;
-  folderSelection?: import("@koed/shared").PersonalFolderReference;
-  repositorySelection?: import("@koed/shared").PersonalGitContext;
+  folderSelection?: import("@koed-labs/shared").PersonalFolderReference;
+  repositorySelection?: import("@koed-labs/shared").PersonalGitContext;
   askThreadId?: string;
   idempotencyKey: string;
   query: string;

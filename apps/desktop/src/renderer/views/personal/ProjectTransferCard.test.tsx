@@ -7,12 +7,12 @@ import {
   repositoryScopeId,
   type PersonalGitContext,
   type PersonalProjectRule
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   PersonalDesktopApi,
   PersonalDesktopProject,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { mergeProjectSources } from "../../../project-memory-ui.js";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { ProjectOrganization } from "./ProjectOrganization.js";

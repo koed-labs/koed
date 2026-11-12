@@ -16,7 +16,7 @@ const files = vi.hoisted(() => [
   { path: "onnx/model.onnx_data", body: "synthetic pinned weights" }
 ]);
 
-vi.mock("@koed/shared", async (original) => {
+vi.mock("@koed-labs/shared", async (original) => {
   const actual = await original<Record<string, unknown>>();
   const { createHash } = await import("node:crypto");
   return {

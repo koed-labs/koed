@@ -11,7 +11,7 @@ import {
   SidebarInset,
   SidebarTrigger,
   useSidebar
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import {
   ChartNoAxesColumn,
   ChevronLeft,

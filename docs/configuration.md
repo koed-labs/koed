@@ -658,7 +658,7 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   `pnpm api-token:create`. Docker Compose derives service-internal database URLs
   from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`. Hosted
   `koed-server` traffic should use the runtime Postgres role; use the migration
-  role only for `pnpm --filter @koed/db migrate:up`. See
+  role only for `pnpm --filter @koed-labs/db migrate:up`. See
   [hosted-database-roles.md](hosted-database-roles.md).
 - `API_NODE_ENV`: runtime environment for the internal API app. Use
   `production` for deployed `koed-server` runs.
@@ -1123,6 +1123,17 @@ policy, or full URLs containing customer content.
 - `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders. Default `100`.
 - `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: semantic `memory_event.content` token threshold for creating LCM placeholders. Default `32768`; values above `32768` are clamped to the Qwen operational cap. Provenance payload JSON is not counted.
 - `MEMORY_LCM_FRESH_EVENT_TAIL`: recent event tail excluded from LCM placeholder creation. Default `10`.
+
+  New LCM leaves may read the immediate next eligible Memory Event as a separately
+  labelled context-only input. It can complete a statement or resolve a tool
+  result at the leaf boundary; unrelated content is not summarised. This does not
+  count that event as covered or remove it from the fresh tail. The event is a
+  separate dependency for input revision checks and invalidation. No next event
+  is invented or awaited indefinitely at force/finalize boundaries. Full context
+  text participates in local worker prompt admission and is supplied only to the
+  final source shard, not raw rollup/reduction inputs. Existing completed
+  summaries are not automatically rewritten.
+
 - `MEMORY_LCM_COMPACTION_MAX_EVENTS`: maximum eligible Memory Events admitted to one owner-scoped LCM compaction reconciliation batch. Default `1000`; maximum `10000`.
 - `MEMORY_LCM_DEPTH1_FANOUT`: leaf fanout for depth-1 LCM placeholder creation. Default `20`.
 - `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.

@@ -2,7 +2,7 @@ import {
   recallQuestionReportedMetadataSchema,
   personalFolderReferenceSchema,
   personalGitContextSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 import {
   memoryQuestionRetrievalScopeSchema,

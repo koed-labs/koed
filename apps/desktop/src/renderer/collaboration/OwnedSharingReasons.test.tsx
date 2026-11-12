@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OwnedSharingReason } from "@koed/shared/collaboration";
+import type { OwnedSharingReason } from "@koed-labs/shared/collaboration";
 import { OwnedSharingReasons } from "./OwnedSharingReasons.js";
 
 const host = document.createElement("div");

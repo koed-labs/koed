@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RecallActivityOverview } from "@koed/shared/personal-desktop";
+import type { RecallActivityOverview } from "@koed-labs/shared/personal-desktop";
 import {
   recallCallerPresentation,
   recallChartModel,

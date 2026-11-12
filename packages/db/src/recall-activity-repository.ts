@@ -1,4 +1,4 @@
-import { recallQuestionMetadataSchema } from "@koed/shared";
+import { recallQuestionMetadataSchema } from "@koed-labs/shared";
 import {
   personalRecallPredicate,
   recallActivityFilter,
@@ -8,7 +8,7 @@ import {
   recallActivityOverviewInputSchema,
   type RecallActivityOverviewInput,
   type RecallActivityOverview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type pg from "pg";
 import {
   recallActivityListInputSchema,
@@ -16,8 +16,8 @@ import {
   type RecallActivityListInput,
   type RecallActivityPage,
   type RecallActivityQuestion
-} from "@koed/shared";
-import type { RecallActivityDetail } from "@koed/shared";
+} from "@koed-labs/shared";
+import type { RecallActivityDetail } from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";

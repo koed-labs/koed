@@ -2,8 +2,8 @@ import type {
   CollaborationDurableSend,
   CollaborationSelection,
   CollaborationSnapshot
-} from "@koed/shared/collaboration";
-import { Button, Spinner } from "@koed/ui";
+} from "@koed-labs/shared/collaboration";
+import { Button, Spinner } from "@koed-labs/ui";
 import {
   AlertTriangle,
   Check,

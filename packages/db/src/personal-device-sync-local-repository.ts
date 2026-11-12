@@ -3,7 +3,7 @@ import {
   canonicalizePdsJson,
   encodePdsPersonalSourceContextSnapshot,
   type PersonalSourceContextSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { lockPersonalSourceContextOwner } from "./personal-source-binding-state.js";
 import { resolveVerifiedPdsNativeSource } from "./personal-source-native-identity.js";
 import { retainVerifiedPersonalSourceBinding } from "./personal-source-binding-receipt.js";
@@ -14,7 +14,7 @@ import {
 import {
   validatePdsClosedProfileTransition,
   validatePdsCheckpointProfileTransition
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { applyPdsRepositoryAssignmentSnapshot } from "./pds-repository-assignment.js";
 import {
   mapRepositoryAssignment,
@@ -25,7 +25,7 @@ import type {
   PdsRepositoryAssignment,
   PdsCheckpointProfileTransition,
   PdsClosedProfileTransition
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import {

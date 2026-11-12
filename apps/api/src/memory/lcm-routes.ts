@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import {
   lcmLexicalAnchorGroundingPayloads,
   validateLcmLexicalAnchors
-} from "@koed/core";
+} from "@koed-labs/core";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   lcmSummaryClaimParamsSchema,
@@ -149,7 +149,10 @@ export const registerLcmRoutes = (
 
       const anchorValidation = validateLcmLexicalAnchors(
         input.summaryStructuredJson.lexical_anchors,
-        lcmLexicalAnchorGroundingPayloads(node.sourceItems)
+        lcmLexicalAnchorGroundingPayloads([
+          ...node.sourceItems,
+          ...(node.contextItems ?? [])
+        ])
       );
       if (anchorValidation.rejected.length > 0) {
         return reply.status(400).send({

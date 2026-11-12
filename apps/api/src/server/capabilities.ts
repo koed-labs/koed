@@ -1,10 +1,10 @@
-import releaseManifest from "@koed/koed/package.json" with { type: "json" };
+import releaseManifest from "@koed-labs/koed/package.json" with { type: "json" };
 import {
   COLLABORATION_CONTRACT_VERSION,
   REALTIME_TRANSPORT_TICKET_TTL_SECONDS,
   REALTIME_TRANSPORT_TICKET_VERSION,
   type RealtimeTransportOffer
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const koedReleaseVersion = releaseManifest.version;
 

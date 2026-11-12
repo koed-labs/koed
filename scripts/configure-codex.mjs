@@ -60,7 +60,7 @@ for (const filePath of mode === "remove"
     ]) {
   if (!existsSync(filePath)) {
     console.error(
-      `${filePath} does not exist. Run pnpm --filter @koed/mcp-server build first.`
+      `${filePath} does not exist. Run pnpm --filter @koed-labs/mcp-server build first.`
     );
     process.exit(1);
   }

@@ -4,7 +4,7 @@ import {
   personalProjectReferenceSchema,
   personalFolderReferenceSchema,
   CURATED_MEMORY_REVIEW_MAX_EVIDENCE
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 import { memoryAnswerRetrievalHintsSchema } from "./memory-answer-request.js";
 import { MEMORY_ANSWER_DELIVERY_MODES } from "../integrations/pi/memory-answer-delivery-policy.mjs";

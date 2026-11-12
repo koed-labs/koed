@@ -598,10 +598,13 @@ const assertPackagedJsSurface = (layout) => {
       "Packaged Codex memory guidance",
       "mcp-server/dist/prompts/codex-global-agent-guidance.md"
     ],
-    ["Packaged DB package artifact", "node_modules/@koed/db/dist/index.js"],
+    [
+      "Packaged DB package artifact",
+      "node_modules/@koed-labs/db/dist/index.js"
+    ],
     [
       "Packaged DB migration journal",
-      "node_modules/@koed/db/drizzle/meta/_journal.json"
+      "node_modules/@koed-labs/db/drizzle/meta/_journal.json"
     ]
   ]) {
     assertExists(label, resolve(layout.runtimeRoot, relativePath));
@@ -741,7 +744,7 @@ const smokePackageStatus = (layout, koedHome) => {
 };
 
 const smokePackagedCollaborationBroker = async (layout, koedHome) => {
-  const { COLLABORATION_CONTRACT_VERSION } = await import("@koed/shared");
+  const { COLLABORATION_CONTRACT_VERSION } = await import("@koed-labs/shared");
   return new Promise((resolveSmoke, rejectSmoke) => {
     const sessionToken = randomBytes(32).toString("base64url");
     const requestId = randomUUID();

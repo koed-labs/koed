@@ -6,8 +6,8 @@
     "outDir": "dist-electron",
     "rootDir": "src",
     "paths": {
-      "@koed/shared": ["../../packages/shared/dist/index.d.ts"],
-      "@koed/shared/private-network": [
+      "@koed-labs/shared": ["../../packages/shared/dist/index.d.ts"],
+      "@koed-labs/shared/private-network": [
         "../../packages/shared/dist/private-network.d.ts"
       ],
       "*": ["../../*"]

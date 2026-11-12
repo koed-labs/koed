@@ -1,5 +1,5 @@
 ---
-"@koed/koed": minor
+"@koed-labs/koed": minor
 ---
 
 Redesign desktop Recall activity with a live overview, aligned activity and timeline cards, saved Kins, and charts that adapt to the selected date range. Move Recall activity above Settings with matching navigation icons. Preserve pagination, access checks, and recorded-usage coverage.

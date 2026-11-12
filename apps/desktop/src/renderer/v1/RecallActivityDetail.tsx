@@ -9,13 +9,13 @@ import {
   TabsList,
   TabsPanel,
   TabsTab
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { Check, Copy, FileText, Info, Layers } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   PersonalDesktopApi,
   RecallActivityDetail as Detail
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import {
   SecureMarkdown,
   type MarkdownPlatformAdapters

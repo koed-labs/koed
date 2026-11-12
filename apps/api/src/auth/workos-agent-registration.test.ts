@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { Redis } from "ioredis";
 import { SignJWT, jwtVerify, type JWTHeaderParameters } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   MemoryRateLimitStore,
   RedisRateLimitStore,

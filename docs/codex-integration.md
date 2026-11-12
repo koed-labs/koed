@@ -115,7 +115,7 @@ Koed's marked block and preserves all other global instructions.
 Packaged app runtimes keep the Codex guidance beside the stable MCP Server
 wrapper under `mcp-server/dist/prompts`. Setup and status read that copy. The
 MCP Server's complete prompt bundle remains in the shared production dependency
-graph under `node_modules/@koed/mcp-server/dist/prompts`.
+graph under `node_modules/@koed-labs/mcp-server/dist/prompts`.
 
 ## API Token
 
@@ -137,7 +137,7 @@ memory evidence. It is a thin MCP `2026-07-28` stdio adapter; it does not own
 capture or persistent local services.
 
 ```bash
-pnpm --filter @koed/mcp-server build
+pnpm --filter @koed-labs/mcp-server build
 ```
 
 In Codex Desktop, add a custom MCP server using `STDIO`:
@@ -262,7 +262,7 @@ If you install the package binary, use:
 koed-capture-hook
 ```
 
-For a direct Koed checkout, build `@koed/mcp-server` and point Codex at:
+For a direct Koed checkout, build `@koed-labs/mcp-server` and point Codex at:
 
 ```text
 /path/to/koed/packages/mcp-server/dist/capture-hook.js

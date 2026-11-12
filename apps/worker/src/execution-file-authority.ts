@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { devNull } from "node:os";
 import { promisify } from "node:util";
 
-import type { ManagedConversationExecutionCheckpointRecord } from "@koed/db";
+import type { ManagedConversationExecutionCheckpointRecord } from "@koed-labs/db";
 import {
   MANAGED_CONVERSATION_FILE_MAX_READ_BYTES,
   MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES,
@@ -11,10 +11,10 @@ import {
   managedConversationFileOperationResultSchema,
   type ManagedConversationFileOperation,
   type ManagedConversationFileOperationResult
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
-import type { ExecutionCheckoutIdentity } from "@koed/shared/execution-checkout";
-import { classifySourceContent } from "@koed/shared";
+import type { ExecutionCheckoutIdentity } from "@koed-labs/shared/execution-checkout";
+import { classifySourceContent } from "@koed-labs/shared";
 
 const execFileAsync = promisify(execFile);
 const objectIdPattern = /^[0-9a-f]{40,64}$/;

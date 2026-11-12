@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, type KeyObject } from "node:crypto";
-import type { PersonalConfigurationRepository } from "@koed/db";
+import type { PersonalConfigurationRepository } from "@koed-labs/db";
 import {
   PERSONAL_CONFIGURATION_PROTOCOL,
   canonicalizePdsJson,
@@ -24,7 +24,7 @@ import {
   type PdsSessionPackageRuntimeContext,
   type PdsRelayClient,
   type PdsSessionPackage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 function hasProjectKin(payload: PersonalConfigurationPayload) {
   return (

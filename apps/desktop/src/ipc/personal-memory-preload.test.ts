@@ -1,7 +1,7 @@
 import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   type PersonalDesktopResult
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createProjectSourceFixture } from "../project-source-fixture.js";
 import { describe, expect, it, vi } from "vitest";
 

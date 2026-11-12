@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import * as sharedRewritePolicy from "@koed/shared";
+import * as sharedRewritePolicy from "@koed-labs/shared";
 import {
   verifyCodexTranscriptRewrite,
   verifyCodexTranscriptContinuation,

@@ -136,12 +136,14 @@ terminal and fail closed.
   The maximum-preview capacity fixture measures the full 64 MiB
   classification-text ceiling and has demonstrated a transient heap delta in
   the hundreds of MiB, so the initial deployment-wide limit remains one.
-- Migration `0034` is the internal alpha selective-PII baseline. It refuses
-  populated legacy
-  Team-sharing rows whose unsanitized content cannot be given truthful privacy
-  provenance. Test data must be reset before applying it; Personal canonical
-  source is outside that reset boundary. Release migrations will be collapsed
-  into the supported initial schema before the first stable release.
+- Migration `0034` was the internal alpha selective-PII baseline. It refused
+  populated legacy Team-sharing rows whose unsanitized content could not be
+  given truthful privacy provenance. This historical alpha migration is not a
+  stable upgrade source. Stable starts from a fresh database using the single
+  `0000_clean_initial_schema` baseline; alpha databases are not migrated or
+  converted in place, and their contents are not promised to be preserved.
+  Processing-data preservation decisions do not change this SQL compatibility
+  boundary.
 - Koed describes this as exposure reduction and data minimization, not as a
   guarantee of anonymization or complete secret detection.
 

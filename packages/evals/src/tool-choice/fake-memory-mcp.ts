@@ -3,11 +3,11 @@ import { appendFile } from "node:fs/promises";
 import {
   memoryAnswerToolDescription,
   memoryServerInstructions
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
-import { MEMORY_ANSWER_DELIVERY_MODES } from "@koed/mcp-server/memory-answer-delivery-policy";
+import { MEMORY_ANSWER_DELIVERY_MODES } from "@koed-labs/mcp-server/memory-answer-delivery-policy";
 
 const logPath = process.env.TOOL_CHOICE_LOG_PATH;
 const fakeMemoryAnswer = (() => {

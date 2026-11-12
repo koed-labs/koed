@@ -64,7 +64,7 @@ export const inventoryDesktopPayload = (root, privacyPackages = []) => {
   };
   visit(root);
   const excluded = new Set([
-    "@koed/privacy-service",
+    "@koed-labs/privacy-service",
     "onnxruntime-node",
     "onnxruntime-web",
     "onnxruntime-common",

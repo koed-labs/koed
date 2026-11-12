@@ -13,11 +13,11 @@ import {
   type SelectionSharingSourceState,
   type SharedMemoryCandidatePreview,
   type SharingRuleSourceIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   createSelectionSharingJournal,
   SelectionSharingSourceLease
-} from "@koed/db";
+} from "@koed-labs/db";
 import { createRepositorySharingRuleMemberSchema } from "../shared-memory/schemas.js";
 
 type Journal = Pick<
