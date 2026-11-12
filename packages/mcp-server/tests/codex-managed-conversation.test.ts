@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
-import { normalizeGitRemoteUrl } from "@koed/shared";
+import { normalizeGitRemoteUrl } from "@koed-labs/shared";
 import os from "node:os";
 import path from "node:path";
 import { zstdCompressSync } from "node:zlib";

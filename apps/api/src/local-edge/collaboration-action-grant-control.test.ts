@@ -9,7 +9,7 @@ import {
   collaborationRendererCommandSchema,
   readCollaborationActionGrantCustodyStatus,
   type CollaborationRendererCommand
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {

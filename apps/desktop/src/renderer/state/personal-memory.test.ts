@@ -1,5 +1,5 @@
 import { createProjectSourceFixture } from "../../project-source-fixture.js";
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import { repositoryScopeId, type RepositoryIdentity } from "@koed-labs/shared";
 import type {
   PersonalDesktopApi,
   PersonalDesktopChange,
@@ -7,8 +7,8 @@ import type {
   PersonalDesktopProject,
   PersonalDesktopProjectMetadata,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
-import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
+import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed-labs/shared/personal-desktop";
 import { describe, expect, it, vi } from "vitest";
 import {
   PersonalMemoryStore,

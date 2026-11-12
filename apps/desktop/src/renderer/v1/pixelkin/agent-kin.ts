@@ -1,5 +1,5 @@
-import { personalProjectKinSchema } from "@koed/shared/personal-desktop";
-import type { PersonalProjectKin } from "@koed/shared";
+import { personalProjectKinSchema } from "@koed-labs/shared/personal-desktop";
+import type { PersonalProjectKin } from "@koed-labs/shared";
 import {
   KIN_COLOURS,
   KIN_DEFAULTS,

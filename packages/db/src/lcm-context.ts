@@ -1,5 +1,5 @@
 import type pg from "pg";
-import type { LcmSourceItem, MemoryActor } from "@koed/core";
+import type { LcmSourceItem, MemoryActor } from "@koed-labs/core";
 import type { Visibility } from "./types.js";
 import { semanticMemoryEventEligibleSql } from "./approval-activity-sql.js";
 

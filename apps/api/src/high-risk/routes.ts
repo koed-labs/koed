@@ -3,7 +3,7 @@ import type {
   HighRiskActionGrantBindingRecord,
   MemorySourceRepository,
   UserSessionContext
-} from "@koed/db";
+} from "@koed-labs/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { AuthHelpers, HashSecret } from "../auth/session.js";

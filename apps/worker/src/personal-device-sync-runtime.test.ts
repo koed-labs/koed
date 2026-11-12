@@ -3,8 +3,8 @@ import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { MemorySourceRepository } from "@koed/db";
-import type { PdsSessionManifest, PdsSessionPackage } from "@koed/shared";
+import type { MemorySourceRepository } from "@koed-labs/db";
+import type { PdsSessionManifest, PdsSessionPackage } from "@koed-labs/shared";
 import {
   canonicalizePdsJson,
   PDS_PROJECT_SELECTION_PROTOCOL,
@@ -18,7 +18,7 @@ import {
   resolveSupportedEmbeddingModelConfig,
   signPdsRecord,
   verifyAndDecryptPdsSessionSourcePackage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createReloadablePdsWorkerRuntimeFromEnvironment,
   advancePdsReceivedSourceCursor,

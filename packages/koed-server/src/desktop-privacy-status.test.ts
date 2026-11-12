@@ -5,7 +5,7 @@ import {
   PINNED_PRIVACY_MODEL_ID,
   PINNED_PRIVACY_MODEL_REVISION,
   PINNED_PRIVACY_CLASSIFIER_HASH
-} from "@koed/shared";
+} from "@koed-labs/shared";
 const state = vi.hoisted(() => ({ components: vi.fn(), model: vi.fn() }));
 vi.mock("./component-commands.js", () => ({
   runComponentStatus: state.components

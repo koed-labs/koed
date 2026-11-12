@@ -11,7 +11,7 @@ import {
   verifyPdsRepositoryAssignmentWithKeyHistory,
   isPdsSessionCheckpointManifest,
   type PdsSessionPackage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { createMemorySourceRepository } from "../../src/index.js";
 import { pdsConversationItemsForClosure } from "../../../../apps/api/src/personal-device-sync/local-source.js";
 import { pdsCheckpointMaterializationSource } from "../../../../apps/worker/src/personal-device-sync-runtime.js";

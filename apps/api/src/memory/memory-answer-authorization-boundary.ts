@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import type { SharedMemorySemanticAuthorizationBoundary } from "@koed/db";
+import type { SharedMemorySemanticAuthorizationBoundary } from "@koed-labs/db";
 import { z } from "zod";
 
 export const MEMORY_ANSWER_AUTHORIZATION_BOUNDARY_MAX_GRANTS = 128;

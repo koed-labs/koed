@@ -1,11 +1,15 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   bundledPdsSecretProviderEnvironment,
   runApplicationSecretProvider
 } from "./application-secret-provider.js";
+
+vi.mock("./private-node-launcher.js", () => ({
+  privateNodeLauncher: () => "/koed/node/bin/node"
+}));
 
 const roots: string[] = [];
 
@@ -44,7 +48,9 @@ describe("application PDS secret provider", () => {
       KOED_HOME: "/tmp/koed"
     });
     expect(environment.PDS_SECRET_PROVIDER).toBe("headless");
-    expect(environment.PDS_SECRET_PROVIDER_COMMAND).toBe(process.execPath);
+    // Providers run with a restricted environment, so the command must be the
+    // private Node launcher rather than process.execPath.
+    expect(environment.PDS_SECRET_PROVIDER_COMMAND).toBe("/koed/node/bin/node");
     expect(environment.PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON).toContain(
       "secret-provider"
     );

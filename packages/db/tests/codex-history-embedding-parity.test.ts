@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   resolveSupportedEmbeddingModelConfig
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

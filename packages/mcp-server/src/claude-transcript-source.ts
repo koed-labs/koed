@@ -2,7 +2,7 @@ import {
   resolveHistoricalCaptureRepositoryIdentity,
   unresolvedHistoricalRepositoryIdentity
 } from "./historical-repository-context.js";
-import type { RepositoryIdentity } from "@koed/shared";
+import type { RepositoryIdentity } from "@koed-labs/shared";
 import {
   recordedCaptureFolderObservation,
   currentCaptureFolderObservation

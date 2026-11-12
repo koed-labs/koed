@@ -11,8 +11,8 @@ import type {
   DeviceCredentialAuthContext,
   HighRiskActionRepository,
   PendingShareRecord
-} from "@koed/db";
-import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
+} from "@koed-labs/db";
+import { defaultFreshAuthenticationMaxAgeMs } from "@koed-labs/db";
 import {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
@@ -75,13 +75,13 @@ import {
   SharedMemorySourceItemRejectedError,
   type SharedMemoryCanonicalSourceItemDto,
   type SharedMemoryActionGrantBinding
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   SHARED_MEMORY_AUTHORITY,
   SharedMemoryAuthorizationError,
   TeamConversationSourceAuthorizationError,
   TeamConversationSourceConflictError
-} from "@koed/db";
+} from "@koed-labs/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 

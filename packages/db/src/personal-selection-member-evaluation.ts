@@ -3,7 +3,7 @@ import {
   crossIdentitySyncDigest,
   personalSelectionMemberEvaluationInputSchema,
   personalSelectionMemberEvaluationSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { personalProjectMemberEvidenceKnownSql } from "./personal-project-member-evidence-sql.js";
 import { personalSelectionScopeVersion } from "./personal-selection-scope-version.js";
 import type { ActorContext } from "./types.js";

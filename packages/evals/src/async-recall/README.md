@@ -12,8 +12,8 @@ It does not use Stop hooks, Code Mode, or MCP Tasks.
 Run the scorer against scripted reference traces, without a model:
 
 ```bash
-pnpm --filter @koed/evals eval:async-recall
-pnpm --filter @koed/evals exec vitest run src/async-recall/benchmark.test.ts
+pnpm --filter @koed-labs/evals eval:async-recall
+pnpm --filter @koed-labs/evals exec vitest run src/async-recall/benchmark.test.ts
 ```
 
 These checks validate fixture and scoring logic, **not actual model behavior**.
@@ -21,7 +21,7 @@ To observe actual native Codex tool behavior against the delayed synthetic MCP
 fixture (requires a configured Codex binary and credentials):
 
 ```bash
-pnpm --filter @koed/evals eval:async-recall:live -- --runs 3 --model gpt-6.1-sol --reasoning-effort medium --delay-ms 5000 --out /absolute/path/outside-repo/async-recall.json
+pnpm --filter @koed-labs/evals eval:async-recall:live -- --runs 3 --model gpt-6.1-sol --reasoning-effort medium --delay-ms 5000 --out /absolute/path/outside-repo/async-recall.json
 ```
 
 The live server uses the production `createKoedMcpServer` factory with a

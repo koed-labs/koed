@@ -1,5 +1,5 @@
 import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
-import { personalOwnerIdSchema } from "@koed/shared";
+import { personalOwnerIdSchema } from "@koed-labs/shared";
 import {
   createPersonalSelectionConsumerRepository,
   createPersonalInventorySelectionRepository
@@ -17,7 +17,7 @@ import {
   repositoryIdentitySchema,
   repositoryScopeId,
   planRepositorySearch
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { globalRepositoryContextJoinSql } from "./global-repository-context-sql.js";
 import {
   authorizedPersonalRawEvidence,
@@ -145,7 +145,7 @@ import {
   tokenCounterIdentity,
   validateLcmLexicalAnchors,
   type LcmSourceItem
-} from "@koed/core";
+} from "@koed-labs/core";
 import type {
   CompactionResult,
   ExpandedMemoryNode,
@@ -155,7 +155,7 @@ import type {
   MemoryEventType,
   MemorySearchResult,
   RetrievalMetadata
-} from "@koed/core";
+} from "@koed-labs/core";
 import {
   classifyApprovalActivity,
   combineStorageSanitizationCounts,
@@ -175,7 +175,7 @@ import {
   type EnvelopeEncryptionProvider,
   type ConversationPresentationDecision,
   type KoedWorkClass
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type {
   CaptureMethod,
@@ -437,7 +437,7 @@ const mapLcmGraphThreadRow = (row: {
   project_path: string | null;
   project_assignment_source: "detected" | "user_override" | null;
   captured_project_provenance: Record<string, unknown> | null;
-  repository_assignment?: import("@koed/shared").RepositoryAssignment;
+  repository_assignment?: import("@koed-labs/shared").RepositoryAssignment;
   thread_id: string;
   thread_name: string;
   session_id: string | null;

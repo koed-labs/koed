@@ -4,7 +4,7 @@ import {
   repositoryChangeInputSchema,
   repositoryReviewOptionsSchema,
   repositoryReviewActionSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 export const registerRepositoryReviewRoutes = (
   app: FastifyInstance,

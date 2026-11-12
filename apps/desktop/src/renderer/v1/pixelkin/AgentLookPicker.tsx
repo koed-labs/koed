@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { Button, Card, CardTitle, buttonVariants } from "@koed/ui";
+import { Button, Card, CardTitle, buttonVariants } from "@koed-labs/ui";
 import {
   Box,
   Check,

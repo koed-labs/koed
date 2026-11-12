@@ -3,7 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
+import {
+  nodeCliInvocation,
+  nodeCliProcessEnvironment
+} from "@koed-labs/shared";
 import type { AiClientPermissionMode } from "./ai-client-permission-mode.js";
 import type {
   ManagedConversationCommand,

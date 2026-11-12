@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { RepositoryIdentity } from "@koed/shared";
+import type { RepositoryIdentity } from "@koed-labs/shared";
 import {
   createDbPool,
   runDbMigrations,

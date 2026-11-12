@@ -25,7 +25,7 @@ import {
   type SharedMemoryRepresentation,
   type SharedMemorySession,
   type SharedMemorySourceItem
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { act, Fragment, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

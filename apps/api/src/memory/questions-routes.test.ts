@@ -4,7 +4,7 @@ import {
   SharedMemoryAuthorizationError,
   type MemoryQuestionActorContext,
   type MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthHelpers } from "../auth/session.js";

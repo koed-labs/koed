@@ -30,7 +30,7 @@ import {
 } from "./generation-lifecycle.js";
 import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js";
 import { validateManifestCatalog } from "./component-manifest-catalog.js";
-import { PINNED_PRIVACY_MODEL_REVISION } from "@koed/shared";
+import { PINNED_PRIVACY_MODEL_REVISION } from "@koed-labs/shared";
 import {
   probePrivacyDownloadCompatibility,
   type PrivacyDownloadCompatibility

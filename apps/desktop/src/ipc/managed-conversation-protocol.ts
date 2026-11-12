@@ -1,7 +1,7 @@
 import {
   MANAGED_CONVERSATION_CONTROL_ACTIONS,
   type ManagedConversationControlActionId
-} from "@koed/mcp-server/managed-conversation-command-types";
+} from "@koed-labs/mcp-server/managed-conversation-command-types";
 import {
   aiClientIdentifierPattern,
   isSupportedAiClientDriverId,
@@ -9,7 +9,7 @@ import {
   type AiClientPermissionMode,
   type ManagedConversationSettingsChange,
   type SupportedAiClientDriverId
-} from "@koed/shared/ai-client-contract";
+} from "@koed-labs/shared/ai-client-contract";
 import type { ManagedConversationSlashCommand } from "../renderer/views/personal/ai-client-slash-suggestions.js";
 
 export const managedConversationCommandChannel =

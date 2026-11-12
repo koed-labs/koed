@@ -6,7 +6,7 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   auditEventValues,
   auditLimit,

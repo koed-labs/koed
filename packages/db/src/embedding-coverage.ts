@@ -1,4 +1,4 @@
-import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
+import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
 
 export interface CurrentEmbeddingConfig {
   model: string;

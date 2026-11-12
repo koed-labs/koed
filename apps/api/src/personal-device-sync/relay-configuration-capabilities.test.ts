@@ -5,12 +5,12 @@ import {
   PdsRelayClient,
   requirePdsConfigurationCapability,
   type PdsConfigurationCapabilityRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createPersonalDeviceSyncRelayRepository,
   runDbMigrations
-} from "@koed/db";
+} from "@koed-labs/db";
 import { personalSourceDeviceFixture } from "../../../../packages/db/tests/fixtures/personal-source-device.js";
 import type { ApiRouteContext } from "../server/context.js";
 import { registerPersonalDeviceSyncRelayRoutes } from "./relay-routes.js";

@@ -51,7 +51,7 @@ const run = (filter, testFiles, extra = []) =>
   );
 
 // New simulation uses shared production protocol verification/signing/package APIs.
-run("@koed/shared", [
+run("@koed-labs/shared", [
   "src/personal-device-sync-adversarial-fixture.test.ts",
   "src/personal-device-sync-v1-fixture.test.ts",
   "src/personal-device-session-package.test.ts",
@@ -59,24 +59,24 @@ run("@koed/shared", [
   "src/personal-device-sync-relay.test.ts"
 ]);
 run("@koed-labs/server", ["src/personal-sync.test.ts"]);
-run("@koed/api", [
+run("@koed-labs/api", [
   "src/personal-device-sync/local-source.test.ts",
   "src/personal-device-sync/relay-routes.test.ts",
   "src/personal-device-sync/secure-runtime.test.ts"
 ]);
-run("@koed/worker", ["src/personal-device-sync-runtime.test.ts"]);
+run("@koed-labs/worker", ["src/personal-device-sync-runtime.test.ts"]);
 
 let dbStage = {
   state: "skipped",
   missingPrerequisite: "DATABASE_URL"
 };
 if (process.env.DATABASE_URL?.trim()) {
-  execFileSync(pnpm, ["--filter", "@koed/db", "migrate:up"], {
+  execFileSync(pnpm, ["--filter", "@koed-labs/db", "migrate:up"], {
     cwd: process.cwd(),
     stdio: "inherit"
   });
   run(
-    "@koed/db",
+    "@koed-labs/db",
     ["tests/repository.test.ts"],
     [
       "-t",
@@ -84,11 +84,11 @@ if (process.env.DATABASE_URL?.trim()) {
     ]
   );
   run(
-    "@koed/db",
+    "@koed-labs/db",
     ["tests/historical-import-repository.test.ts"],
     ["-t", "claims a newly appended segment for an enabled Personal replica"]
   );
-  run("@koed/worker", ["src/raw-projection-service.test.ts"]);
+  run("@koed-labs/worker", ["src/raw-projection-service.test.ts"]);
   dbStage = { state: "executed" };
 }
 

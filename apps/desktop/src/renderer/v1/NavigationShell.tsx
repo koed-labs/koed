@@ -11,7 +11,7 @@ import {
   SidebarInset,
   SidebarTrigger,
   useSidebar
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { ChevronLeft, ChevronRight, Folder, Settings } from "lucide-react";
 import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
 import {

@@ -1,7 +1,7 @@
 import { memoryAnswerInputSchema } from "../src/memory-tool-schemas.js";
-import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
+import { repositoryScopeId, type RepositoryIdentity } from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 import {
   RemoteBackendRuntimeClient,
   type RemoteMemoryApiClient

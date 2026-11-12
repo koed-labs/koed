@@ -1,8 +1,8 @@
 import type {
   EmbeddingCapacityRepository,
   MemorySourceRepository
-} from "@koed/db";
-import type { KoedJobQueue } from "@koed/shared";
+} from "@koed-labs/db";
+import type { KoedJobQueue } from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 
 import { createHistoricalRawAdmission } from "./historical-raw-admission.js";

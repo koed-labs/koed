@@ -5,7 +5,7 @@ import {
   DialogClose,
   DialogPopup,
   DialogTitle
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { X } from "lucide-react";
 import type { ComponentStatus, DesktopApi } from "../../types.js";
 import type { DesktopStatusStore } from "../services/desktop-commands.js";

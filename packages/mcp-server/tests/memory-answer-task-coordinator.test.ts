@@ -13,7 +13,7 @@ import {
   type RepositoryIdentity,
   type MemoryAnswerTask,
   type ClaimedMemoryAnswerTask
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { MemoryAnswerRetrievalClient } from "../src/answer-worker.js";
 import { AnswerExecutionCapacity } from "../src/answer-admission.js";
 import { MemoryAnswerTaskScheduler } from "../src/memory-answer-task-scheduler.js";

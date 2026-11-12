@@ -6,7 +6,10 @@ import {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
+import {
+  nodeCliInvocation,
+  nodeCliProcessEnvironment
+} from "@koed-labs/shared";
 import { loadPrompt } from "./prompt-loader.js";
 import { assertCodexConversationProtocolCompatibility } from "./codex-app-server-protocol-compatibility.js";
 

@@ -9,14 +9,14 @@ import type {
   CollaborationSubscriptionRecord,
   CollaborationThreadRecord,
   DeviceCredentialAuthContext
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationRealtimeEventFamilySchema,
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId,
   type SharedMemoryRepresentation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";

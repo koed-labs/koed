@@ -13,7 +13,7 @@ import {
   type CollaborationCommandResult,
   type CollaborationRendererCommand,
   type SharedMemorySourceRef
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 
 import {
@@ -98,7 +98,7 @@ export interface CollaborationActionGrantControlContext {
     mode: "snapshot" | "continuous";
   }) => Promise<{ remoteReplicaId: string } | null>;
   resolveSharedMemoryConsentPreview?: (input: {
-    sourceIdentity?: import("@koed/shared").SharingRuleSourceIdentity;
+    sourceIdentity?: import("@koed-labs/shared").SharingRuleSourceIdentity;
     source: SharedMemorySourceRef;
     sourceCapabilities: Array<
       "memory_events" | "lcm_leaves" | "lcm_rollups" | "curated_assertions"

@@ -1,7 +1,7 @@
 import {
   parseStructuredLcmSummary,
   type StructuredLcmSummary
-} from "@koed/core";
+} from "@koed-labs/core";
 import { z } from "zod";
 
 const memoryStatusSchema = z.enum([

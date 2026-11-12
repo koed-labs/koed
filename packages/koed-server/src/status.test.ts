@@ -33,7 +33,7 @@ import {
   grantAiClientConnection,
   readAiClientConnections,
   revokeAiClientConnection
-} from "@koed/shared/ai-client-connections";
+} from "@koed-labs/shared/ai-client-connections";
 import { resolveKoedServerPaths } from "./paths.js";
 import { repairCodexIntegration } from "./setup.js";
 const temps: string[] = [];

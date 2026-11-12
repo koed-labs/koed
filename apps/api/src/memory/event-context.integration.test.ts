@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { LcmSourceItem, MemoryEventRecord } from "@koed/core";
+import type { LcmSourceItem, MemoryEventRecord } from "@koed-labs/core";
 import {
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations
-} from "@koed/db";
+} from "@koed-labs/db";
 import { buildServer } from "../server/index.js";
 
 vi.mock("node-pty", () => ({

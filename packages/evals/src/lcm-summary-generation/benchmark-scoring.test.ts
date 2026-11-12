@@ -1,4 +1,4 @@
-import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/core";
+import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed-labs/core";
 import { describe, expect, it } from "vitest";
 import {
   scoreLcmSummaryRun,

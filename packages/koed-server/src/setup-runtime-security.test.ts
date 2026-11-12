@@ -266,7 +266,7 @@ describe("packaged AI Client setup authentication", () => {
     expect(result).toMatchObject({ ok: true });
     expect(
       readFileSync(resolve(home, "integrations/pi/package.json"), "utf8")
-    ).toContain("@koed/pi-integration");
+    ).toContain("@koed-labs/pi-integration");
     expect(existsSync(resolve(home, "integrations/pi/untrusted.mjs"))).toBe(
       false
     );

@@ -25,6 +25,10 @@ vi.mock("./native-validation-process.js", () => ({
 
 vi.mock("./nvidia-smi.js", () => ({ resolveNvidiaSmi: vi.fn() }));
 
+vi.mock("./private-node-launcher.js", () => ({
+  privateNodeLauncher: () => "/koed/node/bin/node"
+}));
+
 const toolPaths = ["/usr/bin/nvidia-smi", "/usr/lib/wsl/lib/nvidia-smi"];
 describe.each(toolPaths)("CUDA host driver probe (%s)", (toolPath) => {
   beforeEach(() => {
@@ -47,7 +51,8 @@ describe.each(toolPaths)("CUDA host driver probe (%s)", (toolPath) => {
       })
     ]);
     const invocation = vi.mocked(nativeCommand).mock.calls[1];
-    expect(invocation?.[0]).toBe(process.execPath);
+    // The restricted probe environment must use the private Node launcher.
+    expect(invocation?.[0]).toBe("/koed/node/bin/node");
     expect(invocation?.[1]).toContain("-p");
     expect(invocation?.[2].env).toMatchObject({
       ELECTRON_RUN_AS_NODE: "1",

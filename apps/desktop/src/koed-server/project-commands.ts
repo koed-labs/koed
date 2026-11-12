@@ -22,7 +22,7 @@ import {
   repositoryIdentityMatches,
   personalDesktopProjectsDataSchema,
   personalDesktopProjectMetadataDataSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createProjectSelectionCommand,
   createProjectSelectionLookup,

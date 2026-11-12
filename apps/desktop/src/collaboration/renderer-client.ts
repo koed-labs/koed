@@ -48,12 +48,12 @@ import {
   type SharedMemoryRepresentation,
   type SharedMemorySourcePage,
   type SharedMemorySourceRef
-} from "@koed/shared/collaboration";
-import type { TeamRepositorySnapshotReview } from "@koed/shared";
+} from "@koed-labs/shared/collaboration";
+import type { TeamRepositorySnapshotReview } from "@koed-labs/shared";
 import {
   CollaborationClientRuntime,
   negotiateDurableRealtimeTransport
-} from "@koed/shared/collaboration-client-runtime";
+} from "@koed-labs/shared/collaboration-client-runtime";
 
 import { CollaborationActionGrantProjectionStore } from "./action-grant-projection-store.js";
 import { RendererEventQueue } from "./renderer-event-queue.js";
@@ -309,8 +309,10 @@ export interface CollaborationRendererClient {
     id: string;
   }): Promise<OwnedShareItem>;
   reviewGitAnchorSharing(
-    input: import("@koed/shared/collaboration").GitAnchorSharingReviewInput
-  ): Promise<import("@koed/shared/collaboration").GitAnchorSharingReviewPage>;
+    input: import("@koed-labs/shared/collaboration").GitAnchorSharingReviewInput
+  ): Promise<
+    import("@koed-labs/shared/collaboration").GitAnchorSharingReviewPage
+  >;
   controlPendingShare(input: {
     pendingShareId: string;
     expectedOperationVersion: number;
@@ -411,7 +413,7 @@ export interface CollaborationRendererClient {
       CollaborationRendererCommand,
       { command: "collaboration.review_repository_rule_creation" }
     >["input"]
-  ): Promise<import("@koed/shared").RepositorySharingRuleCreationReview>;
+  ): Promise<import("@koed-labs/shared").RepositorySharingRuleCreationReview>;
   createRepositoryRule(
     input: Omit<
       Extract<
@@ -426,7 +428,7 @@ export interface CollaborationRendererClient {
       CollaborationRendererCommand,
       { command: "collaboration.list_repository_rules" }
     >["input"]
-  ): Promise<import("@koed/shared").OwnedRepositorySharingRulesPage>;
+  ): Promise<import("@koed-labs/shared").OwnedRepositorySharingRulesPage>;
   controlRepositoryRule(
     input: Omit<
       Extract<
@@ -455,13 +457,15 @@ export interface CollaborationRendererClient {
       CollaborationRendererCommand,
       { command: "collaboration.review_publisher_takeover" }
     >["input"]
-  ): Promise<import("@koed/shared").SharingRulePublisherTakeoverLocalReview>;
+  ): Promise<
+    import("@koed-labs/shared").SharingRulePublisherTakeoverLocalReview
+  >;
   reviewRuleDetail(
     input: Extract<
       CollaborationRendererCommand,
       { command: "collaboration.review_rule_detail" }
     >["input"]
-  ): Promise<import("@koed/shared").SharingRuleDetailReview>;
+  ): Promise<import("@koed-labs/shared").SharingRuleDetailReview>;
   amendRuleDetail(
     input: Omit<
       Extract<
@@ -476,7 +480,7 @@ export interface CollaborationRendererClient {
       CollaborationRendererCommand,
       { command: "collaboration.review_rule_content_policy" }
     >["input"]
-  ): Promise<import("@koed/shared").SharingRuleContentPolicyReview>;
+  ): Promise<import("@koed-labs/shared").SharingRuleContentPolicyReview>;
   amendRuleContentPolicy(
     input: Omit<
       Extract<

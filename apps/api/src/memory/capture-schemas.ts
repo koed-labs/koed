@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   repositoryIdentitySchema,
   personalFolderObservationSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { metadataSchema, visibilitySchema } from "./common-schemas.js";
 
 const captureStateSchema = z.enum(["enabled", "disabled", "ask"]);

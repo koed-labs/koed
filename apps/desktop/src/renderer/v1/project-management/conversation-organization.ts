@@ -4,8 +4,8 @@ import type {
   PersonalProjectMembershipExplanation,
   PersonalSourceContextState,
   PersonalSourceCorrectionInput
-} from "@koed/shared";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 
 export type MembershipReview = {

@@ -4,8 +4,8 @@ import type {
   PersonalDesktopApi,
   PersonalDesktopProject,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
-import type { PersonalGitContext } from "@koed/shared";
+} from "@koed-labs/shared/personal-desktop";
+import type { PersonalGitContext } from "@koed-labs/shared";
 import { PersonalMemoryStore } from "./renderer/state/personal-memory.js";
 import { ConversationProjectsDialog } from "./renderer/views/personal/ConversationProjectsDialog.js";
 import { SourceContextCorrectionDialog } from "./renderer/views/personal/SourceContextCorrectionDialog.js";

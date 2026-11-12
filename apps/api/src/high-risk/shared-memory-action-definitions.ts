@@ -3,7 +3,7 @@ import type {
   SharedMemoryFidelityChangeReviewRecord,
   SharedMemoryPendingShareReviewRecord,
   SharedMemoryRevokeReviewRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
@@ -36,7 +36,7 @@ import {
   type SharedMemoryRepresentation,
   type CollaborationApprovalReview,
   type SharedMemoryFidelityCeiling
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {

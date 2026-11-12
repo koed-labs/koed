@@ -6,7 +6,7 @@ import {
   pinSourceFolderObservation,
   resolveKoedServerPaths
 } from "@koed-labs/server";
-import type { RepositoryIdentity } from "@koed/shared";
+import type { RepositoryIdentity } from "@koed-labs/shared";
 
 export const resolveCaptureFolderObservation = async (input: {
   cwd: string;

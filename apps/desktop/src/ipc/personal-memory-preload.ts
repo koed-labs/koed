@@ -23,7 +23,7 @@ import {
   type PersonalDesktopApi,
   type PersonalDesktopRequest,
   type PersonalDesktopResult
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 
 import {
   personalMemoryCommandChannel,

@@ -4,12 +4,12 @@ import {
   CLIENT_INFO_META_KEY,
   PROTOCOL_VERSION_META_KEY
 } from "@modelcontextprotocol/server";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthHelpers } from "../auth/index.js";
 import { registerRemoteMcpRoutes } from "./remote-mcp.js";
 import { buildServer } from "./build-server.js";
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 
 const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => {

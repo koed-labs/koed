@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
-import type { ProjectSelectionCommandResult } from "@koed/shared/project-selection";
+import type { ProjectSelectionCommandResult } from "@koed-labs/shared/project-selection";
 import { ProjectAssociationPanel } from "./ProjectAssociationPanel.js";
 const localProjectId = `lp_${"a".repeat(32)}`;
 const accepted = {

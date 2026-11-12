@@ -7,12 +7,12 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import type {
   PersonalDesktopApi,
   PersonalDesktopProject,
   PersonalDesktopProjectThread
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import { ArrowRight, FilePenLine, Folder, GitFork } from "lucide-react";
 import {
   SourceContextStatus,
@@ -22,7 +22,7 @@ import {
   type SourceContext as Context
 } from "./SourceContextCompare.js";
 import "./conversation-cards.css";
-import { repositoryScopeId } from "@koed/shared/repository-recall";
+import { repositoryScopeId } from "@koed-labs/shared/repository-recall";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 
 type Manage = NonNullable<PersonalDesktopApi["manageSourceContext"]>;

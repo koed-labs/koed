@@ -2,11 +2,11 @@ import { useRef, useState } from "react";
 import type {
   PersonalProjectCommand,
   PersonalProjectMembershipExplanation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   PersonalDesktopApi,
   PersonalDesktopProject
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 
 type Manage = NonNullable<PersonalDesktopApi["manageProject"]>;

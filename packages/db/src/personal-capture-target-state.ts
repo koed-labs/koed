@@ -1,5 +1,5 @@
 import { and, eq, getTableColumns, sql } from "drizzle-orm";
-import { personalCaptureTargetBindingSchema } from "@koed/shared";
+import { personalCaptureTargetBindingSchema } from "@koed-labs/shared";
 import type { KoedDb } from "./connection.js";
 import { personalCaptureTargetBindings } from "./schema.js";
 

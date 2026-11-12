@@ -5,7 +5,7 @@ import {
   personalMembershipEntitySnapshotSchema,
   type PersonalMembershipRevision,
   type PersonalProjectKin
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   retainLocalPersonalMembershipSnapshot,
   type PersonalMembershipEntityRow

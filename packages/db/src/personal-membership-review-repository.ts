@@ -11,7 +11,7 @@ import {
   personalMembershipSelectorKey,
   type PersonalMembershipReviewInput,
   type PersonalMembershipRevision
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import { withPersonalMembershipTransaction } from "./personal-membership-repository.js";
 import { retainReviewedPersonalMembershipRevision } from "./personal-membership-causal-history.js";

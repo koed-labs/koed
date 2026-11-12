@@ -456,7 +456,7 @@ jobs:
         run: |
           set -euo pipefail
           first_app="apps/desktop/release/mac/Koed.app"
-          pnpm --filter @koed/desktop package:runtime
+          pnpm --filter @koed-labs/desktop package:runtime
           node scripts/compare-package-trees.mjs \
             --first "${first_app}/Contents/Resources/koed-runtime" \
             --second "apps/desktop/.koed-runtime" \

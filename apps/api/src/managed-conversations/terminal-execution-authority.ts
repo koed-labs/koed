@@ -1,11 +1,11 @@
-import type { ManagedTerminalExecutionAuthority } from "@koed/db";
+import type { ManagedTerminalExecutionAuthority } from "@koed-labs/db";
 import {
   fetchBoundedJsonObject,
   readLocalEdgeUpstreamRegistry,
   upstreamAdvertisesCapability,
   upstreamApiUrl,
   upstreamBackendById
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
 import { assertUpstreamOperationPathAllowed } from "../local-edge/upstream-routing.js";

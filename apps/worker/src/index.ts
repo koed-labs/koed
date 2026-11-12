@@ -7,7 +7,7 @@ import {
   databaseErrorCode,
   waitForCurrentDbMigrations,
   type MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import { createEmbeddingWorkflow } from "./embedding-workflow.js";
 import { createEmbeddingCapacityService } from "./embedding-capacity-service.js";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
@@ -22,8 +22,8 @@ import {
   lcmEmbedQueueName,
   memoryEmbedQueueName,
   workerQueueNames
-} from "@koed/shared";
-import { MemoryApiClient } from "@koed/mcp-server";
+} from "@koed-labs/shared";
+import { MemoryApiClient } from "@koed-labs/mcp-server";
 import {
   createWorkerJobWorkflow,
   enqueueLcmCompaction,

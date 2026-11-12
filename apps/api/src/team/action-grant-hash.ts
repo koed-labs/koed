@@ -1,7 +1,7 @@
 import {
   highRiskActionGrantCanonicalHash,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export const teamAdminScopeHash = (input: {
   action: string;

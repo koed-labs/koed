@@ -1,7 +1,7 @@
 import type {
   MemorySourceRepository,
   TeamWorkspaceAccessUpdateReviewRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {
   bindTeamAdminOperation,

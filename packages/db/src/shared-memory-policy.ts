@@ -1,7 +1,7 @@
 import {
   crossIdentitySyncDigest,
   type SharedMemoryFidelityCeiling
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export const defaultSharedMemoryMaximumFidelity =
   "memory_events" satisfies SharedMemoryFidelityCeiling;

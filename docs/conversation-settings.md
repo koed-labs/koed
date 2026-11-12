@@ -86,7 +86,7 @@ The browser fixture uses production controls with simulated runtime responses.
 It does not call a live AI Client.
 
 ```sh
-pnpm --filter @koed/desktop dev --port 5199
+pnpm --filter @koed-labs/desktop dev --port 5199
 ```
 
 The fixture URL is

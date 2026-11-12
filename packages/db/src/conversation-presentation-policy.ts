@@ -1,7 +1,7 @@
 import {
   conversationPresentationPolicyKey,
   type ConversationPresentationPolicyRule
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type pg from "pg";
 
 export type ConversationPresentationPolicySnapshot = {

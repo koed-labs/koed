@@ -2,7 +2,7 @@ import type {
   CollaborationRepository,
   MemorySourceRepository,
   PersonalNoteRecord
-} from "@koed/db";
+} from "@koed-labs/db";
 import { describe, expect, it, vi } from "vitest";
 
 import {

@@ -5,9 +5,9 @@ import { syncChangelogs } from "./product-changelog.mjs";
 test("merges current release notes once and preserves historical content", () => {
   const root =
     "# Koed\n\n## 1.0.0\n\n### Patch Changes\n\n- shared\n\n## 0.9.0\n\nOld root history.\n";
-  const desktop = "# @koed/desktop\n\n## 0.1.1\n\nOld desktop history.\n";
+  const desktop = "# @koed-labs/desktop\n\n## 0.1.1\n\nOld desktop history.\n";
   const product =
-    "# @koed/koed\n\n## 1.0.0\n\n### Patch Changes\n\n- shared\n- product\n\n## 0.9.0\n\nProduct history.\n";
+    "# @koed-labs/koed\n\n## 1.0.0\n\n### Patch Changes\n\n- shared\n- product\n\n## 0.9.0\n\nProduct history.\n";
   const server =
     "# server\n\n## 1.0.0\n\n### Patch Changes\n\n- shared\n- server\n  continuation\n\n## 0.9.0\n\nServer history.\n";
   const result = syncChangelogs({
@@ -24,7 +24,7 @@ test("merges current release notes once and preserves historical content", () =>
   assert.ok(result.root.endsWith("## 0.9.0\n\nOld root history.\n"));
   assert.equal(
     result.desktop,
-    "# @koed/desktop\n\n## 1.0.0\n\n## 0.1.1\n\nOld desktop history.\n"
+    "# @koed-labs/desktop\n\n## 1.0.0\n\n## 0.1.1\n\nOld desktop history.\n"
   );
   assert.deepEqual(
     syncChangelogs({ ...result, product, server, version: "1.0.0" }),
@@ -35,7 +35,7 @@ test("merges current release notes once and preserves historical content", () =>
 test("creates current headings when only server has notes", () => {
   const result = syncChangelogs({
     root: "# Koed\n\n## 0.9.0\n\nHistory\n",
-    desktop: "# @koed/desktop\n",
+    desktop: "# @koed-labs/desktop\n",
     product: "# product\n",
     server: "# server\n\n## 1.0.0\n\n### Patch Changes\n\n- fix\n",
     version: "1.0.0"
@@ -44,7 +44,7 @@ test("creates current headings when only server has notes", () => {
     result.root,
     "# Koed\n\n## 1.0.0\n\n### Patch Changes\n\n- fix\n\n## 0.9.0\n\nHistory\n"
   );
-  assert.equal(result.desktop, "# @koed/desktop\n\n## 1.0.0\n");
+  assert.equal(result.desktop, "# @koed-labs/desktop\n\n## 1.0.0\n");
 });
 
 test("preserves prose and fenced heading examples in release notes", () => {

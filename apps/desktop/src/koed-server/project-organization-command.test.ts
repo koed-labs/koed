@@ -7,7 +7,7 @@ import {
   createProjectManagementValidationApi,
   validationId
 } from "../project-management-validation-api.js";
-import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed/shared/personal-desktop";
+import { PERSONAL_DESKTOP_CONTRACT_VERSION } from "@koed-labs/shared/personal-desktop";
 import { createPersonalMemoryPreloadApi } from "../ipc/personal-memory-preload.js";
 
 describe("atomic organization bridge", () => {

@@ -1,7 +1,7 @@
 import {
   COLLABORATION_CONTRACT_VERSION,
   type CollaborationRendererCommand
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 
 import {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Button, Checkbox, DialogFooter } from "@koed/ui";
+import { Button, Checkbox, DialogFooter } from "@koed-labs/ui";
 import { Folder } from "lucide-react";
 import { ProjectError, ProjectPopup } from "./controls.js";
 import {

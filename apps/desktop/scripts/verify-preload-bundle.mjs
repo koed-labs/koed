@@ -11,11 +11,11 @@ const unexpectedRequires = [
   ...new Set(externalRequires.filter((specifier) => specifier !== "electron"))
 ];
 
-if (unexpectedRequires.length > 0 || source.includes("@koed/")) {
+if (unexpectedRequires.length > 0 || source.includes("@koed-labs/")) {
   throw new Error(
     `Sandboxed preload contains unresolved runtime imports: ${[
       ...unexpectedRequires,
-      ...(source.includes("@koed/") ? ["@koed/*"] : [])
+      ...(source.includes("@koed-labs/") ? ["@koed-labs/*"] : [])
     ].join(", ")}`
   );
 }

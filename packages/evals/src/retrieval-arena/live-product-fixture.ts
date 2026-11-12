@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { createDbPool, type DbPool } from "@koed/db";
+import { createDbPool, type DbPool } from "@koed-labs/db";
 import {
   productStateManifestSchema,
   stableHash,

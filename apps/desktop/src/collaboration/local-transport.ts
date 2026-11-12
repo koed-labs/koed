@@ -9,7 +9,7 @@ import {
   type CollaborationRendererCommand,
   type CollaborationRendererEvent,
   type CollaborationSafeError
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   DESKTOP_COLLABORATION_BROKER_COMMAND_TIMEOUT_MS,
   DESKTOP_COLLABORATION_BROKER_HANDSHAKE_TIMEOUT_MS,

@@ -1,5 +1,5 @@
-import type { PersonalProjectKin } from "@koed/shared";
-import type { HistoricalIngestionLifecycle } from "@koed/shared/historical-ingestion-progress";
+import type { PersonalProjectKin } from "@koed-labs/shared";
+import type { HistoricalIngestionLifecycle } from "@koed-labs/shared/historical-ingestion-progress";
 import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import {
   projectLatestAt,

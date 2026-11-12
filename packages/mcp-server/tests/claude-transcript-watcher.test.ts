@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   canonicalConversationItemKey,
   normalizeGitRemoteUrl
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const filesystemRace = vi.hoisted(() => ({
   failReaddirPath: null as string | null,

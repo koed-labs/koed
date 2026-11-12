@@ -76,7 +76,7 @@ After upgrading an existing database, an Operator can inventory legacy
 approval-derived semantic data without mutation:
 
 ```bash
-pnpm --filter @koed/db approval-activity:inventory
+pnpm --filter @koed-labs/db approval-activity:inventory
 ```
 
 The bounded report is stable across repeated runs and counts affected Memory
@@ -85,7 +85,7 @@ snapshot or continuous shares. Ambiguous scopes stop correction and require
 Operator review. After reviewing the inventory, apply the idempotent correction:
 
 ```bash
-pnpm --filter @koed/db approval-activity:correct
+pnpm --filter @koed-labs/db approval-activity:correct
 ```
 
 Correction removes semantic derivatives, schedules eligible rebuild/deletion
@@ -268,7 +268,7 @@ fallback, repeat with another empty home, cancel CUDA before activation, choose
 services before changing `KOED_HOME`; keep test homes until diagnostics are no
 longer needed. Do not remove an existing home to make these tests fresh.
 
-Release assembly uses one `@koed/app-runtime-stage` production deployment as
+Release assembly uses one `@koed-labs/app-runtime-stage` production deployment as
 source for base and optional privacy payloads. `scripts/component-assembly.mjs`
 projects manifest dependency closures into independent component roots; shared
 packages are copied into both trees when needed, and each tree carries its own
@@ -669,6 +669,13 @@ What it does, in order:
    pinned in the installer, and extracts it with bounded, link-restricted
    extraction. The pins were taken from the Node release checksum manifest;
    that is not an independent attestation.
+   On Linux x64, private Node also includes a checksum-pinned `libatomic.so.1`
+   under its own `lib/koed` directory, together with the upstream copyright,
+   GCC Runtime Library Exception, and GPL text. Its launcher sets
+   `LD_LIBRARY_PATH` to that private directory for Node and its child processes,
+   including after the installer exits. No system `libatomic1` package or
+   `sudo` is required. An existing compatible Node installation is reused
+   without modification. See [bootstrap download provenance](publishing-koed-server.md#private-node-bootstrap-downloads).
 3. Installs exactly `@koed-labs/server@X.Y.Z` from the public npm registry into
    `KOED_HOME/installer/package` with lifecycle scripts disabled and inherited
    npm configuration ignored.
@@ -1070,7 +1077,7 @@ Use the shared input toolbar chip to choose an eligible local Folder.
 Changing the Project or Folder retains the draft.
 Chat uses its own automatic Conversation Folder.
 
-Run `pnpm --filter @koed/desktop test:browser` for the maintained native browser journeys.
+Run `pnpm --filter @koed-labs/desktop test:browser` for the maintained native browser journeys.
 They use synthetic Memory and simulated AI Clients in disposable Electron profiles.
 
 ### Managed Conversation permissions
@@ -1701,9 +1708,19 @@ Acceleration. The preference is stored in `KOED_HOME/config/server.json`;
 changing it restarts running local Koed services. A stopped installation remains
 stopped. An explicit Operator environment policy remains authoritative and makes
 the control read-only. General graphics acceleration controls Desktop rendering
-separately. Accelerated embedding
-models unload after five idle minutes by default and reload on the
-next request. Set the corresponding idle-unload value to `0` only when keeping
+separately.
+
+Hardware status uses the same service tokens as startup. Source checkouts prefer
+environment variables set before launch, then `.env` values, then saved tokens.
+Packaged builds ignore `.env` unless the Operator selects a file with
+`KOED_ENV_PATH`. When the Desktop supervisor runs, status uses its active service
+tokens.
+
+The setup progress bar does not move backward while Koed checks downloads.
+A new setup run starts from the steps already complete.
+
+Accelerated embedding models unload after five idle minutes by default and reload
+on the next request. Set the corresponding idle-unload value to `0` only when keeping
 the model resident is an intentional resource decision.
 
 Run the manual CPU/GPU comparison through the production Embedding Service
@@ -1748,14 +1765,14 @@ mode; source-checkout Desktop keeps the bare developer default and uses explicit
 external dependency configuration.
 
 ```bash
-pnpm --filter @koed/desktop start
+pnpm --filter @koed-labs/desktop start
 ```
 
 For local packaged-native smoke with Homebrew/Linuxbrew-provided assets, stage the native runtime first and pass it into packaging:
 
 ```bash
 pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force
-KOED_NATIVE_RUNTIME_SOURCE_DIR=/tmp/koed-native-runtime pnpm --filter @koed/desktop package:mac
+KOED_NATIVE_RUNTIME_SOURCE_DIR=/tmp/koed-native-runtime pnpm --filter @koed-labs/desktop package:mac
 ```
 
 The Homebrew staging helper copies Homebrew/Linuxbrew Postgres/pgvector and llama.cpp assets only. It no longer requires or packages an Embedding Service Python virtualenv, and it does not create release-quality redistributable native runtime assets.
@@ -1763,7 +1780,7 @@ The Homebrew staging helper copies Homebrew/Linuxbrew Postgres/pgvector and llam
 For renderer development only:
 
 ```bash
-pnpm --filter @koed/desktop dev
+pnpm --filter @koed-labs/desktop dev
 ```
 
 ## LCM Smoke Test

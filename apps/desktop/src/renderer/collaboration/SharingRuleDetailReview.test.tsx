@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   SharingRuleDetailReview as Review,
   SharingRuleDelivery
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   SharingRuleDetailReview,
   type RuleDetailClient

@@ -9,7 +9,7 @@ import {
   vi
 } from "vitest";
 import type pg from "pg";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

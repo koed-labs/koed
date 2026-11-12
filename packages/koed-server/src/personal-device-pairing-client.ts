@@ -10,7 +10,7 @@ import {
   isLoopbackHostname,
   readDesktopLocalCredentialAuthorization,
   isPrivateNetworkIpv4Address
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PersonalSyncResult } from "./personal-sync.js";
 
 const isPersonalDevicePairingUuid = (value: unknown): value is string =>

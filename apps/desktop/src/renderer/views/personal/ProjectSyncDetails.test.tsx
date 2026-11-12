@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { ProjectSyncDetails } from "./ProjectSyncDetails.js";

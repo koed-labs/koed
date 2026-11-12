@@ -1,7 +1,7 @@
 # Release versioning
 
 Koed uses one product release version. Changesets applies the SemVer bump to the
-`@koed/koed` release manifest, and the release-version command synchronizes the
+`@koed-labs/koed` release manifest, and the release-version command synchronizes the
 root package, `@koed-labs/server`, standalone Koed distribution, and Desktop
 application metadata before the version pull request is merged. After Changesets
 versions packages, release synchronization adds the matching Desktop changelog
@@ -94,7 +94,7 @@ native and component catalogs.
 
 The release check requires the product, root, `@koed-labs/server`, and Desktop
 package versions to match. Changesets keeps public `@koed-labs/server` and
-private `@koed/koed` in one coordinated release group while excluding internal
+private `@koed-labs/koed` in one coordinated release group while excluding internal
 workspace packages. The GitHub release workflow passes exact product version to
 standalone component, native runtime, Desktop, and release-metadata builders.
 

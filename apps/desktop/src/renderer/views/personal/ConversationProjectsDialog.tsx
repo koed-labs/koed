@@ -8,12 +8,12 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import type {
   PersonalDesktopApi,
   PersonalDesktopProjectThread,
   PersonalDesktopProject
-} from "@koed/shared/personal-desktop";
+} from "@koed-labs/shared/personal-desktop";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { CreateProjectDialog, type CreateProject } from "./ProjectActions.js";
 import {

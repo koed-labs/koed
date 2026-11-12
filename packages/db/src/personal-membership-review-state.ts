@@ -5,7 +5,7 @@ import {
   personalMembershipSourceFromSelectorKey,
   type PersonalMembershipRevision,
   type PersonalMembershipSyncEntity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PersonalMembershipEntityRow } from "./personal-membership-causal-history.js";
 import { mapPersonalNamedProject } from "./personal-membership-repository.js";
 

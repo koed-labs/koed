@@ -15,9 +15,9 @@ import {
   GitFork,
   MessagesSquare
 } from "lucide-react";
-import { Button } from "@koed/ui";
-import { personalInventoryConversationKey } from "@koed/shared/personal-desktop";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import { Button } from "@koed-labs/ui";
+import { personalInventoryConversationKey } from "@koed-labs/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import {

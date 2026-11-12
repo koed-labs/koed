@@ -3,7 +3,7 @@ import {
   certificateIsPdsValid,
   comparePdsCanonicalIds,
   parseCanonicalPdsJson
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import pg from "pg";
 
 const notifyPdsLocalSync = (client: pg.Pool | pg.PoolClient, reason: string) =>

@@ -1,12 +1,12 @@
 import { performance } from "node:perf_hooks";
-import { parseStructuredLcmSummary } from "@koed/core";
+import { parseStructuredLcmSummary } from "@koed-labs/core";
 import {
   buildLcmSummaryPrompt,
   resolveLcmSummaryWorkerConfig,
   runLcmSummary,
   type LcmSummaryRunner,
   type LcmSummaryWorkerConfig
-} from "@koed/mcp-server";
+} from "@koed-labs/mcp-server";
 import { runWithAttempts } from "./attempts.js";
 import {
   scoreLcmSummaryRun,

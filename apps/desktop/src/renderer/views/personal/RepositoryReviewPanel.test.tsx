@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import type {
   RepositoryReview,
   RepositoryReviewCommand
-} from "@koed/shared/repository-review";
+} from "@koed-labs/shared/repository-review";
 import { RepositoryReviewPanel } from "./RepositoryReviewPanel.js";
 const localProjectId = `lp_${"1".repeat(32)}`;
 const identity = {

@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
 import { decodeJwt } from "jose";
 import { z } from "zod";
-import { fetchBoundedJsonObject } from "@koed/shared";
-import type { MemorySourceRepository, RemoteMcpOAuthStore } from "@koed/db";
+import { fetchBoundedJsonObject } from "@koed-labs/shared";
+import type {
+  MemorySourceRepository,
+  RemoteMcpOAuthStore
+} from "@koed-labs/db";
 import type { RateLimitStore } from "../infra/rate-limit.js";
 import {
   DelegatedAuthenticationError,

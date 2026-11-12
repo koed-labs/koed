@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 
-pnpm --filter @koed/evals eval:lcm-summary:live "$@"
+pnpm --filter @koed-labs/evals eval:lcm-summary:live "$@"

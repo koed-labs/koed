@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { PersonalConversationOrganizationInput } from "@koed/shared";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalConversationOrganizationInput } from "@koed-labs/shared";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import {
   reviewConversationOrganization,

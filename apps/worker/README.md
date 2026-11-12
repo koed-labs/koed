@@ -37,22 +37,22 @@ then submitted back to the API for storage and embedding.
 From the repository root:
 
 ```bash
-pnpm --filter @koed/worker build
-pnpm --filter @koed/worker dev
-pnpm --filter @koed/worker test
-pnpm --filter @koed/worker typecheck
+pnpm --filter @koed-labs/worker build
+pnpm --filter @koed-labs/worker dev
+pnpm --filter @koed-labs/worker test
+pnpm --filter @koed-labs/worker typecheck
 ```
 
 Production entry point after build:
 
 ```bash
-pnpm --filter @koed/worker start
+pnpm --filter @koed-labs/worker start
 ```
 
 Run an embedding backfill:
 
 ```bash
-pnpm --filter @koed/worker embeddings:backfill
+pnpm --filter @koed-labs/worker embeddings:backfill
 ```
 
 ## Configuration

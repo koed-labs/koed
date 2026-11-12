@@ -10,7 +10,7 @@ import {
   personalSelectionLegacyScope,
   type PersonalSelectionSnapshot,
   type PersonalFolderReference
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type pg from "pg";
 import { semanticMemoryEventEligibleSql } from "./approval-activity-sql.js";
 

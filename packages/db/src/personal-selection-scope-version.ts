@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { crossIdentitySyncDigest } from "@koed/shared";
+import { crossIdentitySyncDigest } from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   resolveConsumerSelection,

@@ -1,5 +1,5 @@
 import type { FastifyRequest } from "fastify";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import { expect, it, vi } from "vitest";
 import { createAuthHelpers } from "./session.js";
 import type { RemoteMcpDelegatedPrincipal } from "./remote-mcp-oauth.js";

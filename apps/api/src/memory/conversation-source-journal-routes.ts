@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ConversationSourceSegmentRecord } from "@koed/db";
+import type { ConversationSourceSegmentRecord } from "@koed-labs/db";
 import {
   calculateConversationSourceRootDigest,
   calculateConversationSourceComponentSetDigest,
@@ -19,7 +19,7 @@ import {
   type DeviceBoundSourceSigner,
   type EncryptedPayloadEnvelope,
   type ConversationSourceReplicationManifest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {

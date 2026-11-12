@@ -6,7 +6,7 @@ import {
   useState,
   useSyncExternalStore
 } from "react";
-import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
 import type {
   V1ConversationIntent,

@@ -10,7 +10,7 @@ import {
   runDbMigrations,
   verifyManagedJournalTerminal
 } from "../src/index.js";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
 import { parsePiSessionJournalBytes } from "../../mcp-server/src/pi-session-parser.js";
 
 const databaseUrl = process.env.DATABASE_URL;

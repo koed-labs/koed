@@ -8,8 +8,8 @@ import {
 
 const usage = [
   "Usage:",
-  "  pnpm --filter @koed/evals eval:workers -- --list-cases",
-  "  pnpm --filter @koed/evals eval:workers -- --score <runs.json> [--out <report.json>]",
+  "  pnpm --filter @koed-labs/evals eval:workers -- --list-cases",
+  "  pnpm --filter @koed-labs/evals eval:workers -- --score <runs.json> [--out <report.json>]",
   "",
   "The score input is a JSON array of run records:",
   '[{"caseId":"memory-found-project-decision","runIndex":0,"worker":"memory_answer","output":{"schema_version":"memory-answer-v1","memory_status":"found","relevant_memory_found":true,"answer_markdown":"...","relevance_explanation":"...","evidence":[],"missing":[],"missing_evidence":[]}}]'

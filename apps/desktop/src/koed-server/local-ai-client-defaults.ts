@@ -3,9 +3,9 @@ export {
   documentDefault,
   environmentDefaultFor,
   localAiClientDefaultSpec
-} from "@koed/shared";
+} from "@koed-labs/shared";
 export type {
   LocalAiClientDefault,
   LocalAiClientFlowKey,
   LocalAiClientRuntimeAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";

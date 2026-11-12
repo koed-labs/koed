@@ -1,4 +1,4 @@
-import { Button, Popover } from "@koed/ui";
+import { Button, Popover } from "@koed-labs/ui";
 import {
   ArrowLeft,
   BookText,

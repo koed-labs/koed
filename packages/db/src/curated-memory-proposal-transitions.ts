@@ -1,6 +1,6 @@
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
-import type { EnvelopeEncryptionProvider } from "@koed/shared";
+import type { EnvelopeEncryptionProvider } from "@koed-labs/shared";
 import {
   approvalConversationItemSql,
   semanticMemoryEventEligibleSql

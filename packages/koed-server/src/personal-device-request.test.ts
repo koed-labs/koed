@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
-import { isPrivateNetworkIpv4Address } from "@koed/shared";
+import { isPrivateNetworkIpv4Address } from "@koed-labs/shared";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   startDeviceRequestService,

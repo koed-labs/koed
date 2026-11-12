@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { codexIdePromptUserText, type LcmSourceItem } from "@koed/core";
+import { codexIdePromptUserText, type LcmSourceItem } from "@koed-labs/core";
 import { approvalConversationItemSql } from "./approval-activity-sql.js";
 import {
   personalMemoryNodeSelectionSql,

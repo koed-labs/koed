@@ -53,7 +53,7 @@ Run migrations with the migration role:
 
 ```bash
 DATABASE_URL=postgres://koed_migrator:<password>@127.0.0.1:5432/koed \
-  pnpm --filter @koed/db migrate:up
+  pnpm --filter @koed-labs/db migrate:up
 ```
 
 Run `koed-server` with the runtime role:

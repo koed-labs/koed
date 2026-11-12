@@ -1,7 +1,7 @@
 import {
   UI_THEME_DARK_BACKGROUND,
   UI_THEME_LIGHT_BACKGROUND
-} from "@koed/ui/theme";
+} from "@koed-labs/ui/theme";
 import { describe, expect, it } from "vitest";
 import {
   DESKTOP_THEME_DARK_BACKGROUND,

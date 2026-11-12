@@ -3,7 +3,7 @@ import {
   personalProjectBatchInputSchema,
   personalOwnerIdSchema,
   type PersonalProjectBatchInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   createPersonalMembershipRepository,

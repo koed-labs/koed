@@ -36,7 +36,7 @@ test("enumerates packages without pnpm lifecycle temporary directories", () => {
   const modules = resolve(root, "node_modules");
   const packages = [
     "argon2",
-    "@koed/shared",
+    "@koed-labs/shared",
     "argon2/node_modules/native-addon"
   ];
   for (const name of packages)
@@ -51,24 +51,24 @@ test("enumerates packages without pnpm lifecycle temporary directories", () => {
 });
 
 const requiredSharedFixtures = [
-  "node_modules/@koed/api/dist/browser-approval/index.html",
-  "node_modules/@koed/db/dist/index.js",
-  "node_modules/@koed/db/dist/connection.js",
-  "node_modules/@koed/db/dist/user-api-token-repository.js",
-  "node_modules/@koed/db/drizzle/meta/_journal.json",
-  "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
-  "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md",
-  "node_modules/@koed/mcp-server/integrations/pi/package.json",
-  "node_modules/@koed/mcp-server/integrations/pi/extensions/koed.mjs",
-  "node_modules/@koed/mcp-server/integrations/pi/extensions/structured-result.mjs",
-  "node_modules/@koed/mcp-server/integrations/pi/koed-home.mjs",
-  "node_modules/@koed/mcp-server/integrations/pi/runtime-client.mjs",
-  "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.mjs",
-  "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.d.mts",
-  "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.mjs",
-  "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.d.mts",
-  "node_modules/@koed/mcp-server/integrations/pi/managed-rpc-host.mjs",
-  "node_modules/@koed/mcp-server/integrations/pi/managed-permissions.mjs"
+  "node_modules/@koed-labs/api/dist/browser-approval/index.html",
+  "node_modules/@koed-labs/db/dist/index.js",
+  "node_modules/@koed-labs/db/dist/connection.js",
+  "node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+  "node_modules/@koed-labs/db/drizzle/meta/_journal.json",
+  "node_modules/@koed-labs/mcp-server/dist/prompts/mcp-server-instructions.md",
+  "node_modules/@koed-labs/mcp-server/dist/prompts/codex-global-agent-guidance.md",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/package.json",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/extensions/koed.mjs",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/extensions/structured-result.mjs",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/koed-home.mjs",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/runtime-client.mjs",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/memory-answer-delivery-policy.mjs",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/memory-answer-delivery-policy.d.mts",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/pi-memory-delivery.mjs",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/pi-memory-delivery.d.mts",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/managed-rpc-host.mjs",
+  "node_modules/@koed-labs/mcp-server/integrations/pi/managed-permissions.mjs"
 ];
 
 test("finalizes one symlink-free shared app-runtime graph with stable wrappers", () => {
@@ -84,7 +84,7 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
   }
   const bin = resolve(root, "node_modules", ".bin");
   mkdirSync(bin, { recursive: true });
-  symlinkSync("../@koed/api/dist/index.js", resolve(bin, "api"));
+  symlinkSync("../@koed-labs/api/dist/index.js", resolve(bin, "api"));
   write(resolve(root, "node_modules", ".pnpm", "lock.yaml"));
   write(resolve(root, "package.json"), "{}\n");
 
@@ -118,7 +118,7 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
     resolve(root, "api", "dist", "index.js"),
     "utf8"
   );
-  assert.match(wrapper, /node_modules\/@koed\/api\/dist\/index\.js/);
+  assert.match(wrapper, /node_modules\/@koed-labs\/api\/dist\/index\.js/);
   assert.match(wrapper, /process\.argv\[1\]/);
   const serverWrapper = readFileSync(
     resolve(root, "koed-server", "dist", "cli.js"),
@@ -143,7 +143,7 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
   assert.equal(readFileSync(guidancePath, "utf8"), "fixture\n");
   const piPackage = resolve(
     root,
-    "node_modules/@koed/mcp-server/integrations/pi/package.json"
+    "node_modules/@koed-labs/mcp-server/integrations/pi/package.json"
   );
   assert.equal(readFileSync(piPackage, "utf8"), "fixture\n");
   rmSync(piPackage);
@@ -191,7 +191,7 @@ test("prunes package documentation but preserves runtime MCP prompt Markdown", (
   roots.push(root);
   const prompt = resolve(
     root,
-    "node_modules/@koed/mcp-server/dist/prompts/ai-client/worker-developer.md"
+    "node_modules/@koed-labs/mcp-server/dist/prompts/ai-client/worker-developer.md"
   );
   const documentation = resolve(root, "node_modules/example/README.md");
   const lockfile = resolve(root, "node_modules/example/pnpm-lock.yaml");

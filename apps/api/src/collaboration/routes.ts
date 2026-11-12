@@ -3,8 +3,8 @@ import type {
   MemorySourceRepository,
   PersonalNoteRecord,
   SharedMemoryRepository
-} from "@koed/db";
-import { sharedMemoryGrantScopedSourceId } from "@koed/shared";
+} from "@koed-labs/db";
+import { sharedMemoryGrantScopedSourceId } from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ApiRouteContext } from "../server/context.js";

@@ -22,7 +22,7 @@ import {
   type EnvelopeEncryptionProvider,
   type SignedConversationSourceClosureManifest,
   type SignedConversationSourceSetClosureManifest
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type pg from "pg";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import type {

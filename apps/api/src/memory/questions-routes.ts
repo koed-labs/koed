@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { MemoryQuestionActorContext } from "@koed/db";
+import type { MemoryQuestionActorContext } from "@koed-labs/db";
 import { actorForAuthenticatedRequest } from "../auth/session.js";
 import type { ApiRouteContext } from "../server/context.js";
 import {

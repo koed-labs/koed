@@ -5,13 +5,13 @@ import {
   setProjectAssociationLookup,
   type KoedServerPaths
 } from "@koed-labs/server";
-import { isPortableGitRemote } from "@koed/shared";
+import { isPortableGitRemote } from "@koed-labs/shared";
 import {
   projectSelectionCommandSchema,
   projectSelectionCommandResultSchema,
   projectSelectionLookupResponseSchema,
   type ProjectSelectionCommandResult
-} from "@koed/shared/project-selection";
+} from "@koed-labs/shared/project-selection";
 
 export type ProjectSelectionCheckout = {
   originatingDeviceId: string;

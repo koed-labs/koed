@@ -11,11 +11,11 @@ import {
   createMemorySourceRepository,
   createRemoteMcpOAuthRepository,
   runDbMigrations
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   exportConversationSourceReplicationPublicKey
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApiRouteContext } from "../server/context.js";
 import { createAuthHelpers, createHashSecret } from "../auth/session.js";

@@ -1,11 +1,11 @@
-import { Button } from "@koed/ui";
+import { Button } from "@koed-labs/ui";
 import { Link, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { RendererPlatform } from "../../services/platform.js";
 import type {
   ProjectSelectionCommand,
   ProjectSelectionCommandResult
-} from "@koed/shared/project-selection";
+} from "@koed-labs/shared/project-selection";
 
 export function ProjectAssociationPanel({
   localProjectId,

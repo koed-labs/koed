@@ -9,7 +9,7 @@ import {
   DialogHeader,
   DialogPopup,
   DialogTitle
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import type { AiClientReadiness, ComponentStatus } from "../../../types.js";
 import { summarizeCapabilities } from "../ai-client-card.js";
 

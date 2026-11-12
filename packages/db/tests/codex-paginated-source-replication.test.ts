@@ -21,7 +21,7 @@ import {
   signConversationSourceClosureManifest,
   signConversationSourceReplicationManifest,
   type ConversationSourceReplicationSourceDescriptor
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

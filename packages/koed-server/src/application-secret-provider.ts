@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import {
   createPdsApplicationSecretStore,
   type PdsApplicationSecretStore
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { resolveKoedHome } from "./paths.js";
+import { privateNodeLauncher } from "./private-node-launcher.js";
 
 export type PdsSecretProviderOperation = "get" | "put" | "delete";
 
@@ -28,7 +29,9 @@ export const bundledPdsSecretProviderEnvironment = (
   return {
     ...environment,
     PDS_SECRET_PROVIDER: "headless",
-    PDS_SECRET_PROVIDER_COMMAND: process.execPath,
+    // Providers run with a restricted environment, so use the private Node
+    // launcher that supplies its own library path.
+    PDS_SECRET_PROVIDER_COMMAND: privateNodeLauncher(),
     PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON: JSON.stringify([
       bundledCliPath(),
       "secret-provider"

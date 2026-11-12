@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   MANAGED_TERMINAL_CONTEXT_TTL_SECONDS,
   MANAGED_TERMINAL_MAX_DATA_BYTES,
   type ManagedTerminalRecord
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const pty = vi.hoisted(() => ({ spawn: vi.fn() }));

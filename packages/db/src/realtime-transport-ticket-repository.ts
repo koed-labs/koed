@@ -1,9 +1,9 @@
 import type pg from "pg";
-import { REALTIME_TRANSPORT_TICKET_VERSION } from "@koed/shared";
+import { REALTIME_TRANSPORT_TICKET_VERSION } from "@koed-labs/shared";
 import type {
   RealtimeTransportId,
   RealtimeTransportOperationFamily
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export type RealtimeTransportTicketAuthKind = "session" | "device_credential";
 

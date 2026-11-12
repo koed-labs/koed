@@ -7,8 +7,8 @@ import type {
   LcmGraphNode,
   LcmGraphNodeDetail,
   MemorySourceRepository
-} from "@koed/db";
-import type { MemorySearchResult, RetrievalMetadata } from "@koed/core";
+} from "@koed-labs/db";
+import type { MemorySearchResult, RetrievalMetadata } from "@koed-labs/core";
 import {
   awaitExperienceReplayProductState,
   createProductionNormalizedImportClient,

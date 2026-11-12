@@ -6,7 +6,7 @@ import {
   readDesktopLocalCredentialAuthorization,
   upgradeDesktopLocalCredential,
   storeDesktopLocalCredential
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   loadLocalAppCredential,
   resolveLocalApiToken,

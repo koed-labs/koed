@@ -6,14 +6,14 @@ import { join } from "node:path";
 import type {
   ConversationSourceSegmentRecord,
   PrivacyClassificationRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   allPrivacyLabelsPolicy,
   createLocalTestKeyEnvelopeEncryptionProvider,
   privacyContentPolicyHash,
   type PrivacyClassificationResponse,
   type PrivacyServiceClient
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   createPrivacyMaterializationService,

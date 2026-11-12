@@ -1,4 +1,4 @@
-import type { CollaborationRepository } from "@koed/db";
+import type { CollaborationRepository } from "@koed-labs/db";
 
 interface CollaborationReplayPruneLogger {
   info(bindings: Record<string, unknown>, message: string): void;

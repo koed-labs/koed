@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { canonicalJsonDigest } from "@koed/shared/collaboration";
+import { canonicalJsonDigest } from "@koed-labs/shared/collaboration";
 import type {
   GitAnchorSharingReviewInput,
   SharingRuleDelivery,
   SharingRulePublisherTakeoverLocalReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import { failureMessage } from "./collaboration-primitives.js";
 

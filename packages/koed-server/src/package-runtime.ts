@@ -55,10 +55,10 @@ export const requiredPackageRuntimeFiles = [
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
   "mcp-server/dist/prompts/codex-global-agent-guidance.md",
-  "node_modules/@koed/db/dist/index.js",
-  "node_modules/@koed/db/dist/connection.js",
-  "node_modules/@koed/db/dist/user-api-token-repository.js",
-  "node_modules/@koed/db/drizzle/meta/_journal.json"
+  "node_modules/@koed-labs/db/dist/index.js",
+  "node_modules/@koed-labs/db/dist/connection.js",
+  "node_modules/@koed-labs/db/dist/user-api-token-repository.js",
+  "node_modules/@koed-labs/db/drizzle/meta/_journal.json"
 ];
 
 const excludedPackagePatterns = [
@@ -75,17 +75,6 @@ const excludedPackagePatterns = [
   /^koed-runtime\/embedding-service\/requirements\.txt$/,
   /^koed-runtime\/embedding-service\/pyproject\.toml$/
 ];
-
-const pnpmWorkspaceSelfSymlinkPattern =
-  /^(?<root>koed-server|koed-runtime\/api|koed-runtime\/worker|koed-runtime\/embedding-service|koed-runtime\/mcp-server)\/node_modules\/\.pnpm\/node_modules\/@koed\/(?<name>[^/]+)$/;
-
-const packageSelfNames: Record<string, string> = {
-  "koed-server": "koed-server",
-  "koed-runtime/api": "api",
-  "koed-runtime/worker": "worker",
-  "koed-runtime/embedding-service": "embedding-service",
-  "koed-runtime/mcp-server": "mcp-server"
-};
 
 export type ServerPackageState =
   | "missing"
@@ -310,18 +299,10 @@ const packageCacheDir = (paths: KoedServerPaths): string =>
 const packageCurrentPath = (paths: KoedServerPaths): string =>
   resolve(packageRoot(paths), "current");
 
-const isPnpmWorkspaceSelfSymlink = (path: string): boolean => {
-  const match = path.match(pnpmWorkspaceSelfSymlinkPattern);
-  if (!match?.groups) return false;
-  const { name, root } = match.groups;
-  return Boolean(root && name && name === packageSelfNames[root]);
-};
-
 const listFiles = (root: string, dir = root): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = resolve(dir, entry.name);
     const relativePath = relative(root, path).replaceAll("\\", "/");
-    if (isPnpmWorkspaceSelfSymlink(relativePath)) return [];
     if (entry.isDirectory()) return listFiles(root, path);
     return [relativePath];
   });

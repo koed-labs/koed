@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   resolvePiToolProvenance,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import type { ActorContext } from "./types.js";
 

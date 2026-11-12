@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
 import type pg from "pg";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryQuestionRepository } from "../src/memory-question-repository.js";

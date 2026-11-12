@@ -1,9 +1,9 @@
-import { memoryModelFlowKeys } from "@koed/shared/ai-client-flow-defaults";
-import { personalSelectionConsumerStartSchema } from "@koed/shared";
+import { memoryModelFlowKeys } from "@koed-labs/shared/ai-client-flow-defaults";
+import { personalSelectionConsumerStartSchema } from "@koed-labs/shared";
 import type {
   PersonalProjectRule,
   PersonalSelectionConsumerSelection
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createHash,
   createPrivateKey,
@@ -21,9 +21,9 @@ import type {
   MemoryActor,
   MemoryEventRecord,
   MemorySearchResult
-} from "@koed/core";
-import releaseManifest from "@koed/koed/package.json" with { type: "json" };
-import { ConversationPresentationVersionConflictError } from "@koed/db";
+} from "@koed-labs/core";
+import releaseManifest from "@koed-labs/koed/package.json" with { type: "json" };
+import { ConversationPresentationVersionConflictError } from "@koed-labs/db";
 import pdsFixture from "../../../packages/shared/test-fixtures/personal-device-sync-v1.json" with { type: "json" };
 import type {
   ActorContext,
@@ -64,8 +64,8 @@ import type {
   UserRecord,
   UserSessionContext,
   Visibility
-} from "@koed/db";
-import { createDbPool, createMemorySourceRepository } from "@koed/db";
+} from "@koed-labs/db";
+import { createDbPool, createMemorySourceRepository } from "@koed-labs/db";
 import {
   COLLABORATION_CONTRACT_VERSION,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
@@ -82,7 +82,7 @@ import {
   storeLocalEdgeClientCredential,
   type EnvelopeEncryptionProvider,
   type EncryptedJsonPackage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   buildServer as buildApiServer,
   canReceiveGraphStreamPayload,

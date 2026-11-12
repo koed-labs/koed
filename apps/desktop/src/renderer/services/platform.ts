@@ -3,16 +3,16 @@ import {
   repositoryReviewCommandResultSchema,
   type RepositoryReviewCommand,
   type RepositoryReviewCommandResult
-} from "@koed/shared/repository-review";
+} from "@koed-labs/shared/repository-review";
 import { safeExternalUrl } from "../../window/external-url.js";
-import { personalDesktopProjectMetadataSchema } from "@koed/shared/personal-desktop";
+import { personalDesktopProjectMetadataSchema } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProjectMetadata } from "../../project-memory-ui.js";
 import {
   projectSelectionCommandSchema,
   projectSelectionCommandResultSchema,
   type ProjectSelectionCommand,
   type ProjectSelectionCommandResult
-} from "@koed/shared/project-selection";
+} from "@koed-labs/shared/project-selection";
 
 // Discovery includes local indexing details that are not part of the desktop
 // metadata contract. Normalize those responses while validating every UI field.

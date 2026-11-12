@@ -1,4 +1,4 @@
-import type { MemorySourceRepository, TeamRecord } from "@koed/db";
+import type { MemorySourceRepository, TeamRecord } from "@koed-labs/db";
 import {
   retentionAdminRequestHash,
   retentionAdminScopeHash

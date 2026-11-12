@@ -10,7 +10,7 @@ import {
   type EnvelopeEncryptionProvider,
   type PersonalSourceContextSnapshot,
   type PdsSessionPackage
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { MemorySourceRepository } from "../../src/index.js";
 import { materializePdsSession } from "../../../../apps/worker/src/personal-device-sync-runtime.js";
 import type { PersonalSourceDeviceFixture } from "./personal-source-device.js";

@@ -266,7 +266,7 @@ not a row to skip or repair during this dogfood test.
    KOED_MODELS_DIR="$KOED_TEST_MODELS_DIR" \
    KOED_DEPENDENCY_MODE=bundled-local \
    KOED_AUTO_PORTS=1 \
-     pnpm --filter @koed/desktop exec electron . \
+     pnpm --filter @koed-labs/desktop exec electron . \
        --user-data-dir="$KOED_A_ELECTRON_HOME" \
        --remote-debugging-port=9224
    ```

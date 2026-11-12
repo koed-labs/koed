@@ -29,7 +29,7 @@ import {
   type EncryptedJsonPackage,
   type EncryptedPayloadEnvelope,
   type RecipientPublicKeyMaterial
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";

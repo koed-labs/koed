@@ -53,7 +53,7 @@ unsupported Managed Conversation owner.
 ## Requirements
 
 - A running local `koed-server`. The default API host port is `3300`.
-- A built MCP Server: `pnpm --filter @koed/mcp-server build`.
+- A built MCP Server: `pnpm --filter @koed-labs/mcp-server build`.
 - A configured Local AI Runtime under `KOED_HOME`. `koed-server` provisions and
   retains its Personal API Token; Claude Code does not receive it.
 - Claude Code 2.1.227 or newer installed separately. This is the oldest release

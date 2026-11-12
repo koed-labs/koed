@@ -5,7 +5,7 @@ import {
   createDbPool,
   createRemoteMcpOAuthRepository,
   runDbMigrations
-} from "@koed/db";
+} from "@koed-labs/db";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { verifyBearerToken } from "@modelcontextprotocol/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

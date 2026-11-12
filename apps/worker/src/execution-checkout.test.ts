@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
+import { createGitExecutionCheckoutDriver } from "@koed-labs/shared/execution-checkout";
 
 const temporaryDirectories: string[] = [];
 

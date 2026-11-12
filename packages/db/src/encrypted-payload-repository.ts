@@ -4,7 +4,7 @@ import {
   type EncryptedPayloadEnvelope,
   type EnvelopeEncryptionProvider,
   type EnvelopeEncryptionProviderMode
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { ActorContext, Visibility } from "./types.js";
 
 export type EncryptedFieldSourceTable =

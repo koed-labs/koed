@@ -14,7 +14,7 @@ import {
   type PdsRelayRequestProof,
   type PdsSessionPackageChunk,
   type PdsSessionPackageHeader
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const DAY = 24 * 60 * 60 * 1_000;
 const MAX_SENDER_BYTES = 2 * 1024 * 1024 * 1024;

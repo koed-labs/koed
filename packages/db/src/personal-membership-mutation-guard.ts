@@ -1,5 +1,5 @@
 import type pg from "pg";
-import type { PersonalMembershipRevision } from "@koed/shared";
+import type { PersonalMembershipRevision } from "@koed-labs/shared";
 
 const reviewRequired = () =>
   Object.assign(

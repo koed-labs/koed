@@ -3,7 +3,7 @@ import {
   desktopUpdateEventChannel,
   desktopUpdateRequestSchema,
   desktopUpdateStateSchema
-} from "@koed/shared/desktop-update-contract";
+} from "@koed-labs/shared/desktop-update-contract";
 import type { DesktopUpdateDiscovery } from "../main/update-discovery.js";
 import { desktopRendererOrigin } from "./protocol.js";
 

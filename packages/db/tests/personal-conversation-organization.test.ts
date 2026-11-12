@@ -7,7 +7,7 @@ import {
   type PersonalFolderObservation,
   type PersonalGitContext,
   type PersonalSelectionSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createDbPool,
   createMemorySourceRepository,

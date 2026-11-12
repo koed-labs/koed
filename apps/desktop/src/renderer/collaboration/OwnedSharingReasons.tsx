@@ -4,7 +4,7 @@ import type {
   SharingRuleDelivery,
   ConversationSharingRuleControlIntent,
   SharedMemoryRepresentation
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 
 const updateLabel: Record<OwnedSharingReason["updateState"], string> = {
   fixed_snapshot: "Fixed snapshot",

@@ -1,5 +1,8 @@
-import { scheduleCompaction, type Visibility } from "@koed/core";
-import type { EmbeddableSourceType, MemorySourceRepository } from "@koed/db";
+import { scheduleCompaction, type Visibility } from "@koed-labs/core";
+import type {
+  EmbeddableSourceType,
+  MemorySourceRepository
+} from "@koed-labs/db";
 import {
   embeddingQueueJobId,
   lcmCompactionQueueJobId,
@@ -8,7 +11,7 @@ import {
   type KoedJobQueue,
   type KoedWorkClass,
   type WorkerQueueName
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { EmbeddingWorkflow } from "./embedding-workflow.js";
 
 export interface EmbeddingQueueJobData {

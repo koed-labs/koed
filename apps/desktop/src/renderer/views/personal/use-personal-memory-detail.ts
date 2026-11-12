@@ -1,4 +1,4 @@
-import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopProjectThread } from "@koed-labs/shared/personal-desktop";
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 import {

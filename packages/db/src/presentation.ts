@@ -1,4 +1,4 @@
-import { splitCodexIdePrompt } from "@koed/core";
+import { splitCodexIdePrompt } from "@koed-labs/core";
 import {
   isRecord,
   looksLikeToolPayloadText,

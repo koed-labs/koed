@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import {
   canonicalConversationItemKey,
   readPiToolProvenance
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 
 type JsonRecord = Record<string, unknown>;

@@ -39,14 +39,14 @@ test("keeps renderer-only packages out of Electron production dependencies", () 
     readFileSync(new URL("../package.json", import.meta.url), "utf8")
   );
   assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
+    "@koed-labs/mcp-server",
     "@koed-labs/server",
-    "@koed/mcp-server",
-    "@koed/shared",
+    "@koed-labs/shared",
     "ws",
     "zod"
   ]);
   for (const dependency of [
-    "@koed/ui",
+    "@koed-labs/ui",
     "@legendapp/list",
     "@pierre/diffs",
     "@xterm/addon-fit",

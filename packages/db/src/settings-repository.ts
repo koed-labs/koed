@@ -1,4 +1,4 @@
-import { memoryModelFlowKeys } from "@koed/shared/ai-client-flow-defaults";
+import { memoryModelFlowKeys } from "@koed-labs/shared/ai-client-flow-defaults";
 import { readPersonalCaptureTarget } from "./personal-capture-target-state.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";

@@ -4,7 +4,7 @@ import {
   currentCaptureFolderObservation
 } from "./capture-repository-context.js";
 import { createHash } from "node:crypto";
-import { conversationSourceRewriteGenerationId } from "@koed/shared";
+import { conversationSourceRewriteGenerationId } from "@koed-labs/shared";
 import fs, { type FSWatcher } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import os from "node:os";

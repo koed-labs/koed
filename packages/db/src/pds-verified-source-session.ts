@@ -2,14 +2,14 @@ import type pg from "pg";
 import type {
   RepositoryAssignment,
   PersonalSourceContextSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   personalOwnerIdSchema,
   personalSourceReferenceSchema,
   createRepositoryAssignment,
   PdsConfigurationCompatibilityError,
   decodePdsPersonalSourceContextSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createCapturedSessionRepository,
   type CapturedSessionRepository

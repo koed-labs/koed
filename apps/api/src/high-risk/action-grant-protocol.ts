@@ -15,7 +15,7 @@ import {
   teamRepositorySnapshotReviewSchema,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
   type CollaborationActionGrantIntent
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 
 import {

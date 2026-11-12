@@ -8,7 +8,7 @@ import {
   DialogPopup,
   DialogTitle,
   Spinner
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import { AlertTriangle, Check, Circle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 

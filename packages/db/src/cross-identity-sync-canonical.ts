@@ -2,7 +2,7 @@ import {
   crossIdentitySyncDigest,
   type CapturedSessionSyncContributorV1,
   type CapturedSessionSyncEventV1
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 const MAX_JSON_DEPTH = 16;
 const MAX_JSON_NODES = 4_096;

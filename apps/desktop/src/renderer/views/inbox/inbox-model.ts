@@ -2,7 +2,7 @@ import type {
   CollaborationDurableSend,
   CollaborationSelection,
   CollaborationSnapshot
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 
 export type InboxUnreadItem = {
   context: string;

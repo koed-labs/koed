@@ -4,4 +4,4 @@ export {
   type HistoricalAdmissionInput,
   type HistoricalAdmissionPauseReason,
   type HistoricalImportBatchConfig
-} from "@koed/shared";
+} from "@koed-labs/shared";

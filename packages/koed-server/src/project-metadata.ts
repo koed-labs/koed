@@ -23,7 +23,7 @@ import {
   type NormalizedGitRemote,
   type ProjectMetadataV1,
   type ProjectPackageMetadata
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createGitProjectProbe,
   probeGitProject,
@@ -55,7 +55,7 @@ export interface NamedProject {
   id: string;
   name: string;
   createdAt: string;
-  repository: import("@koed/shared").RepositoryIdentity;
+  repository: import("@koed-labs/shared").RepositoryIdentity;
 }
 
 export interface ProjectMetadataResult {
@@ -120,7 +120,7 @@ export const historicalFolderRepositoryIdentity = (
   paths: KoedServerPaths,
   cwd: string | undefined,
   depsInput: ProjectMetadataDeps = {}
-): import("@koed/shared").RepositoryIdentity | null => {
+): import("@koed-labs/shared").RepositoryIdentity | null => {
   const root = normalizeRecordedProjectDirectory(cwd);
   if (!root) return null;
   const deps = depsWithDefaults(depsInput);

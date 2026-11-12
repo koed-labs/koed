@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   personalMembershipSourceFromSelectorKey,
   personalSourceReferenceSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { personalMembershipBridgeRequired } from "./personal-membership-native-identity.js";
 import { preparePersonalSourceContextSnapshot } from "./personal-source-context-export.js";
 import type { PersonalSourceBindingRow } from "./personal-source-binding-state.js";

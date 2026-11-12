@@ -9,7 +9,7 @@ import {
   normalizeGitRemoteUrl,
   normalizeRecordedProjectDirectory,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 // Missing or ambiguous source context never inherits the importing process's cwd.
 export const unresolvedHistoricalRepositoryIdentity =

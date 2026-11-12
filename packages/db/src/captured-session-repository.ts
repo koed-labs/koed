@@ -18,15 +18,15 @@ import {
   personalFolderScopeId,
   type PersonalFolderContext,
   type RepositoryAssignment
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { basename } from "node:path";
 import pg from "pg";
-import type { MemoryActor } from "@koed/core";
+import type { MemoryActor } from "@koed-labs/core";
 import {
   repositoryIdentitySchema,
   type RepositoryIdentity,
   crossIdentitySyncDeterministicUuid
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   mapRepositoryAssignment,
   recordRepositoryObservation,

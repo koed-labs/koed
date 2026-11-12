@@ -10,7 +10,7 @@ import {
   sharedMemorySemanticPrivacyWorkIdentity,
   type SharedMemorySemanticPrivacyClaim,
   type SharedMemoryRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   crossIdentitySyncDigest,
   privacyClassificationExpectedManifestHash,
@@ -31,7 +31,7 @@ import {
   type EnvelopeEncryptionProvider,
   type PrivacyClassifiedField,
   type PrivacyServiceClient
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createNotificationDrainController,
   type NotificationDrainPool

@@ -1,13 +1,13 @@
 // @vitest-environment happy-dom
 import { act } from "react";
-import { sharingSelectionDescriptor } from "@koed/shared";
+import { sharingSelectionDescriptor } from "@koed-labs/shared";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CollaborationSnapshot,
   GitAnchorSharingReviewInput,
   GitAnchorSharingReviewPage
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import { GitAnchorSharingReview } from "./GitAnchorSharingReview.js";
 import { RepositorySharingRules } from "./RepositorySharingRules.js";
 import { mergeProjectSources } from "../../project-memory-ui.js";

@@ -179,6 +179,46 @@ same embedded version. The documented short command uses
 releases may be marked latest on GitHub. A release whose package does not accept Node 26 cannot
 be installed with the private Node fallback.
 
+### Private Node bootstrap downloads
+
+The Linux x64 installer extracts `libatomic.so.1` privately alongside the
+downloaded Node executable before running Node or npm. It does not invoke a
+system package manager or run Debian package maintainer scripts. The library
+requires glibc 2.14 or newer, below Koed's glibc 2.35 baseline. The original
+Node executable remains at `bin/node.bin`; `bin/node` is a launcher that sets
+`LD_LIBRARY_PATH` to its sibling `lib/koed` directory. The generated Koed
+launcher uses this Node launcher, and child processes inherit the private
+library path. Because `process.execPath` names `bin/node.bin`, Node children
+launched with a restricted environment (the bundled Personal Device Sync secret
+provider and the CUDA driver probe) launch the verified `bin/node` launcher
+instead, so they do not need inherited loader settings. Compatible
+Operator-provided Node installations are unchanged.
+
+Bootstrap inputs are bounded HTTPS downloads authenticated by SHA-256 pins in
+`scripts/install-server.sh`:
+
+| Input                                                 | Source                                                                                                                 | SHA-256                                                            |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Debian Bookworm `libatomic1` 12.2.0-14+deb12u1, amd64 | [Debian package](https://deb.debian.org/debian/pool/main/g/gcc-12/libatomic1_12.2.0-14+deb12u1_amd64.deb)              | `fbd4e154a6b444229ea002cc209df099209c0adc09102e5fd21239a3d2b55e2d` |
+| Matching GCC copyright and Runtime Library Exception  | [Debian copyright](https://metadata.ftp-master.debian.org/changelogs/main/g/gcc-12/gcc-12_12.2.0-14+deb12u1_copyright) | `da8191658b3452ce9caf31638ba61dab31a38c619fa39df119812e050f592fd3` |
+| GPL version 3 text                                    | [GNU license](https://www.gnu.org/licenses/gpl-3.0.txt)                                                                | `3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986` |
+
+The package pin was checked against the [Debian download metadata](https://packages.debian.org/bookworm/amd64/libatomic1/download).
+The copyright bytes were compared with the same-version `gcc-12-base` package.
+Extraction accepts only the regular `libatomic.so.1.2.0` payload and separately
+checks its SHA-256 (`107ab9f7661a1c47cddfb5cd1def99ec537a50a9a537fbe38cdde1b34b8ba280`)
+before saving it as `lib/koed/libatomic.so.1`. The copyright and GPL files are
+retained in that directory. Cached files are checked again on installer reruns;
+missing or changed files are downloaded and verified before the launcher is
+activated. Valid cached files allow reruns without contacting the bootstrap
+download hosts.
+
+When changing these pins, verify the source package checksum and notices,
+then test private Node, npm, service startup, standalone launcher use and
+same-version reruns on a clean Linux x64 glibc 2.35 host without a system
+`libatomic1` package. An emulated container is a useful regression test and
+does not replace native-host release qualification.
+
 ## Immutable candidate and retry protocol
 
 1. Build all release bytes from one product version and retain the npm tarball,

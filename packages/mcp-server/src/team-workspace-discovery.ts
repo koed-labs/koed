@@ -3,7 +3,7 @@ import path from "node:path";
 import {
   readLocalEdgeClientCredentialAuthorization,
   readLocalEdgeUpstreamRegistry
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
 import { MemoryApiError, type MemoryApiClient } from "./index.js";
 

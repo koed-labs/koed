@@ -36,7 +36,7 @@ import {
 } from "../src/codex-transcript-watcher.js";
 import { signalCodexTranscriptWatcher } from "../src/codex-transcript-watcher-signal.js";
 import type { CodexHistoryMetadataReader } from "../src/codex-history-metadata.js";
-import * as sharedRewritePolicy from "@koed/shared";
+import * as sharedRewritePolicy from "@koed-labs/shared";
 import { ingestCodexTranscriptJournal } from "../src/codex-transcript-journal.js";
 import {
   extractTranscriptSessionMetadata,
@@ -310,7 +310,7 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
       expectedParentClosureHash: string;
       sourceGenerationId: string;
       originKeyId: string;
-      sourceRewrite?: import("@koed/shared").ConversationSourceRewriteFrontier;
+      sourceRewrite?: import("@koed-labs/shared").ConversationSourceRewriteFrontier;
     }
   ) {
     const parent = [...this.artifacts.values()].find(

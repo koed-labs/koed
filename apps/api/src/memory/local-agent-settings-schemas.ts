@@ -5,9 +5,9 @@ import {
   aiClientInstanceIdMaxLength,
   supportedAiClientDriverIds,
   type AiClientCapabilityId
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { z } from "zod";
-import { memoryModelFlowKeys } from "@koed/shared/ai-client-flow-defaults";
+import { memoryModelFlowKeys } from "@koed-labs/shared/ai-client-flow-defaults";
 
 const aiClientDriverIdSchema = z
   .string()

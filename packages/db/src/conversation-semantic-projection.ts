@@ -1,5 +1,5 @@
-import { chunkTextForModel, estimateTokens } from "@koed/core";
-import type { MemoryActor } from "@koed/core";
+import { chunkTextForModel, estimateTokens } from "@koed-labs/core";
+import type { MemoryActor } from "@koed-labs/core";
 import type { Visibility } from "./types.js";
 import { isRecord } from "./value-helpers.js";
 

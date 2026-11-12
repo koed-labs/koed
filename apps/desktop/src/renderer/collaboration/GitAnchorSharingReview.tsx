@@ -2,14 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   canonicalJsonDigest as crossIdentitySyncDigest,
   sharingSelectionDescriptor
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import type {
   CollaborationSnapshot,
   GitAnchorSharingReviewInput,
   GitAnchorSharingReviewPage
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
-import type { SharingRuleDelivery } from "@koed/shared";
+import type { SharingRuleDelivery } from "@koed-labs/shared";
 import {
   SharingDetailChoices,
   SharingRow,

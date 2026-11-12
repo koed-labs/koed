@@ -9,7 +9,7 @@ import {
   type SharingRuleSourceIdentity,
   type SharedMemoryFidelityCeiling,
   type SharedMemoryRepresentation
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { workspaceSourceIsNotExcludedSql } from "./shared-memory-publication-authority-sql.js";
 
 export interface RuleMemberReadmissionInput {

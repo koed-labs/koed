@@ -14,7 +14,7 @@ import {
   type CollaborationActionGrantCustodyInput,
   type CollaborationActionGrantReference,
   type CollaborationActionGrantResolveInput
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import { highRiskActionGrantRemoteEnvelopeSchema } from "../high-risk/action-grant-protocol.js";
 import type { LocalEdgeUpstreamBackend } from "./upstream-routing.js";

@@ -2,7 +2,7 @@ import {
   readAvailablePersonalFolders,
   readPersonalFolderDirectoryMarker,
   personalFolderRegistrySchema
-} from "@koed/shared/personal-local-folders";
+} from "@koed-labs/shared/personal-local-folders";
 import {
   mkdirSync,
   mkdtempSync,
@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   normalizeRecordedProjectDirectory,
   personalFolderObservationSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   ensureDeviceIdentity,
   rotateDeviceIdentity

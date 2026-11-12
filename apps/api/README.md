@@ -47,16 +47,16 @@ connected AI Client through the `koed-server`-supervised Local AI Runtime.
 From the repository root:
 
 ```bash
-pnpm --filter @koed/api build
-pnpm --filter @koed/api dev
-pnpm --filter @koed/api test
-pnpm --filter @koed/api typecheck
+pnpm --filter @koed-labs/api build
+pnpm --filter @koed-labs/api dev
+pnpm --filter @koed-labs/api test
+pnpm --filter @koed-labs/api typecheck
 ```
 
 Production entry point after build:
 
 ```bash
-pnpm --filter @koed/api start
+pnpm --filter @koed-labs/api start
 ```
 
 ## Configuration

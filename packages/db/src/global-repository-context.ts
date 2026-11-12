@@ -3,7 +3,7 @@ import {
   repositoryIdentityMatches,
   type TeamRepositorySnapshot,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 // Preference is applied once after semantic thresholds and stage/anchor fusion.
 export const CURRENT_REPOSITORY_SCORE_BONUS = 0.04;

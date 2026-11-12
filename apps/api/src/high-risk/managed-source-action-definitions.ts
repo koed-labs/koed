@@ -1,11 +1,11 @@
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import {
   calculateConversationSourceDownloadRequestHash,
   calculateConversationSourceDownloadScopeHash,
   calculateConversationSourceDiscoveryRequestHash,
   calculateConversationSourceDiscoveryScopeHash,
   type CollaborationApprovalReview
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type { ActionApprovalPolicy } from "./approval-policy.js";
 import {

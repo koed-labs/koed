@@ -1,7 +1,7 @@
 import type {
   CollaborationSelection,
   SharedMemorySourcePage
-} from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
 
 type SharedSessionSelection = Extract<
   CollaborationSelection,

@@ -8,7 +8,7 @@ import {
   TabsList,
   TabsTab,
   TabsPanel
-} from "@koed/ui";
+} from "@koed-labs/ui";
 import type { MarkdownPlatformAdapters } from "../../markdown/SecureMarkdown.js";
 import type { DesktopConversationEvent } from "../../../desktop-conversation.js";
 import type { DesktopThreadGroup } from "../../../project-memory-ui.js";

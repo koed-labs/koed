@@ -10,14 +10,14 @@ import {
   type ConversationPresentationDecision,
   type ManagedConversationFileOperation,
   type ManagedConversationFileOperationResult
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import pg from "pg";
 import {
   managedConversationSettingsKey,
   parseManagedConversationSettings,
   type ManagedConversationSettings,
   type ManagedConversationSettingsChange
-} from "@koed/shared/ai-client-contract";
+} from "@koed-labs/shared/ai-client-contract";
 
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { managedConversationEventMutationId } from "./managed-conversation-event.js";

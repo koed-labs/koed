@@ -10,10 +10,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  lstatSync,
+  readlinkSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,7 +81,13 @@ const sha256Files = (root: string, files: string[]): string => {
   for (const file of [...files].sort()) {
     hash.update(file);
     hash.update("\0");
-    hash.update(readFileSync(resolve(root, file)));
+    const path = resolve(root, file);
+    if (lstatSync(path).isSymbolicLink()) {
+      hash.update("symlink\0");
+      hash.update(readlinkSync(path));
+    } else {
+      hash.update(readFileSync(path));
+    }
     hash.update("\0");
   }
   return hash.digest("hex");
@@ -355,6 +364,74 @@ afterEach(() => {
 });
 
 describe("standalone koed-server package runtime", () => {
+  it.each([
+    ["koed-server", "@koed", "koed-server"],
+    ["koed-server", "@koed-labs", "server"],
+    ...[
+      "api",
+      "worker",
+      "embedding-service",
+      "privacy-service",
+      "mcp-server"
+    ].flatMap((name) => [
+      [`koed-runtime/${name}`, "@koed", name],
+      [`koed-runtime/${name}`, "@koed-labs", name]
+    ])
+  ])(
+    "detects self symlink changes in %s for %s/%s",
+    (packagePath, scope, name) => {
+      const root = createPackageRoot(tempDir(), "0.2.0");
+      const link = resolve(
+        root,
+        packagePath,
+        "node_modules/.pnpm/node_modules",
+        scope,
+        name
+      );
+      expect(validateServerPackageRoot(root)).toMatchObject({ ok: true });
+      mkdirSync(dirname(link), { recursive: true });
+      symlinkSync("../../../..", link);
+      expect(validateServerPackageRoot(root)).toMatchObject({ ok: false });
+      writeManifest(root, "0.2.0");
+      expect(validateServerPackageRoot(root)).toMatchObject({ ok: true });
+      rmSync(link);
+      expect(validateServerPackageRoot(root)).toMatchObject({ ok: false });
+      symlinkSync("../../..", link);
+      expect(validateServerPackageRoot(root)).toMatchObject({ ok: false });
+    }
+  );
+
+  it.each(["directory", "wrong symlink"])(
+    "rejects self-link-shaped %s added after manifest creation",
+    (kind) => {
+      const root = createPackageRoot(tempDir(), "0.2.0");
+      const entry = resolve(
+        root,
+        "koed-runtime/api/node_modules/.pnpm/node_modules/@koed-labs/api"
+      );
+      mkdirSync(dirname(entry), { recursive: true });
+      if (kind === "directory") {
+        mkdirSync(entry);
+        writeFileSync(resolve(entry, "injected.js"), "injected");
+      } else {
+        symlinkSync("../../..", entry);
+      }
+      expect(validateServerPackageRoot(root)).toMatchObject({ ok: false });
+    }
+  );
+
+  it("includes non-self symlinks in package integrity validation", () => {
+    const root = createPackageRoot(tempDir(), "0.2.0");
+    const link = resolve(
+      root,
+      "koed-runtime/api/node_modules/.pnpm/node_modules/@koed-labs/db"
+    );
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync("../../..", link);
+
+    expect(validateServerPackageRoot(root)).toMatchObject({ ok: false });
+  });
+
   it("accepts the launcher in previously released archives", () => {
     const root = createPackageRoot(tempDir(), "0.8.1");
     renameSync(

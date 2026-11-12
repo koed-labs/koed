@@ -5,7 +5,7 @@ import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   repositoryScopeId,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { runDbMigrations } from "../src/migrate.js";
 import { createPrivacyClassificationRepository } from "../src/privacy-classification-repository.js";

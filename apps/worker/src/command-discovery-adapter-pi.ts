@@ -4,7 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
+import {
+  nodeCliInvocation,
+  nodeCliProcessEnvironment
+} from "@koed-labs/shared";
 import type {
   CommandDiscoveryAdapter,
   ManagedConversationSlashCommand

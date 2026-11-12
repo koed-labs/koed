@@ -455,10 +455,10 @@ test("refuses an existing unowned home without modifying it", () => {
   }
 });
 
-function fallbackFixture(f, unsafe = false) {
+function fallbackFixture(f, unsafe = false, target = "darwin-arm64") {
   const archive = join(f.dir, "node.tar.xz");
   const py = `import io,tarfile,sys
-root='node-v26.13.0-darwin-arm64/'
+root='node-v26.13.0-${target}/'
 node=open(sys.argv[3],'rb').read()
 with tarfile.open(sys.argv[1], 'w:xz') as t:
  for name,data in [(root+'bin/node',node),(root+'lib/node_modules/npm/bin/npm-cli.js',b'fixture')]+([('../escape',b'bad')] if sys.argv[2]=='bad' else []):
@@ -492,7 +492,9 @@ with tarfile.open(sys.argv[1], 'w:xz') as t:
     { mode: 0o755 }
   );
   const source = f.source.replace(
-    "6f5b3187d9df9fc007e881167905bc7d69ad26450ddc377c83d63256a2495b6e",
+    target === "linux-x64"
+      ? "d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997"
+      : "6f5b3187d9df9fc007e881167905bc7d69ad26450ddc377c83d63256a2495b6e",
     digest
   );
   return {
@@ -500,6 +502,241 @@ with tarfile.open(sys.argv[1], 'w:xz') as t:
     env: { ...f.env, ARCHIVE: archive, KOED_INSTALL_POLL_SECONDS: "0" }
   };
 }
+
+const atomicHashes = {
+  archive: "fbd4e154a6b444229ea002cc209df099209c0adc09102e5fd21239a3d2b55e2d",
+  library: "107ab9f7661a1c47cddfb5cd1def99ec537a50a9a537fbe38cdde1b34b8ba280",
+  copyright: "da8191658b3452ce9caf31638ba61dab31a38c619fa39df119812e050f592fd3",
+  license: "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+};
+
+test("compatible Operator-provided Linux Node is reused without downloading private libraries", () => {
+  const f = fixture();
+  try {
+    const env = { ...trustedNode(f), HOST_OS: "Linux", HOST_ARCH: "x86_64" };
+    writeFileSync(
+      join(f.dir, "curl"),
+      '#!/bin/sh\necho attempted > "$HOME/download-attempt"\nexit 99\n',
+      { mode: 0o755 }
+    );
+    const result = run(f.source, env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(f.env.KOED_HOME, "installer/node")), false);
+    assert.equal(existsSync(join(f.dir, "download-attempt")), false);
+    assert.equal(
+      readFileSync(join(f.dir, "trusted/bin/node"), "utf8"),
+      fakeNode
+    );
+  } finally {
+    cleanup(f);
+  }
+});
+
+function linuxFallbackFixture(f, mode = "good") {
+  const sample = fallbackFixture(f, false, "linux-x64");
+  const archive = join(f.dir, "libatomic.deb");
+  const library = "fixture libatomic";
+  const made = spawnSync("python3", [
+    "-c",
+    `import io,lzma,tarfile,sys
+out,mode,library=sys.argv[1:]
+data=io.BytesIO()
+with tarfile.open(fileobj=data,mode='w') as t:
+ m=tarfile.TarInfo('./usr/lib/x86_64-linux-gnu/libatomic.so.1.2.0')
+ m.size=len(library)
+ if mode=='symlink': m.type=tarfile.SYMTYPE; m.linkname='/outside'
+ if mode=='missing': m.name='./not-libatomic'
+ t.addfile(m,io.BytesIO(library.encode()) if m.isfile() else None)
+ if mode=='duplicate': t.addfile(m,io.BytesIO(library.encode()))
+payload=lzma.compress(b'x'*1048577 if mode=='oversized' else data.getvalue())
+def member(name,b):
+ header=f'{name:<16}{0:<12}{0:<6}{0:<6}{100644:<8}{len(b):<10}'
+ return header.encode()+b'\x60\\n'+b+(b'\\n' if len(b)%2 else b'')
+deb=b'!<arch>\\n'+member('debian-binary',b'2.0\\n')+member('data.tar.xz',payload)
+open(out,'wb').write(b'invalid ar' if mode=='malformed' else deb)`,
+    archive,
+    mode,
+    library
+  ]);
+  assert.equal(made.status, 0, String(made.stderr));
+  const copyright = join(f.dir, "copyright");
+  const license = join(f.dir, "COPYING3");
+  writeFileSync(copyright, "fixture copyright and runtime exception");
+  writeFileSync(license, "fixture GPL");
+  const values = {
+    archive: readFileSync(archive),
+    library: Buffer.from(library),
+    copyright: readFileSync(copyright),
+    license: readFileSync(license)
+  };
+  let source = sample.source;
+  for (const [key, bytes] of Object.entries(values))
+    source = source.replace(
+      atomicHashes[key],
+      createHash("sha256").update(bytes).digest("hex")
+    );
+  const curl = `#!/bin/sh
+while [ $# -gt 0 ]; do
+ if [ "$1" = -o ]; then shift; out="$1"; else url="$1"; fi
+ shift
+done
+case "$url" in
+ *nodejs.org*) from="$ARCHIVE" ;;
+ *libatomic1*) from="$ATOMIC_ARCHIVE" ;;
+ *_copyright) from="$ATOMIC_COPYRIGHT" ;;
+ *gpl-3.0.txt) from="$ATOMIC_LICENSE" ;;
+ *) exit 65 ;;
+esac
+/bin/cp "$from" "$out"
+`;
+  writeFileSync(join(f.dir, "curl"), curl, { mode: 0o755 });
+  return {
+    source,
+    curl,
+    env: {
+      ...sample.env,
+      HOST_OS: "Linux",
+      HOST_ARCH: "x86_64",
+      ATOMIC_ARCHIVE: archive,
+      ATOMIC_COPYRIGHT: copyright,
+      ATOMIC_LICENSE: license,
+      LD_LIBRARY_PATH: "/untrusted/inherited/path"
+    }
+  };
+}
+
+test("Linux private Node bundles authenticated libatomic, preserves licenses and works after installer exit", () => {
+  const f = fixture();
+  try {
+    const sample = linuxFallbackFixture(f);
+    const result = run(sample.source, sample.env);
+    assert.equal(result.status, 0, result.stderr);
+    const installer = join(realpathSync(f.env.KOED_HOME), "installer");
+    const root = join(installer, "node/node-v26.13.0-linux-x64");
+    assert.equal(
+      readFileSync(join(root, "lib/koed/libatomic.so.1"), "utf8"),
+      "fixture libatomic"
+    );
+    assert.match(
+      readFileSync(join(root, "lib/koed/copyright"), "utf8"),
+      /runtime exception/
+    );
+    assert.equal(
+      readFileSync(join(root, "lib/koed/COPYING3"), "utf8"),
+      "fixture GPL"
+    );
+    assert.match(
+      readFileSync(join(f.dir, "koed-environment"), "utf8"),
+      new RegExp(`LD_LIBRARY_PATH=${root}/lib/koed\\n`)
+    );
+    const launcher = join(installer, "bin/koed");
+    const later = spawnSync(launcher, ["doctor", "--json"], {
+      env: { HOME: f.dir, PATH: "/usr/bin:/bin" },
+      encoding: "utf8"
+    });
+    assert.equal(later.status, 0, later.stderr);
+    assert.match(
+      readFileSync(join(f.dir, "koed-environment"), "utf8"),
+      new RegExp(`LD_LIBRARY_PATH=${root}/lib/koed\\n`)
+    );
+    const before = readFileSync(
+      join(f.env.KOED_HOME, "run/koed-server.lock"),
+      "utf8"
+    );
+    writeFileSync(join(f.dir, "curl"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+    const rerun = run(sample.source, sample.env);
+    assert.equal(rerun.status, 0, rerun.stderr);
+    assert.equal(
+      readFileSync(join(f.env.KOED_HOME, "run/koed-server.lock"), "utf8"),
+      before
+    );
+    // Do not execute the old wrapper before checking/repairing private bytes.
+    writeFileSync(join(root, "lib/koed/libatomic.so.1"), "damaged library");
+    writeFileSync(
+      join(root, "bin/node"),
+      `#!/bin/sh\necho attempted > "${f.dir}/private-probe"\nexit 99\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(join(f.dir, "curl"), sample.curl, { mode: 0o755 });
+    const repaired = run(sample.source, sample.env);
+    assert.equal(repaired.status, 0, repaired.stderr);
+    assert.equal(existsSync(join(f.dir, "private-probe")), false);
+    assert.equal(
+      readFileSync(join(root, "lib/koed/libatomic.so.1"), "utf8"),
+      "fixture libatomic"
+    );
+    // Recover a missing library and an interrupted binary-to-wrapper rename.
+    rmSync(join(root, "lib/koed/libatomic.so.1"));
+    rmSync(join(root, "bin/node"));
+    writeFileSync(join(f.dir, "curl"), sample.curl, { mode: 0o755 });
+    const recovered = run(sample.source, sample.env);
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.equal(existsSync(join(root, "lib/koed/libatomic.so.1")), true);
+  } finally {
+    cleanup(f);
+  }
+});
+
+test("Linux private Node rejects unpinned libraries and notices before activating the wrapper", () => {
+  for (const key of ["archive", "library", "copyright", "license"]) {
+    const f = fixture();
+    try {
+      const sample = linuxFallbackFixture(f);
+      const source = sample.source.replace(
+        createHash("sha256")
+          .update(
+            key === "archive"
+              ? readFileSync(sample.env.ATOMIC_ARCHIVE)
+              : key === "library"
+                ? Buffer.from("fixture libatomic")
+                : readFileSync(
+                    key === "copyright"
+                      ? sample.env.ATOMIC_COPYRIGHT
+                      : sample.env.ATOMIC_LICENSE
+                  )
+          )
+          .digest("hex"),
+        atomicHashes[key]
+      );
+      const result = run(source, sample.env);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /checksum/i);
+      assert.equal(
+        existsSync(
+          join(
+            f.env.KOED_HOME,
+            "installer/node/node-v26.13.0-linux-x64/bin/node.bin"
+          )
+        ),
+        false
+      );
+      assert.equal(calls(f).length, 0);
+    } finally {
+      cleanup(f);
+    }
+  }
+});
+
+test("Linux private Node rejects malformed, linked, duplicate, missing and oversized library payloads", () => {
+  for (const mode of [
+    "malformed",
+    "symlink",
+    "duplicate",
+    "missing",
+    "oversized"
+  ]) {
+    const f = fixture();
+    try {
+      const sample = linuxFallbackFixture(f, mode);
+      const result = run(sample.source, sample.env);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /unsafe private Node library/i);
+      assert.equal(calls(f).length, 0);
+    } finally {
+      cleanup(f);
+    }
+  }
+});
 
 test("private Node fallback verifies pinned bytes and stages exact package", () => {
   const f = fixture();

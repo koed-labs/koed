@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import type { PersonalDesktopProjectThread } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "./project-memory-ui.js";
 import {
   otherConversationFolderId,

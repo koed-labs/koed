@@ -2,7 +2,7 @@ import type {
   CollaborationActionGrantProjection,
   CollaborationRendererClient
 } from "../../collaboration/renderer-client.js";
-import { useToast, type ToastTone } from "@koed/ui";
+import { useToast, type ToastTone } from "@koed-labs/ui";
 import { AlertTriangle, Check, Clock, LoaderCircle, X } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 

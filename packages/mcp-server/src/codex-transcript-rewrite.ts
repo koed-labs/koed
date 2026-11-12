@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import {
   CONVERSATION_SOURCE_REWRITE_MAX_PROOF_BYTES,
   conversationSourceRewriteProofWithinLimit
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row => {

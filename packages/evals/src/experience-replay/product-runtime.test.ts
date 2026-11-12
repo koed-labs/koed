@@ -10,8 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   LocalAiRuntimeServiceFactory,
   LocalAiRuntimeToolExecutor
-} from "@koed/mcp-server/runtime-contracts";
-import { startLocalAiRuntime } from "@koed/mcp-server/runtime-contracts";
+} from "@koed-labs/mcp-server/runtime-contracts";
+import { startLocalAiRuntime } from "@koed-labs/mcp-server/runtime-contracts";
 import type { TrialRedisHandle } from "./isolation.js";
 import {
   startExperienceReplayProductRuntime,

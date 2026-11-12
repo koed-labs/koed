@@ -13,8 +13,8 @@ import type {
   ConversationSourceSegmentRecord,
   MemorySourceRepository,
   PrivacyClassificationRepository
-} from "@koed/db";
-import { privacySourceFrontierHash } from "@koed/db";
+} from "@koed-labs/db";
+import { privacySourceFrontierHash } from "@koed-labs/db";
 import {
   allPrivacyLabelsPolicy,
   assertConversationSourceReplicationJsonlSegment,
@@ -34,7 +34,7 @@ import {
   type PrivacyClassifiedField,
   type PrivacyLabelPolicy,
   type PrivacyServiceClient
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   createNotificationDrainController,
   type NotificationDrainPool

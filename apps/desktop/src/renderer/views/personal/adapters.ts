@@ -1,5 +1,5 @@
-import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
-import type { PersonalMemoryEntry } from "@koed/shared";
+import type { PersonalDesktopProjectThread } from "@koed-labs/shared/personal-desktop";
+import type { PersonalMemoryEntry } from "@koed-labs/shared";
 
 export type PersonalMemorySharingRecord = {
   entryId: string;

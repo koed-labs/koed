@@ -1,4 +1,4 @@
-import type { CollaborationSnapshot } from "@koed/shared";
+import type { CollaborationSnapshot } from "@koed-labs/shared";
 import { describe, expect, it } from "vitest";
 
 import { modalIsAuthorized } from "./CollaborationRoutesImpl.js";

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { MemorySourceRepository } from "@koed/db";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import { createHistoricalAdmissionHealth } from "./historical-admission-health.js";
 
 const createQueue = () => ({

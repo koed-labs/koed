@@ -3,8 +3,8 @@ import {
   codeDefaultAssignmentFor,
   documentDefault,
   localAiClientFlowKeys
-} from "@koed/shared";
-import type { MemorySourceRepository } from "@koed/db";
+} from "@koed-labs/shared";
+import type { MemorySourceRepository } from "@koed-labs/db";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";

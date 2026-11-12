@@ -3,7 +3,7 @@ import {
   PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
   PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
   PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   parsePrivacyRuntimePreference,
   type PrivacyRuntimePreference

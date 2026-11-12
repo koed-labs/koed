@@ -168,11 +168,11 @@ Curated Memory. A false proposal or stored assertion on those cases adds a
 Run the deterministic suite or score captured runs with:
 
 ```bash
-pnpm --filter @koed/evals eval:curated-memory-intake -- --self-test-scorer
-pnpm --filter @koed/evals eval:curated-memory-intake:workflow -- --database-url postgresql://... --mode deterministic-workflow
-pnpm --filter @koed/evals eval:curated-memory-intake:workflow -- --database-url postgresql://... --mode reviewer-adversarial
-pnpm --filter @koed/evals eval:curated-memory-intake:workflow -- --database-url postgresql://... --mode live-ai-client --model gpt-5.4-mini
-pnpm --filter @koed/evals eval:curated-memory-intake -- --score runs.json
+pnpm --filter @koed-labs/evals eval:curated-memory-intake -- --self-test-scorer
+pnpm --filter @koed-labs/evals eval:curated-memory-intake:workflow -- --database-url postgresql://... --mode deterministic-workflow
+pnpm --filter @koed-labs/evals eval:curated-memory-intake:workflow -- --database-url postgresql://... --mode reviewer-adversarial
+pnpm --filter @koed-labs/evals eval:curated-memory-intake:workflow -- --database-url postgresql://... --mode live-ai-client --model gpt-5.4-mini
+pnpm --filter @koed-labs/evals eval:curated-memory-intake -- --score runs.json
 ```
 
 The scorer self-test validates only benchmark fixtures and scoring. The

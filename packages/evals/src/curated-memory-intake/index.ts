@@ -9,9 +9,9 @@ import {
 
 const usage = [
   "Usage:",
-  "  pnpm --filter @koed/evals eval:curated-memory-intake -- --list-cases",
-  "  pnpm --filter @koed/evals eval:curated-memory-intake -- --self-test-scorer [--out <report.json>]",
-  "  pnpm --filter @koed/evals eval:curated-memory-intake -- --score <runs.json> [--out <report.json>]",
+  "  pnpm --filter @koed-labs/evals eval:curated-memory-intake -- --list-cases",
+  "  pnpm --filter @koed-labs/evals eval:curated-memory-intake -- --self-test-scorer [--out <report.json>]",
+  "  pnpm --filter @koed-labs/evals eval:curated-memory-intake -- --score <runs.json> [--out <report.json>]",
   "",
   "The score input is a JSON array of run records:",
   '[{"caseId":"birthday-user-profile","runIndex":0,"calls":[{"toolName":"memory_intake_propose","arguments":{"proposed_claim":"The user birthday is 14 March.","proposed_topic":"Personal details","tags":["personal","birthday"],"sensitivity_hint":"normal","evidence_conversation_item_ids":["11111111-1111-4111-8111-111111111111"]}}],"intake":{"proposalStatus":"stored","assertionId":"assertion-1"},"recall":{"hits":[{"sourceType":"curated_memory","retrievalStage":"curated_memory_search","summaryText":"The user birthday is 14 March."}]}}]'

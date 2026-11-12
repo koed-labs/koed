@@ -16,7 +16,7 @@ import { devNull } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
-import { classifySourceContent, sourceContentLimits } from "@koed/shared";
+import { classifySourceContent, sourceContentLimits } from "@koed-labs/shared";
 
 const execFileAsync = promisify(execFile);
 const protocol = "koed-development-workspace-snapshot-v1" as const;

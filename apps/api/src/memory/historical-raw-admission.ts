@@ -2,12 +2,12 @@ import {
   EMBEDDING_CAPACITY_CONTRACT_REVISION,
   type EmbeddingCapacityRepository,
   type MemorySourceRepository
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   decideHistoricalAdmission,
   type HistoricalAdmissionDecision,
   type KoedJobQueue
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 export interface HistoricalRawAdmissionDependencies {
   repository: MemorySourceRepository;

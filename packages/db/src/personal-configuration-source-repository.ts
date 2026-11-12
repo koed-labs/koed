@@ -2,7 +2,7 @@ import type pg from "pg";
 import {
   PdsConfigurationCompatibilityError,
   type PersonalSourceContextSnapshot
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { lockPersonalConfigurationGroup } from "./personal-configuration-authority.js";
 import { readPersonalSourceBinding } from "./personal-source-binding-state.js";
 import { readBoundPersonalSourceContextSnapshot } from "./personal-source-context-snapshot.js";

@@ -3,7 +3,7 @@ import {
   repositoryScopeId,
   type RepositoryIdentity,
   createLocalTestKeyEnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { createDbPool } from "../src/connection.js";

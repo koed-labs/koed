@@ -1,5 +1,5 @@
-import type { MemorySourceRepository } from "@koed/db";
-import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/mcp-server";
+import type { MemorySourceRepository } from "@koed-labs/db";
+import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed-labs/mcp-server";
 import { describe, expect, it, vi } from "vitest";
 import { resolveExperienceReplayConfig } from "./core/index.js";
 import { createRecordedLcmJobRunner } from "./recorded-runtime-lcm.js";

@@ -4,7 +4,7 @@ import {
   personalSelectionConsumerStartSchema,
   personalSelectionConsumerContinueSchema,
   personalSelectionMemberEvaluationInputSchema
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 /** Owner configuration APIs expose metadata only. A selection/cursor is never
  * a Team grant, source-read token, Workspace publication or capture permission. */

@@ -4,7 +4,7 @@ import {
   repositoryScopeId,
   createPdsRepositoryAssignment,
   type RepositoryIdentity
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { projectFromRepositoryIdentity } from "../src/session-project.js";
 import { applyPdsRepositoryAssignmentSnapshot } from "../src/pds-repository-assignment.js";
 import {

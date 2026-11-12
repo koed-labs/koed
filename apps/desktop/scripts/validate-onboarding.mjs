@@ -406,13 +406,13 @@ const run = async () => {
     await click("Continue");
     await evaluate("window.onboardingValidation.stage('model',.5)");
     await waitFor(
-      "document.querySelector('[role=progressbar]').getAttribute('aria-valuenow')==='41'"
+      "Math.floor(Number(document.querySelector('[role=progressbar]').getAttribute('aria-valuenow')))===41"
     );
     await waitFor("document.body.innerText.includes('256 MB of 512 MB')");
     await capture("desktop-dark-download-progress");
     await evaluate("window.onboardingValidation.stage('model',.505)");
     await waitFor(
-      "Number(document.querySelector('[role=progressbar] i').style.transform.slice(7,-1)) > 2.5 / 6"
+      "parseFloat(document.querySelector('[data-slot=progress-indicator]').style.width) > 100 * 2.5 / 6"
     );
     await evaluate("window.onboardingValidation.fail()");
     await waitFor("document.body.innerText.includes('Retry step')");
@@ -572,9 +572,9 @@ const run = async () => {
     await load("running", "dark", "success");
     assert.equal(
       await evaluate(
-        "getComputedStyle(document.querySelector('.lp-progress-track'),'::after').animationName"
+        "getComputedStyle(document.querySelector('[data-slot=progress-indicator]')).transitionDuration"
       ),
-      "none"
+      "0s"
     );
     await load("ready", "dark", "success");
     await capture("desktop-dark-reduced-motion");

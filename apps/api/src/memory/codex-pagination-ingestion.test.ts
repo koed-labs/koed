@@ -14,11 +14,11 @@ import {
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations
-} from "@koed/db";
+} from "@koed-labs/db";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   generateConversationSourceReplicationOriginKeyPair
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import {
   MemoryApiClient,
   defaultConfig

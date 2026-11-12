@@ -3,8 +3,8 @@
 import type {
   CollaborationSelection,
   CollaborationSnapshot
-} from "@koed/shared/collaboration";
-import { COLLABORATION_CONTRACT_VERSION } from "@koed/shared/collaboration";
+} from "@koed-labs/shared/collaboration";
+import { COLLABORATION_CONTRACT_VERSION } from "@koed-labs/shared/collaboration";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";

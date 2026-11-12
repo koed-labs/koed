@@ -23,7 +23,7 @@ import {
   storeLocalEdgeClientCredential,
   storeUpstreamCredentialSecret,
   updateCollaborationPendingSendState
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,

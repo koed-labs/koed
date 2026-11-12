@@ -65,7 +65,7 @@ pnpm team-fixture:seed
 pnpm team-fixture:validate
 KOED_LAUNCH_TEST_DATABASE_URL='postgres://koed:koed@127.0.0.1:5432/koed_launch_test' \
   pnpm team-launch:validate --with-automated-tests
-pnpm --filter @koed/desktop test:browser
+pnpm --filter @koed-labs/desktop test:browser
 ```
 
 Build and smoke the packaged Desktop on the current macOS or Linux host:

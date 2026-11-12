@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { MemoryAnswerTask } from "@koed/shared";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 import type { Mode, Phase, RecallCase, RecallEvent } from "./benchmark.js";
 
 interface Task {

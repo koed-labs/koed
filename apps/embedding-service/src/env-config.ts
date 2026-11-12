@@ -2,7 +2,7 @@ import { cpus } from "node:os";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolveSupportedEmbeddingModelConfig } from "@koed/shared";
+import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
 import type { AccelerationPolicy } from "./acceleration.js";
 
 export interface SupportedEmbeddingModel {

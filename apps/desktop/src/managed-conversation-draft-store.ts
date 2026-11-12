@@ -17,7 +17,7 @@ import { dirname, resolve } from "node:path";
 import {
   createPdsApplicationSecretStore,
   type PdsApplicationSecretStore
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type { PdsDesktopSecretStore } from "./pds-secure-provider.js";
 
 type SafeStorage = Pick<

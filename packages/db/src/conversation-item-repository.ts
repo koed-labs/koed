@@ -19,7 +19,7 @@ import {
   sanitizeForPostgresStorage,
   projectionWorkClassForSourceTransport,
   type EnvelopeEncryptionProvider
-} from "@koed/shared";
+} from "@koed-labs/shared";
 import type {
   ActorContext,
   CaptureMethod,

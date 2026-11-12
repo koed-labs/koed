@@ -11,79 +11,79 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: "@koed/shared/personal-project-default",
+        find: "@koed-labs/shared/personal-project-default",
         replacement: `${root}packages/shared/src/personal-project-default.ts`
       },
       {
-        find: "@koed/shared/personal-local-folders",
+        find: "@koed-labs/shared/personal-local-folders",
         replacement: `${root}packages/shared/src/personal-local-folders.ts`
       },
       {
-        find: "@koed/shared/repository-review",
+        find: "@koed-labs/shared/repository-review",
         replacement: `${root}packages/shared/src/repository-review.ts`
       },
       {
-        find: "@koed/shared/repository-recall",
+        find: "@koed-labs/shared/repository-recall",
         replacement: `${root}packages/shared/src/repository-recall.ts`
       },
       {
-        find: "@koed/shared/collaboration-client-runtime",
+        find: "@koed-labs/shared/collaboration-client-runtime",
         replacement: `${root}packages/shared/src/collaboration-client-runtime.ts`
       },
       {
-        find: "@koed/shared/collaboration",
+        find: "@koed-labs/shared/collaboration",
         replacement: `${root}packages/shared/src/collaboration-contract.ts`
       },
       {
-        find: "@koed/shared/durable-realtime",
+        find: "@koed-labs/shared/durable-realtime",
         replacement: `${root}packages/shared/src/durable-realtime.ts`
       },
       {
-        find: "@koed/shared/execution-checkout",
+        find: "@koed-labs/shared/execution-checkout",
         replacement: `${root}packages/shared/src/execution-checkout.ts`
       },
       {
-        find: "@koed/shared/personal-desktop",
+        find: "@koed-labs/shared/personal-desktop",
         replacement: `${root}packages/shared/src/personal-desktop-contract.ts`
       },
       {
-        find: "@koed/shared/private-network",
+        find: "@koed-labs/shared/private-network",
         replacement: `${root}packages/shared/src/private-network.ts`
       },
       {
-        find: "@koed/shared/secure-upstream-fetch",
+        find: "@koed-labs/shared/secure-upstream-fetch",
         replacement: `${root}packages/shared/src/secure-upstream-fetch.ts`
       },
       {
-        find: "@koed/shared/ai-client-contract",
+        find: "@koed-labs/shared/ai-client-contract",
         replacement: `${root}packages/shared/src/ai-client-contract.ts`
       },
       {
-        find: "@koed/core",
+        find: "@koed-labs/core",
         replacement: `${root}packages/core/src/index.ts`
       },
       {
-        find: "@koed/db",
+        find: "@koed-labs/db",
         replacement: `${root}packages/db/src/index.ts`
       },
       {
-        find: "@koed/mcp-server/codex-transcript-parser",
+        find: "@koed-labs/mcp-server/codex-transcript-parser",
         replacement: `${root}packages/mcp-server/src/codex-transcript-parser.ts`
       },
       {
-        find: "@koed/mcp-server/claude-transcript-parser",
+        find: "@koed-labs/mcp-server/claude-transcript-parser",
         replacement: `${root}packages/mcp-server/src/claude-transcript-parser.ts`
       },
       {
-        find: "@koed/mcp-server/managed-conversation-command-types",
+        find: "@koed-labs/mcp-server/managed-conversation-command-types",
         replacement: `${root}packages/mcp-server/src/managed-conversation-command-types.ts`
       },
       {
-        find: "@koed/mcp-server/runtime-contracts",
+        find: "@koed-labs/mcp-server/runtime-contracts",
         replacement: `${root}packages/mcp-server/src/runtime-contracts.ts`
       },
       {
-        find: "@koed/mcp-server",
+        find: "@koed-labs/mcp-server",
         replacement: `${root}packages/mcp-server/src/index.ts`
       },
       {
@@ -91,15 +91,15 @@ export default defineConfig({
         replacement: `${root}packages/koed-server/src/index.ts`
       },
       {
-        find: /^@koed\/worker\/(command-discovery-adapter(?:-codex|-claude|-pi)?)$/,
+        find: /^@koed-labs\/worker\/(command-discovery-adapter(?:-codex|-claude|-pi)?)$/,
         replacement: `${root}apps/worker/src/$1.ts`
       },
       {
-        find: "@koed/worker/embedding-workflow",
+        find: "@koed-labs/worker/embedding-workflow",
         replacement: `${root}apps/worker/src/embedding-workflow.ts`
       },
       {
-        find: /^@koed\/shared$/,
+        find: /^@koed-labs\/shared$/,
         replacement: `${root}packages/shared/src/index.ts`
       }
     ]

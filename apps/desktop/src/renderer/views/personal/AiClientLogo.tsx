@@ -1,4 +1,4 @@
-import type { SupportedAiClientDriverId } from "@koed/shared/ai-client-contract";
+import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 
 // Official brand mark, reproduced from simple-icons (CC0): claude.svg
 function ClaudeLogo() {

@@ -1,7 +1,7 @@
-import { personalProjectDefaultIdentity } from "@koed/shared/personal-project-default";
+import { personalProjectDefaultIdentity } from "@koed-labs/shared/personal-project-default";
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
-import { type PersonalFolderReference } from "@koed/shared";
+import { type PersonalFolderReference } from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
 import {
   personalEffectiveFolderFactSql,

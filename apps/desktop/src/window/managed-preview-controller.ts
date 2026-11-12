@@ -8,7 +8,7 @@ import {
 import {
   managedDevelopmentPreviewAccessSchema,
   type ManagedDevelopmentPreviewAccess
-} from "@koed/shared";
+} from "@koed-labs/shared";
 
 import type { ManagedProjectEvent } from "../ipc/managed-project-protocol.js";
 
