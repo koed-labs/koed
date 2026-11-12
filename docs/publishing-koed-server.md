@@ -188,7 +188,11 @@ requires glibc 2.14 or newer, below Koed's glibc 2.35 baseline. The original
 Node executable remains at `bin/node.bin`; `bin/node` is a launcher that sets
 `LD_LIBRARY_PATH` to its sibling `lib/koed` directory. The generated Koed
 launcher uses this Node launcher, and child processes inherit the private
-library path. Compatible Operator-provided Node installations are unchanged.
+library path. Because `process.execPath` names `bin/node.bin`, Node children
+launched with a restricted environment (the bundled Personal Device Sync secret
+provider and the CUDA driver probe) launch the verified `bin/node` launcher
+instead, so they do not need inherited loader settings. Compatible
+Operator-provided Node installations are unchanged.
 
 Bootstrap inputs are bounded HTTPS downloads authenticated by SHA-256 pins in
 `scripts/install-server.sh`:

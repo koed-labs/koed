@@ -11,6 +11,7 @@ import {
 } from "./native-validation-process.js";
 import { compareNativeVersions } from "./native-runtime-catalog.js";
 import { resolveNvidiaSmi } from "./nvidia-smi.js";
+import { privateNodeLauncher } from "./private-node-launcher.js";
 
 const minimumDriver = "550.54.14";
 const minimumCosine = 0.999;
@@ -69,7 +70,8 @@ export async function checkCudaHost(
   // Ask the host loader to load the driver in a disposable copy of Node. The
   // linker may ignore a failed preload with exit code 0, so check the load map.
   const loaded = await nativeCommand(
-    process.execPath,
+    // The probe environment is restricted, so use the private Node launcher.
+    privateNodeLauncher(),
     [
       "-p",
       String.raw`process.report.getReport().sharedObjects.some(p => /\/libcuda\.so(?:\.\d+)*$/.test(p))`
