@@ -224,10 +224,12 @@ describe("desktop onboarding", () => {
     };
   }
   const text = () => container.textContent ?? "";
-  const progress = () =>
-    container
+  const progress = () => {
+    const value = container
       .querySelector('[role="progressbar"]')
       ?.getAttribute("aria-valuenow");
+    return value == null ? undefined : String(Math.floor(Number(value)));
+  };
 
   it("inspects hardware before setup and requires an explicit processing choice", async () => {
     const { click, setup, invoke } = await render({
@@ -305,15 +307,48 @@ describe("desktop onboarding", () => {
     });
     await emit(running);
     expect(progress()).toBe("41");
-    const transform = container.querySelector<HTMLElement>(
-      "[role=progressbar] i"
-    )!.style.transform;
-    expect(Number(transform.slice(7, -1))).toBeCloseTo(2.5 / 6, 6);
+    const indicator = container.querySelector<HTMLElement>(
+      '[data-slot="progress-indicator"]'
+    )!;
+    expect(parseFloat(indicator.style.width)).toBeCloseTo((100 * 2.5) / 6, 6);
     expect(text()).toContain("50 MB of 100 MB");
     await emit({ ...running, sequence: 4, stages: [] });
     expect(progress()).toBe("41");
     await emit(setupSnapshot());
     expect(progress()).toBe("41");
+  });
+  it("retains confirmed progress during verification and resets for a new run", async () => {
+    const { emit } = await render({ snapshot: setupSnapshot("ready") });
+    const downloading = setupSnapshot("running", "download");
+    downloading.sequence = 2;
+    downloading.activeStage = "model";
+    downloading.stages[0]!.state = "complete";
+    downloading.stages[1]!.state = "complete";
+    Object.assign(downloading.stages[2]!, {
+      state: "running",
+      progressPhase: "downloading",
+      completedBytes: 100,
+      totalBytes: 100
+    });
+    await emit(downloading);
+    expect(progress()).toBe("50");
+    const verifying = structuredClone(downloading);
+    verifying.sequence++;
+    Object.assign(verifying.stages[2]!, {
+      progressPhase: "verifying",
+      completedBytes: null,
+      totalBytes: null
+    });
+    await emit(verifying);
+    expect(progress()).toBe("50");
+    expect(
+      container
+        .querySelector('[role="progressbar"]')
+        ?.getAttribute("aria-valuetext")
+    ).toContain("50% confirmed");
+    expect(container.querySelector(".is-indeterminate")).toBeNull();
+    await emit(setupSnapshot("running", "retry"));
+    expect(progress()).toBe("0");
   });
   it("does not count stale verification as readiness or full progress", async () => {
     const snapshot = setupSnapshot();

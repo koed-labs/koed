@@ -23,8 +23,10 @@ qualified. The command also requires a validated native runtime source via
 `KOED_NATIVE_RUNTIME_SOURCE_DIR`; the later artifact checks still apply. The
 generic `pnpm desktop:package:linux` directory build is unchanged.
 
-The Linux x64 Desktop release job stages the versioned Linux native runtime
-archive after checking its SHA-256 sidecar and validating the extracted tree.
+The Linux x64 Desktop release job stages the recipe-addressed CPU core after
+checking its catalog-pinned SHA-256 checksum, manifest, and extracted tree.
+CUDA remains a separate optional release add-on installed through the release
+provider. New releases do not publish the combined Linux CPU/CUDA archive.
 The runtime build targets glibc 2.35 or newer; this is not evidence that Desktop
 has passed release rehearsal on every distribution. Candidate verification
 binds the AppImage to evidence recorded by the reviewed build

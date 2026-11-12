@@ -58,6 +58,102 @@ except (OSError, ValueError, AttributeError): sys.exit(1)
 if type(pid) is not int or pid<=1: sys.exit(1)
 print(pid)' "$home"
 }
+koed_verify_file() {
+  python3 -I -c 'import hashlib,os,sys
+try:
+    p,digest,limit=sys.argv[1:]
+    if os.path.islink(p) or not os.path.isfile(p) or not 0<os.path.getsize(p)<=int(limit): sys.exit(1)
+    h=hashlib.sha256()
+    with open(p,"rb") as f:
+        for b in iter(lambda:f.read(1048576),b""): h.update(b)
+    sys.exit(h.hexdigest()!=digest)
+except OSError: sys.exit(1)' "$@"
+}
+# Bootstrap Linux Node before any Koed CLI can run. These Debian Bookworm
+# bytes require only glibc >= 2.14 and also run on the Ubuntu 22.04 baseline.
+# Extract one authenticated library; never install a system package or run its
+# maintainer scripts. Keep the upstream copyright, runtime exception and GPL.
+koed_private_linux_node() {
+  local root=$1 lib_dir="$1/lib/koed" stage="$install_dir/tmp/node-libraries"
+  local archive_sha=fbd4e154a6b444229ea002cc209df099209c0adc09102e5fd21239a3d2b55e2d
+  local library_sha=107ab9f7661a1c47cddfb5cd1def99ec537a50a9a537fbe38cdde1b34b8ba280
+  local copyright_sha=da8191658b3452ce9caf31638ba61dab31a38c619fa39df119812e050f592fd3
+  local license_sha=3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
+  if [[ -L $lib_dir ]]; then koed_fail 'Unsafe private Node library directory.'; return 1; fi
+  if ! { koed_verify_file "$lib_dir/libatomic.so.1" "$library_sha" 1048576 &&
+         koed_verify_file "$lib_dir/copyright" "$copyright_sha" 1048576 &&
+         koed_verify_file "$lib_dir/COPYING3" "$license_sha" 1048576; }; then
+    if ! command -v curl >/dev/null; then koed_fail 'curl is required for private Node libraries.'; return 1; fi
+    mkdir "$stage" || return 1
+    local name url digest
+    for name in libatomic.deb copyright COPYING3; do
+      case "$name" in
+        libatomic.deb)
+          url='https://deb.debian.org/debian/pool/main/g/gcc-12/libatomic1_12.2.0-14+deb12u1_amd64.deb'; digest=$archive_sha ;;
+        copyright)
+          url='https://metadata.ftp-master.debian.org/changelogs/main/g/gcc-12/gcc-12_12.2.0-14+deb12u1_copyright'; digest=$copyright_sha ;;
+        COPYING3) url='https://www.gnu.org/licenses/gpl-3.0.txt'; digest=$license_sha ;;
+      esac
+      if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 120 --max-filesize 1048576 -o "$stage/$name" "$url"; then
+        koed_fail "Private Node library download failed: $name"; return 1
+      fi
+      if ! koed_verify_file "$stage/$name" "$digest" 1048576; then
+        koed_fail "Private Node library checksum or size invalid: $name"; return 1
+      fi
+    done
+    if ! python3 -I - "$stage" "$library_sha" <<'PYATOMIC'
+import hashlib, io, lzma, os, sys, tarfile
+stage, digest = sys.argv[1:]
+try:
+    data = open(stage + '/libatomic.deb', 'rb').read()
+    if data[:8] != b'!<arch>\n': raise ValueError('invalid Debian archive')
+    offset, members = 8, {}
+    while offset < len(data):
+        header = data[offset:offset+60]
+        if len(header) != 60 or header[58:] != b'`\n': raise ValueError('invalid ar header')
+        name, size = header[:16].decode('ascii').strip().rstrip('/'), int(header[48:58])
+        start = offset + 60
+        if size < 0 or start + size > len(data) or name in members or len(members) >= 16:
+            raise ValueError('invalid ar member')
+        members[name] = data[start:start+size]
+        offset = start + size + size % 2
+    if offset != len(data) or members.get('debian-binary') != b'2.0\n': raise ValueError('invalid Debian format')
+    decoder = lzma.LZMADecompressor(memlimit=67108864)
+    payload = decoder.decompress(members['data.tar.xz'], max_length=1048577)
+    if len(payload) > 1048576 or not decoder.eof or decoder.unused_data:
+        raise ValueError('expanded library archive exceeds limit')
+    with tarfile.open(fileobj=io.BytesIO(payload), mode='r:') as tar:
+        entries = tar.getmembers()
+        selected = [m for m in entries if m.name == './usr/lib/x86_64-linux-gnu/libatomic.so.1.2.0']
+        if len(entries) > 128 or len(selected) != 1 or not selected[0].isfile() or not 0 < selected[0].size <= 1048576:
+            raise ValueError('missing or unsafe libatomic payload')
+        library = tar.extractfile(selected[0]).read()
+    if hashlib.sha256(library).hexdigest() != digest: raise ValueError('libatomic checksum invalid')
+    with open(stage + '/libatomic.so.1', 'xb') as out: out.write(library)
+    os.chmod(stage + '/libatomic.so.1', 0o600)
+except (OSError, ValueError, KeyError, UnicodeError, lzma.LZMAError, tarfile.TarError, EOFError) as error:
+    print('Unsafe private Node library: ' + str(error), file=sys.stderr)
+    sys.exit(1)
+PYATOMIC
+    then return 1; fi
+    mkdir -p "$lib_dir" || return 1
+    for name in libatomic.so.1 copyright COPYING3; do mv -f "$stage/$name" "$lib_dir/$name" || return 1; done
+  fi
+  # Every entry point, including the generated Koed launcher and npm's Node
+  # subprocesses, must load the private library after the installer exits.
+  python3 -I - "$root" <<'PYNODEWRAPPER'
+import os, shlex, sys
+root = sys.argv[1]
+node, binary = root + '/bin/node', root + '/bin/node.bin'
+if os.path.islink(node) or os.path.islink(binary): sys.exit('Unsafe private Node executable.')
+if not os.path.exists(binary): os.rename(node, binary)
+if not os.path.isfile(binary) or not os.access(binary, os.X_OK): sys.exit('Missing private Node executable.')
+wrapper = '#!/bin/sh\n# Koed private Node: load only the bundled bootstrap libraries.\nexport LD_LIBRARY_PATH=%s\nexec %s "$@"\n' % (shlex.quote(root + '/lib/koed'), shlex.quote(binary))
+with open(node + '.next', 'w') as out: out.write(wrapper)
+os.chmod(node + '.next', 0o700)
+os.replace(node + '.next', node)
+PYNODEWRAPPER
+}
 koed_install() {
   local embedded='__KOED_INSTALLER_VERSION__'
   local sentinel='koed-installer-complete-v1'
@@ -127,11 +223,17 @@ koed_install() {
   if [[ -z $node ]]; then node=$(command -v node || true); fi
   if [[ -n $node ]]; then
     node=$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$node") || return 1
-    npm="$(dirname "$(dirname "$node")")/lib/node_modules/npm/bin/npm-cli.js"
-    node_version=$(env -i PATH=/usr/bin:/bin "$node" --version 2>/dev/null) || node_version=''
-    if [[ ! $node_version =~ ^v(24|25|26)\.[0-9]+\.[0-9]+$ || ! -f $npm ]] ||
-       ! env -i HOME="$HOME" PATH=/usr/bin:/bin "$node" "$npm" --version >/dev/null 2>&1; then
+    # Verify cached private libraries before executing a private Node wrapper.
+    # This also recovers an interrupted wrapper activation or damaged library.
+    if [[ $os == Linux && $node == "$install_dir/node/node-v26.13.0-linux-x64/bin/node" ]]; then
       node=''
+    else
+      npm="$(dirname "$(dirname "$node")")/lib/node_modules/npm/bin/npm-cli.js"
+      node_version=$(env -i PATH=/usr/bin:/bin "$node" --version 2>/dev/null) || node_version=''
+      if [[ ! $node_version =~ ^v(24|25|26)\.[0-9]+\.[0-9]+$ || ! -f $npm ]] ||
+         ! env -i HOME="$HOME" PATH=/usr/bin:/bin "$node" "$npm" --version >/dev/null 2>&1; then
+        node=''
+      fi
     fi
   fi
   if [[ -z $node && ! -e $install_dir/node ]] && ! command -v curl >/dev/null; then
@@ -168,7 +270,7 @@ koed_install() {
       if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 300 --max-filesize 104857600 -o "$archive" "https://nodejs.org/dist/v26.13.0/$root.tar.xz"; then
         printf '%s\n' 'Node download failed.' >&2; return 1
       fi
-      if ! python3 -I -c 'import hashlib,os,sys; p=sys.argv[1]; assert os.path.isfile(p) and os.path.getsize(p)<=104857600; h=hashlib.sha256(); f=open(p,"rb"); [h.update(b) for b in iter(lambda:f.read(1048576),b"")]; sys.exit(h.hexdigest()!=sys.argv[2])' "$archive" "$digest"; then
+      if ! koed_verify_file "$archive" "$digest" 104857600; then
         printf '%s\n' 'Node archive checksum or size invalid.' >&2; return 1
       fi
       mkdir "$install_dir/tmp/node" || return 1
@@ -226,6 +328,7 @@ PYEXTRACT
     fi
     node="$install_dir/node/$root/bin/node"
     npm="$install_dir/node/$root/lib/node_modules/npm/bin/npm-cli.js"
+    if [[ $os == Linux ]]; then koed_private_linux_node "$install_dir/node/$root" || return 1; fi
     if [[ ! -x $node || ! -f $npm ]] || [[ $(env -i PATH=/usr/bin:/bin "$node" --version 2>/dev/null) != v26.13.0 ]] ||
        ! env -i HOME="$install_dir" PATH="$(dirname "$node"):/usr/bin:/bin" "$node" "$npm" --version >/dev/null 2>&1; then
       koed_fail 'Private Node and npm validation failed.' "If $install_dir/node is damaged, remove it and rerun this installer."

@@ -372,13 +372,8 @@ test("release validation compares clean package trees and deterministic archives
     /Relevant packaged Desktop app smoke[\s\S]*Build macOS standalone koed-server package[\s\S]*Inspect macOS standalone koed-server package[\s\S]*--platform macos[\s\S]*--arch arm64/
   );
   assert.match(release, /Verify standalone package reproducibility/);
-  assert.match(release, /Verify native runtime artifact reproducibility/);
   assert.match(release, /SOURCE_DATE_EPOCH: 0/);
   assert.match(release, /cmp \\\n\s+"\$\{first\}\/koed-server-/);
-  assert.match(
-    release,
-    /cmp \\\n\s+"\$\{first\}\/koed-native-runtime-linux-x64-/
-  );
 });
 
 test("release artifact size reports have unique target-specific asset names", () => {
@@ -390,14 +385,6 @@ test("release artifact size reports have unique target-specific asset names", ()
   assert.match(
     release,
     /koed-server-app-runtime-\$\{target\}-artifact-size-report\.json/
-  );
-  assert.match(
-    release,
-    /koed-native-runtime-linux-x64-artifact-size-report\.json/
-  );
-  assert.match(
-    release,
-    /koed-native-runtime-linux-x64-artifact-size-report\.json" \\\n\s+\| tee -a "\$\{GITHUB_STEP_SUMMARY\}"/
   );
   assert.doesNotMatch(release, /\$\{release_dir\}\/artifact-size-report\.json/);
 });

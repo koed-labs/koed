@@ -60,11 +60,11 @@ const validReleaseWorkflow = [
   "    steps:",
   "      - name: Write release artifact metadata",
   '        run: node scripts/write-koed-release-artifact-metadata.mjs -- --version "${{ needs.release.outputs.version }}"',
-  "  native-runtime-linux-x64-release-assets:",
+  "  linux-native-packages:",
   "    needs: release",
   "    steps:",
-  "      - name: Package native runtime release artifact",
-  '        run: pnpm native-runtime:build:linux-x64 -- --version "${{ needs.release.outputs.version }}" --json',
+  "      - name: Stage archives and create the CLI download catalog",
+  '        run: node scripts/native-runtime/stage-release.mjs "${{ needs.release.outputs.version }}" scratch/native-packages release-native',
   "  frozen-macos-native-runtime:",
   "    needs: release",
   "    steps:",
@@ -382,6 +382,25 @@ test("rejects version propagation moved to an unrelated workflow step", () => {
     assert.throws(
       () => assertReleaseWorkflowVersionPropagation(root),
       /standalone-koed-server-release-assets\/Build standalone koed-server package/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects split native catalog staging with a version other than the product release", () => {
+  const root = fixture();
+  try {
+    writeWorkflowFixture(
+      root,
+      validReleaseWorkflow.replace(
+        'stage-release.mjs "${{ needs.release.outputs.version }}"',
+        'stage-release.mjs "1.0.0"'
+      )
+    );
+    assert.throws(
+      () => assertReleaseWorkflowVersionPropagation(root),
+      /linux-native-packages\/Stage archives and create the CLI download catalog/
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
