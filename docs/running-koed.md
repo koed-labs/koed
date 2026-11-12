@@ -669,6 +669,13 @@ What it does, in order:
    pinned in the installer, and extracts it with bounded, link-restricted
    extraction. The pins were taken from the Node release checksum manifest;
    that is not an independent attestation.
+   On Linux x64, private Node also includes a checksum-pinned `libatomic.so.1`
+   under its own `lib/koed` directory, together with the upstream copyright,
+   GCC Runtime Library Exception, and GPL text. Its launcher sets
+   `LD_LIBRARY_PATH` to that private directory for Node and its child processes,
+   including after the installer exits. No system `libatomic1` package or
+   `sudo` is required. An existing compatible Node installation is reused
+   without modification. See [bootstrap download provenance](publishing-koed-server.md#private-node-bootstrap-downloads).
 3. Installs exactly `@koed-labs/server@X.Y.Z` from the public npm registry into
    `KOED_HOME/installer/package` with lifecycle scripts disabled and inherited
    npm configuration ignored.
