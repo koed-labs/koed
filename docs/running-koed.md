@@ -1701,9 +1701,19 @@ Acceleration. The preference is stored in `KOED_HOME/config/server.json`;
 changing it restarts running local Koed services. A stopped installation remains
 stopped. An explicit Operator environment policy remains authoritative and makes
 the control read-only. General graphics acceleration controls Desktop rendering
-separately. Accelerated embedding
-models unload after five idle minutes by default and reload on the
-next request. Set the corresponding idle-unload value to `0` only when keeping
+separately.
+
+Hardware status uses the same service tokens as startup. Source checkouts prefer
+environment variables set before launch, then `.env` values, then saved tokens.
+Packaged builds ignore `.env` unless the Operator selects a file with
+`KOED_ENV_PATH`. When the Desktop supervisor runs, status uses its active service
+tokens.
+
+The setup progress bar does not move backward while Koed checks downloads.
+A new setup run starts from the steps already complete.
+
+Accelerated embedding models unload after five idle minutes by default and reload
+on the next request. Set the corresponding idle-unload value to `0` only when keeping
 the model resident is an intentional resource decision.
 
 Run the manual CPU/GPU comparison through the production Embedding Service

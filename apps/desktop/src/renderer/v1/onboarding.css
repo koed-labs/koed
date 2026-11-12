@@ -169,20 +169,14 @@
   font-variant-numeric: tabular-nums;
   color: var(--lp-accent);
 }
-.lp-progress-track {
-  height: 4px;
+.lp-progress-track [data-slot="progress-track"] {
+  height: 6px;
   border-radius: 6px;
   overflow: hidden;
   background: var(--lp-track);
 }
-.lp-progress-track i {
-  display: block;
-  height: 100%;
-  width: 100%;
-  transform-origin: left;
-  border-radius: inherit;
+.lp-progress-track [data-slot="progress-indicator"] {
   background: var(--lp-accent);
-  transition: transform 0.35s linear;
 }
 .lp-setup-error-detail {
   max-width: 310px;
@@ -192,7 +186,7 @@
   line-height: 1.6;
   text-align: center;
 }
-.lp-setup-error .lp-progress-track i {
+.lp-setup-error .lp-progress-track [data-slot="progress-indicator"] {
   background: var(--lp-error);
 }
 .lp-setup-error .lp-progress-label > span {
@@ -598,7 +592,7 @@
   .lp-progress-label {
     color: var(--lp-text);
   }
-  .lp-progress-track {
+  .lp-progress-track [data-slot="progress-track"] {
     background: var(--lp-border-hover);
   }
 }
@@ -661,34 +655,6 @@
 }
 .lp-client-actions {
   flex-wrap: wrap;
-}
-.lp-progress-track.is-indeterminate {
-  position: relative;
-}
-.lp-progress-track.is-indeterminate::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: var(--lp-stage-start);
-  width: var(--lp-stage-size);
-  opacity: 0.5;
-  background: linear-gradient(
-    90deg,
-    transparent 20%,
-    var(--lp-accent) 50%,
-    transparent 80%
-  );
-  background-size: 200% 100%;
-  animation: lp-progress-sweep 1.3s linear infinite;
-}
-@keyframes lp-progress-sweep {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
 }
 .lp-progress-detail {
   margin: 10px 0 0;
