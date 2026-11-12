@@ -21,6 +21,7 @@ import {
   type OnboardingAgent,
   type OnboardingDraft
 } from "./onboarding/model.js";
+import { SetupProgress } from "./onboarding/SetupProgress.js";
 import { useSetup } from "./onboarding/use-setup.js";
 import "./onboarding.css";
 export type { OnboardingAgent, OnboardingDraft } from "./onboarding/model.js";
@@ -322,50 +323,13 @@ export function V1Onboarding({
                       `${state.copy.name} couldn’t finish setting up. Let’s try that step again.`}
                   </p>
                 )}
-                <div className="lp-progress-stack">
-                  <div className="lp-progress-block">
-                    <div className="lp-progress-label">
-                      <span>
-                        {state.ready
-                          ? "Setup complete"
-                          : running
-                            ? setup.snapshot
-                              ? state.copy.label
-                              : "Checking local setup"
-                            : failed
-                              ? state.copy.label
-                              : "Ready to set up Koed"}
-                      </span>
-                      <span>{state.percent}%</span>
-                    </div>
-                    <div
-                      className={`lp-progress-track ${running && state.indeterminate && !state.ready ? "is-indeterminate" : ""}`}
-                      style={
-                        {
-                          "--lp-stage-start": `${(state.done * 100) / state.total}%`,
-                          "--lp-stage-size": `${100 / state.total}%`
-                        } as React.CSSProperties
-                      }
-                      role="progressbar"
-                      aria-label="Overall setup progress"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={state.percent}
-                      aria-valuetext={
-                        running && state.indeterminate
-                          ? `${state.percent}% confirmed; ${state.copy.label} in progress`
-                          : `${state.percent}%`
-                      }
-                    >
-                      <i
-                        style={{ transform: `scaleX(${state.value / 100})` }}
-                      />
-                    </div>
-                  </div>
-                  {running && state.detail && (
-                    <p className="lp-progress-detail">{state.detail}</p>
-                  )}
-                </div>
+                <SetupProgress
+                  runId={setup.snapshot?.runId}
+                  state={state}
+                  running={running}
+                  failed={failed}
+                  inspecting={!setup.snapshot}
+                />
                 {state.ready && <ProcessingReadiness />}
                 {(setup.snapshot?.activeStage === "acceleration" ||
                   (failed &&
