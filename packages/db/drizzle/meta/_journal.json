@@ -20,14 +20,7 @@
       "idx": 2,
       "version": "7",
       "when": 1794397863395,
-      "tag": "0002_memory_answer_task_usage",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1794397863396,
-      "tag": "0003_recall_question_metadata",
+      "tag": "0002_recall_activity",
       "breakpoints": true
     }
   ]

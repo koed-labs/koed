@@ -1,5 +1,5 @@
 {
-  "id": "f6d2eb41-c5c4-48cc-b13b-f737a041bf4d",
+  "id": "eb19f037-d98c-4ede-9dda-dcafd27429b2",
   "prevId": "a66468e4-c8c3-49d2-83fc-aefc0a4f44bb",
   "version": "7",
   "dialect": "postgresql",
@@ -20241,6 +20241,12 @@
         "answered_at": {
           "name": "answered_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recall_metadata": {
+          "name": "recall_metadata",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }
