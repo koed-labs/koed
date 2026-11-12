@@ -7,6 +7,12 @@ import {
 
 export const candidateAssetTransferTimeoutMs = 20 * 60 * 1000;
 
+const jsonMediaType = "application/vnd.github+json";
+const releaseAssetStream = Object.freeze({
+  accept: "application/octet-stream"
+});
+const artifactArchiveStream = Object.freeze({ accept: jsonMediaType });
+
 const readBytes = async (response, limit) => {
   if (!response.ok)
     throw new Error(`Candidate reader returned HTTP ${response.status}.`);
@@ -26,13 +32,15 @@ export const createCandidateReaders = ({
   token = process.env.GH_TOKEN,
   fetchImpl = fetch
 } = {}) => {
-  const github = async (path, binary = false) => {
+  // Release assets need application/octet-stream to return bytes. The
+  // Actions artifact zip endpoint rejects that media type with HTTP 415 and
+  // only redirects to the archive when asked for JSON.
+  const github = async (path, stream = null) => {
+    const binary = stream !== null;
     const response = await fetchImpl(`https://api.github.com/repos/${path}`, {
       method: "GET",
       headers: {
-        accept: binary
-          ? "application/octet-stream"
-          : "application/vnd.github+json",
+        accept: binary ? stream.accept : jsonMediaType,
         ...(token ? { authorization: `Bearer ${token}` } : {})
       },
       signal: AbortSignal.timeout(
@@ -71,12 +79,15 @@ export const createCandidateReaders = ({
     getArtifactArchive: (repository, artifactId) =>
       github(
         `${repo(repository)}/actions/artifacts/${id(artifactId)}/zip`,
-        true
+        artifactArchiveStream
       ),
     getRelease: (repository, releaseId) =>
       github(`${repo(repository)}/releases/${id(releaseId)}`),
     getAsset: (repository, assetId) =>
-      github(`${repo(repository)}/releases/assets/${id(assetId)}`, true),
+      github(
+        `${repo(repository)}/releases/assets/${id(assetId)}`,
+        releaseAssetStream
+      ),
     getRegistryVersion: async (name, version) => {
       if (
         name !== "@koed-labs/server" ||
