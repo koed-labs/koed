@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "yaml";
 
 const read = (path) => readFileSync(path, "utf8");
 
@@ -53,21 +54,20 @@ test("Linux native artifact CI installs and requires the pinned CUDA toolkit", (
     /Validate native runtime payload before use or save/
   );
   assert.match(cacheWorkflow, /Save verified Linux native runtime payload/);
+  const releaseJob = parse(releaseWorkflow).jobs["linux-native-packages"];
+  assert.equal(releaseJob["runs-on"], "ubuntu-22.04");
+  const releaseCommands = releaseJob.steps
+    .map((step) => step.run ?? "")
+    .join("\n");
+  assert.match(releaseCommands, /cuda-minimal-build-12-4/);
+  assert.match(releaseCommands, /scripts\/native-runtime\/stage-release\.mjs/);
   assert.match(
-    releaseWorkflow,
-    /Require prebuilt verified native runtime payload/
+    read("scripts/native-runtime/stage-release.mjs"),
+    /const cuda = buildCudaAddon\(/
   );
-  assert.match(
-    releaseWorkflow,
-    /koed-native-runtime-linux-x64-\$\{\{ needs\.release\.outputs\.version \}\}\.provenance\.json/
-  );
-  const releaseJob = releaseWorkflow
-    .split("  native-runtime-linux-x64-release-assets:")[1]
-    .split("  signed-desktop-release-assets:")[0];
   for (const [job, expectedCount] of [
     [linuxJob, 2],
-    [cacheWorkflow, 2],
-    [releaseJob, 1]
+    [cacheWorkflow, 2]
   ]) {
     const cudaKeys = job.match(
       /key: native-runtime-payload-v1-linux-x64-cuda-12\.4-[^\n]*/g
@@ -96,15 +96,6 @@ test("Linux native artifact CI installs and requires the pinned CUDA toolkit", (
   for (const key of coreKeys) {
     assert.match(key, /scripts\/native-runtime\/loader-validation-lib\.mjs/);
   }
-  assert.doesNotMatch(releaseJob, /cuda-toolkit|Cold-build/);
-  assert.equal(
-    releaseJob.match(
-      /jq '\{ok, error, errors, timings, contentPolicy, postgresExtensions:/g
-    )?.length,
-    2,
-    "both Linux release validations should preserve top-level errors in compact failure diagnostics"
-  );
-  assert.doesNotMatch(releaseJob, /run: pnpm native-runtime:validate/);
   assert.match(
     buildScript,
     /Pinned CUDA runtime is required for the Linux x64 artifact/
