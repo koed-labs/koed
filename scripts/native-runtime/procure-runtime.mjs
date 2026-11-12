@@ -595,6 +595,25 @@ const buildMacosOpenSslStatic = ({
   };
 };
 
+// PostgreSQL 16+ builds macOS loadable modules as .dylib, but the packaged
+// runtime contract names them .so on every platform (matching pgvector).
+export const aliasMacosPostgresModules = (
+  libDir,
+  platform = process.platform,
+  modules = ["pgcrypto"]
+) => {
+  if (platform !== "darwin") return;
+  for (const name of modules) {
+    const dylib = resolve(libDir, `${name}.dylib`);
+    const so = resolve(libDir, `${name}.so`);
+    if (existsSync(dylib)) copyFileSync(dylib, so);
+    if (!existsSync(so))
+      throw new Error(
+        `PostgreSQL build did not produce ${name}.so/${name}.dylib.`
+      );
+  }
+};
+
 const buildPostgresSource = ({
   source,
   opensslSource,
@@ -646,6 +665,7 @@ const buildPostgresSource = ({
     env,
     stdio: "inherit"
   });
+  aliasMacosPostgresModules(resolve(target, "lib"));
   for (const name of ["initdb", "pg_ctl", "psql", "pg_config"])
     chmodIfExists(resolve(target, "bin", name));
   relocateMacosPostgresLibraries(target);
