@@ -366,3 +366,15 @@ children share lineage and must not count as independent corroboration.
       archive digests and record its provenance before the first installer release.
 - [ ] Qualify the macOS arm64 native runtime payload produced by the first full
       release run; the installer cannot complete on macOS until one is published.
+
+## LCM graph event query planning
+
+- [ ] Make `listLcmGraphEvents` fast without planner statistics. On a fresh or
+      truncated database, its `cursor_order` query takes 7–11 seconds per call
+      on near-empty tables. After `ANALYZE`, it takes milliseconds. Capture
+      `EXPLAIN (ANALYZE, BUFFERS)` with and without statistics. Then restructure
+      the query or add an index so that the plan does not depend on statistics.
+- [ ] Find out if new native Desktop installs hit this before autovacuum runs
+      `ANALYZE`. If they do, decide if the runtime must analyze after migrations.
+- [ ] Remove the `analyze` workaround from `personal-membership.test.ts` after the
+      fix. The test must pass on a fresh database that has no statistics.
