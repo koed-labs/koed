@@ -77,13 +77,21 @@ test("large asset transfers have a bounded 20-minute budget", () => {
 });
 
 test("asset reader exposes response stream and rejects HTTP errors", async () => {
+  const requests = [];
   const readers = createCandidateReaders({
-    fetchImpl: async () =>
-      new Response("abcd", { headers: { "content-length": "1" } })
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return new Response("abcd", { headers: { "content-length": "1" } });
+    }
   });
   const stream = await readers.getAsset("org/repo", 1);
   assert.equal(typeof stream.getReader, "function");
   assert.equal(await new Response(stream).text(), "abcd");
+  assert.equal(
+    requests[0].url,
+    "https://api.github.com/repos/org/repo/releases/assets/1"
+  );
+  assert.equal(requests[0].options.headers.accept, "application/octet-stream");
   const failed = createCandidateReaders({
     fetchImpl: async () => new Response("error", { status: 403 })
   });
@@ -105,6 +113,11 @@ test("private artifact reader downloads exact ID as a stream and rejects invalid
     "https://api.github.com/repos/org/repo/actions/artifacts/42/zip"
   );
   assert.equal(requests[0].options.method, "GET");
+  // GitHub answers HTTP 415 when this endpoint is asked for octet-stream.
+  assert.equal(
+    requests[0].options.headers.accept,
+    "application/vnd.github+json"
+  );
   assert.throws(
     () => readers.getArtifactArchive("org/../evil", 42),
     /repository/
