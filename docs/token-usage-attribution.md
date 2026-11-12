@@ -49,6 +49,11 @@ to its final question in the same transaction. Worker job IDs remain per-run,
 and attempt idempotency remains per-attempt. Task expiry does not remove usage
 or its question references. Historical rows are not backfilled.
 
+The migration that admits `memory_answer_task` replaces the source-type check as
+`NOT VALID`. Existing rows already satisfied the narrower check it replaces, so
+skipping revalidation avoids a full-table scan under the migration's exclusive
+lock. New and updated rows are checked as before.
+
 The executor waits for all attempted usage submissions to settle before returning
 to the task scheduler, even when a sibling write fails. Telemetry failures are
 logged and dropped; they do not retry synthesis or create a late-arrival queue.

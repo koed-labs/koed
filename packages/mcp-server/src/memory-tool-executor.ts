@@ -1,4 +1,7 @@
 import {
+  RECALL_CALLER_NAME_MAX_LENGTH,
+  RECALL_CALLER_VERSION_MAX_LENGTH,
+  recallCallerLabel,
   recallMemoryStatusSchema,
   recallCallerSchema
 } from "@koed-labs/shared";
@@ -719,17 +722,15 @@ export class MemoryToolExecutor {
     try {
       execution.onProgress?.("answer synthesis completed");
       if (signal?.aborted) throw new Error("Koed memory request was cancelled");
-      const clientName =
-        typeof caller.clientInfo?.name === "string"
-          ? caller.clientInfo.name.trim().slice(0, 128)
-          : "";
-      const clientVersion =
-        typeof caller.clientInfo?.version === "string"
-          ? caller.clientInfo.version.trim().slice(0, 64) || null
-          : null;
       const callerIdentity = recallCallerSchema.safeParse({
-        name: clientName,
-        version: clientVersion
+        name: recallCallerLabel(
+          caller.clientInfo?.name,
+          RECALL_CALLER_NAME_MAX_LENGTH
+        ),
+        version: recallCallerLabel(
+          caller.clientInfo?.version,
+          RECALL_CALLER_VERSION_MAX_LENGTH
+        )
       });
       const memoryStatus = recallMemoryStatusSchema.safeParse(
         answer.localMemoryWorker.memoryStatus

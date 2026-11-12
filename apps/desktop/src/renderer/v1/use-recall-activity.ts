@@ -15,6 +15,10 @@ type View = {
   overviewError: boolean;
   accessLost: boolean;
 };
+// Question changes can arrive in a steady stream while agents recall. The list
+// read is cheap and follows every change; the overview aggregates the whole
+// range, so changes refresh it at most this often, with one trailing catch-up.
+export const RECALL_OVERVIEW_CHANGE_INTERVAL_MS = 10_000;
 const canRetain = (error: unknown) =>
   Boolean(
     error &&
@@ -72,20 +76,28 @@ export function useRecallActivity(
     scope: string;
     value: RecallActivityOverview;
   } | null>(null);
+  // The scope whose last actual overview request failed. Only a later overview
+  // request that succeeds clears it; a refresh that reuses the retained
+  // overview is not a recovery.
+  const overviewFailedRef = useRef<string | null>(null);
   const refresh = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     let active = true,
       running = false,
       queued = false,
+      queuedOverview = false,
+      overviewStale = false,
       dirty = false;
     let failures = 0,
-      lastSuccess = 0;
+      lastSuccess = 0,
+      lastOverview = 0;
     let poll: ReturnType<typeof setTimeout> | undefined;
     let debounce: ReturnType<typeof setTimeout> | undefined;
     const visible = () => document.visibilityState !== "hidden";
     if (pageRef.current?.key !== key) pageRef.current = null;
     if (overviewRef.current?.scope !== scope) overviewRef.current = null;
+    if (overviewFailedRef.current !== scope) overviewFailedRef.current = null;
 
     const readPage = async () => {
       const previous = pageRef.current?.value;
@@ -122,13 +134,24 @@ export function useRecallActivity(
     };
     const schedulePoll = () => {
       clearTimeout(poll);
-      if (active && visible())
-        poll = setTimeout(
-          () => void run(true),
-          Math.min(300_000, 60_000 * 2 ** failures)
-        );
+      if (!active || !visible()) return;
+      const fallback = Math.min(300_000, 60_000 * 2 ** failures);
+      poll = setTimeout(
+        () => void run(true),
+        overviewStale
+          ? Math.min(
+              fallback,
+              Math.max(
+                0,
+                lastOverview + RECALL_OVERVIEW_CHANGE_INTERVAL_MS - Date.now()
+              )
+            )
+          : fallback
+      );
     };
-    const run = async (refreshOverview: boolean) => {
+    // true always reads the overview, "changed" reads it when the change
+    // interval has passed, and false reuses a retained overview for this scope.
+    const run = async (refreshOverview: boolean | "changed") => {
       if (!active) return;
       if (!visible()) {
         dirty = true;
@@ -136,6 +159,7 @@ export function useRecallActivity(
       }
       if (running) {
         queued = true;
+        queuedOverview ||= refreshOverview === true;
         return;
       }
       if (!api?.listRecallActivity || !api.recallActivityOverview) {
@@ -156,18 +180,24 @@ export function useRecallActivity(
       running = true;
       dirty = false;
       clearTimeout(poll);
+      const readOverview =
+        !overviewRef.current ||
+        refreshOverview === true ||
+        (refreshOverview === "changed" &&
+          Date.now() - lastOverview >= RECALL_OVERVIEW_CHANGE_INTERVAL_MS);
+      if (refreshOverview === "changed" && !readOverview) overviewStale = true;
       setView({
         key,
         page: pageRef.current?.value ?? null,
         overview: overviewRef.current?.value ?? null,
         loading: true,
         error: null,
-        overviewError: false,
+        overviewError: overviewFailedRef.current === scope,
         accessLost: false
       });
       const results = await Promise.allSettled([
         readPage(),
-        refreshOverview || !overviewRef.current
+        readOverview
           ? api.recallActivityOverview({
               from,
               to,
@@ -185,16 +215,30 @@ export function useRecallActivity(
                   ? "hour"
                   : undefined
             })
-          : Promise.resolve(overviewRef.current.value)
+          : Promise.resolve(overviewRef.current!.value)
       ]);
       if (!active) return;
       running = false;
+      if (readOverview) {
+        lastOverview = Date.now();
+        overviewStale = false;
+      }
       const [pageResult, overviewResult] = results;
       const lost = results.some(
         (result) => result.status === "rejected" && !canRetain(result.reason)
       );
-      const failed = results.some((result) => result.status === "rejected");
-      failures = failed ? Math.min(3, failures + 1) : 0;
+      if (readOverview)
+        overviewFailedRef.current =
+          overviewResult.status === "rejected" ? scope : null;
+      const overviewFailed = overviewFailedRef.current === scope;
+      const rejected = results.some((result) => result.status === "rejected");
+      const failed = rejected || overviewFailed;
+      // A list-only refresh neither adds to nor clears the overview's backoff.
+      failures = rejected
+        ? Math.min(3, failures + 1)
+        : overviewFailed
+          ? failures
+          : 0;
       if (lost) {
         pageRef.current = null;
         overviewRef.current = null;
@@ -216,17 +260,19 @@ export function useRecallActivity(
           : failed
             ? "Refresh failed. Previously loaded results are shown with their recorded freshness."
             : null,
-        overviewError: overviewResult.status === "rejected"
+        overviewError: overviewFailed
       });
       if (queued) {
+        const mode = queuedOverview ? true : "changed";
         queued = false;
-        debounce = setTimeout(() => void run(true), 300);
+        queuedOverview = false;
+        debounce = setTimeout(() => void run(mode), 300);
       } else schedulePoll();
     };
     const requestRefresh = () => {
       dirty = true;
       clearTimeout(debounce);
-      if (visible()) debounce = setTimeout(() => void run(true), 300);
+      if (visible()) debounce = setTimeout(() => void run("changed"), 300);
     };
     const focus = () => {
       if (visible() && (dirty || Date.now() - lastSuccess >= 60_000))

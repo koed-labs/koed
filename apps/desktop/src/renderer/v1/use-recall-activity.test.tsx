@@ -8,7 +8,10 @@ import type {
   RecallActivityPage,
   RecallActivityOverview
 } from "@koed-labs/shared/personal-desktop";
-import { useRecallActivity } from "./use-recall-activity.js";
+import {
+  RECALL_OVERVIEW_CHANGE_INTERVAL_MS,
+  useRecallActivity
+} from "./use-recall-activity.js";
 
 let root: Root | undefined;
 afterEach(async () => {
@@ -29,7 +32,7 @@ const page = (name: string): RecallActivityPage => ({
 });
 const overview = {} as RecallActivityOverview;
 
-it("coalesces changes, avoids rehydration, pauses hidden polling and clears denied data", async () => {
+it("coalesces changes, throttles overview reads, avoids rehydration, pauses hidden polling and clears denied data", async () => {
   vi.useFakeTimers();
   let listener: Parameters<PersonalDesktopApi["subscribe"]>[0] | undefined;
   const unsubscribe = vi.fn();
@@ -67,25 +70,49 @@ it("coalesces changes, avoids rehydration, pauses hidden polling and clears deni
       });
     await vi.advanceTimersByTimeAsync(300);
   });
+  // Changes re-read the cheap list at once. The overview waits for its change
+  // interval, then catches up once.
   expect(list).toHaveBeenCalledTimes(2);
-  expect(stats).toHaveBeenCalledTimes(2);
+  expect(stats).toHaveBeenCalledTimes(1);
   expect(list.mock.calls.at(-1)).toEqual([{ ...input, hydrate: false }]);
+  await act(async () => {
+    listener?.({
+      type: "ask_questions_changed",
+      questionIds: ["00000000-0000-4000-8000-000000000001"],
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION
+    });
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  expect(list).toHaveBeenCalledTimes(3);
+  expect(stats).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(
+      RECALL_OVERVIEW_CHANGE_INTERVAL_MS - 600 - 1
+    );
+  });
+  expect(stats).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(list).toHaveBeenCalledTimes(4);
+  expect(stats).toHaveBeenCalledTimes(2);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(59_999);
   });
-  expect(list).toHaveBeenCalledTimes(2);
+  expect(list).toHaveBeenCalledTimes(4);
   visibility = "hidden";
   await act(async () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await vi.advanceTimersByTimeAsync(180_000);
   });
-  expect(list).toHaveBeenCalledTimes(2);
+  expect(list).toHaveBeenCalledTimes(4);
   visibility = "visible";
   await act(async () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await vi.advanceTimersByTimeAsync(300);
   });
-  expect(list).toHaveBeenCalledTimes(3);
+  expect(list).toHaveBeenCalledTimes(5);
+  expect(stats).toHaveBeenCalledTimes(3);
   list.mockRejectedValueOnce(
     Object.assign(new Error("denied"), {
       code: "request_failed",
@@ -105,6 +132,70 @@ it("coalesces changes, avoids rehydration, pauses hidden polling and clears deni
   await act(async () => root!.unmount());
   root = undefined;
   expect(unsubscribe).toHaveBeenCalledOnce();
+});
+
+it("keeps an overview failure until an overview request succeeds", async () => {
+  vi.useFakeTimers();
+  let listener: Parameters<PersonalDesktopApi["subscribe"]>[0] | undefined;
+  const list = vi.fn(async (_input: unknown) => page("first"));
+  const stats = vi.fn(async () => ({ ...overview }));
+  const api = {
+    listRecallActivity: list,
+    recallActivityOverview: stats,
+    subscribe: (next: typeof listener) => {
+      listener = next;
+      return () => {};
+    }
+  } as unknown as PersonalDesktopApi;
+  let view!: ReturnType<typeof useRecallActivity>;
+  function View() {
+    view = useRecallActivity(api, input, "UTC");
+    return null;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root!.render(<View />));
+  const loaded = view.overview;
+  expect(view.overviewError).toBe(false);
+
+  stats.mockRejectedValueOnce(
+    Object.assign(new Error("unavailable"), {
+      code: "request_failed",
+      retryable: true
+    })
+  );
+  await act(async () => {
+    view.refresh();
+  });
+  expect(stats).toHaveBeenCalledTimes(2);
+  expect(view.overviewError).toBe(true);
+  expect(view.error).toMatch(/Refresh failed/);
+  expect(view.overview).toBe(loaded);
+
+  // A change inside the overview interval re-reads only the list. Reusing the
+  // retained overview must not report the failed overview as recovered.
+  await act(async () => {
+    listener?.({
+      type: "ask_questions_changed",
+      questionIds: ["00000000-0000-4000-8000-000000000001"],
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION
+    });
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  expect(list).toHaveBeenCalledTimes(3);
+  expect(stats).toHaveBeenCalledTimes(2);
+  expect(view.loading).toBe(false);
+  expect(view.overviewError).toBe(true);
+  expect(view.error).toMatch(/Refresh failed/);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RECALL_OVERVIEW_CHANGE_INTERVAL_MS);
+  });
+  expect(stats).toHaveBeenCalledTimes(3);
+  expect(view.overviewError).toBe(false);
+  expect(view.error).toBeNull();
+  expect(view.overview).not.toBe(loaded);
 });
 
 it("discards delayed filter and account responses", async () => {

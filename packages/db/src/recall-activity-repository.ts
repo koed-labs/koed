@@ -1,8 +1,11 @@
-import { recallQuestionMetadataSchema } from "@koed-labs/shared";
 import {
   personalRecallPredicate,
   recallActivityFilter,
-  recallActivityBuckets
+  recallActivityBuckets,
+  recallMetadataColumns,
+  recallMetadataFromRow,
+  recallMetadataSql,
+  type RecallMetadataColumns
 } from "./recall-activity-query.js";
 import {
   recallActivityOverviewInputSchema,
@@ -19,7 +22,11 @@ import {
 } from "@koed-labs/shared";
 import type { RecallActivityDetail } from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
-import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
+import {
+  decryptAuthorizedEncryptedFieldPayloadsWithClient,
+  encryptedFieldReferenceKey,
+  type EncryptedFieldReference
+} from "./encrypted-payload-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
 import {
   loadRecallDetailUsage,
@@ -64,8 +71,8 @@ export const createRecallActivityRepository = (
     }>(
       `with eligible as (
          select q.created_at, q.status,
-           case when q.status='answered' then q.recall_metadata->>'memoryStatus' end as outcome,
-           (q.recall_metadata->'timing'->>'durationMs')::bigint as duration
+           ${recallMetadataSql.outcome} as outcome,
+           ${recallMetadataSql.durationMs} as duration
          from memory_questions q where ${predicates.join(" and ")}
        ), totals as (
          select ${buckets.group("created_at")} as bucket,
@@ -113,8 +120,8 @@ export const createRecallActivityRepository = (
     };
   },
   async getRecallActivity(actor, questionId) {
-    const eligible = await pool.query<{ id: string; recall_metadata: unknown }>(
-      `select q.id, q.recall_metadata from memory_questions q where ${personalRecallPredicate} and q.id = $2`,
+    const eligible = await pool.query<{ id: string } & RecallMetadataColumns>(
+      `select q.id, ${recallMetadataColumns} from memory_questions q where ${personalRecallPredicate} and q.id = $2`,
       [actor.userId, questionId]
     );
     if (!eligible.rows[0]) return null;
@@ -181,9 +188,7 @@ export const createRecallActivityRepository = (
     };
     const result: RecallActivityDetail = {
       question: {
-        metadata: eligible.rows[0].recall_metadata
-          ? recallQuestionMetadataSchema.parse(eligible.rows[0].recall_metadata)
-          : null,
+        metadata: recallMetadataFromRow(eligible.rows[0]),
         id: detail.id,
         recordedAt: detail.createdAt,
         updatedAt: detail.updatedAt,
@@ -230,8 +235,10 @@ export const createRecallActivityRepository = (
     if (input.cursor)
       predicates.push(`(q.created_at, q.id) <
       (${bind(input.cursor.recordedAt)}::timestamptz, ${bind(input.cursor.id)}::uuid)`);
-    const result = await pool.query<RecallActivityQuestion>(
-      `select q.id, q.query, q.recall_metadata as metadata, q.search_domain as "searchDomain", q.status,
+    const result = await pool.query<
+      Omit<RecallActivityQuestion, "metadata" | "usage"> & RecallMetadataColumns
+    >(
+      `select q.id, q.query, ${recallMetadataColumns}, q.search_domain as "searchDomain", q.status,
          q.project_id as "projectId", q.project_name as "projectName", q.session_id as "sessionId",
          to_char(q.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "recordedAt",
          to_char(q.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "updatedAt"
@@ -239,48 +246,59 @@ export const createRecallActivityRepository = (
        order by q.created_at desc, q.id desc limit ${bind(input.limit + 1)}`,
       values
     );
-    const questions = result.rows.slice(0, input.limit);
+    const rows = result.rows.slice(0, input.limit);
     const usage = await loadLinkedRecallUsage(
       pool,
       actor,
-      questions.map((question) => question.id)
+      rows.map((row) => row.id)
     );
-    for (const question of questions)
-      question.usage = usage.get(question.id) ?? unknownRecallUsage();
-    // Decrypt only selected question text, with bounded concurrency. No answer,
-    // Evidence Bundle, or worker payload is hydrated for a history row.
-    let next = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(8, questions.length) }, async () => {
-        while (next < questions.length) {
-          const question = questions[next++]!;
-          if (
-            input.hydrate === false ||
-            (input.contentIds && !input.contentIds.includes(question.id))
-          ) {
-            question.query = null;
-            continue;
-          }
-          if (question.query !== "[koed encrypted memory question]") continue;
-          if (!options.envelopeEncryptionProvider)
-            throw new Error("Question encryption is unavailable");
-          const decrypted =
-            await decryptAuthorizedEncryptedFieldPayloadWithClient(
-              pool,
-              actor,
-              options.envelopeEncryptionProvider,
-              {
-                sourceTable: "memory_questions",
-                sourceId: question.id,
-                sourceColumn: "query"
-              }
-            );
-          if (typeof decrypted?.plaintext !== "string")
-            throw new Error("Question content is unavailable");
-          question.query = decrypted.plaintext;
-        }
-      })
+    const questions = rows.map((row): RecallActivityQuestion => ({
+      id: row.id,
+      recordedAt: row.recordedAt,
+      updatedAt: row.updatedAt,
+      query:
+        input.hydrate === false ||
+        (input.contentIds && !input.contentIds.includes(row.id))
+          ? null
+          : row.query,
+      usage: usage.get(row.id) ?? unknownRecallUsage(),
+      metadata: recallMetadataFromRow(row),
+      searchDomain: row.searchDomain,
+      status: row.status,
+      projectId: row.projectId,
+      projectName: row.projectName,
+      sessionId: row.sessionId
+    }));
+    // Decrypt only selected question text, in one payload read for the page.
+    // No answer, Evidence Bundle, or worker payload is hydrated for a history row.
+    const encrypted = questions.filter(
+      (question) => question.query === "[koed encrypted memory question]"
     );
+    if (encrypted.length) {
+      if (!options.envelopeEncryptionProvider)
+        throw new Error("Question encryption is unavailable");
+      const reference = (
+        question: RecallActivityQuestion
+      ): EncryptedFieldReference => ({
+        sourceTable: "memory_questions",
+        sourceId: question.id,
+        sourceColumn: "query"
+      });
+      const payloads = await decryptAuthorizedEncryptedFieldPayloadsWithClient(
+        pool,
+        actor,
+        options.envelopeEncryptionProvider,
+        encrypted.map(reference)
+      );
+      for (const question of encrypted) {
+        const plaintext = payloads.get(
+          encryptedFieldReferenceKey(reference(question))
+        )?.plaintext;
+        if (typeof plaintext !== "string")
+          throw new Error("Question content is unavailable");
+        question.query = plaintext;
+      }
+    }
     const last = questions.at(-1);
     return {
       questions,

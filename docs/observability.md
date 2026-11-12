@@ -17,6 +17,31 @@ own persistence. The stdio adapter reads caller identity from the connection's
 for modern clients. Modern requests never inherit a prior request's identity.
 Client information is self-reported description, never authority
 or a stable installation identity. It may differ from the synthesis worker.
+Because this metadata is stored outside encrypted question content, the caller
+name and version are reduced to ASCII letters, digits, spaces and `._+/@()-`
+before persistence. The API rejects other caller text.
+
+This metadata is validated in one place when it is read: the SQL in
+`recall-activity-query.ts`. Filters, totals and timelines use those expressions,
+and each displayed row is built from the same expressions' output, with no
+second check in application code. A question therefore cannot display one value
+and count as another. The rule is:
+
+- Only version 1 metadata is read. A later version is unknown in every field.
+- Each field is then read on its own. A missing or wrongly shaped value makes
+  that field unknown and leaves the others readable.
+- A result is read only for an answered question.
+- A caller name or version must be 1 to 128 or 1 to 64 of the characters above,
+  with no leading or trailing space. An unreadable name makes the caller unknown;
+  an unreadable version leaves the name.
+- A duration is read only as a whole number of milliseconds up to seven days
+  that equals the difference between its two UTC millisecond timestamps.
+
+An unknown field counts as unknown in totals and matches the unknown result or
+unknown caller filter; an unknown duration is outside every duration filter and
+the median. Stored text can make a field unknown but cannot fail a page or an
+overview. Caller text recorded before the character rule, such as `Codex: App`,
+reads as an unknown caller.
 
 Found percentage is `found / (found + not_found)`. Partial evidence, pending
 summaries, unknown results and recorded errors do not enter that denominator.
@@ -60,9 +85,12 @@ cannot discover earlier task retries. Unknown usage is not zero; cumulative
 snapshots and replayed observations are excluded from spending totals. Cached
 input and reasoning output are subsets, not additions to total tokens.
 
-Question-change events refresh the active view in coalesced batches. A visible
-fallback runs at most once a minute, backs off after failures, and stops while
-hidden. Refresh checks IDs, update timestamps, and usage before decrypting only
+Question-change events refresh the active view in coalesced batches. Each batch
+re-reads the list. The overview aggregates the whole selected range, so change
+events refresh it at most once every ten seconds, followed by one catch-up read;
+a manual refresh always reads it. A failed overview read stays reported until a
+later overview read succeeds; a list-only refresh does not clear it. A visible fallback runs at most once a minute,
+backs off after failures, and stops while hidden. Refresh checks IDs, update timestamps, and usage before decrypting only
 changed question text. Desktop retains only the active page in memory, with no
 disk cache. Account/backend changes and authorization loss clear retained data.
 
@@ -90,8 +118,19 @@ These are local fixture results, not production latency guarantees.
 
 The first token overview exceeded five seconds because casting question IDs to
 text caused repeated full question scans. Keeping the question primary key as
-UUID and validating/casting the typed source reference reduced that work without
-adding an index or cache. Preserve the indexed question type in this broad join.
+UUID and validating/casting the typed source reference removed those scans.
+Preserve the indexed question type in this broad join.
+
+That four-owner fixture did not show a second cost. Without an owner/time index
+on usage, the token overview scanned every owner's source references, whatever
+the selected range. With 300 owners, 300,000 recalls, 1.6 million usage rows and
+2.2 million source references, 7-day and 90-day overviews each took about 600 ms.
+The partial index `workflow_token_usage_recall_owner_observed_idx` on
+`(owner_user_id, observed_at)` for `mcp_memory_answer` usage lets the query start
+from one owner's usage in the range; the same overviews then took 2 ms and 5 ms.
+Keep the usage predicates on `owner_user_id`, `observed_at` and `workflow_type`
+so this index stays usable. A 50-row list reads its question text in one
+encrypted-payload query, not one query per row.
 
 ## Safe Request Logs
 

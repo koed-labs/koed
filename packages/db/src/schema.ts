@@ -12273,6 +12273,10 @@ export const workflowTokenUsage = pgTable(
     index("workflow_token_usage_connector_idx")
       .on(table.connectorClient, table.observedAt)
       .where(sql`${table.connectorClient} is not null`),
+    // Recall activity reads one owner's Memory Answer usage by observation time.
+    index("workflow_token_usage_recall_owner_observed_idx")
+      .on(table.ownerUserId, table.observedAt)
+      .where(sql`${table.workflowType} = 'mcp_memory_answer'`),
     check(
       "workflow_token_usage_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`

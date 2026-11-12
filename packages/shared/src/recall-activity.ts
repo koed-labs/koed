@@ -7,10 +7,47 @@ export const recallMemoryStatusSchema = z.enum([
   "insufficient",
   "pending_summary"
 ]);
+// Caller text is self-reported and stored outside encrypted question content.
+// Keep it to the characters of a product name or version label. The set is
+// ASCII and listed in full so that the database applies exactly the same test
+// when it reads a label back, whatever its locale.
+export const RECALL_CALLER_LABEL_CHARACTERS =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ._+/@()-";
+export const RECALL_CALLER_NAME_MAX_LENGTH = 128;
+export const RECALL_CALLER_VERSION_MAX_LENGTH = 64;
+const callerLabelClass = `[${RECALL_CALLER_LABEL_CHARACTERS.replace(/[\\\]^-]/g, "\\$&")}]`;
+const callerLabelPattern = new RegExp(`^${callerLabelClass}+$`);
+const notCallerLabel = new RegExp(`[^${callerLabelClass.slice(1, -1)}]+`, "g");
+/** Reduce reported client text to a storable label, or null when none remains. */
+export const recallCallerLabel = (
+  value: unknown,
+  maxLength: number
+): string | null => {
+  if (typeof value !== "string") return null;
+  const label = value
+    .normalize("NFKC")
+    .replace(notCallerLabel, " ")
+    .replace(/ +/g, " ")
+    .trim()
+    .slice(0, maxLength)
+    .trim();
+  return label || null;
+};
 export const recallCallerSchema = z
   .object({
-    name: z.string().trim().min(1).max(128),
-    version: z.string().trim().min(1).max(64).nullable()
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(RECALL_CALLER_NAME_MAX_LENGTH)
+      .regex(callerLabelPattern),
+    version: z
+      .string()
+      .trim()
+      .min(1)
+      .max(RECALL_CALLER_VERSION_MAX_LENGTH)
+      .regex(callerLabelPattern)
+      .nullable()
   })
   .strict();
 export const recallQuestionMetadataSchema = z
