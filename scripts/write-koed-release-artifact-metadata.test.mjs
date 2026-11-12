@@ -182,6 +182,24 @@ test("requires SHA-256 sidecars for koed-server archives", () => {
   );
 });
 
+test("release metadata accepts split native packages without a combined runtime archive", () => {
+  const root = tempDir();
+  const native = resolve(root, "koed-linux-native-packages");
+  mkdirSync(native);
+  for (const kind of ["core", "cuda"])
+    writeFileSync(
+      resolve(native, `koed-native-${kind}-${"a".repeat(64)}-linux-x64.tar.gz`),
+      `${kind} archive\n`
+    );
+  const metadata = buildReleaseArtifactMetadata({
+    version: "1.1.0",
+    tag: "v1.1.0",
+    repository: "koed-labs/koed",
+    artifactRoot: root
+  });
+  assert.deepEqual(metadata.artifacts.nativeRuntime.targets, []);
+});
+
 test("rejects archive bytes that disagree with SHA-256 sidecars", () => {
   const root = tempDir();
   const archive = "koed-server-0.4.0-linux-x64.tar.gz";

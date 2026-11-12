@@ -312,19 +312,26 @@ export const assertReleaseWorkflowVersionPropagation = (root) => {
         /\bnode\s+scripts\/write-koed-release-artifact-metadata\.mjs\b/
     },
     {
-      jobId: "native-runtime-linux-x64-release-assets",
-      stepName: "Package native runtime release artifact",
-      commandPattern: /\bpnpm\s+native-runtime:build:linux-x64\b/
+      jobId: "linux-native-packages",
+      stepName: "Stage archives and create the CLI download catalog",
+      commandPattern: /\bnode\s+scripts\/native-runtime\/stage-release\.mjs\b/,
+      versionArgumentPattern:
+        /stage-release\.mjs\s+["']?\$\{\{\s*needs\.release\.outputs\.version\s*\}\}["']?/
     }
   ];
-  for (const { jobId, stepName, commandPattern } of releaseConsumers) {
+  for (const {
+    jobId,
+    stepName,
+    commandPattern,
+    versionArgumentPattern = releaseVersionArgumentPattern
+  } of releaseConsumers) {
     const job = findWorkflowJob(workflow, jobId, releaseWorkflowPath, failures);
     if (job && !jobNeedsRelease(job)) {
       failures.push(`${jobId} must depend on the release job`);
     }
     const step = findWorkflowStep(job, stepName, jobId, failures);
     const run = executableRun(step);
-    if (!commandPattern.test(run) || !releaseVersionArgumentPattern.test(run)) {
+    if (!commandPattern.test(run) || !versionArgumentPattern.test(run)) {
       failures.push(
         `${jobId}/${stepName} must pass the release job version to its builder`
       );

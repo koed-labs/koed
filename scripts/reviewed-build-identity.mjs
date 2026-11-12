@@ -21,7 +21,6 @@ const sourceNames = [
   "koed-server-app-runtime-macos-arm64",
   "koed-desktop-final-assets",
   "koed-desktop-linux-final-assets",
-  "koed-native-runtime-linux-x64",
   "koed-linux-native-packages",
   "koed-macos-native-packages",
   "koed-release-metadata"
