@@ -180,6 +180,16 @@ row never displays one value and counts as another. `docs/observability.md`
 states the rule.
 These fields carry no caller authority or stable installation identity.
 
+The overview also returns `filterOptions` for Projects and AI Clients across the
+whole date range, independent of pagination and the active filters. Preset date
+ranges follow local calendar rollover and resume after sleep. Custom ranges stay
+fixed. Question text is bounded to 100,000 characters for presentation. A returned
+question sets `queryTruncated` when its display text is shortened, and detail also
+sets `contentTruncated`. Stored question content remains unchanged. Usage coverage checks expected attempts
+and claimed runs. Personal ownership receipts preserve permission to record late
+usage after transient task cleanup without retaining question or answer content. Refreshes
+retain the truncation flag when they reuse previously hydrated text.
+
 Overview requests can opt into `bucket: "hour"` for ranges of up to 25 hours.
 This covers local calendar days across daylight-saving changes. Existing callers
 that omit the field retain automatic day/week/month buckets. Desktop uses hourly

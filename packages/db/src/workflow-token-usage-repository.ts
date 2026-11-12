@@ -258,14 +258,22 @@ const validateWorkflowTokenUsageSourceReferences = async (
     if (reference.type === "memory_answer_task") {
       // This API accepts Personal credentials. Team task authority cannot be
       // inferred from ownership or from a deleted Workspace's null foreign key.
-      const task = await db.query<{ question_id: string | null }>(
+      let task = await db.query<{ question_id: string | null }>(
         `select question_id from memory_answer_tasks
           where id = $1 and owner_user_id = $2 and visibility = 'personal'
             and team_authorization is null and team_workspace_id is null
-            and status in ('running', 'cancel_requested')
-            and expires_at > now()`,
+            and attempt_count > 0
+          for share`,
         [reference.id, input.ownerUserId]
       );
+      if (!task.rows[0])
+        task = await db.query<{ question_id: string | null }>(
+          `select question_id from memory_answer_task_usage_receipts
+           where task_id=$1 and owner_user_id=$2
+             and not exists(select 1 from memory_answer_tasks where id=$1)
+           for share`,
+          [reference.id, input.ownerUserId]
+        );
       if (input.visibility !== "personal" || !task.rows[0]) {
         throw new Error(
           "Memory Answer task source reference not found or not authorized"
@@ -282,6 +290,16 @@ const validateWorkflowTokenUsageSourceReferences = async (
           "Question source reference does not belong to Memory Answer task"
         );
       }
+      // Completion can win the race with a late usage observation. Link it to
+      // the existing question while holding the task lock through this write.
+      if (
+        task.rows[0]!.question_id &&
+        !input.references.some((candidate) => candidate.type === "question")
+      )
+        input.references.push({
+          type: "question",
+          id: task.rows[0]!.question_id
+        });
       continue;
     }
     const tableByType: Record<

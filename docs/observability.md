@@ -92,7 +92,10 @@ a manual refresh always reads it. A failed overview read stays reported until a
 later overview read succeeds; a list-only refresh does not clear it. A visible fallback runs at most once a minute,
 backs off after failures, and stops while hidden. Refresh checks IDs, update timestamps, and usage before decrypting only
 changed question text. Desktop retains only the active page in memory, with no
-disk cache. Account/backend changes and authorization loss clear retained data.
+disk cache. Project and AI Client filter choices come from all eligible activity
+in the selected date range, independent of the page and active filters. Calendar
+presets update at local midnight, on return to the window, and on manual refresh.
+Custom date ranges remain fixed. Account/backend changes and authorization loss clear retained data.
 
 The API writes structured JSON through Fastify/Pino with
 `schema_version: "api_log_v1"` and `service: "koed-api"`. Worker services use
@@ -115,6 +118,7 @@ were 33 ms and 63 ms respectively; the OS filesystem cache was not flushed.
 A final warm pass with result/caller/duration metadata measured 17 ms list and
 48 ms overview p95 over another 20 samples; caches were already warm in that pass.
 These are local fixture results, not production latency guarantees.
+They predate the expected-attempt coverage checks and range-wide filter choices.
 
 The first token overview exceeded five seconds because casting question IDs to
 text caused repeated full question scans. Keeping the question primary key as

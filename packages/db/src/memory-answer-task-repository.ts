@@ -666,6 +666,12 @@ export const createMemoryAnswerTaskRepository = (
           ) {
             throw new Error("Encrypted Memory Answer task request is invalid");
           }
+          if (!row.team_authorization && !row.team_workspace_id)
+            await client.query(
+              `insert into memory_answer_task_usage_receipts(task_id, owner_user_id)
+               values($1, $2) on conflict do nothing`,
+              [row.id, actor.userId]
+            );
           task = {
             ...mapTask(row),
             leaseOwner: row.lease_owner!,
@@ -843,6 +849,20 @@ export const createMemoryAnswerTaskRepository = (
             ]
           );
         }
+        // Retain the number of claimed runs before transient task cleanup.
+        // Missing usage from an earlier run must not look like full coverage.
+        await client.query(
+          `update memory_questions set recall_metadata = jsonb_set(
+             recall_metadata, '{usage,taskAttempts}', to_jsonb($3::int))
+           where owner_user_id=$1 and id=$2
+             and jsonb_typeof(recall_metadata->'usage') = 'object'`,
+          [actor.userId, question.id, current.attempt_count]
+        );
+        await client.query(
+          `update memory_answer_task_usage_receipts set question_id=$3
+           where task_id=$1 and owner_user_id=$2`,
+          [input.taskId, actor.userId, question.id]
+        );
         // Link every persisted run of this task, not only the final worker job.
         // These durable references deliberately have no FK to the expiring task.
         await client.query(

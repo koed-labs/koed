@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   RECALL_CALLER_LABEL_CHARACTERS,
   recallCallerLabel,
-  recallCallerSchema
+  recallCallerSchema,
+  recallQuestionMetadataSchema,
+  recallQuestionReportedMetadataSchema
 } from "./recall-activity.js";
 
 describe("Recall caller labels", () => {
@@ -66,4 +68,26 @@ describe("Recall caller labels", () => {
       recallCallerSchema.safeParse({ name: "codex", version: "1;drop" }).success
     ).toBe(false);
   });
+});
+
+it("accepts bounded usage expectations and reserves task run counts for the server", () => {
+  const value = {
+    version: 1,
+    memoryStatus: null,
+    usage: { jobId: "33333333-3333-4333-8333-333333333333", attempts: 2 }
+  };
+  expect(recallQuestionReportedMetadataSchema.safeParse(value).success).toBe(
+    true
+  );
+  const server = { ...value, usage: { ...value.usage, taskAttempts: 2 } };
+  expect(recallQuestionMetadataSchema.safeParse(server).success).toBe(true);
+  expect(recallQuestionReportedMetadataSchema.safeParse(server).success).toBe(
+    false
+  );
+  expect(
+    recallQuestionReportedMetadataSchema.safeParse({
+      ...value,
+      usage: { ...value.usage, jobId: "arbitrary question text" }
+    }).success
+  ).toBe(false);
 });

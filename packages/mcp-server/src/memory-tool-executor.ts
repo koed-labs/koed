@@ -741,7 +741,14 @@ export class MemoryToolExecutor {
           !answer.localMemoryWorker.usedFallback && memoryStatus.success
             ? memoryStatus.data
             : null,
-        caller: callerIdentity.success ? callerIdentity.data : null
+        caller: callerIdentity.success ? callerIdentity.data : null,
+        usage: {
+          jobId: answer.localMemoryWorker.jobId,
+          attempts: Math.max(
+            1,
+            answer.localMemoryWorker.appServerExecutions?.length ?? 0
+          )
+        }
       };
       const finalQuestionInput = answer.localMemoryWorker.usedFallback
         ? {
@@ -867,7 +874,6 @@ export class MemoryToolExecutor {
     const writes = await Promise.allSettled(
       executions.map(async (execution, executionIndex) => {
         const lastUsage = execution.tokenUsage?.last;
-        if (!lastUsage) return;
         const provider =
           execution.provider ?? answer.localMemoryWorker.provider;
         if (
@@ -896,9 +902,9 @@ export class MemoryToolExecutor {
           sourceAdapterVersion: identity.sourceAdapterVersion,
           usageSource: identity.usageSource,
           usageAccuracy: [
-            lastUsage.inputTokens,
-            lastUsage.outputTokens,
-            lastUsage.totalTokens
+            lastUsage?.inputTokens,
+            lastUsage?.outputTokens,
+            lastUsage?.totalTokens
           ].every((value) => typeof value === "number")
             ? "provider_reported"
             : "provider_partial",
@@ -906,11 +912,11 @@ export class MemoryToolExecutor {
           connectorClient: identity.connectorClient,
           model: execution.model,
           modelContextWindow: execution.tokenUsage?.modelContextWindow ?? null,
-          inputTokens: lastUsage.inputTokens ?? null,
-          cachedInputTokens: lastUsage.cachedInputTokens ?? null,
-          outputTokens: lastUsage.outputTokens ?? null,
-          reasoningOutputTokens: lastUsage.reasoningOutputTokens ?? null,
-          totalTokens: lastUsage.totalTokens ?? null,
+          inputTokens: lastUsage?.inputTokens ?? null,
+          cachedInputTokens: lastUsage?.cachedInputTokens ?? null,
+          outputTokens: lastUsage?.outputTokens ?? null,
+          reasoningOutputTokens: lastUsage?.reasoningOutputTokens ?? null,
+          totalTokens: lastUsage?.totalTokens ?? null,
           usageScope: "last",
           metadata: {
             questionOrigin: options.origin,
@@ -927,9 +933,12 @@ export class MemoryToolExecutor {
             searchDomain: input.search_domain,
             projectId,
             attemptIndex: execution.attemptIndex,
-            executionStatus: execution.status ?? "succeeded",
+            executionStatus:
+              execution.status ??
+              (answer.localMemoryWorker.usedFallback ? "failed" : "succeeded"),
             replacementThreadReason: execution.replacementThreadReason,
-            executionIndex
+            executionIndex,
+            expectedExecutions: executions.length
           },
           idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${executionIndex}:${execution.attemptIndex ?? 1}:last`
         });

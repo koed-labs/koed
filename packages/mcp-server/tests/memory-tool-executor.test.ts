@@ -253,7 +253,8 @@ describe("MemoryToolExecutor", () => {
       input: Record<string, unknown>
     ) => Promise<Record<string, unknown>>,
     attempts = 1,
-    usedFallback = false
+    usedFallback = false,
+    missingUsageIndex?: number
   ) =>
     new MemoryToolExecutor(
       {
@@ -280,7 +281,7 @@ describe("MemoryToolExecutor", () => {
           localMemoryWorker: {
             provider,
             promptVersion: "fixture",
-            jobId: "fixture-answer-job",
+            jobId: "33333333-3333-4333-8333-333333333333",
             model: "fixture-model",
             usedFallback,
             appServerExecutions: Array.from(
@@ -288,9 +289,16 @@ describe("MemoryToolExecutor", () => {
               (_, index) => ({
                 model: "fixture-model",
                 attemptIndex: index + 1,
-                tokenUsage: {
-                  last: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }
-                }
+                tokenUsage:
+                  index === missingUsageIndex
+                    ? undefined
+                    : {
+                        last: {
+                          inputTokens: 10,
+                          outputTokens: 5,
+                          totalTokens: 15
+                        }
+                      }
               })
             )
           }
@@ -333,7 +341,9 @@ describe("MemoryToolExecutor", () => {
               memoryStatus: null,
               caller: { name: "requesting-client", version: "1" }
             },
-            local_memory_worker: { jobId: "fixture-answer-job" }
+            local_memory_worker: {
+              jobId: "33333333-3333-4333-8333-333333333333"
+            }
           });
         } else {
           await executor.executeMemoryAnswer(
@@ -420,6 +430,39 @@ describe("MemoryToolExecutor", () => {
       ).toBe(2);
     }
   );
+
+  it("retains expected attempts and records unknown consumption without zero counts", async () => {
+    const record = vi.fn(async (_input: Record<string, unknown>) => ({}));
+    const result = await usageExecutor(
+      "codex",
+      record,
+      2,
+      false,
+      0
+    ).executeMemoryAnswerTask(
+      usageInput(),
+      { cwd: "/fixture" },
+      "task",
+      undefined,
+      undefined,
+      { getExecutionAuthority: () => ({ scope: "personal" }) }
+    );
+    expect(result.finalQuestion.recall_metadata).toMatchObject({
+      usage: { jobId: "33333333-3333-4333-8333-333333333333", attempts: 2 }
+    });
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record.mock.calls[0]![0]).toMatchObject({
+      usageAccuracy: "provider_partial",
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+      metadata: { expectedExecutions: 2 }
+    });
+    expect(record.mock.calls[1]![0]).toMatchObject({
+      usageAccuracy: "provider_reported",
+      totalTokens: 15
+    });
+  });
 
   it("settles every attempted telemetry write before a task can complete after a sibling fails", async () => {
     let rejectFirst!: (error: Error) => void;

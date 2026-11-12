@@ -1,5 +1,5 @@
 {
-  "id": "eb19f037-d98c-4ede-9dda-dcafd27429b2",
+  "id": "2709aadb-67a1-4f92-9058-1a17a26effdc",
   "prevId": "a66468e4-c8c3-49d2-83fc-aefc0a4f44bb",
   "version": "7",
   "dialect": "postgresql",
@@ -17544,6 +17544,95 @@
       },
       "isRLSEnabled": false
     },
+    "public.memory_answer_task_usage_receipts": {
+      "name": "memory_answer_task_usage_receipts",
+      "schema": "",
+      "columns": {
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "question_id": {
+          "name": "question_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "memory_answer_usage_receipt_owner_idx": {
+          "name": "memory_answer_usage_receipt_owner_idx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "memory_answer_usage_receipt_question_idx": {
+          "name": "memory_answer_usage_receipt_question_idx",
+          "columns": [
+            {
+              "expression": "question_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"memory_answer_task_usage_receipts\".\"question_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "memory_answer_usage_receipt_owner_fk": {
+          "name": "memory_answer_usage_receipt_owner_fk",
+          "tableFrom": "memory_answer_task_usage_receipts",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "memory_answer_usage_receipt_question_fk": {
+          "name": "memory_answer_usage_receipt_question_fk",
+          "tableFrom": "memory_answer_task_usage_receipts",
+          "tableTo": "memory_questions",
+          "columnsFrom": ["question_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.memory_answer_tasks": {
       "name": "memory_answer_tasks",
       "schema": "",
@@ -20204,6 +20293,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "recall_metadata": {
+          "name": "recall_metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "response": {
           "name": "response",
           "type": "jsonb",
@@ -20241,12 +20336,6 @@
         "answered_at": {
           "name": "answered_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "recall_metadata": {
-          "name": "recall_metadata",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }

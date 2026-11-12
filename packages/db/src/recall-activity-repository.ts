@@ -15,6 +15,7 @@ import {
 import type pg from "pg";
 import {
   recallActivityListInputSchema,
+  RECALL_QUERY_MAX_LENGTH,
   type EnvelopeEncryptionProvider,
   type RecallActivityListInput,
   type RecallActivityPage,
@@ -32,7 +33,8 @@ import {
   loadRecallDetailUsage,
   loadLinkedRecallUsage,
   loadRecallTokenOverview,
-  unknownRecallUsage
+  unknownRecallUsage,
+  recallQuestionUsageIncomplete
 } from "./recall-activity-usage.js";
 
 export interface RecallActivityRepository {
@@ -68,11 +70,13 @@ export const createRecallActivityRepository = (
       memoryResults: RecallActivityOverview["memoryResults"];
       knownDurations: number;
       medianDurationMs: number | null;
+      usageIncomplete: boolean;
     }>(
       `with eligible as (
          select q.created_at, q.status,
            ${recallMetadataSql.outcome} as outcome,
-           ${recallMetadataSql.durationMs} as duration
+           ${recallMetadataSql.durationMs} as duration,
+           (${recallQuestionUsageIncomplete}) as usage_incomplete
          from memory_questions q where ${predicates.join(" and ")}
        ), totals as (
          select ${buckets.group("created_at")} as bucket,
@@ -85,7 +89,8 @@ export const createRecallActivityRepository = (
          from eligible group by 1
        ), buckets as (
          select ${buckets.series} as bucket
-       ) select (select count(*)::int from eligible) as "recordedQuestions",
+       ) select coalesce((select bool_or(usage_incomplete) from eligible), false) as "usageIncomplete",
+          (select count(*)::int from eligible) as "recordedQuestions",
           (select count(*)::int from eligible where status = 'error') as "recordedErrors",
           (select count(duration)::int from eligible) as "knownDurations",
           (select percentile_cont(0.5) within group (order by duration) from eligible where duration is not null) as "medianDurationMs",
@@ -111,9 +116,36 @@ export const createRecallActivityRepository = (
       input,
       bucket
     );
+    const { usageIncomplete, ...summary } = result.rows[0]!;
+    if (usageIncomplete && tokenOverview.tokens.coverage === "recorded")
+      tokenOverview.tokens.coverage = "partial";
+    // Choices come from the whole date range, independent of pagination and
+    // the active caller/project filters. No question content is decrypted.
+    const choices = recallActivityFilter(actor, {
+      from: input.from,
+      to: input.to
+    });
+    const filterOptions = await pool.query<
+      NonNullable<RecallActivityOverview["filterOptions"]>
+    >(
+      `with eligible as (
+         select q.project_id, q.project_name, (${recallMetadataSql.callerName}) as caller
+         from memory_questions q where ${choices.predicates.join(" and ")}
+       ) select
+         coalesce((select jsonb_agg(jsonb_build_object('projectId', project_id,
+           'projectName', project_name) order by project_id) from (
+             select project_id, max(project_name) as project_name from eligible
+             where project_id is not null group by project_id
+           ) p), '[]'::jsonb) as projects,
+         coalesce((select jsonb_agg(caller order by caller) from (
+           select distinct caller from eligible where caller is not null
+         ) c), '[]'::jsonb) as "callerNames"`,
+      choices.values
+    );
     return {
-      ...result.rows[0]!,
+      ...summary,
       ...tokenOverview,
+      filterOptions: filterOptions.rows[0]!,
       asOf: new Date().toISOString(),
       timezone: input.timezone,
       bucket
@@ -192,7 +224,8 @@ export const createRecallActivityRepository = (
         id: detail.id,
         recordedAt: detail.createdAt,
         updatedAt: detail.updatedAt,
-        query: detail.query,
+        query: text(detail.query, RECALL_QUERY_MAX_LENGTH),
+        queryTruncated: detail.query.length > RECALL_QUERY_MAX_LENGTH,
         searchDomain: detail.searchDomain,
         status: detail.status === "answered" ? "answered" : "error",
         projectId: detail.projectId,
@@ -298,6 +331,11 @@ export const createRecallActivityRepository = (
           throw new Error("Question content is unavailable");
         question.query = plaintext;
       }
+    }
+    for (const question of questions) {
+      if (question.query === null) continue;
+      question.queryTruncated = question.query.length > RECALL_QUERY_MAX_LENGTH;
+      question.query = question.query.slice(0, RECALL_QUERY_MAX_LENGTH);
     }
     const last = questions.at(-1);
     return {

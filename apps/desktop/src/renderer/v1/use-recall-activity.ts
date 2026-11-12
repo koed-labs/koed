@@ -125,7 +125,12 @@ export function useRecallActivity(
           row.query ??
           (previousById.get(row.id)?.updatedAt === row.updatedAt
             ? previousById.get(row.id)!.query
-            : null)
+            : null),
+        queryTruncated:
+          row.query === null &&
+          previousById.get(row.id)?.updatedAt === row.updatedAt
+            ? previousById.get(row.id)?.queryTruncated
+            : row.queryTruncated
       }));
       // A second membership change during hydration gets one bounded full read.
       return questions.some((row) => row.query === null)

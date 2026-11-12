@@ -1,6 +1,14 @@
 import { z } from "zod";
 
 const instant = z.string().datetime({ offset: true });
+export const RECALL_QUERY_MAX_LENGTH = 100_000;
+const usageExpectation = z
+  .object({
+    jobId: z.string().uuid(),
+    attempts: z.number().int().min(1).max(10_000),
+    taskAttempts: z.number().int().min(1).max(10_000).optional()
+  })
+  .strict();
 export const recallMemoryStatusSchema = z.enum([
   "found",
   "not_found",
@@ -55,6 +63,7 @@ export const recallQuestionMetadataSchema = z
     version: z.literal(1),
     memoryStatus: recallMemoryStatusSchema.nullable(),
     caller: recallCallerSchema.nullable().optional(),
+    usage: usageExpectation.optional(),
     timing: z
       .object({
         acceptedAt: instant,
@@ -75,8 +84,11 @@ export const recallQuestionMetadataSchema = z
   })
   .strict();
 // Completion timing comes only from the task repository's retained boundaries.
-export const recallQuestionReportedMetadataSchema =
-  recallQuestionMetadataSchema.omit({ timing: true });
+export const recallQuestionReportedMetadataSchema = recallQuestionMetadataSchema
+  .omit({ timing: true })
+  .extend({
+    usage: usageExpectation.omit({ taskAttempts: true }).optional()
+  });
 export type RecallQuestionMetadata = z.infer<
   typeof recallQuestionMetadataSchema
 >;
@@ -160,7 +172,8 @@ export const recallActivityQuestionSchema = z
     id: z.string().uuid(),
     recordedAt: instant,
     updatedAt: instant,
-    query: z.string().max(100_000).nullable(),
+    query: z.string().max(RECALL_QUERY_MAX_LENGTH).nullable(),
+    queryTruncated: z.boolean().optional(),
     usage: recallUsageTotalsSchema,
     metadata: recallQuestionMetadataSchema.nullable(),
     searchDomain: z.enum(["global", "project", "session"]),
@@ -297,6 +310,20 @@ export const recallActivityOverviewInputSchema = recallActivityFiltersSchema
   );
 export const recallActivityOverviewSchema = z
   .object({
+    filterOptions: z
+      .object({
+        projects: z.array(
+          z
+            .object({
+              projectId: z.string(),
+              projectName: z.string().nullable()
+            })
+            .strict()
+        ),
+        callerNames: z.array(z.string().max(RECALL_CALLER_NAME_MAX_LENGTH))
+      })
+      .strict()
+      .optional(),
     asOf: instant,
     timezone: z.string(),
     bucket: z.enum(["hour", "day", "week", "month"]),

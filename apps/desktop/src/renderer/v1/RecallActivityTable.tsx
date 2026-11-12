@@ -94,6 +94,11 @@ export function RecallActivityTable({
                         <button
                           type="button"
                           className="recall-question-link"
+                          title={
+                            row.queryTruncated
+                              ? "Question shortened for display"
+                              : undefined
+                          }
                           onClick={(event) => onSelect(row, event)}
                         >
                           <span>{row.query ?? "Question unavailable"}</span>

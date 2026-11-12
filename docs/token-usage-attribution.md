@@ -47,7 +47,18 @@ ownership and excludes Team-bound tasks, including retained Team authority after
 Workspace deletion. Fenced task completion links every recorded run of that task
 to its final question in the same transaction. Worker job IDs remain per-run,
 and attempt idempotency remains per-attempt. Task expiry does not remove usage
-or its question references. Historical rows are not backfilled.
+or its question references. An already started Personal task can receive usage
+after expiry, cancellation, or completion. The write still checks ownership and
+excludes Team authority. It locks the task until the usage write commits, and
+links a late observation to the task's existing final question when present.
+Starting a Personal task also writes an ownership receipt in
+`memory_answer_task_usage_receipts`. The receipt stores only task, User and final
+question IDs plus its creation time. It retains permission to record usage after
+task cleanup and grants no permission to resume execution. Team tasks receive no
+receipt. Deleting the User record removes the receipt. Deleting the question
+record clears its question link. The migration creates receipts for existing started Personal tasks.
+A task that never started cannot authorize a usage observation. Historical rows
+are not backfilled.
 
 The migration that admits `memory_answer_task` replaces the source-type check as
 `NOT VALID`. Existing rows already satisfied the narrower check it replaces, so
@@ -57,6 +68,13 @@ lock. New and updated rows are checked as before.
 The executor waits for all attempted usage submissions to settle before returning
 to the task scheduler, even when a sibling write fails. Telemetry failures are
 logged and dropped; they do not retry synthesis or create a late-arrival queue.
+New final questions retain the expected execution count for their final worker
+job. Each usage row retains its job's expected execution count, and task
+completion retains the number of claimed runs. Recall compares these counts
+with linked observations. A missing observation or an entirely missing earlier
+run makes coverage partial. An attempt without provider counts records null
+counts, not zero. These expectations survive task cleanup and expose a failed
+usage write without claiming that the lost counts are known.
 
 Memory Answer usage attributes the actual Codex, Claude Code, or pi synthesis
 worker through its provider's execution identity and transport. Native incomplete

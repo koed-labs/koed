@@ -97,7 +97,7 @@ export function RecallActivityFilters({
   onReset
 }: {
   input: RecallActivityListInput;
-  rows: RecallActivityQuestion[];
+  rows: Pick<RecallActivityQuestion, "projectId" | "projectName">[];
   projects: readonly DesktopProject[];
   callerNames: string[];
   onApply: (input: RecallActivityListInput) => void;

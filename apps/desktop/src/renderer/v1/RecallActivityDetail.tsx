@@ -145,6 +145,11 @@ export function RecallActivityDetail({
                 <h2 className="recall-question-title">
                   {detail.question.query ?? "Question unavailable"}
                 </h2>
+                {detail.question.queryTruncated && (
+                  <p className="recall-detail-note">
+                    This view shows a shortened question.
+                  </p>
+                )}
                 <div className="recall-detail-context">
                   <span
                     className={`recall-client ${caller.icon ?? ""}`}

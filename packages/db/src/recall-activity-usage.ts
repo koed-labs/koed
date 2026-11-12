@@ -40,7 +40,8 @@ export const summarizeRecallAttempts = (
   attempts: RecallUsageAttempt[],
   provenance: RecallUsage["provenance"],
   truncated = false,
-  ambiguous = false
+  ambiguous = false,
+  incomplete = false
 ): RecallUsage => {
   const sum = (
     key:
@@ -60,6 +61,7 @@ export const summarizeRecallAttempts = (
     coverage: !attempts.length
       ? "unavailable"
       : provenance === "historical_job" ||
+          incomplete ||
           truncated ||
           ambiguous ||
           attempts.some(
@@ -101,14 +103,45 @@ const compatibleQuestionUsage = `not exists (
     ((other.source_type = 'question' and other.source_id <> q.id::text)
      or (other.source_type = 'answer_job' and other.source_id <> u.workflow_id)))`;
 
-const usageAggregates = `sum(u.input_tokens)::float8 as "inputTokens",
+const expectedCount = (
+  value: string
+) => `case when ${value} ~ '^[1-9][0-9]{0,4}$'
+  then case when (${value})::int <= 10000 then (${value})::int else 0 end else 0 end`;
+
+// The final question retains the run's expected attempts before telemetry writes.
+// Each surviving usage row also retains its run's expected count. The task's
+// claimed-run count detects a missing earlier run even when all its writes fail.
+// This reads only linked usage; unlinked failed/cancelled tasks stay out of totals.
+export const recallQuestionUsageIncomplete = `case when
+  q.recall_metadata->'version' = '1'::jsonb
+  and jsonb_typeof(q.recall_metadata->'usage') = 'object' then (
+    select coalesce(bool_or(j.recorded < j.expected), false)
+      or coalesce(max(j.recorded) filter (
+        where j.workflow_id = q.recall_metadata->'usage'->>'jobId'), 0)
+        < (${expectedCount("q.recall_metadata->'usage'->>'attempts'")})
+      or count(*) < (${expectedCount("q.recall_metadata->'usage'->>'taskAttempts'")})
+    from (
+      select u.workflow_id, count(*) as recorded,
+        max(${expectedCount("u.metadata->>'expectedExecutions'")}) as expected
+      from workflow_token_usage_source_references ref
+      join workflow_token_usage u on u.id = ref.workflow_token_usage_id
+      where ref.source_type = 'question' and ref.source_id = q.id::text
+        and u.owner_user_id = q.owner_user_id and ${recallUsageEligibility}
+        and ${compatibleQuestionUsage}
+      group by u.workflow_id
+    ) j
+  ) else false end`;
+
+const usageAggregates = (
+  incomplete: string
+) => `sum(u.input_tokens)::float8 as "inputTokens",
   sum(u.cached_input_tokens)::float8 as "cachedInputTokens",
   sum(u.output_tokens)::float8 as "outputTokens",
   sum(u.reasoning_output_tokens)::float8 as "reasoningOutputTokens",
   sum(u.total_tokens)::float8 as "totalTokens", count(*)::int as "recordedAttempts",
   coalesce(bool_or(u.usage_accuracy = 'local_estimate'), false) as "includesEstimates",
   case when count(*) = 0 then 'unavailable'
-       when bool_or(u.total_tokens is null or u.usage_accuracy <> 'provider_reported') then 'partial'
+       when bool_or(u.total_tokens is null or u.usage_accuracy <> 'provider_reported' or (${incomplete})) then 'partial'
        else 'recorded' end as coverage`;
 
 export const loadLinkedRecallUsage = async (
@@ -118,7 +151,7 @@ export const loadLinkedRecallUsage = async (
 ): Promise<Map<string, RecallUsageTotals>> => {
   if (!questionIds.length) return new Map();
   const result = await pool.query<RecallUsageTotals & { questionId: string }>(
-    `select q.id as "questionId", ${usageAggregates}
+    `select q.id as "questionId", ${usageAggregates(recallQuestionUsageIncomplete)}
      from memory_questions q
      join workflow_token_usage_source_references ref on ref.source_type = 'question' and ref.source_id = q.id::text
      join workflow_token_usage u on u.id = ref.workflow_token_usage_id and u.owner_user_id = q.owner_user_id
@@ -155,18 +188,19 @@ export const loadRecallTokenOverview = async (
     Pick<RecallActivityOverview, "tokens" | "linkedQuestions" | "tokenTimeline">
   >(
     `with eligible as (
-       select u.*, q.id as question_id from memory_questions q
+       select u.*, q.id as question_id,
+         (${recallQuestionUsageIncomplete}) as usage_incomplete from memory_questions q
        join workflow_token_usage_source_references ref on ref.source_type = 'question'
          and q.id = case when ref.source_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
            then ref.source_id::uuid end
        join workflow_token_usage u on u.id = ref.workflow_token_usage_id and u.owner_user_id = q.owner_user_id
        where ${predicates.join(" and ")} and ${recallUsageEligibility} and ${compatibleQuestionUsage}
          and u.observed_at >= ${buckets.from}::timestamptz and u.observed_at < ${buckets.to}::timestamptz
-     ), summary as (select ${usageAggregates} from eligible u),
+     ), summary as (select ${usageAggregates("u.usage_incomplete")} from eligible u),
      totals as (
        select ${buckets.group("observed_at")} as bucket,
          sum(total_tokens)::float8 as tokens, count(*)::int as attempts,
-         bool_or(total_tokens is null or usage_accuracy <> 'provider_reported') as partial
+         bool_or(total_tokens is null or usage_accuracy <> 'provider_reported' or usage_incomplete) as partial
        from eligible group by 1
      ), buckets as (
        select ${buckets.series} as bucket
@@ -219,6 +253,11 @@ export const loadRecallDetailUsage = async (
     provenance = "historical_job";
   }
   const ambiguous = rows.some((row) => row.conflict);
+  const coverage = await pool.query<{ incomplete: boolean }>(
+    `select (${recallQuestionUsageIncomplete}) as incomplete from memory_questions q
+     where ${personalRecallPredicate} and q.id = $2`,
+    [actor.userId, questionId]
+  );
   const attempts = rows
     .slice(0, 200)
     .filter((row) => !row.conflict)
@@ -243,6 +282,7 @@ export const loadRecallDetailUsage = async (
     attempts,
     rows.length ? provenance : "unavailable",
     rows.length > 200,
-    ambiguous
+    ambiguous,
+    coverage.rows[0]?.incomplete ?? false
   );
 };

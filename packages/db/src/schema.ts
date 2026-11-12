@@ -12191,6 +12191,36 @@ export const memoryAnswerTasks = pgTable(
   ]
 );
 
+// A content-free ownership receipt outlives transient task cleanup so that
+// delayed observations remain attributable without reviving task execution.
+export const memoryAnswerTaskUsageReceipts = pgTable(
+  "memory_answer_task_usage_receipts",
+  {
+    taskId: uuid("task_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    questionId: uuid("question_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    foreignKey({
+      name: "memory_answer_usage_receipt_owner_fk",
+      columns: [table.ownerUserId],
+      foreignColumns: [users.id]
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "memory_answer_usage_receipt_question_fk",
+      columns: [table.questionId],
+      foreignColumns: [memoryQuestions.id]
+    }).onDelete("set null"),
+    index("memory_answer_usage_receipt_owner_idx").on(table.ownerUserId),
+    index("memory_answer_usage_receipt_question_idx")
+      .on(table.questionId)
+      .where(sql`${table.questionId} is not null`)
+  ]
+);
+
 export const workflowTokenUsage = pgTable(
   "workflow_token_usage",
   {

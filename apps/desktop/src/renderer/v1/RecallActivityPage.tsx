@@ -10,6 +10,7 @@ import type { DesktopProject } from "../../project-memory-ui.js";
 import { Pixelkin } from "./pixelkin/Pixelkin.js";
 import type { AgentLook } from "./pixelkin/agent-kin.js";
 import { useRecallActivity } from "./use-recall-activity.js";
+import { useRecallDateRollover } from "./use-recall-date-rollover.js";
 import { RecallActivityDetail } from "./RecallActivityDetail.js";
 import {
   RecallActivityFilters,
@@ -73,6 +74,18 @@ export function RecallActivityPage({
     setCursors([]);
     setFilters(next);
   };
+  const updatePreset = () => {
+    if (range === "custom") return false;
+    const dates = recallPresetDates(range);
+    const next = recallDateRange(dates.from, dates.to);
+    if (next.from === filters.from && next.to === filters.to) return false;
+    apply({ ...filters, ...next });
+    return true;
+  };
+  useRecallDateRollover(updatePreset);
+  const refreshActivity = () => {
+    if (!updatePreset()) refresh();
+  };
   const reset = () => {
     apply(defaultFilters());
     setRange("7");
@@ -81,6 +94,7 @@ export function RecallActivityPage({
   };
   const callerNames = [
     ...new Set([
+      ...(overview?.filterOptions?.callerNames ?? []),
       ...(page?.questions.flatMap((row) =>
         row.metadata?.caller?.name ? [row.metadata.caller.name] : []
       ) ?? []),
@@ -146,7 +160,7 @@ export function RecallActivityPage({
             size="icon"
             aria-label="Refresh activity"
             disabled={loading}
-            onClick={refresh}
+            onClick={refreshActivity}
           >
             <RefreshCw className={loading ? "recall-spinning" : ""} />
           </Button>
@@ -194,7 +208,7 @@ export function RecallActivityPage({
         <RecallActivityFilters
           key={JSON.stringify(filters)}
           input={filters}
-          rows={rows}
+          rows={overview?.filterOptions?.projects ?? rows}
           projects={projects}
           callerNames={callerNames}
           onReset={reset}
@@ -213,7 +227,7 @@ export function RecallActivityPage({
             variant="outline"
             size="sm"
             disabled={loading}
-            onClick={refresh}
+            onClick={refreshActivity}
           >
             Retry
           </Button>
