@@ -17,6 +17,8 @@ import * as hardware from "./acceleration-hardware.js";
 import * as health from "./acceleration-health.js";
 import * as lifecycle from "./runtime-lifecycle.js";
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
+import * as appRuntime from "./app-runtime.js";
+import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
 
 vi.mock("./acceleration-hardware.js", () => ({
@@ -101,6 +103,156 @@ describe("trusted acceleration mutations", () => {
       expect(readFileSync(path, "utf8")).toBe(tokens);
     }
   );
+  it.each([
+    { name: "source .env", execution: "source", expected: "checkout" },
+    {
+      name: "source process override",
+      execution: "source",
+      process: true,
+      expected: "process"
+    },
+    { name: "installed runtime", execution: "packaged", expected: "saved" },
+    {
+      name: "packaged Desktop",
+      execution: "source",
+      packaged: true,
+      expected: "saved"
+    },
+    {
+      name: "verified Desktop bundle",
+      execution: "source",
+      capability: true,
+      expected: "saved"
+    },
+    {
+      name: "explicit packaged env file",
+      execution: "packaged",
+      explicit: true,
+      expected: "explicit"
+    },
+    {
+      name: "running supervisor",
+      execution: "packaged",
+      supervisor: true,
+      process: true,
+      expected: "running"
+    }
+  ] as const)("uses startup token precedence for $name", async (test) => {
+    const f = fixture();
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      test.execution
+    );
+    const settings = {
+      process: false,
+      packaged: false,
+      explicit: false,
+      supervisor: false,
+      capability: false,
+      ...test
+    };
+    if (settings.packaged) f.environment.KOED_PACKAGED_DESKTOP = "1";
+    if (settings.process) {
+      f.environment.EMBEDDING_SERVICE_TOKEN = "process-embedding";
+      f.environment.PRIVACY_RUNTIME_CONTROL_TOKEN = "process-privacy";
+    }
+    const envFile = (prefix: string) =>
+      `EMBEDDING_SERVICE_TOKEN=${prefix}-embedding\nPRIVACY_RUNTIME_CONTROL_TOKEN=${prefix}-privacy\nKOED_HARDWARE_ACCELERATION=cpu\n`;
+    writeFileSync(resolve(f.paths.repoRoot, ".env"), envFile("checkout"));
+    if (settings.explicit) {
+      f.environment.KOED_ENV_PATH = resolve(f.paths.repoRoot, "operator.env");
+      writeFileSync(f.environment.KOED_ENV_PATH, envFile("explicit"));
+    }
+    mkdirSync(f.paths.configDir, { recursive: true });
+    mkdirSync(resolve(f.paths.modelsDir, "privacy"), { recursive: true });
+    const secretPath = resolve(f.paths.configDir, "local-service-secrets.json");
+    const saved = JSON.stringify({
+      EMBEDDING_SERVICE_TOKEN: "saved-embedding",
+      PRIVACY_RUNTIME_CONTROL_TOKEN: "saved-privacy"
+    });
+    writeFileSync(secretPath, saved);
+    writeFileSync(
+      f.paths.localPortsPath,
+      JSON.stringify({ embedding: "43821", privacy: "48093" })
+    );
+    vi.spyOn(lifecycle, "observeRuntimeLifecycle").mockReturnValue({
+      state: "running",
+      epoch: "test-runtime",
+      message: "Running"
+    });
+    const fetcher = vi.fn(
+      async (url: URL | RequestInfo, init?: RequestInit) => {
+        const embedding = String(url).endsWith("/health");
+        const token = new Headers(init?.headers).get(
+          embedding ? "x-koed-embedding-token" : "x-koed-privacy-token"
+        );
+        const valid =
+          token === `${test.expected}-${embedding ? "embedding" : "privacy"}`;
+        return Response.json(
+          embedding
+            ? {
+                status: "ok",
+                authRequired: true,
+                authValid: valid,
+                acceleration: "metal;runtime=llama.cpp;n-gpu-layers=all"
+              }
+            : {
+                component: "privacy_filter",
+                switchState: valid ? "ready" : "failed",
+                activeProvider: "cpu",
+                verifiedProviders: ["cpu"]
+              }
+        );
+      }
+    );
+    let capability;
+    if (settings.capability) {
+      const runtime = resolve(f.paths.repoRoot, "koed-runtime");
+      mkdirSync(runtime, { recursive: true });
+      writeFileSync(
+        resolve(runtime, "desktop-bundle-manifest.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          productVersion: "1.0.0",
+          component: "base",
+          target: { platform: "macos", architecture: "arm64" },
+          files: []
+        })
+      );
+      capability = verifyDesktopRuntimeBundle(f.paths.repoRoot);
+    }
+    const manager = createAccelerationManagement({
+      capability,
+      paths: f.paths,
+      environment: () => f.environment,
+      serviceEnvironment: () =>
+        settings.supervisor
+          ? {
+              ...f.environment,
+              EMBEDDING_SERVICE_HOST_PORT: "43821",
+              PRIVACY_SERVICE_PORT: "48093",
+              EMBEDDING_SERVICE_TOKEN: "running-embedding",
+              PRIVACY_RUNTIME_CONTROL_TOKEN: "running-privacy"
+            }
+          : undefined,
+      fetch: fetcher
+    });
+    const snapshot = await manager.inspect();
+    expect(snapshot.embedding).toMatchObject({
+      state: "ready",
+      backend: "metal"
+    });
+    expect(snapshot.privacy).toMatchObject({ state: "ready", provider: "cpu" });
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      "http://127.0.0.1:43821/health",
+      "http://127.0.0.1:48093/v1/runtime/status"
+    ]);
+    if (test.expected === "saved" || test.expected === "running")
+      expect(snapshot.source).toBe("default");
+    expect(JSON.stringify(snapshot)).not.toMatch(
+      /(?:checkout|saved|running|explicit|process)-(?:embedding|privacy)/
+    );
+    expect(readFileSync(secretPath, "utf8")).toBe(saved);
+  });
   it.each([
     { automatic: undefined, port: "43821" },
     { automatic: "1", port: "43821" },
