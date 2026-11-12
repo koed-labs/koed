@@ -10,6 +10,43 @@ const release = readFileSync(
   "utf8"
 );
 
+test("release publishes split Linux native packages without the combined archive job", () => {
+  const { jobs } = parse(release);
+  assert.doesNotMatch(
+    release,
+    /native-runtime-linux-x64|native-runtime:build:linux-x64/
+  );
+  const native = jobs["linux-native-packages"];
+  assert.ok(
+    native.steps.some(
+      (step) => step.with?.name === "koed-linux-native-packages"
+    )
+  );
+  assert.ok(
+    native.steps.some((step) => step.run?.includes("release-native/*"))
+  );
+  for (const [name, job] of Object.entries(jobs)) {
+    const needs = Array.isArray(job.needs)
+      ? job.needs
+      : job.needs
+        ? [job.needs]
+        : [];
+    for (const dependency of needs)
+      assert.ok(jobs[dependency], `${name}: missing dependency ${dependency}`);
+  }
+  const publication = jobs["publish-release"].steps
+    .map((step) => step.run ?? "")
+    .join("\n");
+  for (const asset of [
+    "native-runtime-catalog.json",
+    "native-core-manifest.json",
+    "native-cuda-manifest.json",
+    "koed-native-core-*-linux-x64.tar.gz",
+    "koed-native-cuda-*-linux-x64.tar.gz"
+  ])
+    assert.ok(publication.includes(asset), `publication must require ${asset}`);
+});
+
 test("candidate verification has read-only artifact access and no persisted credentials", () => {
   const { jobs } = parse(release);
   const identity = jobs["reviewed-release-identity"];
@@ -195,7 +232,6 @@ test("targeted asset retries regenerate a reviewed identity for the current atte
     "component-manifest-catalog",
     "standalone-koed-server-release-assets",
     "standalone-koed-server-release-metadata",
-    "native-runtime-linux-x64-release-assets",
     "linux-native-packages",
     "signed-desktop-release-assets",
     "privacy-release-qualification"

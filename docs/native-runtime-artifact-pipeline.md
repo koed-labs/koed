@@ -14,8 +14,15 @@ CUDA Toolkit 12.4 on a cache miss. A cache hit reuses the frozen archives.
 Each package keeps the runtime version of the release that built it.
 
 The release CLI contains the download URL, size, and SHA-256 checksum for each
-archive. The existing release approval covers both packages. Older clients can
-continue to download the combined Linux archive.
+archive. The existing release approval covers both packages. New releases do
+not build or publish the combined `koed-native-runtime-linux-x64` archive, its
+checksum, provenance, or size report. Previously published combined archives
+remain available from their original releases.
+
+The reviewed build identity and publication gate require the split packages
+and their manifests instead. Release metadata no longer includes a combined
+native-runtime target; `native-runtime-catalog.json` supplies the CPU core and
+optional CUDA download pins used by current clients.
 
 ## Linux release-provider installation
 
@@ -292,23 +299,21 @@ Ordinary CI and local setup never compile CUDA automatically.
 The release workflow independently rebuilds the macOS native runtime and
 Desktop package from the exact merged release commit. Each supported standalone
 target is built twice and must match at the package-tree, manifest, provenance,
-and archive-byte levels before upload. For Linux x64 the workflow requires the
-matching validated native payload cache, packages it twice with identical
-results, regenerates versioned provenance and checksums without recompilation,
-and publishes the native archive as a separate GitHub Release asset. The draft
+and archive-byte levels before upload. Explicit Linux CI retains the combined
+runtime packaging and reproducibility checks described above. The Release workflow
+uses the separate `linux-native-packages` job: it builds the CPU core and CUDA
+add-on on a cache miss, authenticates cached archives and manifests, and stages
+their exact bytes with the current release's catalog URLs. It does not depend
+on the combined native payload cache or package the combined archive. The draft
 release is published only after the complete required asset set is present. See
 `docs/ci-validation.md` for the complete tier policy and
 `docs/desktop-internal-artifacts.md` for release artifact install/open,
 Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
 
-Before upload, the Linux release job writes `artifact-size-report.json` beside
-the archive. The report attributes exact expanded bytes to PostgreSQL,
-pgvector, CPU and CUDA llama.cpp, CUDA redistributable libraries, and
-manifest/provenance files. Its component compressed values are proportional
-estimates for the solid gzip stream; the total compressed archive size is
-exact. The job rejects unsafe symlinks, special files, duplicates above policy,
-foreign target binaries, checkout-path leaks, and total archive growth greater
-than 5% over the immutable v0.6.2 baseline.
+The CPU core and CUDA add-on retain their independent artifact budgets and
+manifest checks. Removing the combined release archive does not remove the
+explicit Linux CI build, its trusted cache writer, or the local combined-runtime
+build command.
 
 ## Desktop consumption
 

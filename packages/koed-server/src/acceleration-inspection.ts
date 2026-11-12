@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, statfsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { resolveKoedRuntimeOwner } from "./app-runtime.js";
+import {
+  resolveKoedAppRuntimeExecution,
+  resolveKoedRuntimeOwner
+} from "./app-runtime.js";
 import type {
   AccelerationCudaPackage,
   AccelerationSnapshot
@@ -13,7 +16,7 @@ import {
   resolveDesktopRuntimeOwner,
   type DesktopRuntimeCapability
 } from "./desktop-runtime-capability.js";
-import { environmentWithRepoEnv } from "./env-file.js";
+import { resolveEffectiveRuntimeConfig } from "./effective-runtime-config.js";
 import { readCurrentRuntimeOwner } from "./generation-lifecycle.js";
 import { nativeLlamaServerOverride } from "./local-embedding-runtime.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
@@ -30,6 +33,7 @@ import {
 import { applyPersistedLocalPorts } from "./ports.js";
 import type { KoedServerPaths } from "./paths.js";
 import { assertReleaseHost } from "./runtime-release.js";
+import { isPackagedRuntimeMode } from "./runtime-artifact-source.js";
 import { embeddingPolicy } from "./runtime-release-assets.js";
 import { observeRuntimeLifecycle } from "./runtime-lifecycle.js";
 
@@ -168,11 +172,20 @@ export function createAccelerationInspector(options: {
   } | null = null;
   let pending: Promise<AccelerationSnapshot> | null = null;
   const inspect = async (refresh = false): Promise<AccelerationSnapshot> => {
-    const environment = applyPersistedLocalPorts(
+    const requestedEnvironment = options.environment();
+    const execution =
+      options.capability || isPackagedRuntimeMode(requestedEnvironment)
+        ? "packaged"
+        : resolveKoedAppRuntimeExecution();
+    // Match startup: only source checkouts discover .env automatically.
+    const effective = resolveEffectiveRuntimeConfig(
       paths,
-      environmentWithRepoEnv(paths.repoRoot, options.environment()),
-      { force: true }
+      requestedEnvironment,
+      execution
     );
+    const environment = applyPersistedLocalPorts(paths, effective.environment, {
+      force: true
+    });
     const config = resolveKoedServerConfig(paths, environment, {
       strict: true
     });
@@ -301,13 +314,11 @@ export function createAccelerationInspector(options: {
         ? {
             ...environment,
             EMBEDDING_SERVICE_TOKEN:
-              options.environment().EMBEDDING_SERVICE_TOKEN ??
-              secrets.secrets.EMBEDDING_SERVICE_TOKEN ??
-              environment.EMBEDDING_SERVICE_TOKEN,
+              environment.EMBEDDING_SERVICE_TOKEN ??
+              secrets.secrets.EMBEDDING_SERVICE_TOKEN,
             PRIVACY_RUNTIME_CONTROL_TOKEN:
-              options.environment().PRIVACY_RUNTIME_CONTROL_TOKEN ??
-              secrets.secrets.PRIVACY_RUNTIME_CONTROL_TOKEN ??
-              environment.PRIVACY_RUNTIME_CONTROL_TOKEN
+              environment.PRIVACY_RUNTIME_CONTROL_TOKEN ??
+              secrets.secrets.PRIVACY_RUNTIME_CONTROL_TOKEN
           }
         : environment);
     const services = await inspectAccelerationServices({

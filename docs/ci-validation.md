@@ -206,15 +206,11 @@ comparison values live separately in
 `config/release-artifact-baseline-v0.6.2.json`. Validation must never derive or
 rewrite either limit from the artifact currently under test.
 
-The Linux native-runtime release job runs the same inspector against the solid
-gzip archive. It publishes
-`koed-native-runtime-linux-x64-artifact-size-report.json`. The report separates
-PostgreSQL, pgvector, CPU llama.cpp, CUDA
-llama.cpp, CUDA redistributable libraries, and manifest/provenance bytes.
-Expanded component bytes are exact. Per-component compressed bytes are labelled
-as proportional estimates because gzip does not expose independently compressed
-members. CI compares the exact total archive size with the immutable v0.6.2
-baseline and fails above the reviewed 5% growth allowance.
+Linux releases publish the CPU core and optional CUDA add-on through the
+`linux-native-packages` job, with independent artifact budgets and authenticated
+manifests. They no longer build, upload, or require the combined native-runtime
+archive or its size report. Explicit Linux native CI and the trusted combined
+payload cache workflow remain available for dependency validation.
 
 The Release workflow builds the optional CUDA add-on on hosted Linux and attaches
 it to the product release. See [Linux CPU and CUDA release packages](native-runtime-artifact-pipeline.md#linux-cpu-and-cuda-release-packages).
