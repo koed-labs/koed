@@ -30,6 +30,7 @@ beforeEach(() => {
     },
     profileManaged: false,
     managed: {},
+    invalid: {},
     readOnlyReason: null
   };
   result = { snapshot, operation: null };

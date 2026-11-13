@@ -28,8 +28,7 @@ export const resourceProfileValues = (
   embeddingThreads: Math.max(
     1,
     Math.floor(
-      cpuCount /
-        (profile === "low" ? 4 : profile === "balanced" ? 2 : 1)
+      cpuCount / (profile === "low" ? 4 : profile === "balanced" ? 2 : 1)
     )
   ),
   transcriptPollMs: profile === "low" ? 15_000 : 1_000

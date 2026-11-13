@@ -32,7 +32,6 @@ import { performanceChoiceSchema } from "./performance-schema.js";
 import { resourceVariables } from "./resource-profile.js";
 import type { KoedServerPaths } from "./paths.js";
 
-
 // Read each variable the way its component does. null means the component
 // ignores the value and uses its own default, which matches Balanced.
 const positiveInteger = (raw: string): number | null => {

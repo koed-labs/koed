@@ -54,7 +54,7 @@ export const applyResourceProfile = (
       Boolean(environment[name]?.trim() || options.explicit?.[name]?.trim())
     );
   const cpuCount = Math.max(1, options.cpuCount ?? (cpus().length || 1));
-  const values =
+  const values: Partial<ResourceValues> =
     profile === "balanced" ? {} : resourceProfileValues(profile, cpuCount);
   const overrides = options.overrides ?? {};
   const output = { ...environment };

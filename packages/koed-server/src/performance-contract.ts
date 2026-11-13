@@ -56,5 +56,4 @@ export class PerformanceChoiceRejectedError extends Error {
 }
 /** Also recognizes a rejection relayed across the Desktop supervisor RPC. */
 export const isPerformanceChoiceRejection = (error: unknown): boolean =>
-  error instanceof Error &&
-  (error as { rejected?: unknown }).rejected === true;
+  error instanceof Error && (error as { rejected?: unknown }).rejected === true;

@@ -23,6 +23,7 @@ function fixture(running = true) {
       transcriptPollMs: 1000
     },
     managed: {},
+    invalid: {},
     profileManaged: false,
     readOnlyReason: null
   };
