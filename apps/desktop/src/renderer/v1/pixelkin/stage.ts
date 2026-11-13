@@ -239,8 +239,11 @@ function tick(now: number) {
   }
   if (previous && !reduced()) clock += Math.min((now - previous) / 1000, 0.05);
   previous = now;
-  // 30 fps is plenty for small companions.
-  if (!lastPaint || now - lastPaint >= 32) {
+  const turning = [...actors].some(
+    ({ visible, spin }) => visible && spin?.active
+  );
+  // 30 fps is plenty for small companions, but a spin needs every frame.
+  if (!lastPaint || turning || now - lastPaint >= 32) {
     lastPaint = now;
     const gl = engine();
     if (gl)
@@ -251,7 +254,7 @@ function tick(now: number) {
         .forEach((actor) => paint(actor, gl));
   }
   const spinning = [...actors].some(
-    ({ spin }) => spin && (spin.active || spin.startled > 0)
+    ({ visible, spin }) => visible && spin && (spin.active || spin.startled > 0)
   );
   // With no Kin on screen there is nothing to draw. Scheduling frames anyway
   // keeps the compositor producing frames; the IntersectionObserver wakes the

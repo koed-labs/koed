@@ -18,6 +18,53 @@ describe("Kin drag spin", () => {
     expect(spin.startled).toBe(0);
   });
 
+  it("coasts through several turns after a fast flick, slowing smoothly", () => {
+    const spin = new KinSpin();
+    spin.begin(0, 0, 160, -0.14);
+    for (let i = 1; i <= 6; i++) spin.move(i * 15, i * 16);
+    const released = spin.angle;
+    const thrown = spin.velocity;
+    spin.end(96, false);
+    spin.step(1 / 60, false);
+    // The hand-off keeps the release velocity rather than snapping.
+    expect(spin.velocity).toBeGreaterThan(thrown * 0.9);
+    let previous = spin.velocity;
+    let frames = 1;
+    while (spin.velocity > 0 && frames < 600) {
+      spin.step(1 / 60, false);
+      expect(spin.velocity).toBeLessThanOrEqual(previous);
+      previous = spin.velocity;
+      frames++;
+      if (spin.velocity > 0) expect(spin.angle - released).toBeGreaterThan(0);
+    }
+    expect(frames / 60).toBeGreaterThan(1.5);
+    for (let i = 0; i < 60; i++) spin.step(1 / 60, false);
+    expect(spin.active).toBe(false);
+    expect(spin.angle).toBeCloseTo(-0.14);
+  });
+
+  it.each([1, -1])(
+    "settles a slow release in direction %i promptly",
+    (direction) => {
+      const spin = new KinSpin();
+      spin.begin(0, 0, 400, -0.14);
+      for (let i = 1; i <= 20; i++) spin.move(direction * i * 12, i * 50);
+      spin.move(direction * 241, 1080);
+      spin.end(1080, false);
+      for (let i = 0; i < 180 && spin.active; i++) spin.step(1 / 60, false);
+      expect(spin.active).toBe(false);
+      expect(spin.angle).toBeCloseTo(-0.14);
+    }
+  );
+
+  it("keeps a flick's momentum when the last event before release is slow", () => {
+    const spin = new KinSpin();
+    spin.begin(0, 0, 160, -0.14);
+    for (let i = 1; i <= 4; i++) spin.move(i * 20, i * 16);
+    spin.move(81, 72);
+    expect(spin.velocity).toBeGreaterThan(20);
+  });
+
   it("can be grabbed mid-spin and reversed without jumping", () => {
     const spin = new KinSpin();
     spin.begin(0, 0, 400, -0.14);
