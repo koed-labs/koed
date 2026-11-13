@@ -6,10 +6,3 @@
 @import "./conversation/source-diff.css";
 @source "../../../../packages/ui/src";
 @source "../";
-
-/* Pause looping animations while another app has focus. See window-activity.ts. */
-:root[data-window-inactive] *,
-:root[data-window-inactive] *::before,
-:root[data-window-inactive] *::after {
-  animation-play-state: paused !important;
-}

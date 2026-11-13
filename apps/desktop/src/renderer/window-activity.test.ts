@@ -37,4 +37,39 @@ describe("window activity", () => {
       document.documentElement.hasAttribute(WINDOW_INACTIVE_ATTRIBUTE)
     ).toBe(false);
   });
+
+  it("pauses only looping animations and resumes them on focus", () => {
+    const animation = (iterations: number) => {
+      const value = {
+        playState: "running",
+        effect: { getTiming: () => ({ iterations }) },
+        pause: vi.fn(() => {
+          value.playState = "paused";
+        }),
+        play: vi.fn(() => {
+          value.playState = "running";
+        })
+      };
+      return value;
+    };
+    const spinner = animation(Infinity);
+    const exit = animation(1);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    Object.defineProperty(document, "getAnimations", {
+      configurable: true,
+      value: () => [spinner, exit]
+    });
+    const uninstall = installWindowActivity();
+    try {
+      window.dispatchEvent(new Event("blur"));
+      expect(spinner.pause).toHaveBeenCalledOnce();
+      expect(exit.pause).not.toHaveBeenCalled();
+      window.dispatchEvent(new Event("focus"));
+      expect(spinner.play).toHaveBeenCalledOnce();
+      expect(exit.play).not.toHaveBeenCalled();
+    } finally {
+      uninstall();
+      delete (document as { getAnimations?: unknown }).getAnimations;
+    }
+  });
 });
