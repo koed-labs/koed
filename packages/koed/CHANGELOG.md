@@ -1,5 +1,34 @@
 # @koed/koed
 
+## 1.1.0
+
+### Minor Changes
+
+- 46d42fe: Reduce Koed's impact on foreground apps. Local services run at lower scheduling priority (nice 10; `KOED_BACKGROUND_NICE`, `0` keeps normal priority). llama-server defaults to half the logical CPUs (`EMBEDDING_LLAMA_N_THREADS` overrides). New `resourceProfile` in `server.json` or `KOED_RESOURCE_PROFILE`: `low`, `balanced` (default), or `full` sets priority, embedding threads, and Codex transcript polling. `external` runtime mode is unchanged.
+- 571e22a: Align Personal Project recall with the calling Conversation's canonical Project
+  memberships, retaining accepted scope through retrieval and history. Preserve
+  reliable source-time attribution during import and delayed capture. Return each
+  authorized LCM Summary once with matched references and full token accounting,
+  and retain scoped-leaf parent references. Keep retrieval budgets and Global
+  repository reservation unchanged.
+- 89ddb41: Add desktop Recall activity with a live overview, date-range charts, detailed timelines, recorded token usage, saved Kins, and themed filters with resolved Project names. Move Recall above Settings and retain calling AI Client identity, including Codex, in activity rows. Preserve pagination, access checks, and usage coverage.
+
+  Keep usage coverage accurate across retries, preserve late usage, bound question previews, and refresh filter choices and preset dates.
+
+### Patch Changes
+
+- 571e22a: Keep Personal Memory score scans within their one-pass contract and align
+  Memory Answer retrieval planning, request allowances and charged search passes.
+  Preserve the configured request budgets and current-repository reservation for
+  ordinary multi-result Global searches.
+  Keep Global repository preference unknown when the caller's directory is unknown.
+- 46d42fe: Stop llama-server together with the Embedding Service in source runtimes on macOS and Linux. Previously, llama-server could keep running after the Embedding Service exited without a clean shutdown, and hold its port and memory until it was stopped by hand.
+- 46d42fe: Reduce background CPU use. With Personal Device Sync enabled, secret reads no longer block the API or worker. The worker reuses a missing-secret result for up to 15 seconds and refreshes it after pairing. `/v1/capabilities` reuses recent readiness results. Desktop reuses package status between refreshes and pauses animations and its Kin companion while another app has focus.
+- 8a426a0: Fix false embedding backend warnings in source checkouts by matching startup token selection. Keep packaged status checks isolated from incidental .env files. Replace the onboarding progress bar with shadcn Progress and retain confirmed progress during verification.
+- 22aa26e: Stop the API and Worker from repeatedly launching the Personal Device Sync secret provider while `KOED_PERSONAL_DEVICE_SYNC_ENABLED` is off, which is the default. Existing Personal Device Groups and stored data are unchanged, but they sync only when the switch is `true` for the supervisor, API, and Worker.
+- 46d42fe: Keep the koed MCP server from timing out its client's connect when the Local AI Runtime is busy. The stdio server now waits at most 2 seconds for runtime capabilities before it answers `initialize`. Capability-gated tools register later and the client receives `notifications/tools/list_changed`.
+- a81fc99: Bundle a checksum-verified private libatomic library alongside the installer's Linux Node runtime so installation on minimal Linux hosts does not require sudo or a system libatomic1 package.
+
 ## 1.0.0
 
 ### Major Changes
