@@ -4,28 +4,27 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  backgroundAgentBuildIsQualified,
+  backgroundAgentBuildIsEligible,
   createBackgroundAgentLaunchAgentPlist,
   writeBackgroundAgentLaunchAgentPlist
 } from "./background-agent-package.mjs";
 
-const qualifiedEnvironment = {
-  KOED_MACOS_BACKGROUND_AGENT_QUALIFIED: "true",
+const signedEnvironment = {
   DESKTOP_MACOS_APPLE_TEAM_ID: "ABCDE12345",
   KOED_ADHOC_SIGN_MACOS_APP: "false",
   CSC_IDENTITY_AUTO_DISCOVERY: "true"
 };
 
-test("only explicitly qualified Developer ID builds include the LaunchAgent", () => {
-  assert.equal(backgroundAgentBuildIsQualified({}), false);
+test("signed Developer ID build configs are eligible without a qualification flag", () => {
+  assert.equal(backgroundAgentBuildIsEligible({}), false);
   assert.equal(
-    backgroundAgentBuildIsQualified({
-      ...qualifiedEnvironment,
+    backgroundAgentBuildIsEligible({
+      ...signedEnvironment,
       KOED_ADHOC_SIGN_MACOS_APP: "true"
     }),
     false
   );
-  assert.equal(backgroundAgentBuildIsQualified(qualifiedEnvironment), true);
+  assert.equal(backgroundAgentBuildIsEligible(signedEnvironment), true);
 });
 
 test("LaunchAgent plist uses bundle-relative executable and XPC Mach service", () => {
@@ -47,14 +46,14 @@ test("LaunchAgent plist uses bundle-relative executable and XPC Mach service", (
   assert.match(plist, /<key>KeepAlive<\/key>\s*<true\s*\/>/u);
 });
 
-test("plist writer removes stale assets from unsupported/ad-hoc builds", () => {
+test("plist writer includes signed builds and removes stale assets from unsupported builds", () => {
   const root = mkdtempSync(join(tmpdir(), "koed-agent-package-"));
   const appPath = join(root, "Koed.app");
   try {
     const installed = writeBackgroundAgentLaunchAgentPlist({
       appPath,
       productFilename: "Koed",
-      environment: qualifiedEnvironment
+      environment: signedEnvironment
     });
     assert.equal(installed.included, true);
     assert.equal(statSync(installed.plistPath).mode & 0o777, 0o644);

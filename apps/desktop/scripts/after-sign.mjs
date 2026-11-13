@@ -4,7 +4,7 @@ import { join } from "node:path";
 import process from "node:process";
 import {
   BACKGROUND_AGENT_PLIST_NAME,
-  backgroundAgentBuildIsQualified
+  backgroundAgentBuildIsEligible
 } from "./background-agent-package.mjs";
 
 const assertCodesign = (args, description) => {
@@ -29,7 +29,7 @@ const assertTeamIdentifier = (path, expectedTeamId) => {
 
 export default async function afterSign(context) {
   if (context.electronPlatformName !== "darwin") return;
-  if (!backgroundAgentBuildIsQualified(process.env)) return;
+  if (!backgroundAgentBuildIsEligible(process.env)) return;
 
   const appPath = join(
     context.appOutDir,

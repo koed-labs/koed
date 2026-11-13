@@ -6,8 +6,7 @@ export const BACKGROUND_AGENT_PLIST_NAME =
 export const BACKGROUND_AGENT_MACH_SERVICE_NAME =
   "ai.koed.desktop.background-agent";
 
-export const backgroundAgentBuildIsQualified = (environment) =>
-  environment.KOED_MACOS_BACKGROUND_AGENT_QUALIFIED === "true" &&
+export const backgroundAgentBuildIsEligible = (environment) =>
   /^[A-Z0-9]{10}$/u.test(environment.DESKTOP_MACOS_APPLE_TEAM_ID ?? "") &&
   environment.KOED_ADHOC_SIGN_MACOS_APP !== "true" &&
   environment.CSC_IDENTITY_AUTO_DISCOVERY !== "false";
@@ -52,7 +51,7 @@ export const writeBackgroundAgentLaunchAgentPlist = (input) => {
     BACKGROUND_AGENT_PLIST_NAME
   );
   rmSync(plistPath, { force: true });
-  if (!backgroundAgentBuildIsQualified(input.environment))
+  if (!backgroundAgentBuildIsEligible(input.environment))
     return { included: false, plistPath };
 
   const directory = dirname(plistPath);

@@ -478,12 +478,13 @@ Agent has stopped. A LaunchAgent that is awaiting System Settings approval can
 be unregistered directly because it has not started.
 
 The Agent uses the same `KOED_HOME` as Desktop. It is not supported in
-unpackaged or ad-hoc builds; only a signed, notarized release that passed the
-LaunchAgent, XPC identity, reboot, and stop/restart qualification may include
-the service property list. The release build gate is
-`KOED_MACOS_BACKGROUND_AGENT_QUALIFIED=true`; do not set it for a candidate
-until those qualification checks pass. Moving or duplicating an enabled app
-breaks its bound installation identity; disable the Agent before moving it.
+unpackaged or ad-hoc builds. Non-ad-hoc macOS builds configured with a valid
+Developer ID Team ID include the service property list, and the after-sign hook
+verifies the app and native addon signatures use that Team ID. Only signed,
+notarized releases that pass LaunchAgent, XPC identity, reboot, and
+stop/restart qualification should be distributed. Moving or duplicating an
+enabled app breaks its bound installation identity; disable the Agent before
+moving it.
 
 A fresh or incomplete foreground setup opens the guided setup without silently
 installing runtime or model assets. After explicit User confirmation, Desktop

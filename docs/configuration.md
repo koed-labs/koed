@@ -661,10 +661,12 @@ home or moving the app. Do not edit or delete the launch configuration or the
 `run/background-agent-state.json` file manually; invalid or mismatched state
 fails closed and requires recovery before the service can start.
 
-The Background Agent is available only in a signed and notarized macOS release
-that passes the release qualification checks. Unpackaged development builds
-and ad-hoc signed packages omit the LaunchAgent property list and cannot enable
-the service.
+Non-ad-hoc macOS builds configured with a valid Developer ID Team ID include
+the LaunchAgent property list; the after-sign hook verifies the app and native
+addon signatures use that Team ID. The Background Agent is supported for signed
+and notarized releases that pass the release qualification checks. Unpackaged
+development builds and ad-hoc signed packages omit the property list and cannot
+enable the service.
 
 ## Platform Expectations
 

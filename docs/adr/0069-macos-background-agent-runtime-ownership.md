@@ -1,6 +1,6 @@
 # ADR 0069: macOS Background Agent Owns the Local AI Runtime
 
-Status: Accepted. Release activation remains gated on signed qualification.
+Status: Accepted. LaunchAgent inclusion requires a valid Developer ID signing configuration.
 
 Related decisions:
 
@@ -27,10 +27,10 @@ stopped, and only then unregister the service.
   LaunchAgent. It has an isolated Electron `userData` directory and singleton
   lock, its own menu-bar controls, and the sole ownership of its local runtime
   from startup. Desktop never transfers a live supervisor.
-- Include the LaunchAgent property list only in explicitly qualified signed
-  macOS release bundles. The signed app and unpacked native XPC addon must share
-  the expected Team ID. Ad-hoc and unpackaged builds cannot register the
-  service.
+- Include the LaunchAgent property list in non-ad-hoc macOS builds configured
+  with a valid Team ID. The after-sign hook verifies the signed app and unpacked
+  native XPC addon share that Team ID. Ad-hoc and unpackaged builds cannot
+  register the service.
 - Expose a strict, versioned XPC control surface. Authenticate both peers by
   signed Team ID and bundle identifier; require Hello and installation identity
   before lifecycle mutations. Fence requests by persisted generation.
@@ -52,10 +52,11 @@ stopped, and only then unregister the service.
 - The Local AI Runtime and menu-bar controls can outlive the Desktop process
   while retaining a single, explicit runtime owner.
 - Background Agent availability depends on code signing, notarization, native
-  addon packaging, launchd/XPC identity, and release qualification. The build
-  gate `KOED_MACOS_BACKGROUND_AGENT_QUALIFIED=true` must not be set until
-  install, approval, reboot, Stop, restart, and unregister behavior has been
-  qualified on supported macOS versions.
+  addon packaging, launchd/XPC identity, and release qualification. Packaging
+  includes the LaunchAgent for builds with a valid Team ID and non-ad-hoc
+  signing; the after-sign hook verifies app and addon signatures. Notarization,
+  install, approval, reboot, Stop, restart, and unregister behavior still need
+  qualification on supported macOS versions before release.
 - Moving or duplicating an enabled app, corrupting bound state, or losing the
   authenticated XPC connection can require operator recovery. The system
   deliberately does not guess ownership or fall back to another runtime owner.
