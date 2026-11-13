@@ -115,6 +115,30 @@ describe("koed-server config", () => {
     ).toThrow("KOED_RESOURCE_PROFILE must be low, balanced, or full");
   });
 
+  it("ignores invalid resource settings in server.json outside strict mode", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({
+        resourceProfile: "max",
+        resourceOverrides: {
+          backgroundNice: 5,
+          embeddingThreads: 0,
+          futureSetting: true
+        }
+      })
+    );
+
+    expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
+      resourceProfile: "balanced",
+      resourceOverrides: { backgroundNice: 5 }
+    });
+    expect(
+      resolveKoedServerConfig(paths(root), {}).resourceOverrides
+    ).not.toHaveProperty("embeddingThreads");
+  });
+
   it("defaults global memory guidance on and accepts a persistent opt-out", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });

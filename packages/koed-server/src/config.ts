@@ -115,6 +115,23 @@ const resourceProfilePreference = (
           throw new Error(`${source} must be low, balanced, or full`);
         })();
 
+// Non-strict callers (service start, status) must tolerate a bad server.json,
+// so keep each valid override and ignore the rest, as for other settings.
+const lenientResourceOverrides = (value: unknown): ResourceOverrides => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const overrides: ResourceOverrides = {};
+  for (const key of Object.keys(
+    resourceOverridesSchema.shape
+  ) as (keyof ResourceOverrides)[]) {
+    const parsed = resourceOverridesSchema.shape[key].safeParse(
+      (value as Record<string, unknown>)[key]
+    );
+    if (parsed.success && parsed.data !== undefined)
+      overrides[key] = parsed.data;
+  }
+  return overrides;
+};
+
 const readConfig = (
   paths: KoedServerPaths,
   deps: Required<Pick<KoedServerConfigDeps, "existsSync" | "readFileSync">> &
@@ -288,18 +305,22 @@ export const resolveKoedServerConfig = (
         "server.json hardwareAcceleration"
       ) ??
       defaultKoedServerConfig.hardwareAcceleration,
-    resourceOverrides: resourceOverridesSchema.parse(
-      file.resourceOverrides ?? {}
-    ),
+    resourceOverrides: deps.strict
+      ? resourceOverridesSchema.parse(file.resourceOverrides ?? {})
+      : lenientResourceOverrides(file.resourceOverrides),
     resourceProfile:
       resourceProfilePreference(
         trim(environment.KOED_RESOURCE_PROFILE),
         "KOED_RESOURCE_PROFILE"
       ) ??
-      resourceProfilePreference(
-        file.resourceProfile,
-        "server.json resourceProfile"
-      ) ??
+      (deps.strict
+        ? resourceProfilePreference(
+            file.resourceProfile,
+            "server.json resourceProfile"
+          )
+        : isResourceProfile(file.resourceProfile)
+          ? file.resourceProfile
+          : undefined) ??
       defaultKoedServerConfig.resourceProfile,
     external: {
       databaseUrl:
