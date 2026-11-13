@@ -1,4 +1,4 @@
-import { performanceChannel } from "./ipc/performance-protocol.js";
+import { performanceChannel } from "./ipc/performance-channel.js";
 import {
   presentationPreferencesGetChannel,
   presentationPreferencesSetChannel

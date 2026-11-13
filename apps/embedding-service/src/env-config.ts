@@ -4,6 +4,7 @@ import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
 import type { AccelerationPolicy } from "./acceleration.js";
+import { resourceProfileValues } from "@koed-labs/shared/resource-profiles";
 
 export interface SupportedEmbeddingModel {
   key: string;
@@ -173,15 +174,9 @@ const optionalPathEnv = (
   names: string[]
 ): string | null => firstEnv(environment, names) ?? null;
 
-/**
- * Default llama-server CPU threads: half the logical CPUs, at least 1. On SMT
- * machines this is the physical core count (llama.cpp's own default). On
- * Apple Silicon base chips it is the performance core count, which keeps the
- * background Embedding Service off the cores the User's apps need. With the
- * model offloaded to an accelerator, extra CPU threads add little.
- */
+/** Default llama-server CPU threads: the Balanced resource profile value. */
 export const defaultLlamaThreads = (cpuCount: number): number =>
-  Math.max(1, Math.floor(cpuCount / 2));
+  resourceProfileValues("balanced", cpuCount).embeddingThreads;
 
 const intAlias = (
   environment: NodeJS.ProcessEnv,

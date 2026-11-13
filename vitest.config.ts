@@ -47,6 +47,10 @@ export default defineConfig({
         replacement: `${root}packages/shared/src/personal-desktop-contract.ts`
       },
       {
+        find: "@koed-labs/shared/resource-profiles",
+        replacement: `${root}packages/shared/src/resource-profiles.ts`
+      },
+      {
         find: "@koed-labs/shared/private-network",
         replacement: `${root}packages/shared/src/private-network.ts`
       },

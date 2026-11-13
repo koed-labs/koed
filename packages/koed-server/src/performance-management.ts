@@ -29,13 +29,9 @@ import {
   type ResourceValues
 } from "./performance-contract.js";
 import { performanceChoiceSchema } from "./performance-schema.js";
+import { resourceVariables } from "./resource-profile.js";
 import type { KoedServerPaths } from "./paths.js";
 
-const variables = {
-  backgroundNice: ["KOED_BACKGROUND_NICE"],
-  embeddingThreads: ["EMBEDDING_LLAMA_N_THREADS", "LLAMA_N_THREADS"],
-  transcriptPollMs: ["MEMORY_CODEX_TRANSCRIPT_POLL_MS"]
-} as const;
 
 // Read each variable the way its component does. null means the component
 // ignores the value and uses its own default, which matches Balanced.
@@ -117,8 +113,10 @@ export function createPerformanceManagement(options: {
     const invalid: PerformanceSnapshot["invalid"] = {};
     const explicit: Record<string, string> = {};
     const defaults = resourceProfileValues("balanced", cpuCount);
-    for (const key of Object.keys(variables) as (keyof ResourceValues)[]) {
-      const name = variables[key].find((variable) =>
+    for (const key of Object.keys(
+      resourceVariables
+    ) as (keyof ResourceValues)[]) {
+      const name = resourceVariables[key].find((variable) =>
         environment[variable]?.trim()
       );
       if (!name) continue;

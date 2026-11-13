@@ -2,10 +2,14 @@ import {
   getPriority as nodeGetPriority,
   setPriority as nodeSetPriority
 } from "node:os";
+import { resourceProfileValues } from "@koed-labs/shared/resource-profiles";
 
 /** Nice value (0-19) for local background services. 0 keeps normal priority. */
 export const BACKGROUND_NICE_ENV = "KOED_BACKGROUND_NICE";
-export const DEFAULT_BACKGROUND_NICE = 10;
+export const DEFAULT_BACKGROUND_NICE = resourceProfileValues(
+  "balanced",
+  1
+).backgroundNice;
 const MAX_NICE = 19;
 
 export interface ProcessPriorityApi {

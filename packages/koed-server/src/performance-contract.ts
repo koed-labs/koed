@@ -1,29 +1,18 @@
-import type { ResourceProfile } from "./resource-profile.js";
+import type {
+  ResourceProfile,
+  ResourceValues
+} from "@koed-labs/shared/resource-profiles";
 
-export type { ResourceProfile } from "./resource-profile.js";
-export interface ResourceValues {
-  backgroundNice: number;
-  embeddingThreads: number;
-  transcriptPollMs: number;
-}
+export {
+  resourceProfileValues,
+  type ResourceProfile,
+  type ResourceValues
+} from "@koed-labs/shared/resource-profiles";
 export type ResourceOverrides = Partial<ResourceValues>;
 export interface PerformancePreference {
   profile: ResourceProfile;
   overrides: ResourceOverrides;
 }
-export const resourceProfileValues = (
-  profile: ResourceProfile,
-  cpuCount: number
-): ResourceValues => ({
-  backgroundNice: profile === "low" ? 19 : profile === "full" ? 0 : 10,
-  embeddingThreads: Math.max(
-    1,
-    Math.floor(
-      cpuCount / (profile === "low" ? 4 : profile === "balanced" ? 2 : 1)
-    )
-  ),
-  transcriptPollMs: profile === "low" ? 15_000 : 1_000
-});
 export interface PerformanceSnapshot {
   revision: string;
   runtimeEpoch: string;

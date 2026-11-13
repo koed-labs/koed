@@ -18,7 +18,8 @@ describe("resource profile", () => {
     });
     expect(applyResourceProfile({}, "full", { cpuCount: 8 })).toEqual({
       KOED_BACKGROUND_NICE: "0",
-      EMBEDDING_LLAMA_N_THREADS: "8"
+      EMBEDDING_LLAMA_N_THREADS: "8",
+      MEMORY_CODEX_TRANSCRIPT_POLL_MS: "1000"
     });
   });
 
