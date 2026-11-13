@@ -1,3 +1,4 @@
+import { performanceChannel } from "./performance-protocol.js";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import { EventEmitter } from "node:events";
 import {
@@ -138,6 +139,10 @@ describe("desktop IPC command registry", () => {
     }));
     const setPresentationPreferences = vi.fn((value) => value);
     let hardwareAccelerationEnabled = true;
+    const performance = {
+      inspect: vi.fn(async () => ({ snapshot: null, operation: null })),
+      apply: vi.fn(async () => ({ snapshot: null, operation: null }))
+    };
     const acceleration = {
       inspect: vi.fn(async () => ({ snapshot: null, operation: null })),
       apply: vi.fn(async () => ({ snapshot: null, operation: null })),
@@ -241,6 +246,7 @@ describe("desktop IPC command registry", () => {
         setPresentationPreferences,
         getHardwareAcceleration,
         acceleration,
+        performance,
         setHardwareAcceleration,
         getLaunchAtStartup,
         setLaunchAtStartup,
@@ -261,6 +267,7 @@ describe("desktop IPC command registry", () => {
       setThemePreference,
       getHardwareAcceleration,
       acceleration,
+      performance,
       setHardwareAcceleration,
       getLaunchAtStartup,
       setLaunchAtStartup,
@@ -659,6 +666,39 @@ describe("desktop IPC command registry", () => {
     await expect(
       set(renderer("https://attacker.example/"), "light")
     ).rejects.toThrow("Untrusted Desktop IPC sender");
+  });
+
+  it("validates performance choices and restricts them to trusted top-level renderers", async () => {
+    const { registered, performance } = register();
+    const invoke = registered.get(performanceChannel)!;
+    const choice = {
+      profile: "low",
+      overrides: { embeddingThreads: 3 },
+      expectedRevision: "a".repeat(64)
+    };
+    await expect(
+      invoke(renderer("https://foreign.invalid"), {
+        operation: "apply",
+        choice
+      })
+    ).rejects.toThrow("Untrusted");
+    const subframe = renderer();
+    subframe.senderFrame = { url: "koed://app/" };
+    await expect(
+      invoke(subframe, { operation: "apply", choice })
+    ).rejects.toThrow("Untrusted");
+    for (const bad of [
+      { ...choice, overrides: { backgroundNice: 20 } },
+      { ...choice, overrides: { embeddingThreads: 0 } },
+      { ...choice, overrides: { transcriptPollMs: 60001 } },
+      { ...choice, extra: true }
+    ])
+      await expect(
+        invoke(renderer(), { operation: "apply", choice: bad })
+      ).rejects.toThrow();
+    expect(performance.apply).not.toHaveBeenCalled();
+    await invoke(renderer(), { operation: "apply", choice });
+    expect(performance.apply).toHaveBeenCalledWith(choice);
   });
 
   it("validates processing choices and rejects untrusted acceleration IPC", async () => {

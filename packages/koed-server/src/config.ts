@@ -1,3 +1,8 @@
+import { resourceOverridesSchema } from "./performance-schema.js";
+import type {
+  PerformancePreference,
+  ResourceOverrides
+} from "./performance-contract.js";
 import {
   existsSync,
   readFileSync,
@@ -28,6 +33,7 @@ export interface KoedServerConfig {
   codexGlobalMemoryGuidanceEnabled: boolean;
   hardwareAcceleration: HardwareAccelerationPreference;
   resourceProfile: ResourceProfile;
+  resourceOverrides?: ResourceOverrides;
   external?: {
     databaseUrl?: string;
     redisUrl?: string;
@@ -163,6 +169,7 @@ const readConfig = (
         "server.json hardwareAcceleration"
       );
     }
+    resourceOverridesSchema.parse(record.resourceOverrides ?? {});
     resourceProfilePreference(
       record.resourceProfile,
       "server.json resourceProfile"
@@ -281,6 +288,9 @@ export const resolveKoedServerConfig = (
         "server.json hardwareAcceleration"
       ) ??
       defaultKoedServerConfig.hardwareAcceleration,
+    resourceOverrides: resourceOverridesSchema.parse(
+      file.resourceOverrides ?? {}
+    ),
     resourceProfile:
       resourceProfilePreference(
         trim(environment.KOED_RESOURCE_PROFILE),
@@ -377,3 +387,23 @@ export const writeCodexGlobalMemoryGuidancePreference = (
     deps
   );
 };
+
+// Patch only Desktop-owned performance fields; preserve unrelated Operator data.
+// The caller holds stopped-runtime authority while reading and replacing the file.
+export function writePerformancePreference(
+  paths: KoedServerPaths,
+  preference: PerformancePreference
+): void {
+  resolveKoedServerConfig(paths, {}, { strict: true });
+  const existing = existsSync(paths.serverConfigPath)
+    ? (JSON.parse(readFileSync(paths.serverConfigPath, "utf8")) as Record<
+        string,
+        unknown
+      >)
+    : {};
+  writeServerConfigAtomically(paths, {
+    ...existing,
+    resourceProfile: preference.profile,
+    resourceOverrides: resourceOverridesSchema.parse(preference.overrides)
+  });
+}

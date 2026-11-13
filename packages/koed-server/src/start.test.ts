@@ -1291,21 +1291,44 @@ describe("start supervisor", () => {
   it.each([
     {
       profile: undefined,
+      saved: undefined,
       threads: undefined,
       nice: undefined,
       poll: undefined
     },
     {
       profile: "low",
+      saved: undefined,
       threads: String(Math.max(1, Math.floor((cpus().length || 1) / 4))),
       nice: "19",
       poll: "15000"
+    },
+    {
+      profile: undefined,
+      saved: {
+        resourceProfile: "balanced",
+        resourceOverrides: {
+          backgroundNice: 7,
+          embeddingThreads: 2,
+          transcriptPollMs: 4000
+        }
+      },
+      threads: "2",
+      nice: "7",
+      poll: "4000"
     }
   ])(
     "starts bundled-local native Postgres and Embedding Service without Docker (resource profile $profile)",
-    async ({ profile, threads, nice, poll }) => {
+    async ({ profile, saved, threads, nice, poll }) => {
       const root = tempDir();
       const resources = createNativeResources(root);
+      if (saved) {
+        mkdirSync(resolve(root, "config"), { recursive: true });
+        writeFileSync(
+          resolve(root, "config/server.json"),
+          JSON.stringify(saved)
+        );
+      }
       mkdirSync(resolve(root, "models"));
       writeFileSync(
         resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),

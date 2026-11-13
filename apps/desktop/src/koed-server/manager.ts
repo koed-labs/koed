@@ -1,3 +1,9 @@
+import { createPerformanceController } from "./performance-controller.js";
+import {
+  createPerformanceManagement,
+  type PerformanceSnapshot,
+  type DesktopPerformanceApi
+} from "@koed-labs/server";
 import { modelProgressReader, type ModelProgress } from "./model-progress.js";
 import { createAccelerationController } from "./acceleration-controller.js";
 import { createOperationReceipt } from "./operation-receipt.js";
@@ -306,6 +312,7 @@ export interface KoedServerManagerOptions {
 
 export interface KoedServerManager {
   acceleration: DesktopAccelerationApi;
+  performance: DesktopPerformanceApi;
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   localAiClients: LocalAiClientDesktopHandler;
@@ -5540,7 +5547,7 @@ export const createKoedServerManager = ({
     generation = captureStartGeneration(),
     explicitStopAtStart = explicitStopGeneration
   ) => {
-    if (acceleration.isRunning())
+    if (acceleration.isRunning() || performance.isRunning())
       return Promise.resolve({
         ok: false,
         error: "Wait for the processing change to finish before starting Koed."
@@ -6255,6 +6262,7 @@ export const createKoedServerManager = ({
       nativeMutationActive ||
       setupPreparing ||
       acceleration.isRunning() ||
+      performance.isRunning() ||
       setupWorkflow.isRunning()
     )
       throw new Error(
@@ -6290,6 +6298,7 @@ export const createKoedServerManager = ({
     explicitStopGeneration: () => explicitStopGeneration,
     assertAvailable: (origin) => {
       if (
+        performance.isRunning() ||
         nativeMutationActive ||
         (setupPreparing && origin !== "setup") ||
         (setupWorkflow.isRunning() && origin !== "setup") ||
@@ -6329,6 +6338,86 @@ export const createKoedServerManager = ({
           resultMessage(
             ready,
             "Koed did not become ready. Check service status or choose CPU recovery."
+          )
+        );
+    }
+  });
+  const sourcePerformance = createSupervisorInvocation
+    ? null
+    : createPerformanceManagement({
+        paths: { ...resolveKoedServerPaths(environment), repoRoot },
+        environment: () => environment
+      });
+  const performanceRpc = async (
+    action: "inspect" | "save",
+    args: Record<string, unknown> = {}
+  ): Promise<PerformanceSnapshot> => {
+    if (sourcePerformance)
+      return action === "inspect"
+        ? sourcePerformance.inspect()
+        : sourcePerformance.save(args);
+    return requestSupervisor<PerformanceSnapshot>(
+      await accelerationRpcSession(),
+      "performance",
+      action,
+      args
+    );
+  };
+  const performance = createPerformanceController({
+    receipt: createOperationReceipt(
+      resolve(
+        resolveKoedHome(environment),
+        "cache",
+        "desktop-performance-operation.json"
+      )
+    ),
+    inspect: () => performanceRpc("inspect"),
+    save: (choice) => performanceRpc("save", { ...choice }),
+    exclusive: withLifecycleOperation,
+    observe: () => observeRuntimeLifecycle(resolveKoedServerPaths(environment)),
+    explicitStopGeneration: () => explicitStopGeneration,
+    assertAvailable: () => {
+      if (
+        acceleration.isRunning() ||
+        nativeMutationActive ||
+        setupPreparing ||
+        setupWorkflow.isRunning() ||
+        stoppedPrivacyOperation ||
+        queuedPrivacyInstalls.size
+      )
+        throw new Error(
+          "Wait for the current setup or service operation to finish before changing performance."
+        );
+    },
+    stop: async () => {
+      const result = await stopRuntime(false);
+      if (!resultOk(result))
+        throw new Error(
+          resultMessage(
+            result,
+            "Local services did not stop. Performance settings were not saved."
+          )
+        );
+    },
+    start: async () => {
+      const generation = captureStartGeneration();
+      const result = await requestDaemonStartUnlocked(
+        generation,
+        explicitStopGeneration
+      );
+      if (!resultOk(result))
+        throw new Error(
+          resultMessage(
+            result,
+            "Performance settings were saved, but local services could not restart. Check service status."
+          )
+        );
+      const ready = await pollUntilReady(60, generation);
+      if (!resultOk(ready))
+        throw new Error(
+          resultMessage(
+            ready,
+            "Performance settings were saved, but local services are not ready. Check service status."
           )
         );
     }
@@ -6645,6 +6734,7 @@ export const createKoedServerManager = ({
     personalMemory,
     localAiClients,
     acceleration,
+    performance,
     hardwareAcceleration: {
       get: hardwareAccelerationState,
       set: setHardwareAcceleration
@@ -7099,7 +7189,12 @@ export const createKoedServerManager = ({
       },
       setup_inspect: () => setupWorkflow.inspect(),
       setup_run: async (args, context) => {
-        if (acceleration.isRunning() || nativeMutationActive || setupPreparing)
+        if (
+          acceleration.isRunning() ||
+          performance.isRunning() ||
+          nativeMutationActive ||
+          setupPreparing
+        )
           throw new Error(
             "Wait for the current native operation to finish before starting setup."
           );

@@ -1,3 +1,7 @@
+import {
+  createPerformanceManagement,
+  createDesktopPerformanceRpcHandler
+} from "./performance-management.js";
 import { pinDesktopBundleGenerationForStart } from "./generation-lifecycle.js";
 import { realpathSync } from "node:fs";
 import { startKoedServer } from "./start.js";
@@ -190,14 +194,28 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
     nonce: handshake.nonce,
     send: sendDesktopSupervisorStatus
   });
+  const handlePerformanceRpc = createDesktopPerformanceRpcHandler({
+    manager: createPerformanceManagement({
+      paths,
+      capability,
+      environment: () => supervisorEnvironment
+    }),
+    nonce: handshake.nonce,
+    send: sendDesktopSupervisorStatus
+  });
   if (handshake.mode === "acceleration-management") {
     // Read-only inspection can describe a foreign owner. Each mutation separately
     // acquires stopped-runtime authority using this verified bundle capability.
-    process.on("message", handleAccelerationRpc);
+    process.on("message", (message: unknown) => {
+      if (!handleAccelerationRpc(message)) handlePerformanceRpc(message);
+    });
     process.once("disconnect", () => {
       // Abort downloads/probes and let the installer release locks and staging
       // before exiting. A completed activation is reconciled by the next main.
-      void handleAccelerationRpc.close().finally(() => process.exit(0));
+      void Promise.allSettled([
+        handleAccelerationRpc.close(),
+        handlePerformanceRpc.close()
+      ]).finally(() => process.exit(0));
     });
     process.send?.({
       type: "koed.desktop.supervisor.ready",
@@ -285,7 +303,8 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
     if (
       handleStatusRpc(message) ||
       handlePrivacyRpc(message) ||
-      handleAccelerationRpc(message)
+      handleAccelerationRpc(message) ||
+      handlePerformanceRpc(message)
     )
       return;
     if (

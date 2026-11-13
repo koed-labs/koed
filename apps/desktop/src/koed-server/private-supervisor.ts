@@ -28,7 +28,7 @@ const record = (value: unknown): Record<string, unknown> | null =>
 // All private RPCs share correlation, deadline, disconnect and listener cleanup.
 export function requestSupervisor<T>(
   session: PrivateSupervisorSession,
-  channel: "status" | "privacy" | "acceleration",
+  channel: "status" | "privacy" | "acceleration" | "performance",
   action: string,
   args: Record<string, unknown> = {},
   timeoutMs: number | null = 120_000,

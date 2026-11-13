@@ -1072,6 +1072,17 @@ policy, or full URLs containing customer content.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged Desktop does not use source-checkout fallbacks. For packaged standalone `koed-server`, `KOED_JS_RUNTIME_ROOT`, `KOED_REPO_ROOT`, `KOED_PACKAGED_RESOURCES_PATH`, and `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK` cannot select service code; startup and MCP setup require a compatible authenticated runtime generation. `resolveKoedAppRuntime` maps an already-selected generation to paths but does not authenticate or pin it. `status --json` and `doctor --json` report runtime artifact source diagnostics without launching service code from the current directory or checkout.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
 - `KOED_RESOURCE_PROFILE`, or `resourceProfile` in `~/.koed/config/server.json`: how much of the machine local `koed-server` services can use. The environment value wins over the file. Values are `low`, `balanced` (the default), and `full`. A profile fills in the settings below only where they are not set explicitly in the environment or the repository env file. Restart local services to apply a change.
+- Desktop **Settings → Services → Performance** saves `resourceProfile` and
+  `resourceOverrides` in `KOED_HOME/config/server.json`. Optional override fields
+  are `backgroundNice` (integer `0`–`19`), `embeddingThreads` (positive integer),
+  and `transcriptPollMs` (integer `1`–`60000`). The sliders offer 1 through the
+  device's logical CPU count and 1–60 seconds. Explicit environment or repository
+  env-file values win over these saved overrides; saved overrides win over the
+  profile. `LLAMA_N_THREADS` is also an explicit embedding-thread override.
+  Selecting a profile in Desktop clears its individual saved overrides. Desktop
+  preserves unrelated configuration fields and uses the same stopped-runtime
+  ownership lock as other runtime configuration changes. The preferences take
+  effect on the next service start; saving while stopped does not start services.
 
   | Profile    | `KOED_BACKGROUND_NICE` | `EMBEDDING_LLAMA_N_THREADS`                 | `MEMORY_CODEX_TRANSCRIPT_POLL_MS` |
   | ---------- | ---------------------- | ------------------------------------------- | --------------------------------- |

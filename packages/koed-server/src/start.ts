@@ -674,7 +674,8 @@ const localServiceEnv = (
     LLAMA_N_THREADS:
       environment.EMBEDDING_LLAMA_N_THREADS ??
       environment.LLAMA_N_THREADS ??
-      repoEnv.EMBEDDING_LLAMA_N_THREADS,
+      repoEnv.EMBEDDING_LLAMA_N_THREADS ??
+      repoEnv.LLAMA_N_THREADS,
     LLAMA_N_BATCH:
       environment.EMBEDDING_LLAMA_N_BATCH ??
       environment.LLAMA_N_BATCH ??
@@ -1126,7 +1127,8 @@ export const startKoedServer = async ({
     // transcript polling wherever the Operator left them unset.
     if (config.runtimeMode !== "external") {
       environment = applyResourceProfile(environment, config.resourceProfile, {
-        explicit: repoEnv
+        explicit: repoEnv,
+        overrides: config.resourceOverrides
       });
       console.log(`Koed resource profile: ${config.resourceProfile}.`);
     }

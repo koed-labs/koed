@@ -1,4 +1,5 @@
 import { cpus } from "node:os";
+import type { ResourceOverrides } from "./performance-contract.js";
 
 /** How much of the machine local Koed services may use. */
 export type ResourceProfile = "low" | "balanced" | "full";
@@ -61,6 +62,7 @@ export const applyResourceProfile = (
   options: {
     explicit?: Record<string, string | undefined>;
     cpuCount?: number;
+    overrides?: ResourceOverrides;
   } = {}
 ): NodeJS.ProcessEnv => {
   const explicit = { ...options.explicit, ...environment };
@@ -69,6 +71,18 @@ export const applyResourceProfile = (
   for (const setting of profileSettings[profile]) {
     if (setting.overrides.some((name) => explicit[name]?.trim())) continue;
     output[setting.name] = setting.value(cpuCount);
+  }
+  const overrides = options.overrides ?? {};
+  for (const [key, setting] of [
+    ["backgroundNice", priority(10)],
+    ["embeddingThreads", embeddingThreads((count) => count)],
+    ["transcriptPollMs", codexTranscriptPoll(1000)]
+  ] as const) {
+    if (
+      overrides[key] !== undefined &&
+      !setting.overrides.some((name) => explicit[name]?.trim())
+    )
+      output[setting.name] = String(overrides[key]);
   }
   return output;
 };

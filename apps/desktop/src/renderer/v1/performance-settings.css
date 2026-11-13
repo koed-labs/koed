@@ -1,0 +1,270 @@
+@scope (.v1-settings-popup.v1-app.v1-project-ui) {
+  .settings-scroll.performance-container {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
+  }
+  .performance-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    scrollbar-width: thin;
+    overscroll-behavior: contain;
+    padding: 27px 32px 25px;
+  }
+  .performance-section-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 11px;
+  }
+  .performance-section-label h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .performance-section-label > span {
+    font-size: 11px;
+    color: var(--muted-foreground);
+  }
+  .performance-profiles {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  :is(.performance-profile, .performance-values, .performance-individual) {
+    background: var(--v1-field);
+  }
+  .performance-profile {
+    min-width: 0;
+  }
+  .performance-profile[data-selected="true"] {
+    border-color: var(--v1-accent);
+    background: var(--v1-accent-soft);
+    box-shadow: 0 0 0 1px var(--v1-accent);
+  }
+  .performance-profile-button[data-slot="button"] {
+    width: 100%;
+    height: 100%;
+    min-height: 176px;
+    padding: 13px 12px 11px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    text-align: left;
+    gap: 0;
+    white-space: normal;
+  }
+  .performance-profile-icon {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    color: var(--muted-foreground);
+    min-height: 20px;
+  }
+  .performance-profile[data-selected="true"] .performance-profile-icon {
+    color: var(--v1-accent-text);
+  }
+  .performance-profile-title {
+    font-size: 13px;
+    font-weight: 550;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .performance-profile-title [data-slot="badge"] {
+    font-size: 10px;
+  }
+  .performance-profile-description {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--muted-foreground);
+    line-height: 1.5;
+    margin: 6px 0 15px;
+  }
+  .performance-profile-detail {
+    font-size: 10px;
+    color: var(--v1-fg2);
+    margin-top: auto;
+    font-weight: 400;
+  }
+  .performance-values-heading {
+    margin-top: 22px;
+  }
+  .performance-values {
+    overflow: hidden;
+  }
+  .performance-value {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 13px;
+    font-size: 12px;
+  }
+  .performance-value + .performance-value {
+    border-top: 1px solid var(--border);
+  }
+  .performance-value > div {
+    text-align: right;
+  }
+  .performance-value strong {
+    font-weight: 500;
+  }
+  .performance-value small {
+    display: block;
+    color: var(--muted-foreground);
+    margin-top: 3px;
+    font-size: 10px;
+  }
+  .performance-individual {
+    margin-top: 20px;
+  }
+  .performance-disclosure[data-slot="button"] {
+    width: 100%;
+    height: auto;
+    min-height: 39px;
+    display: flex;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    text-align: left;
+    white-space: normal;
+  }
+  .performance-disclosure > svg {
+    color: var(--muted-foreground);
+  }
+  .performance-disclosure > svg:last-child {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .performance-disclosure[data-panel-open] > svg:last-child {
+    transform: rotate(180deg);
+  }
+  .performance-individual-body {
+    padding: 0 13px 6px;
+  }
+  .performance-slider-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 13px 0;
+  }
+  .performance-slider-row + .performance-slider-row {
+    border-top: 1px solid var(--border);
+  }
+  .performance-slider-row strong {
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .performance-slider-row p {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    margin: 4px 0 0;
+    line-height: 1.5;
+    max-width: 280px;
+  }
+  .performance-slider-control {
+    flex: 0 0 220px;
+    min-width: 0;
+  }
+  .performance-slider-control [data-slot="slider"] {
+    --primary: color-mix(in srgb, var(--v1-fg) 60%, var(--v1-field));
+  }
+  .performance-slider-control [data-slot="slider-thumb"] {
+    border-color: var(--primary);
+  }
+  .performance-slider-keys {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--muted-foreground);
+    margin-top: 2px;
+  }
+  .performance-slider-keys > :last-child {
+    text-align: right;
+  }
+  .performance-slider-keys .selected {
+    color: var(--v1-fg);
+    font-weight: 500;
+  }
+  .performance-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 15px 24px;
+    border-top: 1px solid var(--border);
+    background: var(--v1-field);
+    flex-shrink: 0;
+  }
+  .performance-footer > div:first-child {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    color: var(--muted-foreground);
+    max-width: 290px;
+  }
+  .performance-footer svg {
+    flex-shrink: 0;
+  }
+  .performance-footer-buttons {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .performance-notice {
+    font-size: 12px;
+    margin-bottom: 18px;
+    color: var(--muted-foreground);
+  }
+  @media (max-width: 720px) {
+    .performance-scroll {
+      padding: 21px 18px;
+    }
+    .performance-profile-button[data-slot="button"] {
+      padding-inline: 10px;
+      min-height: 190px;
+    }
+    .performance-slider-control {
+      flex-basis: 170px;
+    }
+    .performance-footer {
+      padding: 12px 18px;
+      flex-wrap: wrap;
+    }
+  }
+  @media (max-width: 590px) {
+    .performance-scroll {
+      padding: 19px 15px;
+    }
+    .performance-profiles {
+      gap: 6px;
+    }
+    .performance-profile-button[data-slot="button"] {
+      min-height: 205px;
+      padding: 10px 8px;
+    }
+    .performance-slider-row {
+      align-items: stretch;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .performance-slider-control {
+      flex-basis: auto;
+      width: 100%;
+    }
+    .performance-footer-buttons {
+      margin-left: auto;
+    }
+  }
+}

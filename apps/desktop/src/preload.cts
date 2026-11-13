@@ -1,3 +1,4 @@
+import { performanceChannel } from "./ipc/performance-protocol.js";
 import {
   presentationPreferencesGetChannel,
   presentationPreferencesSetChannel
@@ -109,6 +110,12 @@ contextBridge.exposeInMainWorld("koedDesktop", {
       ipcRenderer.invoke(presentationPreferencesGetChannel),
     set: (value: PresentationPreferences): Promise<PresentationPreferences> =>
       ipcRenderer.invoke(presentationPreferencesSetChannel, value)
+  }),
+  performance: Object.freeze({
+    inspect: () =>
+      ipcRenderer.invoke(performanceChannel, { operation: "inspect" }),
+    apply: (choice: import("@koed-labs/server").PerformanceChoice) =>
+      ipcRenderer.invoke(performanceChannel, { operation: "apply", choice })
   }),
   acceleration: Object.freeze({
     inspect: (refresh = false) =>
