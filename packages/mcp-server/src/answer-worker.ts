@@ -1,3 +1,5 @@
+import { createClaudeTokenUsageAccumulator } from "./claude-token-usage.js";
+import { AiClientUsageError } from "./ai-client-usage-error.js";
 import { createHash, randomUUID } from "node:crypto";
 import { codexIdePromptUserText, countTokensForModel } from "@koed-labs/core";
 import {
@@ -36,7 +38,6 @@ import {
   claudeAgentSdkEffort,
   claudeAgentSdkExecutableOptions,
   claudeAgentSdkProcessEnvironment,
-  claudeAgentSdkTokenUsage,
   resolveClaudeCodeExecutable,
   resolvePiExecutable,
   runAiClientJsonTask,
@@ -3123,7 +3124,10 @@ const runCodexWithRetries = async (
           rawEvents: run.result.rawEvents,
           processMetrics: run.result.processMetrics
         });
-      } else if (error instanceof CodexAppServerTurnError) {
+      } else if (
+        error instanceof CodexAppServerTurnError ||
+        error instanceof AiClientUsageError
+      ) {
         attempts.push({
           ...executionIdentity,
           answerJobId,
@@ -3134,9 +3138,16 @@ const runCodexWithRetries = async (
           tokenUsage: error.tokenUsage,
           primaryThreadId: error.threadId,
           threadId: error.threadId,
-          turnId: error.turnId,
-          rawEvents: error.rawEvents,
-          processMetrics: error.processMetrics
+          turnId:
+            error instanceof CodexAppServerTurnError ? error.turnId : undefined,
+          rawEvents:
+            error instanceof CodexAppServerTurnError
+              ? error.rawEvents
+              : undefined,
+          processMetrics:
+            error instanceof CodexAppServerTurnError
+              ? error.processMetrics
+              : undefined
         });
       } else {
         const processMetrics =
@@ -3476,6 +3487,7 @@ const runClaudeMemoryAnswer = async (
   callerSignal?: AbortSignal,
   onProgress?: (status: string) => void
 ): Promise<CodexAnswerResult> => {
+  const usage = createClaudeTokenUsageAccumulator();
   const invoke = (toolName: string, args: Record<string, unknown>) =>
     handler({
       threadId: "claude-sdk",
@@ -3631,6 +3643,7 @@ const runClaudeMemoryAnswer = async (
     });
     if (callerSignal?.aborted) stream.close();
     for await (const message of stream) {
+      usage.observe(message);
       if (message.type !== "system") {
         onProgress?.("Claude provider activity");
       }
@@ -3642,27 +3655,42 @@ const runClaudeMemoryAnswer = async (
       }
     }
   } catch (error) {
-    if (timedOut) {
-      throw new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`, {
-        cause: error
-      });
-    }
-    if (callerSignal?.aborted) {
-      throw new Error("Memory answer request was cancelled", { cause: error });
-    }
-    throw error;
+    const failure = timedOut
+      ? new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`, {
+          cause: error
+        })
+      : callerSignal?.aborted
+        ? new Error("Memory answer request was cancelled", { cause: error })
+        : error;
+    throw new AiClientUsageError(failure, {
+      model: Object.keys(resultMessage?.modelUsage ?? {})[0] ?? config.model,
+      tokenUsage: usage.value(),
+      threadId
+    });
   } finally {
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", cancel);
   }
-  if (timedOut) {
-    throw new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`);
-  }
-  if (callerSignal?.aborted) {
-    throw new Error("Memory answer request was cancelled");
-  }
-  if (!resultMessage || resultMessage.subtype !== "success") {
-    throw new Error("Claude Agent SDK memory answer failed");
+  if (
+    timedOut ||
+    callerSignal?.aborted ||
+    !resultMessage ||
+    resultMessage.subtype !== "success"
+  ) {
+    throw new AiClientUsageError(
+      new Error(
+        timedOut
+          ? `Claude Agent SDK timed out after ${timeoutMs}ms`
+          : callerSignal?.aborted
+            ? "Memory answer request was cancelled"
+            : "Claude Agent SDK memory answer failed"
+      ),
+      {
+        model: Object.keys(resultMessage?.modelUsage ?? {})[0] ?? config.model,
+        tokenUsage: usage.value(),
+        threadId
+      }
+    );
   }
   const text =
     resultMessage.structured_output === undefined
@@ -3671,7 +3699,7 @@ const runClaudeMemoryAnswer = async (
   return {
     text,
     model: Object.keys(resultMessage.modelUsage ?? {})[0] ?? config.model,
-    tokenUsage: claudeAgentSdkTokenUsage(resultMessage),
+    tokenUsage: usage.value(),
     primaryThreadId: threadId,
     threadId
   };

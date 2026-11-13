@@ -1055,7 +1055,7 @@ describe("memory answer worker", () => {
 const fs = require("node:fs");
 process.stdin.once("data", () => {
   fs.appendFileSync(${JSON.stringify(attemptsPath)}, "attempt\\n");
-  process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: ${JSON.stringify(`${nativeError}; synthetic-private-provider-secret`)} } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", usage: { input: 10, cacheRead: 20, cacheWrite: 5, output: 7, totalTokens: 42 }, errorMessage: ${JSON.stringify(`${nativeError}; synthetic-private-provider-secret`)} } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
   setInterval(() => {}, 1000);
 });
@@ -1093,6 +1093,18 @@ process.stdin.once("data", () => {
         expect(
           fs.readFileSync(attemptsPath, "utf8").trim().split("\n")
         ).toHaveLength(expectedAttempts);
+        expect(response.localMemoryWorker.appServerExecutions).toHaveLength(
+          expectedAttempts
+        );
+        for (const execution of response.localMemoryWorker
+          .appServerExecutions ?? [])
+          expect(execution).toMatchObject({
+            provider: "pi",
+            status: "failed",
+            tokenUsage: {
+              last: { inputTokens: 35, outputTokens: 7, totalTokens: 42 }
+            }
+          });
         const publicResponse = compactMemoryAnswerPayload(
           response,
           "answer_only"
@@ -1136,6 +1148,77 @@ process.stdin.once("data", () => {
       transport: "agent_sdk",
       skippedReason: "missing_retrieval_client"
     });
+  });
+
+  it.each([
+    "error_result",
+    "throw_after_result",
+    "cancel_after_input"
+  ] as const)("preserves observed Claude usage on %s", async (scenario) => {
+    const caller = new AbortController();
+    const query = async function* () {
+      yield {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: "first",
+          usage: {
+            input_tokens: 10,
+            cache_read_input_tokens: 20,
+            cache_creation_input_tokens: 5,
+            output_tokens: 1
+          }
+        }
+      } as SDKMessage;
+      if (scenario === "cancel_after_input") {
+        caller.abort();
+        throw new Error("cancelled by fixture");
+      }
+      yield {
+        type: "result",
+        subtype: "error_max_turns",
+        modelUsage: {
+          model: {
+            inputTokens: 10,
+            cacheReadInputTokens: 20,
+            cacheCreationInputTokens: 5,
+            outputTokens: 7,
+            contextWindow: 1000
+          }
+        }
+      } as unknown as SDKMessage;
+      if (scenario === "throw_after_result")
+        throw new Error("SDK result failure");
+    };
+    sdk.query.mockImplementation(() =>
+      Object.assign(query(), { close: vi.fn() })
+    );
+    const response = await answerWithMemoryWorker(payload, {
+      responseDetail: "internal",
+      signal: caller.signal,
+      client: {
+        search: async () => ({ hits: [] }),
+        expand: async () => ({ sourceItems: [] })
+      },
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({}),
+        provider: "claude",
+        executablePath: process.execPath,
+        maxAttempts: 1
+      }
+    });
+    expect(response.localMemoryWorker.usedFallback).toBe(true);
+    expect(response.localMemoryWorker.appServerExecutions).toHaveLength(1);
+    expect(response.localMemoryWorker.appServerExecutions?.[0]).toMatchObject({
+      status: "failed",
+      provider: "claude",
+      tokenUsage: { last: { inputTokens: 35, cachedInputTokens: 20 } }
+    });
+    expect(
+      response.localMemoryWorker.appServerExecutions?.[0]?.tokenUsage?.last
+        ?.totalTokens
+    ).toBe(scenario === "cancel_after_input" ? undefined : 42);
+    expect(sdk.query).toHaveBeenCalledOnce();
   });
 
   it("aborts and closes the active Claude query when the caller cancels", async () => {

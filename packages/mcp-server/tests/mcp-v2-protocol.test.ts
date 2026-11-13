@@ -731,7 +731,7 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     await vi.waitFor(() => expect(observedSignal?.aborted).toBe(true));
   });
 
-  it("serves current initialize clients through the same stateless adapter", async () => {
+  it("retains Codex initialize identity and the current Conversation directory", async () => {
     const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
     const runtimeClient = {
       capabilities: async () => ({
@@ -747,7 +747,7 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       { transport: serverTransport, legacy: "serve" }
     );
     const client = new Client(
-      { name: "current-initialize-client", version: "1.0.0" },
+      { name: "codex-mcp-client", version: "1.0.0" },
       {
         capabilities: {},
         versionNegotiation: { mode: "legacy" }
@@ -757,12 +757,26 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     await expect(
       client.callTool({
         name: "memory_answer",
-        arguments: { query: "Can this AI Client recall memory?" }
+        arguments: {
+          query: "Can this AI Client recall memory?",
+          conversation_cwd: "/work/codex-vscode"
+        }
       })
     ).resolves.toMatchObject({
       content: [{ type: "text", text: recallText("Recall completed.") }]
     });
     expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledWith(
+      "memory_answer",
+      expect.not.objectContaining({ conversation_cwd: "/work/codex-vscode" }),
+      expect.objectContaining({
+        cwd: "/work/codex-vscode",
+        clientInfo: { name: "codex-mcp-client", version: "1.0.0" },
+        protocolVersion: "2025-11-25"
+      }),
+      expect.any(AbortSignal),
+      expect.any(String)
+    );
     await client.close();
     await server.close();
   });

@@ -209,6 +209,176 @@ const createLifecycleRaceSpawn = (requests: Record<string, unknown>[]) => {
 };
 
 describe("Koed server desktop manager", () => {
+  it("routes Recall activity through bounded Personal API Token operations", async () => {
+    const base = resolve(
+      import.meta.dirname,
+      "../../../../scratch/recall-manager-check"
+    );
+    mkdirSync(base, { recursive: true });
+    const koedHome = mkdtempSync(resolve(base, "home-"));
+    mkdirSync(resolve(koedHome, "config"));
+    writeFileSync(
+      resolve(koedHome, "config/local-app-credential.json"),
+      JSON.stringify({ apiToken: "recall_personal_fixture" })
+    );
+    const id = "00000000-0000-4000-8000-000000000001",
+      at = "2026-11-01T00:00:00Z";
+    const usage = {
+      coverage: "unavailable",
+      inputTokens: null,
+      cachedInputTokens: null,
+      outputTokens: null,
+      reasoningOutputTokens: null,
+      totalTokens: null,
+      recordedAttempts: 0,
+      includesEstimates: false
+    };
+    const question = {
+      id,
+      recordedAt: at,
+      updatedAt: at,
+      query: "Synthetic question",
+      metadata: null,
+      usage,
+      searchDomain: "global",
+      status: "answered",
+      projectId: null,
+      projectName: null,
+      sessionId: null
+    };
+    const data = {
+      list: { questions: [question], nextCursor: null, asOf: at },
+      overview: {
+        asOf: at,
+        timezone: "UTC",
+        bucket: "day",
+        tokens: usage,
+        linkedQuestions: 0,
+        tokenTimeline: [],
+        recordedQuestions: 1,
+        recordedErrors: 0,
+        memoryResults: {
+          found: 0,
+          not_found: 0,
+          insufficient: 0,
+          pending_summary: 0,
+          unknown: 1,
+          foundPercentage: null
+        },
+        knownDurations: 0,
+        medianDurationMs: null,
+        questions: []
+      },
+      detail: {
+        question,
+        answer: null,
+        memoryStatus: null,
+        worker: null,
+        model: null,
+        searchCount: null,
+        expandCount: null,
+        candidateCount: null,
+        failure: null,
+        evidence: [],
+        citations: [],
+        contentTruncated: false,
+        usage: {
+          ...usage,
+          provenance: "unavailable",
+          truncated: false,
+          ambiguous: false,
+          attempts: []
+        }
+      }
+    };
+    const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer recall_personal_fixture"
+      );
+      const path = new URL(String(url)).pathname;
+      return new Response(
+        JSON.stringify(
+          path.endsWith("overview")
+            ? data.overview
+            : path.endsWith(id)
+              ? data.detail
+              : data.list
+        )
+      );
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome }
+      }),
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(
+          null,
+          JSON.stringify({
+            ok: true,
+            api: { state: "healthy", url: "http://localhost:4170" }
+          }),
+          ""
+        ),
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined,
+      personalMemoryFetch: fetcher
+    });
+    const range = {
+      from: at,
+      to: "2026-12-01T00:00:00Z",
+      projectId: "project&a=unexpected"
+    };
+    try {
+      const cursor = { recordedAt: at, id };
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.recall.list",
+          input: {
+            ...range,
+            cursor,
+            hydrate: false,
+            contentIds: [id],
+            limit: 50
+          }
+        })
+      ).toMatchObject({ ok: true, data: data.list });
+      const listUrl = new URL(String(fetcher.mock.calls.at(-1)![0]));
+      expect(listUrl.pathname).toBe("/v1/memory/recall-activity/questions");
+      expect(listUrl.searchParams.get("projectId")).toBe(range.projectId);
+      expect(
+        JSON.parse(
+          Buffer.from(
+            listUrl.searchParams.get("cursor")!,
+            "base64url"
+          ).toString()
+        )
+      ).toEqual(cursor);
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.recall.detail",
+          input: { questionId: id }
+        })
+      ).toMatchObject({ ok: true, data: data.detail });
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.recall.overview",
+          input: { ...range, timezone: "UTC" }
+        })
+      ).toMatchObject({ ok: true, data: data.overview });
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("persists validated folder filters per Project without using the API", async () => {
     const base = resolve(
       import.meta.dirname,

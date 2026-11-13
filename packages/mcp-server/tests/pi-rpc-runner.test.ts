@@ -223,11 +223,15 @@ process.stdin.on("data", chunk => {
     writeFileSync(bridge, "export default () => {};\n");
     writeFileSync(
       executable,
-      "#!/bin/sh\nwhile read line; do sleep 30; done\n"
+      `#!/usr/bin/env node
+process.stdin.once("data",()=>{
+  process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"toolUse",usage:{input:10,cacheRead:20,cacheWrite:5,output:7,totalTokens:42}}})+"\\n");
+  setInterval(()=>{},1000);
+});
+`
     );
     chmodSync(executable, 0o700);
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 20);
     await expect(
       runPiRpcTask(
         "wait",
@@ -241,11 +245,15 @@ process.stdin.on("data", chunk => {
           clientName: "test",
           systemPrompt: "test",
           outputSchema: { type: "object" },
-          signal: controller.signal
+          signal: controller.signal,
+          onProgress: () => controller.abort()
         },
         5_000
       )
-    ).rejects.toThrow("cancelled");
+    ).rejects.toMatchObject({
+      message: "Pi RPC task was cancelled",
+      tokenUsage: { last: { totalTokens: 42, inputTokens: 35 } }
+    });
   });
 
   it("reports parsed RPC events as provider activity", async () => {

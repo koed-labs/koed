@@ -74,6 +74,8 @@ If you are making code changes, keep using the contributor guidance below.
 - Before pushing PR updates, run the cheap CI-equivalent local checks that apply to the touched files, including formatting, linting, and typechecking. Use full `pnpm fmt:check`, `pnpm lint`, and relevant `pnpm --filter ... typecheck` / `pnpm --filter ... build` checks when feasible; if local untracked files block a full check, run a targeted equivalent and call out the limitation before pushing.
 - After opening or updating a PR, watch CI with `gh run watch` or equivalent until checks finish, unless the user asks not to wait.
 - Before adding or omitting a changeset, tell the user whether the issue appears release-noteworthy, recommend a bump level, justify the recommendation, and ask for confirmation. Err toward a minor bump for user-visible features, configuration changes, deployment/runtime changes, or meaningful behavior changes. Reserve major bumps for explicit breaking changes, and patch bumps for narrow fixes or documentation-only release notes.
+- Limit each changeset description to 500 characters, excluding its YAML frontmatter.
+- Before submitting a branch for PR, aim to consolidate its new DB migrations into a single migration entry after the target branch's latest migration. Keep the migration journal and snapshots consistent, and preserve migrations already on the target branch.
 
 ## Current Product Boundaries
 

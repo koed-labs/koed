@@ -2040,7 +2040,21 @@ export class CodexAppServerThreadSession {
           processMetrics: this.client.processMetrics()
         });
       }
-      throw error;
+      // Closing the session (including cancellation or process failure) can
+      // reject with a plain Error after usage has already arrived for this turn.
+      throw new CodexAppServerTurnError(
+        error instanceof Error ? error.message : String(error),
+        {
+          model: this.modelLabel(),
+          tokenUsage: turnId
+            ? this.client.turnTokenUsage(threadId, turnId)
+            : undefined,
+          threadId,
+          turnId: turnId ?? undefined,
+          rawEvents,
+          processMetrics: this.client.processMetrics()
+        }
+      );
     } finally {
       if (timeout) {
         clearTimeout(timeout);

@@ -1,3 +1,4 @@
+import { createRecallActivityRepository } from "./recall-activity-repository.js";
 import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
 import { personalOwnerIdSchema } from "@koed-labs/shared";
 import {
@@ -4227,6 +4228,9 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...createWorkflowTokenUsageRepository(pool),
+    ...createRecallActivityRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
 
     health: () => checkDatabase(pool),
 

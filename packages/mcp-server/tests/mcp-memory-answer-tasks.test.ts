@@ -50,7 +50,10 @@ const task = (overrides: Partial<MemoryAnswerTask> = {}): MemoryAnswerTask => ({
   ...overrides
 });
 
-const connect = async (overrides: Partial<KoedMcpRuntimeClient> = {}) => {
+const connect = async (
+  overrides: Partial<KoedMcpRuntimeClient> = {},
+  era: "legacy" | "modern" = "modern"
+) => {
   const current = task();
   const runtime = {
     capabilities: vi.fn(async () => ({
@@ -71,11 +74,16 @@ const connect = async (overrides: Partial<KoedMcpRuntimeClient> = {}) => {
   const server = serveStdio(
     (context) =>
       createKoedMcpServer(context, { runtimeClient: runtime, environment: {} }),
-    { transport: serverTransport, legacy: "reject" }
+    { transport: serverTransport, legacy: "serve" }
   );
   const client = new Client(
     { name: "ordinary-harness", version: "1" },
-    { capabilities: {}, versionNegotiation: { mode: { pin: "2026-07-28" } } }
+    {
+      capabilities: { roots: { listChanged: true } },
+      versionNegotiation: {
+        mode: era === "legacy" ? "legacy" : { pin: "2026-07-28" }
+      }
+    }
   );
   await client.connect(clientTransport);
   connections.push({ client, server });
@@ -91,6 +99,40 @@ const collect = (client: Client, id: string) =>
   client.callTool({ name: "memory_answer_result", arguments: { task_id: id } });
 
 describe("ordinary MCP non-blocking Memory Answer", () => {
+  it.each([
+    ["legacy", "blocking"],
+    ["legacy", "non_blocking"],
+    ["modern", "blocking"],
+    ["modern", "non_blocking"]
+  ] as const)(
+    "retains the calling AI Client for %s connections in %s mode",
+    async (era, delivery_mode) => {
+      const { client, runtime } = await connect({}, era);
+      const result = await submit(client, { delivery_mode });
+      expect(result.isError).not.toBe(true);
+      const caller = {
+        clientInfo: { name: "ordinary-harness", version: "1" },
+        clientCapabilities: { roots: { listChanged: true } },
+        protocolVersion: era === "legacy" ? "2025-11-25" : "2026-07-28"
+      };
+      if (delivery_mode === "non_blocking") {
+        expect(runtime.startMemoryAnswerTask).toHaveBeenCalledWith(
+          expect.any(Object),
+          expect.objectContaining(caller),
+          expect.any(String),
+          expect.any(AbortSignal)
+        );
+      } else {
+        expect(runtime.callTool).toHaveBeenCalledWith(
+          "memory_answer",
+          expect.any(Object),
+          expect.objectContaining(caller),
+          expect.any(AbortSignal),
+          expect.any(String)
+        );
+      }
+    }
+  );
   it.each(["blocking", "non_blocking"] as const)(
     "transports an explicit Personal Project in %s mode without requiring a caller directory",
     async (delivery_mode) => {
