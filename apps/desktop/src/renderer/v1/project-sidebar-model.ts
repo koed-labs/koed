@@ -14,7 +14,10 @@ export type ConversationRoute = {
   executionId?: string;
   sessionId?: string;
 };
-export type NavigationRoute = { kind: "home" } | ConversationRoute;
+export type NavigationRoute =
+  | { kind: "home" }
+  | { kind: "recall" }
+  | ConversationRoute;
 export type SidebarConversation = {
   key: string;
   aliases: string[];

@@ -177,6 +177,10 @@ _Avoid_: Fact, note, document
 
 **Memory Answer**:
 The supported recall entry point that supplies evidence for AI-client answer synthesis.
+An answer may report matching Memory, no matching Memory, partial evidence, or
+pending summaries. Completing an answer does not imply that matching Memory was
+found. The AI Client requesting an answer may differ from the AI Client performing
+Answer Synthesis.
 _Avoid_: Backend answer generation, diagnostic search
 
 **Memory Event**:

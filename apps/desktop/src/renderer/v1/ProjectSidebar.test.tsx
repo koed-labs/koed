@@ -86,14 +86,14 @@ afterEach(async () => {
 });
 
 describe("Project sidebar interactions", () => {
-  it("offers Settings as the sole rail footer action", async () => {
+  it("offers Recall activity and Settings as the rail footer actions", async () => {
     await act(async () => root.render(<Harness />));
     const actions = container.querySelectorAll(
       '.v1-nav-rail [data-slot="sidebar-footer"] button'
     );
     expect(
       [...actions].map((button) => button.getAttribute("aria-label"))
-    ).toEqual(["Settings"]);
+    ).toEqual(["Recall activity", "Settings"]);
   });
 
   it("expands a Project Home reveals, so its open conversation shows", async () => {

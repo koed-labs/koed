@@ -1,4 +1,11 @@
 import {
+  RECALL_CALLER_NAME_MAX_LENGTH,
+  RECALL_CALLER_VERSION_MAX_LENGTH,
+  recallCallerLabel,
+  recallMemoryStatusSchema,
+  recallCallerSchema
+} from "@koed-labs/shared";
+import {
   pinRepositoryRecallContext,
   resolveRequestedProjectRoot,
   resolveVerifiedProjectRoot
@@ -34,6 +41,7 @@ import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import type { MemoryAnswerTaskExecutionContext } from "./memory-answer-task-scheduler.js";
 import { logger } from "./logger.js";
 import { resolveLocalMemoryAgentConfig } from "./ai-client-assignment.js";
+import { aiClientExecutionIdentity } from "./ai-client-runner.js";
 import {
   answerMarkdownFromAnswer,
   citationsFromAnswer,
@@ -98,6 +106,7 @@ export interface TrustedMemoryAnswerExecutionOptions {
   personalSelection?: PersonalSelectionSnapshot;
   pendingQuestionId?: string;
   taskContext?: MemoryAnswerTaskExecutionContext;
+  memoryAnswerTaskId?: string;
   onFinalQuestionPrepared?: (question: Record<string, unknown>) => void;
 }
 
@@ -468,6 +477,7 @@ export class MemoryToolExecutor {
       {
         origin: "mcp_memory_answer",
         idempotencyKey: `memory-answer-task:${taskId}`,
+        memoryAnswerTaskId: authority.scope === "personal" ? taskId : undefined,
         taskContext: context,
         onProgress,
         onFinalQuestionPrepared: (question) => {
@@ -708,165 +718,236 @@ export class MemoryToolExecutor {
       signal,
       onProgress: execution.onProgress
     });
-    execution.onProgress?.("answer synthesis completed");
-    if (signal?.aborted) throw new Error("Koed memory request was cancelled");
     let recordedQuestion: McpMemoryQuestion | null = null;
-    const finalQuestionInput = answer.localMemoryWorker.usedFallback
-      ? {
-          idempotency_key:
-            execution.idempotencyKey ??
-            `memory-answer:${answer.localMemoryWorker.jobId}`,
-          query: answerInput.query,
-          origin: execution.origin,
-          retrieval_scope: retrievalScope,
-          search_domain: input.search_domain,
-          project_id: projectId,
-          team_workspace_id: teamWorkspaceId,
-          session_id: input.session_id,
-          status: "error",
-          error_message: errorMessageFromAnswer(answer),
-          attempt_count: 1,
-          response: persistedAnswerResponse(answer),
-          retrieval: retrievalFromAnswer(answer),
-          local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
-        }
-      : {
-          idempotency_key:
-            execution.idempotencyKey ??
-            `memory-answer:${answer.localMemoryWorker.jobId}`,
-          query: answerInput.query,
-          origin: execution.origin,
-          retrieval_scope: retrievalScope,
-          search_domain: input.search_domain,
-          project_id: projectId,
-          team_workspace_id: teamWorkspaceId,
-          session_id: input.session_id,
-          status: "answered",
-          answer_markdown: answerMarkdownFromAnswer(answer),
-          attempt_count: 1,
-          response: persistedAnswerResponse(answer),
-          evidence: evidenceFromAnswer(answer),
-          citations: citationsFromAnswer(answer),
-          retrieval: retrievalFromAnswer(answer),
-          local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
-        };
-    if (execution.onFinalQuestionPrepared) {
-      execution.onFinalQuestionPrepared(finalQuestionInput);
-    } else if (execution.pendingQuestionId) {
-      recordedQuestion = questionFromResponse(
-        await this.client.completePendingDesktopAsk(
-          execution.pendingQuestionId,
-          finalQuestionInput.status === "answered"
-            ? {
-                status: "answered",
-                answer_markdown: finalQuestionInput.answer_markdown,
-                attempt_count: finalQuestionInput.attempt_count,
-                response: finalQuestionInput.response,
-                evidence: finalQuestionInput.evidence,
-                citations: finalQuestionInput.citations,
-                retrieval: finalQuestionInput.retrieval,
-                local_memory_worker: finalQuestionInput.local_memory_worker
-              }
-            : {
-                status: "error",
-                error_message: finalQuestionInput.error_message,
-                attempt_count: finalQuestionInput.attempt_count,
-                response: finalQuestionInput.response,
-                retrieval: finalQuestionInput.retrieval,
-                local_memory_worker: finalQuestionInput.local_memory_worker
-              }
+    try {
+      execution.onProgress?.("answer synthesis completed");
+      if (signal?.aborted) throw new Error("Koed memory request was cancelled");
+      const callerIdentity = recallCallerSchema.safeParse({
+        name: recallCallerLabel(
+          caller.clientInfo?.name,
+          RECALL_CALLER_NAME_MAX_LENGTH
+        ),
+        version: recallCallerLabel(
+          caller.clientInfo?.version,
+          RECALL_CALLER_VERSION_MAX_LENGTH
         )
+      });
+      const memoryStatus = recallMemoryStatusSchema.safeParse(
+        answer.localMemoryWorker.memoryStatus
       );
-    } else {
-      try {
-        recordedQuestion = questionFromResponse(
-          await this.client.createFinalQuestion(finalQuestionInput)
-        );
-      } catch (error) {
-        if (execution.requireQuestionPersistence) {
-          throw error;
+      const recallMetadata = {
+        version: 1,
+        memoryStatus:
+          !answer.localMemoryWorker.usedFallback && memoryStatus.success
+            ? memoryStatus.data
+            : null,
+        caller: callerIdentity.success ? callerIdentity.data : null,
+        usage: {
+          jobId: answer.localMemoryWorker.jobId,
+          attempts: Math.max(
+            1,
+            answer.localMemoryWorker.appServerExecutions?.length ?? 0
+          )
         }
-        logger.warn(
-          { err: error, jobId: answer.localMemoryWorker.jobId },
-          "koed memory_answer question history persistence skipped"
+      };
+      const finalQuestionInput = answer.localMemoryWorker.usedFallback
+        ? {
+            idempotency_key:
+              execution.idempotencyKey ??
+              `memory-answer:${answer.localMemoryWorker.jobId}`,
+            query: answerInput.query,
+            origin: execution.origin,
+            recall_metadata: recallMetadata,
+            retrieval_scope: retrievalScope,
+            search_domain: input.search_domain,
+            project_id: projectId,
+            team_workspace_id: teamWorkspaceId,
+            session_id: input.session_id,
+            status: "error",
+            error_message: errorMessageFromAnswer(answer),
+            attempt_count: 1,
+            response: persistedAnswerResponse(answer),
+            retrieval: retrievalFromAnswer(answer),
+            local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
+          }
+        : {
+            idempotency_key:
+              execution.idempotencyKey ??
+              `memory-answer:${answer.localMemoryWorker.jobId}`,
+            query: answerInput.query,
+            origin: execution.origin,
+            recall_metadata: recallMetadata,
+            retrieval_scope: retrievalScope,
+            search_domain: input.search_domain,
+            project_id: projectId,
+            team_workspace_id: teamWorkspaceId,
+            session_id: input.session_id,
+            status: "answered",
+            answer_markdown: answerMarkdownFromAnswer(answer),
+            attempt_count: 1,
+            response: persistedAnswerResponse(answer),
+            evidence: evidenceFromAnswer(answer),
+            citations: citationsFromAnswer(answer),
+            retrieval: retrievalFromAnswer(answer),
+            local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
+          };
+      if (execution.onFinalQuestionPrepared) {
+        execution.onFinalQuestionPrepared(finalQuestionInput);
+      } else if (execution.pendingQuestionId) {
+        recordedQuestion = questionFromResponse(
+          await this.client.completePendingDesktopAsk(
+            execution.pendingQuestionId,
+            finalQuestionInput.status === "answered"
+              ? {
+                  status: "answered",
+                  answer_markdown: finalQuestionInput.answer_markdown,
+                  attempt_count: finalQuestionInput.attempt_count,
+                  response: finalQuestionInput.response,
+                  evidence: finalQuestionInput.evidence,
+                  citations: finalQuestionInput.citations,
+                  retrieval: finalQuestionInput.retrieval,
+                  local_memory_worker: finalQuestionInput.local_memory_worker
+                }
+              : {
+                  status: "error",
+                  error_message: finalQuestionInput.error_message,
+                  attempt_count: finalQuestionInput.attempt_count,
+                  response: finalQuestionInput.response,
+                  retrieval: finalQuestionInput.retrieval,
+                  local_memory_worker: finalQuestionInput.local_memory_worker
+                }
+          )
         );
+      } else {
+        try {
+          recordedQuestion = questionFromResponse(
+            await this.client.createFinalQuestion(finalQuestionInput)
+          );
+        } catch (error) {
+          if (execution.requireQuestionPersistence) {
+            throw error;
+          }
+          logger.warn(
+            { err: error, jobId: answer.localMemoryWorker.jobId },
+            "koed memory_answer question history persistence skipped"
+          );
+        }
       }
+
+      if (recordedQuestion) {
+        execution.onQuestionRecorded?.(recordedQuestion);
+      }
+      return toolAnswerResponse(answer, requestedResponseDetail);
+    } finally {
+      // Observable consumption survives cancellation or final-history failure.
+      // Await every submission before durable-task completion can proceed.
+      await this.recordTokenUsage(
+        answer,
+        input,
+        projectId,
+        recordedQuestion,
+        execution
+      );
     }
-    await this.recordTokenUsage(answer, input, projectId, recordedQuestion);
-    if (recordedQuestion) {
-      execution.onQuestionRecorded?.(recordedQuestion);
-    }
-    return toolAnswerResponse(answer, requestedResponseDetail);
   }
 
   private async recordTokenUsage(
     answer: Awaited<ReturnType<typeof answerWithMemoryWorker>>,
     input: MemoryAnswerToolInput,
     projectId: string | undefined,
-    recordedQuestion: McpMemoryQuestion | null
+    recordedQuestion: McpMemoryQuestion | null,
+    options: TrustedMemoryAnswerExecutionOptions
   ): Promise<void> {
-    const localQuestionId = recordedQuestion?.id;
+    const localQuestionId = recordedQuestion?.id ?? options.pendingQuestionId;
     const executions = answer.localMemoryWorker.appServerExecutions?.length
       ? answer.localMemoryWorker.appServerExecutions
       : [
           {
-            model: answer.localMemoryWorker.model ?? "codex-app-server",
+            model:
+              answer.localMemoryWorker.model ??
+              answer.localMemoryWorker.provider,
             tokenUsage: answer.localMemoryWorker.tokenUsage,
             threadId: answer.localMemoryWorker.appServerThreadId,
             turnId: answer.localMemoryWorker.appServerTurnId
           }
         ];
-    try {
-      await Promise.all(
-        executions.map(async (execution, executionIndex) => {
-          const lastUsage = execution.tokenUsage?.last;
-          if (!lastUsage) return;
-          await this.client.recordTokenUsage({
-            workflowType: "mcp_memory_answer",
-            workflowId: answer.localMemoryWorker.jobId,
+    const writes = await Promise.allSettled(
+      executions.map(async (execution, executionIndex) => {
+        const lastUsage = execution.tokenUsage?.last;
+        const provider =
+          execution.provider ?? answer.localMemoryWorker.provider;
+        if (
+          provider !== "codex" &&
+          provider !== "claude" &&
+          provider !== "pi"
+        ) {
+          throw new Error(
+            "Cannot attribute Memory Answer usage to an unknown worker"
+          );
+        }
+        const identity = aiClientExecutionIdentity(
+          provider,
+          execution.aiClientInstanceId ??
+            answer.localMemoryWorker.aiClientInstanceId
+        );
+        await this.client.recordTokenUsage({
+          workflowType: "mcp_memory_answer",
+          workflowId: answer.localMemoryWorker.jobId,
+          questionId: localQuestionId,
+          answerJobId: answer.localMemoryWorker.jobId,
+          memoryAnswerTaskId: options.memoryAnswerTaskId,
+          sessionId: input.session_id,
+          sourceRuntime: identity.sourceRuntime,
+          sourceKind: identity.sourceKind,
+          sourceAdapterVersion: identity.sourceAdapterVersion,
+          usageSource: identity.usageSource,
+          usageAccuracy: [
+            lastUsage?.inputTokens,
+            lastUsage?.outputTokens,
+            lastUsage?.totalTokens
+          ].every((value) => typeof value === "number")
+            ? "provider_reported"
+            : "provider_partial",
+          usageKind: "turn_delta",
+          connectorClient: identity.connectorClient,
+          model: execution.model,
+          modelContextWindow: execution.tokenUsage?.modelContextWindow ?? null,
+          inputTokens: lastUsage?.inputTokens ?? null,
+          cachedInputTokens: lastUsage?.cachedInputTokens ?? null,
+          outputTokens: lastUsage?.outputTokens ?? null,
+          reasoningOutputTokens: lastUsage?.reasoningOutputTokens ?? null,
+          totalTokens: lastUsage?.totalTokens ?? null,
+          usageScope: "last",
+          metadata: {
+            questionOrigin: options.origin,
+            provider: identity.provider,
+            transport: identity.transport,
+            aiClientInstanceId: identity.aiClientInstanceId,
+            appServerThreadId: execution.primaryThreadId ?? execution.threadId,
+            appServerTurnId: execution.turnId,
             questionId: localQuestionId,
             answerJobId: answer.localMemoryWorker.jobId,
-            sessionId: input.session_id,
-            sourceRuntime: "codex",
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-app-server-v1",
-            usageSource: "app_server",
-            usageAccuracy: "provider_reported",
-            usageKind: "turn_delta",
-            connectorClient: "codex",
-            model: execution.model,
-            modelContextWindow:
-              execution.tokenUsage?.modelContextWindow ?? null,
-            inputTokens: lastUsage.inputTokens ?? null,
-            cachedInputTokens: lastUsage.cachedInputTokens ?? null,
-            outputTokens: lastUsage.outputTokens ?? null,
-            reasoningOutputTokens: lastUsage.reasoningOutputTokens ?? null,
-            totalTokens: lastUsage.totalTokens ?? null,
-            usageScope: "last",
-            metadata: {
-              appServerThreadId:
-                execution.primaryThreadId ?? execution.threadId,
-              appServerTurnId: execution.turnId,
-              questionId: localQuestionId,
-              answerJobId: answer.localMemoryWorker.jobId,
-              primaryAppServerThreadId: execution.primaryThreadId,
-              executionThreadId: execution.threadId,
-              executionTurnId: execution.turnId,
-              searchDomain: input.search_domain,
-              projectId,
-              attemptIndex: execution.attemptIndex,
-              executionStatus: execution.status ?? "succeeded",
-              replacementThreadReason: execution.replacementThreadReason,
-              errorMessage: execution.errorMessage,
-              executionIndex
-            },
-            idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${executionIndex}:${execution.attemptIndex ?? 1}:last`
-          });
-        })
-      );
-    } catch (error) {
+            primaryAppServerThreadId: execution.primaryThreadId,
+            executionThreadId: execution.threadId,
+            executionTurnId: execution.turnId,
+            searchDomain: input.search_domain,
+            projectId,
+            attemptIndex: execution.attemptIndex,
+            executionStatus:
+              execution.status ??
+              (answer.localMemoryWorker.usedFallback ? "failed" : "succeeded"),
+            replacementThreadReason: execution.replacementThreadReason,
+            executionIndex,
+            expectedExecutions: executions.length
+          },
+          idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${executionIndex}:${execution.attemptIndex ?? 1}:last`
+        });
+      })
+    );
+    for (const write of writes) {
+      if (write.status !== "rejected") continue;
       logger.warn(
-        { err: error, jobId: answer.localMemoryWorker.jobId },
+        { err: write.reason, jobId: answer.localMemoryWorker.jobId },
         "koed memory_answer token telemetry skipped"
       );
     }

@@ -15,6 +15,13 @@
       "when": 1794397863394,
       "tag": "0001_lcm_boundary_context",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794397863395,
+      "tag": "0002_recall_activity",
+      "breakpoints": true
     }
   ]
 }

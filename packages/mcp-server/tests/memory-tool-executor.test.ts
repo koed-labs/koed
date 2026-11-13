@@ -247,18 +247,31 @@ describe("MemoryToolExecutor", () => {
     expect(JSON.stringify(context)).not.toContain("diagnostic-");
   });
 
-  it("records task worker usage while preparing the final question for its authoritative commit", async () => {
-    const recordTokenUsage = vi.fn(async (input: Record<string, unknown>) => {
-      void input;
-      return {};
-    });
-    const executor = new MemoryToolExecutor(
+  const usageExecutor = (
+    provider: "codex" | "claude" | "pi",
+    recordTokenUsage: (
+      input: Record<string, unknown>
+    ) => Promise<Record<string, unknown>>,
+    attempts = 1,
+    usedFallback = false,
+    missingUsageIndex?: number
+  ) =>
+    new MemoryToolExecutor(
       {
         recordTokenUsage,
+        createFinalQuestion: vi.fn(async () => {
+          throw new Error("Question persistence failed");
+        }),
         accessCheck: vi.fn(async () => ({
           user: { id: "00000000-0000-4000-8000-000000000001" }
         })),
-        listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] }))
+        // Selecting the unused manual flow would try to validate this setting and fail.
+        listLocalMemoryAgentSettings: vi.fn(async () => ({
+          settings: [{ flowKey: "manual_memory_answer" }]
+        })),
+        completePendingDesktopAsk: vi.fn(async () => ({
+          question: { id: "11111111-1111-4111-8111-111111111111" }
+        }))
       } as unknown as MemoryApiClient,
       {},
       {
@@ -266,47 +279,231 @@ describe("MemoryToolExecutor", () => {
           markdown: "answer",
           retrieval: { evidenceCount: 1 },
           localMemoryWorker: {
-            provider: "codex",
+            provider,
             promptVersion: "fixture",
-            jobId: "fixture-answer-job",
-            model: "gpt-fixture",
-            usedFallback: false,
-            appServerExecutions: [
-              {
-                model: "gpt-fixture",
-                tokenUsage: {
-                  last: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }
-                }
-              }
-            ]
+            jobId: "33333333-3333-4333-8333-333333333333",
+            model: "fixture-model",
+            usedFallback,
+            appServerExecutions: Array.from(
+              { length: attempts },
+              (_, index) => ({
+                model: "fixture-model",
+                attemptIndex: index + 1,
+                tokenUsage:
+                  index === missingUsageIndex
+                    ? undefined
+                    : {
+                        last: {
+                          inputTokens: 10,
+                          outputTokens: 5,
+                          totalTokens: 15
+                        }
+                      }
+              })
+            )
           }
         })
       }
     );
-    const completed = await executor.executeMemoryAnswerTask(
-      memoryAnswerInputSchema.parse({
-        query: "What changed?",
-        search_domain: "global",
-        repository_context: null
-      }),
+  const usageInput = () =>
+    memoryAnswerInputSchema.parse({
+      query: "What changed?",
+      search_domain: "global",
+      repository_context: null
+    });
+
+  it.each(["codex", "claude", "pi"] as const)(
+    "attributes %s usage while retaining the actual flow for both question origins",
+    async (provider) => {
+      for (const origin of ["mcp_memory_answer", "desktop_ask"] as const) {
+        const record = vi.fn(async (_input: Record<string, unknown>) => ({}));
+        const executor = usageExecutor(provider, record);
+        if (origin === "mcp_memory_answer") {
+          const completed = await executor.executeMemoryAnswerTask(
+            usageInput(),
+            {
+              cwd: "/fixture",
+              clientInfo: {
+                name: "requesting-client",
+                version: "1",
+                secret: "discard"
+              }
+            },
+            "task",
+            undefined,
+            undefined,
+            { getExecutionAuthority: () => ({ scope: "personal" }) }
+          );
+          expect(completed.finalQuestion).toMatchObject({
+            answer_markdown: "answer",
+            recall_metadata: {
+              version: 1,
+              memoryStatus: null,
+              caller: { name: "requesting-client", version: "1" }
+            },
+            local_memory_worker: {
+              jobId: "33333333-3333-4333-8333-333333333333"
+            }
+          });
+        } else {
+          await executor.executeMemoryAnswer(
+            usageInput(),
+            { cwd: "/fixture" },
+            {
+              origin,
+              pendingQuestionId: "11111111-1111-4111-8111-111111111111"
+            }
+          );
+        }
+        expect(record).toHaveBeenCalledTimes(1);
+        expect(record.mock.calls[0]![0]).toMatchObject({
+          workflowType: "mcp_memory_answer",
+          connectorClient: provider,
+          sourceRuntime: provider === "claude" ? "claude-code" : provider,
+          sourceKind: provider === "claude" ? "claude-code" : provider,
+          sourceAdapterVersion: {
+            codex: "codex-app-server-v1",
+            claude: "claude-agent-sdk-v1",
+            pi: "pi-rpc-v1"
+          }[provider],
+          usageSource: provider === "codex" ? "app_server" : "connector_native",
+          usageAccuracy: "provider_reported",
+          usageKind: "turn_delta",
+          memoryAnswerTaskId:
+            origin === "mcp_memory_answer" ? "task" : undefined,
+          questionId:
+            origin === "desktop_ask"
+              ? "11111111-1111-4111-8111-111111111111"
+              : undefined,
+          metadata: { questionOrigin: origin, provider }
+        });
+      }
+    }
+  );
+
+  it.each(["codex", "claude", "pi"] as const)(
+    "preserves %s observed usage through cancellation, escaping callbacks, persistence failure and fallback",
+    async (provider) => {
+      for (const failure of ["cancel", "callback", "history"] as const) {
+        const record = vi.fn(async (_input: Record<string, unknown>) => ({}));
+        const executor = usageExecutor(provider, record);
+        const abort = new AbortController();
+        await expect(
+          executor.executeMemoryAnswer(
+            usageInput(),
+            { cwd: "/fixture" },
+            {
+              origin: "mcp_memory_answer",
+              requireQuestionPersistence: true,
+              onProgress: (status) => {
+                if (status !== "answer synthesis completed") return;
+                if (failure === "cancel") abort.abort();
+                if (failure === "callback") throw new Error("Callback failed");
+              }
+            },
+            abort.signal
+          )
+        ).rejects.toThrow(
+          failure === "history"
+            ? "Question persistence failed"
+            : failure === "callback"
+              ? "Callback failed"
+              : "cancelled"
+        );
+        expect(record).toHaveBeenCalledOnce();
+        expect(record.mock.calls[0]![0]).toMatchObject({
+          totalTokens: 15,
+          connectorClient: provider
+        });
+      }
+      const record = vi.fn(async (_input: Record<string, unknown>) => ({}));
+      const result = await usageExecutor(
+        provider,
+        record,
+        2,
+        true
+      ).executeMemoryAnswerTask(usageInput(), { cwd: "/fixture" }, "task");
+      expect(result.finalQuestion.status).toBe("error");
+      expect(record).toHaveBeenCalledTimes(2);
+      expect(
+        new Set(record.mock.calls.map(([value]) => value.idempotencyKey)).size
+      ).toBe(2);
+    }
+  );
+
+  it("retains expected attempts and records unknown consumption without zero counts", async () => {
+    const record = vi.fn(async (_input: Record<string, unknown>) => ({}));
+    const result = await usageExecutor(
+      "codex",
+      record,
+      2,
+      false,
+      0
+    ).executeMemoryAnswerTask(
+      usageInput(),
       { cwd: "/fixture" },
       "task",
       undefined,
       undefined,
       { getExecutionAuthority: () => ({ scope: "personal" }) }
     );
+    expect(result.finalQuestion.recall_metadata).toMatchObject({
+      usage: { jobId: "33333333-3333-4333-8333-333333333333", attempts: 2 }
+    });
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record.mock.calls[0]![0]).toMatchObject({
+      usageAccuracy: "provider_partial",
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+      metadata: { expectedExecutions: 2 }
+    });
+    expect(record.mock.calls[1]![0]).toMatchObject({
+      usageAccuracy: "provider_reported",
+      totalTokens: 15
+    });
+  });
 
-    expect(recordTokenUsage).toHaveBeenCalledTimes(1);
-    const recordedUsage = recordTokenUsage.mock.calls[0]![0];
-    expect(recordedUsage.questionId).toBeUndefined();
-    expect(recordedUsage.metadata).toMatchObject({
-      questionId: undefined,
-      answerJobId: "fixture-answer-job"
+  it("settles every attempted telemetry write before a task can complete after a sibling fails", async () => {
+    let rejectFirst!: (error: Error) => void;
+    let resolveSecond!: (result: Record<string, unknown>) => void;
+    let started!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      started = resolve;
     });
-    expect(completed.finalQuestion).toMatchObject({
-      answer_markdown: "answer",
-      local_memory_worker: { jobId: "fixture-answer-job" }
-    });
+    const record = vi.fn(
+      (input: Record<string, unknown>) =>
+        new Promise<Record<string, unknown>>((resolve, reject) => {
+          if (
+            (input.metadata as { executionIndex: number }).executionIndex === 0
+          )
+            rejectFirst = reject;
+          else {
+            resolveSecond = resolve;
+            started();
+          }
+        })
+    );
+    let settled = false;
+    const result = usageExecutor("codex", record, 2)
+      .executeMemoryAnswerTask(
+        usageInput(),
+        { cwd: "/fixture" },
+        "task",
+        undefined,
+        undefined,
+        { getExecutionAuthority: () => ({ scope: "personal" }) }
+      )
+      .finally(() => {
+        settled = true;
+      });
+    await bothStarted;
+    rejectFirst(new Error("Synthetic telemetry failure"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    resolveSecond({});
+    await expect(result).resolves.toHaveProperty("finalQuestion");
+    expect(record).toHaveBeenCalledTimes(2);
   });
 
   it("runs Memory Answer from the requesting adapter cwd", async () => {

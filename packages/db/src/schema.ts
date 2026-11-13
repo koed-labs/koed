@@ -12014,6 +12014,10 @@ export const memoryQuestions = pgTable(
     citations: jsonb("citations").$type<unknown>(),
     retrieval: jsonb("retrieval").$type<unknown>(),
     localMemoryWorker: jsonb("local_memory_worker").$type<unknown>(),
+    recallMetadata:
+      jsonb("recall_metadata").$type<
+        import("@koed-labs/shared").RecallQuestionMetadata
+      >(),
     response: jsonb("response").$type<unknown>(),
     status: memoryQuestionStatus("status").notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
@@ -12187,6 +12191,36 @@ export const memoryAnswerTasks = pgTable(
   ]
 );
 
+// A content-free ownership receipt outlives transient task cleanup so that
+// delayed observations remain attributable without reviving task execution.
+export const memoryAnswerTaskUsageReceipts = pgTable(
+  "memory_answer_task_usage_receipts",
+  {
+    taskId: uuid("task_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    questionId: uuid("question_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    foreignKey({
+      name: "memory_answer_usage_receipt_owner_fk",
+      columns: [table.ownerUserId],
+      foreignColumns: [users.id]
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "memory_answer_usage_receipt_question_fk",
+      columns: [table.questionId],
+      foreignColumns: [memoryQuestions.id]
+    }).onDelete("set null"),
+    index("memory_answer_usage_receipt_owner_idx").on(table.ownerUserId),
+    index("memory_answer_usage_receipt_question_idx")
+      .on(table.questionId)
+      .where(sql`${table.questionId} is not null`)
+  ]
+);
+
 export const workflowTokenUsage = pgTable(
   "workflow_token_usage",
   {
@@ -12269,6 +12303,10 @@ export const workflowTokenUsage = pgTable(
     index("workflow_token_usage_connector_idx")
       .on(table.connectorClient, table.observedAt)
       .where(sql`${table.connectorClient} is not null`),
+    // Recall activity reads one owner's Memory Answer usage by observation time.
+    index("workflow_token_usage_recall_owner_observed_idx")
+      .on(table.ownerUserId, table.observedAt)
+      .where(sql`${table.workflowType} = 'mcp_memory_answer'`),
     check(
       "workflow_token_usage_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
@@ -12299,7 +12337,7 @@ export const workflowTokenUsageSourceReferences = pgTable(
     ),
     check(
       "workflow_token_usage_source_references_type_check",
-      sql`${table.sourceType} in ('question', 'answer_job', 'lcm_node', 'message', 'tool_event', 'memory_event')`
+      sql`${table.sourceType} in ('question', 'answer_job', 'memory_answer_task', 'lcm_node', 'message', 'tool_event', 'memory_event')`
     )
   ]
 );

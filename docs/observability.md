@@ -1,5 +1,102 @@
 # Observability
 
+## Recall activity
+
+Desktop's Recall activity page shows recorded final Personal Memory Answers from
+AI Clients, including direct Local AI Runtime callers. It is not an inventory of
+all MCP traffic. Desktop Ask and Team-bound questions are excluded. Retained Team
+authority continues to exclude a question after its Workspace is deleted.
+
+New final answers also retain a versioned, allowlisted metadata object alongside
+the encrypted question content. It contains the Memory-found result, descriptive
+calling AI Client name/version when supplied, and measured task timing when
+available. No historical backfill is performed. Missing metadata stays unknown.
+MCP adapters forward bounded client information; the Local AI Runtime and API
+own persistence. The stdio adapter reads caller identity from the connection's
+`initialize` handshake for legacy MCP clients, or from each request's envelope
+for modern clients. Modern requests never inherit a prior request's identity.
+Client information is self-reported description, never authority
+or a stable installation identity. It may differ from the synthesis worker.
+Because this metadata is stored outside encrypted question content, the caller
+name and version are reduced to ASCII letters, digits, spaces and `._+/@()-`
+before persistence. The API rejects other caller text.
+
+This metadata is validated in one place when it is read: the SQL in
+`recall-activity-query.ts`. Filters, totals and timelines use those expressions,
+and each displayed row is built from the same expressions' output, with no
+second check in application code. A question therefore cannot display one value
+and count as another. The rule is:
+
+- Only version 1 metadata is read. A later version is unknown in every field.
+- Each field is then read on its own. A missing or wrongly shaped value makes
+  that field unknown and leaves the others readable.
+- A result is read only for an answered question.
+- A caller name or version must be 1 to 128 or 1 to 64 of the characters above,
+  with no leading or trailing space. An unreadable name makes the caller unknown;
+  an unreadable version leaves the name.
+- A duration is read only as a whole number of milliseconds up to seven days
+  that equals the difference between its two UTC millisecond timestamps.
+
+An unknown field counts as unknown in totals and matches the unknown result or
+unknown caller filter; an unknown duration is outside every duration filter and
+the median. Stored text can make a field unknown but cannot fail a page or an
+overview. Caller text recorded before the character rule, such as `Codex: App`,
+reads as an unknown caller.
+
+Found percentage is `found / (found + not_found)`. Partial evidence, pending
+summaries, unknown results and recorded errors do not enter that denominator.
+An empty denominator is unavailable. Result filters and timeline breakdowns use
+the persisted allowlisted value, without decrypting history. Opening an older
+question can still reveal its encrypted historical result, without changing its
+aggregate classification.
+
+Duration is the server's task acceptance time (`created_at`) through fenced
+completion (`completed_at`), retained before transient task cleanup. It includes
+initial queueing, all retries/backoff and final persistence up to the completion
+boundary. It is not client request latency or pure worker execution time. The
+median is calculated over individual known durations in the selected range.
+Blocking calls without those task boundaries and tasks without a final question
+do not acquire inferred durations. Incoming question metadata cannot supply
+timing; only the task repository stamps it. Date, result, caller and duration
+filters apply before pagination and share the same scope with the overview.
+
+The page reads existing PostgreSQL question and token records without an API
+cache, rollup table, or background backfill. Counts represent distinct recorded
+questions, not submissions, attempts, or a complete failure rate. Recorded errors
+are not recall misses. Question dates use final record creation time; token dates
+use usage observation time. Neither is request latency. The selected display
+timezone determines chart buckets, with half-open query ranges.
+
+Desktop presents a summary above independently scrolling recorded activity and
+a Recall-over-time chart. The default range is seven local calendar days. Today
+uses hourly server buckets (23 or 25 on daylight-saving transition days), seven
+days uses daily buckets, and thirty days groups daily server totals into ten
+three-day intervals. Custom ranges retain bounded day/week/month aggregation.
+Chart totals cover the entire filtered range, independently of the displayed
+50-row page. The question search is labelled as page-only and does not change
+aggregate metrics or decrypt additional history. Known usage history and coverage
+notes remain available under About these metrics.
+
+Only explicitly linked usage contributes to list totals and charts. Most older
+durable-task history has no question link and remains unknown. Opening one
+authorized question may match its decrypted worker job to same-owner historical
+usage. That bounded read never persists a link or changes aggregate totals, and
+cannot discover earlier task retries. Unknown usage is not zero; cumulative
+snapshots and replayed observations are excluded from spending totals. Cached
+input and reasoning output are subsets, not additions to total tokens.
+
+Question-change events refresh the active view in coalesced batches. Each batch
+re-reads the list. The overview aggregates the whole selected range, so change
+events refresh it at most once every ten seconds, followed by one catch-up read;
+a manual refresh always reads it. A failed overview read stays reported until a
+later overview read succeeds; a list-only refresh does not clear it. A visible fallback runs at most once a minute,
+backs off after failures, and stops while hidden. Refresh checks IDs, update timestamps, and usage before decrypting only
+changed question text. Desktop retains only the active page in memory, with no
+disk cache. Project and AI Client filter choices come from all eligible activity
+in the selected date range, independent of the page and active filters. Calendar
+presets update at local midnight, on return to the window, and on manual refresh.
+Custom date ranges remain fixed. Account/backend changes and authorization loss clear retained data.
+
 The API writes structured JSON through Fastify/Pino with
 `schema_version: "api_log_v1"` and `service: "koed-api"`. Worker services use
 structured Pino events. The implementation does not expose collaboration
@@ -11,6 +108,33 @@ Memory Answer task lifecycle logs contain task identity, state, attempt, fence,
 and bounded error code only. Query, answer, evidence, caller path, and provider
 payload remain encrypted content and must not be logged. Local Runtime `/ready`
 reports the active task count.
+
+A local reference measurement on an Apple M2 with 16 GB RAM and PostgreSQL 17.10
+used 10,000 encrypted recalls, one million capture-usage rows, four owners,
+multiple attempts, legacy gaps, and separate Desktop Ask/Team exclusions. Across
+20 warm samples, the 50-row list including text decryption measured 18 ms p95;
+the 90-day overview measured 52 ms p95. First reads after a PostgreSQL restart
+were 33 ms and 63 ms respectively; the OS filesystem cache was not flushed.
+A final warm pass with result/caller/duration metadata measured 17 ms list and
+48 ms overview p95 over another 20 samples; caches were already warm in that pass.
+These are local fixture results, not production latency guarantees.
+They predate the expected-attempt coverage checks and range-wide filter choices.
+
+The first token overview exceeded five seconds because casting question IDs to
+text caused repeated full question scans. Keeping the question primary key as
+UUID and validating/casting the typed source reference removed those scans.
+Preserve the indexed question type in this broad join.
+
+That four-owner fixture did not show a second cost. Without an owner/time index
+on usage, the token overview scanned every owner's source references, whatever
+the selected range. With 300 owners, 300,000 recalls, 1.6 million usage rows and
+2.2 million source references, 7-day and 90-day overviews each took about 600 ms.
+The partial index `workflow_token_usage_recall_owner_observed_idx` on
+`(owner_user_id, observed_at)` for `mcp_memory_answer` usage lets the query start
+from one owner's usage in the range; the same overviews then took 2 ms and 5 ms.
+Keep the usage predicates on `owner_user_id`, `observed_at` and `workflow_type`
+so this index stays usable. A 50-row list reads its question text in one
+encrypted-payload query, not one query per row.
 
 ## Safe Request Logs
 
