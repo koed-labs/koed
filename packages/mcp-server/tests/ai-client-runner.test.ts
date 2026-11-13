@@ -63,16 +63,16 @@ describe("Claude AI Client runner boundary", () => {
 
     expect(tokenUsage).toEqual({
       last: {
-        inputTokens: 120,
+        inputTokens: 170,
         cachedInputTokens: 40,
         outputTokens: 30,
-        totalTokens: 150
+        totalTokens: 200
       },
       total: {
-        inputTokens: 120,
+        inputTokens: 170,
         cachedInputTokens: 40,
         outputTokens: 30,
-        totalTokens: 150
+        totalTokens: 200
       },
       modelContextWindow: 200_000
     });

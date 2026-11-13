@@ -64,6 +64,10 @@ describe.skipIf(!databaseUrl)(
     beforeAll(async () => {
       pool = createDbPool({ connectionString: databaseUrl });
       await runDbMigrations(pool);
+      // Earlier suites may TRUNCATE shared tables, which discards planner
+      // statistics. Without them the LCM graph event query plans badly and
+      // the recall test exceeds its timeout; see TODO.md.
+      await pool.query("analyze");
     });
     afterEach(() => {
       vi.restoreAllMocks();

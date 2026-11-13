@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   repositoryScopeId,
+  recallQuestionMetadataSchema,
   type RepositoryIdentity,
   createLocalTestKeyEnvelopeEncryptionProvider
 } from "@koed-labs/shared";
@@ -143,6 +144,817 @@ describeDb("durable Memory Answer task repository", () => {
       })
     ).toMatchObject({ task: { id: accepted.id } });
   });
+
+  it("links usage across retried worker jobs and preserves it after task expiry", async () => {
+    const { actor, repository } = await createActor("usage-owner");
+    const { actor: otherActor } = await createActor("other-usage-owner");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      invocationKey: randomUUID(),
+      maxQueued: 16,
+      request: {
+        input: {
+          query: "retry usage",
+          search_domain: "global",
+          repository_context: null
+        }
+      }
+    });
+    const first = (
+      await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: "run-a",
+        leaseMs: 60_000
+      })
+    ).task!;
+    const usage = (jobId: string, amount: number) => ({
+      workflowType: "mcp_memory_answer",
+      workflowId: jobId,
+      answerJobId: jobId,
+      memoryAnswerTaskId: accepted.id,
+      totalTokens: amount,
+      idempotencyKey: `usage:${jobId}`
+    });
+    const runA = usage(randomUUID(), 11),
+      runB = usage(randomUUID(), 17);
+    await repository.recordWorkflowTokenUsage(actor, runA);
+    await repository.recordWorkflowTokenUsage(actor, runA);
+    await expect(
+      repository.recordWorkflowTokenUsage(otherActor, usage(randomUUID(), 99))
+    ).rejects.toThrow(/not found|not authorized/);
+    const workspace = await pool.query<{ id: string }>(
+      `with team as (insert into teams (name, created_by_user_id) values ('Usage boundary', $1) returning id)
+       insert into team_workspaces (team_id, name) select id, 'Usage boundary' from team returning id`,
+      [actor.userId]
+    );
+    await pool.query(
+      "update memory_answer_tasks set team_workspace_id=$2, team_authorization='{}'::jsonb where id=$1",
+      [accepted.id, workspace.rows[0]!.id]
+    );
+    await expect(
+      repository.recordWorkflowTokenUsage(actor, usage(randomUUID(), 99))
+    ).rejects.toThrow(/not authorized/);
+    await pool.query(
+      "update memory_answer_tasks set team_workspace_id=null, team_authorization=null, lease_until=now()-interval '1 second' where id=$1",
+      [accepted.id]
+    );
+    const second = (
+      await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: "run-b",
+        leaseMs: 60_000
+      })
+    ).task!;
+    await repository.recordWorkflowTokenUsage(actor, runB);
+    const completion = {
+      taskId: accepted.id,
+      finalQuestion: {
+        idempotencyKey: randomUUID(),
+        query: "retry usage",
+        searchDomain: "global" as const,
+        status: "answered" as const,
+        answerMarkdown: "Retried answer",
+        recallMetadata: {
+          version: 1 as const,
+          memoryStatus: "found" as const,
+          caller: { name: "pi", version: "fixture" }
+        }
+      },
+      result: { markdown: "Retried answer" }
+    };
+    expect(
+      await tasks.completeMemoryAnswerTask(actor, {
+        ...completion,
+        leaseOwner: first.leaseOwner,
+        fenceGeneration: first.fenceGeneration
+      })
+    ).toBeNull();
+    const links = async () =>
+      (
+        await pool.query<{ count: string; total: string | null }>(
+          `select count(*)::text as count, sum(u.total_tokens)::text as total
+       from workflow_token_usage u join workflow_token_usage_source_references r on r.workflow_token_usage_id=u.id
+       where u.owner_user_id=$1 and r.source_type='question'`,
+          [actor.userId]
+        )
+      ).rows[0];
+    expect(await links()).toEqual({ count: "0", total: null });
+    const completed = await tasks.completeMemoryAnswerTask(actor, {
+      ...completion,
+      leaseOwner: second.leaseOwner,
+      fenceGeneration: second.fenceGeneration
+    });
+    expect(completed?.questionId).toBeTruthy();
+    const retainedMetadata = async () =>
+      (
+        await pool.query<{
+          recall_metadata: {
+            timing: {
+              acceptedAt: string;
+              completedAt: string;
+              durationMs: number;
+            };
+            caller: { name: string };
+            memoryStatus: string;
+          };
+        }>("select recall_metadata from memory_questions where id=$1", [
+          completed!.questionId
+        ])
+      ).rows[0]!.recall_metadata;
+    const metadata = await retainedMetadata();
+    expect(metadata.memoryStatus).toBe("found");
+    expect(metadata.caller.name).toBe("pi");
+    expect(metadata.timing.acceptedAt).toBe(accepted.createdAt);
+    expect(metadata.timing.completedAt).toBe(completed!.completedAt);
+    expect(metadata.timing.durationMs).toBe(
+      Date.parse(completed!.completedAt!) - Date.parse(accepted.createdAt)
+    );
+    expect(await links()).toEqual({ count: "2", total: "28" });
+    expect(
+      await tasks.completeMemoryAnswerTask(actor, {
+        ...completion,
+        leaseOwner: second.leaseOwner,
+        fenceGeneration: second.fenceGeneration
+      })
+    ).toBeNull();
+    await pool.query(
+      "update memory_answer_tasks set expires_at=now()-interval '1 second' where id=$1",
+      [accepted.id]
+    );
+    await tasks.deleteExpiredMemoryAnswerTasks(actor);
+    expect(await tasks.getMemoryAnswerTask(actor, accepted.id)).toBeNull();
+    expect(await retainedMetadata()).toEqual(metadata);
+    expect(await links()).toEqual({ count: "2", total: "28" });
+    expect(
+      await repository.getMemoryQuestion(actor, completed!.questionId!)
+    ).not.toBeNull();
+  });
+
+  it("aggregates forward-only Recall results, callers and individual durations", async () => {
+    const { actor, repository } = await createActor("recall-metadata");
+    const { actor: other } = await createActor("other-recall-owner");
+    const outcomes = [
+      "found",
+      "found",
+      "not_found",
+      "insufficient",
+      "pending_summary",
+      null,
+      null
+    ] as const;
+    const ids: string[] = [];
+    for (let index = 0; index < outcomes.length; index++) {
+      const durationMs = [1000, 3000, 9000][index];
+      const question = await repository.createFinalMemoryQuestion(actor, {
+        idempotencyKey: randomUUID(),
+        query: "Synthetic metadata question",
+        origin: "mcp_memory_answer",
+        searchDomain: "global",
+        ...(index === 5
+          ? { status: "error" as const, errorMessage: "Synthetic error" }
+          : {
+              status: "answered" as const,
+              answerMarkdown: "Synthetic answer"
+            }),
+        recallMetadata:
+          index === 6
+            ? undefined
+            : {
+                version: 1,
+                memoryStatus: index === 5 ? "found" : outcomes[index]!,
+                caller:
+                  index === 4
+                    ? null
+                    : {
+                        name: ["codex", "claude-code", "pi"][index % 3]!,
+                        version: "fixture"
+                      },
+                ...(durationMs === undefined
+                  ? {}
+                  : {
+                      timing: {
+                        acceptedAt: "2026-11-10T10:00:00.000Z",
+                        completedAt: new Date(
+                          Date.parse("2026-11-10T10:00:00Z") + durationMs
+                        ).toISOString(),
+                        durationMs
+                      }
+                    })
+              },
+        localMemoryWorker: { provider: "claude", memoryStatus: "found" }
+      });
+      ids.push(question.id);
+      await pool.query(
+        "update memory_questions set created_at='2026-11-10T10:00:00Z' where id=$1",
+        [question.id]
+      );
+    }
+    const range = { from: "2026-11-01T00:00:00Z", to: "2026-12-01T00:00:00Z" };
+    const overview = await repository.getRecallActivityOverview(actor, {
+      ...range,
+      timezone: "UTC"
+    });
+    expect(overview.memoryResults).toEqual({
+      found: 2,
+      not_found: 1,
+      insufficient: 1,
+      pending_summary: 1,
+      unknown: 2,
+      foundPercentage: 200 / 3
+    });
+    expect(overview.medianDurationMs).toBe(3000);
+    expect(overview.knownDurations).toBe(3);
+    const filtered = await repository.listRecallActivity(actor, {
+      ...range,
+      limit: 50,
+      memoryStatus: "found",
+      callerName: "codex",
+      maxDurationMs: 1000
+    });
+    expect(filtered.questions.map((q) => q.id)).toEqual([ids[0]]);
+    const unknown = await repository.getRecallActivityOverview(actor, {
+      ...range,
+      timezone: "UTC",
+      memoryStatus: "unknown"
+    });
+    expect(unknown.memoryResults.foundPercentage).toBeNull();
+    expect(unknown.medianDurationMs).toBeNull();
+    expect(
+      (
+        await repository.listRecallActivity(actor, {
+          ...range,
+          limit: 50,
+          callerName: ""
+        })
+      ).questions
+    ).toHaveLength(2);
+    expect(await repository.getRecallActivity(actor, ids[0]!)).toMatchObject({
+      worker: "claude",
+      question: { metadata: { caller: { name: "codex" } } }
+    });
+    expect(
+      (await repository.getRecallActivity(actor, ids[5]!))?.memoryStatus
+    ).toBeNull();
+    expect(await repository.getRecallActivity(other, ids[0]!)).toBeNull();
+
+    // One payload read hydrates the page.
+    expect(
+      (
+        await pool.query<{ query: string }>(
+          "select query from memory_questions where id = any($1::uuid[])",
+          [ids]
+        )
+      ).rows.every((row) => row.query === "[koed encrypted memory question]")
+    ).toBe(true);
+    const hydrated = await repository.listRecallActivity(actor, {
+      ...range,
+      limit: 50
+    });
+    expect(hydrated.questions).toHaveLength(ids.length);
+    expect(
+      hydrated.questions.every((q) => q.query === "Synthetic metadata question")
+    ).toBe(true);
+
+    // Metadata this build cannot read is unknown for that row everywhere: the
+    // displayed row, every filter, and the overview totals agree. ids[1] was a
+    // found result from claude-code with a 3000 ms duration.
+    await pool.query(
+      `update memory_questions set recall_metadata = jsonb_set(recall_metadata, '{version}', '2') where id=$1`,
+      [ids[1]]
+    );
+    const list = async (filter: object) =>
+      (
+        await repository.listRecallActivity(actor, {
+          ...range,
+          limit: 50,
+          ...filter
+        })
+      ).questions;
+    const page = await list({});
+    expect(page.find((q) => q.id === ids[1])?.metadata).toBeNull();
+    expect(page.find((q) => q.id === ids[0])?.metadata).toMatchObject({
+      caller: { name: "codex" }
+    });
+    expect(
+      (await repository.getRecallActivity(actor, ids[1]!))?.question.metadata
+    ).toBeNull();
+    const listed = async (filter: object) =>
+      (await list(filter)).some((q) => q.id === ids[1]);
+    expect(await listed({ memoryStatus: "unknown" })).toBe(true);
+    expect(await listed({ memoryStatus: "found" })).toBe(false);
+    expect(await listed({ callerName: "" })).toBe(true);
+    expect(await listed({ callerName: "claude-code" })).toBe(false);
+    expect(await listed({ minDurationMs: 0 })).toBe(false);
+    expect(await listed({ maxDurationMs: 604_800_000 })).toBe(false);
+    const later = await repository.getRecallActivityOverview(actor, {
+      ...range,
+      timezone: "UTC"
+    });
+    expect(later.memoryResults).toEqual({
+      found: 1,
+      not_found: 1,
+      insufficient: 1,
+      pending_summary: 1,
+      unknown: 3,
+      foundPercentage: 50
+    });
+    expect(later.knownDurations).toBe(2);
+    expect(later.medianDurationMs).toBe(5000);
+    expect(later.questions.reduce((sum, bucket) => sum + bucket.found, 0)).toBe(
+      1
+    );
+    expect(
+      later.questions.reduce((sum, bucket) => sum + bucket.unknown, 0)
+    ).toBe(3);
+
+    // A wrongly shaped field is unknown on its own and cannot fail the read.
+    await pool.query(
+      `update memory_questions set recall_metadata = '{"version":1,"memoryStatus":"maybe","caller":{"name":7},"timing":{"durationMs":"soon"}}' where id=$1`,
+      [ids[0]]
+    );
+    expect((await list({})).find((q) => q.id === ids[0])?.metadata).toEqual({
+      version: 1,
+      memoryStatus: null,
+      caller: null
+    });
+    expect(
+      (await list({ memoryStatus: "unknown", callerName: "" })).some(
+        (q) => q.id === ids[0]
+      )
+    ).toBe(true);
+    expect((await list({ minDurationMs: 0 })).map((q) => q.id)).toEqual([
+      ids[2]
+    ]);
+    const selected = await repository.listRecallActivity(actor, {
+      ...range,
+      limit: 50,
+      contentIds: [ids[2]!]
+    });
+    expect(
+      selected.questions.map((q) => q.query).filter((q) => q !== null)
+    ).toEqual(["Synthetic metadata question"]);
+  });
+
+  it("reads Recall metadata identically for displayed rows, filters and totals", async () => {
+    const { actor, repository } = await createActor("recall-agreement");
+    const at = (ms: number) =>
+      new Date(Date.parse("2026-11-10T10:00:00.000Z") + ms).toISOString();
+    const timing = (durationMs: number, completedAt = at(durationMs)) => ({
+      acceptedAt: at(0),
+      completedAt,
+      durationMs
+    });
+    const base = {
+      version: 1,
+      memoryStatus: "found",
+      caller: { name: "codex", version: "1" },
+      timing: timing(1000)
+    };
+    const same = (instant: string) => ({
+      acceptedAt: instant,
+      completedAt: instant,
+      durationMs: 0
+    });
+    type Shown = {
+      status?: string | null;
+      caller?: string | null;
+      callerVersion?: string | null;
+      duration?: number | null;
+    } | null;
+    const known: Shown = {};
+    // [stored metadata, what every read must show]. Omitted fields keep the
+    // base value: found, codex version 1, 1000 ms.
+    const cases: Record<string, [unknown, Shown]> = {
+      valid: [base, known],
+      "legacy caller text": [
+        { ...base, caller: { name: "Codex: App", version: "1" } },
+        { caller: null }
+      ],
+      "duration unlike its timestamps": [
+        { ...base, timing: timing(2000, at(1000)) },
+        { duration: null }
+      ],
+      "later version": [{ ...base, version: 2 }, null],
+      "version as text": [{ ...base, version: "1" }, null],
+      "no stored metadata": [null, null],
+      "metadata is a list": [[base], null],
+      "metadata is text": ["found", null],
+      "unknown result": [{ ...base, memoryStatus: "maybe" }, { status: null }],
+      "result is a number": [{ ...base, memoryStatus: 1 }, { status: null }],
+      "caller is text": [{ ...base, caller: "codex" }, { caller: null }],
+      "caller name is a number": [
+        { ...base, caller: { name: 7, version: "1" } },
+        { caller: null }
+      ],
+      "caller name with outer space": [
+        { ...base, caller: { name: " codex", version: "1" } },
+        { caller: null }
+      ],
+      "caller name beyond ASCII": [
+        { ...base, caller: { name: "caf\u00e9", version: "1" } },
+        { caller: null }
+      ],
+      "caller name too long": [
+        { ...base, caller: { name: "a".repeat(129), version: "1" } },
+        { caller: null }
+      ],
+      "caller name at the limit": [
+        { ...base, caller: { name: "a".repeat(128), version: null } },
+        { caller: "a".repeat(128), callerVersion: null }
+      ],
+      "caller name with every separator": [
+        { ...base, caller: { name: "@a/b (c) d.e_f+g-h", version: "1" } },
+        { caller: "@a/b (c) d.e_f+g-h" }
+      ],
+      "caller version is unreadable": [
+        { ...base, caller: { name: "codex", version: "1;x" } },
+        { callerVersion: null }
+      ],
+      "caller with other keys": [
+        { ...base, caller: { name: "codex", version: "1", secret: "x" } },
+        known
+      ],
+      "duration is text": [
+        { ...base, timing: { ...timing(1000), durationMs: "1000" } },
+        { duration: null }
+      ],
+      "duration is a fraction": [
+        { ...base, timing: { ...timing(1000), durationMs: 1000.5 } },
+        { duration: null }
+      ],
+      "duration is negative": [
+        { ...base, timing: { ...timing(1000), durationMs: -1000 } },
+        { duration: null }
+      ],
+      "completed before accepted": [
+        { ...base, timing: timing(1000, at(-1000)) },
+        { duration: null }
+      ],
+      "duration at the limit": [
+        { ...base, timing: timing(604_800_000) },
+        { duration: 604_800_000 }
+      ],
+      "duration over the limit": [
+        { ...base, timing: timing(604_800_001) },
+        { duration: null }
+      ],
+      "timestamps with an offset": [
+        {
+          ...base,
+          timing: {
+            acceptedAt: "2026-11-10T10:00:00.000+00:00",
+            completedAt: "2026-11-10T10:00:01.000+00:00",
+            durationMs: 1000
+          }
+        },
+        { duration: null }
+      ],
+      "timestamps without milliseconds": [
+        {
+          ...base,
+          timing: {
+            acceptedAt: "2026-11-10T10:00:00Z",
+            completedAt: "2026-11-10T10:00:01Z",
+            durationMs: 1000
+          }
+        },
+        { duration: null }
+      ],
+      "timestamp is a number": [
+        { ...base, timing: { ...timing(1000), acceptedAt: 20261110 } },
+        { duration: null }
+      ],
+      "impossible day": [
+        { ...base, timing: same("2026-02-30T10:00:00.000Z") },
+        { duration: null }
+      ],
+      "leap day in a common year": [
+        { ...base, timing: same("2026-02-29T10:00:00.000Z") },
+        { duration: null }
+      ],
+      "leap day in a century year": [
+        { ...base, timing: same("2100-02-29T10:00:00.000Z") },
+        { duration: null }
+      ],
+      "real leap day": [
+        {
+          ...base,
+          timing: {
+            acceptedAt: "2028-02-29T23:59:59.500Z",
+            completedAt: "2028-03-01T00:00:00.500Z",
+            durationMs: 1000
+          }
+        },
+        known
+      ],
+      "month thirteen": [
+        { ...base, timing: same("2026-13-01T10:00:00.000Z") },
+        { duration: null }
+      ],
+      "second sixty": [
+        { ...base, timing: same("2026-11-10T10:00:60.000Z") },
+        { duration: null }
+      ],
+      "year zero": [
+        { ...base, timing: same("0000-01-01T00:00:00.000Z") },
+        { duration: null }
+      ],
+      "result on a recorded error": [base, { status: null }]
+    };
+
+    const names = Object.keys(cases);
+    const idOf = new Map<string, string>();
+    for (const name of names) {
+      const failed = name === "result on a recorded error";
+      const question = await repository.createFinalMemoryQuestion(actor, {
+        idempotencyKey: randomUUID(),
+        query: name,
+        origin: "mcp_memory_answer",
+        searchDomain: "global",
+        ...(failed
+          ? { status: "error" as const, errorMessage: "Synthetic error" }
+          : { status: "answered" as const, answerMarkdown: "Synthetic" })
+      });
+      idOf.set(name, question.id);
+      await pool.query(
+        "update memory_questions set created_at='2026-11-10T10:00:00Z', recall_metadata=$2::jsonb where id=$1",
+        [
+          question.id,
+          cases[name]![0] === null ? null : JSON.stringify(cases[name]![0])
+        ]
+      );
+    }
+    const range = { from: "2026-11-01T00:00:00Z", to: "2026-12-01T00:00:00Z" };
+    const list = async (filter: object) =>
+      (
+        await repository.listRecallActivity(actor, {
+          ...range,
+          limit: 50,
+          hydrate: false,
+          ...filter
+        })
+      ).questions;
+    const matching = async (filter: object) =>
+      new Set((await list(filter)).map((question) => question.id));
+    const rows = new Map((await list({})).map((row) => [row.id, row]));
+    expect(rows.size).toBe(names.length);
+    const shown = (name: string) => rows.get(idOf.get(name)!)!.metadata;
+
+    // Each case shows what it should, and every shown value is storable.
+    for (const name of names) {
+      const expected = cases[name]![1];
+      const metadata = shown(name);
+      if (expected === null) {
+        expect(metadata, name).toBeNull();
+        continue;
+      }
+      expect(recallQuestionMetadataSchema.parse(metadata), name).toEqual(
+        metadata
+      );
+      const status = "status" in expected ? expected.status : "found";
+      const caller = "caller" in expected ? expected.caller : "codex";
+      const version =
+        "callerVersion" in expected ? expected.callerVersion : "1";
+      const duration = "duration" in expected ? expected.duration : 1000;
+      expect(metadata?.memoryStatus, name).toBe(status);
+      expect(metadata?.caller, name).toEqual(
+        caller === null ? null : { name: caller, version }
+      );
+      expect(metadata?.timing?.durationMs ?? null, name).toBe(duration);
+    }
+
+    // Filters select exactly the rows that display the filtered value.
+    const showing = (test: (name: string) => boolean) =>
+      new Set(names.filter(test).map((name) => idOf.get(name)!));
+    for (const status of [
+      "found",
+      "not_found",
+      "insufficient",
+      "pending_summary",
+      "unknown"
+    ] as const)
+      expect(await matching({ memoryStatus: status }), status).toEqual(
+        showing((name) => (shown(name)?.memoryStatus ?? "unknown") === status)
+      );
+    expect(await matching({ callerName: "" })).toEqual(
+      showing((name) => (shown(name)?.caller ?? null) === null)
+    );
+    for (const caller of ["codex", "a".repeat(128), "@a/b (c) d.e_f+g-h"])
+      expect(await matching({ callerName: caller }), caller).toEqual(
+        showing((name) => shown(name)?.caller?.name === caller)
+      );
+    for (const hidden of ["Codex: App", " codex", "caf\u00e9", "7"])
+      expect((await matching({ callerName: hidden })).size, hidden).toBe(0);
+    const durationOf = (name: string) => shown(name)?.timing?.durationMs;
+    expect(await matching({ minDurationMs: 0 })).toEqual(
+      showing((name) => durationOf(name) !== undefined)
+    );
+    for (const duration of [0, 1000, 2000, 604_800_000])
+      expect(
+        await matching({ minDurationMs: duration, maxDurationMs: duration }),
+        String(duration)
+      ).toEqual(showing((name) => durationOf(name) === duration));
+
+    // Overview totals are the totals of the displayed rows.
+    const overview = await repository.getRecallActivityOverview(actor, {
+      ...range,
+      timezone: "UTC"
+    });
+    const durations = names
+      .flatMap((name) => durationOf(name) ?? [])
+      .sort((a, b) => a - b);
+    const found = showing((name) => shown(name)?.memoryStatus === "found").size;
+    expect(overview.recordedQuestions).toBe(names.length);
+    expect(overview.memoryResults).toMatchObject({
+      found,
+      not_found: 0,
+      insufficient: 0,
+      pending_summary: 0,
+      unknown: names.length - found
+    });
+    expect(overview.knownDurations).toBe(durations.length);
+    expect(overview.medianDurationMs).toBe(
+      (durations[Math.floor((durations.length - 1) / 2)]! +
+        durations[Math.ceil((durations.length - 1) / 2)]!) /
+        2
+    );
+    expect(
+      overview.questions.reduce((sum, bucket) => sum + bucket.found, 0)
+    ).toBe(found);
+
+    // The detail read shows the same metadata as the list.
+    for (const name of [
+      "valid",
+      "legacy caller text",
+      "duration unlike its timestamps",
+      "later version",
+      "impossible day"
+    ])
+      expect(
+        (await repository.getRecallActivity(actor, idOf.get(name)!))?.question
+          .metadata,
+        name
+      ).toEqual(shown(name));
+  });
+
+  it("uses DST-aware half-open dates and usage observation time for Recall timelines", async () => {
+    const { actor, repository } = await createActor("recall-dates");
+    const ids: string[] = [];
+    for (const createdAt of [
+      "2026-03-28T23:59:59Z",
+      "2026-03-29T00:00:00Z",
+      "2026-03-29T23:30:00Z",
+      "2026-03-30T23:00:00Z"
+    ]) {
+      const question = await repository.createFinalMemoryQuestion(actor, {
+        idempotencyKey: randomUUID(),
+        query: "Synthetic boundary",
+        origin: "mcp_memory_answer",
+        searchDomain: "global",
+        status: "answered",
+        answerMarkdown: "Synthetic"
+      });
+      await pool.query(
+        "update memory_questions set created_at=$2 where id=$1",
+        [question.id, createdAt]
+      );
+      ids.push(question.id);
+    }
+    const key = randomUUID();
+    await repository.recordWorkflowTokenUsage(actor, {
+      workflowType: "mcp_memory_answer",
+      questionId: ids[2],
+      totalTokens: 15,
+      inputTokens: 10,
+      outputTokens: 5,
+      idempotencyKey: key
+    });
+    await pool.query(
+      "update workflow_token_usage set observed_at='2026-03-29T22:30:00Z' where idempotency_key=$1",
+      [key]
+    );
+    const range = {
+      from: "2026-03-29T00:00:00Z",
+      to: "2026-03-30T23:00:00Z",
+      timezone: "Europe/London"
+    };
+    const overview = await repository.getRecallActivityOverview(actor, range);
+    expect(overview.recordedQuestions).toBe(2);
+    expect(overview.questions.map((q) => [q.start, q.count])).toEqual([
+      ["2026-03-29T00:00:00.000000Z", 1],
+      ["2026-03-29T23:00:00.000000Z", 1]
+    ]);
+    const firstDay = await repository.getRecallActivityOverview(actor, {
+      ...range,
+      to: "2026-03-29T23:00:00Z"
+    });
+    expect(firstDay.recordedQuestions).toBe(1);
+    expect(firstDay.tokens.totalTokens).toBe(15);
+    expect(
+      (
+        await repository.getRecallActivityOverview(actor, {
+          ...range,
+          from: "2026-03-29T23:00:00Z"
+        })
+      ).tokens.totalTokens
+    ).toBeNull();
+  });
+
+  it.each([
+    {
+      timezone: "Europe/London",
+      from: "2026-03-29T00:00:00Z",
+      to: "2026-03-29T23:00:00Z",
+      hours: 23
+    },
+    {
+      timezone: "Europe/London",
+      from: "2026-10-24T23:00:00Z",
+      to: "2026-10-26T00:00:00Z",
+      hours: 25
+    },
+    {
+      timezone: "Asia/Kolkata",
+      from: "2026-11-10T18:30:00Z",
+      to: "2026-11-11T18:30:00Z",
+      hours: 24
+    }
+  ])(
+    "uses distinct hourly Recall and usage buckets for $hours-hour days in $timezone",
+    async (range) => {
+      const { actor, repository } = await createActor("recall-hourly");
+      const ids: string[] = [];
+      // Include both ends to prove the range is half-open. On the autumn date,
+      // the middle records fall in the two different occurrences of 01:00.
+      for (const offset of [0, 1, 2, range.hours]) {
+        const question = await repository.createFinalMemoryQuestion(actor, {
+          idempotencyKey: randomUUID(),
+          query: "Synthetic hourly boundary",
+          origin: "mcp_memory_answer",
+          searchDomain: "global",
+          status: "answered",
+          answerMarkdown: "Synthetic"
+        });
+        const instant = new Date(
+          Date.parse(range.from) + offset * 3_600_000
+        ).toISOString();
+        await pool.query(
+          "update memory_questions set created_at=$2 where id=$1",
+          [question.id, instant]
+        );
+        const key = randomUUID();
+        await repository.recordWorkflowTokenUsage(actor, {
+          workflowType: "mcp_memory_answer",
+          questionId: question.id,
+          totalTokens: 10,
+          inputTokens: 8,
+          outputTokens: 2,
+          idempotencyKey: key
+        });
+        await pool.query(
+          "update workflow_token_usage set observed_at=$2 where idempotency_key=$1",
+          [key, instant]
+        );
+        ids.push(question.id);
+      }
+      const stats = await repository.getRecallActivityOverview(actor, {
+        from: range.from,
+        to: range.to,
+        timezone: range.timezone,
+        bucket: "hour"
+      });
+      const legacy = await repository.getRecallActivityOverview(actor, {
+        from: range.from,
+        to: range.to,
+        timezone: range.timezone
+      });
+      expect(legacy.bucket).toBe("day");
+      expect(legacy.recordedQuestions).toBe(stats.recordedQuestions);
+      expect(stats.bucket).toBe("hour");
+      expect(stats.questions).toHaveLength(range.hours);
+      expect(stats.tokenTimeline).toHaveLength(range.hours);
+      expect(new Set(stats.questions.map((point) => point.start)).size).toBe(
+        range.hours
+      );
+      expect(stats.questions.slice(0, 3).map((point) => point.count)).toEqual([
+        1, 1, 1
+      ]);
+      expect(stats.questions.slice(3).every((point) => point.count === 0)).toBe(
+        true
+      );
+      expect(stats.recordedQuestions).toBe(3);
+      expect(stats.tokens.totalTokens).toBe(30);
+      expect(
+        stats.tokenTimeline.slice(0, 3).map((point) => point.totalTokens)
+      ).toEqual([10, 10, 10]);
+      expect(
+        stats.tokenTimeline
+          .slice(3)
+          .every((point) => point.totalTokens === null)
+      ).toBe(true);
+    }
+  );
 
   it("reclaims expired leases, fences stale owners, and resolves cancellation races", async () => {
     const { actor } = await createActor("lease-owner");

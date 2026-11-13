@@ -82,6 +82,9 @@ import {
   readDesktopLocalCredentialAuthorization,
   resolveTeamCollaborationEnabled,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
+  recallActivityPageSchema,
+  recallActivityOverviewSchema,
+  recallActivityDetailSchema,
   MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS,
   MEMORY_ANSWER_TRANSPORT_OVERHEAD_MS,
   personalDesktopChangeSchema,
@@ -4528,6 +4531,35 @@ export const createKoedServerManager = ({
     });
   };
 
+  const listRecallActivity = async (
+    input: Extract<
+      PersonalDesktopRequest,
+      { operation: "personal.recall.list" }
+    >["input"]
+  ) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(input)) {
+      if (value === undefined) continue;
+      query.set(
+        key,
+        key === "cursor"
+          ? Buffer.from(JSON.stringify(value), "utf8").toString("base64url")
+          : String(value)
+      );
+    }
+    const payload = await authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(
+          `/v1/memory/recall-activity/questions?${query.toString()}`,
+          apiOrigin
+        ),
+        init: { method: "GET" }
+      }),
+      8 * 1_024 * 1_024
+    );
+    return recallActivityPageSchema.parse(payload);
+  };
+
   const listPersonalAskThreads = async (
     input: Extract<
       PersonalDesktopRequest,
@@ -4909,6 +4941,35 @@ export const createKoedServerManager = ({
         return projectCommands.manage(request.input);
       case "personal.projects.create":
         return projectCommands.create(request.input);
+      case "personal.recall.overview": {
+        const query = new URLSearchParams();
+        for (const [key, value] of Object.entries(request.input)) {
+          if (value !== undefined) query.set(key, String(value));
+        }
+        return authenticatedPersonalMemoryRequest(
+          ({ apiOrigin }) => ({
+            url: new URL(
+              `/v1/memory/recall-activity/overview?${query}`,
+              apiOrigin
+            ),
+            init: { method: "GET" }
+          }),
+          1 * 1_024 * 1_024
+        ).then((payload) => recallActivityOverviewSchema.parse(payload));
+      }
+      case "personal.recall.detail":
+        return authenticatedPersonalMemoryRequest(
+          ({ apiOrigin }) => ({
+            url: new URL(
+              `/v1/memory/recall-activity/questions/${encodeURIComponent(request.input.questionId)}`,
+              apiOrigin
+            ),
+            init: { method: "GET" }
+          }),
+          8 * 1_024 * 1_024
+        ).then((payload) => recallActivityDetailSchema.parse(payload));
+      case "personal.recall.list":
+        return listRecallActivity(request.input);
       case "personal.ask.threads.list":
         return listPersonalAskThreads(request.input);
       case "personal.ask.thread.load":

@@ -143,3 +143,55 @@ The solo presentation retains the existing managed Conversation controller for
 streaming, approval, draft recovery and command delivery. Its model and reasoning
 controls use the same capabilities, and its onboarding uses the existing local
 setup and AI Client commands with their existing consent requirements.
+
+## Recall activity operations
+
+The production v1 renderer uses `personal.recall.list`,
+`personal.recall.detail`, and `personal.recall.overview` through the typed
+Personal Desktop contract. Main process access is restricted to the corresponding
+Personal API Token endpoints under `/v1/memory/recall-activity`; the renderer
+receives neither credentials nor a generic HTTP or database capability.
+
+List requests apply metadata filters before keyset pagination and decrypt at most
+50 selected question texts, read in one encrypted-payload query. The cursor preserves PostgreSQL timestamp precision.
+Refresh can omit content and request hydration for a bounded set of changed IDs;
+returned null text means unhydrated, not an empty question. Detail returns bounded
+answer/evidence and usage projections without raw provider payloads. Historical
+job matches are labelled and do not affect list/chart totals.
+
+The v1 page subscribes to the existing `ask_questions_changed` wire event. Its
+name remains compatible with older consumers, and it covers both question
+origins. The event carries IDs, not question content, and is only a refresh hint;
+every read reauthorizes and reapplies the Personal Memory predicate. Refreshes
+coalesce, pause while hidden, reject stale responses, and use a visible fallback
+of at least 60 seconds with failure backoff. Each coalesced change re-reads the
+list. It re-reads the overview only when ten seconds have passed since the last
+overview read, and otherwise schedules one catch-up read for that moment. The
+overview error state clears only when an overview read succeeds.
+
+Recall filters also accept a recorded Memory-found result, calling AI Client name
+(an empty name selects unknown callers), and minimum/maximum measured duration.
+The overview returns result counts, the found percentage with its exact
+denominator, known-duration coverage, and a median over individual measurements.
+Each question includes nullable versioned metadata; legacy rows remain unknown,
+as do fields this build cannot read. The database validates the metadata once,
+and filters, overview totals and each returned row all use that one result, so a
+row never displays one value and counts as another. `docs/observability.md`
+states the rule.
+These fields carry no caller authority or stable installation identity.
+
+The overview also returns `filterOptions` for Projects and AI Clients across the
+whole date range, independent of pagination and the active filters. Preset date
+ranges follow local calendar rollover and resume after sleep. Custom ranges stay
+fixed. Question text is bounded to 100,000 characters for presentation. A returned
+question sets `queryTruncated` when its display text is shortened, and detail also
+sets `contentTruncated`. Stored question content remains unchanged. Usage coverage checks expected attempts
+and claimed runs. Personal ownership receipts preserve permission to record late
+usage after transient task cleanup without retaining question or answer content. Refreshes
+retain the truncation flag when they reuse previously hydrated text.
+
+Overview requests can opt into `bucket: "hour"` for ranges of up to 25 hours.
+This covers local calendar days across daylight-saving changes. Existing callers
+that omit the field retain automatic day/week/month buckets. Desktop uses hourly
+buckets for Today and groups full-range daily totals for longer preset charts;
+pagination never determines chart totals.

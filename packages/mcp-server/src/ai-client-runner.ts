@@ -1,3 +1,5 @@
+import { claudeAgentSdkTokenUsage } from "./claude-token-usage.js";
+export { claudeAgentSdkTokenUsage } from "./claude-token-usage.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -695,29 +697,6 @@ const claudeResultText = (message: Extract<SDKMessage, { type: "result" }>) => {
     return JSON.stringify(message.structured_output);
   }
   return message.result;
-};
-
-export const claudeAgentSdkTokenUsage = (
-  message: Extract<SDKMessage, { type: "result" }>
-): CodexThreadTokenUsage | undefined => {
-  const usages = Object.values(message.modelUsage ?? {});
-  if (usages.length === 0) return undefined;
-  const last = usages.reduce(
-    (total, usage) => ({
-      inputTokens: (total.inputTokens ?? 0) + usage.inputTokens,
-      cachedInputTokens:
-        (total.cachedInputTokens ?? 0) + usage.cacheReadInputTokens,
-      outputTokens: (total.outputTokens ?? 0) + usage.outputTokens,
-      totalTokens:
-        (total.totalTokens ?? 0) + usage.inputTokens + usage.outputTokens
-    }),
-    {} as NonNullable<CodexThreadTokenUsage["last"]>
-  );
-  return {
-    last,
-    total: { ...last },
-    modelContextWindow: Math.max(...usages.map((usage) => usage.contextWindow))
-  };
 };
 
 export const claudeSupportedReasoningEfforts = (
