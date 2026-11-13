@@ -64,7 +64,7 @@ function prepareStagingDirectory(plan) {
   );
   mkdirSync(nativeSourceDirectory, { recursive: true });
   copyFileSync(
-    resolve(plan.desktopRoot, "binding.gyp"),
+    resolve(plan.desktopRoot, "src/background-agent/native/binding.gyp"),
     resolve(plan.buildRoot, "binding.gyp")
   );
   copyFileSync(

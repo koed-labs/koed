@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { URL } from "node:url";
 import { createNativeBuildPlan } from "./build-background-agent-native-lib.mjs";
+
+test("keeps the GYP file out of the package root to prevent implicit installs", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8")
+  );
+
+  assert.equal(packageJson.scripts.install, undefined);
+  assert.equal(packageJson.scripts.preinstall, undefined);
+  assert.equal(existsSync(new URL("../binding.gyp", import.meta.url)), false);
+  assert.equal(
+    existsSync(
+      new URL("../src/background-agent/native/binding.gyp", import.meta.url)
+    ),
+    true
+  );
+});
 
 test("does not compile the macOS XPC module for other host platforms", () => {
   assert.equal(
