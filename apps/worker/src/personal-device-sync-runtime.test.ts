@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type { MemorySourceRepository } from "@koed-labs/db";
@@ -281,7 +287,10 @@ it("imports authenticated encrypted Project configuration without a Session and 
   try {
     const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
       repository,
-      environment: { PDS_SECRET_PROVIDER: "headless" },
+      environment: {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless"
+      },
       resolveSecret: () => secret,
       envelopeEncryptionProvider: {} as never
     })!;
@@ -895,7 +904,10 @@ describe("PDS session materialization", () => {
     const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
       repository: {} as MemorySourceRepository,
       envelopeEncryptionProvider: {} as never,
-      environment: { PDS_SECRET_PROVIDER: "headless" },
+      environment: {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless"
+      },
       resolveSecret: () => (available ? secret : null),
       createRuntime
     });
@@ -924,11 +936,68 @@ describe("PDS session materialization", () => {
       createReloadablePdsWorkerRuntimeFromEnvironment({
         repository: {} as MemorySourceRepository,
         envelopeEncryptionProvider: {} as never,
-        environment: {},
+        environment: { KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true" },
         resolveSecret: vi.fn(),
         createRuntime: vi.fn()
       })
     ).toBeNull();
+  });
+
+  it("does not start a reloadable runtime while Personal Device Sync is disabled", () => {
+    const resolveSecret = vi.fn();
+    for (const flag of [undefined, "", "false"]) {
+      expect(
+        createReloadablePdsWorkerRuntimeFromEnvironment({
+          repository: {} as MemorySourceRepository,
+          envelopeEncryptionProvider: {} as never,
+          environment: {
+            KOED_PERSONAL_DEVICE_SYNC_ENABLED: flag,
+            PDS_SECRET_PROVIDER: "headless"
+          },
+          resolveSecret,
+          createRuntime: vi.fn()
+        })
+      ).toBeNull();
+    }
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid Personal Device Sync flag", () => {
+    expect(() =>
+      createReloadablePdsWorkerRuntimeFromEnvironment({
+        repository: {} as MemorySourceRepository,
+        envelopeEncryptionProvider: {} as never,
+        environment: {
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "yes",
+          PDS_SECRET_PROVIDER: "headless"
+        },
+        resolveSecret: vi.fn(),
+        createRuntime: vi.fn()
+      })
+    ).toThrow(
+      'KOED_PERSONAL_DEVICE_SYNC_ENABLED must be exactly "true" or "false"'
+    );
+  });
+
+  it("does not launch the application provider while Personal Device Sync is disabled", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "koed-pds-provider-"));
+    const marker = resolve(directory, "launched");
+    try {
+      expect(
+        resolvePdsProviderRuntimeSecret({
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: process.execPath,
+          PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON: JSON.stringify([
+            "-e",
+            `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "")`
+          ]),
+          PDS_RUNTIME_SECRET_REF: "pds-runtime"
+        })
+      ).toBeNull();
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("accepts the bounded application provider contract", () => {
@@ -961,6 +1030,7 @@ describe("PDS session materialization", () => {
       }
     };
     const resolved = resolvePdsProviderRuntimeSecret({
+      KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
       PDS_SECRET_PROVIDER: "headless",
       PDS_SECRET_PROVIDER_COMMAND: process.execPath,
       PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON: JSON.stringify([
@@ -975,6 +1045,7 @@ describe("PDS session materialization", () => {
   it("rejects an application provider runtime without the opaque provider command", () => {
     expect(
       resolvePdsProviderRuntimeSecret({
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_SECRET_PROVIDER: "headless",
         PDS_RUNTIME_SECRET_REF: "pds-runtime"
       })

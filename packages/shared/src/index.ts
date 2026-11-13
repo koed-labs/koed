@@ -311,6 +311,10 @@ export {
   teamCollaborationFeatureEnvironmentName
 } from "./team-collaboration-feature.js";
 export {
+  personalDeviceSyncFeatureEnvironmentName,
+  resolvePersonalDeviceSyncEnabled
+} from "./personal-device-sync-feature.js";
+export {
   coarsePresenceFromTeamPresence,
   deriveTeamPresenceSnapshot,
   isTeamManualStatus,

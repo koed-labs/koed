@@ -105,7 +105,11 @@ describe("PDS secure runtime", () => {
   it("accepts validated private Project epoch history after a key refresh", async () => {
     const secret = reloadableRuntimeSecret();
     const runtime = await createPdsSecureRuntimeFromEnvironment(
-      { PDS_SECRET_PROVIDER: "headless", PDS_RUNTIME_SECRET_REF: "runtime" },
+      {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_RUNTIME_SECRET_REF: "runtime"
+      },
       {
         resolveHeadlessSecret: async () =>
           JSON.stringify({
@@ -118,7 +122,11 @@ describe("PDS secure runtime", () => {
     );
     expect(runtime.secureKeyProvider).not.toBeNull();
     const invalid = await createPdsSecureRuntimeFromEnvironment(
-      { PDS_SECRET_PROVIDER: "headless", PDS_RUNTIME_SECRET_REF: "runtime" },
+      {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_RUNTIME_SECRET_REF: "runtime"
+      },
       {
         resolveHeadlessSecret: async () =>
           JSON.stringify({
@@ -154,6 +162,7 @@ describe("PDS secure runtime", () => {
     const resolved: string[] = [];
     const runtime = await createPdsSecureRuntimeFromEnvironment(
       {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_SECRET_PROVIDER: "headless",
         PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
@@ -179,6 +188,7 @@ describe("PDS secure runtime", () => {
     const privateJwk = pair.privateKey.export({ format: "jwk" });
     const runtime = await createPdsSecureRuntimeFromEnvironment(
       {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_SECRET_PROVIDER: "headless",
         PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
@@ -209,6 +219,7 @@ describe("PDS secure runtime", () => {
     const delays: number[] = [];
     const runtime = await createPdsSecureRuntimeForApiStartup(
       {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_SECRET_PROVIDER: "headless",
         PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
@@ -244,6 +255,7 @@ describe("PDS secure runtime", () => {
     await expect(
       createPdsSecureRuntimeForApiStartup(
         {
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
           PDS_SECRET_PROVIDER: "headless",
           PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
           PDS_AUTHORITY_SECRET_REF: "pds-authority"
@@ -263,6 +275,7 @@ describe("PDS secure runtime", () => {
     const stored: Record<string, string> = {};
     const runtime = await createPdsSecureRuntimeForApiStartup(
       {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_SECRET_PROVIDER: "headless",
         PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
@@ -287,6 +300,7 @@ describe("PDS secure runtime", () => {
     await expect(
       createPdsSecureRuntimeForApiStartup(
         {
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
           PDS_SECRET_PROVIDER: "headless",
           PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
           PDS_AUTHORITY_SECRET_REF: "pds-authority"
@@ -307,9 +321,55 @@ describe("PDS secure runtime", () => {
     expect(putCalled).toBe(false);
   });
 
+  it("does not read the provider while Personal Device Sync is disabled", async () => {
+    let resolutions = 0;
+    const resolveHeadlessSecret = () => {
+      resolutions += 1;
+      return Promise.resolve(null);
+    };
+    for (const flag of [undefined, "", "false"]) {
+      const environment = {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: flag,
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_AUTHORITY_SECRET_REF: "pds-authority",
+        PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
+      };
+      await expect(
+        createPdsSecureRuntimeForApiStartup(environment, {
+          resolveHeadlessSecret
+        })
+      ).resolves.toEqual({ authoritySigner: null, secureKeyProvider: null });
+      await expect(
+        createPdsSecureRuntimeFromEnvironment(environment, {
+          resolveHeadlessSecret
+        })
+      ).resolves.toEqual({ authoritySigner: null, secureKeyProvider: null });
+      expect(
+        createReloadablePdsSecureKeyProviderFromEnvironment(environment, {
+          resolveHeadlessSecret
+        })
+      ).toBeNull();
+    }
+    expect(resolutions).toBe(0);
+  });
+
+  it("rejects an invalid Personal Device Sync flag at API startup", async () => {
+    await expect(
+      createPdsSecureRuntimeForApiStartup({
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "yes",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_AUTHORITY_SECRET_REF: "pds-authority"
+      })
+    ).rejects.toThrow(
+      'KOED_PERSONAL_DEVICE_SYNC_ENABLED must be exactly "true" or "false"'
+    );
+  });
+
   it("refuses a configured authority without a secure provider", async () => {
     await expect(
       createPdsSecureRuntimeForApiStartup({
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_AUTHORITY_SECRET_REF: "pds-authority"
       })
     ).rejects.toThrow(
@@ -327,6 +387,7 @@ describe("PDS secure runtime", () => {
     await expect(
       createPdsSecureRuntimeFromEnvironment(
         {
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
           PDS_SECRET_PROVIDER: "headless",
           PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
           PDS_AUTHORITY_SECRET_REF: "pds-authority"
@@ -377,6 +438,7 @@ describe("PDS secure runtime", () => {
     await expect(
       createPdsSecureRuntimeFromEnvironment(
         {
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
           PDS_SECRET_PROVIDER: "headless",
           PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
           PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
@@ -391,6 +453,7 @@ describe("PDS secure runtime", () => {
     const resolved: string[] = [];
     const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
       {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_SECRET_PROVIDER: "headless",
         PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
@@ -442,6 +505,7 @@ describe("PDS secure runtime", () => {
     const secret = reloadableRuntimeSecret();
     const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
       {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_SECRET_PROVIDER: "headless",
         PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
@@ -530,6 +594,7 @@ describe("PDS secure runtime", () => {
     const secret = reloadableRuntimeSecret();
     const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
       {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
         PDS_SECRET_PROVIDER: "headless",
         PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
         PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
