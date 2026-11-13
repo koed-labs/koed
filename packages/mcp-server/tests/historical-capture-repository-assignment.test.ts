@@ -80,7 +80,7 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
       const captured = await repository.createCapturedSession(actor, input);
       expect(captured.repositoryAssignment?.effective).toEqual(identity);
       expect(captured.repositoryAssignment?.effective?.kind).toBe(
-        "portable_repository"
+        sourceRuntime === "codex-cli" ? "portable_repository" : "unresolved"
       );
       const other = {
         ...identity,
@@ -155,7 +155,7 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
   );
 
   it.each(["codex-cli", "claude-code", "pi"] as const)(
-    "does not replace a recorded %s folder assignment when Git becomes available",
+    "retains an uncertain %s assignment when a recorded path later acquires Git",
     async (sourceRuntime) => {
       const user = await repository.createUser({
         email: `folder-replay-${randomUUID()}@example.test`
@@ -175,7 +175,7 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
         cwd,
         env
       });
-      expect(folderIdentity.kind).toBe("non_git_project");
+      expect(folderIdentity.kind).toBe("unresolved");
       const input = {
         sourceRuntime,
         externalSessionId: randomUUID(),
@@ -205,7 +205,7 @@ describe.skipIf(!databaseUrl)("historical import assignment boundary", () => {
         cwd,
         env
       });
-      expect(current.kind).toBe("portable_repository");
+      expect(current).toEqual(folderIdentity);
       const replay = await repository.createCapturedSession(actor, {
         ...input,
         repositoryIdentity: current

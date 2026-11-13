@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { recordCaptureHookFolder } from "../src/capture-hook.js";
 import {
   canonicalConversationItemKey,
   normalizeGitRemoteUrl
@@ -160,11 +161,8 @@ describe("Claude transcript watcher", () => {
           expect(input).toMatchObject({
             sourceSession: {
               repositoryIdentity: {
-                kind:
-                  recordedCwd === "/tmp/project"
-                    ? "non_git_project"
-                    : "unresolved",
-                root: recordedCwd === "/tmp/project" ? recordedCwd : null,
+                kind: "unresolved",
+                root: null,
                 checkoutId: null
               }
             }
@@ -816,6 +814,16 @@ describe("Claude transcript watcher", () => {
         cursors: {}
       };
 
+      await recordCaptureHookFolder(
+        { KOED_HOME: path.join(root, "koed") },
+        {
+          sourceSessionId,
+          cwd,
+          hookEventName: "SessionStart",
+          sessionStartSource: "startup"
+        },
+        ["--source=claude"]
+      );
       await processClaudeTranscriptSignal(
         client,
         state,

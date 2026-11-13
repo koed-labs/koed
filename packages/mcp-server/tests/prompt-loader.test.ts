@@ -45,7 +45,7 @@ describe("prompt loader", () => {
     const prompt = loadPrompt("memory-answer-worker");
 
     expect(prompt.id).toBe("memory-answer-worker");
-    expect(prompt.version).toBe("memory-answer-worker-v11");
+    expect(prompt.version).toBe("memory-answer-worker-v13-project-membership");
     expect(prompt.body).toContain(
       "do not preemptively decide which directly useful details"
     );

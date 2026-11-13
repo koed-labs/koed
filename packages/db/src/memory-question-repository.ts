@@ -6,6 +6,9 @@ import {
   personalFolderReferenceSchema,
   personalFolderScopeId,
   personalGitContextSchema,
+  authorizedPersonalSelectionSnapshot,
+  assertPersonalSelectionInput,
+  type PersonalSelectionSnapshot,
   repositoryScopeId
 } from "@koed-labs/shared";
 import { randomUUID } from "node:crypto";
@@ -104,6 +107,7 @@ export interface MemoryQuestionRepository {
       retrievalScope?: MemoryQuestionRetrievalScope;
       teamWorkspaceId?: string;
       searchDomain: MemoryQuestionSearchDomain;
+      personalSelection?: PersonalSelectionSnapshot;
       projectId?: string;
       projectName?: string;
       projectPath?: string;
@@ -1045,6 +1049,60 @@ export const createMemoryQuestionRepository = (
       input,
       finalOptions = {}
     ) {
+      const personalSelection = input.personalSelection
+        ? authorizedPersonalSelectionSnapshot(
+            input.personalSelection,
+            actor.userId
+          )
+        : undefined;
+      if (personalSelection && input.teamWorkspaceId)
+        throw Object.assign(
+          new Error("Personal selection cannot be combined with Team scope"),
+          { statusCode: 400 }
+        );
+      if (
+        input.searchDomain === "project" &&
+        !input.projectId &&
+        !(
+          personalSelection?.version === 1 &&
+          personalSelection.target.kind === "projects"
+        )
+      )
+        throw Object.assign(
+          new Error(
+            "Project question requires an accepted Project union or pinned Project identity"
+          ),
+          { statusCode: 400 }
+        );
+      if (personalSelection)
+        assertPersonalSelectionInput(personalSelection, {
+          search_domain: input.searchDomain,
+          project_id: input.projectId,
+          session_id: input.sessionId,
+          repository_context: personalSelection.callerRepositoryContext
+        });
+      if (
+        input.retrieval?.personal_selection !== undefined &&
+        !isDeepStrictEqual(
+          input.retrieval.personal_selection,
+          personalSelection
+        )
+      )
+        throw Object.assign(
+          new Error(
+            "Retrieval metadata does not match the accepted Personal selection"
+          ),
+          { statusCode: 400 }
+        );
+      if (personalSelection)
+        input = {
+          ...input,
+          personalSelection,
+          retrieval: {
+            ...input.retrieval,
+            personal_selection: personalSelection
+          }
+        };
       const suppressPlaintextPayload =
         memoryQuestionSensitiveFieldsRequireEncryption();
       if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
@@ -1242,6 +1300,21 @@ export const createMemoryQuestionRepository = (
           actor,
           row.team_authorization
         );
+      }
+      if (!inserted) {
+        const existing = await expandQuestionRow(actor, row, client);
+        if (
+          !isDeepStrictEqual(
+            existing.retrieval?.personal_selection,
+            personalSelection
+          )
+        )
+          throw Object.assign(
+            new Error(
+              "Final Memory Question idempotency selection does not match"
+            ),
+            { statusCode: 409 }
+          );
       }
       if (!inserted && strictIdempotencyBoundary) {
         const existing = await expandQuestionRow(actor, row, client);

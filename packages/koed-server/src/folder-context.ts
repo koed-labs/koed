@@ -17,6 +17,7 @@ import { z } from "zod";
 import {
   normalizeRecordedProjectDirectory,
   personalFolderObservationSchema,
+  repositoryIdentitySchema,
   type PersonalFolderObservation
 } from "@koed-labs/shared";
 import { inspectDeviceIdentityStatus } from "./device-identity.js";
@@ -130,6 +131,7 @@ const sourceFolderSchema = z
     sourceKind: z.enum(["codex", "claude-code", "pi"]),
     externalSessionId: z.string().min(1).max(1024),
     original: personalFolderObservationSchema.nullable(),
+    originalRepository: repositoryIdentitySchema.nullable().optional(),
     latest: personalFolderObservationSchema.nullable().optional()
   })
   .strict();
@@ -151,7 +153,8 @@ export const pinSourceFolderObservation = (
   paths: KoedServerPaths,
   key: SourceFolderKey,
   observation: PersonalFolderObservation | undefined,
-  newConversation = true
+  newConversation = true,
+  repository?: import("@koed-labs/shared").RepositoryIdentity
 ): void => {
   const target = sourceFolderPath(paths, key);
   withProjectMetadataLock(target, () => {
@@ -172,6 +175,11 @@ export const pinSourceFolderObservation = (
         ? prior.original
         : newConversation
           ? (observation ?? null)
+          : null,
+      originalRepository: prior
+        ? (prior.originalRepository ?? null)
+        : newConversation
+          ? (repository ?? null)
           : null,
       latest: observation ?? null
     });
@@ -214,3 +222,9 @@ export const readCurrentSourceFolderObservation = (
   paths: KoedServerPaths,
   key: SourceFolderKey
 ) => readSourceFolderRecord(paths, key)?.latest ?? undefined;
+
+/** Only a startup-time pin can establish a local selected Git Anchor. */
+export const readSourceRepositoryIdentity = (
+  paths: KoedServerPaths,
+  key: SourceFolderKey
+) => readSourceFolderRecord(paths, key)?.originalRepository ?? undefined;

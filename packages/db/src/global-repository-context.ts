@@ -86,15 +86,16 @@ export const canonicalGlobalCandidateKey = (row: {
   source_id: string;
   source_chunk_index?: number | null;
   source_chunk_count?: number | null;
-  source_generation?: number | null;
+  source_generation?: string | number | null;
   visibility: string;
 }): string =>
   JSON.stringify([
     row.visibility,
     row.source_type,
     row.source_id,
-    row.source_chunk_index ?? 0,
-    row.source_chunk_count ?? 1,
+    // LCM chunks rank one authorized summary generation, not independent evidence.
+    row.source_type === "memory_node" ? 0 : (row.source_chunk_index ?? 0),
+    row.source_type === "memory_node" ? 1 : (row.source_chunk_count ?? 1),
     row.source_generation ?? null
   ]);
 

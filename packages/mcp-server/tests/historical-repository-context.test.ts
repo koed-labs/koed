@@ -7,6 +7,10 @@ import {
   repositoryIdentitySchema
 } from "@koed-labs/shared";
 import {
+  pinSourceFolderObservation,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
+import {
   resolveHistoricalCaptureRepositoryIdentity,
   codexSourceTimeRepositoryIdentity,
   codexSourceTimeProjectDirectory,
@@ -97,7 +101,7 @@ it("preserves a recorded Git identity when its folder is missing or reused", asy
   expect(fs.existsSync(env.KOED_HOME)).toBe(false);
 });
 
-it("groups missing or non-Git recorded folders consistently within one profile", async () => {
+it("keeps missing source-time repository association uncertain across folder/profile changes", async () => {
   const { directory, env } = fixture();
   const cwd = path.join(directory, "missing-checkout");
   const first = await resolveHistoricalCaptureRepositoryIdentity({
@@ -106,14 +110,14 @@ it("groups missing or non-Git recorded folders consistently within one profile",
     env
   });
   expect(repositoryIdentitySchema.parse(first)).toMatchObject({
-    kind: "non_git_project",
-    root: cwd,
+    kind: "unresolved",
+    root: null,
     branch: null,
     checkoutId: null,
-    reason: "non_git"
+    reason: "probe_ambiguous"
   });
-  expect(first.key).toMatch(/^ng_/);
-  expect(first.originatingDeviceId).not.toBe("historical_unknown_device");
+  expect(first.key).toBeNull();
+  expect(first.originatingDeviceId).toBe("historical_unknown_device");
   expect(
     await resolveHistoricalCaptureRepositoryIdentity({
       sourceTime: null,
@@ -134,18 +138,17 @@ it("groups missing or non-Git recorded folders consistently within one profile",
     cwd: path.join(directory, "other"),
     env
   });
-  expect(otherFolder.key).not.toBe(first.key);
+  expect(otherFolder).toEqual(first);
   const otherProfile = await resolveHistoricalCaptureRepositoryIdentity({
     sourceTime: null,
     cwd,
     env: { KOED_HOME: path.join(directory, "other-profile") }
   });
-  expect(otherProfile.key).not.toBe(first.key);
-  expect(otherProfile.originatingDeviceId).not.toBe(first.originatingDeviceId);
+  expect(otherProfile).toEqual(first);
 });
 
 it.each([false, true])(
-  "uses current Git at the recorded folder and resolves subdirectories (upstream: %s)",
+  "keeps unassociated history uncertain despite current Git at the path (upstream: %s)",
   async (upstream) => {
     const { directory, env } = fixture();
     const root = path.join(directory, "repository");
@@ -167,20 +170,19 @@ it.each([false, true])(
       cwd,
       env
     });
-    expect(identity).toMatchObject({
-      kind: "portable_repository",
-      key: normalizeGitRemoteUrl(
-        `https://example.test/team/${upstream ? "upstream" : "origin"}.git`
-      ).fingerprint,
-      root: fs.realpathSync(root),
-      selectedRemote: upstream ? "upstream" : "origin",
-      branch: null
-    });
-    expect(identity.checkoutId).toMatch(/^checkout_/);
+    expect(identity).toEqual(unresolvedHistoricalRepositoryIdentity());
+    git("remote", "set-url", "origin", "https://example.test/replacement.git");
+    expect(
+      await resolveHistoricalCaptureRepositoryIdentity({
+        sourceTime: null,
+        cwd,
+        env
+      })
+    ).toEqual(identity);
   }
 );
 
-it("keeps conflicting current Git anchors unresolved instead of hiding the conflict behind a folder", async () => {
+it("keeps missing historical evidence uncertain independently of current Git conflicts", async () => {
   const { directory, env } = fixture();
   const cwd = path.join(directory, "repository");
   fs.mkdirSync(cwd);
@@ -204,12 +206,12 @@ it("keeps conflicting current Git anchors unresolved instead of hiding the confl
   ).toMatchObject({
     kind: "unresolved",
     key: null,
-    reason: "selection_conflict",
+    reason: "probe_ambiguous",
     branch: null
   });
 });
 
-it("retains a local Git identity when the recorded checkout has no remote", async () => {
+it("does not claim a source-time local Git identity from a later checkout", async () => {
   const { directory, env } = fixture();
   const cwd = path.join(directory, "local-repository");
   fs.mkdirSync(cwd);
@@ -220,11 +222,11 @@ it("retains a local Git identity when the recorded checkout has no remote", asyn
     env
   });
   expect(identity).toMatchObject({
-    kind: "device_local_repository",
-    root: fs.realpathSync(cwd),
+    kind: "unresolved",
+    root: null,
     branch: null
   });
-  expect(identity.key).toMatch(/^dl_/);
+  expect(identity.key).toBeNull();
 });
 
 it("keeps missing, relative and malformed folders unresolved without a process cwd fallback", async () => {
@@ -250,7 +252,7 @@ it("keeps missing, relative and malformed folders unresolved without a process c
 });
 
 it.each(["C:\\recorded\\folder\\", "\\\\server\\share\\folder\\", "C:\\"])(
-  "preserves Windows source folder syntax on other importing hosts: %s",
+  "keeps unassociated Windows folders uncertain on other importing hosts: %s",
   async (cwd) => {
     const { env } = fixture();
     expect(
@@ -260,8 +262,8 @@ it.each(["C:\\recorded\\folder\\", "\\\\server\\share\\folder\\", "C:\\"])(
         env
       })
     ).toMatchObject({
-      kind: "non_git_project",
-      root: cwd === "C:\\" ? cwd : cwd.slice(0, -1),
+      kind: "unresolved",
+      root: null,
       checkoutId: null
     });
   }
@@ -312,4 +314,120 @@ it("keeps conflicting branch observations out of source-time preference", () => 
       metadata({ repository_url: url, branch: "other" })
     ])
   ).toMatchObject({ kind: "portable_repository", branch: null });
+});
+
+it("preserves startup-time selected anchors and conflicts over native origin and later pins", async () => {
+  const { env } = fixture();
+  const paths = resolveKoedServerPaths(env);
+  const sourceTime = codexSourceTimeRepositoryIdentity([
+    metadata({ repository_url: "https://example.test/team/origin.git" })
+  ])!;
+  const source = {
+    sourceKind: "codex" as const,
+    externalSessionId: "selected"
+  };
+  const selected = repositoryIdentitySchema.parse({
+    ...sourceTime,
+    key: "gr_explicit_upstream",
+    selectedRemote: "upstream",
+    reason: "local_selection" as const
+  });
+  for (const original of [
+    selected,
+    repositoryIdentitySchema.parse({
+      ...unresolvedHistoricalRepositoryIdentity(),
+      reason: "selection_conflict" as const
+    })
+  ]) {
+    const key = { ...source, externalSessionId: original.reason };
+    pinSourceFolderObservation(paths, key, undefined, true, original);
+    pinSourceFolderObservation(paths, key, undefined, true, sourceTime);
+    expect(
+      await resolveHistoricalCaptureRepositoryIdentity({
+        sourceTime,
+        env,
+        cwd: "/reused",
+        source: key
+      })
+    ).toEqual(original);
+    expect(
+      await resolveHistoricalCaptureRepositoryIdentity({
+        sourceTime: null,
+        env,
+        cwd: "/missing",
+        source: key
+      })
+    ).toEqual(original);
+  }
+});
+
+it("keeps resumed and legacy source pins uncertain without backfilling today's selection", async () => {
+  const { env } = fixture();
+  const paths = resolveKoedServerPaths(env);
+  const sourceTime = codexSourceTimeRepositoryIdentity([
+    metadata({ repository_url: "https://example.test/team/origin.git" })
+  ])!;
+  const source = { sourceKind: "codex" as const, externalSessionId: "resumed" };
+  pinSourceFolderObservation(paths, source, undefined, false);
+  pinSourceFolderObservation(paths, source, undefined, true, sourceTime);
+  const resolve = (recorded = false) =>
+    resolveHistoricalCaptureRepositoryIdentity({
+      sourceTime: recorded ? sourceTime : null,
+      env,
+      cwd: "/missing",
+      source
+    });
+  expect(await resolve()).toEqual(unresolvedHistoricalRepositoryIdentity());
+  const recordDirectory = path.join(paths.dataDir, "source-folder-contexts");
+  const target = path.join(
+    recordDirectory,
+    fs.readdirSync(recordDirectory)[0]!
+  );
+  const old = JSON.parse(fs.readFileSync(target, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  delete old.originalRepository;
+  fs.writeFileSync(target, JSON.stringify(old));
+  pinSourceFolderObservation(paths, source, undefined, true, sourceTime);
+  expect(await resolve()).toEqual(unresolvedHistoricalRepositoryIdentity());
+  expect(await resolve(true)).toEqual(sourceTime);
+});
+
+it("uses reliable native source Git when a startup probe could not observe the checkout", async () => {
+  const { env } = fixture();
+  const source = {
+    sourceKind: "codex" as const,
+    externalSessionId: "probe-failed"
+  };
+  const sourceTime = codexSourceTimeRepositoryIdentity([
+    metadata({ repository_url: "https://example.test/team/original.git" })
+  ])!;
+  const failed = repositoryIdentitySchema.parse({
+    ...unresolvedHistoricalRepositoryIdentity(),
+    reason: "probe_failed" as const
+  });
+  pinSourceFolderObservation(
+    resolveKoedServerPaths(env),
+    source,
+    undefined,
+    true,
+    failed
+  );
+  expect(
+    await resolveHistoricalCaptureRepositoryIdentity({
+      sourceTime,
+      env,
+      cwd: "/missing",
+      source
+    })
+  ).toEqual(sourceTime);
+  expect(
+    await resolveHistoricalCaptureRepositoryIdentity({
+      sourceTime: null,
+      env,
+      cwd: "/missing",
+      source
+    })
+  ).toEqual(failed);
 });

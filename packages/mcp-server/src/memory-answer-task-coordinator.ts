@@ -15,7 +15,11 @@ import {
   type MemoryAnswerTaskExecutionAuthority
 } from "@koed-labs/shared";
 import { MemoryApiClient } from "./index.js";
-import { pinPersonalRecallRequest } from "./personal-recall-request.js";
+import {
+  isImplicitPersonalProjectRecallRequest,
+  pinPersonalRecallRequest
+} from "./personal-recall-request.js";
+import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import type { MemoryAnswerRetrievalClient } from "./answer-worker.js";
 import type {
   MemoryAnswerTaskApi,
@@ -436,7 +440,10 @@ export const createMemoryAnswerTaskCoordinator = (
     resolveStart: async (request) => {
       if (
         (request.request.input as Record<string, unknown>)?.recall_target !==
-        undefined
+          undefined ||
+        (request.request.selection === undefined &&
+          request.request.requestVersion === undefined &&
+          isImplicitPersonalProjectRecallRequest(request.request.input))
       ) {
         if (
           request.request.selection !== undefined ||
@@ -448,7 +455,8 @@ export const createMemoryAnswerTaskCoordinator = (
           );
         const pinned = await pinPersonalRecallRequest(
           request.request.input,
-          client
+          client,
+          request.request.caller as LocalRuntimeCallerContext | undefined
         );
         request = {
           ...request,
@@ -466,7 +474,8 @@ export const createMemoryAnswerTaskCoordinator = (
       });
       if (
         selection?.version === 1 &&
-        (selection.target.kind === "project" ||
+        (selection.target.kind === "projects" ||
+          selection.target.kind === "project" ||
           selection.target.kind === "folder")
       ) {
         const raw = request.request.input as Record<string, unknown>;

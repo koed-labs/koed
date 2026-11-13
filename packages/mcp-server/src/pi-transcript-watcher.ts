@@ -1,8 +1,8 @@
 import {
-  resolveCaptureRepositoryIdentity,
   recordedCaptureFolderObservation,
   currentCaptureFolderObservation
 } from "./capture-repository-context.js";
+import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
 import { createHash } from "node:crypto";
 import { conversationSourceRewriteGenerationId } from "@koed-labs/shared";
 import fs, { type FSWatcher } from "node:fs";
@@ -357,7 +357,9 @@ export const processPiTranscriptSignal = async (
   if (boundary < captureBaseline) throw new Error("pi_session_truncated");
   if (artifact && file.size < artifact.providerCursorOffset)
     throw new Error("pi_session_truncated");
-  const repositoryIdentity = await resolveCaptureRepositoryIdentity({
+  const repositoryIdentity = await resolveHistoricalCaptureRepositoryIdentity({
+    sourceTime: null,
+    source: { sourceKind: "pi", externalSessionId: identity.id },
     cwd: identity.cwd,
     env
   });

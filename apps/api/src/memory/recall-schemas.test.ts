@@ -4,8 +4,87 @@ import {
   MEMORY_RETRIEVAL_HINT_MAX_LENGTH
 } from "@koed-labs/shared";
 import { searchMemorySchema } from "./recall-schemas.js";
+import { expandMemoryNodeQuerySchema } from "./graph-schemas.js";
+import { curatedMemorySearchQuerySchema } from "./curated-memory-schemas.js";
 
 describe("searchMemorySchema", () => {
+  it.each([
+    ["search", searchMemorySchema],
+    ["expansion", expandMemoryNodeQuerySchema],
+    ["curated", curatedMemorySearchQuerySchema]
+  ] as const)(
+    "accepts Project unions without a synthetic Project ID for %s",
+    (_name, schema) => {
+      const ownerUserId = "00000000-0000-4000-8000-000000000001";
+      const selection = {
+        version: 1,
+        ownerUserId,
+        target: {
+          kind: "projects",
+          projects: [
+            { ownerUserId, projectId: "00000000-0000-4000-8000-000000000002" }
+          ],
+          callerSessionId: "00000000-0000-4000-8000-000000000003"
+        },
+        callerRepositoryContext: null
+      };
+      expect(
+        schema.parse({
+          query: "bounded",
+          search_domain: "project",
+          personal_selection: selection
+        })
+      ).toMatchObject({
+        search_domain: "project",
+        personal_selection: selection
+      });
+      expect(() =>
+        schema.parse({ query: "bounded", search_domain: "project" })
+      ).toThrow("project_id is required");
+      expect(() =>
+        schema.parse({
+          query: "bounded",
+          search_domain: "project",
+          personal_selection: {
+            ...selection,
+            target: { kind: "global" }
+          }
+        })
+      ).toThrow("project_id is required");
+      expect(() =>
+        schema.parse({
+          query: "bounded",
+          search_domain: "project",
+          personal_selection: {
+            ...selection,
+            target: { ...selection.target, projects: [] }
+          }
+        })
+      ).toThrow();
+    }
+  );
+
+  it("rejects Personal Project unions combined with Team routing", () => {
+    const ownerUserId = "00000000-0000-4000-8000-000000000001";
+    for (const schema of [searchMemorySchema, expandMemoryNodeQuerySchema])
+      expect(() =>
+        schema.parse({
+          query: "bounded",
+          search_domain: "project",
+          team_workspace_id: ownerUserId,
+          personal_selection: {
+            version: 1,
+            ownerUserId,
+            callerRepositoryContext: null,
+            target: {
+              kind: "projects",
+              projects: [{ ownerUserId, projectId: ownerUserId }],
+              callerSessionId: ownerUserId
+            }
+          }
+        })
+      ).toThrow("Personal selection cannot");
+  });
   it("rejects unsupported target fields instead of dropping them into Global recall", () => {
     expect(() =>
       searchMemorySchema.parse({

@@ -17,7 +17,16 @@ export const resolveCaptureFolderObservation = async (input: {
 }) => {
   const paths = resolveKoedServerPaths(input.env);
   const observation = await observeCaptureFolder(paths, input.cwd, input.env);
-  pinSourceFolderObservation(paths, input, observation, input.newConversation);
+  const repository = input.newConversation
+    ? await resolveCaptureRepositoryIdentity(input)
+    : undefined;
+  pinSourceFolderObservation(
+    paths,
+    input,
+    observation,
+    input.newConversation,
+    repository
+  );
   return readSourceFolderObservation(paths, input);
 };
 

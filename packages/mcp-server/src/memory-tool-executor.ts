@@ -352,7 +352,11 @@ export class MemoryToolExecutor {
         })) as unknown as Record<string, unknown>;
       }
       case "memory_answer": {
-        const pinned = await pinPersonalRecallRequest(rawInput, this.client);
+        const pinned = await pinPersonalRecallRequest(
+          rawInput,
+          this.client,
+          caller
+        );
         return await this.executeMemoryAnswer(
           pinned.input,
           caller,
@@ -432,7 +436,8 @@ export class MemoryToolExecutor {
   }> {
     const nonRepositorySelection =
       context?.personalSelection?.version === 1 &&
-      (context.personalSelection.target.kind === "project" ||
+      (context.personalSelection.target.kind === "projects" ||
+        context.personalSelection.target.kind === "project" ||
         context.personalSelection.target.kind === "folder");
     input = memoryAnswerInputSchema.parse(
       nonRepositorySelection
@@ -506,7 +511,8 @@ export class MemoryToolExecutor {
       execution.taskContext?.personalSelection ?? execution.personalSelection;
     const nonRepositorySelection =
       acceptedSelection?.version === 1 &&
-      (acceptedSelection.target.kind === "project" ||
+      (acceptedSelection.target.kind === "projects" ||
+        acceptedSelection.target.kind === "project" ||
         acceptedSelection.target.kind === "folder");
     const desktopSelection =
       execution.origin === "desktop_ask" && acceptedSelection?.version === 1;
@@ -760,6 +766,7 @@ export class MemoryToolExecutor {
             recall_metadata: recallMetadata,
             retrieval_scope: retrievalScope,
             search_domain: input.search_domain,
+            personal_selection: personalSelection,
             project_id: projectId,
             team_workspace_id: teamWorkspaceId,
             session_id: input.session_id,
@@ -779,6 +786,7 @@ export class MemoryToolExecutor {
             recall_metadata: recallMetadata,
             retrieval_scope: retrievalScope,
             search_domain: input.search_domain,
+            personal_selection: personalSelection,
             project_id: projectId,
             team_workspace_id: teamWorkspaceId,
             session_id: input.session_id,

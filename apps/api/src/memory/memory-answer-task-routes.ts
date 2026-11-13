@@ -208,6 +208,7 @@ export const registerMemoryAnswerTaskRoutes = (
         retrievalScope: question.retrieval_scope,
         teamWorkspaceId: question.team_workspace_id,
         searchDomain: question.search_domain,
+        personalSelection: question.personal_selection,
         projectId: question.project_id,
         projectName: question.project_name,
         projectPath: question.project_path,

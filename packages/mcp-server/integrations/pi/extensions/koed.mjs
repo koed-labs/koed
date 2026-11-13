@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import { resolveInstalledKoedHome } from "../koed-home.mjs";
 import {
   callLocalRuntimeTool,
+  piRuntimeCallerContext,
   recordCaptureFolderContext,
   createRuntimeTaskPort
 } from "../runtime-client.mjs";
@@ -207,10 +208,7 @@ export default function koedExtension(pi) {
             delete input.delivery_mode;
             const task = await port.start(
               input,
-              {
-                cwd: ctx.cwd,
-                clientInfo: { name: "pi", version: "koed-extension-v1" }
-              },
+              piRuntimeCallerContext(ctx),
               invocation,
               combined
             );

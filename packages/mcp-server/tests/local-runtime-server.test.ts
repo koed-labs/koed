@@ -89,6 +89,37 @@ const defaultExecutor = (): LocalAiRuntimeToolExecutor => ({
 });
 
 describe("Local AI Runtime", () => {
+  it.each([
+    { externalSessionId: "native-pi-session", sourceRuntime: "pi" as const },
+    {
+      externalSessionId: "native-codex-thread",
+      sourceRuntime: "codex-cli" as const
+    },
+    { sessionId: "e19cf47b-a553-4043-9bb5-c02134392c4a" }
+  ])(
+    "preserves per-call Conversation identity through authenticated HTTP (%j)",
+    async (conversation) => {
+      const environment = { NODE_ENV: "test", KOED_HOME: tempHome() };
+      const executor = defaultExecutor();
+      const runtime = await startLocalAiRuntime({
+        environment,
+        serviceFactory: fixture(executor).serviceFactory
+      });
+      try {
+        const caller = { cwd: "/same/folder", conversation };
+        await expect(
+          new LocalAiRuntimeClient(environment).callTool(
+            "memory_answer",
+            { query: "decision" },
+            caller
+          )
+        ).resolves.toMatchObject({ caller });
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+
   it("authenticates Pi Folder observations and preserves the source's original context", async () => {
     const koedHome = tempHome(),
       environment = { NODE_ENV: "test", KOED_HOME: koedHome };

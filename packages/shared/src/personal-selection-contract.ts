@@ -15,7 +15,38 @@ import {
 import type { PersonalMembershipReason } from "./personal-membership-contract.js";
 
 export const PERSONAL_SELECTION_CONTRACT_VERSION = 1;
+export const personalProjectsRecallTargetSchema = z
+  .object({
+    kind: z.literal("projects"),
+    projects: z.array(personalProjectReferenceSchema).min(1),
+    callerSessionId: z.uuid().toLowerCase()
+  })
+  .strict()
+  .superRefine((target, ctx) => {
+    const identities = target.projects.map(
+      (project) => `${project.ownerUserId}:${project.projectId}`
+    );
+    if (new Set(identities).size !== identities.length)
+      ctx.addIssue({
+        code: "custom",
+        message: "Project references must be unique"
+      });
+  });
+export const personalProjectRecallResolutionInputSchema = z.union([
+  z.object({ sessionId: z.uuid().toLowerCase() }).strict(),
+  z.object({ source: personalSourceReferenceSchema }).strict(),
+  z
+    .object({
+      externalSessionId: z.string().min(1).max(512),
+      sourceRuntime: z.enum(["codex-cli", "claude-code", "pi"])
+    })
+    .strict()
+]);
+export const personalProjectRecallResolutionSchema = z
+  .object({ sessionId: z.uuid(), target: personalProjectsRecallTargetSchema })
+  .strict();
 export const personalRecallTargetSchema = z.discriminatedUnion("kind", [
+  personalProjectsRecallTargetSchema,
   z
     .object({
       kind: z.literal("project"),
@@ -53,6 +84,19 @@ export const personalRecallTargetsEqual = (
   switch (left.kind) {
     case "global":
       return true;
+    case "projects":
+      return (
+        right.kind === "projects" &&
+        left.callerSessionId === right.callerSessionId &&
+        left.projects.length === right.projects.length &&
+        left.projects.every((project) =>
+          right.projects.some(
+            (other) =>
+              project.ownerUserId === other.ownerUserId &&
+              project.projectId === other.projectId
+          )
+        )
+      );
     case "repository":
       return (
         right.kind === "repository" &&
@@ -94,6 +138,16 @@ export const personalSelectionSchema = z
   .strict()
   .superRefine((value, ctx) => {
     const target = value.target;
+    if (
+      target.kind === "projects" &&
+      target.projects.some(
+        (project) => project.ownerUserId !== value.ownerUserId
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "Selection target belongs to another owner"
+      });
     const owner =
       target.kind === "project"
         ? target.project.ownerUserId

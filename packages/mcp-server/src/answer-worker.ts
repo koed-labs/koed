@@ -55,7 +55,8 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 30 * 60_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v11";
+export const MEMORY_ANSWER_PROMPT_VERSION =
+  "memory-answer-worker-v13-project-membership";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
 
@@ -742,7 +743,7 @@ type MemoryAnswerBudgetKind =
 class MemoryAnswerEvidenceBudgetError extends Error {
   constructor(readonly exhausted: MemoryAnswerBudgetKind[]) {
     super(
-      `Memory answer budget exhausted: no complete event context window fits evidence budget (${exhausted.join(", ")})`
+      `Memory answer budget exhausted: no complete event context window or LCM Summary fits evidence budget (${exhausted.join(", ")})`
     );
   }
 }
@@ -1171,7 +1172,8 @@ const workerRetrievalDiagnostic = (value: unknown): unknown => {
               "topScore",
               "scoreThreshold",
               "countAboveThreshold",
-              "maxAllowed"
+              "maxAllowed",
+              "parentNodeIds"
             ])
           )
         }
@@ -1457,6 +1459,20 @@ const sourceKey = (item: unknown): string => {
       record.chunk_index ??
       0
   );
+  if (
+    sourceType === "memory_node" &&
+    record.summaryRepresentation === "complete_summary"
+  ) {
+    const generation = record.sourceGeneration ?? record.source_generation;
+    return JSON.stringify([
+      sourceType,
+      sourceId,
+      record.visibility ?? null,
+      generation ??
+        createHash("sha256").update(JSON.stringify(record)).digest("hex"),
+      "complete_summary"
+    ]);
+  }
   return [sourceType || "unknown", sourceId, chunkIndex]
     .map(stringPart)
     .join(":");
@@ -1519,7 +1535,13 @@ export const mergeMemoryAnswerCandidateLists = (
   const ledger = new Map<string, Record<string, unknown>>();
   for (const [index, item] of existing.entries()) {
     const normalized = normalizeCandidateIdentity(item, index, "existing");
-    ledger.set(sourceKey(normalized), normalized);
+    const key = sourceKey(normalized);
+    ledger.set(key, {
+      ...normalized,
+      ...(isCompleteSummary(normalized)
+        ? observedReferenceLineage(ledger.get(key), normalized)
+        : {})
+    });
   }
   for (const list of lists) {
     list.hits.forEach((item, index) => {
@@ -1562,7 +1584,7 @@ const combineMemoryAnswerCandidateLists = (
   fusion: boolean
 ): unknown[] => {
   if (fusion) return mergeMemoryAnswerCandidateLists(existing, lists);
-  return [
+  return mergeCompleteSummaryEvidence([
     ...existing.map((item, index) =>
       normalizeCandidateIdentity(item, index, "existing")
     ),
@@ -1571,7 +1593,7 @@ const combineMemoryAnswerCandidateLists = (
         normalizeCandidateIdentity(item, index, list.stage)
       )
     )
-  ];
+  ]);
 };
 
 const stringField = (
@@ -1662,7 +1684,8 @@ const evidenceMatchesObservedSelection = (
     return false;
   return references.some(
     (reference) =>
-      sourceKey(reference) === sourceKey(candidate) &&
+      (sourceKey(reference) === sourceKey(candidate) ||
+        sameCompleteSummaryGeneration(candidate, reference)) &&
       recordFromUnknown(reference).visibility === record.visibility &&
       evidenceMatchesSelection(reference, selection)
   );
@@ -1808,13 +1831,58 @@ const appendEvidence = (
       const index = seen.get(key)!;
       merged[index] = {
         ...recordFromUnknown(merged[index]),
-        ...(recordFromUnknown(item).fullCanonicalEvent === true
+        ...(recordFromUnknown(item).fullCanonicalEvent === true ||
+        isCompleteSummary(item)
           ? recordFromUnknown(item)
           : {}),
         ...observedReferenceLineage(merged[index], item),
         ...mergedEventWindowMetadata(merged[index], item)
       };
     }
+  }
+  return merged;
+};
+
+const isCompleteSummary = (item: unknown): boolean => {
+  const record = recordFromUnknown(item);
+  return (
+    record.sourceType === "memory_node" &&
+    record.summaryRepresentation === "complete_summary"
+  );
+};
+
+const sameCompleteSummaryGeneration = (
+  summary: unknown,
+  reference: unknown
+): boolean => {
+  if (!isCompleteSummary(summary)) return false;
+  const record = recordFromUnknown(summary);
+  const ref = recordFromUnknown(reference);
+  const generation = record.sourceGeneration ?? record.source_generation;
+  if (generation === undefined || generation === null) return false;
+  return (
+    ref.sourceType === record.sourceType &&
+    ref.sourceId === record.sourceId &&
+    ref.visibility === record.visibility &&
+    (ref.sourceGeneration ?? ref.source_generation) === generation
+  );
+};
+
+const mergeCompleteSummaryEvidence = (evidence: unknown[]): unknown[] => {
+  const summaries = new Map<string, number>();
+  const merged: unknown[] = [];
+  for (const item of evidence) {
+    const key = sourceKey(item);
+    const index = isCompleteSummary(item) ? summaries.get(key) : undefined;
+    if (index === undefined) {
+      if (isCompleteSummary(item)) summaries.set(key, merged.length);
+      merged.push(item);
+    } else
+      merged[index] = {
+        ...recordFromUnknown(merged[index]),
+        ...recordFromUnknown(item),
+        ...observedReferenceLineage(merged[index], item)
+      };
   }
   return merged;
 };
@@ -1856,6 +1924,15 @@ const boundedUnknown = (
   );
 };
 
+const isCompleteEvidence = (item: unknown): boolean => {
+  const record = recordFromUnknown(item);
+  return (
+    record.fullCanonicalEvent === true ||
+    (record.sourceType === "memory_node" &&
+      record.summaryRepresentation === "complete_summary")
+  );
+};
+
 const boundEvidence = (
   evidence: unknown[],
   config: MemoryAnswerWorkerConfig
@@ -1867,7 +1944,7 @@ const boundEvidence = (
   const bounded: unknown[] = [];
   const admittedKeys = new Set<string>();
   const admittedWindows = new Set<string>();
-  evidence = eventWindowEvidence(evidence);
+  evidence = mergeCompleteSummaryEvidence(eventWindowEvidence(evidence));
   let tokenEstimate = 0;
   const exhausted: MemoryAnswerBudgetKind[] = [];
   if (evidence.length > config.maxCandidates) exhausted.push("candidates");
@@ -1880,7 +1957,7 @@ const boundEvidence = (
           !group.windowId || !admittedKeys.has(sourceKey(candidate))
       )
       .map((candidate) =>
-        recordFromUnknown(candidate).fullCanonicalEvent === true
+        isCompleteEvidence(candidate)
           ? sanitizeTeamIdentityMetadata(candidate)
           : boundedUnknown(candidate, {
               maxStringLength: 4_096,
@@ -1921,12 +1998,11 @@ const boundEvidence = (
       const supportingContext = Array.isArray(record.supportingContext)
         ? record.supportingContext
         : undefined;
-      const budgetContent =
-        record.fullCanonicalEvent === true
-          ? safeCandidate
-          : summaryText || lexicalAnchors || supportingContext
-            ? { summaryText, lexicalAnchors, supportingContext }
-            : safeCandidate;
+      const budgetContent = isCompleteEvidence(record)
+        ? safeCandidate
+        : summaryText || lexicalAnchors || supportingContext
+          ? { summaryText, lexicalAnchors, supportingContext }
+          : safeCandidate;
       const tokens = countTokensForModel(JSON.stringify(budgetContent), {
         model: config.model
       }).tokens;
@@ -1945,7 +2021,9 @@ const boundEvidence = (
   }
   if (
     bounded.length === 0 &&
-    evidence.some((item) => eventWindowIds(item).length > 0)
+    evidence.some(
+      (item) => eventWindowIds(item).length > 0 || isCompleteEvidence(item)
+    )
   ) {
     throw new MemoryAnswerEvidenceBudgetError(exhausted);
   }
@@ -2024,6 +2102,7 @@ const withinRequestDeadline = async <T>(
 };
 
 const observedEvidenceKey = (item: unknown): string => {
+  if (isCompleteSummary(item)) return sourceKey(item);
   return createHash("sha256").update(JSON.stringify(item)).digest("hex");
 };
 
@@ -2034,8 +2113,10 @@ const mergeObservedEvidence = (existing: unknown[], items: unknown[]) => {
   for (const item of items) {
     const key = observedEvidenceKey(item);
     if (!merged.has(key)) merged.set(key, item);
+    else if (isCompleteSummary(item))
+      merged.set(key, mergeCompleteSummaryEvidence([merged.get(key), item])[0]);
   }
-  return [...merged.values()];
+  return mergeCompleteSummaryEvidence([...merged.values()]);
 };
 
 const indexedEvidenceObservation = (evidence: unknown[], items: unknown[]) => {
@@ -2122,7 +2203,7 @@ export const evidenceSelectedByAnswer = (
   return appendEvidence([], resolved).map((item) =>
     Object.fromEntries(
       Object.entries(recordFromUnknown(item)).filter(
-        ([key]) => key !== "observedReferences"
+        ([key]) => key !== "observedReferences" || isCompleteSummary(item)
       )
     )
   );
@@ -2957,7 +3038,7 @@ const buildDynamicMemoryAnswerPrompt = (
       ? firstPassContext.evidence
       : [];
     firstPassContext.evidence = observations.map((observation, index) =>
-      recordFromUnknown(observation.item).fullCanonicalEvent === true
+      isCompleteEvidence(observation.item)
         ? observation
         : boundedObservations[index]
     );
@@ -3023,9 +3104,12 @@ const buildDynamicMemoryAnswerPrompt = (
         (item) => !group.items.includes(item)
       );
     }
-    if (state.evidence.length === 0 && group.windowId) {
+    if (
+      state.evidence.length === 0 &&
+      (group.windowId || group.items.some(isCompleteEvidence))
+    ) {
       throw new Error(
-        "Memory answer prompt-token budget exhausted: no complete event context window fits"
+        "Memory answer prompt-token budget exhausted: no complete event context window or LCM Summary fits"
       );
     }
     const bounded = boundEvidence(state.evidence, config);
@@ -4021,6 +4105,7 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
             query,
             ...common,
             retrieval_stage: "score_scan",
+            max_search_passes: 1,
             limit: options.limit
           })
         );
@@ -4147,7 +4232,18 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
         maxSearchPasses
       }).searchPasses;
       searchBudget -= cost;
-      return [{ ...task, limit, maxSearchPasses, cost }];
+      return [
+        {
+          ...task,
+          limit,
+          parentNodeIds:
+            task.stage === "scoped_leaf_search"
+              ? stringArrayArg(task.detail, "parentNodeIds")
+              : undefined,
+          maxSearchPasses: cost,
+          cost
+        }
+      ];
     }
   );
   const results = await Promise.all(
@@ -4155,12 +4251,17 @@ export const runScriptedMemoryAnswerFirstPass = async (options: {
       const started = Date.now();
       const { limit } = task;
       try {
+        if (task.stage === "scoped_leaf_search" && !task.parentNodeIds?.length)
+          throw new Error(
+            "Scoped leaf retrieval requires parent references from its scan"
+          );
         const result = await beforeDeadline(() =>
           options.client.search({
             query: task.query,
             ...common,
             retrieval_stage: task.stage,
             strict_limit: true,
+            parent_node_ids: task.parentNodeIds,
             max_search_passes: task.maxSearchPasses,
             limit
           })
@@ -4508,11 +4609,7 @@ const runDynamicToolMemoryAnswer = async (
             (entry) => recordFromUnknown(entry).item
           )
         : [];
-      if (
-        items.some(
-          (item) => recordFromUnknown(item).fullCanonicalEvent === true
-        )
-      ) {
+      if (items.some(isCompleteEvidence)) {
         let tokens = countTokensForModel(response.text, {
           model: options.config.model
         }).tokens;
@@ -4569,7 +4666,7 @@ const runDynamicToolMemoryAnswer = async (
           state.observedEvidenceTokens = previousObservedTokens;
           markBudgetExhausted(state.ledger, "prompt_tokens");
           const message =
-            "Memory answer prompt-token budget exhausted: complete event context observation cannot fit";
+            "Memory answer prompt-token budget exhausted: complete event context observation or LCM Summary cannot fit";
           state.errors.push(message);
           response = dynamicToolResult(
             { kind: "budget_exhausted", message },
@@ -4767,14 +4864,19 @@ const runDynamicToolMemoryAnswer = async (
     );
     // Historical observations may span several working sets, but the final
     // support must still fit a single configured evidence-token budget.
-    if (
-      boundEvidence(selectedEvidence, options.config).exhausted.includes(
-        "evidence_tokens"
-      )
-    ) {
+    const selectedEvidenceBudget = boundEvidence(
+      selectedEvidence,
+      options.config
+    );
+    if (selectedEvidenceBudget.exhausted.includes("evidence_tokens")) {
       markBudgetExhausted(state.ledger, "evidence_tokens");
       throw new Error("Memory answer budget exhausted: evidence_tokens");
     }
+    if (selectedEvidence.some(isCompleteSummary))
+      state.ledger.evidenceTokenEstimate = Math.max(
+        state.ledger.evidenceTokenEstimate,
+        selectedEvidenceBudget.tokenEstimate
+      );
     const selectedEvidenceLimit = Math.min(
       state.limit,
       options.config.maxCandidates,

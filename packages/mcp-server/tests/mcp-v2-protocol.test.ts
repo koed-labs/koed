@@ -591,10 +591,11 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       expect(caller.cwd).toBe(input.query);
   });
 
-  it("requires a Project target for ambiguous Codex workspaces and keeps Global available", async () => {
+  it("passes native Conversation identity independently of workspace ambiguity and keeps explicit targets available", async () => {
     const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
     const { client } = await connect({ callTool });
     const _meta = {
+      threadId: "native-conversation",
       "x-codex-turn-metadata": {
         workspaces: { "/repo/alpha": {}, "/repo/beta": {} }
       }
@@ -604,9 +605,19 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       arguments: { query: "decision" },
       _meta
     });
-    expect(unknown).toMatchObject({ isError: true });
-    expect(JSON.stringify(unknown.content)).toContain("explicit project_id");
-    expect(callTool).not.toHaveBeenCalled();
+    expect(unknown.isError).not.toBe(true);
+    expect(callTool).toHaveBeenLastCalledWith(
+      "memory_answer",
+      expect.any(Object),
+      expect.objectContaining({
+        conversation: {
+          externalSessionId: "native-conversation",
+          sourceRuntime: "codex-cli"
+        }
+      }),
+      expect.any(AbortSignal),
+      expect.any(String)
+    );
     await client.callTool({
       name: "memory_answer",
       arguments: { query: "global decision", search_domain: "global" },
@@ -615,7 +626,6 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     expect(callTool).toHaveBeenLastCalledWith(
       "memory_answer",
       expect.objectContaining({
-        repository_context: null,
         search_domain: "global"
       }),
       expect.any(Object),
@@ -681,6 +691,62 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       clientInfo: { name: "koed-mcp-v2-test", version: "1.0.0" }
     });
     expect(result.structuredContent).toBeUndefined();
+  });
+
+  it("preserves overlapping same-folder native Conversations per invocation", async () => {
+    const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
+    const { client } = await connect({ callTool });
+    await Promise.all(
+      ["first", "second"].map((conversation_id) =>
+        client.callTool({
+          name: "memory_answer",
+          arguments: {
+            query: conversation_id,
+            conversation_cwd: "/shared/folder",
+            conversation_id,
+            conversation_source: "claude-code"
+          }
+        })
+      )
+    );
+    expect(callTool).toHaveBeenCalledTimes(2);
+    for (const [, input, caller] of vi.mocked(
+      callTool as LocalAiRuntimeClient["callTool"]
+    ).mock.calls) {
+      expect(caller).toMatchObject({
+        cwd: "/shared/folder",
+        conversation: {
+          externalSessionId: input.query,
+          sourceRuntime: "claude-code"
+        }
+      });
+      expect(input).not.toHaveProperty("conversation_id");
+      expect(input).not.toHaveProperty("conversation_source");
+    }
+  });
+
+  it("rejects a native binding that conflicts with trusted caller context", async () => {
+    const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
+    const { client } = await connect({
+      callTool,
+      callerContextResolver: ({ defaultContext }) => ({
+        ...defaultContext,
+        conversation: { externalSessionId: "trusted", sourceRuntime: "pi" }
+      })
+    });
+    const result = await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "decision",
+        conversation_id: "different",
+        conversation_source: "pi"
+      }
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain(
+      "conflicting Conversation"
+    );
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   it("keeps one adapter connection independent from another", async () => {

@@ -23,8 +23,16 @@ export const localRuntimeToolNames = [
 
 export type LocalRuntimeToolName = (typeof localRuntimeToolNames)[number];
 
+export type LocalRuntimeConversationBinding =
+  | {
+      externalSessionId: string;
+      sourceRuntime: "codex-cli" | "claude-code" | "pi";
+    }
+  | { sessionId: string };
+
 export interface LocalRuntimeCallerContext {
   cwd: string;
+  conversation?: LocalRuntimeConversationBinding;
   protocolVersion?: string;
   clientInfo?: Record<string, unknown>;
   clientCapabilities?: Record<string, unknown>;

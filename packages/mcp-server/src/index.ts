@@ -10,6 +10,8 @@ import {
   memoryAnswerTaskClaimResponseSchema,
   type PersonalSelectionSnapshot,
   personalSelectionCompatibilityError,
+  personalProjectRecallResolutionInputSchema,
+  personalProjectRecallResolutionSchema,
   memoryAnswerTaskResponseSchema,
   memoryAnswerTaskHeartbeatResponseSchema,
   type AcceptMemoryAnswerTaskInput,
@@ -567,6 +569,22 @@ export class MemoryApiClient {
 
   async accessCheck(): Promise<AccessCheckResult> {
     return this.request<AccessCheckResult>("GET", "/v1/access/check");
+  }
+
+  async resolvePersonalProjectRecall(
+    input: import("zod").infer<
+      typeof personalProjectRecallResolutionInputSchema
+    >
+  ): Promise<
+    import("zod").infer<typeof personalProjectRecallResolutionSchema>
+  > {
+    return personalProjectRecallResolutionSchema.parse(
+      await this.request(
+        "POST",
+        "/v1/personal/projects/resolve-recall",
+        personalProjectRecallResolutionInputSchema.parse(input)
+      )
+    );
   }
 
   async capabilities(): Promise<Record<string, unknown>> {
