@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   DEFAULT_LLAMA_SERVER_BINARY,
@@ -10,6 +10,7 @@ import {
   boolEnv,
   intEnv,
   loadEmbeddingServiceEnv,
+  defaultLlamaThreads,
   resolveEnv,
   strEnv,
   verifyEmbeddingModelArtifact
@@ -112,6 +113,24 @@ describe("Embedding Service env config", () => {
     expect(config.llamaServerBinary).toBe("/custom/llama-server");
     expect(config.modelPath).toBe("/models/embedding.gguf");
     expect(config.embeddingServerPort).toBe(18080);
+  });
+
+  it("defaults llama-server threads to half the logical CPUs", () => {
+    expect(defaultLlamaThreads(8)).toBe(4);
+    expect(defaultLlamaThreads(12)).toBe(6);
+    expect(defaultLlamaThreads(3)).toBe(1);
+    expect(defaultLlamaThreads(1)).toBe(1);
+    expect(defaultLlamaThreads(0)).toBe(1);
+    expect(resolveEnv({}).llamaNThreads).toBe(
+      defaultLlamaThreads(cpus().length || 1)
+    );
+  });
+
+  it("keeps an explicit llama-server thread count", () => {
+    expect(resolveEnv({ EMBEDDING_LLAMA_N_THREADS: "8" }).llamaNThreads).toBe(
+      8
+    );
+    expect(resolveEnv({ LLAMA_N_THREADS: "2" }).llamaNThreads).toBe(2);
   });
 
   it("keeps the safe acceleration defaults when values are blank", () => {

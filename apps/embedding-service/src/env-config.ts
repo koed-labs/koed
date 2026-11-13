@@ -173,6 +173,16 @@ const optionalPathEnv = (
   names: string[]
 ): string | null => firstEnv(environment, names) ?? null;
 
+/**
+ * Default llama-server CPU threads: half the logical CPUs, at least 1. On SMT
+ * machines this is the physical core count (llama.cpp's own default). On
+ * Apple Silicon base chips it is the performance core count, which keeps the
+ * background Embedding Service off the cores the User's apps need. With the
+ * model offloaded to an accelerator, extra CPU threads add little.
+ */
+export const defaultLlamaThreads = (cpuCount: number): number =>
+  Math.max(1, Math.floor(cpuCount / 2));
+
 const intAlias = (
   environment: NodeJS.ProcessEnv,
   names: string[],
@@ -366,7 +376,7 @@ export const resolveEnv = (
     llamaNThreads: intAlias(
       environment,
       ["LLAMA_N_THREADS", "EMBEDDING_LLAMA_N_THREADS"],
-      cpuCount
+      defaultLlamaThreads(cpuCount)
     ),
     llamaNBatch,
     llamaBatchTokenHeadroom,
