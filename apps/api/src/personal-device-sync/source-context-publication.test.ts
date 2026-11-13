@@ -54,7 +54,11 @@ describe("capability-gated source publication", () => {
       }
     };
     const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
-      { PDS_SECRET_PROVIDER: "headless", PDS_RUNTIME_SECRET_REF: "fixture" },
+      {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_RUNTIME_SECRET_REF: "fixture"
+      },
       { resolveHeadlessSecret: async () => JSON.stringify(secret) }
     );
     const context = await provider!.getSourceContext({

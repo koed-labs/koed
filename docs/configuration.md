@@ -171,13 +171,16 @@ Supported mode fields:
   is off, both commands are absent from `koed --help` and exit with status 1
   without reading runtime state; with `--json` they report
   `{"ok": false, "error": ...}`. Any other value makes both commands fail with a
-  validation message. The switch covers only these CLI commands. Koed Desktop
-  does not show device pairing, and an installation that is not in a Personal
-  Device Group starts no pairing listener or sync work. Existing Personal Device
-  Groups are not changed, and the API, Worker and Desktop sync code paths are
-  not gated by this switch. Desktop passes its own environment to the CLI
-  commands it runs, so Desktop device controls that call `koed personal-sync`
-  need the variable set for Desktop as well.
+  validation message. The switch also gates the API and Worker Personal Device
+  Sync runtime. While it is off, they do not read the Personal Device Sync
+  secret provider, the Worker does not start local sync work, and the API starts
+  without a Personal Device Sync authority or source context. An invalid value
+  stops the API and Worker at startup. Koed Desktop does not show device
+  pairing. Existing Personal Device Groups and stored data are not changed, but
+  they do not sync until the switch is `true` for the supervisor, API and
+  Worker. Restart them after changing the value. Desktop passes its own
+  environment to the services and CLI commands it runs, so set the variable for
+  Desktop to use Personal Device Sync there.
 - `KOED_DEVELOPER_TEAM_BACKEND_ENABLED`: an isolated local-testing switch that
   lets the `developer` deployment profile truthfully advertise and serve the
   Team backend capability foundation. It accepts only `true` or `false`,
