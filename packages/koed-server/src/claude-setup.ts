@@ -113,8 +113,11 @@ const spawnClaude = (
   args: string[],
   options: SpawnSyncOptionsWithStringEncoding
 ): SpawnSyncReturns<string> => {
-  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
-  const invocation = nodeCliInvocation(resolvedPath, args);
+  const invocation = nodeCliInvocation(
+    executablePath,
+    args,
+    resolveThirdPartyNodeCliExecutable()
+  );
   return spawnSync(invocation.command, invocation.args, {
     ...options,
     env: nodeCliProcessEnvironment(invocation, options.env ?? {}, process.env)

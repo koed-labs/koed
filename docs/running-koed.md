@@ -96,6 +96,11 @@ Artifacts, access grants, exports, and Fork Snapshots.
 > [!IMPORTANT]  
 > Codex, Claude Code, and Pi are supported AI Client integrations. See client-specific integration guides for setup and limitations.
 
+On packaged macOS Desktop, JavaScript AI Client CLIs run through the executable
+Koed Helper when available, including the managed Pi host. Native CLIs run
+directly; if the Helper is unavailable, Koed retains its current runtime and
+enables Node mode when that runtime is Electron.
+
 Koed's server deployment unit is `koed-server` plus dependencies. Internally,
 `koed-server` supervises API, Worker, and the local Transcript Watcher, and connects
 to the configured Embedding Service. Postgres with pgvector stores Users, API

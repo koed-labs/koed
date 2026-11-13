@@ -712,13 +712,11 @@ export class CodexAppServerClient {
     const configArguments = (options.configOverrides ?? []).flatMap(
       (override) => ["--config", override]
     );
-    const resolvedBinary = resolveThirdPartyNodeCliExecutable(binary);
-    const invocation = nodeCliInvocation(resolvedBinary, [
-      ...configArguments,
-      "app-server",
-      "--listen",
-      "stdio://"
-    ]);
+    const invocation = nodeCliInvocation(
+      binary,
+      [...configArguments, "app-server", "--listen", "stdio://"],
+      resolveThirdPartyNodeCliExecutable()
+    );
     this.child = spawn(invocation.command, invocation.args, {
       cwd,
       env: nodeCliProcessEnvironment(invocation, env, env),

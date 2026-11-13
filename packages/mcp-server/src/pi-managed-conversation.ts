@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   nodeCliInvocation,
-  nodeCliProcessEnvironment
+  nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable
 } from "@koed-labs/shared";
 import type { AiClientPermissionMode } from "./ai-client-permission-mode.js";
 import type {
@@ -238,7 +239,8 @@ export class PiManagedConversationSession {
           forkSourcePath: forkSource,
           reasoningEffort: this.config.reasoningEffort
         })
-      ]
+      ],
+      resolveThirdPartyNodeCliExecutable()
     );
     const env = {
       ...piRpcEnvironment(this.config.env),

@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { extname, join, basename } from "node:path";
 
 export interface NodeCliInvocation {
@@ -44,22 +44,30 @@ export const resolveThirdPartyNodeCliExecutableInternal = (
     return executablePath;
   }
 
-  // Must be inside an Electron app bundle (Contents/Frameworks/...)
-  if (!executablePath.includes("/Contents/Frameworks/")) {
+  const match = executablePath.match(
+    /^(.*\.app)\/Contents\/(Frameworks\/.*|MacOS\/[^/]+)$/
+  );
+  if (!match) {
     return executablePath;
   }
+  const appBundlePath = match[1]!;
 
-  // Extract the app bundle path (everything before /Contents/Frameworks/)
-  const slash = executablePath.indexOf("/Contents/Frameworks/");
-  const appBundlePath = executablePath.slice(0, slash);
-
-  // Extract product name from the .app bundle filename (e.g. "Koed" from "Koed.app")
-  const appBundleName = basename(appBundlePath);
-  const productName = appBundleName.replace(/\.app$/, "");
-
-  if (!productName) {
-    return executablePath;
+  const executableInsideBundle = match[2]!;
+  let productName: string;
+  if (executableInsideBundle.startsWith("MacOS/")) {
+    productName = basename(executableInsideBundle);
+  } else {
+    try {
+      const helpers = readdirSync(
+        join(appBundlePath, "Contents", "Frameworks")
+      ).filter((name) => name.endsWith(" Helper.app"));
+      if (helpers.length !== 1) return executablePath;
+      productName = helpers[0]!.slice(0, -" Helper.app".length);
+    } catch {
+      return executablePath;
+    }
   }
+  if (!productName) return executablePath;
 
   // Derive the Helper.app path
   const helperAppPath = join(
@@ -110,9 +118,16 @@ export const nodeCliProcessEnvironment = (
   invocation: NodeCliInvocation,
   environment: NodeJS.ProcessEnv,
   runtimeEnvironment: NodeJS.ProcessEnv = process.env,
-  nodeExecutable: string = process.execPath
-): NodeJS.ProcessEnv =>
-  invocation.command === nodeExecutable &&
-  runtimeEnvironment.ELECTRON_RUN_AS_NODE === "1"
+  nodeExecutable: string = invocation.nodeExecutable ?? process.execPath
+): NodeJS.ProcessEnv => {
+  if (invocation.nodeExecutable === undefined) return environment;
+  return invocation.command === nodeExecutable &&
+    (runtimeEnvironment.ELECTRON_RUN_AS_NODE === "1" ||
+      (Boolean(process.versions.electron) &&
+        invocation.command === process.execPath) ||
+      /\/Contents\/Frameworks\/([^/]+ Helper)\.app\/Contents\/MacOS\/\1$/.test(
+        invocation.nodeExecutable
+      ))
     ? { ...environment, ELECTRON_RUN_AS_NODE: "1" }
     : environment;
+};

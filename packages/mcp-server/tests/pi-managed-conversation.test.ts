@@ -123,6 +123,57 @@ function fixture(startupDelayMs = 0, bundled = false) {
 }
 
 describe("Pi managed RPC conversation", () => {
+  it("launches the managed host through the packaged Helper with its filtered environment", async () => {
+    const f = fixture();
+    const runtime = path.join(f.root, "Koed.app/Contents/MacOS/Koed");
+    const helper = path.join(
+      f.root,
+      "Koed.app/Contents/Frameworks/Koed Helper.app/Contents/MacOS/Koed Helper"
+    );
+    fs.mkdirSync(path.dirname(helper), { recursive: true });
+    fs.writeFileSync(helper, "", { mode: 0o755 });
+    const execDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "execPath"
+    )!;
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "platform"
+    )!;
+    Object.defineProperty(process, "execPath", {
+      value: runtime,
+      configurable: true
+    });
+    Object.defineProperty(process, "platform", {
+      value: "darwin",
+      configurable: true
+    });
+    try {
+      const session = new PiManagedConversationSession({
+        ...f.config,
+        env: { ...f.config.env, KOED_HOME: f.root, SECRET_UNRELATED: "secret" }
+      });
+      await session.start();
+      const [command, args, options] = mocks.spawn.mock.calls[0]! as [
+        string,
+        string[],
+        { env: NodeJS.ProcessEnv }
+      ];
+      expect(command).toBe(helper);
+      expect(args[0]).toMatch(/integrations\/pi\/managed-rpc-host\.mjs$/);
+      expect(options.env).toMatchObject({
+        ELECTRON_RUN_AS_NODE: "1",
+        KOED_HOME: f.root,
+        KOED_MANAGED_PERMISSION_MODE: "full_access",
+        KOED_PI_MEMORY_ANSWER_MODE: "blocking"
+      });
+      expect(options.env.SECRET_UNRELATED).toBeUndefined();
+      await session.closeAndWait();
+    } finally {
+      Object.defineProperty(process, "execPath", execDescriptor);
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
+  });
   it("passes the persisted name only to the managed RPC host", async () => {
     const f = fixture();
     const session = new PiManagedConversationSession({

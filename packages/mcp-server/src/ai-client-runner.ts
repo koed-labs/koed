@@ -244,8 +244,11 @@ export const probeCodexVersion = async (
     CODEX_VERSION_PROBE_TIMEOUT_MS,
     Math.max(1, requestedTimeoutMs)
   );
-  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
-  const invocation = nodeCliInvocation(resolvedPath, ["--version"]);
+  const invocation = nodeCliInvocation(
+    executablePath,
+    ["--version"],
+    resolveThirdPartyNodeCliExecutable()
+  );
   const result = await execFileAsync(invocation.command, invocation.args, {
     env: nodeCliProcessEnvironment(invocation, environment, environment),
     timeout: boundedTimeoutMs,
@@ -436,8 +439,11 @@ const claudeProbeInvocation = (
   executablePath: string,
   args: string[]
 ): { command: string; args: string[] } => {
-  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
-  return nodeCliInvocation(resolvedPath, args);
+  return nodeCliInvocation(
+    executablePath,
+    args,
+    resolveThirdPartyNodeCliExecutable()
+  );
 };
 
 export const resolveClaudeCodeExecutable = (
@@ -656,8 +662,11 @@ export const claudeAgentSdkProcessEnvironment = (
   env: NodeJS.ProcessEnv,
   clientName: string
 ): NodeJS.ProcessEnv => {
-  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
-  const invocation = nodeCliInvocation(resolvedPath, []);
+  const invocation = nodeCliInvocation(
+    executablePath,
+    [],
+    resolveThirdPartyNodeCliExecutable()
+  );
   return nodeCliProcessEnvironment(
     invocation,
     claudeAgentSdkEnvironment(env, clientName),
@@ -672,9 +681,12 @@ export const claudeAgentSdkExecutableOptions = (
   pathToClaudeCodeExecutable: string;
   spawnClaudeCodeProcess?: NonNullable<Options["spawnClaudeCodeProcess"]>;
 } => {
-  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
-  const invocation = nodeCliInvocation(resolvedPath, []);
-  if (invocation.command !== process.execPath || invocation.args.length !== 1) {
+  const invocation = nodeCliInvocation(
+    executablePath,
+    [],
+    resolveThirdPartyNodeCliExecutable()
+  );
+  if (!invocation.nodeExecutable || invocation.args.length !== 1) {
     return { pathToClaudeCodeExecutable: invocation.command };
   }
   const [nodeEntry] = invocation.args;
