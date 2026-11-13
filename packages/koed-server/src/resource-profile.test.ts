@@ -49,4 +49,14 @@ describe("resource profile", () => {
       }).EMBEDDING_LLAMA_N_THREADS
     ).toBe("4");
   });
+
+  it("keeps a repository setting when the process variable is blank", () => {
+    expect(
+      applyResourceProfile({ EMBEDDING_LLAMA_N_THREADS: "" }, "low", {
+        cpuCount: 8,
+        explicit: { EMBEDDING_LLAMA_N_THREADS: "8" },
+        overrides: { embeddingThreads: 6 }
+      }).EMBEDDING_LLAMA_N_THREADS
+    ).toBe("");
+  });
 });

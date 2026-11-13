@@ -65,11 +65,14 @@ export const applyResourceProfile = (
     overrides?: ResourceOverrides;
   } = {}
 ): NodeJS.ProcessEnv => {
-  const explicit = { ...options.explicit, ...environment };
+  // Check each source on its own: merging first would let a blank process
+  // variable hide a non-empty value from the repository env file.
+  const isExplicit = (name: string) =>
+    Boolean(environment[name]?.trim() || options.explicit?.[name]?.trim());
   const cpuCount = Math.max(1, options.cpuCount ?? (cpus().length || 1));
   const output = { ...environment };
   for (const setting of profileSettings[profile]) {
-    if (setting.overrides.some((name) => explicit[name]?.trim())) continue;
+    if (setting.overrides.some(isExplicit)) continue;
     output[setting.name] = setting.value(cpuCount);
   }
   const overrides = options.overrides ?? {};
@@ -80,7 +83,7 @@ export const applyResourceProfile = (
   ] as const) {
     if (
       overrides[key] !== undefined &&
-      !setting.overrides.some((name) => explicit[name]?.trim())
+      !setting.overrides.some(isExplicit)
     )
       output[setting.name] = String(overrides[key]);
   }
