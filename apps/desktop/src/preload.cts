@@ -33,6 +33,8 @@ import {
   desktopCommandNames,
   hardwareAccelerationGetChannel,
   hardwareAccelerationSetChannel,
+  backgroundAgentGetChannel,
+  backgroundAgentSetChannel,
   launchAtStartupGetChannel,
   launchAtStartupSetChannel,
   desktopStatusChangedChannel,
@@ -133,6 +135,11 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     get: () => ipcRenderer.invoke(launchAtStartupGetChannel),
     set: (enabled: boolean) =>
       ipcRenderer.invoke(launchAtStartupSetChannel, enabled)
+  }),
+  backgroundAgent: Object.freeze({
+    get: () => ipcRenderer.invoke(backgroundAgentGetChannel),
+    set: (enabled: boolean) =>
+      ipcRenderer.invoke(backgroundAgentSetChannel, enabled)
   }),
   cliInstall: Object.freeze({
     getStatus: () =>

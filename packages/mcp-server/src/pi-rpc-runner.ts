@@ -12,7 +12,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   nodeCliInvocation,
-  nodeCliProcessEnvironment
+  nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable
 } from "@koed-labs/shared";
 
 import { startPiWorkerTools } from "./pi-worker-tools.js";
@@ -121,7 +122,7 @@ export const piExecutableInvocation = (
   executablePath: string,
   args: string[]
 ): { command: string; args: string[] } =>
-  nodeCliInvocation(executablePath, args);
+  nodeCliInvocation(executablePath, args, resolveThirdPartyNodeCliExecutable());
 
 const executableOnPath = (
   env: NodeJS.ProcessEnv,

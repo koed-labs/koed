@@ -87,6 +87,8 @@ export const hardwareAccelerationGetChannel = "koed:hardware-acceleration:get";
 export const hardwareAccelerationSetChannel = "koed:hardware-acceleration:set";
 export const launchAtStartupGetChannel = "koed:launch-at-startup:get";
 export const launchAtStartupSetChannel = "koed:launch-at-startup:set";
+export const backgroundAgentGetChannel = "koed:background-agent:get";
+export const backgroundAgentSetChannel = "koed:background-agent:set";
 export const personalMemoryCommandChannel = "koed:personal-memory:command";
 export const personalMemoryEventChannel = "koed:personal-memory:event";
 export { localAiClientCommandChannel } from "./local-ai-client-protocol.js";

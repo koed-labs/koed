@@ -125,6 +125,21 @@ describe("Desktop menu-bar status", () => {
     );
   });
 
+  it("uses an explicit label when quitting only the Desktop process", () => {
+    const template = createMenuBarMenuTemplate(
+      createMenuBarStatusSnapshot(healthyStatus()),
+      {
+        openDesktop: vi.fn(),
+        refresh: vi.fn(),
+        quit: vi.fn(),
+        quitLabel: "Quit Desktop"
+      }
+    );
+
+    expect(template.some((item) => item.label === "Quit Desktop")).toBe(true);
+    expect(template.some((item) => item.label === "Quit Koed")).toBe(false);
+  });
+
   it("shows an externally stopped instance as Stopped with a Start action, not service faults", () => {
     const snapshot = createMenuBarStatusSnapshot({
       ...healthyStatus(),
@@ -158,6 +173,24 @@ describe("Desktop menu-bar status", () => {
         quit: vi.fn()
       }).some((item) => item.label === "Start Koed")
     ).toBe(false);
+  });
+
+  it("shows an explicit Stop action for an Agent-owned running runtime", () => {
+    const stopKoed = vi.fn();
+    const template = createMenuBarMenuTemplate(
+      createMenuBarStatusSnapshot(healthyStatus()),
+      {
+        openDesktop: vi.fn(),
+        refresh: vi.fn(),
+        stopKoed,
+        quit: vi.fn()
+      }
+    );
+
+    template.find((item) => item.label === "Stop Koed")?.click?.();
+
+    expect(stopKoed).toHaveBeenCalledOnce();
+    expect(template.some((item) => item.label === "Start Koed")).toBe(false);
   });
 
   it("only lists services that are not running normally", () => {

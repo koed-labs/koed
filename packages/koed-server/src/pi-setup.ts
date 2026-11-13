@@ -15,7 +15,8 @@ import {
 import { dirname, delimiter, isAbsolute, join, resolve } from "node:path";
 import {
   nodeCliInvocation,
-  nodeCliProcessEnvironment
+  nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable
 } from "@koed-labs/shared";
 import { installPiPackageTransaction } from "./pi-package-transaction.mjs";
 import { resolveKoedServerPaths } from "./paths.js";
@@ -158,7 +159,7 @@ export const piSetupInvocation = (
   executablePath: string,
   args: string[]
 ): { command: string; args: string[] } =>
-  nodeCliInvocation(executablePath, args);
+  nodeCliInvocation(executablePath, args, resolveThirdPartyNodeCliExecutable());
 
 export const resolvePiSetupLauncher = (
   environment: NodeJS.ProcessEnv = process.env,

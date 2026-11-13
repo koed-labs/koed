@@ -15,6 +15,8 @@ import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
 import { accelerationChannel } from "./acceleration-protocol.js";
 import {
   presentationPreferencesGetChannel,
+  backgroundAgentGetChannel,
+  backgroundAgentSetChannel,
   presentationPreferencesSetChannel,
   clipboardWriteChannel,
   collaborationCommandChannel,
@@ -167,6 +169,18 @@ describe("desktop IPC command registry", () => {
         supported: true
       };
     });
+    const getBackgroundAgent = vi.fn(async () => ({
+      enabled: false,
+      status: "disabled" as const,
+      supported: true,
+      runtimeState: "disabled" as const
+    }));
+    const setBackgroundAgent = vi.fn(async (enabled: boolean) => ({
+      enabled,
+      status: enabled ? ("enabled" as const) : ("disabled" as const),
+      supported: true,
+      runtimeState: enabled ? ("starting" as const) : ("stopped" as const)
+    }));
     const mutatingHandlers = Object.fromEntries(
       [
         "setup_codex",
@@ -244,6 +258,8 @@ describe("desktop IPC command registry", () => {
         setHardwareAcceleration,
         getLaunchAtStartup,
         setLaunchAtStartup,
+        getBackgroundAgent,
+        setBackgroundAgent,
         selectProjectDirectory
       }
     );
@@ -264,6 +280,8 @@ describe("desktop IPC command registry", () => {
       setHardwareAcceleration,
       getLaunchAtStartup,
       setLaunchAtStartup,
+      getBackgroundAgent,
+      setBackgroundAgent,
       selectProjectDirectory,
       mutatingHandlers,
       checkHandlers
@@ -740,6 +758,29 @@ describe("desktop IPC command registry", () => {
     expect(setLaunchAtStartup).toHaveBeenCalledWith(true);
     await expect(set(renderer(), "yes")).rejects.toThrow(
       "Invalid launch-at-startup preference"
+    );
+    await expect(get(renderer("https://attacker.example/"))).rejects.toThrow(
+      "Untrusted Desktop IPC sender"
+    );
+  });
+
+  it("gets and sets Background Agent only for trusted renderers with booleans", async () => {
+    const { registered, getBackgroundAgent, setBackgroundAgent } = register();
+    const get = registered.get(backgroundAgentGetChannel)!;
+    const set = registered.get(backgroundAgentSetChannel)!;
+
+    await expect(get(renderer())).resolves.toMatchObject({
+      enabled: false,
+      runtimeState: "disabled"
+    });
+    await expect(set(renderer(), true)).resolves.toMatchObject({
+      enabled: true,
+      runtimeState: "starting"
+    });
+    expect(getBackgroundAgent).toHaveBeenCalledOnce();
+    expect(setBackgroundAgent).toHaveBeenCalledWith(true);
+    await expect(set(renderer(), "yes")).rejects.toThrow(
+      "Invalid Background Agent preference"
     );
     await expect(get(renderer("https://attacker.example/"))).rejects.toThrow(
       "Untrusted Desktop IPC sender"

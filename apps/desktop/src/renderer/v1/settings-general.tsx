@@ -1,7 +1,8 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Button, Switch } from "@koed-labs/ui";
+import { Button, Spinner, Switch } from "@koed-labs/ui";
 import { Laptop, Sun, Moon, Check } from "lucide-react";
 import type { DesktopApi, DesktopLaunchAtStartupState } from "../../types.js";
+import { useBackgroundAgentSetting } from "../state/use-background-agent-setting.js";
 import type { ThemeStore } from "../state/theme.js";
 import { Group, Row } from "./settings-controls.js";
 const themes = [
@@ -198,14 +199,49 @@ function PresentationSettings({
     </>
   );
 }
+function BackgroundAgentSetting({
+  api
+}: {
+  api?: DesktopApi["backgroundAgent"];
+}) {
+  const { state, busy, error, setEnabled } = useBackgroundAgentSetting(api);
+  if (!api) return null;
+  return (
+    <Row
+      title="Keep Koed running in the menu bar"
+      description={
+        state?.supported === false
+          ? "Requires a qualified, signed macOS build."
+          : state?.status === "requires-approval"
+            ? "Allow Koed in System Settings to finish setup."
+            : "Keep Koed running after you quit the Desktop app."
+      }
+    >
+      <Switch
+        aria-label="Keep Koed running in the menu bar"
+        checked={state?.enabled ?? false}
+        disabled={!state || !state.supported || busy}
+        onCheckedChange={(enabled) => void setEnabled(enabled)}
+      />
+      {busy ? <Spinner aria-label="Updating Background Agent" /> : null}
+      {state?.runtimeState === "needs_attention" ? (
+        <span role="status">The Local AI Runtime needs attention.</span>
+      ) : null}
+      {error ? <span role="alert">{error}</span> : null}
+    </Row>
+  );
+}
+
 export function GeneralPreferences({
   themeStore,
   launchAtStartup,
+  backgroundAgent,
   presentationPreferences,
   onRestartOnboarding
 }: {
   themeStore: ThemeStore;
   launchAtStartup?: DesktopApi["launchAtStartup"];
+  backgroundAgent?: DesktopApi["backgroundAgent"];
   presentationPreferences?: DesktopApi["presentationPreferences"];
   onRestartOnboarding?: () => void | Promise<void>;
 }) {
@@ -233,6 +269,7 @@ export function GeneralPreferences({
       {theme.error && <p role="alert">{theme.error}</p>}
       <Group title="On this device">
         <LaunchSetting api={launchAtStartup} />
+        <BackgroundAgentSetting api={backgroundAgent} />
         <PresentationSettings api={presentationPreferences} />
         {onRestartOnboarding && (
           <Row

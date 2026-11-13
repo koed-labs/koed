@@ -221,6 +221,12 @@ importers:
       lucide-react:
         specifier: ^0.564.0
         version: 0.564.0(react@19.2.6)
+      node-addon-api:
+        specifier: 8.7.0
+        version: 8.7.0
+      node-gyp:
+        specifier: 12.4.0
+        version: 12.4.0
       qrcode:
         specifier: 1.5.4
         version: 1.5.4

@@ -64,6 +64,7 @@ import {
   localAiClientFlowKeys,
   nodeCliInvocation,
   nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable,
   resolveTeamCollaborationEnabled,
   summarizeHistoricalIngestionState,
   type AiClientCapabilityDescriptor,
@@ -555,7 +556,11 @@ export const inspectClaudeCode = async (
   }
   const childEnvironment = claudeProcessEnvironment(environment);
   const runClaude = (args: string[], timeout: number) => {
-    const invocation = nodeCliInvocation(executable, args);
+    const invocation = nodeCliInvocation(
+      executable,
+      args,
+      resolveThirdPartyNodeCliExecutable()
+    );
     return deps.spawnSync(invocation.command, invocation.args, {
       encoding: "utf8",
       env: nodeCliProcessEnvironment(invocation, childEnvironment, environment),
@@ -1248,7 +1253,11 @@ const inspectCodexInstallation = (
   deps: CodexStatusDependencies
 ): { executable: string; version: string | null } => {
   const executable = deps.resolveCodexExecutable(environment);
-  const invocation = nodeCliInvocation(executable, ["--version"]);
+  const invocation = nodeCliInvocation(
+    executable,
+    ["--version"],
+    resolveThirdPartyNodeCliExecutable()
+  );
   const result = deps.spawnSync(invocation.command, invocation.args, {
     encoding: "utf8",
     env: nodeCliProcessEnvironment(invocation, environment, environment),

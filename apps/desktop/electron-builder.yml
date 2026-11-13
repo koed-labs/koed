@@ -6,6 +6,7 @@ copyright: Copyright © 2026 Koed
 asar: true
 npmRebuild: false
 afterPack: scripts/after-pack.mjs
+afterSign: scripts/after-sign.mjs
 
 files:
   - dist-electron/**/*
@@ -24,6 +25,7 @@ files:
 
 asarUnpack:
   - dist-electron/koed-server/node-entrypoint-runner.js
+  - dist-electron/background-agent/native/koed_background_xpc.node
 
 extraResources:
   - from: dist

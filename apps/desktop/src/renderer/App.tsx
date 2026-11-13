@@ -1966,6 +1966,7 @@ export function App({
         cliInstall={window.koedDesktop?.cliInstall}
         hardwareAcceleration={window.koedDesktop?.hardwareAcceleration}
         launchAtStartup={window.koedDesktop?.launchAtStartup}
+        backgroundAgent={window.koedDesktop?.backgroundAgent}
         localAiClients={window.koedDesktop?.localAiClients}
         onSectionChange={(section) =>
           dispatch({

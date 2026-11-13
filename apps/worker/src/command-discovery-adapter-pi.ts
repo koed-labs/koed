@@ -6,7 +6,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   nodeCliInvocation,
-  nodeCliProcessEnvironment
+  nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable
 } from "@koed-labs/shared";
 import type {
   CommandDiscoveryAdapter,
@@ -233,7 +234,11 @@ const discoverFromRpc = (
       "--no-context-files",
       "--no-extensions"
     ];
-    const invocation = nodeCliInvocation(executable, args);
+    const invocation = nodeCliInvocation(
+      executable,
+      args,
+      resolveThirdPartyNodeCliExecutable()
+    );
     child = spawn(invocation.command, invocation.args, {
       cwd: workerRoot,
       env: nodeCliProcessEnvironment(

@@ -33,6 +33,7 @@ import type {
   PersonalMemoryDesktopHandler
 } from "../koed-server/manager.js";
 import type {
+  DesktopBackgroundAgentState,
   DesktopLaunchAtStartupState,
   DesktopSetupSnapshot
 } from "../types.js";
@@ -57,6 +58,8 @@ import {
   hardwareAccelerationSetChannel,
   launchAtStartupGetChannel,
   launchAtStartupSetChannel,
+  backgroundAgentGetChannel,
+  backgroundAgentSetChannel,
   type DesktopCommandName
 } from "./protocol.js";
 import {
@@ -195,6 +198,10 @@ export const registerDesktopCommandHandlers = (
     setLaunchAtStartup: (
       enabled: boolean
     ) => Promise<DesktopLaunchAtStartupState>;
+    getBackgroundAgent: () => Promise<DesktopBackgroundAgentState>;
+    setBackgroundAgent: (
+      enabled: boolean
+    ) => Promise<DesktopBackgroundAgentState>;
     getPresentationPreferences?: () => PresentationPreferences;
     setPresentationPreferences?: (
       value: PresentationPreferences
@@ -405,6 +412,23 @@ export const registerDesktopCommandHandlers = (
       throw new Error("Invalid launch-at-startup preference.");
     }
     return options.setLaunchAtStartup(value);
+  });
+
+  ipcMain.handle(backgroundAgentGetChannel, async (event) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    return options.getBackgroundAgent();
+  });
+
+  ipcMain.handle(backgroundAgentSetChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    if (typeof value !== "boolean") {
+      throw new Error("Invalid Background Agent preference.");
+    }
+    return options.setBackgroundAgent(value);
   });
 
   ipcMain.handle(

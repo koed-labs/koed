@@ -58,7 +58,9 @@ interface DesktopMenuBarOptions<TMenu> {
   getStatus: () => unknown | Promise<unknown>;
   openDesktop: () => void | Promise<void>;
   startKoed?: () => void;
+  stopKoed?: () => void;
   quit: () => void;
+  quitLabel?: string;
   pollIntervalMs?: number;
   now?: () => Date;
 }
@@ -180,7 +182,9 @@ export const createMenuBarMenuTemplate = (
     openDesktop: () => void;
     refresh: () => void;
     startKoed?: () => void;
+    stopKoed?: () => void;
     quit: () => void;
+    quitLabel?: string;
   }
 ): MenuBarMenuItem[] => {
   const exceptionalServices = snapshot.services.filter(
@@ -208,11 +212,13 @@ export const createMenuBarMenuTemplate = (
     { type: "separator" },
     ...(snapshot.stopped && actions.startKoed
       ? [{ label: "Start Koed", click: actions.startKoed }]
-      : []),
+      : !snapshot.stopped && actions.stopKoed
+        ? [{ label: "Stop Koed", click: actions.stopKoed }]
+        : []),
     { label: "Open Koed", click: actions.openDesktop },
     { label: "Refresh Status", click: actions.refresh },
     { type: "separator" },
-    { label: "Quit Koed", click: actions.quit }
+    { label: actions.quitLabel ?? "Quit Koed", click: actions.quit }
   ];
 };
 
@@ -233,7 +239,9 @@ export const createDesktopMenuBar = <TMenu>({
   getStatus,
   openDesktop,
   startKoed,
+  stopKoed,
   quit,
+  quitLabel,
   pollIntervalMs = 30_000,
   now = () => new Date()
 }: DesktopMenuBarOptions<TMenu>): DesktopMenuBar => {
@@ -280,7 +288,9 @@ export const createDesktopMenuBar = <TMenu>({
         openDesktop: showDesktop,
         refresh: refreshStatus,
         ...(startKoed ? { startKoed } : {}),
-        quit
+        ...(stopKoed ? { stopKoed } : {}),
+        quit,
+        ...(quitLabel ? { quitLabel } : {})
       })
     );
   function attachStatusMenu(): void {

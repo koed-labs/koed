@@ -96,6 +96,11 @@ Artifacts, access grants, exports, and Fork Snapshots.
 > [!IMPORTANT]  
 > Codex, Claude Code, and Pi are supported AI Client integrations. See client-specific integration guides for setup and limitations.
 
+On packaged macOS Desktop, JavaScript AI Client CLIs run through the executable
+Koed Helper when available, including the managed Pi host. Native CLIs run
+directly; if the Helper is unavailable, Koed retains its current runtime and
+enables Node mode when that runtime is Electron.
+
 Koed's server deployment unit is `koed-server` plus dependencies. Internally,
 `koed-server` supervises API, Worker, and the local Transcript Watcher, and connects
 to the configured Embedding Service. Postgres with pgvector stores Users, API
@@ -446,6 +451,45 @@ uses the native login-item service, Linux uses a Koed-owned XDG autostart entry,
 and Windows-compatible application code uses an exact executable registration
 with `--background`. Native Windows packaging, signing, runtime distribution,
 and packaged smoke testing are not shipped in this build.
+
+### macOS Background Agent
+
+**Background Agent** is separate from **Launch Koed at startup**. The settings
+are independent; if both are enabled at login, the Agent owns the Local AI
+Runtime and Desktop attaches to it. On qualified macOS 14+ releases, enabling
+the Agent registers a per-user LaunchAgent that keeps the Koed menu-bar controls
+and Local AI Runtime available after the Desktop app is quit. Closing the
+Desktop window alone still leaves the Desktop app running.
+The Background Agent has its own tray with **Open Koed**, **Start Koed**,
+**Stop Koed**, and **Quit Koed**; when the Agent is enabled, the Desktop tray's
+quit action is labeled **Quit Desktop** because it detaches without stopping
+the Agent-owned runtime.
+
+Only one process owns the Local AI Runtime. Desktop Start/Stop requests,
+including setup, acceleration, and Privacy workflows, go through an
+authenticated XPC connection to the Agent while it is registered. Desktop
+shutdown detaches; it never transfers a live supervisor. Enabling the Agent is
+rejected while Desktop owns a running or starting runtime. If installation
+identity, saved home, or XPC state cannot be verified, the app fails closed
+instead of starting a second runtime through the CLI.
+
+**Stop Koed** records a durable stop and leaves the Background Agent available
+for an explicit later **Start Koed**. Disabling the Agent or choosing its
+**Quit Koed** action first requests and verifies a durable runtime Stop, then
+unregisters the LaunchAgent. This order matters: macOS terminates a running
+LaunchAgent when it is unregistered. If Stop or unregister fails, Koed retains
+the service registration and reports the failure rather than claiming the
+Agent has stopped. A LaunchAgent that is awaiting System Settings approval can
+be unregistered directly because it has not started.
+
+The Agent uses the same `KOED_HOME` as Desktop. It is not supported in
+unpackaged or ad-hoc builds. Non-ad-hoc macOS builds configured with a valid
+Developer ID Team ID include the service property list, and the after-sign hook
+verifies the app and native addon signatures use that Team ID. Only signed,
+notarized releases that pass LaunchAgent, XPC identity, reboot, and
+stop/restart qualification should be distributed. Moving or duplicating an
+enabled app breaks its bound installation identity; disable the Agent before
+moving it.
 
 A fresh or incomplete foreground setup opens the guided setup without silently
 installing runtime or model assets. After explicit User confirmation, Desktop

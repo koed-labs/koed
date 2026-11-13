@@ -1308,6 +1308,53 @@ describe("Koed server desktop manager", () => {
     );
   });
 
+  it("delegates Agent-owned runtime lifecycle without CLI ownership fallback", async () => {
+    const owner = {
+      start: vi.fn(async () => ({ ok: true, state: "starting" })),
+      stop: vi.fn(async () => ({ ok: true, state: "stopped" })),
+      status: vi.fn(async () => ({ ok: true, state: "ready" }))
+    };
+    const execFile = vi.fn(
+      (
+        _command: string,
+        _args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void
+      ) => callback(null, "{}", "")
+    );
+    const spawn = vi.fn(() => {
+      throw new Error("Agent-owned manager must not spawn a local supervisor.");
+    });
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: "/home/test/.koed" },
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      existsSync: (path) => path.endsWith("last-verification.json"),
+      execFile: execFile as never,
+      spawn: spawn as never,
+      openExternal: async () => undefined,
+      runtimeLifecycle: owner
+    });
+
+    await expect(manager.handlers.start_daemon()).resolves.toMatchObject({
+      ok: true,
+      state: "starting"
+    });
+    await expect(manager.resume()).resolves.toMatchObject({
+      ok: true,
+      state: "ready"
+    });
+    await manager.stop();
+    await manager.shutdown();
+
+    expect(owner.start).toHaveBeenCalledWith({ explicit: true });
+    expect(owner.status).toHaveBeenCalledOnce();
+    expect(owner.stop).toHaveBeenCalledOnce();
+    expect(execFile).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("serializes Team Privacy status and daemon start while stopped supervisors initialize", async () => {
     const requests: Record<string, unknown>[] = [];
     lifecycleControl.current = { ...stoppedManagedLifecycle };

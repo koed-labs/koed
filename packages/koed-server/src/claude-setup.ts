@@ -16,7 +16,8 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
   nodeCliInvocation,
-  nodeCliProcessEnvironment
+  nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable
 } from "@koed-labs/shared";
 import {
   resolveKoedAppRuntime,
@@ -112,7 +113,11 @@ const spawnClaude = (
   args: string[],
   options: SpawnSyncOptionsWithStringEncoding
 ): SpawnSyncReturns<string> => {
-  const invocation = nodeCliInvocation(executablePath, args);
+  const invocation = nodeCliInvocation(
+    executablePath,
+    args,
+    resolveThirdPartyNodeCliExecutable()
+  );
   return spawnSync(invocation.command, invocation.args, {
     ...options,
     env: nodeCliProcessEnvironment(invocation, options.env ?? {}, process.env)

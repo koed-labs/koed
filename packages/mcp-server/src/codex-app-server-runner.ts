@@ -8,7 +8,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   nodeCliInvocation,
-  nodeCliProcessEnvironment
+  nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable
 } from "@koed-labs/shared";
 import { loadPrompt } from "./prompt-loader.js";
 import { assertCodexConversationProtocolCompatibility } from "./codex-app-server-protocol-compatibility.js";
@@ -711,12 +712,11 @@ export class CodexAppServerClient {
     const configArguments = (options.configOverrides ?? []).flatMap(
       (override) => ["--config", override]
     );
-    const invocation = nodeCliInvocation(binary, [
-      ...configArguments,
-      "app-server",
-      "--listen",
-      "stdio://"
-    ]);
+    const invocation = nodeCliInvocation(
+      binary,
+      [...configArguments, "app-server", "--listen", "stdio://"],
+      resolveThirdPartyNodeCliExecutable()
+    );
     this.child = spawn(invocation.command, invocation.args, {
       cwd,
       env: nodeCliProcessEnvironment(invocation, env, env),

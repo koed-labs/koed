@@ -18,7 +18,9 @@ import {
   Tray
 } from "electron";
 import { execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
@@ -40,7 +42,8 @@ import {
   createKoedEnvironment,
   createKoedServerManager,
   shouldRefreshLocalAiClientsAfterResume,
-  type KoedServerManager
+  type KoedServerManager,
+  type KoedServerRuntimeLifecycle
 } from "./koed-server/manager.js";
 import {
   createKoedServerCliInvocation,
@@ -81,6 +84,25 @@ import {
   createLaunchAtStartupController,
   isBackgroundLaunch
 } from "./window/launch-at-startup.js";
+import {
+  BACKGROUND_AGENT_MACH_SERVICE_NAME,
+  BACKGROUND_AGENT_SERVICE_NAME,
+  createBackgroundAgentLaunchService,
+  isBackgroundAgentLaunch
+} from "./background-agent/launch-service.js";
+import { loadBackgroundAgentNativeBridge } from "./background-agent/native-bridge.js";
+import {
+  createBackgroundAgentStateStore,
+  type BackgroundAgentState
+} from "./background-agent/state.js";
+import { createBackgroundAgentRuntimeLifecycle } from "./background-agent/runtime-lifecycle.js";
+import { createBackgroundAgentLaunchConfigurationStore } from "./background-agent/launch-configuration.js";
+import {
+  createBackgroundAgentXpcClient,
+  createBackgroundAgentXpcServer
+} from "./background-agent/xpc-transport.js";
+import { createBackgroundAgentController } from "./background-agent/agent-controller.js";
+import { createDesktopBackgroundAgentController } from "./background-agent/desktop-controller.js";
 import {
   consumeDesktopActivation,
   createDesktopWindowActivator,
@@ -124,6 +146,86 @@ const allowedRendererOrigins = new Set([
 ]);
 
 app.setName(appName);
+const desktopUserDataPath = app.getPath("userData");
+const backgroundAgentProcess = isBackgroundAgentLaunch(process.argv);
+const backgroundAgentBundlePath = app.isPackaged
+  ? resolve(process.resourcesPath, "..", "..")
+  : app.getAppPath();
+if (backgroundAgentProcess) {
+  const agentUserDataPath = resolve(
+    app.getPath("appData"),
+    `${appName} Background Agent`
+  );
+  mkdirSync(resolve(agentUserDataPath, "Session Data"), {
+    recursive: true,
+    mode: 0o700
+  });
+  app.setPath("userData", agentUserDataPath);
+  app.setPath("sessionData", resolve(agentUserDataPath, "Session Data"));
+}
+const nativeAgentBridge = loadBackgroundAgentNativeBridge({
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  loadAddon: () =>
+    createRequire(import.meta.url)(
+      resolve(
+        app.getAppPath(),
+        "dist-electron/background-agent/native/koed_background_xpc.node"
+      )
+    )
+});
+const backgroundAgentPlistPath = resolve(
+  backgroundAgentBundlePath,
+  "Contents/Library/LaunchAgents",
+  BACKGROUND_AGENT_SERVICE_NAME
+);
+const backgroundAgentLaunchConfiguration =
+  createBackgroundAgentLaunchConfigurationStore({
+    directoryPath: resolve(desktopUserDataPath, "background-agent"),
+    bundlePath: realpathSync(backgroundAgentBundlePath)
+  });
+const backgroundAgentLaunchService = createBackgroundAgentLaunchService({
+  appIsPackaged: app.isPackaged,
+  nativeBridgeAvailable: nativeAgentBridge.available,
+  agentPlistPresent: existsSync(backgroundAgentPlistPath),
+  ...(nativeAgentBridge.available ? { teamId: nativeAgentBridge.teamId } : {}),
+  getLoginItemSettings: (options) => app.getLoginItemSettings(options),
+  platform: process.platform,
+  setLoginItemSettings: (settings) => app.setLoginItemSettings(settings)
+});
+const desktopBackgroundAgentRuntime = createBackgroundAgentRuntimeLifecycle();
+const createBackgroundAgentStore = (installationId?: string) => {
+  const koedHome = resolveApplicationKoedHome(koedEnvironment);
+  mkdirSync(koedHome, { recursive: true, mode: 0o700 });
+  const canonicalKoedHome = realpathSync(koedHome);
+  const savedConfiguration = backgroundAgentLaunchConfiguration.read();
+  const savedInstallationId =
+    savedConfiguration.kind === "valid" &&
+    savedConfiguration.configuration.koedHome === canonicalKoedHome
+      ? savedConfiguration.configuration.installationId
+      : undefined;
+  return createBackgroundAgentStateStore({
+    installation: {
+      ...((installationId ?? savedInstallationId)
+        ? { installationId: installationId ?? savedInstallationId }
+        : {}),
+      bundlePath: realpathSync(backgroundAgentBundlePath),
+      koedHome: canonicalKoedHome
+    }
+  });
+};
+const createBackgroundAgentClient = (state: BackgroundAgentState) => {
+  if (!nativeAgentBridge.available)
+    throw new Error("Background Agent native XPC is unavailable.");
+  return createBackgroundAgentXpcClient({
+    bridge: nativeAgentBridge.bridge,
+    installationId: state.installationId,
+    homeIdentity: createHash("sha256").update(state.koedHome).digest("hex"),
+    teamId: nativeAgentBridge.teamId,
+    bundleIdentifier: "ai.koed.desktop",
+    serviceName: BACKGROUND_AGENT_MACH_SERVICE_NAME
+  });
+};
 const presentationPreferencePath = resolve(
   app.getPath("userData"),
   "presentation-preferences.json"
@@ -139,6 +241,18 @@ let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
+let backgroundAgentMenuBar: DesktopMenuBar | null = null;
+let backgroundAgentManager: KoedServerManager | null = null;
+let backgroundAgentController: ReturnType<
+  typeof createBackgroundAgentController
+> | null = null;
+let desktopBackgroundAgentController: ReturnType<
+  typeof createDesktopBackgroundAgentController
+> | null = null;
+let backgroundAgentXpcServer: ReturnType<
+  typeof createBackgroundAgentXpcServer
+> | null = null;
+let backgroundAgentQuitFinalizing = false;
 let disposeDesktopUpdateIpc: (() => void) | null = null;
 let disposeDesktopUpdateDiscovery: (() => void) | null = null;
 let backgroundLaunchPending = false;
@@ -152,21 +266,26 @@ const acceptPairingDeepLink = (value: string): string | null => {
   return pairingLink;
 };
 
-if (process.defaultApp && process.argv[1]) {
-  app.setAsDefaultProtocolClient("koed-pair", process.execPath, [
-    resolve(process.argv[1])
-  ]);
-} else {
-  app.setAsDefaultProtocolClient("koed-pair");
+if (!backgroundAgentProcess) {
+  if (process.defaultApp && process.argv[1]) {
+    app.setAsDefaultProtocolClient("koed-pair", process.execPath, [
+      resolve(process.argv[1])
+    ]);
+  } else {
+    app.setAsDefaultProtocolClient("koed-pair");
+  }
 }
 
 let ownsDesktopInstance = true;
-if (process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
+if (
+  backgroundAgentProcess ||
+  process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1"
+) {
   const hasLock = app.requestSingleInstanceLock();
   if (!hasLock) {
     ownsDesktopInstance = false;
     app.quit();
-  } else {
+  } else if (!backgroundAgentProcess) {
     app.on("second-instance", (_event, argv) => {
       const deepLink = argv.find((argument) =>
         argument.startsWith("koed-pair://")
@@ -177,17 +296,19 @@ if (process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
   }
 }
 
-app.on("open-url", (event, url) => {
-  event.preventDefault();
-  void showPairingDeepLink(url);
-});
+if (!backgroundAgentProcess) {
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    void showPairingDeepLink(url);
+  });
 
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: KOED_APP_SCHEME,
-    privileges: { standard: true, secure: true, supportFetchAPI: true }
-  }
-]);
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: KOED_APP_SCHEME,
+      privileges: { standard: true, secure: true, supportFetchAPI: true }
+    }
+  ]);
+}
 
 const openExternal = createExternalUrlOpener({
   environment: process.env,
@@ -218,7 +339,8 @@ const createServerManager = (
   > | null,
   personalDevicePairingStore?: ReturnType<
     typeof createPdsDesktopSecretStore
-  > | null
+  > | null,
+  runtimeLifecycle?: KoedServerRuntimeLifecycle
 ): KoedServerManager =>
   createKoedServerManager({
     repoRoot,
@@ -249,6 +371,7 @@ const createServerManager = (
           )
       : undefined,
     packagedResourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+    ...(runtimeLifecycle ? { runtimeLifecycle } : {}),
     productVersion: app.getVersion(),
     existsSync,
     execFile,
@@ -396,8 +519,164 @@ async function showPairingDeepLink(value: string): Promise<void> {
   }
 }
 
+const configurePersistentPdsSecrets = () => {
+  const persistentPdsStore = createPdsDesktopSecretStore({
+    userDataPath: resolveApplicationKoedHome(koedEnvironment),
+    environment: koedEnvironment
+  });
+  if (persistentPdsStore) {
+    koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
+      persistentPdsStore.providerKind;
+    koedEnvironment.PDS_AUTHORITY_SECRET_REF =
+      PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
+    koedEnvironment.PDS_RUNTIME_SECRET_REF =
+      koedEnvironment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime";
+    return;
+  }
+  koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
+  delete koedEnvironment.PDS_AUTHORITY_SECRET_REF;
+  console.warn(
+    "PDS local device storage provider is unavailable; Local Memory remains available."
+  );
+};
+
+const createBackgroundAgentMenuBar = (
+  manager: KoedServerManager,
+  controller: ReturnType<typeof createBackgroundAgentController>
+) => {
+  const icon = getMenuBarIcon();
+  if (!icon) throw new Error("Background Agent tray icon is unavailable.");
+  const tray = new Tray(icon);
+  return createDesktopMenuBar<Menu>({
+    tray: {
+      destroy: () => tray.destroy(),
+      onClick: (listener) => tray.on("click", listener),
+      onRightClick: (listener) => tray.on("right-click", listener),
+      popUpContextMenu: (menu) => tray.popUpContextMenu(menu),
+      setToolTip: (tooltip) => tray.setToolTip(tooltip)
+    },
+    buildMenu: (template) => Menu.buildFromTemplate(template),
+    getStatus: () => manager.handlers.status(),
+    openDesktop: () => {
+      const desktop = spawn(process.execPath, [], {
+        detached: true,
+        stdio: "ignore"
+      });
+      desktop.on("error", (error) =>
+        console.error("Could not open Koed Desktop:", error)
+      );
+      desktop.unref();
+    },
+    startKoed: () => {
+      void controller
+        .startExplicit()
+        .then(() => backgroundAgentMenuBar?.refresh())
+        .catch((error) => console.error("Could not start Koed:", error));
+    },
+    stopKoed: () => {
+      void controller
+        .stopExplicit()
+        .then(() => backgroundAgentMenuBar?.refresh())
+        .catch((error) => console.error("Could not stop Koed:", error));
+    },
+    quit: () => {
+      void quitBackgroundAgent().catch((error) =>
+        console.error("Could not quit the Background Agent:", error)
+      );
+    }
+  });
+};
+
+const quitBackgroundAgent = async () => {
+  if (!backgroundAgentController) return app.quit();
+  const stopped = await backgroundAgentController.stopExplicit();
+  if (stopped.state !== "stopped" || !stopped.stopIntent)
+    throw new Error(
+      "Koed must stop successfully before quitting the Background Agent."
+    );
+  const launchState = await backgroundAgentLaunchService.set(false);
+  if (launchState.enabled)
+    throw new Error("Background Agent could not be unregistered.");
+  app.quit();
+};
+
+const bootstrapBackgroundAgent = async () => {
+  await app.whenReady();
+  app.dock?.hide();
+  if (
+    process.platform !== "darwin" ||
+    !app.isPackaged ||
+    !nativeAgentBridge.available
+  ) {
+    throw new Error(
+      "This Koed build is not qualified for Background Agent mode."
+    );
+  }
+  const launchState = await backgroundAgentLaunchService.get();
+  if (
+    !launchState.supported ||
+    !launchState.enabled ||
+    launchState.status !== "enabled"
+  )
+    throw new Error("Background Agent is not registered and enabled.");
+  const launchConfiguration = backgroundAgentLaunchConfiguration.read();
+  if (launchConfiguration.kind !== "valid")
+    throw new Error(
+      "Background Agent launch configuration is missing or invalid."
+    );
+  koedEnvironment.KOED_HOME = launchConfiguration.configuration.koedHome;
+  const store = createBackgroundAgentStore(
+    launchConfiguration.configuration.installationId
+  );
+  const state = store.read();
+  if (state.kind !== "valid")
+    throw new Error("Background Agent state is missing or invalid.");
+
+  configurePersistentPdsSecrets();
+  backgroundAgentManager = createServerManager();
+  koedServer = backgroundAgentManager;
+  backgroundAgentController = createBackgroundAgentController({
+    store,
+    manager: backgroundAgentManager,
+    onError: (error) => console.error("Background Agent startup failed:", error)
+  });
+  const identity = state.state;
+  backgroundAgentXpcServer = createBackgroundAgentXpcServer({
+    bridge: nativeAgentBridge.bridge,
+    installationId: identity.installationId,
+    homeIdentity: createHash("sha256").update(identity.koedHome).digest("hex"),
+    teamId: nativeAgentBridge.teamId,
+    bundleIdentifier: "ai.koed.desktop",
+    serviceName: BACKGROUND_AGENT_MACH_SERVICE_NAME,
+    handler: backgroundAgentController.handle
+  });
+  backgroundAgentMenuBar = createBackgroundAgentMenuBar(
+    backgroundAgentManager,
+    backgroundAgentController
+  );
+  backgroundAgentManager.lifecycle.subscribe(
+    () => void backgroundAgentMenuBar?.refresh()
+  );
+  backgroundAgentManager.lifecycle.start();
+  void backgroundAgentController
+    .startup()
+    .catch((error) => console.error("Background Agent startup failed:", error));
+};
+
 const bootstrap = async () => {
   await app.whenReady();
+  const launchConfiguration = backgroundAgentLaunchConfiguration.read();
+  const launchState = await backgroundAgentLaunchService.get();
+  if (
+    launchConfiguration.kind === "valid" &&
+    (launchState.enabled || !process.env.KOED_HOME?.trim())
+  ) {
+    koedEnvironment.KOED_HOME = launchConfiguration.configuration.koedHome;
+  } else if (launchState.enabled && launchConfiguration.kind !== "valid") {
+    desktopBackgroundAgentRuntime.activateUnavailable(
+      "Background Agent launch configuration is missing or invalid."
+    );
+  }
   const updateDiscovery = createUpdateDiscovery({
     eligible:
       app.isPackaged &&
@@ -459,9 +738,19 @@ const bootstrap = async () => {
   koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
   koedServer = createServerManager(
     managedConversationDraftStore,
-    personalDevicePairingStore
+    personalDevicePairingStore,
+    desktopBackgroundAgentRuntime
   );
   const server = koedServer;
+  desktopBackgroundAgentController = createDesktopBackgroundAgentController({
+    launchService: backgroundAgentLaunchService,
+    store: () => createBackgroundAgentStore(),
+    launchConfiguration: backgroundAgentLaunchConfiguration,
+    manager: server,
+    runtimeLifecycle: desktopBackgroundAgentRuntime,
+    createClient: createBackgroundAgentClient
+  });
+  await desktopBackgroundAgentController.initialize();
   if (process.platform === "darwin" && !app.isPackaged) {
     app.dock?.setIcon(desktopIconPath);
   }
@@ -619,6 +908,18 @@ const bootstrap = async () => {
       server.hardwareAcceleration.set(enabled),
     getLaunchAtStartup: () => launchAtStartup.get(),
     setLaunchAtStartup: (enabled) => launchAtStartup.set(enabled),
+    getBackgroundAgent: async () => {
+      const state = await desktopBackgroundAgentController!.get();
+      configureMenuBar();
+      return state;
+    },
+    setBackgroundAgent: async (enabled) => {
+      try {
+        return await desktopBackgroundAgentController!.set(enabled);
+      } finally {
+        configureMenuBar();
+      }
+    },
     selectProjectDirectory: async () => {
       const options = {
         buttonLabel: "Open",
@@ -675,7 +976,10 @@ const bootstrap = async () => {
         startKoed: () => {
           void Promise.resolve(server.handlers.start()).catch(() => undefined);
         },
-        quit: () => app.quit()
+        quit: () => app.quit(),
+        ...(desktopBackgroundAgentRuntime.isActive()
+          ? { quitLabel: "Quit Desktop" }
+          : {})
       });
     }
   };
@@ -695,25 +999,7 @@ const bootstrap = async () => {
     background: backgroundLaunchPending,
     createWindow,
     resumeRuntime: async () => {
-      const persistentPdsStore = createPdsDesktopSecretStore({
-        userDataPath: resolveApplicationKoedHome(koedEnvironment),
-        environment: koedEnvironment
-      });
-      if (persistentPdsStore) {
-        koedEnvironment.PDS_DESKTOP_SECRET_STORAGE =
-          persistentPdsStore.providerKind;
-        const runtimeReference =
-          koedEnvironment.PDS_RUNTIME_SECRET_REF?.trim() || "pds-runtime";
-        koedEnvironment.PDS_AUTHORITY_SECRET_REF =
-          PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE;
-        koedEnvironment.PDS_RUNTIME_SECRET_REF = runtimeReference;
-      } else {
-        koedEnvironment.PDS_DESKTOP_SECRET_STORAGE = "unavailable";
-        delete koedEnvironment.PDS_AUTHORITY_SECRET_REF;
-        console.warn(
-          "PDS local device storage provider is unavailable; Local Memory remains available."
-        );
-      }
+      configurePersistentPdsSecrets();
       const result = await server.resume();
       if (shouldRefreshLocalAiClientsAfterResume(result)) {
         void server
@@ -791,7 +1077,7 @@ const bootstrap = async () => {
   });
 };
 
-if (ownsDesktopInstance) {
+if (ownsDesktopInstance && !backgroundAgentProcess) {
   for (const argument of process.argv) {
     if (argument.startsWith("koed-pair://")) {
       acceptPairingDeepLink(argument);
@@ -799,23 +1085,46 @@ if (ownsDesktopInstance) {
     }
   }
 }
-const bootstrapPromise = ownsDesktopInstance ? bootstrap() : Promise.resolve();
+const bootstrapPromise = ownsDesktopInstance
+  ? backgroundAgentProcess
+    ? bootstrapBackgroundAgent()
+    : bootstrap()
+  : Promise.resolve();
+void bootstrapPromise.catch((error) => {
+  console.error("Koed process startup failed:", error);
+  app.quit();
+});
 
-app.on("window-all-closed", () => {
-  if (shouldQuitAfterAllWindowsClosed(process.platform)) {
-    app.quit();
-  }
-});
-app.on("activate", () => {
-  const activation = consumeDesktopActivation(backgroundLaunchPending);
-  backgroundLaunchPending = activation.backgroundLaunchPending;
-  if (!activation.openWindow) return;
-  if (BrowserWindow.getAllWindows().length === 0) {
-    void showDesktopWindow();
-  }
-});
+if (!backgroundAgentProcess) {
+  app.on("window-all-closed", () => {
+    if (shouldQuitAfterAllWindowsClosed(process.platform)) app.quit();
+  });
+  app.on("activate", () => {
+    const activation = consumeDesktopActivation(backgroundLaunchPending);
+    backgroundLaunchPending = activation.backgroundLaunchPending;
+    if (!activation.openWindow) return;
+    if (BrowserWindow.getAllWindows().length === 0) void showDesktopWindow();
+  });
+}
 let koedServerStoppedForQuit = false;
 app.on("before-quit", (event) => {
+  if (backgroundAgentProcess) {
+    if (backgroundAgentQuitFinalizing) return;
+    event.preventDefault();
+    backgroundAgentQuitFinalizing = true;
+    void (async () => {
+      await backgroundAgentManager?.shutdown();
+      backgroundAgentXpcServer?.close();
+      backgroundAgentController?.close();
+      backgroundAgentMenuBar?.dispose();
+      backgroundAgentQuitFinalizing = true;
+      app.quit();
+    })().catch((error) => {
+      backgroundAgentQuitFinalizing = false;
+      console.error("Background Agent shutdown failed:", error);
+    });
+    return;
+  }
   disposeDesktopUpdateDiscovery?.();
   disposeDesktopUpdateDiscovery = null;
   disposeDesktopUpdateIpc?.();
@@ -827,6 +1136,8 @@ app.on("before-quit", (event) => {
   void (async () => {
     await managedPreviewController.close();
     await koedServer?.shutdown();
+    desktopBackgroundAgentController?.close();
+    desktopBackgroundAgentRuntime.deactivate();
     desktopMenuBar?.dispose();
     desktopMenuBar = null;
     koedServerStoppedForQuit = true;
