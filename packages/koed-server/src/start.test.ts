@@ -31,6 +31,7 @@ import {
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
 import type { RuntimeOwner } from "./component-contract.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { createPerformanceManagement } from "./performance-management.js";
 import { setupCore } from "./setup.js";
 import { loadRepoEnv } from "./env-file.js";
 import { deviceRequestCommand } from "./personal-device-request.js";
@@ -1290,6 +1291,7 @@ describe("start supervisor", () => {
 
   it.each([
     {
+      threadOverride: undefined,
       profile: undefined,
       saved: undefined,
       threads: undefined,
@@ -1297,6 +1299,7 @@ describe("start supervisor", () => {
       poll: undefined
     },
     {
+      threadOverride: undefined,
       profile: "low",
       saved: undefined,
       threads: String(Math.max(1, Math.floor((cpus().length || 1) / 4))),
@@ -1304,6 +1307,7 @@ describe("start supervisor", () => {
       poll: "15000"
     },
     {
+      threadOverride: undefined,
       profile: undefined,
       saved: {
         resourceProfile: "balanced",
@@ -1316,10 +1320,26 @@ describe("start supervisor", () => {
       threads: "2",
       nice: "7",
       poll: "4000"
+    },
+    {
+      threadOverride: "process",
+      profile: "balanced",
+      saved: undefined,
+      threads: "8",
+      nice: undefined,
+      poll: undefined
+    },
+    {
+      threadOverride: "file",
+      profile: "low",
+      saved: undefined,
+      threads: "8",
+      nice: "19",
+      poll: "15000"
     }
   ])(
     "starts bundled-local native Postgres and Embedding Service without Docker (resource profile $profile)",
-    async ({ profile, saved, threads, nice, poll }) => {
+    async ({ threadOverride, profile, saved, threads, nice, poll }) => {
       const root = tempDir();
       const resources = createNativeResources(root);
       if (saved) {
@@ -1340,6 +1360,8 @@ describe("start supervisor", () => {
           "DATABASE_URL=postgres://wrong:wrong@localhost:15432/wrong",
           "WORK_QUEUE_BACKEND=bullmq",
           "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=18080",
+          ...(threadOverride ? ["EMBEDDING_LLAMA_N_THREADS="] : []),
+          ...(threadOverride === "file" ? ["LLAMA_N_THREADS=8"] : []),
           ""
         ].join("\n")
       );
@@ -1365,19 +1387,27 @@ describe("start supervisor", () => {
         return { applied: false, reason: "disabled" };
       });
 
+      const environment: NodeJS.ProcessEnv = {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        ...(profile ? { KOED_RESOURCE_PROFILE: profile } : {}),
+        ...(threadOverride === "process"
+          ? { EMBEDDING_LLAMA_N_THREADS: " ", LLAMA_N_THREADS: "8" }
+          : {}),
+        KOED_AUTO_PORTS: "0",
+        KOED_TEAM_COLLABORATION_ENABLED: "true",
+        MEMORY_API_TOKEN: "test-runtime-token",
+        POSTGRES_HOST_PORT: "25432",
+        EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081"
+      };
+      const performance = await createPerformanceManagement({
+        paths: resolveKoedServerPaths(environment),
+        environment: () => environment
+      }).inspect();
       await startKoedServer({
         ...cleanShutdownAfterReady(),
-        environment: {
-          KOED_HOME: root,
-          KOED_REPO_ROOT: root,
-          KOED_DEPENDENCY_MODE: "bundled-local",
-          ...(profile ? { KOED_RESOURCE_PROFILE: profile } : {}),
-          KOED_AUTO_PORTS: "0",
-          KOED_TEAM_COLLABORATION_ENABLED: "true",
-          MEMORY_API_TOKEN: "test-runtime-token",
-          POSTGRES_HOST_PORT: "25432",
-          EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081"
-        },
+        environment,
         timeoutMs: 1,
         pollIntervalMs: 1,
         spawnSync: (command, args, options) => {
@@ -1451,6 +1481,10 @@ describe("start supervisor", () => {
       )[0]?.[0];
       expect(priorityEnvironment?.KOED_BACKGROUND_NICE).toBe(nice);
       expect(spawned[0]?.env?.LLAMA_N_THREADS).toBe(threads);
+      if (threads)
+        expect(Number(spawned[0]?.env?.LLAMA_N_THREADS)).toBe(
+          performance.effective.embeddingThreads
+        );
       expect(
         spawned.find((entry) =>
           entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))

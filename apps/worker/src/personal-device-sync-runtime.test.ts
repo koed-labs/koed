@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
+import { EventEmitter } from "node:events";
+import type { Logger } from "pino";
 import {
   existsSync,
   mkdirSync,
@@ -40,6 +42,7 @@ import {
   PDS_WORKER_MISSING_SECRET_RECHECK_MS,
   validatePdsLifecycleStatementBinding
 } from "./personal-device-sync-runtime.js";
+import { createPdsLocalSyncService } from "./personal-device-sync-service.js";
 
 describe("PDS received source cursors", () => {
   it.each([
@@ -970,6 +973,83 @@ describe("PDS session materialization", () => {
     expect(await runtime.heartbeatGroups?.()).toEqual(["group-a"]);
     expect(resolveSecret).toHaveBeenCalledTimes(3);
   });
+
+  it.each(["cached", "in-flight", "reconnect"])(
+    "adopts pairing after a %s missing-secret read without another wake",
+    async (mode) => {
+      vi.useFakeTimers();
+      let secret: object | null = null;
+      let finishLookup!: (value: null) => void;
+      const resolveSecret = vi.fn(async () => secret);
+      if (mode === "in-flight")
+        resolveSecret.mockImplementationOnce(
+          () =>
+            new Promise<null>((resolve) => {
+              finishLookup = resolve;
+            })
+        );
+      const pairedHeartbeat = vi.fn(async () => []);
+      const createRuntime = vi.fn(() => ({ heartbeatGroups: pairedHeartbeat }));
+      const repository = {
+        getPdsLocalSyncWakeAt: vi.fn(async () => null)
+      } as unknown as MemorySourceRepository;
+      const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
+        repository,
+        envelopeEncryptionProvider: {} as never,
+        environment: {
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+          PDS_SECRET_PROVIDER: "headless"
+        },
+        resolveSecret: resolveSecret as never,
+        createRuntime: createRuntime as never
+      });
+      if (!runtime) throw new Error("Expected a configured PDS runtime");
+      const wakeClient = Object.assign(new EventEmitter(), {
+        query: vi.fn(async () => undefined),
+        release: vi.fn()
+      });
+      const logger = { warn: vi.fn() };
+      const service = createPdsLocalSyncService({
+        repository,
+        secureRuntime: runtime,
+        wakePool: { connect: async () => wakeClient },
+        logger: logger as unknown as Logger
+      });
+      try {
+        service.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(resolveSecret).toHaveBeenCalledOnce();
+        wakeClient.emit("notification", {
+          channel: "koed_pds_local_sync",
+          payload: "group_reconciled"
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(resolveSecret).toHaveBeenCalledOnce();
+        secret = { pairing: "new" };
+        if (mode === "reconnect") {
+          wakeClient.emit("error", new Error("connection lost"));
+          await vi.advanceTimersByTimeAsync(250);
+        } else {
+          wakeClient.emit("notification", {
+            channel: "koed_pds_local_sync",
+            payload: "desktop_runtime_updated"
+          });
+          if (mode === "in-flight") finishLookup(null);
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        expect(createRuntime).toHaveBeenCalledOnce();
+        expect(createRuntime).toHaveBeenCalledWith(expect.anything(), secret);
+        expect(pairedHeartbeat).toHaveBeenCalled();
+        expect(logger.warn).not.toHaveBeenCalled();
+        const reads = resolveSecret.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(resolveSecret).toHaveBeenCalledTimes(reads);
+      } finally {
+        await service.stop();
+        vi.useRealTimers();
+      }
+    }
+  );
 
   it("shares one provider read between concurrent cycle calls", async () => {
     let release!: (value: null) => void;

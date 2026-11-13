@@ -1079,6 +1079,8 @@ policy, or full URLs containing customer content.
   device's logical CPU count and 1–60 seconds. Explicit environment or repository
   env-file values win over these saved overrides; saved overrides win over the
   profile. `LLAMA_N_THREADS` is also an explicit embedding-thread override.
+  Blank thread values count as unset. For example, `EMBEDDING_LLAMA_N_THREADS=`
+  does not hide a value in `LLAMA_N_THREADS`.
   Selecting a profile in Desktop clears its individual saved overrides. Desktop
   preserves unrelated configuration fields and uses the same stopped-runtime
   ownership lock as other runtime configuration changes. The preferences take

@@ -2198,7 +2198,7 @@ export const createPdsWorkerRuntimeFromEnvironment = (
 /**
  * How long the worker trusts a "no runtime secret" answer. Without it, every
  * reconciliation cycle on an unpaired device starts a provider process. A new
- * pairing is picked up within this window.
+ * pairing notification invalidates this cached result immediately.
  */
 export const PDS_WORKER_MISSING_SECRET_RECHECK_MS = 15_000;
 
@@ -2226,9 +2226,16 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
   let cycleRuntime: PdsWorkerSecureRuntime | null = null;
   let missingUntil = 0;
   let pending: Promise<PdsWorkerSecureRuntime | null> | null = null;
+  let configurationVersion = 0;
 
   const readCycleRuntime = async (): Promise<PdsWorkerSecureRuntime | null> => {
-    const secret = await resolveSecret(environment);
+    let secret: RuntimeSecret | null;
+    let version: number;
+    do {
+      version = configurationVersion;
+      secret = await resolveSecret(environment);
+      // Do not cache a result from before a pairing update.
+    } while (version !== configurationVersion);
     if (!secret) {
       runtimeFingerprint = null;
       cycleRuntime = null;
@@ -2267,6 +2274,10 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
   };
 
   return {
+    invalidateConfiguration() {
+      configurationVersion += 1;
+      missingUntil = 0;
+    },
     async heartbeatGroups() {
       const runtime = await resolveCycleRuntime();
       return runtime ? ((await runtime.heartbeatGroups?.()) ?? []) : [];

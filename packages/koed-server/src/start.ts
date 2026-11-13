@@ -672,10 +672,11 @@ const localServiceEnv = (
       environment.LLAMA_N_CTX ??
       repoEnv.EMBEDDING_LLAMA_N_CTX,
     LLAMA_N_THREADS:
-      environment.EMBEDDING_LLAMA_N_THREADS ??
-      environment.LLAMA_N_THREADS ??
-      repoEnv.EMBEDDING_LLAMA_N_THREADS ??
-      repoEnv.LLAMA_N_THREADS,
+      environment.EMBEDDING_LLAMA_N_THREADS?.trim() ||
+      environment.LLAMA_N_THREADS?.trim() ||
+      repoEnv.EMBEDDING_LLAMA_N_THREADS?.trim() ||
+      repoEnv.LLAMA_N_THREADS?.trim() ||
+      undefined,
     LLAMA_N_BATCH:
       environment.EMBEDDING_LLAMA_N_BATCH ??
       environment.LLAMA_N_BATCH ??
