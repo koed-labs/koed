@@ -1,13 +1,14 @@
 import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
 import { repositoryIdentitySchema } from "@koed-labs/shared";
 import {
+  readSourceRepositoryIdentity,
+  resolveKoedServerPaths,
+  listProjectMetadata
+} from "@koed-labs/server";
+import {
   recordedCaptureFolderObservation,
   currentCaptureFolderObservation
 } from "./capture-repository-context.js";
-import {
-  discoverProjectMetadata,
-  resolveKoedServerPaths
-} from "@koed-labs/server";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -49,7 +50,6 @@ import {
   watcherWakePath
 } from "./codex-transcript-watcher-signal.js";
 import type { ProjectMetadataV1 } from "@koed-labs/shared";
-import { readProjectMetadataForRoot } from "./project-team-workspace-links.js";
 import type { CodexHistoricalCandidate } from "./codex-historical-ingestion.js";
 import { CodexCompressedTranscriptReader } from "./codex-compressed-transcript.js";
 import { resolveCodexAppServerBinary } from "./codex-app-server-runner.js";
@@ -1154,12 +1154,34 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           fileKey: identityKey
         });
         const sourceProjectPath = sourceProjectId(identity.context);
-        const sourceProject = sourceProjectPath
-          ? readProjectMetadataForRoot(sourceProjectPath, {
-              ...process.env,
-              KOED_HOME: this.config.koedHome
-            })
-          : null;
+        const recordedRepository = readSourceRepositoryIdentity(
+          resolveKoedServerPaths({
+            ...process.env,
+            KOED_HOME: this.config.koedHome
+          }),
+          { sourceKind: "codex", externalSessionId: identity.sessionId }
+        );
+        const currentProject =
+          sourceProjectPath && recordedRepository?.checkoutId
+            ? listProjectMetadata(
+                resolveKoedServerPaths({
+                  ...process.env,
+                  KOED_HOME: this.config.koedHome
+                })
+              ).projects?.find(
+                (project) =>
+                  project.path.cwd === sourceProjectPath ||
+                  project.path.projectRoot === sourceProjectPath
+              )
+            : null;
+        // A path-local catalog entry is not source-time association evidence.
+        const sourceProject =
+          recordedRepository?.checkoutId &&
+          recordedRepository.checkoutId ===
+            currentProject?.repository?.checkoutId &&
+          recordedRepository.key === currentProject?.repository?.key
+            ? currentProject
+            : null;
         if (observeHistorical) {
           const sourceStartedAt = identity.context.transcriptMetadata.timestamp;
           const sourceStartedBeforeActivation =
@@ -1209,8 +1231,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
               sourceSession: await this.sourceSessionRegistration(
                 identity,
                 sourceProjectPath,
-                sourceProject,
-                true
+                sourceProject
               ),
               frontierOffset,
               latestActivityAt,
@@ -1300,25 +1321,12 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           !this.config.futureCaptureOnly &&
           !existingArtifact &&
           historicalSelection?.frontierOffset === liveStartOffset;
-        const liveProject =
-          sourceProjectPath && !historicalJournal
-            ? ((
-                await discoverProjectMetadata(
-                  resolveKoedServerPaths({
-                    ...process.env,
-                    KOED_HOME: this.config.koedHome
-                  }),
-                  { cwd: sourceProjectPath }
-                )
-              ).project ?? null)
-            : sourceProject;
         const result = await ingestCodexTranscriptJournal({
           client: this.client,
           sourceSession: await this.sourceSessionRegistration(
             identity,
             sourceProjectPath,
-            liveProject,
-            historicalJournal
+            sourceProject
           ),
           sourceSessionId: identity.sessionId,
           transcriptPath: readablePath,
@@ -1473,8 +1481,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           ProjectMetadataV1,
           "localProjectId" | "displayName" | "repository"
         > & { path: { cwd: string; projectRoot: string | null } })
-      | null,
-    historical = false
+      | null
   ) {
     const sourceTime = repositoryIdentitySchema.safeParse(
       identity.context.transcriptMetadata.sourceTimeRepositoryIdentity
@@ -1494,23 +1501,16 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       sourceRuntime: "codex-cli" as const,
       captureMethod: "api" as const,
       cwd: sourceProjectPath,
-      ...(historical
-        ? {
-            repositoryIdentity:
-              await resolveHistoricalCaptureRepositoryIdentity({
-                sourceTime: sourceTime.success ? sourceTime.data : null,
-                cwd:
-                  typeof identity.context.transcriptMetadata
-                    .sourceTimeProjectDirectory === "string"
-                    ? identity.context.transcriptMetadata
-                        .sourceTimeProjectDirectory
-                    : undefined,
-                env: { ...process.env, KOED_HOME: this.config.koedHome }
-              })
-          }
-        : sourceProject?.repository
-          ? { repositoryIdentity: sourceProject.repository }
-          : {}),
+      repositoryIdentity: await resolveHistoricalCaptureRepositoryIdentity({
+        sourceTime: sourceTime.success ? sourceTime.data : null,
+        cwd:
+          typeof identity.context.transcriptMetadata
+            .sourceTimeProjectDirectory === "string"
+            ? identity.context.transcriptMetadata.sourceTimeProjectDirectory
+            : undefined,
+        env: { ...process.env, KOED_HOME: this.config.koedHome },
+        source: { sourceKind: "codex", externalSessionId: identity.sessionId }
+      }),
       idempotencyKey: sha256(`watcher-session:${identity.sessionId}`),
       metadata: {
         ...identity.context.transcriptMetadata,

@@ -88,8 +88,8 @@ describe("Pi historical transcript registration", () => {
         expect(input).toMatchObject({
           sourceSession: {
             repositoryIdentity: {
-              kind: "non_git_project",
-              root: cwd,
+              kind: "unresolved",
+              root: null,
               checkoutId: null
             }
           }

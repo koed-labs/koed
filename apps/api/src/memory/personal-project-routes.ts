@@ -18,7 +18,8 @@ import {
   personalProjectRuleInputSchema,
   personalProjectAddBackSchema,
   personalProjectAddSessionSchema,
-  personalProjectExplainSessionsSchema
+  personalProjectExplainSessionsSchema,
+  personalProjectRecallResolutionInputSchema
 } from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 import { listSelectedPersonalThreads } from "./personal-selection-inventory.js";
@@ -70,6 +71,36 @@ export const registerPersonalProjectRoutes = (
     auth: { authenticate },
     rateLimit: { memoryRead: read, memoryWrite: write }
   } = context;
+  app.post(
+    "/v1/personal/projects/resolve-recall",
+    { preHandler: read },
+    async (request, reply) => {
+      const user = await authenticate(request);
+      try {
+        return await requireRepository().resolvePersonalProjectRecall(
+          { userId: user.id },
+          personalProjectRecallResolutionInputSchema.parse(request.body)
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          typeof error.code === "string" &&
+          error.code.startsWith("personal_") &&
+          "statusCode" in error &&
+          (error.statusCode === 404 || error.statusCode === 409) &&
+          "retryable" in error &&
+          typeof error.retryable === "boolean"
+        )
+          return reply.code(error.statusCode).send({
+            error: error.message,
+            code: error.code,
+            retryable: error.retryable
+          });
+        throw error;
+      }
+    }
+  );
   app.get(
     "/v1/personal/projects/:projectId/sync",
     { preHandler: read },

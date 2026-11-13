@@ -12078,6 +12078,10 @@ export const memoryQuestions = pgTable(
       "memory_questions_search_domain_check",
       sql`(${table.searchDomain} = 'global')
         or (${table.searchDomain} = 'project' and ${table.projectId} is not null)
+        or (${table.searchDomain} = 'project' and ${table.origin} = 'mcp_memory_answer'
+          and ${table.visibility} = 'personal' and ${table.teamWorkspaceId} is null
+          and ${table.retrieval} is not null
+          and ${table.retrieval} @> '{"contentEncrypted":true,"encryptedSourceTable":"memory_questions"}'::jsonb)
         or (${table.searchDomain} = 'session' and ${table.sessionId} is not null)`
     ),
     check(

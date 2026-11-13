@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { MemoryApiClient, MemoryApiError } from "../src/index.js";
 import { processPiTranscriptSignal } from "../src/pi-transcript-watcher.js";
+import { resolveCaptureFolderObservation } from "../src/capture-repository-context.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -254,6 +255,14 @@ describe("Pi transcript watcher", () => {
       };
       const signal = { sourceSessionId, transcriptPath, cwd };
 
+      await resolveCaptureFolderObservation({
+        sourceKind: "pi",
+        externalSessionId: sourceSessionId,
+        cwd,
+        env,
+        newConversation: true
+      });
+
       await processPiTranscriptSignal(client, state, signal, env);
       const expectedKind =
         checkout === "non-git"
@@ -303,7 +312,7 @@ describe("Pi transcript watcher", () => {
           sourceSession: {
             repositoryIdentity: {
               key: normalizeGitRemoteUrl(
-                "https://example.test/team/pi-moved.git"
+                "https://example.test/team/pi-capture.git"
               ).fingerprint
             }
           }

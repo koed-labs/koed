@@ -236,6 +236,10 @@ _Avoid_: Visibility, search domain, access level
 The boundary that limits recall to a Conversation, named Project, Git Anchor,
 Folder, resolved Workspace context, or all visible Memory. A named Project
 selection does not replace the independent Git and Folder selections.
+The current Conversation's Personal Project boundary covers Memory in any named
+Project containing that Conversation, with overlapping Memory counted once.
+It does not include additional Projects merely because another selected
+Conversation belongs to them. Project membership grants no new access.
 _Avoid_: Retrieval scope, visibility, access level
 
 **Access Suspension**:

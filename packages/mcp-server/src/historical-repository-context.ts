@@ -1,9 +1,7 @@
 import {
-  historicalFolderRepositoryIdentity,
+  readSourceRepositoryIdentity,
   resolveKoedServerPaths
 } from "@koed-labs/server";
-import path from "node:path";
-import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
 import {
   isPortableGitRemote,
   normalizeGitRemoteUrl,
@@ -102,38 +100,35 @@ export const codexSourceTimeProjectDirectory = (
     : null;
 };
 
-// The DB retains existing assignments. Discovery applies only to fresh imports.
-export const resolveHistoricalCaptureRepositoryIdentity = async (input: {
+// The DB retains assignments and explicit corrections. Never infer source facts
+// from today's path: this resolver applies equally to delayed live capture.
+export const resolveHistoricalCaptureRepositoryIdentity = (input: {
   sourceTime: RepositoryIdentity | null;
   cwd: string | undefined;
   env: NodeJS.ProcessEnv;
+  source?: {
+    sourceKind: "codex" | "claude-code" | "pi";
+    externalSessionId: string;
+  };
 }): Promise<RepositoryIdentity> => {
-  if (input.sourceTime?.kind === "portable_repository") return input.sourceTime;
-  const cwd = normalizeRecordedProjectDirectory(input.cwd);
-  if (!cwd) return unresolvedHistoricalRepositoryIdentity();
-  // A foreign recorded path must never resolve relative to this process's cwd.
-  if (
-    path.isAbsolute(cwd) &&
-    (process.platform !== "win32" || path.parse(cwd).root.length > 1)
-  ) {
-    const current = await resolveCaptureRepositoryIdentity({
-      cwd,
-      env: input.env
-    });
-    if (
-      current?.kind === "portable_repository" ||
-      current?.kind === "device_local_repository" ||
-      (current?.kind === "unresolved" &&
-        !["probe_failed", "checkout_unavailable"].includes(current.reason))
-    ) {
-      // This is today's repository identity, not evidence of a historical branch.
-      return { ...current, branch: null };
-    }
-  }
-  return (
-    historicalFolderRepositoryIdentity(
+  let pinned: RepositoryIdentity | undefined;
+  if (input.source) {
+    pinned = readSourceRepositoryIdentity(
       resolveKoedServerPaths(input.env),
-      cwd
-    ) ?? unresolvedHistoricalRepositoryIdentity()
-  );
+      input.source
+    );
+    // Preserve explicit selections and unresolved selections alike. Native origin
+    // metadata cannot override a source-time selected upstream/custom remote.
+    if (
+      pinned &&
+      (pinned.kind !== "unresolved" ||
+        !["probe_failed", "probe_ambiguous", "checkout_unavailable"].includes(
+          pinned.reason
+        ))
+    )
+      return Promise.resolve(pinned);
+  }
+  if (input.sourceTime?.kind === "portable_repository")
+    return Promise.resolve(input.sourceTime);
+  return Promise.resolve(pinned ?? unresolvedHistoricalRepositoryIdentity());
 };

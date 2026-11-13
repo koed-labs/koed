@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolveMcpConversationDirectory } from "./conversation-directory.js";
+import { resolveMcpConversationBinding } from "./conversation-binding.js";
 import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
 import { splitMemoryAnswerDeliveryInput } from "../integrations/pi/memory-answer-delivery-policy.mjs";
 import {
@@ -348,10 +349,12 @@ export const createKoedMcpServer = async (
         try {
           // This is per-invocation transport context, never durable tool input.
           // A shared adapter must not retain the last Conversation's directory.
-          const { conversation_cwd, ...executionInput } = input as Record<
-            string,
-            unknown
-          >;
+          const {
+            conversation_cwd,
+            conversation_id,
+            conversation_source,
+            ...executionInput
+          } = input as Record<string, unknown>;
           const fallback = defaultCallerContext(
             context,
             process.cwd(),
@@ -366,26 +369,31 @@ export const createKoedMcpServer = async (
                 clientName: fallback.clientInfo?.name,
                 startupCwd: fallback.cwd
               });
-          const caller = callerContextResolver
+          const resolvedCaller = callerContextResolver
             ? callerContextResolver({
                 defaultContext: fallback,
                 requestContext: _requestContext
               })
             : { ...fallback, cwd: directory ?? fallback.cwd };
+          const conversation = resolveMcpConversationBinding({
+            conversationId: conversation_id,
+            conversationSource: conversation_source,
+            metadata: context.mcpReq._meta,
+            clientName: fallback.clientInfo?.name,
+            trustedConversation: resolvedCaller.conversation
+          });
+          const caller = { ...resolvedCaller, conversation };
           if (
             toolName === "memory_answer" &&
+            executionInput.search_domain === "global" &&
             directory === undefined &&
             !callerContextResolver &&
             executionInput.project_id === undefined &&
             executionInput.recall_target === undefined &&
             executionInput.repository_context === undefined
           ) {
-            if ((executionInput.search_domain ?? "project") === "project")
-              throw new Error(
-                "Koed cannot identify this Conversation's Project. Review and trust Koed's PreToolUse hook, or pass an explicit project_id. Multiple workspace folders are not an implicit Project selection."
-              );
-            if (executionInput.search_domain === "global")
-              executionInput.repository_context = null;
+            // Unknown invocation context must not inherit the adapter's checkout.
+            executionInput.repository_context = null;
           }
           // Runtime processes can outlive adapter upgrades or be replaced while
           // this MCP connection remains open. Recheck new contract features.
@@ -433,7 +441,7 @@ export const createKoedMcpServer = async (
             toolName,
             toolName === "memory_answer"
               ? parseMemoryAnswerRequest(delivery.executionInput)
-              : (input as Record<string, unknown>),
+              : executionInput,
             caller,
             context.mcpReq.signal,
             invocationKey

@@ -1,7 +1,4 @@
-import {
-  resolveHistoricalCaptureRepositoryIdentity,
-  unresolvedHistoricalRepositoryIdentity
-} from "./historical-repository-context.js";
+import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
 import type { RepositoryIdentity } from "@koed-labs/shared";
 import {
   recordedCaptureFolderObservation,
@@ -222,11 +219,17 @@ export const journalClaudeTranscript = async (input: {
         sourceRuntime: "claude-code",
         captureMethod: "api",
         cwd: input.signal.cwd,
-        ...(input.repositoryIdentity
-          ? { repositoryIdentity: input.repositoryIdentity }
-          : input.historicalFrontierOffset !== undefined
-            ? { repositoryIdentity: unresolvedHistoricalRepositoryIdentity() }
-            : {}),
+        repositoryIdentity:
+          input.repositoryIdentity ??
+          (await resolveHistoricalCaptureRepositoryIdentity({
+            sourceTime: null,
+            cwd: input.signal.cwd,
+            env: input.env ?? process.env,
+            source: {
+              sourceKind: "claude-code",
+              externalSessionId: input.signal.sourceSessionId
+            }
+          })),
         idempotencyKey: `claude-code-session:${input.signal.sourceSessionId}`,
         sourceHash: hash({
           provider: "claude-code",
@@ -385,6 +388,10 @@ export const registerClaudeHistoricalTranscriptSources = async (
   );
   const repositoryIdentity = await resolveHistoricalCaptureRepositoryIdentity({
     sourceTime: null,
+    source: {
+      sourceKind: "claude-code",
+      externalSessionId: signal.sourceSessionId
+    },
     cwd:
       recorded?.sessionId === signal.sourceSessionId ? recorded.cwd : undefined,
     env

@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
-import { repositoryScopeId, type RepositoryIdentity } from "@koed-labs/shared";
+import {
+  repositoryScopeId,
+  type RepositoryIdentity,
+  type PersonalSelectionSnapshot
+} from "@koed-labs/shared";
 import {
   pinMemoryAnswerTaskSelection,
   validateMemoryAnswerTaskRequest,
@@ -48,6 +52,46 @@ it("binds request and completion to pinned Project identity", () => {
 });
 
 const owner = "00000000-0000-4000-8000-000000000001";
+it("binds final union questions to the exact accepted Personal snapshot", () => {
+  const selection: PersonalSelectionSnapshot = {
+    version: 1,
+    ownerUserId: owner,
+    target: {
+      kind: "projects",
+      callerSessionId: owner,
+      projects: [
+        { ownerUserId: owner, projectId: "A" },
+        { ownerUserId: owner, projectId: "B" }
+      ]
+    },
+    callerRepositoryContext: null
+  };
+  const accepted = {
+    requestVersion: 1,
+    selection,
+    input: { query: "Union question", search_domain: "project" }
+  };
+  const final = {
+    query: "Union question",
+    searchDomain: "project" as const,
+    personalSelection: selection
+  };
+  expect(() =>
+    validateMemoryAnswerTaskCompletion(accepted, null, final)
+  ).not.toThrow();
+  expect(
+    validateMemoryAnswerTaskCompletion(accepted, null, {
+      ...final,
+      personalSelection: undefined
+    })
+  ).toEqual(selection);
+  expect(() =>
+    validateMemoryAnswerTaskCompletion(accepted, null, {
+      ...final,
+      personalSelection: { ...selection, target: { kind: "global" } }
+    })
+  ).toThrow("Personal selection does not match");
+});
 it("pins one owner-scoped selection without changing its legacy Project semantics", () => {
   const pinned = pinMemoryAnswerTaskSelection(request, owner);
   expect(pinned).toMatchObject({

@@ -1,4 +1,4 @@
-import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
+import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import { MemoryApiClient } from "./index.js";
@@ -63,12 +63,20 @@ export const processClaudeTranscriptSignal = async (
       )
     );
   }
-  // Resolve the transcript's checkout, never the watcher's process directory.
+  // Resolve recorded source evidence, never the delayed watcher's filesystem.
   // Existing logical sessions retain their assignment at the shared API boundary.
   const repositoryIdentity = [...initialArtifacts.values()].some(
     (artifact) => artifact === null
   )
-    ? await resolveCaptureRepositoryIdentity({ cwd: signal.cwd, env })
+    ? await resolveHistoricalCaptureRepositoryIdentity({
+        sourceTime: null,
+        cwd: signal.cwd,
+        env,
+        source: {
+          sourceKind: "claude-code",
+          externalSessionId: signal.sourceSessionId
+        }
+      })
     : undefined;
   const artifactsByComponent = await coordinateClaudeSuccessorGeneration({
     client,

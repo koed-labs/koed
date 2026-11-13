@@ -569,6 +569,8 @@ export interface MemorySearchResult extends MemoryCandidateProvenance {
   parentNodeIds?: string[];
   visibility: Visibility;
   summaryText: string;
+  /** Complete authorized LCM text, or a source-filtered outline instead. */
+  summaryRepresentation?: "complete_summary" | "filtered_sources";
   sourceItems?: LcmSourceItem[];
   lexicalAnchors?: string[];
   exactAnchorMatches?: string[];

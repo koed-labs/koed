@@ -32,7 +32,11 @@ export const memoryAnswerInputSchema = z
     query: z.string().trim().min(1).max(32_000),
     retrieval_hints: memoryAnswerRetrievalHintsSchema,
     response_detail: memoryAnswerResponseDetailSchema.default("answer_only"),
-    search_domain: searchDomainSchema.default("project"),
+    search_domain: searchDomainSchema
+      .default("project")
+      .describe(
+        "Use search_domain=project for the union of Personal Projects containing the current Conversation, global for all Personal Memory, or session for a known Conversation. Project recall requires a current Conversation binding and never falls back to a repository or Global. Explicit Team selectors use the separate Team scope."
+      ),
     project_id: z.string().trim().min(1).max(4096).optional(),
     repository_context: repositoryIdentitySchema.nullable().optional(),
     session_id: uuidSchema.optional(),
@@ -113,6 +117,22 @@ export const memoryAnswerRequestSchema = z
         Object.hasOwn(memoryAnswerInputSchema.shape, key)
       )
     );
+    if (
+      (input.search_domain === undefined ||
+        input.search_domain === "project") &&
+      input.project_id === undefined &&
+      input.team_workspace_id === undefined &&
+      input.team_backend_id === undefined
+    ) {
+      delete execution.repository_context;
+      if (input.session_id !== undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: ["session_id"],
+          message:
+            "Implicit Project recall cannot contain session_id; use search_domain=session"
+        });
+    }
     const result = memoryAnswerInputSchema.safeParse(execution);
     if (!result.success)
       for (const issue of result.error.issues)
@@ -143,6 +163,20 @@ export const parseMemoryAnswerRequest = (raw: unknown) => {
 
 export const memoryAnswerAdapterInputSchema =
   memoryAnswerRequestSchema.safeExtend({
+    conversation_id: z
+      .string()
+      .min(1)
+      .max(4096)
+      .optional()
+      .describe(
+        "Native Conversation ID supplied by the AI Client integration."
+      ),
+    conversation_source: z
+      .enum(["codex-cli", "claude-code", "pi"])
+      .optional()
+      .describe(
+        "Native Conversation source supplied by the AI Client integration."
+      ),
     conversation_cwd: z
       .string()
       .min(1)
