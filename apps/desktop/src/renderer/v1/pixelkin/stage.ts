@@ -231,7 +231,9 @@ function tick(now: number) {
   }
   if (previous && !reduced()) clock += Math.min((now - previous) / 1000, 0.05);
   previous = now;
-  const turning = [...actors].some(({ spin }) => spin?.active);
+  const turning = [...actors].some(
+    ({ visible, spin }) => visible && spin?.active
+  );
   // 30 fps is plenty for small companions, but a spin needs every frame.
   if (turning || now - lastPaint >= 32) {
     lastPaint = now;
@@ -244,7 +246,7 @@ function tick(now: number) {
         .forEach((actor) => paint(actor, gl));
   }
   const spinning = [...actors].some(
-    ({ spin }) => spin && (spin.active || spin.startled > 0)
+    ({ visible, spin }) => visible && spin && (spin.active || spin.startled > 0)
   );
   if ((!reduced() || spinning) && actors.size)
     frame = requestAnimationFrame(tick);

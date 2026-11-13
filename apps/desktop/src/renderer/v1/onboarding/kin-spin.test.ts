@@ -43,6 +43,20 @@ describe("Kin drag spin", () => {
     expect(spin.angle).toBeCloseTo(-0.14);
   });
 
+  it.each([1, -1])(
+    "settles a slow release in direction %i promptly",
+    (direction) => {
+      const spin = new KinSpin();
+      spin.begin(0, 0, 400, -0.14);
+      for (let i = 1; i <= 20; i++) spin.move(direction * i * 12, i * 50);
+      spin.move(direction * 241, 1080);
+      spin.end(1080, false);
+      for (let i = 0; i < 180 && spin.active; i++) spin.step(1 / 60, false);
+      expect(spin.active).toBe(false);
+      expect(spin.angle).toBeCloseTo(-0.14);
+    }
+  );
+
   it("keeps a flick's momentum when the last event before release is slow", () => {
     const spin = new KinSpin();
     spin.begin(0, 0, 160, -0.14);

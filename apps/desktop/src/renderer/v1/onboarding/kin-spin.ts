@@ -11,6 +11,8 @@ const VELOCITY_WINDOW_MS = 80;
 const COAST = 0.75;
 // The coast eases out as (1 - t)^GLIDE_POWER, so it starts at release velocity.
 const GLIDE_POWER = 3;
+// Longer glides feel stuck; let the spring handle slow releases instead.
+const MAX_GLIDE_SECONDS = 3;
 
 /** Direct pointer tracking, then an interruptible inertial coast to the front. */
 export class KinSpin {
@@ -93,11 +95,16 @@ export class KinSpin {
       Math.round((this.angle + this.velocity * COAST - FRONT) / TAU) * TAU +
       FRONT;
     const distance = coast - this.angle;
-    if (distance * this.velocity > 0 && Math.abs(distance) >= 1) {
+    const duration = (GLIDE_POWER * distance) / this.velocity;
+    if (
+      distance * this.velocity > 0 &&
+      Math.abs(distance) >= 1 &&
+      duration <= MAX_GLIDE_SECONDS
+    ) {
       this.#target = coast;
       this.#glide = {
         distance,
-        duration: (GLIDE_POWER * distance) / this.velocity,
+        duration,
         elapsed: 0
       };
       return;
