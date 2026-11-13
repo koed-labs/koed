@@ -51,9 +51,6 @@ export const resolveThirdPartyNodeCliExecutableInternal = (
 
   // Extract the app bundle path (everything before /Contents/Frameworks/)
   const slash = executablePath.indexOf("/Contents/Frameworks/");
-  if (slash === -1) {
-    return executablePath;
-  }
   const appBundlePath = executablePath.slice(0, slash);
 
   // Extract product name from the .app bundle filename (e.g. "Koed" from "Koed.app")
@@ -105,7 +102,6 @@ export const resolveThirdPartyNodeCliExecutableInternal = (
  */
 export const resolveThirdPartyNodeCliExecutable = (
   executablePath: string = process.execPath,
-  runtimeEnvironment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform
 ): string =>
   resolveThirdPartyNodeCliExecutableInternal(executablePath, platform);
