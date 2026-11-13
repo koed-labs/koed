@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 export {
   nodeCliInvocation,
   nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable,
   type NodeCliInvocation
 } from "./node-cli-invocation.js";
 

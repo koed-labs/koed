@@ -11,6 +11,7 @@ import {
   defaultAiClientInstanceId,
   nodeCliInvocation,
   nodeCliProcessEnvironment,
+  resolveThirdPartyNodeCliExecutable,
   sanitizeAiClientDiagnostics,
   type AiClientCapabilityDescriptor,
   type AiClientDiagnostic,
@@ -243,7 +244,8 @@ export const probeCodexVersion = async (
     CODEX_VERSION_PROBE_TIMEOUT_MS,
     Math.max(1, requestedTimeoutMs)
   );
-  const invocation = nodeCliInvocation(executablePath, ["--version"]);
+  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
+  const invocation = nodeCliInvocation(resolvedPath, ["--version"]);
   const result = await execFileAsync(invocation.command, invocation.args, {
     env: nodeCliProcessEnvironment(invocation, environment, environment),
     timeout: boundedTimeoutMs,
@@ -433,8 +435,10 @@ export const resolveClaudeSdkExecutablePath = (
 const claudeProbeInvocation = (
   executablePath: string,
   args: string[]
-): { command: string; args: string[] } =>
-  nodeCliInvocation(executablePath, args);
+): { command: string; args: string[] } => {
+  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
+  return nodeCliInvocation(resolvedPath, args);
+};
 
 export const resolveClaudeCodeExecutable = (
   env: NodeJS.ProcessEnv = process.env,
@@ -652,7 +656,8 @@ export const claudeAgentSdkProcessEnvironment = (
   env: NodeJS.ProcessEnv,
   clientName: string
 ): NodeJS.ProcessEnv => {
-  const invocation = nodeCliInvocation(executablePath, []);
+  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
+  const invocation = nodeCliInvocation(resolvedPath, []);
   return nodeCliProcessEnvironment(
     invocation,
     claudeAgentSdkEnvironment(env, clientName),
@@ -667,7 +672,8 @@ export const claudeAgentSdkExecutableOptions = (
   pathToClaudeCodeExecutable: string;
   spawnClaudeCodeProcess?: NonNullable<Options["spawnClaudeCodeProcess"]>;
 } => {
-  const invocation = nodeCliInvocation(executablePath, []);
+  const resolvedPath = resolveThirdPartyNodeCliExecutable(executablePath);
+  const invocation = nodeCliInvocation(resolvedPath, []);
   if (invocation.command !== process.execPath || invocation.args.length !== 1) {
     return { pathToClaudeCodeExecutable: invocation.command };
   }
