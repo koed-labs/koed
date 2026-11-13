@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type {
-  DesktopPerformanceState,
-  PerformanceChoice,
-  PerformanceSnapshot
+import {
+  isPerformanceChoiceRejection,
+  type DesktopPerformanceState,
+  type PerformanceChoice,
+  type PerformanceSnapshot
 } from "@koed-labs/server";
 import type { createOperationReceipt } from "./operation-receipt.js";
 
@@ -139,9 +140,11 @@ export function createPerformanceController(deps: {
           } catch (error) {
             // If saving was attempted, its result could be ambiguous after a
             // disconnect. Do not silently start a possibly changed configuration.
+            // A rejected choice wrote nothing, so restarting is safe.
             if (
               stopped &&
-              !attemptedSave &&
+              !saved &&
+              (!attemptedSave || isPerformanceChoiceRejection(error)) &&
               authorized() &&
               deps.observe().state === "stopped"
             ) {

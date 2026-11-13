@@ -51,3 +51,19 @@ export interface DesktopPerformanceApi {
   inspect: () => Promise<DesktopPerformanceState>;
   apply: (choice: PerformanceChoice) => Promise<DesktopPerformanceState>;
 }
+
+/**
+ * A performance choice refused before anything was written, so the saved
+ * configuration is unchanged and stopped services can safely restart.
+ */
+export class PerformanceChoiceRejectedError extends Error {
+  readonly rejected = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "PerformanceChoiceRejectedError";
+  }
+}
+/** Also recognizes a rejection relayed across the Desktop supervisor RPC. */
+export const isPerformanceChoiceRejection = (error: unknown): boolean =>
+  error instanceof Error &&
+  (error as { rejected?: unknown }).rejected === true;

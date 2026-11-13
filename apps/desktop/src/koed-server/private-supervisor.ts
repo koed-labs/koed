@@ -20,6 +20,15 @@ export class DesktopSupervisorRequestInterruptedError extends Error {
   }
 }
 
+/** The supervisor refused the request without changing anything. */
+export class DesktopSupervisorRequestRejectedError extends Error {
+  readonly rejected = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopSupervisorRequestRejectedError";
+  }
+}
+
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -77,7 +86,11 @@ export function requestSupervisor<T>(
       }
       if (item.type !== `koed.desktop.${channel}.response`) return;
       if (typeof item.error === "string") {
-        fail(new Error(item.error));
+        fail(
+          item.rejected === true
+            ? new DesktopSupervisorRequestRejectedError(item.error)
+            : new Error(item.error)
+        );
         return;
       }
       if (settled) return;

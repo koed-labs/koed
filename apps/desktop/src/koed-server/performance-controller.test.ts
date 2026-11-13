@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PerformanceSnapshot } from "@koed-labs/server";
+import {
+  PerformanceChoiceRejectedError,
+  type PerformanceSnapshot
+} from "@koed-labs/server";
 import { createPerformanceController } from "./performance-controller.js";
 function fixture(running = true) {
   const calls: string[] = [];
@@ -108,6 +111,18 @@ describe("performance lifecycle", () => {
     await g.controller.apply(g.choice);
     expect((await g.controller.wait()).operation?.state).toBe("failed");
     expect(g.deps.save).toHaveBeenCalledOnce();
+  });
+  it("restarts services when the save is rejected without writing", async () => {
+    const f = fixture();
+    f.deps.save.mockRejectedValue(
+      new PerformanceChoiceRejectedError(
+        "Choose no more embedding threads than the available logical CPUs."
+      )
+    );
+    await f.controller.apply(f.choice);
+    const result = await f.controller.wait();
+    expect(result.operation?.state).toBe("failed");
+    expect(f.calls).toEqual(["stop", "start"]);
   });
   it("excludes concurrent apply and rejects a queued runtime epoch change", async () => {
     const f = fixture();

@@ -22,6 +22,8 @@ import {
 import { isPackagedRuntimeMode } from "./runtime-artifact-source.js";
 import { observeRuntimeLifecycle } from "./runtime-lifecycle.js";
 import {
+  isPerformanceChoiceRejection,
+  PerformanceChoiceRejectedError,
   resourceProfileValues,
   type PerformanceSnapshot,
   type ResourceValues
@@ -146,19 +148,27 @@ export function createPerformanceManagement(options: {
   return {
     inspect,
     async save(input: unknown) {
-      const choice = performanceChoiceSchema.parse(input);
+      const parsed = performanceChoiceSchema.safeParse(input);
+      if (!parsed.success)
+        throw new PerformanceChoiceRejectedError(
+          "Performance settings are not valid."
+        );
+      const choice = parsed.data;
+      const reject = (message: string): never => {
+        throw new PerformanceChoiceRejectedError(message);
+      };
       return withStoppedRuntime(paths, owner, async () => {
         const current = await inspect();
-        if (current.readOnlyReason) throw new Error(current.readOnlyReason);
+        if (current.readOnlyReason) reject(current.readOnlyReason);
         if (current.revision !== choice.expectedRevision)
-          throw new Error(
+          reject(
             "Performance settings changed. Discard your draft and try again."
           );
         if (
           current.profileManaged &&
           choice.profile !== current.preference.profile
         )
-          throw new Error("The environment controls the resource profile.");
+          reject("The environment controls the resource profile.");
         const saved = resolveKoedServerConfig(paths, {}, { strict: true });
         const overrides = { ...choice.overrides };
         for (const key of Object.keys(
@@ -168,13 +178,13 @@ export function createPerformanceManagement(options: {
             overrides[key] !== undefined &&
             overrides[key] !== saved.resourceOverrides?.[key]
           )
-            throw new Error(`${current.managed[key]}.`);
+            reject(`${current.managed[key]}.`);
         }
         if (
           overrides.embeddingThreads !== undefined &&
           overrides.embeddingThreads > current.cpuCount
         )
-          throw new Error(
+          reject(
             "Choose no more embedding threads than the available logical CPUs."
           );
         writePerformancePreference(paths, {
@@ -248,7 +258,8 @@ export function createDesktopPerformanceRpcHandler(options: {
               error:
                 error instanceof Error
                   ? error.message
-                  : "Performance settings could not be saved."
+                  : "Performance settings could not be saved.",
+              ...(isPerformanceChoiceRejection(error) && { rejected: true })
             });
         }
       )
