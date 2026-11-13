@@ -5,7 +5,10 @@ import {
   requirePdsConfigurationCapability,
   createPdsRepositoryAssignmentFromSourceContext
 } from "@koed-labs/shared";
-import { pdsRepositoryKeyHistorySchema } from "@koed-labs/shared";
+import {
+  pdsRepositoryKeyHistorySchema,
+  resolvePersonalDeviceSyncEnabled
+} from "@koed-labs/shared";
 import { createPdsRepositoryAssignment } from "@koed-labs/shared";
 import { spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
@@ -552,6 +555,9 @@ const configuredSecretResolver = (
   environment: NodeJS.ProcessEnv,
   dependencies: { resolveHeadlessSecret?: PdsSecretResolver }
 ): PdsSecretResolver | null => {
+  // Each read launches the provider process, so never poll it unless
+  // Personal Device Sync is enabled.
+  if (!resolvePersonalDeviceSyncEnabled(environment)) return null;
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
   if (provider !== "headless") return null;
   return (
@@ -713,6 +719,9 @@ export const createPdsSecureRuntimeForApiStartup = async (
   authoritySigner: PdsAuthoritySigner | null;
   secureKeyProvider: PdsSecureKeyProvider | null;
 }> => {
+  if (!resolvePersonalDeviceSyncEnabled(environment)) {
+    return { authoritySigner: null, secureKeyProvider: null };
+  }
   const authorityReference = environment.PDS_AUTHORITY_SECRET_REF?.trim();
   if (!authorityReference) {
     return await createPdsSecureRuntimeFromEnvironment(

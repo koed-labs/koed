@@ -6,7 +6,10 @@ import {
   personalConfigurationRecordHash,
   personalConfigurationPackageId
 } from "@koed-labs/shared";
-import { pdsRepositoryKeyHistorySchema } from "@koed-labs/shared";
+import {
+  pdsRepositoryKeyHistorySchema,
+  resolvePersonalDeviceSyncEnabled
+} from "@koed-labs/shared";
 import {
   verifyPdsRepositoryAssignmentWithKeyHistory,
   PdsConfigurationCompatibilityError,
@@ -186,6 +189,9 @@ type ProviderCommand = {
 const providerRuntimeSecretCommand = (
   environment: NodeJS.ProcessEnv
 ): ProviderCommand | null => {
+  // Each read launches the provider process, so never poll it unless
+  // Personal Device Sync is enabled.
+  if (!resolvePersonalDeviceSyncEnabled(environment)) return null;
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
   if (provider !== "headless") return null;
   const reference = environment.PDS_RUNTIME_SECRET_REF?.trim();
@@ -2209,6 +2215,7 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
   }
 ): PdsWorkerSecureRuntime | null => {
   const environment = input.environment ?? process.env;
+  if (!resolvePersonalDeviceSyncEnabled(environment)) return null;
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
   if (provider !== "headless") return null;
   const resolveSecret =
