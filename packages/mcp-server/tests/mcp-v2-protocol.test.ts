@@ -44,6 +44,7 @@ afterEach(async () => {
 const connect = async ({
   curatedMemoryIntakeAvailable = true,
   environment = {},
+  clientName = "koed-mcp-v2-test",
   callerContextResolver,
   capabilities = async () => ({
     protocolVersion: 1 as const,
@@ -59,6 +60,7 @@ const connect = async ({
 }: {
   curatedMemoryIntakeAvailable?: boolean;
   environment?: NodeJS.ProcessEnv;
+  clientName?: string;
   callerContextResolver?: McpCallerContextResolver;
   capabilities?: LocalAiRuntimeClient["capabilities"];
   callTool?: (
@@ -84,7 +86,7 @@ const connect = async ({
     { transport: serverTransport, legacy: "reject" }
   );
   const client = new Client(
-    { name: "koed-mcp-v2-test", version: "1.0.0" },
+    { name: clientName, version: "1.0.0" },
     {
       capabilities: {},
       versionNegotiation: { mode: { pin: "2026-07-28" } }
@@ -591,6 +593,111 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       expect(caller.cwd).toBe(input.query);
   });
 
+  it.each([
+    undefined,
+    { workspaces: {} },
+    { workspaces: { "/repo/alpha": {}, "/repo/beta": {} } }
+  ])(
+    "keeps Global repository context unknown for unbound Codex workspaces (%j)",
+    async (turn) => {
+      const { client, callTool } = await connect({ clientName: "codex" });
+      const result = await client.callTool({
+        name: "memory_answer",
+        arguments: { query: "decision", search_domain: "global" },
+        _meta: {
+          threadId: "native-conversation",
+          ...(turn ? { "x-codex-turn-metadata": turn } : {})
+        }
+      });
+      expect(result.isError).not.toBe(true);
+      expect(callTool).toHaveBeenCalledWith(
+        "memory_answer",
+        expect.objectContaining({ repository_context: null }),
+        expect.objectContaining({
+          conversation: {
+            externalSessionId: "native-conversation",
+            sourceRuntime: "codex-cli"
+          }
+        }),
+        expect.any(AbortSignal),
+        expect.any(String)
+      );
+    }
+  );
+
+  it.each(["hook", "managed", "workspace", "trusted"])(
+    "keeps known Global caller context available for repository discovery (%s)",
+    async (source) => {
+      const cwd = "/repo/current";
+      const { client, callTool } = await connect({
+        clientName: "codex",
+        environment: source === "managed" ? { KOED_MCP_CWD: cwd } : {},
+        ...(source === "trusted"
+          ? {
+              callerContextResolver: ({
+                defaultContext
+              }: Parameters<McpCallerContextResolver>[0]) => ({
+                ...defaultContext,
+                cwd
+              })
+            }
+          : {})
+      });
+      const result = await client.callTool({
+        name: "memory_answer",
+        arguments: {
+          query: "decision",
+          search_domain: "global",
+          ...(source === "hook" ? { conversation_cwd: cwd } : {})
+        },
+        ...(source === "workspace"
+          ? {
+              _meta: { "x-codex-turn-metadata": { workspaces: { [cwd]: {} } } }
+            }
+          : {})
+      });
+      expect(result.isError).not.toBe(true);
+      const [, input, caller] = vi.mocked(
+        callTool as LocalAiRuntimeClient["callTool"]
+      ).mock.calls[0]!;
+      expect(input.repository_context).toBeUndefined();
+      expect(caller.cwd).toBe(cwd);
+    }
+  );
+
+  it.each([
+    null,
+    {
+      kind: "local_project",
+      key: "named_a",
+      originatingDeviceId: "test-device",
+      reason: "manual",
+      root: null,
+      branch: null,
+      checkoutId: null,
+      selectedRemote: null,
+      anchorDisplay: null
+    }
+  ])(
+    "preserves explicit Global repository context without a Codex workspace (%j)",
+    async (repository_context) => {
+      const { client, callTool } = await connect({ clientName: "codex" });
+      const result = await client.callTool({
+        name: "memory_answer",
+        arguments: {
+          query: "decision",
+          search_domain: "global",
+          repository_context
+        }
+      });
+      expect(result.isError).not.toBe(true);
+      expect(
+        vi.mocked(callTool as LocalAiRuntimeClient["callTool"]).mock
+          .calls[0]![1].repository_context
+      ).toEqual(repository_context);
+    }
+  );
+
   it("passes native Conversation identity independently of workspace ambiguity and keeps explicit targets available", async () => {
     const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
     const { client } = await connect({ callTool });
@@ -626,7 +733,8 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     expect(callTool).toHaveBeenLastCalledWith(
       "memory_answer",
       expect.objectContaining({
-        search_domain: "global"
+        search_domain: "global",
+        repository_context: null
       }),
       expect.any(Object),
       expect.any(AbortSignal),

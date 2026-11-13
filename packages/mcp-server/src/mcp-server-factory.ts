@@ -349,6 +349,18 @@ export const createKoedMcpServer = async (
             trustedConversation: resolvedCaller.conversation
           });
           const caller = { ...resolvedCaller, conversation };
+          if (
+            toolName === "memory_answer" &&
+            executionInput.search_domain === "global" &&
+            directory === undefined &&
+            !callerContextResolver &&
+            executionInput.project_id === undefined &&
+            executionInput.recall_target === undefined &&
+            executionInput.repository_context === undefined
+          ) {
+            // Unknown invocation context must not inherit the adapter's checkout.
+            executionInput.repository_context = null;
+          }
           // Runtime processes can outlive adapter upgrades or be replaced while
           // this MCP connection remains open. Recheck new contract features.
           if (

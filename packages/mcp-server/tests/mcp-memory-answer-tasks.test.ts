@@ -105,6 +105,51 @@ describe("ordinary MCP non-blocking Memory Answer", () => {
     ["modern", "blocking"],
     ["modern", "non_blocking"]
   ] as const)(
+    "pins unknown Global repository context before %s %s dispatch",
+    async (era, delivery_mode) => {
+      const { client, runtime } = await connect({}, era);
+      const result = await client.callTool({
+        name: "memory_answer",
+        arguments: {
+          query: "Decision",
+          search_domain: "global",
+          delivery_mode
+        },
+        _meta: {
+          "x-codex-turn-metadata": {
+            workspaces: { "/repo/alpha": {}, "/repo/beta": {} }
+          }
+        }
+      });
+      expect(result.isError).not.toBe(true);
+      const input: unknown = expect.objectContaining({
+        search_domain: "global",
+        repository_context: null
+      });
+      if (delivery_mode === "non_blocking") {
+        expect(runtime.startMemoryAnswerTask).toHaveBeenCalledWith(
+          input,
+          expect.any(Object),
+          expect.any(String),
+          expect.any(AbortSignal)
+        );
+      } else {
+        expect(runtime.callTool).toHaveBeenCalledWith(
+          "memory_answer",
+          input,
+          expect.any(Object),
+          expect.any(AbortSignal),
+          expect.any(String)
+        );
+      }
+    }
+  );
+  it.each([
+    ["legacy", "blocking"],
+    ["legacy", "non_blocking"],
+    ["modern", "blocking"],
+    ["modern", "non_blocking"]
+  ] as const)(
     "retains the calling AI Client for %s connections in %s mode",
     async (era, delivery_mode) => {
       const { client, runtime } = await connect({}, era);

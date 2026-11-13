@@ -380,6 +380,11 @@ request stores the resolved identity or explicit `null` when discovery fails.
 Retries preserve that value and never infer context from the worker directory.
 Global recall continues to search all authorized Personal Memory.
 
+For Codex requests without an invocation-local directory or trusted caller
+resolver, the MCP adapter records explicit unknown repository context. Missing
+or multiple workspace roots do not make the adapter's startup checkout the
+current repository, even when the Conversation identity is known.
+
 For a PDS replica, the branch preference uses the verified captured branch
 observation from its received assignment snapshot. Missing observations give no
 branch bonus, even when the imported automatic identity names a branch. The
