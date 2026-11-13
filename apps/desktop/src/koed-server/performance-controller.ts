@@ -159,8 +159,17 @@ export function createPerformanceController(deps: {
             } catch {
               snapshot = null;
             }
+            const message =
+              error instanceof Error
+                ? error.message
+                : "Performance settings could not be applied.";
+            // Restart failures already say the settings were saved.
+            const savedPrefix =
+              saved && !message.startsWith("Performance settings were saved")
+                ? "Performance settings were saved. "
+                : "";
             update(
-              `${saved ? "Performance settings were saved. " : ""}${error instanceof Error ? error.message : "Performance settings could not be applied."}`,
+              `${savedPrefix}${message}`,
               authorized() ? "failed" : "interrupted"
             );
           }

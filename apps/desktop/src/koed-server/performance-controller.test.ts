@@ -109,8 +109,20 @@ describe("performance lifecycle", () => {
     const g = fixture();
     g.deps.start.mockRejectedValue(new Error("not ready"));
     await g.controller.apply(g.choice);
-    expect((await g.controller.wait()).operation?.state).toBe("failed");
+    const failed = (await g.controller.wait()).operation;
+    expect(failed?.state).toBe("failed");
+    expect(failed?.message).toBe("Performance settings were saved. not ready");
     expect(g.deps.save).toHaveBeenCalledOnce();
+    const h = fixture();
+    h.deps.start.mockRejectedValue(
+      new Error(
+        "Performance settings were saved, but local services could not restart. Check service status."
+      )
+    );
+    await h.controller.apply(h.choice);
+    expect((await h.controller.wait()).operation?.message).toBe(
+      "Performance settings were saved, but local services could not restart. Check service status."
+    );
   });
   it("restarts services when the save is rejected without writing", async () => {
     const f = fixture();
