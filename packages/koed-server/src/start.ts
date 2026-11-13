@@ -1356,6 +1356,9 @@ export const startKoedServer = async ({
     else signal?.addEventListener("abort", shutdown, { once: true });
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
+    // Closing the terminal must also stop the Embedding Service, which runs in
+    // its own process group and does not receive the terminal's hangup.
+    process.on("SIGHUP", shutdown);
 
     const stopSupervisorLogMaintenance = maintainSupervisorLog(refreshedEnv);
     let sourceRuntimeLeaseAcquired = false;
@@ -1797,6 +1800,7 @@ export const startKoedServer = async ({
       stopSupervisorLogMaintenance();
       process.off("SIGINT", shutdown);
       process.off("SIGTERM", shutdown);
+      process.off("SIGHUP", shutdown);
       signal?.removeEventListener("abort", shutdown);
       managedProcessMonitor.dispose();
       if (runtimeStateWritten) {
