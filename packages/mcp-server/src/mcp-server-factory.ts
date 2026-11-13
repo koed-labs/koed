@@ -234,7 +234,35 @@ export interface CreateKoedMcpServerOptions {
   runtimeClient?: KoedMcpRuntimeClient;
   environment?: NodeJS.ProcessEnv;
   callerContextResolver?: McpCallerContextResolver;
+  /**
+   * Longest wait for Local AI Runtime capabilities before the server is
+   * returned to answer the opening request. Omit it to wait for the whole
+   * capability request: a stateless server must know its tools within that
+   * one request. A server pinned to one connection (stdio) can pass a bound.
+   * When the bound passes, discovery continues in the background, and the
+   * client receives `notifications/tools/list_changed` when the
+   * capability-gated tools register. A busy runtime then cannot push the
+   * client's connect handshake past its timeout.
+   */
+  capabilityWaitMs?: number;
 }
+
+type CapabilityDiscovery =
+  | { ok: true; capabilities: RuntimeToolCapabilities }
+  | { ok: false };
+
+const settledWithin = <T>(
+  promise: Promise<T>,
+  waitMs: number | undefined
+): Promise<T | undefined> => {
+  if (waitMs === undefined) return promise;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), Math.max(0, waitMs));
+    timer.unref?.();
+  });
+  return Promise.race([promise, bound]).finally(() => clearTimeout(timer));
+};
 
 export interface McpCallerContextResolverInput {
   defaultContext: LocalRuntimeCallerContext;
@@ -250,20 +278,24 @@ export const createKoedMcpServer = async (
   {
     runtimeClient = new LocalAiRuntimeClient(),
     environment = process.env,
-    callerContextResolver
+    callerContextResolver,
+    capabilityWaitMs
   }: CreateKoedMcpServerOptions = {}
 ): Promise<McpServer> => {
   const invocationNamespace = randomUUID();
-  let runtimeCapabilities: RuntimeToolCapabilities;
+  let runtimeCapabilities: RuntimeToolCapabilities =
+    unavailableBackendToolCapabilities;
   let runtimeAvailable = true;
-  let capabilitiesNeedRefresh = false;
-  try {
-    runtimeCapabilities = await backendToolCapabilities(runtimeClient);
-  } catch {
-    runtimeCapabilities = unavailableBackendToolCapabilities;
-    runtimeAvailable = false;
-    capabilitiesNeedRefresh = true;
-  }
+  // A completed tool call proves the runtime is reachable. A late failure of
+  // the opening discovery must not mark the runtime unavailable after that.
+  let runtimeConfirmed = false;
+  let capabilitiesNeedRefresh = true;
+  let discoveryInFlight = true;
+  const capabilityDiscovery: Promise<CapabilityDiscovery> =
+    backendToolCapabilities(runtimeClient).then(
+      (capabilities) => ({ ok: true, capabilities }),
+      () => ({ ok: false })
+    );
   const toolExposure = resolveToolExposureConfig(environment);
   const registeredTools = new Set<LocalRuntimeToolName>();
   const server = new McpServer(
@@ -287,7 +319,9 @@ export const createKoedMcpServer = async (
 
   const markRuntimeAvailable = async (): Promise<void> => {
     runtimeAvailable = true;
-    if (!capabilitiesNeedRefresh) return;
+    runtimeConfirmed = true;
+    // The opening discovery registers its tools itself when it settles.
+    if (!capabilitiesNeedRefresh || discoveryInFlight) return;
     try {
       runtimeCapabilities = await backendToolCapabilities(runtimeClient);
       registerExposedTools(runtimeCapabilities);
@@ -570,6 +604,25 @@ export const createKoedMcpServer = async (
     }
   };
 
+  const applyCapabilityDiscovery = (discovery: CapabilityDiscovery): void => {
+    discoveryInFlight = false;
+    if (!capabilitiesNeedRefresh) return;
+    if (discovery.ok) {
+      runtimeCapabilities = discovery.capabilities;
+      capabilitiesNeedRefresh = false;
+      // After connect, each new registration sends tools/list_changed.
+      registerExposedTools(runtimeCapabilities);
+    } else if (!runtimeConfirmed) {
+      runtimeAvailable = false;
+    }
+  };
+
+  const openingDiscovery = await settledWithin(
+    capabilityDiscovery,
+    capabilityWaitMs
+  );
+  if (openingDiscovery) applyCapabilityDiscovery(openingDiscovery);
+  else void capabilityDiscovery.then(applyCapabilityDiscovery);
   registerExposedTools(runtimeCapabilities);
 
   return server;
