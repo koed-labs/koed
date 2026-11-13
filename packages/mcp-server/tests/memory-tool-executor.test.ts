@@ -549,6 +549,9 @@ describe("MemoryToolExecutor", () => {
         {
           query: "What changed?",
           search_domain: "project",
+          project_id: repositoryScopeId(
+            repositoryContext("/work/requesting-project")
+          ),
           repository_context: repositoryContext("/work/requesting-project")
         },
         { cwd: "/work/requesting-project" }

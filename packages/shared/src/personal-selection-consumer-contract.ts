@@ -8,10 +8,16 @@ import { personalMembershipReasonSchema } from "./personal-membership-contract.j
 
 /** Native IDs describe local evidence only; they never assert a portable origin. */
 export const personalSelectionConsumerTargetSchema = z.union([
-  personalRecallTargetSchema.refine(
-    (target) => target.kind !== "global",
-    "Choose a Project, Git Anchor, exact Folder or Conversation"
-  ),
+  personalRecallTargetSchema.transform((target, ctx) => {
+    if (target.kind === "global" || target.kind === "projects") {
+      ctx.addIssue({
+        code: "custom",
+        message: "Choose a Project, Git Anchor, exact Folder or Conversation"
+      });
+      return z.NEVER;
+    }
+    return target;
+  }),
   z.object({ kind: z.literal("local_session"), sessionId: z.uuid() }).strict()
 ]);
 export const personalSelectionConsumerSelectionSchema = z

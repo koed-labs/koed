@@ -214,7 +214,8 @@ export {
   observeCaptureFolder,
   pinSourceFolderObservation,
   readSourceFolderObservation,
-  readCurrentSourceFolderObservation
+  readCurrentSourceFolderObservation,
+  readSourceRepositoryIdentity
 } from "./folder-context.js";
 
 export {

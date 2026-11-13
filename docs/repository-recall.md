@@ -111,48 +111,49 @@ assignment state. No migration or startup repair reassigns existing history.
 
 ## Resolve Before Accepting Work
 
-For Project scope, the local adapter resolves the caller's cwd through shared
-Project discovery. Subdirectories resolve to the Git root. An explicit path or
-catalogued local Project id resolves that requested Project only. An unknown
-Project, missing checkout, invalid selected anchor, or failed probe returns a
-resolution error. It does not substitute the caller's repository or Global scope.
+Implicit Personal Project recall resolves the union of canonical named Project
+memberships of the caller's Conversation before accepting work. It does not
+discover a Project from cwd, workspace roots, the adapter startup directory, or
+the latest active Conversation. Missing or invalid Conversation identity, an
+unavailable Conversation, or no memberships returns an explicit error, without
+repository or Global fallback. See [Personal Project Recall](personal-project-recall.md).
 
-Supported client integrations bind that cwd to the Conversation, independently
-of the MCP process's startup directory. Codex (CLI, desktop, and IDE extension)
-and Claude Code install a `PreToolUse` hook for Koed's `memory_answer` tool.
-The hook copies its native `cwd` into the adapter-only `conversation_cwd`
-argument on every call, including calls from concurrent Conversations. The
-adapter validates the absolute path, passes it as caller context, and removes
-the argument before submitting blocking or non-blocking work. Missing or invalid
-native cwd stops the recall call instead of selecting the adapter's Project.
-An explicit `project_id` or pinned `repository_context` still selects the
-requested Project; Global and Session search keep their original scopes.
+The adapter carries identity per invocation, so simultaneous Conversations in
+the same folder stay independent. Codex supplies its native Conversation ID as
+MCP request `_meta.threadId`. A trusted caller-context resolver can instead
+supply a native ID and runtime or a captured Session UUID. The MCP transport's
+`sessionId` is never a native Conversation ID.
 
-Codex also supplies per-request workspace roots in its native MCP metadata.
-When no hook observation or private managed directory is available, a single
-absolute workspace root selects that Project. This covers app-server clients
-that skip an untrusted hook. Missing or multiple workspace roots require an
-explicit Project target or a trusted hook; Koed does not choose one arbitrarily
-or use the MCP startup folder. Global recall remains available with unknown
-current-Project provenance. The adapter uses only the local root for discovery,
-not remote URLs or other identity claims from that metadata.
+Codex and Claude Code `PreToolUse` hooks copy their native source Session ID and
+runtime into adapter-only `conversation_id` and `conversation_source` fields,
+along with `conversation_cwd`. The adapter validates and removes these fields
+before blocking or non-blocking execution. Native metadata and trusted caller
+context take precedence; conflicting body fields reject the call rather than
+selecting another Conversation.
 
-Pi's native extension passes `ctx.cwd` directly for both delivery modes. Managed
-Codex and Claude Conversations also supply a launch-scoped `KOED_MCP_CWD` to
-their private adapter; a per-call hook observation takes precedence. No shared
-last-active folder is stored. Remote transports still control caller context
-and cannot inherit the serving host's directory.
+Hook-only body fields are client-supplied claims. In particular, the adapter
+cannot cryptographically prove that Claude's hook produced them or that they
+identify the currently executing Conversation. The authenticated User's
+ownership is verified when resolving the claimed Conversation; this does not
+grant access to another User's Personal Memory. These claims are context for
+scope selection, not an authorization boundary. Global Personal recall remains
+an explicit same-User option without a Conversation binding.
 
-After upgrading, repair the Codex and Claude integrations and restart those
-clients so they load the added hook and adapter schema. Review and trust changed
-Codex hooks through the client's normal hook review flow. Older MCP-only setups
-can pass an explicit Project path. Other stdio clients retain startup-directory
-compatibility, but Codex without sufficient native context requires an explicit
-target. Moving a whole Project continues to
-route newly resolved source folders to its saved named destination before task
-acceptance.
+Explicit named Project and exact Folder targets keep their requested selection.
+Global and explicit Session recall keep their scopes. After upgrading, repair
+the client integrations and restart clients so they load the hook and adapter
+schema. Review changed Codex hooks through the client's normal hook review flow.
+Clients without usable identity can select an explicit target.
 
-The accepted task's encrypted request stores `repository_context`: root, identity
+### Legacy Repository Selection
+
+The deprecated explicit `project_id` and resolved `repository_context` paths
+retain repository compatibility behavior. Shared discovery resolves requested
+local paths and subdirectories to their Git root; it does not select the
+implicit named Project union. Unknown repositories, missing checkouts, invalid
+anchors, or failed probes return resolution errors without scope fallback.
+
+A legacy repository task's encrypted request stores `repository_context`: root, identity
 kind/key, branch observation, resolution reason, and checkout/device provenance.
 Its `project_id` is an opaque scope value derived from kind, key, and the
 originating device for local identities. Portable equality ignores checkout paths,
@@ -379,6 +380,11 @@ request stores the resolved identity or explicit `null` when discovery fails.
 Retries preserve that value and never infer context from the worker directory.
 Global recall continues to search all authorized Personal Memory.
 
+For Codex requests without an invocation-local directory or trusted caller
+resolver, the MCP adapter records explicit unknown repository context. Missing
+or multiple workspace roots do not make the adapter's startup checkout the
+current repository, even when the Conversation identity is known.
+
 For a PDS replica, the branch preference uses the verified captured branch
 observation from its received assignment snapshot. Missing observations give no
 branch bonus, even when the imported automatic identity names a branch. The
@@ -401,6 +407,13 @@ requires portable repository context. The worker reserves follow-up retrieval
 separately, charges scans at their actual cost, and schedules routed searches
 within the remaining budget. Failed searches retain their reserved cost so
 retries cannot evade the request-wide cap.
+
+Personal score scans keep that one-pass contract across every scanned retrieval
+stage, even when current-repository context is known. Scripted scans explicitly
+request one pass, leaving the separately reserved budget available for routed
+evidence retrieval and follow-up searches. A one-result request also uses one
+pass, even when its stage over-fetches more candidates. Routed requests carry
+their planned pass cost as their pass allowance; failures retain that same cost.
 
 After the existing semantic threshold, stage weights and exact-anchor fusion,
 current-repository evidence receives `0.04`; a known matching branch adds `0.01`.

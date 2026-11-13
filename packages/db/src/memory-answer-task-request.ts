@@ -10,6 +10,7 @@ import {
   type PersonalSelectionSnapshot
 } from "@koed-labs/shared";
 import type { CreateFinalMemoryQuestionInput } from "./memory-question-repository.js";
+import { isDeepStrictEqual } from "node:util";
 
 const inputFrom = (request: unknown): Record<string, unknown> | null => {
   if (
@@ -30,13 +31,18 @@ const projectScope = (
 ) =>
   !teamWorkspaceId &&
   selection?.version === 1 &&
-  (selection.target.kind === "project" || selection.target.kind === "folder")
-    ? personalSelectionLegacyScope(selection).projectId!
-    : repositoryScopeId(
-        teamWorkspaceId
-          ? requirePortableTeamRepositoryContext(snapshot.repository_context)
-          : repositoryRecallContextSchema.parse(snapshot.repository_context)
-      );
+  selection.target.kind === "projects"
+    ? undefined
+    : !teamWorkspaceId &&
+        selection?.version === 1 &&
+        (selection.target.kind === "project" ||
+          selection.target.kind === "folder")
+      ? personalSelectionLegacyScope(selection).projectId!
+      : repositoryScopeId(
+          teamWorkspaceId
+            ? requirePortableTeamRepositoryContext(snapshot.repository_context)
+            : repositoryRecallContextSchema.parse(snapshot.repository_context)
+        );
 
 /** The database binds the encrypted request to its authenticated owner before acceptance. */
 export const pinMemoryAnswerTaskSelection = (
@@ -91,7 +97,9 @@ export const validateMemoryAnswerTaskRequest = (
     throw new Error("Memory Answer request scope does not match task");
 };
 
-/** Bind a completed question to the original request, never the worker's current cwd. */
+/** Validate completion and return its accepted selection for server-side persistence.
+ * Older clients may omit the repeated selection; a supplied replacement never wins.
+ */
 export const validateMemoryAnswerTaskCompletion = (
   request: unknown,
   teamWorkspaceId: string | null,
@@ -103,6 +111,7 @@ export const validateMemoryAnswerTaskCompletion = (
     | "searchDomain"
     | "sessionId"
     | "projectId"
+    | "personalSelection"
   >
 ) => {
   validateMemoryAnswerTaskRequest(request, teamWorkspaceId ?? undefined);
@@ -112,6 +121,20 @@ export const validateMemoryAnswerTaskCompletion = (
   )
     throw new Error("Final Memory Question scope does not match task");
   const snapshot = inputFrom(request);
+  const acceptedSelection =
+    snapshot &&
+    request &&
+    typeof request === "object" &&
+    !Array.isArray(request)
+      ? personalSelectionFromTaskRequest({ ...request, input: snapshot })
+      : undefined;
+  if (
+    question.personalSelection !== undefined &&
+    !isDeepStrictEqual(acceptedSelection, question.personalSelection)
+  )
+    throw new Error(
+      "Final Memory Question Personal selection does not match task"
+    );
   if (
     !snapshot ||
     typeof snapshot.query !== "string" ||
@@ -136,4 +159,5 @@ export const validateMemoryAnswerTaskCompletion = (
       : snapshot.project_id;
   if ((project ?? null) !== (question.projectId ?? null))
     throw new Error("Final Memory Question project does not match task");
+  return acceptedSelection;
 };

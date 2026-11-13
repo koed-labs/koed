@@ -1283,7 +1283,7 @@ describe.skipIf(!databaseUrl)(
       const search = async (
         context: RepositoryIdentity | null,
         maxSearchPasses?: 1 | 2,
-        limit = 1
+        limit = 2
       ) =>
         createMemoryEngine(repo).searchMemory({
           requesterContext: actor,
@@ -1313,6 +1313,33 @@ describe.skipIf(!databaseUrl)(
         currentRepositoryCandidateCount: 1
       });
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      const scan = await createMemoryEngine(repo).searchMemory({
+        requesterContext: actor,
+        query: "release checklist rationale",
+        scope: "personal",
+        searchDomain: "global",
+        repositoryContext: a,
+        maxSearchPasses: 2,
+        retrievalStage: "score_scan",
+        limit: 2
+      });
+      expect(scan.results).toEqual([]);
+      expect(scan.metadata).toMatchObject({
+        searchPasses: 1,
+        currentRepositoryCandidateCount: 0
+      });
+      expect(scan.metadata.stages).toContainEqual(
+        expect.objectContaining({
+          name: "raw_fallback_search",
+          countAboveThreshold: 4
+        })
+      );
+      const singleResult = await search(a, undefined, 1);
+      expect(singleResult.metadata).toMatchObject({
+        searchPasses: 1,
+        currentRepositoryCandidateCount: 0
+      });
+      expect(singleResult.results[0]?.sourceId).not.toBe(current.event.id);
       expect((await search(a, 1)).results[0]?.sourceId).not.toBe(
         current.event.id
       );

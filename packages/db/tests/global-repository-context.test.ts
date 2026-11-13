@@ -126,12 +126,21 @@ it("bounds both pools by the existing cap and retains full canonical namespaces"
   const key = canonicalGlobalCandidateKey(row);
   for (const change of [
     { visibility: "team" },
-    { source_chunk_index: 1 },
-    { source_chunk_count: 3 },
+    { source_id: "another-source" },
     { source_generation: 8 },
     { source_type: "memory_event" }
   ])
     expect(canonicalGlobalCandidateKey({ ...row, ...change })).not.toBe(key);
+  expect(canonicalGlobalCandidateKey({ ...row, source_chunk_index: 1 })).toBe(
+    key
+  );
+  expect(canonicalGlobalCandidateKey({ ...row, source_chunk_count: 3 })).toBe(
+    key
+  );
+  const event = { ...row, source_type: "memory_event" };
+  expect(
+    canonicalGlobalCandidateKey({ ...event, source_chunk_index: 1 })
+  ).not.toBe(canonicalGlobalCandidateKey(event));
 });
 
 it("classifies Team snapshots and requires authorized comparable branch disclosure", () => {

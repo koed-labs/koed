@@ -1,7 +1,8 @@
 import {
   recallQuestionReportedMetadataSchema,
   personalFolderReferenceSchema,
-  personalGitContextSchema
+  personalGitContextSchema,
+  personalSelectionSnapshotSchema
 } from "@koed-labs/shared";
 import { z } from "zod";
 import {
@@ -16,6 +17,7 @@ const finalMemoryQuestionBaseSchema = z.object({
   retrieval_scope: memoryQuestionRetrievalScopeSchema.default("personal"),
   team_workspace_id: z.string().uuid().optional(),
   search_domain: searchDomainSchema.default("global"),
+  personal_selection: personalSelectionSnapshotSchema.optional(),
   project_id: z.string().min(1).optional(),
   project_name: z.string().min(1).optional(),
   project_path: z.string().min(1).optional(),
@@ -43,6 +45,12 @@ export const finalMemoryQuestionSchema = z
     })
   ])
   .superRefine((input, context) => {
+    if (input.personal_selection && input.team_workspace_id)
+      context.addIssue({
+        code: "custom",
+        path: ["personal_selection"],
+        message: "Personal selection cannot be combined with Team scope"
+      });
     if (input.search_domain === "session" && !input.session_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -50,7 +58,14 @@ export const finalMemoryQuestionSchema = z
         message: "session_id is required when search_domain is session"
       });
     }
-    if (input.search_domain === "project" && !input.project_id) {
+    if (
+      input.search_domain === "project" &&
+      !input.project_id &&
+      !(
+        input.personal_selection?.version === 1 &&
+        input.personal_selection.target.kind === "projects"
+      )
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["project_id"],

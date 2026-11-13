@@ -186,6 +186,7 @@ export const registerPiHistoricalTranscriptSource = async (
           cwd: identity.cwd,
           repositoryIdentity: await resolveHistoricalCaptureRepositoryIdentity({
             sourceTime: null,
+            source: { sourceKind: "pi", externalSessionId: identity.id },
             cwd: identity.cwd,
             env
           }),

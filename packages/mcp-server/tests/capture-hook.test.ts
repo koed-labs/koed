@@ -35,6 +35,7 @@ describe("Conversation recall context hook", () => {
                 hookEventName: "PreToolUse",
                 toolName: "mcp__koed__memory_answer",
                 cwd,
+                sourceSessionId: `conversation-${cwd}`,
                 toolInput
               },
               undefined,
@@ -44,7 +45,13 @@ describe("Conversation recall context hook", () => {
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               ...(source === "codex" ? { permissionDecision: "allow" } : {}),
-              updatedInput: { ...toolInput, conversation_cwd: cwd }
+              updatedInput: {
+                ...toolInput,
+                conversation_cwd: cwd,
+                conversation_id: `conversation-${cwd}`,
+                conversation_source:
+                  source === "codex" ? "codex-cli" : "claude-code"
+              }
             }
           });
           if (source === "claude")
@@ -54,6 +61,7 @@ describe("Conversation recall context hook", () => {
                   hookEventName: "PreToolUse",
                   toolName: "mcp__koed__memory_answer",
                   cwd,
+                  sourceSessionId: `conversation-${cwd}`,
                   toolInput
                 },
                 undefined,
@@ -71,6 +79,7 @@ describe("Conversation recall context hook", () => {
       hookEventName: "PreToolUse",
       toolName: "mcp__memory-local__memory_answer",
       cwd: "/work/repo",
+      sourceSessionId: "current-conversation",
       toolInput: { query: "decision" }
     };
     expect(recallHookOutput(metadata)).toEqual({});
@@ -103,6 +112,21 @@ describe("Conversation recall context hook", () => {
       ).toMatchObject({
         hookSpecificOutput: { permissionDecision: "deny" }
       });
+    }
+  );
+
+  it.each([undefined, "", "\0"])(
+    "rejects invalid native identity %j",
+    (sourceSessionId) => {
+      expect(
+        recallHookOutput({
+          hookEventName: "PreToolUse",
+          toolName: "mcp__koed__memory_answer",
+          cwd: "/work/repo",
+          sourceSessionId,
+          toolInput: { query: "decision" }
+        })
+      ).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
     }
   );
 });

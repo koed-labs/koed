@@ -209,6 +209,59 @@ describe("Memory Question history credential boundaries", () => {
     }
   );
 
+  it("preserves the accepted Project union on Personal final questions and rejects Team mixing", async () => {
+    const test = await fixture("token");
+    const personalSelection = {
+      version: 1,
+      ownerUserId: test.user.id,
+      target: {
+        kind: "projects",
+        callerSessionId: randomUUID(),
+        projects: [
+          { ownerUserId: test.user.id, projectId: "A" },
+          { ownerUserId: test.user.id, projectId: "B" }
+        ]
+      },
+      callerRepositoryContext: null
+    };
+    const payload = {
+      idempotency_key: randomUUID(),
+      origin: "mcp_memory_answer",
+      query: "Union question",
+      search_domain: "project",
+      personal_selection: personalSelection,
+      status: "answered",
+      answer_markdown: "Union answer"
+    };
+    const response = await test.app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/final",
+      headers: test.headers,
+      payload
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(test.createFinalMemoryQuestion).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: test.user.id }),
+      expect.objectContaining({
+        personalSelection,
+        projectId: undefined,
+        searchDomain: "project"
+      })
+    );
+    test.createFinalMemoryQuestion.mockClear();
+    expect(
+      (
+        await test.app.inject({
+          method: "POST",
+          url: "/v1/memory/questions/final",
+          headers: test.headers,
+          payload: { ...payload, team_workspace_id: randomUUID() }
+        })
+      ).statusCode
+    ).toBeGreaterThanOrEqual(400);
+    expect(test.createFinalMemoryQuestion).not.toHaveBeenCalled();
+  });
+
   it.each(["Basic unrelated", "Bearer stale-personal-token"])(
     "uses a successful browser session despite an unrelated %s header",
     async (authorization) => {

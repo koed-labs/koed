@@ -299,7 +299,14 @@ export const expandMemoryNodeQuerySchema = z
         message: "session_id is required when search_domain is session"
       });
     }
-    if (input.search_domain === "project" && !input.project_id) {
+    if (
+      input.search_domain === "project" &&
+      !input.project_id &&
+      !(
+        input.personal_selection?.version === 1 &&
+        input.personal_selection.target.kind === "projects"
+      )
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["project_id"],

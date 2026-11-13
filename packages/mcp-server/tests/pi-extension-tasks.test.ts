@@ -107,7 +107,10 @@ describe("Pi explicit Memory Answer tasks", () => {
     "uses each Pi Conversation directory for %s recall, including concurrent sessions",
     async (delivery_mode) => {
       const requests: Array<{
-        caller: { cwd: string };
+        caller: {
+          cwd: string;
+          conversation: { externalSessionId: string; sourceRuntime: string };
+        };
         input: Record<string, unknown>;
       }> = [];
       vi.stubGlobal(
@@ -127,10 +130,10 @@ describe("Pi explicit Memory Answer tasks", () => {
       );
       const { invoke } = await setup();
       await Promise.all(
-        ["/work/alpha", "/work/beta/subdirectory"].map((cwd, index) =>
+        ["/work/shared", "/work/shared"].map((cwd, index) =>
           invoke(
             "memory_answer",
-            { query: cwd, delivery_mode },
+            { query: `session-${index}`, delivery_mode },
             `session-${index}`,
             new AbortController().signal,
             cwd
@@ -138,8 +141,13 @@ describe("Pi explicit Memory Answer tasks", () => {
         )
       );
       expect(requests).toHaveLength(2);
-      for (const request of requests)
-        expect(request.caller.cwd).toBe(request.input.query);
+      for (const request of requests) {
+        expect(request.caller.cwd).toBe("/work/shared");
+        expect(request.caller.conversation).toEqual({
+          externalSessionId: request.input.query,
+          sourceRuntime: "pi"
+        });
+      }
     }
   );
   it("submits promptly, collects pending, and freshly collects compact completion across sessions", async () => {

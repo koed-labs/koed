@@ -144,6 +144,20 @@ export const createRuntimeTaskPort = (koedHome) => {
   };
 };
 
+export const piRuntimeCallerContext = (context) => {
+  const externalSessionId = context.sessionManager?.getSessionId?.();
+  return {
+    cwd: context.cwd,
+    clientInfo: { name: "pi", version: "koed-extension-v1" },
+    ...(typeof externalSessionId === "string" &&
+    externalSessionId.trim().length > 0 &&
+    externalSessionId.length <= 4096 &&
+    !externalSessionId.includes("\0")
+      ? { conversation: { externalSessionId, sourceRuntime: "pi" } }
+      : {})
+  };
+};
+
 export const callLocalRuntimeTool = async ({
   koedHome,
   name,
@@ -186,10 +200,7 @@ export const callLocalRuntimeTool = async ({
     "POST",
     {
       input,
-      caller: {
-        cwd: context.cwd,
-        clientInfo: { name: "pi", version: "koed-extension-v1" }
-      },
+      caller: piRuntimeCallerContext(context),
       invocationKey
     },
     signal

@@ -23,6 +23,7 @@ import {
   type PersonalDirectMembership
 } from "@koed-labs/shared";
 import type { ActorContext } from "./types.js";
+import { resolvePersonalProjectRecall } from "./personal-project-recall-resolution.js";
 
 const uuid = personalOwnerIdSchema;
 const updateDetails = personalProjectUpdateSchema.extend({
@@ -381,6 +382,9 @@ export const createPersonalMembershipRepository = (
 ) => {
   const transact = personalMembershipTransactionRunner(pool, transaction);
   return {
+    async resolvePersonalProjectRecall(actor: ActorContext, raw: unknown) {
+      return resolvePersonalProjectRecall(pool, actor, raw);
+    },
     async createNamedPersonalProject(
       actor: ActorContext,
       raw: { name: string; requestId?: string }
