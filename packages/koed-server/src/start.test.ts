@@ -47,6 +47,23 @@ import {
 } from "./supervisor-lock.js";
 import type { KoedServerStatus } from "./types.js";
 
+// Keep the test worker at its own priority; nice cannot be raised back.
+const lowerBackgroundServicePriority = vi.hoisted(() =>
+  vi.fn(() => ({ applied: false as const, reason: "disabled" as const }))
+);
+vi.mock("./process-priority.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./process-priority.js")>()),
+  lowerBackgroundServicePriority
+}));
+
+// Supervisor tests spawn fake children with small fake PIDs. A real process
+// group signal for those PIDs reaches unrelated processes (kill(-1) signals
+// every process the user owns), so these tests never use group shutdown.
+vi.mock("./local-embedding-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./local-embedding-runtime.js")>()),
+  embeddingServiceLeadsProcessGroup: () => false
+}));
+
 vi.mock("./local-privacy-runtime.js", async (importOriginal) => {
   const original =
     await importOriginal<typeof import("./local-privacy-runtime.js")>();
@@ -898,6 +915,27 @@ describe("start supervisor", () => {
     }
   );
 
+  it.each([0, 1])(
+    "never signals process group %i, which would reach unrelated processes",
+    async (pid) => {
+      // Mocked: a real kill(-1) would signal every process the user owns.
+      const kill = vi
+        .spyOn(process, "kill")
+        .mockImplementation((() => true) as typeof process.kill);
+      try {
+        await stopChildProcess(
+          child(pid) as never,
+          100,
+          "embeddingService",
+          true
+        );
+        expect(kill).not.toHaveBeenCalled();
+      } finally {
+        kill.mockRestore();
+      }
+    }
+  );
+
   it("rejects when a managed process exited before listeners attach", async () => {
     const alreadyExited = new EventEmitter() as EventEmitter & {
       exitCode: number | null;
@@ -1278,6 +1316,16 @@ describe("start supervisor", () => {
       env?: NodeJS.ProcessEnv;
     }> = [];
     let runtime: { dependencyMode?: string; services?: string[] } | undefined;
+    let postgresStartsBeforePriority: number | undefined;
+    const isPostgresStart = (entry: { command: string; args: string[] }) =>
+      entry.command.endsWith("pg_ctl") && entry.args.includes("start");
+    let spawnedBeforePriority: number | undefined;
+    lowerBackgroundServicePriority.mockClear();
+    lowerBackgroundServicePriority.mockImplementationOnce(() => {
+      postgresStartsBeforePriority = commands.filter(isPostgresStart).length;
+      spawnedBeforePriority = spawned.length;
+      return { applied: false, reason: "disabled" };
+    });
 
     await startKoedServer({
       ...cleanShutdownAfterReady(),
@@ -1351,6 +1399,11 @@ describe("start supervisor", () => {
       "worker",
       "local-ai-runtime"
     ]);
+    // Priority drops before any service starts, so every service inherits it.
+    expect(lowerBackgroundServicePriority).toHaveBeenCalledTimes(1);
+    expect(spawnedBeforePriority).toBe(0);
+    expect(postgresStartsBeforePriority).toBe(0);
+    expect(commands.filter(isPostgresStart)).toHaveLength(1);
   });
 
   it("loads runtime and path settings from the selected env before startup", async () => {
@@ -2403,6 +2456,7 @@ describe("start supervisor", () => {
     const root = tempDir();
     const controller = new AbortController();
     const spawned: Array<{ command: string; args: string[] }> = [];
+    lowerBackgroundServicePriority.mockClear();
 
     const running = startKoedServer({
       signal: controller.signal,
@@ -2438,6 +2492,8 @@ describe("start supervisor", () => {
       ) as { services: string[]; processes: Record<string, number> };
       expect(runtime.services).not.toContain("local-ai-runtime");
       expect(runtime.processes).not.toHaveProperty("localAiRuntime");
+      // Server deployments keep normal scheduling priority.
+      expect(lowerBackgroundServicePriority).not.toHaveBeenCalled();
       expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(true);
       await expect(
         deviceRequestCommand(

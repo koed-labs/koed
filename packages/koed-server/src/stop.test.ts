@@ -758,6 +758,37 @@ describe("stopKoedServer", () => {
     }
   );
 
+  it("signals a source-runtime Embedding Service group when its identity is recorded", () => {
+    // No runtime/native directory: this KOED_HOME is not release-managed.
+    const koedHome = makeHome();
+    writeRuntime(
+      koedHome,
+      runtime({
+        services: ["embedding-service-native", "api", "worker"],
+        processes: { api: 10, worker: 11, embeddingService: 13 },
+        processIdentities: { embeddingService: "embedding-13" }
+      })
+    );
+    const targets: number[] = [];
+    const live = new Set([13]);
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: (pid) =>
+        pid === 13 ? "embedding-13" : "test-supervisor",
+      isProcessGroupLeader: (pid) => pid === 13,
+      kill: (pid) => {
+        targets.push(pid);
+        live.delete(Math.abs(pid));
+      },
+      checkPid: (pid) => live.has(Math.abs(pid))
+    });
+
+    // -13 signals the whole group, so an orphan-prone llama-server stops too.
+    expect(targets).toEqual([11, 10, -13]);
+    expect(result.stoppedServices).toContain("embedding-service-native");
+  });
+
   it("preserves the release-managed Embedding Service PID when its identity is missing", () => {
     const koedHome = makeHome();
     mkdirSync(resolve(koedHome, "runtime", "native"), { recursive: true });

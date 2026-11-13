@@ -78,7 +78,7 @@ without Koed. With Koed, 12 tasks improved with captured knowledge and estimated
 
 ```bash
 pnpm install
-pnpm desktop:start
+KOED_HOME=~/.koed-dev pnpm desktop:start
 ```
 
 On first launch, choose **Set up Koed** and confirm. Desktop installs the
