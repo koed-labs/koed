@@ -185,6 +185,31 @@ describe("Desktop performance preferences", () => {
     await expect(f.manager.inspect()).rejects.toThrow();
     expect(readFileSync(f.paths.serverConfigPath, "utf8")).toBe("{broken");
   });
+  it("reads invalid environment values with the components' fallbacks", async () => {
+    const f = fixture();
+    f.environment.KOED_BACKGROUND_NICE = "20";
+    f.environment.LLAMA_N_THREADS = "-1";
+    f.environment.MEMORY_CODEX_TRANSCRIPT_POLL_MS = "1500ms";
+    const s = await f.manager.inspect();
+    expect(s.effective).toEqual({
+      backgroundNice: 10,
+      embeddingThreads: 6,
+      transcriptPollMs: 1500
+    });
+    expect(Object.keys(s.invalid)).toEqual([
+      "backgroundNice",
+      "embeddingThreads"
+    ]);
+    expect(s.invalid.backgroundNice).toMatch(/KOED_BACKGROUND_NICE/);
+    expect(s.managed.transcriptPollMs).toBe("Managed by the environment");
+    await expect(
+      f.manager.save({
+        profile: "low",
+        overrides: {},
+        expectedRevision: s.revision
+      })
+    ).resolves.toMatchObject({ preference: { profile: "low" } });
+  });
   it("rejects unauthenticated, malformed and duplicate private supervisor requests", async () => {
     const f = fixture();
     const save = vi.spyOn(f.manager, "save");

@@ -28,10 +28,7 @@ import {
   type PerformanceSnapshot,
   type ResourceValues
 } from "./performance-contract.js";
-import {
-  performanceChoiceSchema,
-  resourceOverridesSchema
-} from "./performance-schema.js";
+import { performanceChoiceSchema } from "./performance-schema.js";
 import type { KoedServerPaths } from "./paths.js";
 
 const variables = {
@@ -39,6 +36,25 @@ const variables = {
   embeddingThreads: ["EMBEDDING_LLAMA_N_THREADS", "LLAMA_N_THREADS"],
   transcriptPollMs: ["MEMORY_CODEX_TRANSCRIPT_POLL_MS"]
 } as const;
+
+// Read each variable the way its component does. null means the component
+// ignores the value and uses its own default, which matches Balanced.
+const positiveInteger = (raw: string): number | null => {
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : null;
+};
+const readers: Record<keyof ResourceValues, (raw: string) => number | null> = {
+  // process-priority.ts resolveBackgroundNice
+  backgroundNice: (raw) =>
+    /^\d+$/.test(raw) && Number(raw) <= 19 ? Number(raw) : null,
+  // embedding-service env-config.ts intEnv
+  embeddingThreads: positiveInteger,
+  // codex-transcript-watcher.ts positiveInt
+  transcriptPollMs: (raw) => {
+    const value = positiveInteger(raw);
+    return value === null ? null : Math.min(value, 60_000);
+  }
+};
 
 export function createPerformanceManagement(options: {
   paths: KoedServerPaths;
@@ -98,18 +114,19 @@ export function createPerformanceManagement(options: {
       ...overrides
     };
     const managed: PerformanceSnapshot["managed"] = {};
+    const invalid: PerformanceSnapshot["invalid"] = {};
     const explicit: Record<string, string> = {};
+    const defaults = resourceProfileValues("balanced", cpuCount);
     for (const key of Object.keys(variables) as (keyof ResourceValues)[]) {
       const name = variables[key].find((variable) =>
         environment[variable]?.trim()
       );
       if (!name) continue;
-      const value = Number(environment[name]);
-      resourceOverridesSchema.parse({
-        [key]: key === "transcriptPollMs" ? Math.min(value, 60_000) : value
-      });
-      effective[key] =
-        key === "transcriptPollMs" ? Math.min(value, 60_000) : value;
+      const raw = environment[name]!.trim();
+      const value = readers[key](raw);
+      effective[key] = value ?? defaults[key];
+      if (value === null)
+        invalid[key] = `${name} is not valid, so ${defaults[key]} is used.`;
       managed[key] = "Managed by the environment";
       explicit[name] = environment[name]!;
     }
@@ -142,6 +159,7 @@ export function createPerformanceManagement(options: {
       effective,
       profileManaged,
       managed,
+      invalid,
       readOnlyReason
     };
   };

@@ -33,6 +33,8 @@ export interface PerformanceSnapshot {
   effective: ResourceValues;
   profileManaged: boolean;
   managed: Partial<Record<keyof ResourceValues, string>>;
+  /** Environment values the components ignore, and the value they use instead. */
+  invalid: Partial<Record<keyof ResourceValues, string>>;
   readOnlyReason: string | null;
 }
 export interface PerformanceChoice extends PerformancePreference {

@@ -229,6 +229,9 @@ export function PerformanceSettings({
                       preference.overrides[key] !== undefined) && (
                       <small>{snapshot.managed[key] ?? "Custom value"}</small>
                     )}
+                    {snapshot.invalid?.[key] && (
+                      <small role="alert">{snapshot.invalid[key]}</small>
+                    )}
                   </div>
                 </div>
               ))}
