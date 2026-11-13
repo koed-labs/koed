@@ -77,4 +77,71 @@ describe("Kin stage rendering", () => {
       }
     }
   );
+  describe("idle rendering", () => {
+    const setup = (focused: boolean) => {
+      const frames: FrameRequestCallback[] = [];
+      vi.stubGlobal("WebGL2RenderingContext", class {});
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        (callback: FrameRequestCallback) => {
+          frames.push(callback);
+          return frames.length;
+        }
+      );
+      vi.stubGlobal("cancelAnimationFrame", vi.fn());
+      vi.stubGlobal("matchMedia", () => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn()
+      }));
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(focused);
+      const canvas = document.createElement("canvas");
+      vi.spyOn(canvas, "getContext").mockReturnValue({
+        clearRect: vi.fn(),
+        drawImage: vi.fn()
+      } as unknown as CanvasRenderingContext2D);
+      const actor = createPixelkinActor(canvas, KIN_DEFAULTS, 64, "avatar");
+      const remove = addPixelkin(actor);
+      return { frames, hasFocus, actor, remove };
+    };
+
+    it("paints once and stops while another app has focus", () => {
+      const { frames, remove } = setup(false);
+      try {
+        expect(frames).toHaveLength(1);
+        frames[0]!(100);
+        expect(engine.render).toHaveBeenCalledTimes(1);
+        // No further frames are scheduled until the window has focus.
+        expect(frames).toHaveLength(1);
+      } finally {
+        remove();
+      }
+    });
+
+    it("resumes when the window regains focus", () => {
+      const { frames, hasFocus, remove } = setup(false);
+      try {
+        frames[0]!(100);
+        hasFocus.mockReturnValue(true);
+        window.dispatchEvent(new Event("focus"));
+        expect(frames).toHaveLength(2);
+        frames[1]!(200);
+        expect(frames).toHaveLength(3);
+      } finally {
+        remove();
+      }
+    });
+
+    it("stops scheduling frames while no Kin is on screen", () => {
+      const { frames, actor, remove } = setup(true);
+      try {
+        actor.visible = false;
+        frames[0]!(100);
+        expect(engine.render).not.toHaveBeenCalled();
+        expect(frames).toHaveLength(1);
+      } finally {
+        remove();
+      }
+    });
+  });
 });

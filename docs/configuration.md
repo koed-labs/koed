@@ -1068,6 +1068,16 @@ policy, or full URLs containing customer content.
 - `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.
 - `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged Desktop does not use source-checkout fallbacks. For packaged standalone `koed-server`, `KOED_JS_RUNTIME_ROOT`, `KOED_REPO_ROOT`, `KOED_PACKAGED_RESOURCES_PATH`, and `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK` cannot select service code; startup and MCP setup require a compatible authenticated runtime generation. `resolveKoedAppRuntime` maps an already-selected generation to paths but does not authenticate or pin it. `status --json` and `doctor --json` report runtime artifact source diagnostics without launching service code from the current directory or checkout.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
+- `KOED_RESOURCE_PROFILE`, or `resourceProfile` in `~/.koed/config/server.json`: how much of the machine local `koed-server` services can use. The environment value wins over the file. Values are `low`, `balanced` (the default), and `full`. A profile fills in the settings below only where they are not set explicitly in the environment or the repository env file. Restart local services to apply a change.
+
+  | Profile    | `KOED_BACKGROUND_NICE` | `EMBEDDING_LLAMA_N_THREADS`                 | `MEMORY_CODEX_TRANSCRIPT_POLL_MS` |
+  | ---------- | ---------------------- | ------------------------------------------- | --------------------------------- |
+  | `low`      | `19`                   | a quarter of the logical CPUs, at least `1` | `15000`                           |
+  | `balanced` | default (`10`)         | default (half the logical CPUs)             | default (`1000`)                  |
+  | `full`     | `0`                    | all logical CPUs                            | default (`1000`)                  |
+
+  `external` runtime mode ignores the profile.
+
 - `KOED_BACKGROUND_NICE`: scheduling priority (nice value, `0`-`19`) for local `koed-server` services. Defaults to `10`. `0` keeps normal priority. The supervisor lowers its own priority before it starts services, so Postgres, the Embedding Service, llama-server, the API, the worker, the Local AI Runtime, and their child processes run at this value. Foreground apps then get the CPU first when the machine is busy. Koed still uses idle CPU. The supervisor never raises the priority, and an invalid value falls back to `10`. `external` runtime mode keeps normal priority.
 - `KOED_PDS_LAN_PORT`: private HTTP endpoint for trusted-overlay Desktop
   pairing and local PDS relay gateway traffic. Defaults to `3310`. Koed binds

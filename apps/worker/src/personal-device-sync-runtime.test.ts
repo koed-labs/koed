@@ -30,6 +30,8 @@ import {
   resolvePdsLifecycleAuthorizationPublicKey,
   resolvePdsPeerEndpoint,
   resolvePdsProviderRuntimeSecret,
+  resolvePdsProviderRuntimeSecretAsync,
+  PDS_WORKER_MISSING_SECRET_RECHECK_MS,
   validatePdsLifecycleStatementBinding
 } from "./personal-device-sync-runtime.js";
 
@@ -917,6 +919,97 @@ describe("PDS session materialization", () => {
     await expect(runtime.poll()).rejects.toThrow(
       "PdsSecureRuntimeUnavailableError"
     );
+  });
+
+  it("checks a missing runtime secret once per window, then adopts a new pairing", async () => {
+    let clock = 1_000;
+    let secret: object | null = null;
+    const resolveSecret = vi.fn(() => secret);
+    const pairedRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group-a"]),
+      poll: vi.fn().mockResolvedValue([]),
+      publish: vi.fn(),
+      materialize: vi.fn()
+    };
+    const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
+      repository: {} as MemorySourceRepository,
+      envelopeEncryptionProvider: {} as never,
+      environment: { PDS_SECRET_PROVIDER: "headless" },
+      resolveSecret: resolveSecret as never,
+      createRuntime: () => pairedRuntime as never,
+      now: () => clock
+    });
+    if (!runtime) throw new Error("Expected a configured PDS runtime");
+
+    expect(await runtime.heartbeatGroups?.()).toEqual([]);
+    await runtime.waitForWake?.(new AbortController().signal);
+    expect(await runtime.heartbeatGroups?.()).toEqual([]);
+    // An unpaired device does not start a provider process every cycle.
+    expect(resolveSecret).toHaveBeenCalledTimes(1);
+
+    secret = { pairing: "new" };
+    clock += PDS_WORKER_MISSING_SECRET_RECHECK_MS;
+    expect(await runtime.heartbeatGroups?.()).toEqual(["group-a"]);
+    expect(resolveSecret).toHaveBeenCalledTimes(2);
+    // A present secret is read every cycle so a replacement is adopted.
+    expect(await runtime.heartbeatGroups?.()).toEqual(["group-a"]);
+    expect(resolveSecret).toHaveBeenCalledTimes(3);
+  });
+
+  it("shares one provider read between concurrent cycle calls", async () => {
+    let release!: (value: null) => void;
+    const resolveSecret = vi.fn(
+      () =>
+        new Promise<null>((resolvePromise) => {
+          release = resolvePromise;
+        })
+    );
+    const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
+      repository: {} as MemorySourceRepository,
+      envelopeEncryptionProvider: {} as never,
+      environment: { PDS_SECRET_PROVIDER: "headless" },
+      resolveSecret,
+      createRuntime: vi.fn()
+    });
+    if (!runtime) throw new Error("Expected a configured PDS runtime");
+    const { heartbeatGroups, waitForWake } = runtime;
+    if (!heartbeatGroups || !waitForWake)
+      throw new Error("Expected reloadable cycle methods");
+    const calls = [
+      heartbeatGroups(),
+      waitForWake(new AbortController().signal)
+    ];
+    release(null);
+    await Promise.all(calls);
+    expect(resolveSecret).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the provider without blocking the worker", async () => {
+    const home = mkdtempSync(resolve(tmpdir(), "koed-pds-worker-provider-"));
+    const script = resolve(home, "provider.mjs");
+    writeFileSync(
+      script,
+      'setTimeout(() => process.stdout.write("{}"), 300);\n'
+    );
+    try {
+      let timerRan = false;
+      setTimeout(() => {
+        timerRan = true;
+      }, 10);
+      await expect(
+        resolvePdsProviderRuntimeSecretAsync({
+          PATH: process.env.PATH,
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: process.execPath,
+          PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON: JSON.stringify([script]),
+          PDS_RUNTIME_SECRET_REF: "pds-runtime"
+        })
+      ).resolves.toBeNull();
+      // A synchronous lookup would hold the event loop until the provider exits.
+      expect(timerRan).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("does not start a reloadable runtime without an explicit provider", () => {

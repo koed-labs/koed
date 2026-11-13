@@ -9,6 +9,11 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { KoedServerPaths } from "./paths.js";
+import {
+  DEFAULT_RESOURCE_PROFILE,
+  isResourceProfile,
+  type ResourceProfile
+} from "./resource-profile.js";
 
 export type KoedServerRuntimeMode = "local-personal" | "external" | "developer";
 export type KoedDependencyMode = "bundled-local" | "external";
@@ -22,6 +27,7 @@ export interface KoedServerConfig {
   piTranscriptWatcherEnabled: boolean;
   codexGlobalMemoryGuidanceEnabled: boolean;
   hardwareAcceleration: HardwareAccelerationPreference;
+  resourceProfile: ResourceProfile;
   external?: {
     databaseUrl?: string;
     redisUrl?: string;
@@ -37,7 +43,8 @@ export const defaultKoedServerConfig: KoedServerConfig = {
   claudeTranscriptWatcherEnabled: true,
   piTranscriptWatcherEnabled: true,
   codexGlobalMemoryGuidanceEnabled: true,
-  hardwareAcceleration: "auto"
+  hardwareAcceleration: "auto",
+  resourceProfile: DEFAULT_RESOURCE_PROFILE
 };
 
 export interface KoedServerConfigDeps {
@@ -88,6 +95,18 @@ const hardwareAccelerationPreference = (
       ? value
       : (() => {
           throw new Error(`${source} must be auto or cpu`);
+        })();
+
+const resourceProfilePreference = (
+  value: unknown,
+  source: string
+): ResourceProfile | undefined =>
+  value === undefined || value === ""
+    ? undefined
+    : isResourceProfile(value)
+      ? value
+      : (() => {
+          throw new Error(`${source} must be low, balanced, or full`);
         })();
 
 const readConfig = (
@@ -144,6 +163,10 @@ const readConfig = (
         "server.json hardwareAcceleration"
       );
     }
+    resourceProfilePreference(
+      record.resourceProfile,
+      "server.json resourceProfile"
+    );
     if (
       record.external !== undefined &&
       (!record.external ||
@@ -258,6 +281,16 @@ export const resolveKoedServerConfig = (
         "server.json hardwareAcceleration"
       ) ??
       defaultKoedServerConfig.hardwareAcceleration,
+    resourceProfile:
+      resourceProfilePreference(
+        trim(environment.KOED_RESOURCE_PROFILE),
+        "KOED_RESOURCE_PROFILE"
+      ) ??
+      resourceProfilePreference(
+        file.resourceProfile,
+        "server.json resourceProfile"
+      ) ??
+      defaultKoedServerConfig.resourceProfile,
     external: {
       databaseUrl:
         trim(environment.KOED_EXTERNAL_DATABASE_URL) ??

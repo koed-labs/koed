@@ -463,6 +463,7 @@ const sleep = (ms: number): Promise<void> =>
   });
 
 const statusCommandTimeoutMs = 120_000;
+const packageStatusMaxAgeMs = 60_000;
 
 const waitForAbortOrDelay = (
   signal: AbortSignal,
@@ -2009,7 +2010,39 @@ export const createKoedServerManager = ({
     );
   };
 
-  const runPackageStatusJson = () => runJson(["package", "status"], 60_000);
+  // Every explicit read refreshes the cached result used by routine status.
+  let packageStatusCache: {
+    value: Promise<unknown>;
+    at: number;
+    epoch: unknown;
+  } | null = null;
+  const runPackageStatusJson = () => {
+    const value = runJson(["package", "status"], 60_000);
+    const entry = {
+      value,
+      at: Date.now(),
+      epoch: lifecycle.current()?.epoch
+    };
+    packageStatusCache = entry;
+    // Never reuse a failed read: the next status refresh retries it.
+    void value.then((result) => {
+      if (
+        packageStatusCache === entry &&
+        (result as { ok?: unknown } | null)?.ok === false
+      )
+        packageStatusCache = null;
+    });
+    return value;
+  };
+  // Routine status refreshes reuse a recent package status instead of starting
+  // a CLI process each time. The package changes only on install or upgrade,
+  // so a new supervisor epoch or the age limit starts a fresh read.
+  const routinePackageStatusJson = () =>
+    packageStatusCache &&
+    Date.now() - packageStatusCache.at < packageStatusMaxAgeMs &&
+    packageStatusCache.epoch === lifecycle.current()?.epoch
+      ? packageStatusCache.value
+      : runPackageStatusJson();
 
   const runPackageInstallJson = async (args?: Record<string, unknown>) => {
     const plan = resolveServerPackageInstallPlan(
@@ -2142,7 +2175,7 @@ export const createKoedServerManager = ({
         if (stoppedBefore) return stoppedBefore;
         const [statusResult, packageStatus] = await Promise.all([
           runDesktopStatus(),
-          runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
+          routinePackageStatusJson() as Promise<ServerPackageStatusPayload | null>
         ]);
         const after = lifecycle.refresh();
         // A different supervisor epoch invalidates a response collected earlier.
@@ -6742,7 +6775,9 @@ export const createKoedServerManager = ({
       models_install: () => withNativeMutation(() => runModelInstallJson()),
       package_status: () => runPackageStatusJson(),
       package_install: (args) =>
-        withNativeMutation(() => runPackageInstallJson(args)),
+        withNativeMutation(() => runPackageInstallJson(args)).finally(() => {
+          packageStatusCache = null;
+        }),
       repository_review: (args) => projectCommands.review(args),
       project_folder_filter_get: async (args) =>
         readProjectFolderFilter(

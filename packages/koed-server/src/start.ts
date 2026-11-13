@@ -78,6 +78,7 @@ import {
   BACKGROUND_NICE_ENV,
   lowerBackgroundServicePriority
 } from "./process-priority.js";
+import { applyResourceProfile } from "./resource-profile.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import {
   collectKoedServerStartupStatus,
@@ -1121,6 +1122,14 @@ export const startKoedServer = async ({
       });
     }
     const config = startupConfig;
+    // The resource profile fills in priority, embedding threads, and Codex
+    // transcript polling wherever the Operator left them unset.
+    if (config.runtimeMode !== "external") {
+      environment = applyResourceProfile(environment, config.resourceProfile, {
+        explicit: repoEnv
+      });
+      console.log(`Koed resource profile: ${config.resourceProfile}.`);
+    }
     const initialServiceEnv = localServiceEnv(
       environment,
       repoEnv,

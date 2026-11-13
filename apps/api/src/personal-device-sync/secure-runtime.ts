@@ -7,7 +7,7 @@ import {
 } from "@koed-labs/shared";
 import { pdsRepositoryKeyHistorySchema } from "@koed-labs/shared";
 import { createPdsRepositoryAssignment } from "@koed-labs/shared";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
 import {
   canonicalizePdsJson,
@@ -207,42 +207,55 @@ const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
   }
 };
 
+// Runs the provider without blocking the API: lookups happen on request paths
+// such as /v1/capabilities, and the provider is a separate process that takes
+// about a second to start.
 const resolveHeadlessSecret = (
   reference: string,
   environment: NodeJS.ProcessEnv
-): string | null => {
+): Promise<string | null> => {
   const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
   if (
     !command ||
     !/^[^\s\r\n\0]+$/.test(command) ||
     !/^[^\r\n\0]{1,240}$/.test(reference)
   ) {
-    return null;
+    return Promise.resolve(null);
   }
-  try {
-    const result = spawnSync(
-      command,
-      [...providerArgs(environment), "get", reference],
-      {
-        encoding: "utf8",
+  return new Promise<string | null>((resolvePromise) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, [...providerArgs(environment), "get", reference], {
         env: pdsSecureProviderEnvironment(environment),
-        maxBuffer: maximumSecretBytes + 1,
         stdio: ["ignore", "pipe", "ignore"],
-        timeout: 10_000
-      }
-    );
-    if (
-      result.status !== 0 ||
-      result.error ||
-      typeof result.stdout !== "string" ||
-      Buffer.byteLength(result.stdout, "utf8") > maximumSecretBytes
-    ) {
-      return null;
+        windowsHide: true
+      });
+    } catch {
+      resolvePromise(null);
+      return;
     }
-    return result.stdout;
-  } catch {
-    return null;
-  }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      resolvePromise(value);
+    };
+    const timeout = setTimeout(() => finish(null), 10_000);
+    timeout.unref?.();
+    child.stdout?.on("data", (chunk: Buffer) => {
+      size += chunk.byteLength;
+      if (size > maximumSecretBytes) return finish(null);
+      chunks.push(chunk);
+    });
+    child.once("error", () => finish(null));
+    child.once("close", (code) =>
+      finish(code === 0 ? Buffer.concat(chunks).toString("utf8") : null)
+    );
+  });
 };
 
 const putHeadlessSecret = (
@@ -543,22 +556,32 @@ const configuredSecretResolver = (
   if (provider !== "headless") return null;
   return (
     dependencies.resolveHeadlessSecret ??
-    ((reference: string) =>
-      Promise.resolve(resolveHeadlessSecret(reference, environment)))
+    ((reference: string) => resolveHeadlessSecret(reference, environment))
   );
 };
+
+/**
+ * How long a readiness answer stays valid. Readiness backs the Personal Device
+ * Sync capability on every /v1/capabilities request, and each fresh lookup
+ * runs the secret provider command synchronously. Operations that use the
+ * secret always read it fresh, so only the capability flag can lag a pairing
+ * change, and by at most this long.
+ */
+export const PDS_RELOADABLE_READINESS_TTL_MS = 15_000;
 
 export const createReloadablePdsSecureKeyProviderFromEnvironment = (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: {
     resolveHeadlessSecret?: PdsSecretResolver;
+    now?: () => number;
   } = {}
 ): PdsSecureKeyProvider | null => {
   const reference = environment.PDS_RUNTIME_SECRET_REF?.trim();
   const resolver = configuredSecretResolver(environment, dependencies);
   if (!reference || /[\r\n\0]/.test(reference) || !resolver) return null;
+  const now = dependencies.now ?? Date.now;
 
-  const resolveSecret = async (): Promise<PdsRuntimeSecret | null> => {
+  const readSecret = async (): Promise<PdsRuntimeSecret | null> => {
     const value = await resolver(reference);
     const secret = value ? parseRuntimeSecret(value) : null;
     if (!secret) return null;
@@ -570,8 +593,28 @@ export const createReloadablePdsSecureKeyProviderFromEnvironment = (
     }
   };
 
+  // Concurrent callers share one provider lookup. Every completed lookup
+  // refreshes the readiness answer.
+  let readiness: { ready: boolean; at: number } | null = null;
+  let lookup: Promise<PdsRuntimeSecret | null> | null = null;
+  const resolveSecret = (): Promise<PdsRuntimeSecret | null> => {
+    if (lookup) return lookup;
+    const current: Promise<PdsRuntimeSecret | null> = readSecret()
+      .then((secret) => {
+        readiness = { ready: secret !== null, at: now() };
+        return secret;
+      })
+      .finally(() => {
+        if (lookup === current) lookup = null;
+      });
+    lookup = current;
+    return current;
+  };
+
   return {
     async isReady() {
+      if (readiness && now() - readiness.at < PDS_RELOADABLE_READINESS_TTL_MS)
+        return readiness.ready;
       return (await resolveSecret()) !== null;
     },
     async getSourceContext(input) {

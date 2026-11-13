@@ -73,8 +73,46 @@ describe("koed-server config", () => {
       claudeTranscriptWatcherEnabled: true,
       piTranscriptWatcherEnabled: true,
       codexGlobalMemoryGuidanceEnabled: true,
-      hardwareAcceleration: "auto"
+      hardwareAcceleration: "auto",
+      resourceProfile: "balanced"
     });
+  });
+
+  it("persists the resource profile with environment precedence", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ resourceProfile: "low" })
+    );
+
+    expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
+      resourceProfile: "low"
+    });
+    expect(
+      resolveKoedServerConfig(paths(root), { KOED_RESOURCE_PROFILE: "full" })
+    ).toMatchObject({ resourceProfile: "full" });
+    expect(
+      resolveKoedServerConfig(paths(root), { KOED_RESOURCE_PROFILE: " " })
+    ).toMatchObject({ resourceProfile: "low" });
+  });
+
+  it("rejects an unknown resource profile", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    const serverConfigPath = resolve(root, "config/server.json");
+    writeFileSync(serverConfigPath, JSON.stringify({ resourceProfile: "max" }));
+
+    expect(() =>
+      resolveKoedServerConfig(paths(root), {}, { strict: true })
+    ).toThrow(
+      `Cannot read ${serverConfigPath}: server.json resourceProfile must be low, balanced, or full`
+    );
+    expect(() =>
+      resolveKoedServerConfig(paths(tempDir()), {
+        KOED_RESOURCE_PROFILE: "turbo"
+      })
+    ).toThrow("KOED_RESOURCE_PROFILE must be low, balanced, or full");
   });
 
   it("defaults global memory guidance on and accepts a persistent opt-out", () => {

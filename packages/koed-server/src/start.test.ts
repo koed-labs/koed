@@ -13,7 +13,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   readDesktopLocalCredentialAuthorization,
@@ -1288,123 +1288,153 @@ describe("start supervisor", () => {
     ).toBe(true);
   });
 
-  it("starts bundled-local native Postgres and Embedding Service without Docker", async () => {
-    const root = tempDir();
-    const resources = createNativeResources(root);
-    mkdirSync(resolve(root, "models"));
-    writeFileSync(
-      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
-      "model"
-    );
-    writeFileSync(
-      resolve(root, ".env"),
-      [
-        "DATABASE_URL=postgres://wrong:wrong@localhost:15432/wrong",
-        "WORK_QUEUE_BACKEND=bullmq",
-        "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=18080",
-        ""
-      ].join("\n")
-    );
-    const commands: Array<{
-      command: string;
-      args: string[];
-      env?: NodeJS.ProcessEnv;
-    }> = [];
-    const spawned: Array<{
-      command: string;
-      args: string[];
-      env?: NodeJS.ProcessEnv;
-    }> = [];
-    let runtime: { dependencyMode?: string; services?: string[] } | undefined;
-    let postgresStartsBeforePriority: number | undefined;
-    const isPostgresStart = (entry: { command: string; args: string[] }) =>
-      entry.command.endsWith("pg_ctl") && entry.args.includes("start");
-    let spawnedBeforePriority: number | undefined;
-    lowerBackgroundServicePriority.mockClear();
-    lowerBackgroundServicePriority.mockImplementationOnce(() => {
-      postgresStartsBeforePriority = commands.filter(isPostgresStart).length;
-      spawnedBeforePriority = spawned.length;
-      return { applied: false, reason: "disabled" };
-    });
+  it.each([
+    {
+      profile: undefined,
+      threads: undefined,
+      nice: undefined,
+      poll: undefined
+    },
+    {
+      profile: "low",
+      threads: String(Math.max(1, Math.floor((cpus().length || 1) / 4))),
+      nice: "19",
+      poll: "15000"
+    }
+  ])(
+    "starts bundled-local native Postgres and Embedding Service without Docker (resource profile $profile)",
+    async ({ profile, threads, nice, poll }) => {
+      const root = tempDir();
+      const resources = createNativeResources(root);
+      mkdirSync(resolve(root, "models"));
+      writeFileSync(
+        resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
+        "model"
+      );
+      writeFileSync(
+        resolve(root, ".env"),
+        [
+          "DATABASE_URL=postgres://wrong:wrong@localhost:15432/wrong",
+          "WORK_QUEUE_BACKEND=bullmq",
+          "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=18080",
+          ""
+        ].join("\n")
+      );
+      const commands: Array<{
+        command: string;
+        args: string[];
+        env?: NodeJS.ProcessEnv;
+      }> = [];
+      const spawned: Array<{
+        command: string;
+        args: string[];
+        env?: NodeJS.ProcessEnv;
+      }> = [];
+      let runtime: { dependencyMode?: string; services?: string[] } | undefined;
+      let postgresStartsBeforePriority: number | undefined;
+      const isPostgresStart = (entry: { command: string; args: string[] }) =>
+        entry.command.endsWith("pg_ctl") && entry.args.includes("start");
+      let spawnedBeforePriority: number | undefined;
+      lowerBackgroundServicePriority.mockClear();
+      lowerBackgroundServicePriority.mockImplementationOnce(() => {
+        postgresStartsBeforePriority = commands.filter(isPostgresStart).length;
+        spawnedBeforePriority = spawned.length;
+        return { applied: false, reason: "disabled" };
+      });
 
-    await startKoedServer({
-      ...cleanShutdownAfterReady(),
-      environment: {
-        KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        KOED_DEPENDENCY_MODE: "bundled-local",
-        KOED_AUTO_PORTS: "0",
-        KOED_TEAM_COLLABORATION_ENABLED: "true",
-        MEMORY_API_TOKEN: "test-runtime-token",
-        POSTGRES_HOST_PORT: "25432",
-        EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081"
-      },
-      timeoutMs: 1,
-      pollIntervalMs: 1,
-      spawnSync: (command, args, options) => {
-        commands.push({ command, args, env: options?.env });
-        if (command.endsWith("pg_ctl") && args.includes("status")) {
-          return {
-            stdout: "",
-            stderr: "not running",
-            status: 1,
-            signal: null,
-            pid: 1,
-            output: []
-          } as never;
+      await startKoedServer({
+        ...cleanShutdownAfterReady(),
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local",
+          ...(profile ? { KOED_RESOURCE_PROFILE: profile } : {}),
+          KOED_AUTO_PORTS: "0",
+          KOED_TEAM_COLLABORATION_ENABLED: "true",
+          MEMORY_API_TOKEN: "test-runtime-token",
+          POSTGRES_HOST_PORT: "25432",
+          EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: (command, args, options) => {
+          commands.push({ command, args, env: options?.env });
+          if (command.endsWith("pg_ctl") && args.includes("status")) {
+            return {
+              stdout: "",
+              stderr: "not running",
+              status: 1,
+              signal: null,
+              pid: 1,
+              output: []
+            } as never;
+          }
+          return spawnResult();
+        },
+        spawn: (command, args, options) => {
+          spawned.push({ command, args, env: options?.env });
+          return child(spawned.length);
+        },
+        collectStatus: async () => {
+          runtime = JSON.parse(
+            readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+          ) as { dependencyMode?: string; services?: string[] };
+          return healthyStatus(root);
         }
-        return spawnResult();
-      },
-      spawn: (command, args, options) => {
-        spawned.push({ command, args, env: options?.env });
-        return child(spawned.length);
-      },
-      collectStatus: async () => {
-        runtime = JSON.parse(
-          readFileSync(resolve(root, "run/koed-server.json"), "utf8")
-        ) as { dependencyMode?: string; services?: string[] };
-        return healthyStatus(root);
-      }
-    });
+      });
 
-    expect(commands.some((command) => command.command === "docker")).toBe(
-      false
-    );
-    expect(commands.map((command) => command.command)).toContain(
-      resolve(resources.pgBin, "pg_ctl")
-    );
-    expect(commands.map((command) => command.args.join(" "))).toContain(
-      `${resolve(root, "scripts/source-runtime-build.mjs")} check --lease-pid ${process.pid}`
-    );
-    expect(
-      commands.some((command) => command.args.includes("@koed-labs/api"))
-    ).toBe(false);
-    expect(spawned[0]?.command).toBe(process.execPath);
-    expect(spawned[0]?.args).toEqual([resources.serviceEntry]);
-    expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(resources.llamaServer);
-    expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("18081");
+      expect(commands.some((command) => command.command === "docker")).toBe(
+        false
+      );
+      expect(commands.map((command) => command.command)).toContain(
+        resolve(resources.pgBin, "pg_ctl")
+      );
+      expect(commands.map((command) => command.args.join(" "))).toContain(
+        `${resolve(root, "scripts/source-runtime-build.mjs")} check --lease-pid ${process.pid}`
+      );
+      expect(
+        commands.some((command) => command.args.includes("@koed-labs/api"))
+      ).toBe(false);
+      expect(spawned[0]?.command).toBe(process.execPath);
+      expect(spawned[0]?.args).toEqual([resources.serviceEntry]);
+      expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(resources.llamaServer);
+      expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("18081");
 
-    expect(spawned[0]?.env?.MODEL_PATH).toBe(
-      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
-    );
-    expect(spawned.map((entry) => entry.args.join(" "))).toContain(
-      resolve(root, "apps/worker/dist/index.js")
-    );
-    expect(runtime?.dependencyMode).toBe("bundled-local");
-    expect(runtime?.services).toEqual([
-      "postgres-native",
-      "embedding-service-native",
-      "privacy-service-native",
-      "api",
-      "worker",
-      "local-ai-runtime"
-    ]);
-    // Priority drops before any service starts, so every service inherits it.
-    expect(lowerBackgroundServicePriority).toHaveBeenCalledTimes(1);
-    expect(spawnedBeforePriority).toBe(0);
-    expect(postgresStartsBeforePriority).toBe(0);
-    expect(commands.filter(isPostgresStart)).toHaveLength(1);
-  });
+      expect(spawned[0]?.env?.MODEL_PATH).toBe(
+        resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
+      );
+      expect(spawned.map((entry) => entry.args.join(" "))).toContain(
+        resolve(root, "apps/worker/dist/index.js")
+      );
+      expect(runtime?.dependencyMode).toBe("bundled-local");
+      expect(runtime?.services).toEqual([
+        "postgres-native",
+        "embedding-service-native",
+        "privacy-service-native",
+        "api",
+        "worker",
+        "local-ai-runtime"
+      ]);
+      // Priority drops before any service starts, so every service inherits it.
+      expect(lowerBackgroundServicePriority).toHaveBeenCalledTimes(1);
+      expect(spawnedBeforePriority).toBe(0);
+      expect(postgresStartsBeforePriority).toBe(0);
+      expect(commands.filter(isPostgresStart)).toHaveLength(1);
+      // The resource profile reaches every service it controls.
+      const priorityEnvironment = (
+        lowerBackgroundServicePriority.mock.calls as unknown as Array<
+          [NodeJS.ProcessEnv]
+        >
+      )[0]?.[0];
+      expect(priorityEnvironment?.KOED_BACKGROUND_NICE).toBe(nice);
+      expect(spawned[0]?.env?.LLAMA_N_THREADS).toBe(threads);
+      expect(
+        spawned.find((entry) =>
+          entry.args.some((arg) => arg.endsWith("local-runtime-cli.js"))
+        )?.env?.MEMORY_CODEX_TRANSCRIPT_POLL_MS
+      ).toBe(poll);
+    }
+  );
 
   it("loads runtime and path settings from the selected env before startup", async () => {
     const root = tempDir();
