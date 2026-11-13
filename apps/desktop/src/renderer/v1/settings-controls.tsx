@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ChevronRight,
   Cpu,
+  Gauge,
   Info,
   Layers3,
   Settings2,
@@ -63,6 +64,12 @@ export const details = {
     icon: Activity,
     parent: "services",
     description: "Inspect the services reported by this installation."
+  },
+  performance: {
+    label: "Performance",
+    icon: Gauge,
+    parent: "services",
+    description: "Choose how much of your computer Koed uses."
   },
   embedding: {
     label: "Embedding status",

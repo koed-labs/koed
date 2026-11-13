@@ -177,6 +177,13 @@ The koed MCP cannot connect to the local server.
 Start Koed Desktop or `koed-server`. Then call the memory tool again. The MCP
 Server reconnects without a Codex restart.
 
+The stdio MCP Server waits at most 2 seconds for the Local AI Runtime to report
+its capabilities before it answers `initialize`, so a busy runtime does not time
+out the AI Client's connect. Tools that depend on runtime capabilities may
+therefore register after the handshake. Each later registration sends
+`notifications/tools/list_changed`, and the AI Client lists tools again to pick
+them up.
+
 If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
 from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.

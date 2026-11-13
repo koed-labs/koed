@@ -34,3 +34,5 @@ export * from "./primitives/message.js";
 export * from "./primitives/bubble.js";
 export * from "./primitives/trace.js";
 export * from "./primitives/code-block.js";
+
+export { Slider } from "./primitives/slider.js";

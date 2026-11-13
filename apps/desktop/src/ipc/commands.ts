@@ -1,4 +1,9 @@
 import {
+  performanceChannel,
+  performanceRequestSchema
+} from "./performance-protocol.js";
+import type { DesktopPerformanceApi } from "@koed-labs/server";
+import {
   presentationPreferencesGetChannel,
   presentationPreferencesSetChannel
 } from "./protocol.js";
@@ -183,6 +188,7 @@ export const registerDesktopCommandHandlers = (
       resolvedDark: boolean;
     };
     acceleration?: DesktopAccelerationApi;
+    performance?: DesktopPerformanceApi;
     getHardwareAcceleration?: () => Promise<{
       enabled: boolean;
       managedByEnvironment: boolean;
@@ -351,6 +357,16 @@ export const registerDesktopCommandHandlers = (
     return options.setThemePreference(value);
   });
 
+  ipcMain.handle(performanceChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    const request = performanceRequestSchema.parse(value);
+    if (!options.performance)
+      throw new Error("Performance settings are unavailable.");
+    return request.operation === "inspect"
+      ? options.performance.inspect()
+      : options.performance.apply(request.choice);
+  });
   ipcMain.handle(accelerationChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins))
       throw new Error("Untrusted Desktop IPC sender.");

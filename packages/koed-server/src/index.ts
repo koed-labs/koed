@@ -222,3 +222,7 @@ export {
   listPendingRepositoryChanges,
   acknowledgeRepositoryChange
 } from "./project-metadata.js";
+
+export * from "./performance-contract.js";
+export { performanceChoiceSchema } from "./performance-schema.js";
+export { createPerformanceManagement } from "./performance-management.js";

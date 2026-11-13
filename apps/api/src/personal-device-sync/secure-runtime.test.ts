@@ -1,5 +1,8 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
   canonicalizePdsJson,
   parseCanonicalPdsJson,
@@ -8,6 +11,7 @@ import {
 } from "@koed-labs/shared";
 import {
   createReloadablePdsSecureKeyProviderFromEnvironment,
+  PDS_RELOADABLE_READINESS_TTL_MS,
   createPdsSecureRuntimeFromEnvironment,
   createPdsSecureRuntimeForApiStartup,
   serializePdsCheckpointSourceForEncryptedStorage,
@@ -450,6 +454,7 @@ describe("PDS secure runtime", () => {
 
   it("adopts a protected application runtime after API startup", async () => {
     let stored: string | null = null;
+    let clock = 1_000;
     const resolved: string[] = [];
     const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
       {
@@ -462,7 +467,8 @@ describe("PDS secure runtime", () => {
         resolveHeadlessSecret: async (reference) => {
           resolved.push(reference);
           return stored;
-        }
+        },
+        now: () => clock
       }
     );
     expect(provider).not.toBeNull();
@@ -473,10 +479,15 @@ describe("PDS secure runtime", () => {
         groupId: "group-one"
       })
     ).resolves.toBeNull();
+    expect(resolved).toHaveLength(2);
 
     const runtime = reloadableRuntimeSecret();
     stored = JSON.stringify(runtime);
-    await expect(provider?.isReady?.()).resolves.toBe(true);
+    // The capability probe reuses its recent answer instead of running the
+    // provider command on every /v1/capabilities request.
+    await expect(provider?.isReady?.()).resolves.toBe(false);
+    expect(resolved).toHaveLength(2);
+    // Operations that use the secret always read it fresh.
     await expect(
       provider?.getSourceContext({
         userId: runtime.userId,
@@ -492,13 +503,162 @@ describe("PDS secure runtime", () => {
         groupId: runtime.groupId
       })
     ).resolves.toBeNull();
-    expect(resolved).toEqual([
-      "desktop-pds-ref",
-      "desktop-pds-ref",
-      "desktop-pds-ref",
-      "desktop-pds-ref",
-      "desktop-pds-ref"
-    ]);
+    // A fresh read also refreshes the capability answer.
+    await expect(provider?.isReady?.()).resolves.toBe(true);
+    expect(resolved).toHaveLength(4);
+
+    stored = null;
+    clock += PDS_RELOADABLE_READINESS_TTL_MS;
+    await expect(provider?.isReady?.()).resolves.toBe(false);
+    expect(resolved).toEqual(Array(5).fill("desktop-pds-ref"));
+  });
+
+  it("reads the secret again after invalidation, ignoring older lookups", async () => {
+    let stored: string | null = null;
+    let release!: () => void;
+    let hold = false;
+    const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
+      {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
+      },
+      {
+        resolveHeadlessSecret: async () => {
+          const value = stored;
+          if (hold) await new Promise<void>((resolve) => (release = resolve));
+          return value;
+        },
+        now: () => 1_000
+      }
+    );
+    await expect(provider?.isReady?.()).resolves.toBe(false);
+
+    hold = true;
+    const stale = provider?.getSourceContext({
+      userId: "user-one",
+      groupId: "group-one"
+    });
+    const runtime = reloadableRuntimeSecret();
+    stored = JSON.stringify(runtime);
+    hold = false;
+    provider?.invalidate?.();
+    // A lookup after invalidation does not join the one that began before.
+    await expect(
+      provider?.getSourceContext({
+        userId: runtime.userId,
+        groupId: runtime.groupId
+      })
+    ).resolves.not.toBeNull();
+    release();
+    await expect(stale).resolves.toBeNull();
+    // The older lookup finishing late does not overwrite readiness.
+    await expect(provider?.isReady?.()).resolves.toBe(true);
+  });
+
+  it("shares one provider lookup between concurrent readiness checks", async () => {
+    let release!: (value: string | null) => void;
+    const resolveHeadlessSecret = vi.fn(
+      () =>
+        new Promise<string | null>((resolve) => {
+          release = resolve;
+        })
+    );
+    const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
+      {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
+      },
+      { resolveHeadlessSecret }
+    );
+    const isReady = provider?.isReady;
+    if (!isReady) throw new Error("expected a reloadable provider");
+    const checks = [isReady(), isReady()];
+    release(JSON.stringify(reloadableRuntimeSecret()));
+    await expect(Promise.all(checks)).resolves.toEqual([true, true]);
+    expect(resolveHeadlessSecret).toHaveBeenCalledTimes(1);
+  });
+
+  describe("headless provider command", () => {
+    // A stand-in provider: `get <reference>` prints KOED_HOME/<reference>
+    // after an optional delay, or exits 1 when the file is missing.
+    const withProvider = async (
+      files: Record<string, string>,
+      run: (environment: NodeJS.ProcessEnv) => Promise<void>,
+      delayMs = 0
+    ) => {
+      const home = mkdtempSync(join(tmpdir(), "koed-pds-provider-"));
+      const script = join(home, "provider.mjs");
+      writeFileSync(
+        script,
+        [
+          'import { readFileSync } from "node:fs";',
+          "const [, , operation, reference] = process.argv;",
+          `setTimeout(() => {`,
+          "  try {",
+          '    if (operation !== "get") process.exit(2);',
+          "    process.stdout.write(readFileSync(`${process.env.KOED_HOME}/${reference}`));",
+          "  } catch { process.exit(1); }",
+          `}, ${delayMs});`
+        ].join("\n")
+      );
+      for (const [name, value] of Object.entries(files))
+        writeFileSync(join(home, name), value);
+      try {
+        await run({
+          PATH: process.env.PATH,
+          KOED_HOME: home,
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: process.execPath,
+          PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON: JSON.stringify([script]),
+          PDS_RUNTIME_SECRET_REF: "pds-runtime"
+        });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    };
+
+    it("reads the runtime secret without blocking the event loop", async () => {
+      await withProvider(
+        { "pds-runtime": JSON.stringify(reloadableRuntimeSecret()) },
+        async (environment) => {
+          const provider =
+            createReloadablePdsSecureKeyProviderFromEnvironment(environment);
+          let timerRan = false;
+          setTimeout(() => {
+            timerRan = true;
+          }, 10);
+          await expect(provider?.isReady?.()).resolves.toBe(true);
+          // A synchronous lookup would hold the event loop until the
+          // provider exits, so this timer could not run first.
+          expect(timerRan).toBe(true);
+        },
+        300
+      );
+    });
+
+    it("reports not ready when the provider fails", async () => {
+      await withProvider({}, async (environment) => {
+        const provider =
+          createReloadablePdsSecureKeyProviderFromEnvironment(environment);
+        await expect(provider?.isReady?.()).resolves.toBe(false);
+      });
+    });
+
+    it("rejects provider output over the secret size limit", async () => {
+      await withProvider(
+        { "pds-runtime": "x".repeat(2_000_001) },
+        async (environment) => {
+          const provider =
+            createReloadablePdsSecureKeyProviderFromEnvironment(environment);
+          await expect(provider?.isReady?.()).resolves.toBe(false);
+        }
+      );
+    });
   });
 
   it("builds an authenticated cumulative checkpoint while the source Session stays open", async () => {

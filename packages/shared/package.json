@@ -39,6 +39,10 @@
       "types": "./dist/ai-client-connections.d.ts",
       "import": "./dist/ai-client-connections.js"
     },
+    "./resource-profiles": {
+      "types": "./dist/resource-profiles.d.ts",
+      "import": "./dist/resource-profiles.js"
+    },
     "./historical-ingestion-progress": {
       "types": "./dist/historical-ingestion-progress.d.ts",
       "import": "./dist/historical-ingestion-progress.js"

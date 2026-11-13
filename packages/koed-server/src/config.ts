@@ -1,3 +1,8 @@
+import { resourceOverridesSchema } from "./performance-schema.js";
+import type {
+  PerformancePreference,
+  ResourceOverrides
+} from "./performance-contract.js";
 import {
   existsSync,
   readFileSync,
@@ -9,6 +14,11 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { KoedServerPaths } from "./paths.js";
+import {
+  DEFAULT_RESOURCE_PROFILE,
+  isResourceProfile,
+  type ResourceProfile
+} from "./resource-profile.js";
 
 export type KoedServerRuntimeMode = "local-personal" | "external" | "developer";
 export type KoedDependencyMode = "bundled-local" | "external";
@@ -22,6 +32,8 @@ export interface KoedServerConfig {
   piTranscriptWatcherEnabled: boolean;
   codexGlobalMemoryGuidanceEnabled: boolean;
   hardwareAcceleration: HardwareAccelerationPreference;
+  resourceProfile: ResourceProfile;
+  resourceOverrides?: ResourceOverrides;
   external?: {
     databaseUrl?: string;
     redisUrl?: string;
@@ -37,7 +49,8 @@ export const defaultKoedServerConfig: KoedServerConfig = {
   claudeTranscriptWatcherEnabled: true,
   piTranscriptWatcherEnabled: true,
   codexGlobalMemoryGuidanceEnabled: true,
-  hardwareAcceleration: "auto"
+  hardwareAcceleration: "auto",
+  resourceProfile: DEFAULT_RESOURCE_PROFILE
 };
 
 export interface KoedServerConfigDeps {
@@ -89,6 +102,35 @@ const hardwareAccelerationPreference = (
       : (() => {
           throw new Error(`${source} must be auto or cpu`);
         })();
+
+const resourceProfilePreference = (
+  value: unknown,
+  source: string
+): ResourceProfile | undefined =>
+  value === undefined || value === ""
+    ? undefined
+    : isResourceProfile(value)
+      ? value
+      : (() => {
+          throw new Error(`${source} must be low, balanced, or full`);
+        })();
+
+// Non-strict callers (service start, status) must tolerate a bad server.json,
+// so keep each valid override and ignore the rest, as for other settings.
+const lenientResourceOverrides = (value: unknown): ResourceOverrides => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const overrides: ResourceOverrides = {};
+  for (const key of Object.keys(
+    resourceOverridesSchema.shape
+  ) as (keyof ResourceOverrides)[]) {
+    const parsed = resourceOverridesSchema.shape[key].safeParse(
+      (value as Record<string, unknown>)[key]
+    );
+    if (parsed.success && parsed.data !== undefined)
+      overrides[key] = parsed.data;
+  }
+  return overrides;
+};
 
 const readConfig = (
   paths: KoedServerPaths,
@@ -144,6 +186,11 @@ const readConfig = (
         "server.json hardwareAcceleration"
       );
     }
+    resourceOverridesSchema.parse(record.resourceOverrides ?? {});
+    resourceProfilePreference(
+      record.resourceProfile,
+      "server.json resourceProfile"
+    );
     if (
       record.external !== undefined &&
       (!record.external ||
@@ -258,6 +305,23 @@ export const resolveKoedServerConfig = (
         "server.json hardwareAcceleration"
       ) ??
       defaultKoedServerConfig.hardwareAcceleration,
+    resourceOverrides: deps.strict
+      ? resourceOverridesSchema.parse(file.resourceOverrides ?? {})
+      : lenientResourceOverrides(file.resourceOverrides),
+    resourceProfile:
+      resourceProfilePreference(
+        trim(environment.KOED_RESOURCE_PROFILE),
+        "KOED_RESOURCE_PROFILE"
+      ) ??
+      (deps.strict
+        ? resourceProfilePreference(
+            file.resourceProfile,
+            "server.json resourceProfile"
+          )
+        : isResourceProfile(file.resourceProfile)
+          ? file.resourceProfile
+          : undefined) ??
+      defaultKoedServerConfig.resourceProfile,
     external: {
       databaseUrl:
         trim(environment.KOED_EXTERNAL_DATABASE_URL) ??
@@ -344,3 +408,23 @@ export const writeCodexGlobalMemoryGuidancePreference = (
     deps
   );
 };
+
+// Patch only Desktop-owned performance fields; preserve unrelated Operator data.
+// The caller holds stopped-runtime authority while reading and replacing the file.
+export function writePerformancePreference(
+  paths: KoedServerPaths,
+  preference: PerformancePreference
+): void {
+  resolveKoedServerConfig(paths, {}, { strict: true });
+  const existing = existsSync(paths.serverConfigPath)
+    ? (JSON.parse(readFileSync(paths.serverConfigPath, "utf8")) as Record<
+        string,
+        unknown
+      >)
+    : {};
+  writeServerConfigAtomically(paths, {
+    ...existing,
+    resourceProfile: preference.profile,
+    resourceOverrides: resourceOverridesSchema.parse(preference.overrides)
+  });
+}

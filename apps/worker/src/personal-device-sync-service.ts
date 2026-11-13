@@ -10,6 +10,8 @@ import { PDS_PEER_ROUTE_REFRESH_MS } from "@koed-labs/shared";
  * worker config/logging/queue state.
  */
 export interface PdsWorkerSecureRuntime {
+  /** Reread configuration at the next cycle without changing the active cycle. */
+  invalidateConfiguration?(): void;
   heartbeatGroups?(): Promise<string[]>;
   refreshPeerRoutes?(): Promise<void>;
   waitForWake?(signal?: AbortSignal): Promise<void>;
@@ -986,7 +988,10 @@ export const createPdsLocalSyncService = (input: {
       await client.query("listen koed_pds_local_sync");
       wakeReconnectAttempt = 0;
       client.on("notification", (message) => {
-        if (message.channel === "koed_pds_local_sync") requestProcessing();
+        if (message.channel !== "koed_pds_local_sync") return;
+        if (message.payload === "desktop_runtime_updated")
+          input.secureRuntime.invalidateConfiguration?.();
+        requestProcessing();
       });
       client.on("error", () => {
         if (wakeClient === client) wakeClient = null;
@@ -994,6 +999,8 @@ export const createPdsLocalSyncService = (input: {
         client.release();
         scheduleWakeReconnect();
       });
+      // A runtime update can arrive while the database connection is down.
+      input.secureRuntime.invalidateConfiguration?.();
       requestProcessing();
     } catch {
       scheduleWakeReconnect();

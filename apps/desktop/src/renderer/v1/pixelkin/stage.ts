@@ -223,9 +223,17 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
   context.drawImage(gl.canvas, 0, 0, pixels, pixels, 0, 0, size, size);
 }
 
+// The companion only idles for whoever is looking at Koed. While another app
+// has focus, stop rendering; the focus listener wakes the loop again.
+const windowInactive = () =>
+  typeof document.hasFocus === "function" && !document.hasFocus();
+
 function tick(now: number) {
   frame = 0;
-  if (document.hidden) {
+  const inactive = windowInactive();
+  // An unfocused window still paints once, so a Kin added in the background
+  // shows a still image instead of an empty canvas.
+  if (document.hidden || (inactive && lastPaint)) {
     previous = 0;
     return;
   }
@@ -235,7 +243,7 @@ function tick(now: number) {
     ({ visible, spin }) => visible && spin?.active
   );
   // 30 fps is plenty for small companions, but a spin needs every frame.
-  if (turning || now - lastPaint >= 32) {
+  if (!lastPaint || turning || now - lastPaint >= 32) {
     lastPaint = now;
     const gl = engine();
     if (gl)
@@ -248,7 +256,11 @@ function tick(now: number) {
   const spinning = [...actors].some(
     ({ visible, spin }) => visible && spin && (spin.active || spin.startled > 0)
   );
-  if ((!reduced() || spinning) && actors.size)
+  // With no Kin on screen there is nothing to draw. Scheduling frames anyway
+  // keeps the compositor producing frames; the IntersectionObserver wakes the
+  // loop when a Kin scrolls back into view.
+  const anyVisible = [...actors].some(({ visible }) => visible);
+  if (!inactive && (!reduced() || spinning) && (anyVisible || spinning))
     frame = requestAnimationFrame(tick);
 }
 
@@ -267,6 +279,11 @@ const onVisibility = () => {
   previous = 0;
   if (!document.hidden) wakePixelkins();
 };
+const onWindowBlur = () => {
+  cancelAnimationFrame(frame);
+  frame = 0;
+  previous = 0;
+};
 
 function start() {
   reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
@@ -282,6 +299,8 @@ function start() {
           wakePixelkins();
         });
   window.addEventListener("pointermove", onPointer, { passive: true });
+  window.addEventListener("blur", onWindowBlur);
+  window.addEventListener("focus", wakePixelkins);
   document.addEventListener("visibilitychange", onVisibility);
 }
 
@@ -294,6 +313,8 @@ function stop() {
   observer = null;
   pointer = null;
   window.removeEventListener("pointermove", onPointer);
+  window.removeEventListener("blur", onWindowBlur);
+  window.removeEventListener("focus", wakePixelkins);
   document.removeEventListener("visibilitychange", onVisibility);
 }
 

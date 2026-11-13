@@ -24,6 +24,14 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./performance": {
+      "types": "./dist/performance-contract.d.ts",
+      "import": "./dist/performance-contract.js"
+    },
+    "./performance-schema": {
+      "types": "./dist/performance-schema.d.ts",
+      "import": "./dist/performance-schema.js"
+    },
     "./desktop-component-manager": {
       "types": "./dist/desktop-component-manager.d.ts",
       "import": "./dist/desktop-component-manager.js"

@@ -67,6 +67,8 @@ export interface PdsSecureSourceKeyContext {
  */
 export interface PdsSecureKeyProvider {
   isReady?(): Promise<boolean>;
+  /** Drops cached readiness after the runtime secret changes. */
+  invalidate?(): void;
   getSourceContext(input: {
     userId: string;
     groupId: string;
