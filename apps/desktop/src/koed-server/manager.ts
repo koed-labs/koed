@@ -2076,6 +2076,8 @@ export const createKoedServerManager = ({
           "Confirm the package download prompt, then retry package install."
       };
     }
+    // Every install path, including setup, must drop the cached status: the
+    // routine read would otherwise report the pre-install package.
     return runJson(
       [
         "package",
@@ -2095,7 +2097,9 @@ export const createKoedServerManager = ({
         "--activate"
       ],
       600_000
-    );
+    ).finally(() => {
+      packageStatusCache = null;
+    });
   };
 
   const withPackageComponent = (
@@ -6865,9 +6869,7 @@ export const createKoedServerManager = ({
       models_install: () => withNativeMutation(() => runModelInstallJson()),
       package_status: () => runPackageStatusJson(),
       package_install: (args) =>
-        withNativeMutation(() => runPackageInstallJson(args)).finally(() => {
-          packageStatusCache = null;
-        }),
+        withNativeMutation(() => runPackageInstallJson(args)),
       repository_review: (args) => projectCommands.review(args),
       project_folder_filter_get: async (args) =>
         readProjectFolderFilter(
