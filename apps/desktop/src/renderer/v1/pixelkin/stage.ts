@@ -231,8 +231,9 @@ function tick(now: number) {
   }
   if (previous && !reduced()) clock += Math.min((now - previous) / 1000, 0.05);
   previous = now;
-  // 30 fps is plenty for small companions.
-  if (now - lastPaint >= 32) {
+  const turning = [...actors].some(({ spin }) => spin?.active);
+  // 30 fps is plenty for small companions, but a spin needs every frame.
+  if (turning || now - lastPaint >= 32) {
     lastPaint = now;
     const gl = engine();
     if (gl)
