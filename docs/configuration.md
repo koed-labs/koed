@@ -630,8 +630,9 @@ Koed-owned local state lives under `KOED_HOME`:
   non-secret `device-identity.json`, local Project metadata in `projects.json`,
   and Project-to-Team Workspace mappings in `project-team-workspaces.json`
 - `run/` for `koed-server.json`, `last-verification.json`, identity bootstrap
-  marker/lock state, upstream enrollment orchestration state, and native runtime
-  state
+  marker/lock state, upstream enrollment orchestration state, native runtime
+  state, and `background-agent-state.json` (installation identity, generation,
+  and durable Stop intent)
 - `logs/` for service logs, including `postgres.log`
 - `data/` for native database files, including `data/postgres`
 - `models/` for embedding model files
@@ -639,6 +640,31 @@ Koed-owned local state lives under `KOED_HOME`:
 - `runtime/` for bundled or packaged native runtime binaries
 
 Packaged Desktop, headless local-personal startup, and repair commands all read and write this same layout. Host proof is deliberately excluded from this layout so copying it alone cannot copy usable device identity.
+
+### macOS Background Agent Launch Configuration
+
+The macOS Background Agent uses the same `KOED_HOME` as Desktop, but launchd
+does not inherit the shell environment that started Desktop. When the Agent is
+enabled, Desktop therefore records a private, non-secret launch configuration
+at `background-agent/launch-configuration.json` under Electron's Desktop
+`userData` directory. It binds an installation UUID and canonical app-bundle
+path to the selected `KOED_HOME`; its owner-only permissions and path checks
+prevent a moved or duplicate app from silently taking ownership of another
+installation's profile.
+
+The configuration is retained after the Agent is disabled so a later Desktop
+launch without a `KOED_HOME` environment variable continues to use the same
+profile. If the Agent is disabled, an explicit `KOED_HOME` override can select a
+new profile; the next enable updates the binding. While the Agent is enabled,
+the saved home remains authoritative. Disable the Agent before changing its
+home or moving the app. Do not edit or delete the launch configuration or the
+`run/background-agent-state.json` file manually; invalid or mismatched state
+fails closed and requires recovery before the service can start.
+
+The Background Agent is available only in a signed and notarized macOS release
+that passes the release qualification checks. Unpackaged development builds
+and ad-hoc signed packages omit the LaunchAgent property list and cannot enable
+the service.
 
 ## Platform Expectations
 

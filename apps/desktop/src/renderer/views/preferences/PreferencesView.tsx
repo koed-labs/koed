@@ -37,6 +37,7 @@ import type { CollaborationRendererClient } from "../../../collaboration/rendere
 import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import type { DesktopApi } from "../../../types.js";
+import { useBackgroundAgentSetting } from "../../state/use-background-agent-setting.js";
 import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
 import { AiClientStatusDialog } from "./AiClientStatusDialog.js";
 import { EmbeddingStateDetails } from "./EmbeddingStateDetails.js";
@@ -85,6 +86,7 @@ export type PreferencesViewProps = {
   initialSection?: PreferencesSection;
   hardwareAcceleration?: DesktopApi["hardwareAcceleration"];
   launchAtStartup?: DesktopApi["launchAtStartup"];
+  backgroundAgent?: DesktopApi["backgroundAgent"];
   localAiClients?: DesktopApi["localAiClients"];
   cliInstall?: DesktopApi["cliInstall"];
   onSectionChange?: (section: PreferencesSection) => void;
@@ -141,6 +143,7 @@ function SettingRow({
 function GeneralSection({
   hardwareAcceleration,
   launchAtStartup,
+  backgroundAgent,
   cliInstall,
   onThemeChange,
   theme
@@ -148,6 +151,7 @@ function GeneralSection({
   PreferencesViewProps,
   | "hardwareAcceleration"
   | "launchAtStartup"
+  | "backgroundAgent"
   | "cliInstall"
   | "onThemeChange"
   | "theme"
@@ -167,6 +171,7 @@ function GeneralSection({
         <h2>On this device</h2>
         <div className="koed-general-card">
           <LaunchAtStartupSetting api={launchAtStartup} />
+          <BackgroundAgentSetting api={backgroundAgent} />
           <HardwareAccelerationSetting api={hardwareAcceleration} />
         </div>
       </section>
@@ -238,6 +243,41 @@ function LaunchAtStartupSetting({
           <span role="status">
             Allow Koed in System Settings to finish setup.
           </span>
+        ) : null}
+        {error ? <span role="alert">{error}</span> : null}
+      </div>
+    </SettingRow>
+  );
+}
+
+function BackgroundAgentSetting({
+  api
+}: {
+  api?: DesktopApi["backgroundAgent"];
+}) {
+  const { state, busy, error, setEnabled } = useBackgroundAgentSetting(api);
+  if (!api) return null;
+  const description =
+    state?.supported === false
+      ? "Requires a qualified, signed macOS build."
+      : state?.status === "requires-approval"
+        ? "Allow Koed in System Settings to finish setup."
+        : "Keep Koed running after you quit the Desktop app.";
+  return (
+    <SettingRow
+      description={description}
+      label="Keep Koed running in the menu bar"
+    >
+      <div className="koed-preference-toggle-state">
+        <Switch
+          aria-label="Keep Koed running in the menu bar"
+          checked={state?.enabled ?? false}
+          disabled={!state || !state.supported || busy}
+          onCheckedChange={(enabled) => void setEnabled(enabled)}
+        />
+        {busy ? <Spinner aria-label="Updating Background Agent" /> : null}
+        {state?.runtimeState === "needs_attention" ? (
+          <span role="status">The Local AI Runtime needs attention.</span>
         ) : null}
         {error ? <span role="alert">{error}</span> : null}
       </div>
@@ -1173,6 +1213,7 @@ export function PreferencesView({
   initialSection = "general",
   hardwareAcceleration,
   launchAtStartup,
+  backgroundAgent,
   localAiClients,
   onSectionChange,
   onThemeChange,
@@ -1235,6 +1276,7 @@ export function PreferencesView({
             <GeneralSection
               hardwareAcceleration={hardwareAcceleration}
               launchAtStartup={launchAtStartup}
+              backgroundAgent={backgroundAgent}
               cliInstall={cliInstall}
               onThemeChange={onThemeChange}
               theme={theme}

@@ -236,12 +236,20 @@ export type ManagedProjectDesktopHandler = (
   context?: DesktopCommandContext
 ) => Promise<ManagedProjectResult>;
 
+export interface KoedServerRuntimeLifecycle {
+  isActive?(): boolean;
+  start(input: { explicit: boolean }): Promise<unknown>;
+  stop(input: { explicit: boolean }): Promise<unknown>;
+  status(): Promise<unknown>;
+}
+
 export interface KoedServerManagerOptions {
   repoRoot: string;
   cliPath: string;
   environment: NodeJS.ProcessEnv;
   createCliInvocation: (args: string[]) => NodeEntrypointInvocation;
   createSupervisorInvocation?: () => NodeEntrypointInvocation;
+  runtimeLifecycle?: KoedServerRuntimeLifecycle;
   packagedResourcesPath?: string;
   productVersion?: string;
   existsSync: (path: string) => boolean;
@@ -320,6 +328,7 @@ export interface KoedServerManager {
   ) => Promise<void>;
   resume: () => Promise<unknown>;
   stop: () => Promise<unknown>;
+  stopRuntime: (explicit: boolean) => Promise<unknown>;
   /** Desktop quit: stops only what this Desktop started; adopted instances keep running. */
   shutdown: () => Promise<unknown>;
   lifecycle: LifecycleObserver;
@@ -1554,6 +1563,7 @@ export const createKoedServerManager = ({
   environment,
   createCliInvocation,
   createSupervisorInvocation,
+  runtimeLifecycle,
   packagedResourcesPath,
   productVersion,
   existsSync,
@@ -1641,6 +1651,10 @@ export const createKoedServerManager = ({
     Promise<Record<string, unknown>>
   >();
   let personalDevicePairingServerError: string | null = null;
+  const activeRuntimeLifecycle = () =>
+    runtimeLifecycle && (runtimeLifecycle.isActive?.() ?? true)
+      ? runtimeLifecycle
+      : undefined;
   if (environment.KOED_HOME?.trim()) {
     writePersonalDevicePeerEndpoint(environment, null);
   }
@@ -5327,8 +5341,17 @@ export const createKoedServerManager = ({
 
   const requestDaemonStartUnlocked = async (
     generation: number,
-    explicitStopAtStart: number
+    explicitStopAtStart: number,
+    explicitStart = false
   ) => {
+    const activeRuntimeOwner = activeRuntimeLifecycle();
+    if (activeRuntimeOwner) {
+      if (generation !== stopGeneration) return stoppedStartResult();
+      const result = await activeRuntimeOwner.start({
+        explicit: explicitStart
+      });
+      return generation === stopGeneration ? result : stoppedStartResult();
+    }
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
       let live: Awaited<ReturnType<typeof inspectLiveInstance>>;
       try {
@@ -5444,7 +5467,8 @@ export const createKoedServerManager = ({
   };
   const requestDaemonStart = (
     generation = captureStartGeneration(),
-    explicitStopAtStart = explicitStopGeneration
+    explicitStopAtStart = explicitStopGeneration,
+    explicitStart = false
   ) => {
     if (acceleration.isRunning())
       return Promise.resolve({
@@ -5452,14 +5476,18 @@ export const createKoedServerManager = ({
         error: "Wait for the processing change to finish before starting Koed."
       });
     return withLifecycleOperation(() =>
-      requestDaemonStartUnlocked(generation, explicitStopAtStart)
+      requestDaemonStartUnlocked(generation, explicitStopAtStart, explicitStart)
     );
   };
 
   const start = async () => {
     const explicitStopAtStart = explicitStopGeneration;
     const generation = captureStartGeneration();
-    const result = await requestDaemonStart(generation, explicitStopAtStart);
+    const result = await requestDaemonStart(
+      generation,
+      explicitStopAtStart,
+      true
+    );
     if (generation !== stopGeneration) {
       return isSupervisorStartupFailureResult(result) &&
         explicitStopAtStart === explicitStopGeneration
@@ -5496,6 +5524,11 @@ export const createKoedServerManager = ({
     const explicitStopAtStart = explicitStopGeneration;
     const generation = captureStartGeneration();
     try {
+      const activeRuntimeOwner = activeRuntimeLifecycle();
+      if (activeRuntimeOwner) {
+        const status = await activeRuntimeOwner.status();
+        return generation === stopGeneration ? status : stoppedStartResult();
+      }
       const result = await requestDaemonStart(generation, explicitStopAtStart);
       if (generation !== stopGeneration) {
         return isSupervisorStartupFailureResult(result) &&
@@ -5968,6 +6001,8 @@ export const createKoedServerManager = ({
       setupAbort?.abort();
     }
     await closeDesktopServices();
+    const activeRuntimeOwner = activeRuntimeLifecycle();
+    if (activeRuntimeOwner) return activeRuntimeOwner.stop({ explicit });
     if (desktopSupervisorProcess && !desktopSupervisorProcess.killed) {
       const child = desktopSupervisorProcess;
       if (child.connected) child.send({ type: "koed.desktop.supervisor.stop" });
@@ -6018,6 +6053,16 @@ export const createKoedServerManager = ({
     lifecycle.stop();
     accelerationSession?.child.kill("SIGTERM");
     accelerationSession = null;
+    const activeRuntimeOwner = activeRuntimeLifecycle();
+    if (activeRuntimeOwner) {
+      await closeDesktopServices();
+      return {
+        ok: true,
+        state: "detached",
+        message:
+          "Desktop closed; the Background Agent retains runtime ownership."
+      };
+    }
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
       await closeDesktopServices();
       return {
@@ -6932,7 +6977,7 @@ export const createKoedServerManager = ({
         return await collaborationTransport.request(command, context);
       },
       start,
-      start_daemon: () => requestDaemonStart(),
+      start_daemon: () => requestDaemonStart(undefined, undefined, true),
       open_external: async (args) => {
         const url =
           typeof args?.url === "string" ? safeExternalUrl(args.url) : null;
@@ -7091,6 +7136,7 @@ export const createKoedServerManager = ({
         }
       }
     },
-    stop
+    stop,
+    stopRuntime: (explicit) => stopRuntime(explicit)
   };
 };

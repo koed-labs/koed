@@ -149,6 +149,28 @@ transcript watching. It may work against a local or remote backend and is shared
 by AI-client integrations for one local profile.
 _Avoid_: MCP Server, backend LLM service, browser bridge
 
+**Background Agent**:
+A macOS Koed process that keeps the Local AI Runtime and menu-bar controls
+available after the Desktop app is quit. It is separate from **Launch Koed at
+startup** and from Team Presence.
+_Avoid_: Team Presence, Launch Koed at startup, second Local AI Runtime
+
+**Stop Koed**:
+A User's explicit request to stop the Local AI Runtime while leaving the
+Background Agent available for a later explicit Start. The stop remains in
+force until Koed is explicitly started again.
+_Avoid_: Quit Koed, pause, logout
+
+**Quit Desktop**:
+A User's request to exit the Desktop interface while leaving an enabled
+Background Agent in control of the Local AI Runtime.
+_Avoid_: Quit Koed, Stop Koed
+
+**Quit Koed**:
+A User's explicit request to stop the Local AI Runtime and end Background
+Agent availability. It is distinct from closing the Desktop window.
+_Avoid_: Stop Koed, close window, system logout
+
 **Local Operator Scripts**:
 Trusted commands run from the deployment checkout, such as API Token bootstrap.
 _Avoid_: Console, dashboard, admin app

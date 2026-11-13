@@ -13,6 +13,7 @@ import {
   removeClaudeAgentSdkPlatformRuntimes
 } from "../../../scripts/provider-runtime-package-policy.mjs";
 import { assertNoPrivacyPayload } from "./privacy-payload-inventory.mjs";
+import { writeBackgroundAgentLaunchAgentPlist } from "./background-agent-package.mjs";
 
 /**
  * Electron's prebuilt macOS binary is ad-hoc signed without a sealed resource
@@ -127,6 +128,14 @@ export default async function afterPack(context) {
   );
   if (!existsSync(appPath)) {
     throw new Error(`Expected packaged macOS app at ${appPath}.`);
+  }
+  const backgroundAgentPlist = writeBackgroundAgentLaunchAgentPlist({
+    appPath,
+    productFilename: context.packager.appInfo.productFilename,
+    environment: process.env
+  });
+  if (backgroundAgentPlist.included) {
+    console.log("Included qualified Background Agent LaunchAgent plist.");
   }
 
   const removed = normalizePackagedSymlinks(appPath);

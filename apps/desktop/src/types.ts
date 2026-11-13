@@ -185,6 +185,18 @@ export interface DesktopLaunchAtStartupState {
   supported: boolean;
 }
 
+export type DesktopBackgroundAgentRuntimeState =
+  | "disabled"
+  | "stopped"
+  | "starting"
+  | "ready"
+  | "needs_attention";
+
+export interface DesktopBackgroundAgentState extends DesktopLaunchAtStartupState {
+  runtimeState?: DesktopBackgroundAgentRuntimeState;
+  message?: string;
+}
+
 export interface DesktopApi {
   featureFlags?: DesktopFeatureFlags;
   invoke: <T = unknown>(
@@ -251,6 +263,10 @@ export interface DesktopApi {
   launchAtStartup?: {
     get: () => Promise<DesktopLaunchAtStartupState>;
     set: (enabled: boolean) => Promise<DesktopLaunchAtStartupState>;
+  };
+  backgroundAgent?: {
+    get: () => Promise<DesktopBackgroundAgentState>;
+    set: (enabled: boolean) => Promise<DesktopBackgroundAgentState>;
   };
   setup?: DesktopSetupApi;
   cliInstall?: CliInstallApi;
