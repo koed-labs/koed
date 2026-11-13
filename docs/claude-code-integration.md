@@ -372,7 +372,9 @@ not create competing ports or background services.
 
 Claude Code currently connects through MCP's initialize-based stdio path. Koed
 serves that path and MCP `2026-07-28` discovery through the same adapter factory;
-neither path owns persistent work.
+neither path owns persistent work. On the stdio path, capability-gated tools can
+register after `initialize` and arrive through `notifications/tools/list_changed`;
+see [Codex Integration](codex-integration.md#mcp-server).
 
 Capture remains provider-specific: Codex transcript growth is handled by the
 Codex watcher, while Claude hook signals are handled by the Claude watcher.
