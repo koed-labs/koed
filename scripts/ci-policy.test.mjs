@@ -510,6 +510,21 @@ test("app-only smoke starts immediately without waiting for other jobs", () => {
   assert.doesNotMatch(relevantSmoke, /needs\.build\.result/);
 });
 
+test("Linux native runtime starts after static checks without waiting for tests or build", () => {
+  assert.deepEqual(linuxJob.needs, ["changes", "static-checks"]);
+  assert.doesNotMatch(
+    JSON.stringify(linuxJob),
+    /needs\.(tests|build)\.|download-artifact/
+  );
+
+  const required = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs[
+    "ci-required"
+  ];
+  for (const job of ["tests", "build", "native-runtime-linux-x64"]) {
+    assert.ok(required.needs.includes(job), `CI required must wait for ${job}`);
+  }
+});
+
 test("ordinary, documentation, relevant, forced, and release pull requests route correctly", () => {
   assert.deepEqual(
     evaluateCiPolicy({
