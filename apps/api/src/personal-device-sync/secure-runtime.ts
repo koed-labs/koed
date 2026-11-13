@@ -569,9 +569,9 @@ const configuredSecretResolver = (
 /**
  * How long a readiness answer stays valid. Readiness backs the Personal Device
  * Sync capability on every /v1/capabilities request, and each fresh lookup
- * runs the secret provider command synchronously. Operations that use the
- * secret always read it fresh, so only the capability flag can lag a pairing
- * change, and by at most this long.
+ * runs the secret provider command synchronously. A local runtime wake after
+ * pairing invalidates it; otherwise the capability flag can lag a secret
+ * change by at most this long.
  */
 export const PDS_RELOADABLE_READINESS_TTL_MS = 15_000;
 
@@ -600,14 +600,17 @@ export const createReloadablePdsSecureKeyProviderFromEnvironment = (
   };
 
   // Concurrent callers share one provider lookup. Every completed lookup
-  // refreshes the readiness answer.
+  // refreshes the readiness answer, unless the secret changed since it began.
   let readiness: { ready: boolean; at: number } | null = null;
   let lookup: Promise<PdsRuntimeSecret | null> | null = null;
+  let generation = 0;
   const resolveSecret = (): Promise<PdsRuntimeSecret | null> => {
     if (lookup) return lookup;
+    const started = generation;
     const current: Promise<PdsRuntimeSecret | null> = readSecret()
       .then((secret) => {
-        readiness = { ready: secret !== null, at: now() };
+        if (started === generation)
+          readiness = { ready: secret !== null, at: now() };
         return secret;
       })
       .finally(() => {
@@ -618,6 +621,11 @@ export const createReloadablePdsSecureKeyProviderFromEnvironment = (
   };
 
   return {
+    invalidate() {
+      generation += 1;
+      readiness = null;
+      lookup = null;
+    },
     async isReady() {
       if (readiness && now() - readiness.at < PDS_RELOADABLE_READINESS_TTL_MS)
         return readiness.ready;

@@ -513,6 +513,50 @@ describe("PDS secure runtime", () => {
     expect(resolved).toEqual(Array(5).fill("desktop-pds-ref"));
   });
 
+  it("reads the secret again after invalidation, ignoring older lookups", async () => {
+    let stored: string | null = null;
+    let release!: () => void;
+    let hold = false;
+    const provider = createReloadablePdsSecureKeyProviderFromEnvironment(
+      {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/operator/secret-provider",
+        PDS_RUNTIME_SECRET_REF: "desktop-pds-ref"
+      },
+      {
+        resolveHeadlessSecret: async () => {
+          const value = stored;
+          if (hold) await new Promise<void>((resolve) => (release = resolve));
+          return value;
+        },
+        now: () => 1_000
+      }
+    );
+    await expect(provider?.isReady?.()).resolves.toBe(false);
+
+    hold = true;
+    const stale = provider?.getSourceContext({
+      userId: "user-one",
+      groupId: "group-one"
+    });
+    const runtime = reloadableRuntimeSecret();
+    stored = JSON.stringify(runtime);
+    hold = false;
+    provider?.invalidate?.();
+    // A lookup after invalidation does not join the one that began before.
+    await expect(
+      provider?.getSourceContext({
+        userId: runtime.userId,
+        groupId: runtime.groupId
+      })
+    ).resolves.not.toBeNull();
+    release();
+    await expect(stale).resolves.toBeNull();
+    // The older lookup finishing late does not overwrite readiness.
+    await expect(provider?.isReady?.()).resolves.toBe(true);
+  });
+
   it("shares one provider lookup between concurrent readiness checks", async () => {
     let release!: (value: string | null) => void;
     const resolveHeadlessSecret = vi.fn(

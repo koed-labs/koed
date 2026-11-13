@@ -815,6 +815,8 @@ export const registerPersonalDeviceSyncRoutes = (
         );
       }
       await sessionUser(request);
+      // Pairing changed the runtime secret: read it again on next use.
+      context.personalDeviceSync.secureKeyProvider?.invalidate?.();
       await repo().wakePdsLocalSync("desktop_runtime_updated");
       return { accepted: true };
     }
