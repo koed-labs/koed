@@ -11284,7 +11284,11 @@ export const createMemorySourceRepository = (
       if (searchDomain === "session" && !input.sessionId) {
         throw new Error("Session-scoped memory search requires sessionId");
       }
-      if (searchDomain === "project" && !input.projectId) {
+      if (
+        searchDomain === "project" &&
+        !input.projectId &&
+        !personalSourceSelection.namedProjectIds?.length
+      ) {
         throw new Error("Project-scoped memory search requires projectId");
       }
       const parsedRepositoryContext = repositoryIdentitySchema
@@ -11386,7 +11390,7 @@ export const createMemorySourceRepository = (
         lexical_anchors: string[] | null;
         lcm_summary_model: string | null;
         lcm_summary_pending: boolean;
-        source_generation: number | null;
+        source_generation: string | number | null;
         occurred_at: Date | null;
         score: number;
         created_at: Date;
@@ -11397,6 +11401,7 @@ export const createMemorySourceRepository = (
         repository_contexts?: unknown[];
         candidate_pool?: "global" | "current";
         observed_references?: MemorySearchResult["citation"][];
+        summary_representation?: "complete_summary" | "filtered_sources";
       };
       type StageResult = {
         name: RetrievalStageName;
@@ -11629,6 +11634,7 @@ export const createMemorySourceRepository = (
               return {
                 ...row,
                 summary_text: outline,
+                summary_representation: "filtered_sources" as const,
                 summary_structured_json: null,
                 lexical_anchors: null,
                 lcm_summary_model: null,
@@ -11735,6 +11741,8 @@ export const createMemorySourceRepository = (
             }
             const result = {
               ...hydrated,
+              summary_representation:
+                hydrated.summary_representation ?? "complete_summary",
               summary_structured_json: structuredSummary,
               lexical_anchors: parsed.success
                 ? parsed.data.lexical_anchors
@@ -11763,16 +11771,23 @@ export const createMemorySourceRepository = (
               parentNodeIds: string[] = []
             ): Promise<StageResult> => {
               const started = Date.now();
+              // Cost follows the requested operation, not stage over-fetching.
               const pools = planRepositorySearch({
                 retrievalScope: "personal",
                 searchDomain,
                 repositoryContext,
-                retrievalStage: stage,
-                limit,
+                retrievalStage: scanOnly ? "score_scan" : stage,
+                limit: requestedLimit,
+                candidateLimit: limit,
                 maxSearchPasses: input.maxSearchPasses
               });
               if (pools.current > 0) searchPasses = 2;
               databaseReads += 1;
+              // Admit summary generations, then retain their chunks as citations.
+              const summaryStage =
+                stage === "rollup_search" ||
+                stage === "leaf_search" ||
+                stage === "scoped_leaf_search";
               const vectorResult = await pool.query<VectorRow>(
                 `
               with candidates as (
@@ -11852,6 +11867,17 @@ export const createMemorySourceRepository = (
                   me.embedding_dimensions,
                   me.source_chunk_index,
                   me.source_chunk_count,
+                  jsonb_build_array(
+                    me.visibility,
+                    case when me.memory_node_id is not null then 'memory_node'
+                      when me.memory_event_id is not null then 'memory_event'
+                      when me.message_id is not null then 'message'
+                      else 'curated_memory' end,
+                    coalesce(me.memory_node_id, me.memory_event_id, me.message_id, me.curated_memory_assertion_id),
+                    case when me.memory_node_id is not null then 0 else coalesce(me.source_chunk_index, 0) end,
+                    case when me.memory_node_id is not null then 1 else coalesce(me.source_chunk_count, 1) end,
+                    case when me.memory_node_id is not null then mn.summary_embedding_revision else null end
+                  ) as candidate_key,
                   repo_context.contexts as repository_contexts
                 from memory_embeddings me
                 join ${embeddingTable} v on v.memory_embedding_id = me.id
@@ -11909,6 +11935,12 @@ export const createMemorySourceRepository = (
                       me.memory_node_id is not null
                       and mn.id is not null
                       and me.personal_deleted_at is null
+                      and me.source_hash = encode(digest(
+                        coalesce(mn.source_hash, mn.id::text)
+                          || ':lcm-summary-embedding-anchors-v1:'
+                          || mn.summary_embedding_revision::text,
+                        'sha256'
+                      ), 'hex')
                     )
                     or (
                       me.memory_event_id is not null
@@ -12006,33 +12038,33 @@ export const createMemorySourceRepository = (
               )
               select * from (
                 ${
-                  // Global recall merges rows by canonical key, so limit distinct
-                  // keys rather than raw rows and keep each key's references.
-                  searchDomain === "global"
+                  searchDomain === "global" || summaryStage
                     ? `(select candidates.*, 'global'::text as candidate_pool from candidates
                   join (
-                    select visibility as key_visibility, source_type as key_source_type,
-                      source_id as key_source_id,
-                      coalesce(source_chunk_index, 0) as key_chunk_index,
-                      coalesce(source_chunk_count, 1) as key_chunk_count,
-                      source_generation as key_generation
-                    from candidates group by 1, 2, 3, 4, 5, 6
-                    order by max(score) desc, max(created_at) desc, source_id limit $4
-                  ) global_keys on global_keys.key_visibility = candidates.visibility
-                    and global_keys.key_source_type = candidates.source_type
-                    and global_keys.key_source_id = candidates.source_id
-                    and global_keys.key_chunk_index = coalesce(candidates.source_chunk_index, 0)
-                    and global_keys.key_chunk_count = coalesce(candidates.source_chunk_count, 1)
-                    and global_keys.key_generation is not distinct from candidates.source_generation)`
+                    select candidate_key from candidates group by candidate_key
+                    order by max(score) desc, max(created_at) desc, min(source_id::text) limit $4
+                  ) global_keys using (candidate_key))`
                     : `(select candidates.*, 'global'::text as candidate_pool from candidates
                   order by score desc, created_at desc, source_id limit $4)`
                 }
                 union all
-                (select candidates.*, 'current'::text as candidate_pool from candidates
+                ${
+                  summaryStage
+                    ? `(select candidates.*, 'current'::text as candidate_pool from candidates
+                  join (
+                    select candidate_key from candidates
+                    where $13::integer>0 and jsonb_array_length(repository_contexts)>0
+                      and not exists(select 1 from jsonb_array_elements(repository_contexts) context
+                        where not coalesce(repository_scope_matches(context->'identity',$12::text),false))
+                    group by candidate_key
+                    order by max(score) desc, max(created_at) desc, min(source_id::text) limit $13
+                  ) current_keys using (candidate_key))`
+                    : `(select candidates.*, 'current'::text as candidate_pool from candidates
                   where $13::integer>0 and jsonb_array_length(repository_contexts)>0
                     and not exists(select 1 from jsonb_array_elements(repository_contexts) context
                       where not coalesce(repository_scope_matches(context->'identity',$12::text),false))
-                  order by score desc, created_at desc, source_id limit $13)
+                  order by score desc, created_at desc, source_id limit $13)`
+                }
               ) pooled order by score desc, created_at desc, source_id
             `,
                 [
@@ -12076,7 +12108,11 @@ export const createMemorySourceRepository = (
                     )
                   }
                 };
-                if (previous && searchDomain === "global") {
+                if (
+                  previous &&
+                  (searchDomain === "global" ||
+                    row.source_type === "memory_node")
+                ) {
                   previous.observed_references = [
                     ...(previous.observed_references ?? []),
                     reference
@@ -12089,7 +12125,8 @@ export const createMemorySourceRepository = (
                   ];
                 } else
                   uniqueRows.set(
-                    searchDomain === "global"
+                    searchDomain === "global" ||
+                      row.source_type === "memory_node"
                       ? key
                       : JSON.stringify([key, row.id, uniqueRows.size]),
                     { ...row, observed_references: [reference] }
@@ -12120,7 +12157,8 @@ export const createMemorySourceRepository = (
                   return filteredSummary
                     ? {
                         ...row,
-                        summary_text: filteredSummary
+                        summary_text: filteredSummary,
+                        summary_representation: "filtered_sources" as const
                       }
                     : row;
                 })
@@ -12349,7 +12387,7 @@ export const createMemorySourceRepository = (
           lexical_anchors?: string[] | null;
           lcm_summary_model?: string | null;
           lcm_summary_pending?: boolean;
-          source_generation?: number | null;
+          source_generation?: string | number | null;
           occurred_at?: Date | null;
           source_chunk_index?: number | null;
           source_chunk_count?: number | null;
@@ -12357,10 +12395,15 @@ export const createMemorySourceRepository = (
           created_at: Date;
           repository_contexts?: unknown[];
           observed_references?: MemorySearchResult["citation"][];
+          summary_representation?: "complete_summary" | "filtered_sources";
         },
         weight: number
       ) => {
-        const summaryText = codexIdePromptUserText(row.summary_text).trim();
+        const summaryText = (
+          row.source_type === "memory_node"
+            ? row.summary_text
+            : codexIdePromptUserText(row.summary_text)
+        ).trim();
         const exactAnchorMatches = (input.exactHints ?? []).filter((hint) =>
           [summaryText, ...(row.lexical_anchors ?? [])].some((text) =>
             text.includes(hint)
@@ -12368,7 +12411,7 @@ export const createMemorySourceRepository = (
         );
         const normalizedText = summaryText.toLowerCase();
         const key =
-          searchDomain === "global"
+          searchDomain === "global" || row.source_type === "memory_node"
             ? canonicalGlobalCandidateKey(row)
             : input.includeEventContext || !normalizedText
               ? `${row.source_type}:${row.source_id}`
@@ -12453,7 +12496,7 @@ export const createMemorySourceRepository = (
               }
             : undefined;
         const observedReferences =
-          searchDomain === "global"
+          searchDomain === "global" || row.source_type === "memory_node"
             ? [
                 ...new Map(
                   [
@@ -12489,6 +12532,7 @@ export const createMemorySourceRepository = (
             occurredAt: row.occurred_at?.toISOString(),
             visibility: row.visibility,
             summaryText,
+            summaryRepresentation: row.summary_representation,
             lexicalAnchors: row.lexical_anchors ?? undefined,
             exactAnchorMatches:
               exactAnchorMatches.length > 0 ? exactAnchorMatches : undefined,
@@ -12524,7 +12568,10 @@ export const createMemorySourceRepository = (
             createdAt: row.occurred_at ?? row.created_at,
             stagePriority: priority
           });
-        } else if (existing && searchDomain === "global") {
+        } else if (
+          existing &&
+          (searchDomain === "global" || row.source_type === "memory_node")
+        ) {
           existing.repositoryContexts = repositoryContexts;
           existing.score =
             existing.baseScore +
@@ -12662,6 +12709,7 @@ export const createMemorySourceRepository = (
           occurredAt: result.occurredAt,
           visibility: result.visibility,
           summaryText: result.summaryText,
+          summaryRepresentation: result.summaryRepresentation,
           lexicalAnchors: result.lexicalAnchors,
           exactAnchorMatches: result.exactAnchorMatches,
           lcmNodeSummaryStatus: result.lcmNodeSummaryStatus,
@@ -13382,7 +13430,11 @@ export const createMemorySourceRepository = (
       if (searchDomain === "session" && !input.sessionId) {
         throw new Error("Session-scoped memory expansion requires sessionId");
       }
-      if (searchDomain === "project" && !input.projectId) {
+      if (
+        searchDomain === "project" &&
+        !input.projectId &&
+        !selection.namedProjectIds?.length
+      ) {
         throw new Error("Project-scoped memory expansion requires projectId");
       }
       const now = new Date();

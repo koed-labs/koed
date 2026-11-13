@@ -7,6 +7,7 @@ import {
   resolveKoedServerPaths
 } from "@koed-labs/server";
 import { isConversationDirectory } from "./conversation-directory.js";
+import { resolveCaptureRepositoryIdentity } from "./capture-repository-context.js";
 
 import { signalCodexTranscriptWatcher } from "./codex-transcript-watcher-signal.js";
 import { signalClaudeTranscriptWatcher } from "./claude-transcript-watcher-signal.js";
@@ -70,7 +71,7 @@ const readRoutingMetadata = async (): Promise<CaptureHookMetadata> => {
   }
 };
 
-/** Native hooks supply the Conversation directory before each recall call. */
+/** Native hooks supply the Conversation identity before each recall call. */
 export const recallHookOutput = (
   metadata: CaptureHookMetadata,
   memoryTool = "mcp__koed__memory_answer",
@@ -82,13 +83,19 @@ export const recallHookOutput = (
     !metadata.toolInput
   )
     return {};
-  if (!isConversationDirectory(metadata.cwd))
+  if (
+    !isConversationDirectory(metadata.cwd) ||
+    typeof metadata.sourceSessionId !== "string" ||
+    metadata.sourceSessionId.trim().length === 0 ||
+    metadata.sourceSessionId.length > 4096 ||
+    metadata.sourceSessionId.includes("\0")
+  )
     return {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason:
-          "Koed recall requires the current Conversation directory. Repair the AI Client integration and reconnect before retrying recall."
+          "Koed recall requires the current Conversation identity and directory. Repair the AI Client integration and reconnect before retrying recall."
       }
     };
   return {
@@ -97,7 +104,12 @@ export const recallHookOutput = (
       // Codex requires allow with updatedInput. Claude can rewrite arguments
       // without an approval decision, preserving its normal permission flow.
       ...(source === "codex" ? { permissionDecision: "allow" } : {}),
-      updatedInput: { ...metadata.toolInput, conversation_cwd: metadata.cwd }
+      updatedInput: {
+        ...metadata.toolInput,
+        conversation_cwd: metadata.cwd,
+        conversation_id: metadata.sourceSessionId,
+        conversation_source: source === "codex" ? "codex-cli" : "claude-code"
+      }
     }
   };
 };
@@ -153,12 +165,22 @@ export const recordCaptureHookFolder = async (
     const observation = metadata.cwd
       ? await observeCaptureFolder(paths, metadata.cwd, environment)
       : undefined;
+    const newConversation =
+      metadata.hookEventName === "SessionStart" &&
+      metadata.sessionStartSource === "startup";
+    const repository =
+      newConversation && metadata.cwd
+        ? await resolveCaptureRepositoryIdentity({
+            cwd: metadata.cwd,
+            env: environment
+          })
+        : undefined;
     pinSourceFolderObservation(
       paths,
       { sourceKind, externalSessionId: metadata.sourceSessionId },
       observation,
-      metadata.hookEventName === "SessionStart" &&
-        metadata.sessionStartSource === "startup"
+      newConversation,
+      repository
     );
   }
 };

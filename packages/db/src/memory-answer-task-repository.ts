@@ -776,7 +776,7 @@ export const createMemoryAnswerTaskRepository = (
           current.id,
           "request_snapshot"
         );
-        validateMemoryAnswerTaskCompletion(
+        const acceptedSelection = validateMemoryAnswerTaskCompletion(
           request,
           current.team_workspace_id,
           input.finalQuestion
@@ -786,6 +786,7 @@ export const createMemoryAnswerTaskRepository = (
           actor,
           {
             ...input.finalQuestion,
+            personalSelection: acceptedSelection,
             idempotencyKey: `memory-answer-task:${current.id}`
           },
           { teamAuthority: current.team_authorization ?? undefined }

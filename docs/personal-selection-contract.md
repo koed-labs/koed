@@ -39,9 +39,17 @@ The existing assignment and signed package schemas stay available for compatibil
 ## Targets and legacy decoding
 
 `personalSelectionSchema` accepts version `1` only.
-Its target kinds are `project`, `repository`, `folder`, `session`, and `global`.
+Its target kinds are `project`, `projects`, `repository`, `folder`, `session`, and `global`.
 Project, Folder, and Conversation targets carry owner-scoped references.
 Repository targets carry the selected Git identity under the current anchor rules.
+
+The recall-only `projects` target carries owner-scoped Project references and
+the captured caller Session UUID. It represents the union of the caller's
+canonical memberships, pinned before acceptance. Source selection reuses the
+UI membership predicate and rechecks that the caller remains in each selected
+Project. It does not traverse other Conversations into further Projects.
+Sharing/enumeration consumers reject this recall-specific target rather than
+implicitly broaden their supported selection contract.
 
 `normalizePersonalSelection` parses selector fields at the adapter boundary.
 Callers must pass only those fields, before legacy schemas inject defaults.
@@ -60,8 +68,13 @@ Both an explicit alias and its pinned legacy context must identify the same targ
 
 Legacy Conversation identifiers require a verified logical source lookup.
 Unknown identifiers remain errors.
-With no explicit selector, the adapter must supply trusted Git or exact Folder context before task acceptance.
-The contract does not infer an umbrella Project from that context.
+The legacy decoder still requires established Git or exact Folder context when
+its caller selects that compatibility contract. Normal implicit Personal MCP
+Project recall instead resolves the current Conversation's canonical memberships
+through the authenticated Project resolver before acceptance. It does not infer
+named membership from cwd or supply a synthetic repository identifier. See
+[Personal Project recall](personal-project-recall.md) for caller context and
+explicit missing-binding behaviour.
 
 `PersonalSelectionBoundary` defines the common source-resolution interface.
 Its implementation must apply owner authorization, source eligibility, deletion, time bounds, and current membership before candidate limits.
@@ -96,6 +109,15 @@ Global preference remains in `repository-recall.ts` and `global-repository-conte
 New Project membership cannot change a source's Git classification.
 Team requests retain their current authorization, repository snapshots, consent, grants, representations, and source-access contracts.
 None of these Personal types permits Team publication.
+
+## Question history
+
+Final Personal Memory Questions retain the accepted snapshot in encrypted
+`retrieval.personal_selection`. Completion and idempotent retries cannot replace
+that selection. Migration `0003` permits the narrow Personal MCP Project-union
+history case without a single `project_id`; repository and route validation
+still require a valid owner-bound union selection. Other Project history and
+Team requests retain their existing identifier and authorization requirements.
 
 ## Project initialization
 

@@ -204,6 +204,23 @@ const callerSchema = z
       .max(4096)
       .refine(path.isAbsolute, "cwd must be absolute"),
     protocolVersion: z.string().max(64).optional(),
+    conversation: z
+      .union([
+        z.object({ sessionId: z.string().uuid() }).strict(),
+        z
+          .object({
+            externalSessionId: z
+              .string()
+              .min(1)
+              .max(4096)
+              .refine(
+                (value) => value.trim().length > 0 && !value.includes("\0")
+              ),
+            sourceRuntime: z.enum(["codex-cli", "claude-code", "pi"])
+          })
+          .strict()
+      ])
+      .optional(),
     clientInfo: z.record(z.string(), z.unknown()).optional(),
     clientCapabilities: z.record(z.string(), z.unknown()).optional()
   })

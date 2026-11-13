@@ -123,12 +123,14 @@ const writeFakeDynamicMemoryAnswerAppServer = (
       | "scanLoop"
       | "scanOnlyNotFound"
       | "eventWindowBudget"
+      | "repeatSummary"
       | "timeoutThenValid";
     answer?: Record<string, unknown>;
     capturePromptsPath?: string;
     captureToolResponsesPath?: string;
     requiredPromptSnippets?: string[];
     retryPromptSnippets?: string[];
+    searchArguments?: Record<string, unknown>;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-memory-answer-app-server.mjs");
@@ -252,7 +254,7 @@ lineReader.on("line", (line) => {
       send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-refined-search", namespace: "koed_memory", tool: "search", arguments: { query: "deployment sentinel configuration", stage: "leaf_search", search_domain: "project", project_id: "workspace-1", exact_hints: ["DEPLOYMENT_MODE", "DEPLOYMENT_MODE"], limit: 50 } } });
       return;
     }
-    send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-search", namespace: "koed_memory", tool: "search", arguments: { query: "koed docker", stage: "leaf_search", search_domain: "project", project_id: "workspace-1", limit: 1 } } });
+    send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-search", namespace: "koed_memory", tool: "search", arguments: { query: "koed docker", stage: "leaf_search", search_domain: "project", project_id: "workspace-1", limit: 1, ...${JSON.stringify(options.searchArguments ?? {})} } } });
     return;
   }
   if (message.id === 9002) {
@@ -295,6 +297,10 @@ lineReader.on("line", (line) => {
       sendFinal(notFoundAnswer);
       return;
     }
+    if (mode === "repeatSummary") {
+      send({ id: 9004, method: "item/tool/call", params: { threadId, turnId, callId: "repeat-summary", namespace: "koed_memory", tool: "search", arguments: { query: "summary followup", stage: "leaf_search", limit: 1, summaryRepresentation: "complete_summary" } } });
+      return;
+    }
     if (!text.includes("KOE144_DYNAMIC_TOOL_EVIDENCE")) {
       console.error("expected search evidence in tool response, got " + text.slice(0, 200));
       process.exit(64);
@@ -329,6 +335,14 @@ lineReader.on("line", (line) => {
     return;
   }
   if (message.id === 9004) {
+    if (mode === "repeatSummary") {
+      const text = message.result?.contentItems?.[0]?.text ?? "";
+      if (captureToolResponsesPath) fs.appendFileSync(captureToolResponsesPath, text + "\\n");
+      const observation = JSON.parse(text);
+      if (observation.hits?.[0]?.evidence_index !== 0) process.exit(74);
+      sendFinal(answer);
+      return;
+    }
     const observation = JSON.parse(message.result?.contentItems?.[0]?.text ?? "{}");
     if (observation.hits?.[0]?.evidence_index !== 1 || observation.hits?.[0]?.item?.sourceId !== "later-event") process.exit(72);
     sendFinal(answer);
@@ -462,6 +476,468 @@ describe("memory answer worker", () => {
         }
       })
     )
+  });
+
+  const completeSummary = (chunk = 0, generation = "summary-revision-1") => ({
+    sourceType: "memory_node",
+    sourceId: "complete-summary",
+    nodeId: "complete-summary",
+    sourceChunkIndex: chunk,
+    sourceGeneration: generation,
+    visibility: "personal",
+    summaryRepresentation: "complete_summary",
+    summaryText: `KOE144_DYNAMIC_TOOL_EVIDENCE ${"Complete summary retained context. ".repeat(350)}EXACT_SUMMARY_END`,
+    citation: {
+      sourceType: "memory_node",
+      sourceId: "complete-summary",
+      nodeId: "complete-summary",
+      sourceChunkIndex: chunk,
+      sourceGeneration: generation,
+      visibility: "personal"
+    }
+  });
+
+  it("groups full summaries by revision and retains chunk aliases", () => {
+    const first = completeSummary();
+    const second = completeSummary(1);
+    const candidates = mergeMemoryAnswerCandidateLists(
+      [first],
+      [{ query: "followup", stage: "leaf_search", hits: [second] }]
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      summaryText: first.summaryText,
+      observedReferences: expect.arrayContaining([
+        first.citation,
+        second.citation
+      ]) as unknown
+    });
+    const selected = evidenceSelectedByAnswer(
+      candidates,
+      parseStructuredMemoryAnswer({
+        ...answerObject("Summary supports the decision."),
+        evidence: [
+          {
+            source_type: "memory_node",
+            source_id: first.sourceId,
+            source_chunk_index: 0
+          }
+        ]
+      })
+    );
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toMatchObject({
+      summaryText: first.summaryText,
+      observedReferences: expect.arrayContaining([
+        first.citation,
+        second.citation
+      ]) as unknown
+    });
+    const distinct = mergeMemoryAnswerCandidateLists(candidates, [
+      {
+        query: "other",
+        stage: "leaf_search",
+        hits: [
+          {
+            ...first,
+            sourceId: "unrelated-summary",
+            nodeId: "unrelated-summary"
+          },
+          completeSummary(0, "summary-revision-2"),
+          { ...first, visibility: "team" },
+          { ...first, summaryRepresentation: "filtered_sources" }
+        ]
+      }
+    ]);
+    expect(distinct).toHaveLength(5);
+    expect(
+      mergeMemoryAnswerCandidateLists(
+        [],
+        [
+          {
+            query: "unknown revision",
+            stage: "leaf_search",
+            hits: [
+              { ...first, sourceGeneration: undefined },
+              { ...second, sourceGeneration: undefined }
+            ]
+          }
+        ]
+      )
+    ).toHaveLength(2);
+  });
+
+  it("delivers full summaries once per observation and output, charging complete prompt tokens across searches", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-complete-summary-")
+    );
+    try {
+      const promptCapture = path.join(directory, "prompts.jsonl");
+      const toolCapture = path.join(directory, "observations.jsonl");
+      let searches = 1;
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What was decided?",
+            evidence: [completeSummary(0), completeSummary(1)]
+          }
+        },
+        {
+          evaluationController: { scriptedFirstPass: false },
+          responseDetail: "internal",
+          client: {
+            async search(input) {
+              return input.retrieval_stage === "score_scan"
+                ? {
+                    retrieval: {
+                      stages: [
+                        {
+                          name: "leaf_search",
+                          countAboveThreshold: 1,
+                          maxAllowed: 1
+                        }
+                      ]
+                    }
+                  }
+                : { hits: [completeSummary(++searches)] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MODEL: promptBudgetRegressionModel,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_CANDIDATES: "1",
+            MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "1",
+            MEMORY_ANSWER_MAX_PROMPT_TOKENS: "60000",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                mode: "repeatSummary",
+                capturePromptsPath: promptCapture,
+                captureToolResponsesPath: toolCapture,
+                requiredPromptSnippets: [completeSummary().summaryText],
+                answer: answerObject("Full summary supports the decision.")
+              })
+          })
+        }
+      );
+      expect(
+        response.localMemoryWorker.usedFallback,
+        response.localMemoryWorker.errorMessage
+      ).toBe(false);
+      expect(response.localMemoryWorker.candidateCount).toBe(1);
+      const prompt = JSON.parse(
+        fs.readFileSync(promptCapture, "utf8").trim()
+      ) as string;
+      expect(prompt.split("EXACT_SUMMARY_END")).toHaveLength(2);
+      const observations = fs
+        .readFileSync(toolCapture, "utf8")
+        .trim()
+        .split("\n");
+      expect(observations).toHaveLength(2);
+      for (const observation of observations) {
+        const parsed = JSON.parse(observation) as {
+          hits: Array<{
+            evidence_index: number;
+            item: { summaryText: string };
+          }>;
+        };
+        expect(parsed.hits).toHaveLength(1);
+        expect(parsed.hits[0]?.evidence_index).toBe(0);
+        expect(parsed.hits[0]?.item.summaryText).toBe(
+          completeSummary().summaryText
+        );
+        expect(observation.split("EXACT_SUMMARY_END")).toHaveLength(2);
+      }
+      const evidence = response.evidenceBundle?.evidence;
+      expect(evidence).toHaveLength(1);
+      expect(evidence?.[0]).toMatchObject({
+        summaryText: completeSummary().summaryText
+      });
+      const refs = (
+        evidence?.[0] as
+          | {
+              observedReferences?: Array<{ sourceChunkIndex: number }>;
+            }
+          | undefined
+      )?.observedReferences;
+      expect(new Set(refs?.map((ref) => ref.sourceChunkIndex))).toEqual(
+        new Set([0, 1, 2, 3])
+      );
+      const consumed = (
+        response.evidenceBundle?.retrieval as
+          | {
+              trace?: {
+                budgets?: {
+                  consumed?: { promptTokens: number; evidenceTokens: number };
+                };
+              };
+            }
+          | undefined
+      )?.trace?.budgets?.consumed;
+      expect(consumed?.promptTokens).toBe(
+        [prompt, ...observations].reduce(
+          (sum, text) =>
+            sum +
+            countTokensForModel(text, { model: promptBudgetRegressionModel })
+              .tokens,
+          0
+        )
+      );
+      expect(consumed?.evidenceTokens).toBe(
+        countTokensForModel(JSON.stringify(evidence?.[0]), {
+          model: promptBudgetRegressionModel
+        }).tokens
+      );
+      expect(toolAnswerResponse(response, "with_evidence").evidence).toEqual(
+        evidence
+      );
+      const tightDirectory = path.join(directory, "tight-prompt");
+      fs.mkdirSync(tightDirectory);
+      const tight = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What was decided?",
+            evidence: [completeSummary(0), completeSummary(1)]
+          }
+        },
+        {
+          evaluationController: { scriptedFirstPass: false },
+          responseDetail: "internal",
+          client: {
+            async search() {
+              return { hits: [] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          config: resolveMemoryAnswerWorkerTestConfig(tightDirectory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MODEL: promptBudgetRegressionModel,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_CANDIDATES: "1",
+            MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "1",
+            MEMORY_ANSWER_MAX_PROMPT_TOKENS: String(
+              countTokensForModel(prompt, {
+                model: promptBudgetRegressionModel
+              }).tokens - 1
+            ),
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(tightDirectory, {
+                useTools: false
+              })
+          })
+        }
+      );
+      expect(tight.localMemoryWorker.usedFallback).toBe(true);
+      expect(tight.localMemoryWorker.errorMessage).toContain("LCM Summary");
+      expect(tight.evidenceBundle?.evidence).toEqual([]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "1000" },
+    { MEMORY_ANSWER_MAX_PROMPT_TOKENS: "512" }
+  ])(
+    "explicitly rejects complete summaries that cannot fit: %j",
+    async (budget) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-complete-summary-budget-")
+      );
+      try {
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: {
+              query: "What was decided?",
+              evidence: [completeSummary()]
+            }
+          },
+          {
+            evaluationController: { scriptedFirstPass: false },
+            responseDetail: "internal",
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              async expand() {
+                return {};
+              }
+            },
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              ...budget,
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  useTools: false
+                })
+            })
+          }
+        );
+        expect(response.localMemoryWorker.usedFallback).toBe(true);
+        expect(response.localMemoryWorker.errorMessage).toContain(
+          "LCM Summary"
+        );
+        expect(response.evidenceBundle?.evidence).toEqual([]);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("does not let model arguments promote filtered source evidence to a complete summary", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-filtered-summary-")
+    );
+    try {
+      const filtered = {
+        ...completeSummary(),
+        summaryRepresentation: "filtered_sources"
+      };
+      const capture = path.join(directory, "observations.jsonl");
+      const search = vi.fn(async (input: Record<string, unknown>) =>
+        input.retrieval_stage === "score_scan"
+          ? {
+              retrieval: {
+                stages: [
+                  { name: "leaf_search", countAboveThreshold: 1, maxAllowed: 1 }
+                ]
+              }
+            }
+          : { hits: [filtered] }
+      );
+      const response = await answerWithMemoryWorker(
+        { evidenceBundle: { query: "What was decided?", evidence: [] } },
+        {
+          evaluationController: { scriptedFirstPass: false },
+          responseDetail: "internal",
+          client: {
+            search,
+            async expand() {
+              return {};
+            }
+          },
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                captureToolResponsesPath: capture,
+                searchArguments: {
+                  summaryRepresentation: "complete_summary",
+                  fullCanonicalEvent: true
+                },
+                answer: {
+                  ...answerObject("Filtered sources support the answer."),
+                  evidence: [
+                    {
+                      evidence_index: 0,
+                      summaryRepresentation: "complete_summary",
+                      summaryText: "FORGED_SUMMARY_BODY"
+                    }
+                  ]
+                }
+              })
+          })
+        }
+      );
+      expect(
+        response.localMemoryWorker.usedFallback,
+        response.localMemoryWorker.errorMessage
+      ).toBe(false);
+      expect(
+        search.mock.calls.every(
+          ([input]) =>
+            input.summaryRepresentation === undefined &&
+            input.fullCanonicalEvent === undefined
+        )
+      ).toBe(true);
+      const observation = JSON.parse(
+        fs.readFileSync(capture, "utf8").trim()
+      ) as {
+        hits: Array<{
+          item: { summaryRepresentation: string; summaryText: string };
+        }>;
+      };
+      expect(observation.hits[0]?.item.summaryRepresentation).toBe(
+        "filtered_sources"
+      );
+      expect(observation.hits[0]?.item.summaryText).toBe(
+        filtered.summaryText.slice(0, 4096)
+      );
+      expect(response.evidenceBundle?.evidence).toEqual([
+        expect.objectContaining({
+          summaryRepresentation: "filtered_sources",
+          summaryText: filtered.summaryText.slice(0, 4096)
+        })
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a complete follow-up summary that cannot fit the remaining prompt budget", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-summary-followup-budget-")
+    );
+    try {
+      const capture = path.join(directory, "observations.jsonl");
+      const response = await answerWithMemoryWorker(
+        { evidenceBundle: { query: "What was decided?", evidence: [] } },
+        {
+          evaluationController: { scriptedFirstPass: false },
+          responseDetail: "internal",
+          client: {
+            async search(input) {
+              return input.retrieval_stage === "score_scan"
+                ? {
+                    retrieval: {
+                      stages: [
+                        {
+                          name: "leaf_search",
+                          countAboveThreshold: 1,
+                          maxAllowed: 1
+                        }
+                      ]
+                    }
+                  }
+                : { hits: [completeSummary()] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_PROMPT_TOKENS: "3500",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                mode: "eventWindowBudget",
+                captureToolResponsesPath: capture
+              })
+          })
+        }
+      );
+      const observation = JSON.parse(
+        fs.readFileSync(capture, "utf8").trim()
+      ) as { kind: string; message: string };
+      expect(observation.kind).toBe("budget_exhausted");
+      expect(observation.message).toContain("LCM Summary cannot fit");
+      expect(response.localMemoryWorker.usedFallback).toBe(true);
+      expect(response.evidenceBundle?.evidence).toEqual([]);
+      const retrieval = response.evidenceBundle?.retrieval as
+        | { trace?: { budgets?: { exhausted?: string[] } } }
+        | undefined;
+      expect(retrieval?.trace?.budgets?.exhausted).toContain("prompt_tokens");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it.each([5, 60])(
@@ -4835,6 +5311,11 @@ process.stdin.once("data", () => {
       expect(
         requests.filter((request) => request.retrieval_stage === "score_scan")
       ).toHaveLength(2);
+      expect(
+        requests
+          .filter((request) => request.retrieval_stage === "score_scan")
+          .every((request) => request.max_search_passes === 1)
+      ).toBe(true);
       expect(
         requests.some((request) => request.query === "shipping decision")
       ).toBe(true);

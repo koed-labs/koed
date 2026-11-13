@@ -1,5 +1,6 @@
 import {
   discoverProjectMetadata,
+  setProjectRepositoryAnchor,
   resolveKoedServerPaths
 } from "@koed-labs/server";
 import { execFileSync } from "node:child_process";
@@ -35,6 +36,7 @@ import {
   type CodexTranscriptWatcherConfig
 } from "../src/codex-transcript-watcher.js";
 import { signalCodexTranscriptWatcher } from "../src/codex-transcript-watcher-signal.js";
+import { recordCaptureHookFolder } from "../src/capture-hook.js";
 import type { CodexHistoryMetadataReader } from "../src/codex-history-metadata.js";
 import * as sharedRewritePolicy from "@koed-labs/shared";
 import { ingestCodexTranscriptJournal } from "../src/codex-transcript-journal.js";
@@ -1057,6 +1059,16 @@ describe("Codex Transcript Watcher source journal", () => {
         { cwd: projectRoot }
       )
     ).project!;
+    await recordCaptureHookFolder(
+      { KOED_HOME: koedHome },
+      {
+        sourceSessionId: "catalogued",
+        cwd: projectRoot,
+        hookEventName: "SessionStart",
+        sessionStartSource: "startup"
+      },
+      []
+    );
     const client = new FakeWatcherClient();
     const watcher = trackedWatcher(client, watcherConfig(root));
 
@@ -1121,6 +1133,16 @@ describe("Codex Transcript Watcher source journal", () => {
     ]) {
       const transcript = transcriptPath(root, `rollout-${sessionId}.jsonl`);
       writeFileSync(transcript, line(sessionRecord(sessionId!, cwd)));
+      await recordCaptureHookFolder(
+        { KOED_HOME: config.koedHome },
+        {
+          sourceSessionId: sessionId,
+          cwd,
+          hookEventName: "SessionStart",
+          sessionStartSource: "startup"
+        },
+        []
+      );
       await watcher.scanNow();
       appendFileSync(
         transcript,
@@ -1164,6 +1186,138 @@ describe("Codex Transcript Watcher source journal", () => {
     expect(firstIdentity.key).toBe(secondIdentity.key);
     expect(firstIdentity.checkoutId).not.toBe(secondIdentity.checkoutId);
   });
+
+  it("preserves an explicit startup selection over native origin after remotes change before ingestion", async () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "checkout");
+    mkdirSync(cwd);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+    git("init");
+    git("remote", "add", "origin", "https://example.test/team/origin.git");
+    git("remote", "add", "chosen", "https://example.test/team/selected.git");
+    const config = watcherConfig(root);
+    const env = { KOED_HOME: config.koedHome };
+    const paths = resolveKoedServerPaths(env);
+    const discovered = (await discoverProjectMetadata(paths, { cwd })).project!;
+    await setProjectRepositoryAnchor(paths, {
+      localProjectId: discovered.localProjectId,
+      expectedCheckoutId: discovered.repository!.checkoutId!,
+      remoteName: "chosen"
+    });
+    const transcript = transcriptPath(root);
+    const record = sessionRecord("selected-delayed", cwd);
+    writeFileSync(
+      transcript,
+      line({
+        ...record,
+        payload: {
+          ...record.payload,
+          git: {
+            repository_url: "https://example.test/team/origin.git",
+            branch: "main"
+          }
+        }
+      })
+    );
+    await recordCaptureHookFolder(
+      env,
+      {
+        sourceSessionId: "selected-delayed",
+        cwd,
+        hookEventName: "SessionStart",
+        sessionStartSource: "startup"
+      },
+      []
+    );
+    git("remote", "set-url", "chosen", "https://example.test/team/later.git");
+    git("remote", "add", "upstream", "https://example.test/team/upstream.git");
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, config);
+    await watcher.scanNow();
+    appendFileSync(transcript, line(userRecord("selected startup source")));
+    await watcher.scanNow();
+    expect(client.sourceSessions.at(-1)).toMatchObject({
+      repositoryIdentity: {
+        key: sharedRewritePolicy.normalizeGitRemoteUrl(
+          "https://example.test/team/selected.git"
+        ).fingerprint,
+        reason: "local_selection",
+        selectedRemote: "chosen"
+      }
+    });
+    appendFileSync(transcript, line(userRecord("continued source")));
+    await watcher.scanNow();
+    expect(client.sourceSessions.at(-1)?.repositoryIdentity).toEqual(
+      client.sourceSessions[0]?.repositoryIdentity
+    );
+  });
+
+  it.each([false, true])(
+    "uses source-time evidence for delayed first live ingestion after checkout replacement (native Git: %s)",
+    async (nativeGit) => {
+      const root = temporaryDirectory();
+      const cwd = path.join(root, "checkout");
+      mkdirSync(cwd);
+      const transcript = transcriptPath(root);
+      const record = sessionRecord("delayed-context", cwd);
+      writeFileSync(
+        transcript,
+        line({
+          ...record,
+          payload: {
+            ...record.payload,
+            ...(nativeGit
+              ? {
+                  git: {
+                    repository_url: "https://example.test/team/original.git",
+                    branch: "original"
+                  }
+                }
+              : {})
+          }
+        })
+      );
+      rmSync(cwd, { recursive: true });
+      mkdirSync(cwd);
+      execFileSync("git", ["-C", cwd, "init"], { stdio: "pipe" });
+      execFileSync(
+        "git",
+        [
+          "-C",
+          cwd,
+          "remote",
+          "add",
+          "upstream",
+          "https://example.test/team/replacement.git"
+        ],
+        { stdio: "pipe" }
+      );
+      const client = new FakeWatcherClient();
+      const watcher = trackedWatcher(client, watcherConfig(root));
+      await watcher.scanNow();
+      appendFileSync(transcript, line(userRecord("delayed capture evidence")));
+      await watcher.scanNow();
+      expect(client.sourceSessions.at(-1)).toMatchObject({
+        cwd,
+        repositoryIdentity: {
+          kind: nativeGit ? "portable_repository" : "unresolved",
+          key: nativeGit
+            ? sharedRewritePolicy.normalizeGitRemoteUrl(
+                "https://example.test/team/original.git"
+              ).fingerprint
+            : null,
+          root: null,
+          branch: nativeGit ? "original" : null
+        }
+      });
+      expect(
+        client.itemBatches
+          .flat()
+          .some((item) => item.rawText === "delayed capture evidence")
+      ).toBe(true);
+    }
+  );
 
   it("stores normalized lineage for native Codex guardian sessions", async () => {
     const root = temporaryDirectory();
@@ -1350,8 +1504,8 @@ describe("Codex Transcript Watcher source journal", () => {
             });
             offeredProjectName = candidate.projectName;
             expect(candidate.sourceSession.repositoryIdentity).toMatchObject({
-              kind: knownRepository ? "portable_repository" : "non_git_project",
-              root: knownRepository ? null : "/missing/project"
+              kind: knownRepository ? "portable_repository" : "unresolved",
+              root: null
             });
           }
         },
@@ -1374,8 +1528,8 @@ describe("Codex Transcript Watcher source journal", () => {
 
       expect(client.sourceSessions.at(-1)).toMatchObject({
         repositoryIdentity: {
-          kind: knownRepository ? "portable_repository" : "non_git_project",
-          root: knownRepository ? null : "/missing/project"
+          kind: knownRepository ? "portable_repository" : "unresolved",
+          root: null
         }
       });
       const artifact = client.artifacts.get("history-race")!;

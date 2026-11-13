@@ -20,6 +20,8 @@ export type PersonalSourceSelection = {
   projectId?: string;
   sessionId?: string;
   namedProjectId?: string;
+  namedProjectIds?: string[];
+  callerSessionId?: string;
   folder?: PersonalFolderReference;
 };
 
@@ -93,12 +95,20 @@ export const projectPersonalSelectionQuery = <T extends PersonalSelectionQuery>(
   return {
     input: projected,
     selection: {
-      ...resolvePersonalSourceSelection(ownerUserId, {
-        ...projected,
-        personalSelection: undefined
-      }),
+      ...(accepted.namedProjectIds
+        ? { ...accepted, sessionId: projected.sessionId }
+        : resolvePersonalSourceSelection(ownerUserId, {
+            ...projected,
+            personalSelection: undefined
+          })),
       ...(accepted.namedProjectId
         ? { namedProjectId: accepted.namedProjectId }
+        : {}),
+      ...(accepted.namedProjectIds
+        ? {
+            namedProjectIds: accepted.namedProjectIds,
+            callerSessionId: accepted.callerSessionId
+          }
         : {}),
       ...(accepted.folder ? { folder: accepted.folder } : {})
     }
@@ -125,7 +135,11 @@ export const resolvePersonalSourceSelection = (
         projectId: input.projectId,
         sessionId: input.sessionId
       };
-  if (scope.searchDomain === "project" && !scope.projectId)
+  if (
+    scope.searchDomain === "project" &&
+    !scope.projectId &&
+    !(snapshot?.version === 1 && snapshot.target.kind === "projects")
+  )
     throw new Error("Personal Project selection requires a pinned identity");
   if (scope.searchDomain === "session" && !scope.sessionId)
     throw new Error(
@@ -139,11 +153,47 @@ export const resolvePersonalSourceSelection = (
     ...(snapshot?.version === 1 && snapshot.target.kind === "project"
       ? { namedProjectId: snapshot.target.project.projectId }
       : {}),
+    ...(snapshot?.version === 1 && snapshot.target.kind === "projects"
+      ? {
+          namedProjectIds: snapshot.target.projects.map(
+            (project) => project.projectId
+          ),
+          callerSessionId: snapshot.target.callerSessionId
+        }
+      : {}),
     ...(snapshot?.version === 1 && snapshot.target.kind === "folder"
       ? { folder: snapshot.target.folder }
       : {})
   };
 };
+
+/** Canonical membership shared by inventory, recall resolution and current source checks. */
+export const personalSessionProjectMembershipSql = (
+  session: string,
+  project: string,
+  options: PersonalSourceReadOptions = {}
+): string => `(
+  ${project}.owner_user_id=${session}.owner_user_id and ${project}.deleted_at is null
+  and ${personalProjectCatalogReadySql(project)}
+  ${
+    options.ignoreProjectExclusions
+      ? ""
+      : `and not exists (
+    select 1 from personal_project_exclusions selected_exclusion
+    where selected_exclusion.owner_user_id=${project}.owner_user_id and selected_exclusion.project_id=${project}.project_id
+      and selected_exclusion.logical_session_id=${session}.logical_session_id and selected_exclusion.cleared_at is null)
+    and not ${personalGraphExclusionBlocksSql(session, `${project}.owner_user_id`, `${project}.project_id`)}`
+  }
+  and (exists (
+    select 1 from personal_project_inclusions selected_inclusion
+    where selected_inclusion.owner_user_id=${project}.owner_user_id and selected_inclusion.project_id=${project}.project_id
+      and selected_inclusion.removed_at is null and selected_inclusion.logical_session_id=${session}.logical_session_id
+      and ${personalDirectMembershipReadySql("selected_inclusion", session)})
+    or exists (
+      select 1 from personal_project_rules selected_rule
+      where selected_rule.owner_user_id=${project}.owner_user_id and selected_rule.project_id=${project}.project_id
+        and selected_rule.removed_at is null and ${personalProjectRuleMatchesSql(session, "selected_rule")}))
+)`;
 
 /** Parameter is JSON from resolvePersonalSourceSelection, never unvalidated caller JSON.
  * Global permits owner-bound standalone Memory with no Session. A present Session
@@ -167,33 +217,26 @@ export const personalSourceSelectionSql = (
     and (
       ${parameter}::jsonb->>'searchDomain'='global'
       or (${parameter}::jsonb->>'searchDomain'='session' and ${session}.id=(${parameter}::jsonb->>'sessionId')::uuid)
-      or (${parameter}::jsonb->>'searchDomain'='project' and ${parameter}::jsonb->>'namedProjectId' is null and ${parameter}::jsonb->'folder' is null and repository_scope_matches(
+      or (${parameter}::jsonb->>'searchDomain'='project' and ${parameter}::jsonb->>'namedProjectId' is null and ${parameter}::jsonb->'namedProjectIds' is null and ${parameter}::jsonb->'folder' is null and repository_scope_matches(
         coalesce(${session}.repository_override_identity,${session}.repository_automatic_identity),${parameter}::jsonb->>'projectId'))
       or (${parameter}::jsonb->'folder' is not null and ${personalEffectiveFolderFactSql(session)}->>'state'='known'
         and ${personalEffectiveFolderFactSql(session)}->'value'->'reference'=${parameter}::jsonb->'folder')
       or (${parameter}::jsonb->>'namedProjectId' is not null and exists (
         select 1 from personal_named_projects selected_project
-        where selected_project.owner_user_id=${session}.owner_user_id and selected_project.deleted_at is null
-          and ${personalProjectCatalogReadySql("selected_project")}
+        where ${personalSessionProjectMembershipSql(session, "selected_project", options)}
           and ${personalProjectIdentityMatchesSql("selected_project", `${parameter}::jsonb->>'namedProjectId'`)}
-          ${
-            options.ignoreProjectExclusions
-              ? ""
-              : `and not exists (select 1 from personal_project_exclusions selected_exclusion
-            where selected_exclusion.owner_user_id=selected_project.owner_user_id and selected_exclusion.project_id=selected_project.project_id
-              and selected_exclusion.logical_session_id=${session}.logical_session_id and selected_exclusion.cleared_at is null)
-            and not ${personalGraphExclusionBlocksSql(session, "selected_project.owner_user_id", "selected_project.project_id")}`
-          }
-          and (
-            exists (select 1 from personal_project_inclusions selected_inclusion
-              where selected_inclusion.owner_user_id=selected_project.owner_user_id
-                and selected_inclusion.project_id=selected_project.project_id and selected_inclusion.removed_at is null
-                and selected_inclusion.logical_session_id=${session}.logical_session_id
-                and ${personalDirectMembershipReadySql("selected_inclusion", session)})
-            or exists (select 1 from personal_project_rules selected_rule
-              where selected_rule.owner_user_id=selected_project.owner_user_id and selected_rule.project_id=selected_project.project_id
-                and selected_rule.removed_at is null and ${personalProjectRuleMatchesSql(session, "selected_rule")})
-          )
+      ))
+      or (${parameter}::jsonb->'namedProjectIds' is not null and exists (
+        select 1 from personal_named_projects union_project
+        where ${personalSessionProjectMembershipSql(session, "union_project")}
+          and exists (select 1 from jsonb_array_elements_text(${parameter}::jsonb->'namedProjectIds') pinned_project(identity)
+            where ${personalProjectIdentityMatchesSql("union_project", "pinned_project.identity")})
+          and exists (select 1 from sessions union_caller
+            where union_caller.id=(${parameter}::jsonb->>'callerSessionId')::uuid
+              and ${personalSessionProjectMembershipSql("union_caller", "union_project")}
+              and union_caller.visibility='personal' and union_caller.invalidated_at is null and union_caller.personal_deleted_at is null
+              and not exists(select 1 from personal_source_bindings pending_caller where pending_caller.owner_user_id=union_caller.owner_user_id and pending_caller.local_session_id=union_caller.id and pending_caller.availability='pending')
+              and sync_session_recall_ready(union_caller.id))
       ))
       ${options.includeUnassigned ? `or (${parameter}::jsonb->>'searchDomain'='project' and ${parameter}::jsonb->>'namedProjectId' is null and ${parameter}::jsonb->>'projectId'='unassigned' and repository_scope_id(coalesce(${session}.repository_override_identity,${session}.repository_automatic_identity)) is null)` : ""}
     )

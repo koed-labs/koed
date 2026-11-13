@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   callLocalRuntimeTool,
   createRuntimeTaskPort,
+  piRuntimeCallerContext,
   readRuntimeRegistration
 } from "../integrations/pi/runtime-client.mjs";
 const directories: string[] = [];
@@ -41,6 +42,21 @@ afterEach(() => {
     rmSync(d, { recursive: true, force: true });
 });
 describe("standalone Pi runtime port", () => {
+  it.each([undefined, "", "\0"])(
+    "leaves unavailable native identity unresolved (%j)",
+    (sessionId) => {
+      const context = {
+        cwd: "/same/folder",
+        sessionId: "transport-session",
+        sessionManager: { getSessionId: () => sessionId }
+      };
+      expect(piRuntimeCallerContext(context)).toEqual({
+        cwd: "/same/folder",
+        clientInfo: { name: "pi", version: "koed-extension-v1" }
+      });
+    }
+  );
+
   it.each(["memory_workspaces", "memory_answer"])(
     "checks runtime capabilities before forwarding %s Team routing",
     async (name) => {

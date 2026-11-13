@@ -128,6 +128,7 @@ export const personalSelectionLegacyScope = (
       searchDomain: "project",
       projectId: selection.target.project.projectId
     };
+  if (selection.target.kind === "projects") return { searchDomain: "project" };
   if (selection.target.kind === "folder")
     return {
       searchDomain: "project",

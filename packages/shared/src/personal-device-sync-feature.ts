@@ -1,0 +1,18 @@
+export const personalDeviceSyncFeatureEnvironmentName =
+  "KOED_PERSONAL_DEVICE_SYNC_ENABLED";
+
+/**
+ * Personal Device Sync is opt-in for this release. Unset or empty means
+ * disabled; any value other than exactly "true" or "false" is invalid.
+ */
+export const resolvePersonalDeviceSyncEnabled = (
+  environment: NodeJS.ProcessEnv = process.env
+): boolean => {
+  const configured = environment[personalDeviceSyncFeatureEnvironmentName];
+  if (configured === undefined || configured === "") return false;
+  if (configured === "true") return true;
+  if (configured === "false") return false;
+  throw new Error(
+    `${personalDeviceSyncFeatureEnvironmentName} must be exactly "true" or "false"`
+  );
+};
