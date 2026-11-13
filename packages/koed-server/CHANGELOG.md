@@ -1,5 +1,21 @@
 # @koed/koed-server
 
+## 1.1.0
+
+### Minor Changes
+
+- 571e22a: Align Personal Project recall with the calling Conversation's canonical Project
+  memberships, retaining accepted scope through retrieval and history. Preserve
+  reliable source-time attribution during import and delayed capture. Return each
+  authorized LCM Summary once with matched references and full token accounting,
+  and retain scoped-leaf parent references. Keep retrieval budgets and Global
+  repository reservation unchanged.
+
+### Patch Changes
+
+- 8a426a0: Fix false embedding backend warnings in source checkouts by matching startup token selection. Keep packaged status checks isolated from incidental .env files. Replace the onboarding progress bar with shadcn Progress and retain confirmed progress during verification.
+- 22aa26e: Stop the API and Worker from repeatedly launching the Personal Device Sync secret provider while `KOED_PERSONAL_DEVICE_SYNC_ENABLED` is off, which is the default. Existing Personal Device Groups and stored data are unchanged, but they sync only when the switch is `true` for the supervisor, API, and Worker.
+
 ## 1.0.0
 
 ### Major Changes
