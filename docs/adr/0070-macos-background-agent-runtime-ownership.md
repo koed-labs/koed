@@ -1,4 +1,4 @@
-# ADR 0069: macOS Background Agent Owns the Local AI Runtime
+# ADR 0070: macOS Background Agent Owns the Local AI Runtime
 
 Status: Accepted. LaunchAgent inclusion requires a valid Developer ID signing configuration.
 
