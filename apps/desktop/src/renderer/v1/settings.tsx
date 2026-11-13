@@ -1,3 +1,4 @@
+import { PerformanceSettings } from "./PerformanceSettings.js";
 import { useEffect, useRef, useState } from "react";
 import {
   Button,
@@ -282,7 +283,11 @@ export function V1Settings({
         </nav>
         <div
           ref={navigation.bodyRef}
-          className="settings-scroll"
+          className={
+            page === "performance"
+              ? "settings-scroll performance-container"
+              : "settings-scroll"
+          }
           role="tabpanel"
           id="v1-settings-panel"
           aria-labelledby={"v1-settings-tab-" + tab}
@@ -318,7 +323,13 @@ export function V1Settings({
               snapshot={snapshot}
             />
           )}
-          {tab === "services" && (
+          {tab === "services" && page === "performance" && (
+            <PerformanceSettings
+              onBack={navigation.back}
+              onApplied={() => void statusStore.refresh()}
+            />
+          )}
+          {tab === "services" && page !== "performance" && (
             <>
               {page === "health" || page === "embedding" ? (
                 <SettingsServicePage

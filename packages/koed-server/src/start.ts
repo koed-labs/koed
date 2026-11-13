@@ -53,6 +53,7 @@ import {
   resolveApiUrl
 } from "./env-file.js";
 import {
+  embeddingServiceLeadsProcessGroup,
   nativeLlamaServerOverride,
   startLocalEmbeddingRuntime
 } from "./local-embedding-runtime.js";
@@ -73,6 +74,11 @@ import {
   type KoedServerPaths
 } from "./paths.js";
 import { allocateAndPersistLocalPorts } from "./ports.js";
+import {
+  BACKGROUND_NICE_ENV,
+  lowerBackgroundServicePriority
+} from "./process-priority.js";
+import { applyResourceProfile } from "./resource-profile.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import {
   collectKoedServerStartupStatus,
@@ -666,9 +672,11 @@ const localServiceEnv = (
       environment.LLAMA_N_CTX ??
       repoEnv.EMBEDDING_LLAMA_N_CTX,
     LLAMA_N_THREADS:
-      environment.EMBEDDING_LLAMA_N_THREADS ??
-      environment.LLAMA_N_THREADS ??
-      repoEnv.EMBEDDING_LLAMA_N_THREADS,
+      environment.EMBEDDING_LLAMA_N_THREADS?.trim() ||
+      environment.LLAMA_N_THREADS?.trim() ||
+      repoEnv.EMBEDDING_LLAMA_N_THREADS?.trim() ||
+      repoEnv.LLAMA_N_THREADS?.trim() ||
+      undefined,
     LLAMA_N_BATCH:
       environment.EMBEDDING_LLAMA_N_BATCH ??
       environment.LLAMA_N_BATCH ??
@@ -729,7 +737,13 @@ const waitForChildExit = (
 // A process group outlives its leader while any member is alive, and Linux does not
 // reuse a PID that still names a live group. Probing the group immediately before
 // each signal therefore reaches only descendants of the child Koed spawned.
+// kill(-1) signals every process the user owns and kill(0) signals this
+// supervisor's own group. Only a real child PID above 1 names a private group.
+const isSignalableProcessGroup = (pid: number): boolean =>
+  Number.isSafeInteger(pid) && pid > 1;
+
 const processGroupAlive = (pid: number): boolean => {
+  if (!isSignalableProcessGroup(pid)) return false;
   try {
     process.kill(-pid, 0);
     return true;
@@ -771,7 +785,7 @@ export const stopChildProcess = async (
   if (!child?.pid) return;
   const pid = child.pid;
   const exited = () => child.exitCode != null || child.signalCode != null;
-  if (!privateGroup) {
+  if (!privateGroup || !isSignalableProcessGroup(pid)) {
     if (exited()) return;
     child.kill("SIGTERM");
     if (await waitForChildExit(child, timeoutMs)) return;
@@ -1110,6 +1124,15 @@ export const startKoedServer = async ({
       });
     }
     const config = startupConfig;
+    // The resource profile fills in priority, embedding threads, and Codex
+    // transcript polling wherever the Operator left them unset.
+    if (config.runtimeMode !== "external") {
+      environment = applyResourceProfile(environment, config.resourceProfile, {
+        explicit: repoEnv,
+        overrides: config.resourceOverrides
+      });
+      console.log(`Koed resource profile: ${config.resourceProfile}.`);
+    }
     const initialServiceEnv = localServiceEnv(
       environment,
       repoEnv,
@@ -1236,7 +1259,8 @@ export const startKoedServer = async ({
               managedChildren[name],
               5_000,
               name,
-              name === "embeddingService" && Boolean(paths.nativeSelectionRoot)
+              name === "embeddingService" &&
+                embeddingServiceLeadsProcessGroup(paths)
             );
           } catch (error) {
             cleanupErrors.push(
@@ -1253,7 +1277,7 @@ export const startKoedServer = async ({
               nativeEmbeddingProcess,
               5_000,
               "embeddingService",
-              Boolean(paths.nativeSelectionRoot)
+              embeddingServiceLeadsProcessGroup(paths)
             );
           } catch (error) {
             cleanupErrors.push(
@@ -1332,6 +1356,9 @@ export const startKoedServer = async ({
     else signal?.addEventListener("abort", shutdown, { once: true });
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
+    // Closing the terminal must also stop the Embedding Service, which runs in
+    // its own process group and does not receive the terminal's hangup.
+    process.on("SIGHUP", shutdown);
 
     const stopSupervisorLogMaintenance = maintainSupervisorLog(refreshedEnv);
     let sourceRuntimeLeaseAcquired = false;
@@ -1398,6 +1425,15 @@ export const startKoedServer = async ({
       }
 
       startupPhase = "service dependency validation and startup";
+      // Local runtimes share the machine with the user's foreground apps.
+      // Server deployments keep normal priority.
+      if (config.runtimeMode !== "external") {
+        const priority = lowerBackgroundServicePriority(refreshedEnv);
+        if (priority.applied)
+          console.log(
+            `Koed background services run at nice ${priority.priority} (${BACKGROUND_NICE_ENV}).`
+          );
+      }
       if (config.dependencyMode === "external") {
         const queueBackend = requiredRuntime.queue;
         const requiredExternalServices: Array<[string, string | undefined]> = [
@@ -1514,7 +1550,7 @@ export const startKoedServer = async ({
       emitStartupMilestone("api_process_spawned");
 
       const embeddingIdentity =
-        paths.nativeSelectionRoot && nativeEmbeddingProcess?.pid
+        embeddingServiceLeadsProcessGroup(paths) && nativeEmbeddingProcess?.pid
           ? resolveProcessIdentity(nativeEmbeddingProcess.pid)
           : null;
       const runtime: KoedServerRuntimeState = {
@@ -1529,7 +1565,7 @@ export const startKoedServer = async ({
         claudeTranscriptWatcherEnabled: config.claudeTranscriptWatcherEnabled,
         piTranscriptWatcherEnabled: config.piTranscriptWatcherEnabled,
         services: [...runtimeServices, "api"],
-        // The release-managed Embedding Service leads a private process group.
+        // The native Embedding Service leads a private process group.
         // koed stop signals that group only while its leader keeps this identity.
         ...(embeddingIdentity
           ? { processIdentities: { embeddingService: embeddingIdentity } }
@@ -1764,6 +1800,7 @@ export const startKoedServer = async ({
       stopSupervisorLogMaintenance();
       process.off("SIGINT", shutdown);
       process.off("SIGTERM", shutdown);
+      process.off("SIGHUP", shutdown);
       signal?.removeEventListener("abort", shutdown);
       managedProcessMonitor.dispose();
       if (runtimeStateWritten) {

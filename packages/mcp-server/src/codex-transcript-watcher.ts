@@ -63,6 +63,7 @@ export {
   signalCodexTranscriptWatcher,
   watcherWakePath
 } from "./codex-transcript-watcher-signal.js";
+import { resourceProfileValues } from "@koed-labs/shared/resource-profiles";
 export { completeTranscriptBoundary } from "./codex-transcript-journal.js";
 
 const WATCHER_VERSION = 5;
@@ -208,7 +209,12 @@ export const resolveCodexTranscriptWatcherConfig = (
       200,
       10_000
     ),
-    pollMs: positiveInt(env, "MEMORY_CODEX_TRANSCRIPT_POLL_MS", 1_000, 60_000),
+    pollMs: positiveInt(
+      env,
+      "MEMORY_CODEX_TRANSCRIPT_POLL_MS",
+      resourceProfileValues("balanced", 1).transcriptPollMs,
+      60_000
+    ),
     turnBoundarySettleMs: positiveInt(
       env,
       "MEMORY_CODEX_TRANSCRIPT_TURN_SETTLE_MS",

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
+import { EventEmitter } from "node:events";
+import type { Logger } from "pino";
 import {
   existsSync,
   mkdirSync,
@@ -36,8 +38,11 @@ import {
   resolvePdsLifecycleAuthorizationPublicKey,
   resolvePdsPeerEndpoint,
   resolvePdsProviderRuntimeSecret,
+  resolvePdsProviderRuntimeSecretAsync,
+  PDS_WORKER_MISSING_SECRET_RECHECK_MS,
   validatePdsLifecycleStatementBinding
 } from "./personal-device-sync-runtime.js";
+import { createPdsLocalSyncService } from "./personal-device-sync-service.js";
 
 describe("PDS received source cursors", () => {
   it.each([
@@ -929,6 +934,181 @@ describe("PDS session materialization", () => {
     await expect(runtime.poll()).rejects.toThrow(
       "PdsSecureRuntimeUnavailableError"
     );
+  });
+
+  it("checks a missing runtime secret once per window, then adopts a new pairing", async () => {
+    let clock = 1_000;
+    let secret: object | null = null;
+    const resolveSecret = vi.fn(() => secret);
+    const pairedRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group-a"]),
+      poll: vi.fn().mockResolvedValue([]),
+      publish: vi.fn(),
+      materialize: vi.fn()
+    };
+    const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
+      repository: {} as MemorySourceRepository,
+      envelopeEncryptionProvider: {} as never,
+      environment: {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless"
+      },
+      resolveSecret: resolveSecret as never,
+      createRuntime: () => pairedRuntime as never,
+      now: () => clock
+    });
+    if (!runtime) throw new Error("Expected a configured PDS runtime");
+
+    expect(await runtime.heartbeatGroups?.()).toEqual([]);
+    await runtime.waitForWake?.(new AbortController().signal);
+    expect(await runtime.heartbeatGroups?.()).toEqual([]);
+    // An unpaired device does not start a provider process every cycle.
+    expect(resolveSecret).toHaveBeenCalledTimes(1);
+
+    secret = { pairing: "new" };
+    clock += PDS_WORKER_MISSING_SECRET_RECHECK_MS;
+    expect(await runtime.heartbeatGroups?.()).toEqual(["group-a"]);
+    expect(resolveSecret).toHaveBeenCalledTimes(2);
+    // A present secret is read every cycle so a replacement is adopted.
+    expect(await runtime.heartbeatGroups?.()).toEqual(["group-a"]);
+    expect(resolveSecret).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["cached", "in-flight", "reconnect"])(
+    "adopts pairing after a %s missing-secret read without another wake",
+    async (mode) => {
+      vi.useFakeTimers();
+      let secret: object | null = null;
+      let finishLookup!: (value: null) => void;
+      const resolveSecret = vi.fn(async () => secret);
+      if (mode === "in-flight")
+        resolveSecret.mockImplementationOnce(
+          () =>
+            new Promise<null>((resolve) => {
+              finishLookup = resolve;
+            })
+        );
+      const pairedHeartbeat = vi.fn(async () => []);
+      const createRuntime = vi.fn(() => ({ heartbeatGroups: pairedHeartbeat }));
+      const repository = {
+        getPdsLocalSyncWakeAt: vi.fn(async () => null)
+      } as unknown as MemorySourceRepository;
+      const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
+        repository,
+        envelopeEncryptionProvider: {} as never,
+        environment: {
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+          PDS_SECRET_PROVIDER: "headless"
+        },
+        resolveSecret: resolveSecret as never,
+        createRuntime: createRuntime as never
+      });
+      if (!runtime) throw new Error("Expected a configured PDS runtime");
+      const wakeClient = Object.assign(new EventEmitter(), {
+        query: vi.fn(async () => undefined),
+        release: vi.fn()
+      });
+      const logger = { warn: vi.fn() };
+      const service = createPdsLocalSyncService({
+        repository,
+        secureRuntime: runtime,
+        wakePool: { connect: async () => wakeClient },
+        logger: logger as unknown as Logger
+      });
+      try {
+        service.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(resolveSecret).toHaveBeenCalledOnce();
+        wakeClient.emit("notification", {
+          channel: "koed_pds_local_sync",
+          payload: "group_reconciled"
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(resolveSecret).toHaveBeenCalledOnce();
+        secret = { pairing: "new" };
+        if (mode === "reconnect") {
+          wakeClient.emit("error", new Error("connection lost"));
+          await vi.advanceTimersByTimeAsync(250);
+        } else {
+          wakeClient.emit("notification", {
+            channel: "koed_pds_local_sync",
+            payload: "desktop_runtime_updated"
+          });
+          if (mode === "in-flight") finishLookup(null);
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        expect(createRuntime).toHaveBeenCalledOnce();
+        expect(createRuntime).toHaveBeenCalledWith(expect.anything(), secret);
+        expect(pairedHeartbeat).toHaveBeenCalled();
+        expect(logger.warn).not.toHaveBeenCalled();
+        const reads = resolveSecret.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(resolveSecret).toHaveBeenCalledTimes(reads);
+      } finally {
+        await service.stop();
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("shares one provider read between concurrent cycle calls", async () => {
+    let release!: (value: null) => void;
+    const resolveSecret = vi.fn(
+      () =>
+        new Promise<null>((resolvePromise) => {
+          release = resolvePromise;
+        })
+    );
+    const runtime = createReloadablePdsWorkerRuntimeFromEnvironment({
+      repository: {} as MemorySourceRepository,
+      envelopeEncryptionProvider: {} as never,
+      environment: {
+        KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+        PDS_SECRET_PROVIDER: "headless"
+      },
+      resolveSecret,
+      createRuntime: vi.fn()
+    });
+    if (!runtime) throw new Error("Expected a configured PDS runtime");
+    const { heartbeatGroups, waitForWake } = runtime;
+    if (!heartbeatGroups || !waitForWake)
+      throw new Error("Expected reloadable cycle methods");
+    const calls = [
+      heartbeatGroups(),
+      waitForWake(new AbortController().signal)
+    ];
+    release(null);
+    await Promise.all(calls);
+    expect(resolveSecret).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the provider without blocking the worker", async () => {
+    const home = mkdtempSync(resolve(tmpdir(), "koed-pds-worker-provider-"));
+    const script = resolve(home, "provider.mjs");
+    writeFileSync(
+      script,
+      'setTimeout(() => process.stdout.write("{}"), 300);\n'
+    );
+    try {
+      let timerRan = false;
+      setTimeout(() => {
+        timerRan = true;
+      }, 10);
+      await expect(
+        resolvePdsProviderRuntimeSecretAsync({
+          PATH: process.env.PATH,
+          KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true",
+          PDS_SECRET_PROVIDER: "headless",
+          PDS_SECRET_PROVIDER_COMMAND: process.execPath,
+          PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON: JSON.stringify([script]),
+          PDS_RUNTIME_SECRET_REF: "pds-runtime"
+        })
+      ).resolves.toBeNull();
+      // A synchronous lookup would hold the event loop until the provider exits.
+      expect(timerRan).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("does not start a reloadable runtime without an explicit provider", () => {

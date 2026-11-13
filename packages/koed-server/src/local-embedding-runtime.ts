@@ -372,6 +372,18 @@ export const collectLocalEmbeddingRuntimeStatus = async (
   }
 };
 
+/**
+ * The native Embedding Service leads its own process group on POSIX, in
+ * release and source runtimes alike. Its llama-server child joins that group,
+ * so koed-server can stop both together, even when the service exits before
+ * it stops llama-server (killed after the grace period, signalled during
+ * model load, or after a supervisor crash). Windows has no process groups.
+ */
+export const embeddingServiceLeadsProcessGroup = (
+  paths: Pick<KoedServerPaths, "nativeSelectionRoot">,
+  platform: NodeJS.Platform = process.platform
+): boolean => Boolean(paths.nativeSelectionRoot) || platform !== "win32";
+
 export const startLocalEmbeddingRuntime = (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
@@ -396,8 +408,8 @@ export const startLocalEmbeddingRuntime = (
   }
   const child = spawn(process.execPath, [runtime.serviceEntry], {
     cwd: runtime.appDir,
-    // The release supervisor can stop its owned llama-server descendants together.
-    ...(paths.nativeSelectionRoot ? { detached: true } : {}),
+    // koed-server stops its owned llama-server descendants with the group.
+    ...(embeddingServiceLeadsProcessGroup(paths) ? { detached: true } : {}),
     env,
     stdio: "inherit"
   });

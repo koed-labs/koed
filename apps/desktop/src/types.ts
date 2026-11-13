@@ -1,3 +1,4 @@
+import type { DesktopPerformanceApi } from "@koed-labs/server";
 import type {
   CollaborationCommandResult,
   CollaborationRendererCommand,
@@ -238,6 +239,7 @@ export interface DesktopApi {
     }) => Promise<{ graphicsAcceleration: boolean; showMenuBar: boolean }>;
   };
   acceleration?: DesktopAccelerationApi;
+  performance?: DesktopPerformanceApi;
   hardwareAcceleration?: {
     get: () => Promise<{
       enabled: boolean;

@@ -42,10 +42,21 @@ if (command) {
   process.exit(1);
 }
 
-const handle = serveStdio((context) => createKoedMcpServer(context), {
-  legacy: "serve",
-  onerror: (error) => logger.error({ err: error }, "koed MCP transport error")
-});
+// A stdio connection is pinned to one server instance, so capability-gated
+// tools can register after the handshake (tools/list_changed). Bounding the
+// wait keeps a busy Local AI Runtime from timing out the client's connect.
+const STDIO_CAPABILITY_WAIT_MS = 2_000;
+
+const handle = serveStdio(
+  (context) =>
+    createKoedMcpServer(context, {
+      capabilityWaitMs: STDIO_CAPABILITY_WAIT_MS
+    }),
+  {
+    legacy: "serve",
+    onerror: (error) => logger.error({ err: error }, "koed MCP transport error")
+  }
+);
 
 logger.info("koed MCP v2 stdio adapter connected");
 

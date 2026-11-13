@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   collectLocalEmbeddingRuntimeStatus,
+  embeddingServiceLeadsProcessGroup,
   localEmbeddingEnv,
   localEmbeddingRuntimeAvailable,
   resolveBundledEmbeddingMode,
@@ -370,6 +371,7 @@ describe("local Embedding Service runtime", () => {
       args: string[];
       env?: NodeJS.ProcessEnv;
       cwd?: string | URL;
+      detached?: boolean;
     }> = [];
     const result = startLocalEmbeddingRuntime(
       paths(root),
@@ -377,7 +379,13 @@ describe("local Embedding Service runtime", () => {
       {
         existsSync: (path) => path === serviceEntry || path === llamaServer,
         spawn: (command, args, options) => {
-          spawned.push({ command, args, env: options?.env, cwd: options?.cwd });
+          spawned.push({
+            command,
+            args,
+            env: options?.env,
+            cwd: options?.cwd,
+            detached: options?.detached
+          });
           return { pid: 12, on: () => undefined } as never;
         }
       }
@@ -393,5 +401,27 @@ describe("local Embedding Service runtime", () => {
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_HOST).toBe("127.0.0.1");
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_PORT).toBe("3900");
     expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(llamaServer);
+    // A source runtime has no native selection, but the service still leads
+    // its own process group so llama-server stops with it.
+    expect(spawned[0]?.detached).toBe(process.platform !== "win32");
+  });
+
+  it("leads a process group on POSIX in source and release runtimes", () => {
+    expect(embeddingServiceLeadsProcessGroup({}, "darwin")).toBe(true);
+    expect(embeddingServiceLeadsProcessGroup({}, "linux")).toBe(true);
+    expect(
+      embeddingServiceLeadsProcessGroup(
+        { nativeSelectionRoot: "/koed/runtime/native/selected" },
+        "linux"
+      )
+    ).toBe(true);
+    // Windows has no process groups, so a source runtime keeps one process.
+    expect(embeddingServiceLeadsProcessGroup({}, "win32")).toBe(false);
+    expect(
+      embeddingServiceLeadsProcessGroup(
+        { nativeSelectionRoot: "C:/koed/runtime/native/selected" },
+        "win32"
+      )
+    ).toBe(true);
   });
 });

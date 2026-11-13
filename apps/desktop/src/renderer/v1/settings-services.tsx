@@ -111,6 +111,7 @@ export function SettingsServicesOverview({
             note={embeddingSummaryLabel(embedding ?? null)}
           />
         )}
+        <PageLink page="performance" onOpen={onOpen} />
       </Group>
       <AccelerationSettings />
     </>

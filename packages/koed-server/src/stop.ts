@@ -221,7 +221,8 @@ const stopPid = (
   if (deps.expectedProcessIdentity && !deps.checkPid(pid))
     return { stoppedPids: [], missingPids: [pid], errors: [] };
   if (!identityMatches()) return identityError();
-  const target = deps.processGroup ? -pid : pid;
+  // Never signal -1 (every process the user owns) or 0 (this process group).
+  const target = deps.processGroup && pid > 1 ? -pid : pid;
   try {
     deps.kill(target, "SIGTERM");
     if (waitForPidExit(target, deps)) {
@@ -501,10 +502,10 @@ export const stopKoedServer = ({
               "Embedding Service process identity is missing; refusing to signal it"
           });
         } else {
-          // Release-managed runtimes start the Embedding Service as a private
-          // group leader. Signal the group, so llama-server descendants stop too,
-          // only while the leader keeps the identity recorded at spawn. A recorded
-          // identity also refuses any signal to a reused PID.
+          // A recorded identity means the Embedding Service started as a
+          // private group leader (release and POSIX source runtimes). Signal the
+          // group, so llama-server descendants stop too, only while the leader
+          // keeps that identity. The identity also refuses a reused PID.
           const stopped = stopPid("embedding-service-native", embeddingPid, {
             kill,
             checkPid,
@@ -518,7 +519,7 @@ export const stopKoedServer = ({
                 }
               : {}),
             processGroup:
-              releaseManaged &&
+              embeddingPid > 1 &&
               embeddingIdentity !== undefined &&
               checkPid(embeddingPid) &&
               resolveProcessIdentity(embeddingPid) === embeddingIdentity &&

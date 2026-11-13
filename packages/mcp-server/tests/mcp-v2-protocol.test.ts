@@ -385,6 +385,149 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     await server.close();
   });
 
+  it("answers the handshake before slow capabilities and adds gated tools later", async () => {
+    let resolveCapabilities!: (
+      value: Awaited<ReturnType<LocalAiRuntimeClient["capabilities"]>>
+    ) => void;
+    const capabilities = vi.fn(
+      () =>
+        new Promise<Awaited<ReturnType<LocalAiRuntimeClient["capabilities"]>>>(
+          (resolve) => {
+            resolveCapabilities = resolve;
+          }
+        )
+    );
+    const callTool = vi.fn(async () => ({ markdown: "Recall completed." }));
+    const runtimeClient = {
+      capabilities,
+      callTool
+    } as unknown as LocalAiRuntimeClient;
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const server = serveStdio(
+      (context) =>
+        createKoedMcpServer(context, { runtimeClient, capabilityWaitMs: 10 }),
+      { transport: serverTransport, legacy: "serve" }
+    );
+    const changedTools: string[][] = [];
+    const client = new Client(
+      { name: "slow-koed-test", version: "1.0.0" },
+      {
+        capabilities: {},
+        versionNegotiation: { mode: "legacy" },
+        listChanged: {
+          tools: {
+            onChanged: (_error, tools) => {
+              if (tools) changedTools.push(tools.map((tool) => tool.name));
+            }
+          }
+        }
+      }
+    );
+    connected.push({ client, server });
+
+    await expect(client.connect(clientTransport)).resolves.toBeUndefined();
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+      "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel"
+    ]);
+    await expect(
+      client.callTool({
+        name: "memory_answer",
+        arguments: { query: "Can Koed recall this while it starts?" }
+      })
+    ).resolves.toMatchObject({
+      content: [{ type: "text", text: recallText("Recall completed.") }]
+    });
+
+    resolveCapabilities({
+      protocolVersion: 1,
+      curatedMemoryIntakeAvailable: true,
+      supportedTools: localRuntimeToolNames,
+      memoryAnswerTeamBackendAvailable: true
+    });
+    await vi.waitFor(() =>
+      expect(changedTools.at(-1)).toEqual(
+        expect.arrayContaining(["memory_workspaces", "memory_intake_propose"])
+      )
+    );
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+      "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel",
+      "memory_workspaces",
+      "memory_intake_propose"
+    ]);
+    // The tool call above must not start a second discovery while the
+    // opening one is still in flight.
+    expect(capabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers when background capability discovery fails", async () => {
+    let rejectCapabilities!: (error: Error) => void;
+    const capabilities = vi
+      .fn<LocalAiRuntimeClient["capabilities"]>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectCapabilities = reject;
+          })
+      )
+      .mockResolvedValue({
+        protocolVersion: 1,
+        curatedMemoryIntakeAvailable: true,
+        supportedTools: localRuntimeToolNames,
+        memoryAnswerTeamBackendAvailable: true
+      });
+    const callTool = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("runtime is starting"))
+      .mockResolvedValue({ markdown: "Recall completed." });
+    const runtimeClient = {
+      capabilities,
+      callTool
+    } as unknown as LocalAiRuntimeClient;
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const server = serveStdio(
+      (context) =>
+        createKoedMcpServer(context, { runtimeClient, capabilityWaitMs: 10 }),
+      { transport: serverTransport, legacy: "serve" }
+    );
+    const client = new Client(
+      { name: "failed-discovery-koed-test", version: "1.0.0" },
+      { capabilities: {}, versionNegotiation: { mode: "legacy" } }
+    );
+    connected.push({ client, server });
+
+    await expect(client.connect(clientTransport)).resolves.toBeUndefined();
+    rejectCapabilities(new Error("Koed local AI runtime request timed out"));
+    // Let the rejected discovery settle before the first tool call.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(
+      client.callTool({
+        name: "memory_answer",
+        arguments: { query: "Can Koed recall this?" }
+      })
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: KOED_MCP_UNAVAILABLE_MESSAGE }]
+    });
+    await expect(
+      client.callTool({
+        name: "memory_answer",
+        arguments: { query: "Can Koed recall this now?" }
+      })
+    ).resolves.toMatchObject({
+      content: [{ type: "text", text: recallText("Recall completed.") }]
+    });
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(["memory_workspaces", "memory_intake_propose"])
+    );
+    expect(capabilities).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps legacy recall available and fails fast for new Team input on older runtimes", async () => {
     const callTool = vi.fn(async () => ({ markdown: "Existing recall works" }));
     const { client } = await connect({

@@ -60,6 +60,29 @@ historical-import admission. These are nested pages, with no additional
 expansion step. Use the back button or Escape to return to the Services overview
 for service actions. Both detail pages offer Refresh status.
 
+Select **Performance** to choose Low, Balanced (the default), or Full. Profile
+cards show the embedding thread allowance for this device. Expand **Individual
+settings** to adjust background priority, embedding threads, and transcript
+check frequency with keyboard-accessible sliders. Transcript checks currently
+apply to Codex only. Selecting any profile, including the current one, restores
+its presets and removes saved individual overrides. **Discard** restores the
+last saved values.
+
+**Apply & restart** checks ownership and the configuration revision, stops local
+services, saves the preferences atomically, and restarts services that were
+running. If services are stopped, **Save preference** leaves them stopped.
+Changes continue if Settings closes. A newer explicit stop request prevents an
+automatic restart. Failed saves or restarts show an error; a saved preference is
+not rolled back when a restart fails. After an interrupted operation, reopen
+Performance and check Service health before retrying.
+
+Environment settings take precedence and their controls are read-only.
+External runtimes and runtimes owned by another installation cannot be changed
+here. An external Embedding Service also makes the embedding-thread control
+read-only. Concurrent configuration edits require discarding the stale draft.
+Performance values describe the resolved startup configuration, not measured
+CPU usage or a guarantee of the operating system's scheduling priority.
+
 Embedding is up to date only when idle activity is backed by backlog telemetry.
 Missing telemetry reports unknown or unavailable progress. An unavailable
 Embedding Service or incompatible model needs attention. Historical import can

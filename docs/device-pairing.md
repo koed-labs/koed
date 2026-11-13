@@ -87,6 +87,9 @@ then executes the existing signed enrollment, Key Bundle, and local reconciliati
 protocol. The internal invitation is never displayed in the new flow.
 The joining runtime is bound to its local User before its worker is woken, so
 the first synchronization cycle uses the receiving installation's local authority.
+After a pairing update, the worker rereads its private configuration without
+waiting for other work. It discards any cached result that says no secret exists.
+It also rereads the configuration after its database connection returns.
 
 Direction and message IDs are authenticated, replayed messages are rejected, and
 acceptance is serialized and persisted before enrollment starts. Repeating the

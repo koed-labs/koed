@@ -614,6 +614,7 @@ const bootstrap = async () => {
       return { ...value };
     },
     acceleration: server.acceleration,
+    performance: server.performance,
     getHardwareAcceleration: () => server.hardwareAcceleration.get(),
     setHardwareAcceleration: (enabled) =>
       server.hardwareAcceleration.set(enabled),

@@ -4,6 +4,7 @@ import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
 import type { AccelerationPolicy } from "./acceleration.js";
+import { resourceProfileValues } from "@koed-labs/shared/resource-profiles";
 
 export interface SupportedEmbeddingModel {
   key: string;
@@ -172,6 +173,10 @@ const optionalPathEnv = (
   environment: NodeJS.ProcessEnv,
   names: string[]
 ): string | null => firstEnv(environment, names) ?? null;
+
+/** Default llama-server CPU threads: the Balanced resource profile value. */
+export const defaultLlamaThreads = (cpuCount: number): number =>
+  resourceProfileValues("balanced", cpuCount).embeddingThreads;
 
 const intAlias = (
   environment: NodeJS.ProcessEnv,
@@ -366,7 +371,7 @@ export const resolveEnv = (
     llamaNThreads: intAlias(
       environment,
       ["LLAMA_N_THREADS", "EMBEDDING_LLAMA_N_THREADS"],
-      cpuCount
+      defaultLlamaThreads(cpuCount)
     ),
     llamaNBatch,
     llamaBatchTokenHeadroom,

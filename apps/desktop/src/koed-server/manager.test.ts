@@ -4803,9 +4803,55 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         "team-vps",
         "--json"
       ],
-      ["/repo/cli.js", "status", "--json"],
-      ["/repo/cli.js", "package", "status", "--json"]
+      // The second refresh reuses the recent package status.
+      ["/repo/cli.js", "status", "--json"]
     ]);
+  });
+
+  it("reuses package status across routine refreshes but not failed or explicit reads", async () => {
+    const calls: string[][] = [];
+    let packageResult: Record<string, unknown> = { ok: false };
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(
+          null,
+          JSON.stringify(
+            args[1] === "status" ? healthyLocalServiceStatus() : packageResult
+          ),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+    const packageReads = () =>
+      calls.filter((args) => args[1] === "package").length;
+
+    // A failed read is retried on the next refresh.
+    await manager.handlers.status!();
+    expect(packageReads()).toBe(1);
+    packageResult = { ok: true, state: "installed" };
+    await manager.handlers.status!();
+    expect(packageReads()).toBe(2);
+    // A good read is reused by routine refreshes.
+    await manager.handlers.status!();
+    await manager.handlers.status!();
+    expect(packageReads()).toBe(2);
+    // An explicit package status request always reads fresh.
+    await manager.handlers.package_status!();
+    expect(packageReads()).toBe(3);
+    await manager.handlers.status!();
+    expect(packageReads()).toBe(3);
   });
 
   it("reads Personal Device status through the loopback Desktop credential boundary", async () => {

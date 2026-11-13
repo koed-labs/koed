@@ -27,7 +27,7 @@ import {
   pdsProjectSelectionRecordSchema,
   verifyPdsProjectSelection
 } from "@koed-labs/shared";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -180,9 +180,15 @@ const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
   }
 };
 
-export const resolvePdsProviderRuntimeSecret = (
+type ProviderCommand = {
+  command: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+};
+
+const providerRuntimeSecretCommand = (
   environment: NodeJS.ProcessEnv
-): RuntimeSecret | null => {
+): ProviderCommand | null => {
   // Each read launches the provider process, so never poll it unless
   // Personal Device Sync is enabled.
   if (!resolvePersonalDeviceSyncEnabled(environment)) return null;
@@ -198,26 +204,17 @@ export const resolvePdsProviderRuntimeSecret = (
     reference.length > 240
   )
     return null;
+  return {
+    command,
+    args: [...providerArgs(environment), "get", reference],
+    env: providerEnvironment(environment)
+  };
+};
+
+const parseProviderRuntimeSecret = (stdout: string): RuntimeSecret | null => {
+  if (Buffer.byteLength(stdout, "utf8") > maximumSecretBytes) return null;
   try {
-    const result = spawnSync(
-      command,
-      [...providerArgs(environment), "get", reference],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        env: providerEnvironment(environment),
-        maxBuffer: maximumSecretBytes + 1,
-        timeout: 10_000
-      }
-    );
-    if (
-      result.status !== 0 ||
-      result.error ||
-      typeof result.stdout !== "string" ||
-      Buffer.byteLength(result.stdout, "utf8") > maximumSecretBytes
-    )
-      return null;
-    const value = JSON.parse(result.stdout) as Record<string, unknown>;
+    const value = JSON.parse(stdout) as Record<string, unknown>;
     if (
       typeof value.userId !== "string" ||
       typeof value.groupId !== "string" ||
@@ -271,6 +268,78 @@ export const resolvePdsProviderRuntimeSecret = (
   } catch {
     return null;
   }
+};
+
+export const resolvePdsProviderRuntimeSecret = (
+  environment: NodeJS.ProcessEnv
+): RuntimeSecret | null => {
+  const lookup = providerRuntimeSecretCommand(environment);
+  if (!lookup) return null;
+  try {
+    const result = spawnSync(lookup.command, lookup.args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: lookup.env,
+      maxBuffer: maximumSecretBytes + 1,
+      timeout: 10_000
+    });
+    if (
+      result.status !== 0 ||
+      result.error ||
+      typeof result.stdout !== "string"
+    )
+      return null;
+    return parseProviderRuntimeSecret(result.stdout);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Reads the runtime secret without blocking the worker. The provider is a
+ * separate process that takes about a second to start.
+ */
+export const resolvePdsProviderRuntimeSecretAsync = (
+  environment: NodeJS.ProcessEnv
+): Promise<RuntimeSecret | null> => {
+  const lookup = providerRuntimeSecretCommand(environment);
+  if (!lookup) return Promise.resolve(null);
+  return new Promise<RuntimeSecret | null>((resolvePromise) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(lookup.command, lookup.args, {
+        env: lookup.env,
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true
+      });
+    } catch {
+      resolvePromise(null);
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (stdout: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      resolvePromise(
+        stdout === null ? null : parseProviderRuntimeSecret(stdout)
+      );
+    };
+    const timeout = setTimeout(() => finish(null), 10_000);
+    timeout.unref?.();
+    child.stdout?.on("data", (chunk: Buffer) => {
+      size += chunk.byteLength;
+      if (size > maximumSecretBytes) return finish(null);
+      chunks.push(chunk);
+    });
+    child.once("error", () => finish(null));
+    child.once("close", (code) =>
+      finish(code === 0 ? Buffer.concat(chunks).toString("utf8") : null)
+    );
+  });
 };
 
 const record = (value: unknown, label: string): Record<string, unknown> => {
@@ -2126,31 +2195,54 @@ export const createPdsWorkerRuntimeFromEnvironment = (
  * keychain-backed runtime. One provider read is pinned for each reconciliation
  * cycle so an epoch cannot change halfway through a package operation.
  */
+/**
+ * How long the worker trusts a "no runtime secret" answer. Without it, every
+ * reconciliation cycle on an unpaired device starts a provider process. A new
+ * pairing notification invalidates this cached result immediately.
+ */
+export const PDS_WORKER_MISSING_SECRET_RECHECK_MS = 15_000;
+
 export const createReloadablePdsWorkerRuntimeFromEnvironment = (
   input: PdsRuntimeFactoryInput & {
-    resolveSecret?: (environment: NodeJS.ProcessEnv) => RuntimeSecret | null;
+    resolveSecret?: (
+      environment: NodeJS.ProcessEnv
+    ) => RuntimeSecret | null | Promise<RuntimeSecret | null>;
     createRuntime?: (
       input: PdsRuntimeFactoryInput,
       secret: RuntimeSecret
     ) => PdsWorkerSecureRuntime | null;
+    now?: () => number;
   }
 ): PdsWorkerSecureRuntime | null => {
   const environment = input.environment ?? process.env;
   if (!resolvePersonalDeviceSyncEnabled(environment)) return null;
   const provider = environment.PDS_SECRET_PROVIDER?.trim();
   if (provider !== "headless") return null;
-  const resolveSecret = input.resolveSecret ?? resolvePdsProviderRuntimeSecret;
+  const resolveSecret =
+    input.resolveSecret ?? resolvePdsProviderRuntimeSecretAsync;
   const createRuntime = input.createRuntime ?? createPdsWorkerRuntimeFromSecret;
+  const now = input.now ?? Date.now;
   let runtimeFingerprint: string | null = null;
   let cycleRuntime: PdsWorkerSecureRuntime | null = null;
+  let missingUntil = 0;
+  let pending: Promise<PdsWorkerSecureRuntime | null> | null = null;
+  let configurationVersion = 0;
 
-  const resolveCycleRuntime = (): PdsWorkerSecureRuntime | null => {
-    const secret = resolveSecret(environment);
+  const readCycleRuntime = async (): Promise<PdsWorkerSecureRuntime | null> => {
+    let secret: RuntimeSecret | null;
+    let version: number;
+    do {
+      version = configurationVersion;
+      secret = await resolveSecret(environment);
+      // Do not cache a result from before a pairing update.
+    } while (version !== configurationVersion);
     if (!secret) {
       runtimeFingerprint = null;
       cycleRuntime = null;
+      missingUntil = now() + PDS_WORKER_MISSING_SECRET_RECHECK_MS;
       return null;
     }
+    missingUntil = 0;
     const fingerprint = createHash("sha256")
       .update(JSON.stringify(secret))
       .digest("base64url");
@@ -2161,6 +2253,19 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
     return cycleRuntime;
   };
 
+  // A present secret is read once per cycle, so an epoch cannot change halfway
+  // through a package operation. Concurrent callers share that one read.
+  const resolveCycleRuntime = (): Promise<PdsWorkerSecureRuntime | null> => {
+    if (!cycleRuntime && now() < missingUntil) return Promise.resolve(null);
+    if (pending) return pending;
+    const current: Promise<PdsWorkerSecureRuntime | null> =
+      readCycleRuntime().finally(() => {
+        if (pending === current) pending = null;
+      });
+    pending = current;
+    return current;
+  };
+
   const requiredRuntime = (): PdsWorkerSecureRuntime => {
     if (!cycleRuntime) {
       throw new Error("PdsSecureRuntimeUnavailableError");
@@ -2169,8 +2274,12 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
   };
 
   return {
+    invalidateConfiguration() {
+      configurationVersion += 1;
+      missingUntil = 0;
+    },
     async heartbeatGroups() {
-      const runtime = resolveCycleRuntime();
+      const runtime = await resolveCycleRuntime();
       return runtime ? ((await runtime.heartbeatGroups?.()) ?? []) : [];
     },
     async refreshPeerRoutes() {
@@ -2189,7 +2298,7 @@ export const createReloadablePdsWorkerRuntimeFromEnvironment = (
       return await requiredRuntime().outboundState(input);
     },
     async waitForWake(signal) {
-      const runtime = resolveCycleRuntime();
+      const runtime = await resolveCycleRuntime();
       if (!runtime) return;
       await runtime.waitForWake?.(signal);
     },

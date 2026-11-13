@@ -1,3 +1,9 @@
+import { createPerformanceController } from "./performance-controller.js";
+import {
+  createPerformanceManagement,
+  type PerformanceSnapshot,
+  type DesktopPerformanceApi
+} from "@koed-labs/server";
 import { modelProgressReader, type ModelProgress } from "./model-progress.js";
 import { createAccelerationController } from "./acceleration-controller.js";
 import { createOperationReceipt } from "./operation-receipt.js";
@@ -306,6 +312,7 @@ export interface KoedServerManagerOptions {
 
 export interface KoedServerManager {
   acceleration: DesktopAccelerationApi;
+  performance: DesktopPerformanceApi;
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   localAiClients: LocalAiClientDesktopHandler;
@@ -463,6 +470,7 @@ const sleep = (ms: number): Promise<void> =>
   });
 
 const statusCommandTimeoutMs = 120_000;
+const packageStatusMaxAgeMs = 60_000;
 
 const waitForAbortOrDelay = (
   signal: AbortSignal,
@@ -2009,7 +2017,39 @@ export const createKoedServerManager = ({
     );
   };
 
-  const runPackageStatusJson = () => runJson(["package", "status"], 60_000);
+  // Every explicit read refreshes the cached result used by routine status.
+  let packageStatusCache: {
+    value: Promise<unknown>;
+    at: number;
+    epoch: unknown;
+  } | null = null;
+  const runPackageStatusJson = () => {
+    const value = runJson(["package", "status"], 60_000);
+    const entry = {
+      value,
+      at: Date.now(),
+      epoch: lifecycle.current()?.epoch
+    };
+    packageStatusCache = entry;
+    // Never reuse a failed read: the next status refresh retries it.
+    void value.then((result) => {
+      if (
+        packageStatusCache === entry &&
+        (result as { ok?: unknown } | null)?.ok === false
+      )
+        packageStatusCache = null;
+    });
+    return value;
+  };
+  // Routine status refreshes reuse a recent package status instead of starting
+  // a CLI process each time. The package changes only on install or upgrade,
+  // so a new supervisor epoch or the age limit starts a fresh read.
+  const routinePackageStatusJson = () =>
+    packageStatusCache &&
+    Date.now() - packageStatusCache.at < packageStatusMaxAgeMs &&
+    packageStatusCache.epoch === lifecycle.current()?.epoch
+      ? packageStatusCache.value
+      : runPackageStatusJson();
 
   const runPackageInstallJson = async (args?: Record<string, unknown>) => {
     const plan = resolveServerPackageInstallPlan(
@@ -2036,6 +2076,8 @@ export const createKoedServerManager = ({
           "Confirm the package download prompt, then retry package install."
       };
     }
+    // Every install path, including setup, must drop the cached status: the
+    // routine read would otherwise report the pre-install package.
     return runJson(
       [
         "package",
@@ -2055,7 +2097,9 @@ export const createKoedServerManager = ({
         "--activate"
       ],
       600_000
-    );
+    ).finally(() => {
+      packageStatusCache = null;
+    });
   };
 
   const withPackageComponent = (
@@ -2142,7 +2186,7 @@ export const createKoedServerManager = ({
         if (stoppedBefore) return stoppedBefore;
         const [statusResult, packageStatus] = await Promise.all([
           runDesktopStatus(),
-          runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
+          routinePackageStatusJson() as Promise<ServerPackageStatusPayload | null>
         ]);
         const after = lifecycle.refresh();
         // A different supervisor epoch invalidates a response collected earlier.
@@ -5507,7 +5551,7 @@ export const createKoedServerManager = ({
     generation = captureStartGeneration(),
     explicitStopAtStart = explicitStopGeneration
   ) => {
-    if (acceleration.isRunning())
+    if (acceleration.isRunning() || performance.isRunning())
       return Promise.resolve({
         ok: false,
         error: "Wait for the processing change to finish before starting Koed."
@@ -6222,6 +6266,7 @@ export const createKoedServerManager = ({
       nativeMutationActive ||
       setupPreparing ||
       acceleration.isRunning() ||
+      performance.isRunning() ||
       setupWorkflow.isRunning()
     )
       throw new Error(
@@ -6257,6 +6302,7 @@ export const createKoedServerManager = ({
     explicitStopGeneration: () => explicitStopGeneration,
     assertAvailable: (origin) => {
       if (
+        performance.isRunning() ||
         nativeMutationActive ||
         (setupPreparing && origin !== "setup") ||
         (setupWorkflow.isRunning() && origin !== "setup") ||
@@ -6296,6 +6342,86 @@ export const createKoedServerManager = ({
           resultMessage(
             ready,
             "Koed did not become ready. Check service status or choose CPU recovery."
+          )
+        );
+    }
+  });
+  const sourcePerformance = createSupervisorInvocation
+    ? null
+    : createPerformanceManagement({
+        paths: { ...resolveKoedServerPaths(environment), repoRoot },
+        environment: () => environment
+      });
+  const performanceRpc = async (
+    action: "inspect" | "save",
+    args: Record<string, unknown> = {}
+  ): Promise<PerformanceSnapshot> => {
+    if (sourcePerformance)
+      return action === "inspect"
+        ? sourcePerformance.inspect()
+        : sourcePerformance.save(args);
+    return requestSupervisor<PerformanceSnapshot>(
+      await accelerationRpcSession(),
+      "performance",
+      action,
+      args
+    );
+  };
+  const performance = createPerformanceController({
+    receipt: createOperationReceipt(
+      resolve(
+        resolveKoedHome(environment),
+        "cache",
+        "desktop-performance-operation.json"
+      )
+    ),
+    inspect: () => performanceRpc("inspect"),
+    save: (choice) => performanceRpc("save", { ...choice }),
+    exclusive: withLifecycleOperation,
+    observe: () => observeRuntimeLifecycle(resolveKoedServerPaths(environment)),
+    explicitStopGeneration: () => explicitStopGeneration,
+    assertAvailable: () => {
+      if (
+        acceleration.isRunning() ||
+        nativeMutationActive ||
+        setupPreparing ||
+        setupWorkflow.isRunning() ||
+        stoppedPrivacyOperation ||
+        queuedPrivacyInstalls.size
+      )
+        throw new Error(
+          "Wait for the current setup or service operation to finish before changing performance."
+        );
+    },
+    stop: async () => {
+      const result = await stopRuntime(false);
+      if (!resultOk(result))
+        throw new Error(
+          resultMessage(
+            result,
+            "Local services did not stop. Performance settings were not saved."
+          )
+        );
+    },
+    start: async () => {
+      const generation = captureStartGeneration();
+      const result = await requestDaemonStartUnlocked(
+        generation,
+        explicitStopGeneration
+      );
+      if (!resultOk(result))
+        throw new Error(
+          resultMessage(
+            result,
+            "Performance settings were saved, but local services could not restart. Check service status."
+          )
+        );
+      const ready = await pollUntilReady(60, generation);
+      if (!resultOk(ready))
+        throw new Error(
+          resultMessage(
+            ready,
+            "Performance settings were saved, but local services are not ready. Check service status."
           )
         );
     }
@@ -6612,6 +6738,7 @@ export const createKoedServerManager = ({
     personalMemory,
     localAiClients,
     acceleration,
+    performance,
     hardwareAcceleration: {
       get: hardwareAccelerationState,
       set: setHardwareAcceleration
@@ -7064,7 +7191,12 @@ export const createKoedServerManager = ({
       },
       setup_inspect: () => setupWorkflow.inspect(),
       setup_run: async (args, context) => {
-        if (acceleration.isRunning() || nativeMutationActive || setupPreparing)
+        if (
+          acceleration.isRunning() ||
+          performance.isRunning() ||
+          nativeMutationActive ||
+          setupPreparing
+        )
           throw new Error(
             "Wait for the current native operation to finish before starting setup."
           );

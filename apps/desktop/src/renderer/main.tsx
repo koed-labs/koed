@@ -2,7 +2,10 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { V1App as App } from "./v1/App.js";
+import { installWindowActivity } from "./window-activity.js";
 import "./index.css";
+
+installWindowActivity();
 
 function DesktopRoot() {
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(
