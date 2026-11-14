@@ -122,6 +122,57 @@ The removed `MEMORY_ANSWER_TIMEOUT_MS` name has no compatibility alias.
 
 ## Evidence Selection And Budgets
 
+### Complete Evidence Admission
+
+The helper receives complete source text with the identity, actor, timing and
+lineage needed to interpret and cite it. Repeated internal citation and
+retrieval metadata stays in Koed's Evidence Bundle rather than consuming the
+helper's evidence budget multiple times. Admission counts the serialized
+helper-visible representation; it does not discount bytes that are still sent
+to the AI Client. Provider-reported usage remains separate from this local
+tokenizer-based budget.
+
+An explicit expansion prioritizes its requested sources over earlier working-set
+evidence. Earlier evidence already shown to the helper remains available for
+final reference selection through its stable execution-local identity. Changing
+working-set priority does not automatically select new evidence for the answer,
+discard a selected parent summary or treat a parent and its children as
+independent corroboration.
+
+When a broad expansion omits sources and another expansion is available, prompt
+packing reserves room for one independently fitting omitted source and its
+navigation envelope. This prevents the broad response from consuming all space
+needed for targeted recovery. A request that explicitly selects sources uses the
+remaining budget normally. The reservation does not increase the configured
+limit or guarantee that every source can fit.
+
+Search and expansion disclose bounded navigation information for omitted sources,
+including the applicable item or token limit. They also report configured and
+remaining evidence and prompt budgets. Navigation information contains no
+omitted source body and is not observed, selectable support. The helper can
+narrow a later expansion to identifiers returned by that authorized node.
+Every request still expands through the normal repository authorization path;
+an unavailable selector fails closed rather than falling back to all sources.
+Team selectors refer only to the returned shared representation, not Personal
+source identifiers.
+
+Complete sources and raw event-context windows are never shortened to make them
+fit. Initial admission may omit oversized evidence while allowing the helper to
+inspect the omission information and attempt a supported narrower retrieval.
+If the relevant complete source still cannot fit, the answer must report
+insufficient bounded evidence rather than imply that no matching Memory exists.
+Final selected support remains subject to the same item and token limits.
+Expansion diagnostics count sources actually delivered after prompt admission,
+not the sources returned by the backend before packing.
+
+Helper observation accounting does not reduce the final Evidence Bundle's
+budget. Final selected support retains its full reference metadata and is
+checked independently against the existing final item and token limits. A set
+that the helper read across several operations may still be too large to return
+as one selected Evidence Bundle.
+
+### Event Context
+
 Personal Memory synthesis requests canonical event context by default. Embedding
 chunks locate matches; the local worker receives the complete matched Memory
 Event plus its immediate preceding and following events in the same authorised
