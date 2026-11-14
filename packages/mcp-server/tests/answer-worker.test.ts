@@ -2136,6 +2136,8 @@ process.stdin.once("data", () => {
       MEMORY_ANSWER_MAX_SEARCHES: "4",
       MEMORY_ANSWER_MAX_EXPANSIONS: "2",
       MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "7",
+      MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "18000",
+      MEMORY_ANSWER_MAX_PROMPT_TOKENS: "36000",
       MEMORY_ANSWER_CODEX_BINARY: "/bin/codex"
     });
 
@@ -2147,13 +2149,21 @@ process.stdin.once("data", () => {
     expect(config.maxSearches).toBe(4);
     expect(config.maxExpansions).toBe(2);
     expect(config.maxEvidenceItems).toBe(7);
+    expect(config.maxEvidenceTokens).toBe(18000);
+    expect(config.maxPromptTokens).toBe(36000);
   });
 
   it("uses the efficient GPT-5.6 defaults for memory answers", () => {
     expect(resolveMemoryAnswerWorkerConfig({})).toMatchObject({
       provider: "codex",
       model: "gpt-5.6-luna",
-      reasoningEffort: "low"
+      reasoningEffort: "low",
+      maxEvidenceTokens: 24_000,
+      maxPromptTokens: 48_000,
+      maxSearches: 6,
+      maxExpansions: 5,
+      maxCandidates: 50,
+      maxEvidenceItems: 50
     });
   });
 
@@ -2432,7 +2442,7 @@ process.stdin.once("data", () => {
   });
 
   it.each([false, true])(
-    "recovers an omitted complete source and preserves observed parent support (crowded default-budget working set: %s)",
+    "recovers an omitted complete source and preserves observed parent support (crowded configured-budget working set: %s)",
     async (crowded) => {
       const directory = fs.mkdtempSync(
         path.join(os.tmpdir(), "koed-admission-recovery-")
@@ -2491,7 +2501,8 @@ process.stdin.once("data", () => {
               expand
             },
             config: resolveMemoryAnswerWorkerTestConfig(directory, {
-              ...(crowded ? {} : { MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "1600" }),
+              MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: crowded ? "12000" : "1600",
+              MEMORY_ANSWER_MAX_PROMPT_TOKENS: "24000",
               MEMORY_ANSWER_MODEL: promptBudgetRegressionModel,
               MEMORY_ANSWER_MAX_ATTEMPTS: "1",
               MEMORY_CODEX_APP_SERVER_BINARY:

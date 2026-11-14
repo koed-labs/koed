@@ -5,8 +5,8 @@ groups matching chunks by authorized Memory Node identity and summary embedding
 revision before candidate limits and Global pool admission. The strongest chunk
 score ranks the group; additional chunks do not multiply its score or consume
 independent evidence slots. Unrelated nodes remain distinct even when their
-summary text is identical. Current-repository reservation and existing limits
-are unchanged.
+summary text is identical. Current-repository reservation and retrieval candidate
+limits are unchanged.
 
 Each admitted group is authorized and hydrated once. A fully authorized group
 returns its complete summary with `summaryRepresentation: "complete_summary"`.

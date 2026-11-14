@@ -59,7 +59,7 @@ values. Indexes are not positions in the latest ranked list. Koed keeps the
 bounded evidence snapshots and their complete observed references for final
 selection, including references from earlier validation attempts.
 
-The working-set candidate, item and token limits are unchanged. Only admitted
+The configured working-set candidate, item and token limits still apply. Only admitted
 evidence is exposed as selectable tool results. The observation history is
 bounded by one initial evidence budget plus one for each permitted search or
 expansion: at most `(1 + maxSearches + maxExpansions)` times the configured
@@ -123,6 +123,11 @@ The removed `MEMORY_ANSWER_TIMEOUT_MS` name has no compatibility alias.
 ## Evidence Selection And Budgets
 
 ### Complete Evidence Admission
+
+The default evidence allowance is 24,000 tokens for the helper working set and,
+independently, final selected support. The default cumulative prompt budget is
+48,000 tokens. Both remain configurable; search, expansion and item-count limits
+are unchanged. Existing explicit environment overrides retain their values.
 
 The helper receives complete source text with the identity, actor, timing and
 lineage needed to interpret and cite it. Repeated internal citation and

@@ -666,12 +666,12 @@ export const resolveMemoryAnswerWorkerConfig = (
     ),
     maxEvidenceTokens: parsePositiveInteger(
       resolveEnvValue(env, "MEMORY_ANSWER_MAX_EVIDENCE_TOKENS"),
-      12_000,
+      24_000,
       { min: 256, max: 100_000 }
     ),
     maxPromptTokens: parsePositiveInteger(
       resolveEnvValue(env, "MEMORY_ANSWER_MAX_PROMPT_TOKENS"),
-      24_000,
+      48_000,
       { min: 512, max: 200_000 }
     ),
     executablePath:
