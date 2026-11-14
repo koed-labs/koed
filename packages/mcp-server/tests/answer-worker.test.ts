@@ -114,6 +114,8 @@ const writeFakeDynamicMemoryAnswerAppServer = (
     mode?:
       | "happy"
       | "expandSuccess"
+      | "admissionRecovery"
+      | "expandResult"
       | "expandThenSearch"
       | "invalidThenValid"
       | "expandBudget"
@@ -131,6 +133,7 @@ const writeFakeDynamicMemoryAnswerAppServer = (
     requiredPromptSnippets?: string[];
     retryPromptSnippets?: string[];
     searchArguments?: Record<string, unknown>;
+    expandArguments?: Record<string, unknown>;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-memory-answer-app-server.mjs");
@@ -246,8 +249,8 @@ lineReader.on("line", (line) => {
       send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan-again", namespace: "koed_memory", tool: "scan", arguments: { query: "koed docker again", search_domain: "project", project_id: "workspace-1" } } });
       return;
     }
-    if (mode === "expandBudget" || mode === "expandSuccess" || mode === "expandThenSearch") {
-      send({ id: 9003, method: "item/tool/call", params: { threadId, turnId, callId: "call-expand", namespace: "koed_memory", tool: "expand", arguments: { node_id: "node-1" } } });
+    if (["expandBudget", "expandSuccess", "expandThenSearch", "admissionRecovery", "expandResult"].includes(mode)) {
+      send({ id: 9003, method: "item/tool/call", params: { threadId, turnId, callId: "call-expand", namespace: "koed_memory", tool: "expand", arguments: { node_id: "node-1", ...${JSON.stringify(options.expandArguments ?? {})} } } });
       return;
     }
     if (mode === "refineSearch") {
@@ -261,7 +264,8 @@ lineReader.on("line", (line) => {
     const text = message.result?.contentItems?.[0]?.text ?? "";
     if (captureToolResponsesPath) fs.appendFileSync(captureToolResponsesPath, text + "\\n");
     if (mode === "eventWindowBudget") {
-      if (!text.includes("budget_exhausted") || !text.includes("complete event context observation")) process.exit(73);
+      const observation = JSON.parse(text);
+      if (!text.includes("budget_exhausted") && !(observation.hits?.length === 0 && observation.state?.omittedSources?.length > 0)) process.exit(73);
       sendFinal(notFoundAnswer);
       return;
     }
@@ -314,6 +318,15 @@ lineReader.on("line", (line) => {
   }
   if (message.id === 9003) {
     const text = message.result?.contentItems?.[0]?.text ?? "";
+    if (captureToolResponsesPath) fs.appendFileSync(captureToolResponsesPath, text + "\\n");
+    if (mode === "admissionRecovery") {
+      const observation = JSON.parse(text);
+      const omitted = observation.state?.omittedSources?.find(entry => entry.source.source_id === "head-event");
+      if (!omitted || observation.expandedEvidence?.some(entry => entry.item.sourceId === "head-event")) process.exit(75);
+      send({ id: 9005, method: "item/tool/call", params: { threadId, turnId, callId: "recover-source", namespace: "koed_memory", tool: "expand", arguments: { nodeId: omitted.nodeId, sources: [omitted.source] } } });
+      return;
+    }
+    if (mode === "expandResult") { sendFinal(answer); return; }
     if (mode === "expandThenSearch") {
       if (!text.includes("GROUNDED_CHILD_EVIDENCE")) process.exit(70);
       send({ id: 9004, method: "item/tool/call", params: { threadId, turnId, callId: "later-search", namespace: "koed_memory", tool: "search", arguments: { query: "later search", stage: "leaf_search", limit: 1 } } });
@@ -332,6 +345,15 @@ lineReader.on("line", (line) => {
       process.exit(68);
     }
     sendFinal(notFoundAnswer);
+    return;
+  }
+  if (message.id === 9005) {
+    const text = message.result?.contentItems?.[0]?.text ?? "";
+    if (captureToolResponsesPath) fs.appendFileSync(captureToolResponsesPath, text + "\\n");
+    const observation = JSON.parse(text);
+    const entry = observation.expandedEvidence?.find(entry => entry.item.sourceId === "head-event");
+    if (!entry || entry.item.sourcePosition !== 2 || !entry.item.summaryText.endsWith("HEAD_END")) process.exit(76);
+    sendFinal({ ...answer, evidence: [...answer.evidence, { evidence_index: entry.evidence_index, source_type: "memory_event", source_id: "head-event", source_chunk_index: 0, visibility: "personal", relevance: "requested source", support: "HEAD_END" }] });
     return;
   }
   if (message.id === 9004) {
@@ -366,6 +388,24 @@ const resolveMemoryAnswerWorkerTestConfig = (
   });
 
 const promptBudgetRegressionModel = "gpt-5.6-luna";
+
+interface AdmissionTestObservation {
+  kind: string;
+  expandedEvidence: Array<{
+    evidence_index: number;
+    item: Record<string, unknown>;
+  }>;
+  reservedPromptTokens: number;
+  state: {
+    evidenceCount: number;
+    omittedSources: unknown[];
+    remainingBudgets: { promptTokens: number };
+  };
+}
+
+const parseAdmissionTestObservation = (
+  text: string
+): AdmissionTestObservation => JSON.parse(text) as AdmissionTestObservation;
 
 const createPromptBudgetRegressionClient = (): MemoryAnswerRetrievalClient => ({
   async search(input) {
@@ -926,9 +966,21 @@ describe("memory answer worker", () => {
       );
       const observation = JSON.parse(
         fs.readFileSync(capture, "utf8").trim()
-      ) as { kind: string; message: string };
-      expect(observation.kind).toBe("budget_exhausted");
-      expect(observation.message).toContain("LCM Summary cannot fit");
+      ) as {
+        kind: string;
+        hits: unknown[];
+        state: { omittedSources: unknown[] };
+      };
+      expect(observation.kind).toBe("search_result");
+      expect(observation.hits).toEqual([]);
+      expect(observation.state.omittedSources).toContainEqual(
+        expect.objectContaining({
+          reason: "prompt_tokens",
+          source: expect.objectContaining({
+            source_id: "complete-summary"
+          }) as unknown
+        })
+      );
       expect(response.localMemoryWorker.usedFallback).toBe(true);
       expect(response.evidenceBundle?.evidence).toEqual([]);
       const retrieval = response.evidenceBundle?.retrieval as
@@ -1475,7 +1527,7 @@ describe("memory answer worker", () => {
           config: resolveMemoryAnswerWorkerTestConfig(directory, {
             MEMORY_ANSWER_PROVIDER: "codex",
             MEMORY_ANSWER_MAX_ATTEMPTS: "1",
-            MEMORY_ANSWER_MAX_PROMPT_TOKENS: "3000",
+            MEMORY_ANSWER_MAX_PROMPT_TOKENS: "3700",
             MEMORY_CODEX_APP_SERVER_BINARY:
               writeFakeDynamicMemoryAnswerAppServer(directory, {
                 mode: "eventWindowBudget",
@@ -1486,11 +1538,14 @@ describe("memory answer worker", () => {
       );
       const observation = JSON.parse(
         fs.readFileSync(capture, "utf8").trim()
-      ) as { kind: string; message: string };
-      expect(observation.kind).toBe("budget_exhausted");
-      expect(observation.message).toContain(
-        "complete event context observation"
-      );
+      ) as {
+        kind: string;
+        hits: unknown[];
+        state: { omittedSources: unknown[] };
+      };
+      expect(observation.kind).toBe("search_result");
+      expect(observation.hits).toEqual([]);
+      expect(observation.state.omittedSources).toHaveLength(3);
       expect(response.evidenceBundle?.evidence).toEqual([]);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
@@ -2081,6 +2136,8 @@ process.stdin.once("data", () => {
       MEMORY_ANSWER_MAX_SEARCHES: "4",
       MEMORY_ANSWER_MAX_EXPANSIONS: "2",
       MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "7",
+      MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "18000",
+      MEMORY_ANSWER_MAX_PROMPT_TOKENS: "36000",
       MEMORY_ANSWER_CODEX_BINARY: "/bin/codex"
     });
 
@@ -2092,13 +2149,21 @@ process.stdin.once("data", () => {
     expect(config.maxSearches).toBe(4);
     expect(config.maxExpansions).toBe(2);
     expect(config.maxEvidenceItems).toBe(7);
+    expect(config.maxEvidenceTokens).toBe(18000);
+    expect(config.maxPromptTokens).toBe(36000);
   });
 
   it("uses the efficient GPT-5.6 defaults for memory answers", () => {
     expect(resolveMemoryAnswerWorkerConfig({})).toMatchObject({
       provider: "codex",
       model: "gpt-5.6-luna",
-      reasoningEffort: "low"
+      reasoningEffort: "low",
+      maxEvidenceTokens: 24_000,
+      maxPromptTokens: 48_000,
+      maxSearches: 6,
+      maxExpansions: 5,
+      maxCandidates: 50,
+      maxEvidenceItems: 50
     });
   });
 
@@ -2375,6 +2440,680 @@ process.stdin.once("data", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it.each([false, true])(
+    "recovers an omitted complete source and preserves observed parent support (crowded configured-budget working set: %s)",
+    async (crowded) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-admission-recovery-")
+      );
+      try {
+        const capture = path.join(directory, "tools.jsonl");
+        const parent = {
+          sourceType: "memory_node",
+          sourceId: "node-1",
+          nodeId: "node-1",
+          sourceChunkIndex: 0,
+          visibility: "personal",
+          summaryRepresentation: "complete_summary",
+          sourceGeneration: "one",
+          summaryText: `Parent explains the decision. ${crowded ? "Initial summarized decision. ".repeat(180) : ""}`
+        };
+        const initialEvidence = crowded
+          ? Array.from({ length: 10 }, (_, index) => ({
+              ...parent,
+              sourceId: index === 0 ? "node-1" : `parent-${index}`,
+              nodeId: index === 0 ? "node-1" : `parent-${index}`
+            }))
+          : [parent];
+        const sourceItems = [
+          "tail-event",
+          "middle-event",
+          "head-event",
+          ...(crowded
+            ? Array.from({ length: 5 }, (_, index) => `other-${index}`)
+            : [])
+        ].map((sourceId) => ({
+          kind: "memory_event",
+          sourceId,
+          text: `${"Complete implementation statement. ".repeat(crowded ? 1100 : 160)}${sourceId === "head-event" ? "HEAD_END" : "SOURCE_END"}`,
+          actor: "assistant",
+          createdAt: "2026-01-01T00:00:00Z",
+          supportingContext: [{ boundary: "complete turn" }]
+        }));
+        const expand = vi.fn(async (nodeId: string) => ({
+          expanded: { nodeId, visibility: "personal", sourceItems }
+        }));
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: {
+              query: "What is the implementation?",
+              evidence: initialEvidence
+            }
+          },
+          {
+            evaluationController: { scriptedFirstPass: false },
+            responseDetail: "internal",
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              expand
+            },
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: crowded ? "12000" : "1600",
+              MEMORY_ANSWER_MAX_PROMPT_TOKENS: "24000",
+              MEMORY_ANSWER_MODEL: promptBudgetRegressionModel,
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  mode: "admissionRecovery",
+                  capturePromptsPath: path.join(directory, "prompts.jsonl"),
+                  captureToolResponsesPath: capture,
+                  answer: {
+                    ...answerObject(
+                      "Parent and implementation. [1 personal] [2 personal]"
+                    ),
+                    evidence: [
+                      {
+                        evidence_index: 0,
+                        source_type: "memory_node",
+                        source_id: "node-1",
+                        source_chunk_index: 0,
+                        visibility: "personal",
+                        support: "Parent explains"
+                      }
+                    ]
+                  }
+                })
+            })
+          }
+        );
+        expect(
+          response.localMemoryWorker.usedFallback,
+          response.localMemoryWorker.errorMessage
+        ).toBe(false);
+        expect(expand).toHaveBeenCalledTimes(2);
+        const observations = fs
+          .readFileSync(capture, "utf8")
+          .trim()
+          .split("\n")
+          .map(parseAdmissionTestObservation);
+        const [firstObservation, secondObservation] = observations;
+        if (!firstObservation || !secondObservation)
+          throw new Error("Expected both expansion observations");
+        const firstCount = firstObservation.expandedEvidence.length;
+        if (!crowded) expect(firstCount).toBe(2);
+        else {
+          expect(firstCount).toBeLessThan(2);
+          expect(firstObservation.reservedPromptTokens).toBeGreaterThan(4000);
+          expect(firstObservation.state.omittedSources).toContainEqual(
+            expect.objectContaining({ reason: "recovery_reserve" })
+          );
+          const prompt = JSON.parse(
+            fs
+              .readFileSync(path.join(directory, "prompts.jsonl"), "utf8")
+              .trim()
+          ) as string;
+          const initialTokens = countTokensForModel(prompt, {
+            model: promptBudgetRegressionModel
+          }).tokens;
+          expect(initialTokens).toBeGreaterThan(9000);
+          const emittedTokens = observations.reduce<number>(
+            (total, observation) =>
+              total +
+              countTokensForModel(JSON.stringify(observation), {
+                model: promptBudgetRegressionModel
+              }).tokens,
+            initialTokens
+          );
+          expect(emittedTokens).toBeLessThanOrEqual(24000);
+          expect(firstObservation.reservedPromptTokens).toBeLessThanOrEqual(
+            firstObservation.state.remainingBudgets.promptTokens
+          );
+        }
+        expect(firstObservation.state.omittedSources).toContainEqual(
+          expect.objectContaining({
+            source: {
+              source_type: "memory_event",
+              source_id: "head-event",
+              source_chunk_index: 0
+            },
+            nodeId: "node-1",
+            reason: "evidence_tokens",
+            requiredTokens: expect.any(Number) as unknown
+          })
+        );
+        expect(secondObservation.expandedEvidence).toEqual([
+          expect.objectContaining({
+            evidence_index: initialEvidence.length + firstCount,
+            item: expect.objectContaining({
+              sourcePosition: 2,
+              expandedFromNodeId: "node-1",
+              parentNodeIds: ["node-1"],
+              actor: "assistant",
+              summaryText: sourceItems[2]!.text,
+              supportingContext: [{ boundary: "complete turn" }]
+            }) as unknown
+          })
+        ]);
+        expect(response.evidenceBundle?.evidence).toHaveLength(2);
+        expect(response.evidenceBundle?.retrieval).toMatchObject({
+          expansions: [
+            {
+              sourceItemCount: firstCount,
+              omittedSourceCount: sourceItems.length - firstCount
+            },
+            { sourceItemCount: 1, omittedSourceCount: 0 }
+          ]
+        });
+        expect(
+          secondObservation.state.remainingBudgets.promptTokens
+        ).toBeGreaterThan(0);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(
+    [
+      [],
+      [
+        {
+          source_type: "memory_event",
+          source_id: "foreign",
+          source_chunk_index: 0
+        }
+      ],
+      [
+        {
+          source_type: "memory_event",
+          source_id: "event",
+          source_chunk_index: 0
+        },
+        {
+          source_type: "memory_event",
+          source_id: "event",
+          source_chunk_index: 0
+        }
+      ]
+    ].map((sources) => ({ sources }))
+  )(
+    "rejects invalid or unauthorized exact expansion selectors without exposing bodies: %j",
+    async ({ sources }) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-admission-selector-")
+      );
+      try {
+        const capture = path.join(directory, "tools.jsonl");
+        const expand = vi.fn(async () => ({
+          expanded: {
+            nodeId: "node-1",
+            visibility: "personal",
+            sourceItems: [
+              {
+                kind: "memory_event",
+                sourceId: "event",
+                text: "PRIVATE_AUTHORIZED_BODY"
+              }
+            ]
+          }
+        }));
+        await answerWithMemoryWorker(
+          { evidenceBundle: { query: "What is missing?", evidence: [] } },
+          {
+            evaluationController: { scriptedFirstPass: false },
+            responseDetail: "internal",
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              expand
+            },
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  mode: "expandResult",
+                  expandArguments: { sources },
+                  captureToolResponsesPath: capture,
+                  answer: {
+                    ...answerObject(
+                      "Cannot inspect this selection.",
+                      "insufficient"
+                    ),
+                    missing_evidence: ["authorized source selection"],
+                    evidence: []
+                  }
+                })
+            })
+          }
+        );
+        const observation: unknown = JSON.parse(
+          fs.readFileSync(capture, "utf8").trim()
+        );
+        expect(observation).toMatchObject({
+          kind: "validation_error",
+          message: "Invalid expansion sources."
+        });
+        expect(JSON.stringify(observation)).not.toContain(
+          "PRIVATE_AUTHORIZED_BODY"
+        );
+        expect(expand).toHaveBeenCalledTimes(sources.length === 1 ? 1 : 0);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("starts with navigation-only omissions when a complete initial summary cannot fit and reports honest insufficiency", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-admission-navigation-")
+    );
+    try {
+      const capture = path.join(directory, "prompts.jsonl");
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What was decided?",
+            evidence: [completeSummary()]
+          }
+        },
+        {
+          evaluationController: { scriptedFirstPass: false },
+          responseDetail: "internal",
+          client: {
+            async search() {
+              return { hits: [] };
+            },
+            async expand() {
+              return {};
+            }
+          },
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                useTools: false,
+                capturePromptsPath: capture,
+                answer: {
+                  ...answerObject(
+                    "The complete source cannot fit; more focused source evidence is required.",
+                    "insufficient"
+                  ),
+                  evidence: [],
+                  missing_evidence: [
+                    "A complete source within the configured evidence budget"
+                  ]
+                }
+              })
+          })
+        }
+      );
+      expect(
+        response.localMemoryWorker.usedFallback,
+        response.localMemoryWorker.errorMessage
+      ).toBe(false);
+      const prompt = JSON.parse(
+        fs.readFileSync(capture, "utf8").trim()
+      ) as string;
+      expect(prompt).toContain('"source_id": "complete-summary"');
+      expect(prompt).toContain('"reason": "evidence_tokens"');
+      expect(prompt).not.toContain("EXACT_SUMMARY_END");
+      expect(response.evidenceBundle?.evidence).toEqual([]);
+      expect(response.localMemoryWorker.memoryStatus).toBe("insufficient");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["unobserved", "rich_final_cap"])(
+    "rejects unsupported final evidence selection despite a navigation or compact view: %s",
+    async (mode) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-admission-final-")
+      );
+      try {
+        const capture = path.join(directory, "prompts.jsonl");
+        const summary = completeSummary();
+        const evidence =
+          mode === "unobserved"
+            ? summary
+            : {
+                ...summary,
+                summaryText: "Short complete summary.",
+                citation: {
+                  ...summary.citation,
+                  duplicatedMetadata: "Rich provenance detail. ".repeat(1000)
+                }
+              };
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: { query: "What was decided?", evidence: [evidence] }
+          },
+          {
+            evaluationController: { scriptedFirstPass: false },
+            responseDetail: "internal",
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              async expand() {
+                return {};
+              }
+            },
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "1000",
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  useTools: false,
+                  capturePromptsPath: capture,
+                  answer: {
+                    ...answerObject("The claimed decision. [1 personal]"),
+                    evidence: [
+                      {
+                        source_type: "memory_node",
+                        source_id: "complete-summary",
+                        source_chunk_index: 0,
+                        visibility: "personal",
+                        support:
+                          mode === "unobserved"
+                            ? "EXACT_SUMMARY_END"
+                            : "Short complete summary"
+                      }
+                    ]
+                  }
+                })
+            })
+          }
+        );
+        expect(response.localMemoryWorker.usedFallback).toBe(true);
+        expect(response.evidenceBundle?.evidence).toEqual([]);
+        const prompt = JSON.parse(
+          fs.readFileSync(capture, "utf8").trim()
+        ) as string;
+        if (mode === "unobserved")
+          expect(prompt).not.toContain("EXACT_SUMMARY_END");
+        else {
+          expect(prompt).toContain('"finalEvidenceTokens":');
+          expect(prompt).toContain("Short complete summary.");
+          expect(response.localMemoryWorker.errorMessage).toContain(
+            "evidence_tokens"
+          );
+        }
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([24000, 6500])(
+    "reports total omitted expansion sources and only feasible recovery reserves with bounded navigation (prompt limit: %s)",
+    async (promptLimit) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-admission-many-")
+      );
+      try {
+        const capture = path.join(directory, "tools.jsonl");
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: { query: "Which source is relevant?", evidence: [] }
+          },
+          {
+            evaluationController: { scriptedFirstPass: false },
+            responseDetail: "internal",
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              async expand() {
+                return {
+                  expanded: {
+                    nodeId: "node-1",
+                    visibility: "personal",
+                    sourceItems: Array.from({ length: 60 }, (_, index) => ({
+                      kind: "memory_event",
+                      sourceId: `event-${index}`,
+                      text: `Complete source ${index}.`
+                    }))
+                  }
+                };
+              }
+            },
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_MAX_PROMPT_TOKENS: String(promptLimit),
+              MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "1",
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  mode: "expandResult",
+                  captureToolResponsesPath: capture,
+                  answer: {
+                    ...answerObject(
+                      "Additional complete sources require inspection.",
+                      "insufficient"
+                    ),
+                    evidence: [],
+                    missing_evidence: ["Relevant complete source"]
+                  }
+                })
+            })
+          }
+        );
+        expect(
+          response.localMemoryWorker.usedFallback,
+          response.localMemoryWorker.errorMessage
+        ).toBe(false);
+        const observation = parseAdmissionTestObservation(
+          fs.readFileSync(capture, "utf8").trim()
+        );
+        expect(observation.state.omittedSources).toHaveLength(50);
+        expect(observation.state).toMatchObject({
+          omittedSourceCount: 59,
+          omittedSourcesTruncated: true
+        });
+        expect(observation.reservedPromptTokens).toBeLessThanOrEqual(
+          observation.state.remainingBudgets.promptTokens
+        );
+        if (promptLimit === 6500)
+          expect(observation.reservedPromptTokens).toBe(0);
+        expect(response.evidenceBundle?.retrieval).toMatchObject({
+          expansions: [{ sourceItemCount: 1, omittedSourceCount: 59 }]
+        });
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("retires an intersected raw context window when an independent complete source is expanded", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-admission-window-")
+    );
+    try {
+      const capture = path.join(directory, "tools.jsonl");
+      const text =
+        "GROUNDED_CHILD_EVIDENCE: independently authorized complete source.";
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "What is the complete source?",
+            evidence: [eventWindow()]
+          }
+        },
+        {
+          evaluationController: { scriptedFirstPass: false },
+          responseDetail: "internal",
+          client: {
+            async search() {
+              return { hits: [] };
+            },
+            async expand(nodeId) {
+              return {
+                expanded: {
+                  nodeId,
+                  visibility: "personal",
+                  sourceItems: [
+                    { kind: "memory_event", sourceId: "event-b", text }
+                  ]
+                }
+              };
+            }
+          },
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                mode: "expandSuccess",
+                captureToolResponsesPath: capture,
+                answer: {
+                  ...answerObject(
+                    "The complete independently observed source. [1 personal]"
+                  ),
+                  evidence: [
+                    {
+                      evidence_index: 3,
+                      source_type: "memory_event",
+                      source_id: "event-b",
+                      source_chunk_index: 0,
+                      visibility: "personal",
+                      support: "GROUNDED_CHILD_EVIDENCE"
+                    }
+                  ]
+                }
+              })
+          })
+        }
+      );
+      expect(
+        response.localMemoryWorker.usedFallback,
+        response.localMemoryWorker.errorMessage
+      ).toBe(false);
+      const observation = parseAdmissionTestObservation(
+        fs.readFileSync(capture, "utf8").trim()
+      );
+      expect(observation.state.evidenceCount).toBe(1);
+      expect(observation.expandedEvidence).toEqual([
+        expect.objectContaining({
+          evidence_index: 3,
+          item: expect.objectContaining({
+            sourceId: "event-b",
+            summaryText: text
+          }) as unknown
+        })
+      ]);
+      expect(response.evidenceBundle?.evidence).toEqual([
+        expect.objectContaining({ sourceId: "event-b", summaryText: text })
+      ]);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["pseudonymous-team-source", "owner-private-source"])(
+    "matches expansion selectors against authorized Team identities only: %s",
+    async (sourceId) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-admission-team-")
+      );
+      try {
+        const capture = path.join(directory, "tools.jsonl");
+        const expand = vi.fn(async () => ({
+          expanded: {
+            nodeId: "node-1",
+            visibility: "team",
+            sourceItems: [
+              {
+                kind: "memory_event",
+                sourceId: "owner-private-source",
+                canonicalSourceIdentity: {
+                  sourceType: "memory_event",
+                  sourceId: "pseudonymous-team-source",
+                  sourceChunkIndex: 0
+                },
+                text: "AUTHORIZED_TEAM_BODY"
+              }
+            ]
+          }
+        }));
+        await answerWithMemoryWorker(
+          { evidenceBundle: { query: "Which Team source?", evidence: [] } },
+          {
+            evaluationController: { scriptedFirstPass: false },
+            responseDetail: "internal",
+            retrievalScope: "team",
+            searchDomain: "global",
+            teamWorkspaceId: "workspace-1",
+            client: {
+              async search() {
+                return { hits: [] };
+              },
+              expand
+            },
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  mode: "expandResult",
+                  captureToolResponsesPath: capture,
+                  expandArguments: {
+                    sources: [
+                      {
+                        source_type: "memory_event",
+                        source_id: sourceId,
+                        source_chunk_index: 0
+                      }
+                    ]
+                  },
+                  answer: {
+                    ...answerObject(
+                      "Further context is needed.",
+                      "insufficient"
+                    ),
+                    evidence: [],
+                    missing_evidence: ["Additional context"]
+                  }
+                })
+            })
+          }
+        );
+        expect(expand).toHaveBeenCalledWith(
+          "node-1",
+          expect.objectContaining({ teamWorkspaceId: "workspace-1" })
+        );
+        const observation = parseAdmissionTestObservation(
+          fs.readFileSync(capture, "utf8").trim()
+        );
+        if (sourceId === "pseudonymous-team-source")
+          expect(observation.expandedEvidence).toEqual([
+            expect.objectContaining({
+              item: expect.objectContaining({
+                sourceId,
+                visibility: "team",
+                summaryText: "AUTHORIZED_TEAM_BODY"
+              }) as unknown
+            })
+          ]);
+        else {
+          expect(observation).toMatchObject({
+            kind: "validation_error",
+            message: "Invalid expansion sources."
+          });
+          expect(JSON.stringify(observation)).not.toContain(
+            "AUTHORIZED_TEAM_BODY"
+          );
+        }
+        expect(JSON.stringify(observation)).not.toContain(
+          "owner-private-source"
+        );
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("returns grounded child evidence selected from a worker-expanded parent", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
