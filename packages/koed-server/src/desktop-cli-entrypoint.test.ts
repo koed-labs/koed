@@ -61,6 +61,28 @@ it("runs shared CLI commands with a verified capability and supervisor command",
   expect(environment.KOED_PACKAGED_DESKTOP).toBe("1");
 });
 
+it("starts the detached host only after verifying the packaged installation", async () => {
+  const { resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const host = vi.fn(async () => 0);
+  const runCli = vi.fn(async () => 0);
+  const environment: NodeJS.ProcessEnv = {};
+  await expect(
+    runInstalledDesktopCli(["__control-plane-host"], {
+      moduleUrl: pathToFileURL(entry).href,
+      executable,
+      platform: "darwin",
+      electronVersion: "39.8.10",
+      environment,
+      verifyBundle: () => capability,
+      runControlPlaneHost: host,
+      runCli
+    })
+  ).resolves.toBe(0);
+  expect(host).toHaveBeenCalledWith({ capability, environment });
+  expect(runCli).not.toHaveBeenCalled();
+});
+
 it("fails closed before running any command outside its installation", async () => {
   const { entry } = installation();
   const runCli = vi.fn(async () => 0);

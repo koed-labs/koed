@@ -18,6 +18,12 @@ import { serveControlConnection } from "./host-session.js";
 import type { HostCore } from "./host-core.js";
 import type { ControlTransport } from "./transport.js";
 
+export class ControlHostCleanupError extends AggregateError {
+  constructor(startError: unknown, cleanupError: unknown) {
+    super([startError, cleanupError], "Control listener cleanup is uncertain");
+  }
+}
+
 export async function startControlPlaneHost(input: {
   paths: KoedServerPaths;
   admission: ControlPlaneAdmission;
@@ -102,7 +108,11 @@ export async function startControlPlaneHost(input: {
     publishControlDiscovery(input.paths, input.admission, record);
     active = true;
   } catch (error) {
-    await listener.close();
+    try {
+      await listener.close();
+    } catch (cleanupError) {
+      throw new ControlHostCleanupError(error, cleanupError);
+    }
     throw error;
   }
   return {

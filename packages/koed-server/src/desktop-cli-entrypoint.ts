@@ -13,6 +13,7 @@ export interface InstalledDesktopCliDependencies {
   electronVersion?: string | undefined;
   environment?: NodeJS.ProcessEnv;
   verifyBundle?: typeof verifyDesktopRuntimeBundle;
+  runControlPlaneHost?: typeof import("./control-plane/host-entrypoint.js").runInstalledControlPlaneHost;
   runCli?: (
     args: string[],
     dependencies: KoedServerCliDependencies
@@ -41,6 +42,7 @@ export async function runInstalledDesktopCli(
     electronVersion = process.versions.electron,
     environment = process.env,
     verifyBundle = verifyDesktopRuntimeBundle,
+    runControlPlaneHost,
     runCli,
     stderr = process.stderr
   }: InstalledDesktopCliDependencies = {}
@@ -70,6 +72,16 @@ export async function runInstalledDesktopCli(
       `Koed Desktop CLI could not verify its installation: ${error instanceof Error ? error.message : String(error)}\n`
     );
     return 1;
+  }
+  if (args.length === 1 && args[0] === "__control-plane-host") {
+    const capability = dependencies.desktopRuntimeCapability;
+    if (!capability)
+      throw new Error("Verified Desktop runtime capability required");
+    const runHost =
+      runControlPlaneHost ??
+      (await import("./control-plane/host-entrypoint.js"))
+        .runInstalledControlPlaneHost;
+    return runHost({ capability, environment });
   }
   const run = runCli ?? (await import("./cli.js")).runKoedServerCli;
   return run(args, dependencies);

@@ -19,6 +19,38 @@ afterEach(() =>
 );
 
 describe("control-plane host", () => {
+  it("reports uncertain listener cleanup if discovery publication and close both fail", async () => {
+    const scratch = resolve(import.meta.dirname, "../../../../scratch");
+    mkdirSync(scratch, { recursive: true });
+    const root = mkdtempSync(resolve(scratch, "host-"));
+    roots.push(root);
+    const paths = resolveKoedServerPaths({ KOED_HOME: root });
+    const admission = acquireControlPlaneAdmission(paths)!;
+    const close = vi.fn(async () => {
+      throw new Error("close failed");
+    });
+    const transport: ControlTransport = {
+      connect: vi.fn(),
+      listen: vi.fn(async () => ({ close, onError: () => () => {} }))
+    };
+    try {
+      await expect(
+        startControlPlaneHost({
+          paths,
+          admission,
+          core: {} as HostCore,
+          transport,
+          socketPath: "relative",
+          installationId: "install",
+          productVersion: "1",
+          onFatal: vi.fn()
+        })
+      ).rejects.toThrow("Control listener cleanup is uncertain");
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
   it("publishes after listen and closes connections even if discovery removal fails", async () => {
     const scratch = resolve(import.meta.dirname, "../../../../scratch");
     mkdirSync(scratch, { recursive: true });
