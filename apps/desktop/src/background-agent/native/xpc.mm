@@ -1,4 +1,5 @@
 #include <napi.h>
+#include "control-node.h"
 
 #import <Foundation/Foundation.h>
 #import <dispatch/dispatch.h>
@@ -605,6 +606,7 @@ Napi::Object initialize(Napi::Env env, Napi::Object exports) {
   exports.Set("listen", Napi::Function::New(env, listen));
   exports.Set("connect", Napi::Function::New(env, connect));
   exports.Set("teamId", Napi::String::New(env, KOED_SIGNING_TEAM_ID_VALUE));
+  exports.Set("localControl", koed::createLocalControlBinding(env));
   auto limits = Napi::Object::New(env);
   limits.Set("maxPayloadBytes", Napi::Number::New(env, maxPayloadBytes));
   limits.Set("maxPendingRequests", Napi::Number::New(env, maxPendingRequests));

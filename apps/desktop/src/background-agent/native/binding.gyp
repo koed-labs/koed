@@ -5,7 +5,7 @@
   "targets": [
     {
       "target_name": "koed_background_xpc",
-      "sources": ["src/background-agent/native/xpc.mm", "src/background-agent/native/local-control.mm", "src/background-agent/native/control-frame.cc", "src/background-agent/native/control-socket.mm", "src/background-agent/native/control-stream.cc"],
+      "sources": ["src/background-agent/native/xpc.mm", "src/background-agent/native/local-control.mm", "src/background-agent/native/control-frame.cc", "src/background-agent/native/control-socket.mm", "src/background-agent/native/control-stream.cc", "src/background-agent/native/control-node.mm"],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include_dir\")"
       ],

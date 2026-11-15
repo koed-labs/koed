@@ -76,7 +76,9 @@ function prepareStagingDirectory(plan) {
     "control-socket.mm",
     "control-socket.h",
     "control-stream.cc",
-    "control-stream.h"
+    "control-stream.h",
+    "control-node.mm",
+    "control-node.h"
   ]) {
     copyFileSync(
       resolve(plan.desktopRoot, "src/background-agent/native", file),

@@ -79,10 +79,13 @@ test("stages and links native local-control sources and security frameworks", as
   assert.match(script, /control-socket\.h/u);
   assert.match(script, /control-stream\.cc/u);
   assert.match(script, /control-stream\.h/u);
+  assert.match(script, /control-node\.mm/u);
+  assert.match(script, /control-node\.h/u);
   assert.match(binding, /local-control\.mm/u);
   assert.match(binding, /control-frame\.cc/u);
   assert.match(binding, /control-socket\.mm/u);
   assert.match(binding, /control-stream\.cc/u);
+  assert.match(binding, /control-node\.mm/u);
   assert.match(binding, /-framework Security/u);
   assert.match(binding, /-lbsm/u);
 });
