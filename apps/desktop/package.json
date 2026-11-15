@@ -38,8 +38,8 @@
     "test:browser:v1": "vite build --mode v1-validation && electron scripts/validate-v1-ui.mjs && electron scripts/validate-onboarding.mjs && electron scripts/validate-acceleration-lifecycle.mjs"
   },
   "dependencies": {
-    "@koed-labs/server": "workspace:*",
     "@koed-labs/mcp-server": "workspace:*",
+    "@koed-labs/server": "workspace:*",
     "@koed-labs/shared": "workspace:*",
     "ws": "8.21.3",
     "zod": "^4.4.3"
@@ -64,6 +64,8 @@
     "esbuild": "^0.28.0",
     "happy-dom": "^20.9.0",
     "lucide-react": "^0.564.0",
+    "node-addon-api": "8.7.0",
+    "node-gyp": "12.4.0",
     "qrcode": "1.5.4",
     "react": "19.2.6",
     "react-dom": "19.2.6",

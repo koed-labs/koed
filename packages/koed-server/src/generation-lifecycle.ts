@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { assertControlStateCleanForPruning } from "./control-plane/state.js";
 import {
   existsSync,
   closeSync,
@@ -158,17 +159,22 @@ const acquireLifecycleLock = (paths: KoedServerPaths): LifecycleLockRecord => {
 };
 const releaseLifecycleLock = (
   paths: KoedServerPaths,
-  expected: LifecycleLockRecord
+  expected: LifecycleLockRecord,
+  strict = false
 ): void => {
   const path = lockPath(paths);
+  if (strict) assertDirectoryChain(paths.koedHome, path);
   const actual = readLockRecord(path);
   if (
     !actual ||
     actual.pid !== expected.pid ||
     actual.token !== expected.token ||
     actual.processIdentity !== expected.processIdentity
-  )
+  ) {
+    if (strict)
+      throw new Error("runtime lifecycle lock ownership cannot be confirmed");
     return;
+  }
   rmSync(path, { recursive: true, force: true });
 };
 // Run a short synchronous action under the lifecycle lock. Supervisor-lock reclaim
@@ -266,6 +272,11 @@ export const removeStaleGenerationPin = (paths: KoedServerPaths): boolean => {
     (!identity && processIsRunning(pin.pid))
   )
     return false;
+  try {
+    assertControlStateCleanForPruning(paths);
+  } catch {
+    return false;
+  }
   rmSync(generationStatePath(paths), { force: true });
   return true;
 };
@@ -288,6 +299,7 @@ const assertNoActivePin = (
       (!identity && processIsRunning(pin.pid))
     )
       throw new Error("runtime generation is running or pinned");
+    assertControlStateCleanForPruning(paths);
     rmSync(generationStatePath(paths), { force: true });
   }
   const supervisorPath = resolve(paths.runDir, "koed-server.lock");
@@ -685,7 +697,7 @@ const persistPinState = (
   requester: RuntimeOwner,
   lock: LifecycleLockRecord,
   source: "manifest-pinned-store" | "desktop-bundle" = "manifest-pinned-store"
-): { path: string; processIdentity: string } => {
+): { path: string; state: RuntimeGenerationState } => {
   const processIdentity = resolveProcessIdentity(process.pid);
   if (!processIdentity)
     throw new Error("runtime process identity is unavailable");
@@ -707,31 +719,62 @@ const persistPinState = (
     mode: 0o600
   });
   renameSync(temporary, path);
-  return { path, processIdentity };
+  return { path, state };
 };
 const createPinRelease = (
   paths: KoedServerPaths,
   lock: LifecycleLockRecord,
   pinPath: string,
-  processIdentity: string
+  expected: RuntimeGenerationState
 ): (() => Promise<void>) => {
   let released = false;
+  let pinRemoved = false;
   return () =>
     Promise.resolve().then(() => {
       if (released) return;
-      released = true;
-      try {
-        const current = readPinState(paths);
+      const lockDirectory = lockPath(paths);
+      assertDirectoryChain(paths.koedHome, lockDirectory);
+      const actualLock = readLockRecord(lockDirectory);
+      if (
+        !actualLock ||
+        actualLock.pid !== lock.pid ||
+        actualLock.token !== lock.token ||
+        actualLock.processIdentity !== lock.processIdentity
+      )
+        throw new Error("runtime lifecycle lock ownership cannot be confirmed");
+      const current = readPinState(paths);
+      if (current) {
         if (
-          current?.pinToken === lock.token &&
-          current.processIdentity === processIdentity
+          current.pinToken !== expected.pinToken ||
+          current.processIdentity !== expected.processIdentity ||
+          current.pid !== expected.pid ||
+          current.generationId !== expected.generationId ||
+          current.startedAt !== expected.startedAt ||
+          current.source !== expected.source ||
+          !sameOwner(current.owner, expected.owner)
         )
-          rmSync(pinPath, { force: true });
-      } finally {
-        releaseLifecycleLock(paths, lock);
+          throw new Error(
+            "runtime generation pin ownership cannot be confirmed"
+          );
+        rmSync(pinPath);
+        pinRemoved = true;
+      } else if (!pinRemoved) {
+        throw new Error("runtime generation pin ownership cannot be confirmed");
       }
+      releaseLifecycleLock(paths, lock, true);
+      released = true;
     });
 };
+
+export class RuntimePinPublicationError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "Runtime pin published but acquisition failed; Operator attention required",
+      { cause }
+    );
+    this.name = "RuntimePinPublicationError";
+  }
+}
 
 export function readDesktopBundleGeneration(
   paths: KoedServerPaths,
@@ -773,6 +816,7 @@ export async function pinDesktopBundleGenerationForStart(
     throw new Error("validated private Desktop runtime capability is required");
   const requester = resolveDesktopRuntimeOwner(capability, paths.koedHome);
   const lock = acquireLifecycleLock(paths);
+  let pinPublished = false;
   try {
     return await withStoreLock(paths, async () => {
       assertNoActivePin(paths, true);
@@ -815,12 +859,14 @@ export async function pinDesktopBundleGenerationForStart(
         lock,
         "desktop-bundle"
       );
+      pinPublished = true;
       return {
         generation,
-        release: createPinRelease(paths, lock, pin.path, pin.processIdentity)
+        release: createPinRelease(paths, lock, pin.path, pin.state)
       };
     });
   } catch (error) {
+    if (pinPublished) throw new RuntimePinPublicationError(error);
     releaseLifecycleLock(paths, lock);
     throw error;
   }
@@ -852,18 +898,21 @@ export async function pinGenerationForStart(
   requester: RuntimeOwner
 ): Promise<{ generation: VerifiedGeneration; release(): Promise<void> }> {
   const lock = acquireLifecycleLock(paths);
+  let pinPublished = false;
   try {
     return await withStoreLock(paths, async () => {
       assertNoActivePin(paths, true);
       const generation = await readCurrentGeneration(paths);
       assertOwner(generation, requester);
       const pin = persistPinState(paths, generation, requester, lock);
+      pinPublished = true;
       return {
         generation,
-        release: createPinRelease(paths, lock, pin.path, pin.processIdentity)
+        release: createPinRelease(paths, lock, pin.path, pin.state)
       };
     });
   } catch (error) {
+    if (pinPublished) throw new RuntimePinPublicationError(error);
     releaseLifecycleLock(paths, lock);
     throw error;
   }
@@ -978,6 +1027,7 @@ export async function cleanupGenerations(
   const lock = acquireLifecycleLock(paths);
   try {
     return await withStoreLock(paths, async () => {
+      assertControlStateCleanForPruning(paths);
       assertNoActivePin(paths);
       const currentId = readCurrentId(paths);
       const current = currentId

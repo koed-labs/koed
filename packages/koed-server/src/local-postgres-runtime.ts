@@ -60,6 +60,8 @@ export interface LocalPostgresRuntimeStopResult {
 export interface LocalPostgresRuntimeDependencies {
   existsSync?: typeof existsSync;
   spawnSync?: SpawnSyncLike;
+  startSpawnSync?: SpawnSyncLike;
+  requireInitialized?: boolean;
 }
 
 const trim = (value: string | undefined): string | undefined => {
@@ -367,10 +369,11 @@ export const stopLocalPostgresRuntime = (
   }
   if (!exists(resolve(runtime.dataDir, "PG_VERSION"))) {
     return {
-      ok: true,
+      ok: !dependencies.requireInitialized,
       stopped: false,
-      message:
-        "Bundled-local native Postgres data directory was not initialized."
+      message: dependencies.requireInitialized
+        ? "Cannot confirm bundled-local native Postgres stopped: initialization evidence is missing."
+        : "Bundled-local native Postgres data directory was not initialized."
     };
   }
   const status = run(
@@ -380,10 +383,22 @@ export const stopLocalPostgresRuntime = (
     spawnSync
   );
   if (status.status !== 0) {
+    if (!status.error && status.status === 3) {
+      return {
+        ok: true,
+        stopped: false,
+        message: "Bundled-local native Postgres was not running."
+      };
+    }
     return {
-      ok: true,
+      ok: false,
       stopped: false,
-      message: "Bundled-local native Postgres was not running."
+      message:
+        "Cannot confirm bundled-local native Postgres stopped: status probe failed.",
+      error:
+        status.error?.message ??
+        status.stderr?.trim() ??
+        `exit code ${status.status ?? 1}`
     };
   }
   const stopped = run(
@@ -483,6 +498,20 @@ export const startLocalPostgresRuntime = (
   );
   let startedByCurrentProcess = false;
   if (status.status !== 0) {
+    if (status.error || status.status !== 3) {
+      return {
+        ok: false,
+        started: false,
+        env,
+        status: {
+          runtime: "native-postgres",
+          state: "needs_attention",
+          message: "Cannot confirm bundled-local native Postgres status.",
+          details: { exitCode: status.status, stderr: status.stderr },
+          paths: safeRuntimePaths(runtime)
+        }
+      };
+    }
     const started = run(
       runtime.pgCtlBin,
       [
@@ -495,7 +524,7 @@ export const startLocalPostgresRuntime = (
         `-h ${runtime.host} -p ${runtime.port}`
       ],
       env,
-      spawnSync
+      dependencies.startSpawnSync ?? spawnSync
     );
     if (started.status !== 0) {
       return {

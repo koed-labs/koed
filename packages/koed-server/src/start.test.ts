@@ -29,8 +29,15 @@ import {
   vi
 } from "vitest";
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
+import * as appRuntime from "./app-runtime.js";
+import * as runtimeSelection from "./service-runtime-selection.js";
 import type { RuntimeOwner } from "./component-contract.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import {
+  acquireControlPlaneAdmission,
+  assertControlPlaneAdmission,
+  releaseControlPlaneAdmission
+} from "./control-plane/admission.js";
 import { createPerformanceManagement } from "./performance-management.js";
 import { setupCore } from "./setup.js";
 import { loadRepoEnv } from "./env-file.js";
@@ -49,12 +56,16 @@ import {
 import type { KoedServerStatus } from "./types.js";
 
 // Keep the test worker at its own priority; nice cannot be raised back.
+const resolveManagedPriorityPrefix = vi.hoisted(() =>
+  vi.fn<() => string[]>(() => [])
+);
 const lowerBackgroundServicePriority = vi.hoisted(() =>
   vi.fn(() => ({ applied: false as const, reason: "disabled" as const }))
 );
 vi.mock("./process-priority.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./process-priority.js")>()),
-  lowerBackgroundServicePriority
+  lowerBackgroundServicePriority,
+  resolveManagedPriorityPrefix
 }));
 
 // Supervisor tests spawn fake children with small fake PIDs. A real process
@@ -418,6 +429,235 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
+  it("persists packaged generation before launching children", async () => {
+    const root = realpathSync(tempDir());
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/db",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://operator:8000",
+      MEMORY_API_TOKEN: "test-runtime-token"
+    };
+    const admission = acquireControlPlaneAdmission(
+      resolveKoedServerPaths(environment)
+    )!;
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      "packaged"
+    );
+    const release = vi.fn(async () => {});
+    vi.spyOn(
+      runtimeSelection,
+      "pinAndResolvePackagedRuntime"
+    ).mockResolvedValue({
+      pin: { generation: { id: "generation-1" }, release },
+      runtime: {}
+    } as never);
+    const spawn = vi.fn(() => child(10));
+    const persistGenerationBeforeEffects = vi.fn(async () => {
+      throw new Error("state persistence failed");
+    });
+    try {
+      await expect(
+        startKoedServer({
+          environment,
+          admission,
+          spawn,
+          spawnSync: () => spawnResult(),
+          persistGenerationBeforeEffects
+        })
+      ).rejects.toThrow("state persistence failed");
+      expect(persistGenerationBeforeEffects).toHaveBeenCalledWith(
+        "generation-1"
+      );
+      expect(spawn).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
+
+  it("does not launch children when stopped during packaged generation selection", async () => {
+    const root = realpathSync(tempDir());
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/db",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://operator:8000",
+      MEMORY_API_TOKEN: "test-runtime-token"
+    };
+    const admission = acquireControlPlaneAdmission(
+      resolveKoedServerPaths(environment)
+    )!;
+    const controller = new AbortController();
+    const release = vi.fn(async () => {});
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      "packaged"
+    );
+    vi.spyOn(
+      runtimeSelection,
+      "pinAndResolvePackagedRuntime"
+    ).mockImplementation(async () => {
+      controller.abort();
+      return {
+        pin: { generation: { id: "generation-1" }, release },
+        runtime: {}
+      } as never;
+    });
+    const spawn = vi.fn(() => child(10));
+    try {
+      await expect(
+        startKoedServer({
+          environment,
+          admission,
+          signal: controller.signal,
+          spawn,
+          spawnSync: () => spawnResult(),
+          persistGenerationBeforeEffects: () => {}
+        })
+      ).rejects.toThrow(/stopped before readiness/);
+      expect(spawn).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
+
+  it("reports unclean when existing runtime evidence blocks a borrowed start", async () => {
+    const root = realpathSync(tempDir());
+    const environment = { KOED_HOME: root, KOED_REPO_ROOT: root };
+    const paths = resolveKoedServerPaths(environment);
+    const admission = acquireControlPlaneAdmission(paths)!;
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.runtimeStatePath, "{}");
+    const cleanup = vi.fn();
+    await expect(
+      startKoedServer({ environment, admission, onCleanupOutcome: cleanup })
+    ).rejects.toThrow(/runtime evidence/i);
+    expect(cleanup).toHaveBeenCalledWith({ clean: false });
+    expect(() => releaseControlPlaneAdmission(admission)).toThrow(/uncertain/i);
+  });
+
+  it("does not report clean for a pre-aborted second start", async () => {
+    const root = realpathSync(tempDir());
+    const environment = { KOED_HOME: root, KOED_REPO_ROOT: root };
+    const admission = acquireControlPlaneAdmission(
+      resolveKoedServerPaths(environment)
+    )!;
+    const controller = new AbortController();
+    controller.abort();
+    const cleanup = vi.fn();
+    try {
+      await expect(
+        startKoedServer({
+          environment,
+          admission,
+          signal: controller.signal,
+          onCleanupOutcome: cleanup
+        })
+      ).rejects.toThrow(/stopped before readiness/i);
+      expect(cleanup).not.toHaveBeenCalled();
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
+
+  it.skipIf(process.platform !== "darwin")(
+    "applies the launch-only priority prefix to managed services without lowering the control plane",
+    async () => {
+      const root = realpathSync(tempDir());
+      const resources = createNativeResources(root);
+      mkdirSync(resolve(root, "data", "postgres"), { recursive: true });
+      writeFileSync(resolve(root, "data", "postgres", "PG_VERSION"), "17");
+      createSourceDesktopDbRuntime(
+        root,
+        "77777777-7777-4777-8777-777777777777"
+      );
+      mkdirSync(resolve(root, "models"));
+      writeFileSync(
+        resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
+        "model"
+      );
+      const environment = {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_AUTO_PORTS: "0",
+        KOED_TEAM_COLLABORATION_ENABLED: "true",
+        MEMORY_API_TOKEN: "test-runtime-token",
+        POSTGRES_HOST_PORT: "25432",
+        EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT: "18081"
+      };
+      const admission = acquireControlPlaneAdmission(
+        resolveKoedServerPaths(environment)
+      )!;
+      const commands: Array<{ command: string; args: string[] }> = [];
+      const spawned: Array<{ command: string; args: string[] }> = [];
+      lowerBackgroundServicePriority.mockClear();
+      resolveManagedPriorityPrefix.mockReturnValueOnce([
+        "/usr/bin/nice",
+        "-n",
+        "10"
+      ]);
+      try {
+        await startKoedServer({
+          ...cleanShutdownAfterReady(),
+          environment,
+          admission,
+          timeoutMs: 1,
+          pollIntervalMs: 1,
+          spawnSync: (command, args) => {
+            commands.push({ command, args });
+            if (command.endsWith("pg_ctl") && args.includes("status"))
+              return { ...spawnResult(), status: 3 };
+            return spawnResult();
+          },
+          spawn: (command, args) => {
+            spawned.push({ command, args });
+            return child(spawned.length);
+          },
+          collectStatus: async () => healthyStatus(root)
+        });
+        expect(lowerBackgroundServicePriority).not.toHaveBeenCalled();
+        expect(
+          commands.some(
+            ({ command, args }) =>
+              command === "/usr/bin/nice" &&
+              args.includes("start") &&
+              args.includes(resolve(resources.pgBin, "pg_ctl"))
+          )
+        ).toBe(true);
+        expect(spawned.length).toBeGreaterThanOrEqual(4);
+        expect(
+          spawned.every(({ command }) => command === "/usr/bin/nice")
+        ).toBe(true);
+      } finally {
+        releaseControlPlaneAdmission(admission);
+      }
+    }
+  );
+
+  it("leaves admission reusable when startup was already cancelled", async () => {
+    const root = realpathSync(tempDir());
+    const environment = { KOED_HOME: root, KOED_REPO_ROOT: root };
+    const paths = resolveKoedServerPaths(environment);
+    const admission = acquireControlPlaneAdmission(paths)!;
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await expect(
+        startKoedServer({ environment, admission, signal: controller.signal })
+      ).rejects.toThrow(/stopped|cancelled|aborted/i);
+      expect(() => assertControlPlaneAdmission(admission, paths)).not.toThrow();
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
   it("rejects caller-constructed Desktop runtime authority", async () => {
     await expect(
       startKoedServer({
@@ -1416,7 +1656,7 @@ describe("start supervisor", () => {
             return {
               stdout: "",
               stderr: "not running",
-              status: 1,
+              status: 3,
               signal: null,
               pid: 1,
               output: []
@@ -1554,7 +1794,7 @@ describe("start supervisor", () => {
           return {
             stdout: "",
             stderr: "not running",
-            status: 1,
+            status: 3,
             signal: null,
             pid: 1,
             output: []
@@ -1723,7 +1963,7 @@ describe("start supervisor", () => {
           return {
             stdout: "",
             stderr: "not running",
-            status: 1,
+            status: 3,
             signal: null,
             pid: 1,
             output: []
@@ -1863,7 +2103,7 @@ describe("start supervisor", () => {
             return {
               stdout: "",
               stderr: "not running",
-              status: 1,
+              status: 3,
               signal: null,
               pid: 1,
               output: []
@@ -1959,7 +2199,7 @@ describe("start supervisor", () => {
           return {
             stdout: "",
             stderr: "not running",
-            status: 1,
+            status: 3,
             signal: null,
             pid: 1,
             output: []
@@ -2254,7 +2494,7 @@ describe("start supervisor", () => {
             return spawnSync(command, args, { ...options, encoding: "utf8" });
           }
           return args.includes("status")
-            ? ({ ...spawnResult(), status: 1 } as never)
+            ? ({ ...spawnResult(), status: 3 } as never)
             : spawnResult();
         },
         spawn: (_command, args, options) => {

@@ -1,3 +1,8 @@
+import type {
+  spawnSync as nodeSpawnSync,
+  SpawnSyncReturns
+} from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import {
   getPriority as nodeGetPriority,
   setPriority as nodeSetPriority
@@ -49,6 +54,66 @@ export const resolveBackgroundNice = (
   }
   const value = Number(raw);
   return value === 0 ? null : value;
+};
+
+export const resolveManagedPriorityPrefix = (
+  environment: NodeJS.ProcessEnv,
+  options: {
+    platform?: string;
+    getPriority?: () => number;
+    canExecute?: (path: string) => boolean;
+    warn?: (message: string) => void;
+  } = {}
+): string[] => {
+  if ((options.platform ?? process.platform) !== "darwin") return [];
+  const warn = options.warn ?? console.warn;
+  const target = resolveBackgroundNice(environment, warn);
+  if (target === null) return [];
+  try {
+    const current = (options.getPriority ?? (() => nodeGetPriority(0)))();
+    if (current >= target) return [];
+    const canExecute =
+      options.canExecute ??
+      ((path: string) => {
+        accessSync(path, constants.X_OK);
+        return true;
+      });
+    if (!canExecute("/usr/bin/nice"))
+      throw new Error("/usr/bin/nice is unavailable");
+    return ["/usr/bin/nice", "-n", String(target - current)];
+  } catch (error) {
+    warn(
+      `Could not lower Koed background service priority: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return [];
+  }
+};
+
+type SpawnSyncLike = (
+  command: string,
+  args: string[],
+  options?: Parameters<typeof nodeSpawnSync>[2]
+) => SpawnSyncReturns<string>;
+
+export const spawnSyncWithPriority = (
+  spawn: SpawnSyncLike,
+  prefix: string[],
+  target: string,
+  args: string[],
+  options?: Parameters<typeof nodeSpawnSync>[2],
+  warn: (message: string) => void = console.warn
+): SpawnSyncReturns<string> => {
+  if (prefix.length === 0) return spawn(target, args, options);
+  const [command, ...prefixArgs] = prefix;
+  const result = spawn(command!, [...prefixArgs, target, ...args], options);
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (result.pid === 0 && (code === "ENOENT" || code === "EACCES")) {
+    warn(
+      "Could not launch the background priority utility; starting service without it."
+    );
+    return spawn(target, args, options);
+  }
+  return result;
 };
 
 /**

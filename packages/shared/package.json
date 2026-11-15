@@ -43,6 +43,10 @@
       "types": "./dist/resource-profiles.d.ts",
       "import": "./dist/resource-profiles.js"
     },
+    "./local-control-protocol": {
+      "types": "./dist/local-control-protocol.d.ts",
+      "import": "./dist/local-control-protocol.js"
+    },
     "./historical-ingestion-progress": {
       "types": "./dist/historical-ingestion-progress.d.ts",
       "import": "./dist/historical-ingestion-progress.js"
