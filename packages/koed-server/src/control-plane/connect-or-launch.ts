@@ -6,6 +6,8 @@ export async function connectOrLaunchControlPlane(input: {
   read(): ControlDiscovery | undefined;
   isLocked(): boolean;
   launch(): void;
+  launchIfMissing?: boolean;
+  launchFailure?: () => Error | undefined;
   connect(discovery: ControlDiscovery): Promise<ControlClient>;
   installationId: string;
   productVersion: string;
@@ -29,6 +31,10 @@ export async function connectOrLaunchControlPlane(input: {
     throw new Error(
       "Koed has an owner but no control-plane endpoint; Operator attention required"
     );
+  if (input.launchIfMissing === false)
+    throw new Error(
+      "No control-plane endpoint is available; Stop was not recorded"
+    );
   input.launch();
   const now = input.now ?? Date.now;
   const sleep =
@@ -38,6 +44,8 @@ export async function connectOrLaunchControlPlane(input: {
   while (now() < deadline) {
     const discovery = input.read();
     if (discovery) return connect(discovery);
+    const failure = input.launchFailure?.();
+    if (failure && !input.isLocked()) throw failure;
     await sleep(100);
   }
   throw new Error(

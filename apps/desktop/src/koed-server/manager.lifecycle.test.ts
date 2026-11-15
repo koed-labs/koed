@@ -62,6 +62,8 @@ const harness = (
     startupFailure?: string;
     managementStderr?: string;
     invalidManagementHandshake?: boolean;
+    sharedControl?: boolean;
+    holdControlStart?: boolean;
   } = {}
 ) => {
   const spawned: EventEmitter[] = [];
@@ -146,14 +148,32 @@ const harness = (
     spawned.push(child);
     return child;
   });
-  const execFile = vi.fn((_command, _args, _options, callback) =>
-    callback(null, JSON.stringify({ ok: true, state: "stopped" }), "")
-  );
+  let releaseControlStart: (() => void) | undefined;
+  const execFile = vi.fn((_command, _args, _options, callback) => {
+    const reply = () =>
+      callback(null, JSON.stringify({ ok: true, state: "stopped" }), "");
+    if (
+      options.holdControlStart &&
+      _command === "/installed-control" &&
+      _args[0] === "start"
+    )
+      releaseControlStart = reply;
+    else reply();
+  });
   const manager = createKoedServerManager({
     repoRoot: "/repo",
     cliPath: "/repo/cli.js",
     environment: { KOED_HOME: home },
     createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+    ...(options.sharedControl
+      ? {
+          createControlCliInvocation: (args: string[]) => ({
+            command: "/installed-control",
+            args,
+            env: {}
+          })
+        }
+      : {}),
     createSupervisorInvocation: () => ({
       command: "/electron",
       args: ["private-entry.js"],
@@ -165,10 +185,89 @@ const harness = (
     spawn: spawn as never,
     openExternal: async () => undefined
   });
-  return { manager, spawn, spawned, actions, execFile };
+  return {
+    manager,
+    spawn,
+    spawned,
+    actions,
+    execFile,
+    releaseStart: () => releaseControlStart?.()
+  };
 };
 
 describe("Desktop manager shared lifecycle", () => {
+  it("routes selected packaged starts and stops through the installed control CLI", async () => {
+    const home = verifiedHome();
+    const { manager, spawn, execFile } = harness(
+      home,
+      () => lifecycleReply(stopped, true),
+      { sharedControl: true }
+    );
+    await expect(manager.handlers.start_daemon()).resolves.toMatchObject({
+      ok: true
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(
+      execFile.mock.calls.some(
+        (call) => call[0] === "/installed-control" && call[1]?.[0] === "start"
+      )
+    ).toBe(true);
+    await manager.handlers.stop();
+    expect(
+      execFile.mock.calls.some(
+        (call) => call[0] === "/installed-control" && call[1]?.[0] === "stop"
+      )
+    ).toBe(true);
+  });
+  it("uses automatic intent for Desktop resume", async () => {
+    const home = verifiedHome();
+    const { manager, execFile } = harness(
+      home,
+      () => lifecycleReply(stopped, true),
+      { sharedControl: true }
+    );
+    execFile.mockImplementation((_command, _args, _options, callback) =>
+      callback(
+        null,
+        JSON.stringify({ ok: false, error: "explicit stop remains" }),
+        ""
+      )
+    );
+    await manager.resume();
+    expect(
+      execFile.mock.calls.some(
+        (call) => call[1]?.[0] === "__control-plane-start-automatic"
+      )
+    ).toBe(true);
+  });
+  it("waits for control-plane activation before an explicit stop", async () => {
+    const home = verifiedHome();
+    const { manager, execFile, releaseStart } = harness(
+      home,
+      () => lifecycleReply(stopped, true),
+      { sharedControl: true, holdControlStart: true }
+    );
+    const start = manager.handlers.start_daemon();
+    await vi.waitFor(() =>
+      expect(execFile.mock.calls.some((call) => call[1]?.[0] === "start")).toBe(
+        true
+      )
+    );
+    const queuedStart = manager.handlers.start_daemon();
+    const stop = manager.handlers.stop();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(execFile.mock.calls.some((call) => call[1]?.[0] === "stop")).toBe(
+      false
+    );
+    releaseStart();
+    await Promise.all([start, queuedStart, stop]);
+    expect(
+      execFile.mock.calls.filter((call) => call[1]?.[0] === "start")
+    ).toHaveLength(1);
+    expect(execFile.mock.calls.some((call) => call[1]?.[0] === "stop")).toBe(
+      true
+    );
+  });
   it("adopts a Desktop-owned supervisor started by the installed CLI without spawning another", async () => {
     const home = verifiedHome();
     observed.current = live(77);

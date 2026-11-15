@@ -233,6 +233,20 @@ const createServerManager = (
         environment: koedEnvironment,
         existsSync
       }),
+    createControlCliInvocation:
+      app.isPackaged && process.platform === "darwin"
+        ? (args) => ({
+            command: process.execPath,
+            args: [
+              resolve(
+                process.resourcesPath,
+                "app.asar/node_modules/@koed-labs/server/dist/desktop-cli-entrypoint.js"
+              ),
+              ...args
+            ],
+            env: { ...koedEnvironment, ELECTRON_RUN_AS_NODE: "1" }
+          })
+        : undefined,
     createSupervisorInvocation: app.isPackaged
       ? () =>
           createNodeEntrypointInvocation(

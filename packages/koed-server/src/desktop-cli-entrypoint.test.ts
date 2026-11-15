@@ -83,6 +83,29 @@ it("starts the detached host only after verifying the packaged installation", as
   expect(runCli).not.toHaveBeenCalled();
 });
 
+it("routes packaged macOS start and stop to the control plane", async () => {
+  const { resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const runControlPlaneCli = vi.fn(async () => 0);
+  const runCli = vi.fn(async () => 0);
+  for (const args of [["start", "--daemon"], ["stop"]]) {
+    await expect(
+      runInstalledDesktopCli(args, {
+        moduleUrl: pathToFileURL(entry).href,
+        executable,
+        platform: "darwin",
+        electronVersion: "39.8.10",
+        environment: {},
+        verifyBundle: () => capability,
+        runControlPlaneCli,
+        runCli
+      })
+    ).resolves.toBe(0);
+  }
+  expect(runControlPlaneCli).toHaveBeenCalledTimes(2);
+  expect(runCli).not.toHaveBeenCalled();
+});
+
 it("fails closed before running any command outside its installation", async () => {
   const { entry } = installation();
   const runCli = vi.fn(async () => 0);

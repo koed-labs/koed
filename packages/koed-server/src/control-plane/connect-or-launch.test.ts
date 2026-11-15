@@ -57,6 +57,34 @@ describe("connect or launch", () => {
     ).rejects.toThrow("incompatible");
     expect(launch).not.toHaveBeenCalled();
   });
+  it("does not launch a persistent host for Stop", async () => {
+    const launch = vi.fn();
+    await expect(
+      connectOrLaunchControlPlane({
+        read: () => undefined,
+        isLocked: () => false,
+        launch,
+        launchIfMissing: false,
+        connect: vi.fn(),
+        installationId: "install",
+        productVersion: "1"
+      })
+    ).rejects.toThrow("Stop was not recorded");
+    expect(launch).not.toHaveBeenCalled();
+  });
+  it("reports a failed launch without waiting for the timeout", async () => {
+    await expect(
+      connectOrLaunchControlPlane({
+        read: () => undefined,
+        isLocked: () => false,
+        launch: vi.fn(),
+        launchFailure: () => new Error("host exited"),
+        connect: vi.fn(),
+        installationId: "install",
+        productVersion: "1"
+      })
+    ).rejects.toThrow("host exited");
+  });
   it("waits for the newly launched host before connecting", async () => {
     const read = vi
       .fn()

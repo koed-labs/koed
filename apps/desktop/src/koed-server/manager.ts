@@ -250,6 +250,7 @@ export interface KoedServerManagerOptions {
   cliPath: string;
   environment: NodeJS.ProcessEnv;
   createCliInvocation: (args: string[]) => NodeEntrypointInvocation;
+  createControlCliInvocation?: (args: string[]) => NodeEntrypointInvocation;
   createSupervisorInvocation?: () => NodeEntrypointInvocation;
   packagedResourcesPath?: string;
   productVersion?: string;
@@ -1564,6 +1565,7 @@ export const createKoedServerManager = ({
   cliPath,
   environment,
   createCliInvocation,
+  createControlCliInvocation,
   createSupervisorInvocation,
   packagedResourcesPath,
   productVersion,
@@ -1755,7 +1757,15 @@ export const createKoedServerManager = ({
         return;
       }
 
-      const invocation = createCliInvocation([...args, "--json"]);
+      const factory =
+        createControlCliInvocation &&
+        (args[0] === "start" ||
+          args[0] === "stop" ||
+          args[0] === "__control-plane-stop-implicit" ||
+          args[0] === "__control-plane-start-automatic")
+          ? createControlCliInvocation
+          : createCliInvocation;
+      const invocation = factory([...args, "--json"]);
       let settled = false;
       const child = execFile(
         invocation.command,
@@ -5430,10 +5440,26 @@ export const createKoedServerManager = ({
     };
   };
 
+  let pendingControlStart: Promise<unknown> | null = null;
   const requestDaemonStartUnlocked = async (
     generation: number,
-    explicitStopAtStart: number
+    explicitStopAtStart: number,
+    automatic = false
   ) => {
+    if (createControlCliInvocation) {
+      if (generation !== stopGeneration) return stoppedStartResult();
+      const pending = runJson(
+        [automatic ? "__control-plane-start-automatic" : "start", "--daemon"],
+        120_000
+      );
+      pendingControlStart = pending;
+      try {
+        const result = await pending;
+        return generation === stopGeneration ? result : stoppedStartResult();
+      } finally {
+        if (pendingControlStart === pending) pendingControlStart = null;
+      }
+    }
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
       let live: Awaited<ReturnType<typeof inspectLiveInstance>>;
       try {
@@ -5549,7 +5575,8 @@ export const createKoedServerManager = ({
   };
   const requestDaemonStart = (
     generation = captureStartGeneration(),
-    explicitStopAtStart = explicitStopGeneration
+    explicitStopAtStart = explicitStopGeneration,
+    automatic = false
   ) => {
     if (acceleration.isRunning() || performance.isRunning())
       return Promise.resolve({
@@ -5557,7 +5584,7 @@ export const createKoedServerManager = ({
         error: "Wait for the processing change to finish before starting Koed."
       });
     return withLifecycleOperation(() =>
-      requestDaemonStartUnlocked(generation, explicitStopAtStart)
+      requestDaemonStartUnlocked(generation, explicitStopAtStart, automatic)
     );
   };
 
@@ -5601,7 +5628,11 @@ export const createKoedServerManager = ({
     const explicitStopAtStart = explicitStopGeneration;
     const generation = captureStartGeneration();
     try {
-      const result = await requestDaemonStart(generation, explicitStopAtStart);
+      const result = await requestDaemonStart(
+        generation,
+        explicitStopAtStart,
+        true
+      );
       if (generation !== stopGeneration) {
         return isSupervisorStartupFailureResult(result) &&
           explicitStopAtStart === explicitStopGeneration
@@ -6073,6 +6104,8 @@ export const createKoedServerManager = ({
       setupAbort?.abort();
     }
     await closeDesktopServices();
+    // An explicit Stop must not race ahead of a still-activating control plane.
+    if (pendingControlStart) await pendingControlStart;
     if (desktopSupervisorProcess && !desktopSupervisorProcess.killed) {
       const child = desktopSupervisorProcess;
       if (child.connected) child.send({ type: "koed.desktop.supervisor.stop" });
@@ -6107,7 +6140,14 @@ export const createKoedServerManager = ({
       };
     }
     // Include the supervisor's graceful shutdown window before CLI fallback.
-    const result = await runJson(["stop"], 90_000);
+    const result = await runJson(
+      [
+        createControlCliInvocation && !explicit
+          ? "__control-plane-stop-implicit"
+          : "stop"
+      ],
+      95_000
+    );
     if (serverProcess && !serverProcess.killed) serverProcess.kill("SIGTERM");
     serverProcess = null;
     return result;

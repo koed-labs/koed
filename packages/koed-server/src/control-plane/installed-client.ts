@@ -32,6 +32,7 @@ export async function openInstalledControlPlane(input: {
   environment: NodeJS.ProcessEnv;
   executable: string;
   entrypoint: string;
+  launchIfMissing?: boolean;
 }) {
   const paths = resolveKoedServerPaths(input.environment);
   ensureKoedHome(paths);
@@ -66,7 +67,10 @@ export async function openInstalledControlPlane(input: {
     )
       throw new Error("Control-plane discovery owner cannot be verified");
   };
+  let launchFailure: Error | undefined;
   return connectOrLaunchControlPlane({
+    launchIfMissing: input.launchIfMissing,
+    launchFailure: () => launchFailure,
     read: () => readControlDiscovery(paths),
     isLocked,
     installationId: owner.installationId,
@@ -109,11 +113,16 @@ export async function openInstalledControlPlane(input: {
           [input.entrypoint, "__control-plane-host"],
           { detached: true, stdio: ["ignore", fd, fd], env: input.environment }
         );
-        child.once("error", (error) =>
-          process.stderr.write(
-            `Could not launch control plane: ${error.message}\n`
-          )
-        );
+        child.once("error", (error) => {
+          launchFailure = new Error(
+            `Could not launch control plane: ${error.message}; check ${resolve(paths.logsDir, "control-plane.log")}`
+          );
+        });
+        child.once("exit", (code, signal) => {
+          launchFailure ??= new Error(
+            `Control plane exited before discovery (${signal ?? code}); check ${resolve(paths.logsDir, "control-plane.log")}`
+          );
+        });
         child.unref();
       } finally {
         closeSync(fd);

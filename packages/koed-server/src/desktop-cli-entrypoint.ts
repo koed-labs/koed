@@ -14,6 +14,8 @@ export interface InstalledDesktopCliDependencies {
   environment?: NodeJS.ProcessEnv;
   verifyBundle?: typeof verifyDesktopRuntimeBundle;
   runControlPlaneHost?: typeof import("./control-plane/host-entrypoint.js").runInstalledControlPlaneHost;
+  runControlPlaneCli?: typeof import("./control-plane/cli.js").runControlPlaneCli;
+  stdout?: Pick<NodeJS.WriteStream, "write">;
   runCli?: (
     args: string[],
     dependencies: KoedServerCliDependencies
@@ -43,6 +45,8 @@ export async function runInstalledDesktopCli(
     environment = process.env,
     verifyBundle = verifyDesktopRuntimeBundle,
     runControlPlaneHost,
+    runControlPlaneCli,
+    stdout = process.stdout,
     runCli,
     stderr = process.stderr
   }: InstalledDesktopCliDependencies = {}
@@ -82,6 +86,49 @@ export async function runInstalledDesktopCli(
       (await import("./control-plane/host-entrypoint.js"))
         .runInstalledControlPlaneHost;
     return runHost({ capability, environment });
+  }
+  if (
+    platform === "darwin" &&
+    (args[0] === "start" ||
+      args[0] === "stop" ||
+      args[0] === "restart" ||
+      args[0] === "__control-plane-stop-implicit" ||
+      args[0] === "__control-plane-start-automatic") &&
+    !args.includes("--help") &&
+    !args.includes("-h")
+  ) {
+    const capability = dependencies.desktopRuntimeCapability;
+    const invocation = dependencies.supervisorInvocation;
+    if (!capability || !invocation)
+      throw new Error("Verified Desktop runtime capability required");
+    const runControl =
+      runControlPlaneCli ??
+      (await import("./control-plane/cli.js")).runControlPlaneCli;
+    const implicit = args[0] === "__control-plane-stop-implicit";
+    const automatic = args[0] === "__control-plane-start-automatic";
+    return runControl(
+      implicit
+        ? ["stop", "--non-explicit", ...args.slice(1)]
+        : automatic
+          ? ["start", "--non-explicit", ...args.slice(1)]
+          : args,
+      {
+        stdout,
+        stderr,
+        allowImplicitStop: implicit,
+        allowAutomaticStart: automatic,
+        connect: async (command) =>
+          (
+            await import("./control-plane/installed-client.js")
+          ).openInstalledControlPlane({
+            capability,
+            environment,
+            executable,
+            entrypoint: invocation.startCommand,
+            launchIfMissing: command !== "stop"
+          })
+      }
+    );
   }
   const run = runCli ?? (await import("./cli.js")).runKoedServerCli;
   return run(args, dependencies);
