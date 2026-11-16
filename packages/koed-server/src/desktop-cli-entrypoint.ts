@@ -96,6 +96,46 @@ export async function runInstalledDesktopCli(
     );
     return 0;
   }
+  if (
+    platform === "darwin" &&
+    args.length === 1 &&
+    args[0] === "__control-plane-desktop-session"
+  ) {
+    const capability = dependencies.desktopRuntimeCapability;
+    const invocation = dependencies.supervisorInvocation;
+    if (!capability || !invocation || !process.connected || !process.send)
+      throw new Error("A Desktop parent IPC connection is required");
+    const { openInstalledControlPlane } =
+      await import("./control-plane/installed-client.js");
+    const { serveDesktopSession } =
+      await import("./control-plane/desktop-session.js");
+    const client = await openInstalledControlPlane({
+      capability,
+      environment,
+      executable,
+      entrypoint: invocation.startCommand
+    });
+    return serveDesktopSession(client, {
+      get connected() {
+        return Boolean(process.connected && process.send);
+      },
+      send(message) {
+        if (!process.connected || !process.send)
+          throw new Error("Desktop parent disconnected");
+        process.send(
+          message as Parameters<NonNullable<typeof process.send>>[0]
+        );
+      },
+      onMessage(listener) {
+        process.on("message", listener);
+        return () => process.off("message", listener);
+      },
+      onDisconnect(listener) {
+        process.on("disconnect", listener);
+        return () => process.off("disconnect", listener);
+      }
+    });
+  }
   if (args.length === 1 && args[0] === "__control-plane-host") {
     const capability = dependencies.desktopRuntimeCapability;
     if (!capability)

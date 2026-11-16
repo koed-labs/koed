@@ -7,7 +7,8 @@ import type { HostCore } from "./host-core.js";
 /** Call only after native authentication and the connection hello have succeeded. */
 export function dispatchControlRequest(
   core: HostCore,
-  value: unknown
+  value: unknown,
+  desktop?: { attach(): void; detach(intentional: boolean): void }
 ): ControlReply {
   const request = controlRequestSchema.parse(value);
   const current = core.status();
@@ -43,12 +44,30 @@ export function dispatchControlRequest(
           snapshot: core.stop(request.command.explicit)
         };
       case "attach":
+        if (request.command.reason === "desktop-session") {
+          if (!desktop) return fail("unsupported_operation");
+          desktop.attach();
+          return {
+            requestId: request.requestId,
+            ok: true,
+            snapshot: core.status()
+          };
+        }
         return {
           requestId: request.requestId,
           ok: true,
           snapshot: core.attach(request.command.reason)
         };
       case "detach":
+        if (request.command.reason === "desktop-session") {
+          if (!desktop) return fail("unsupported_operation");
+          desktop.detach(request.command.intentional);
+          return {
+            requestId: request.requestId,
+            ok: true,
+            snapshot: core.status()
+          };
+        }
         return {
           requestId: request.requestId,
           ok: true,

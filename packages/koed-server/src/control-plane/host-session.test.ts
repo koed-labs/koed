@@ -33,7 +33,9 @@ function fixture() {
     state: "stopped" as const,
     stopIntent: false
   };
+  const closeDesktop = vi.fn();
   const core = {
+    openDesktopSession: vi.fn(() => ({ close: closeDesktop })),
     status: () => snapshot,
     start: vi.fn(() => snapshot),
     stop: vi.fn(() => snapshot)
@@ -50,6 +52,7 @@ function fixture() {
   return {
     connection,
     core,
+    closeDesktop,
     sent,
     validateHello,
     end: () => onEnd(),
@@ -62,6 +65,46 @@ async function settle() {
 }
 
 describe("control host connection", () => {
+  it("ties Desktop availability to the authenticated connection", async () => {
+    const f = fixture();
+    f.message("valid");
+    f.message({
+      requestId: "a",
+      instanceId: "instance",
+      expectedRevision: 1,
+      command: { action: "attach", reason: "desktop-session" }
+    });
+    await settle();
+    expect(f.core.openDesktopSession).toHaveBeenCalledOnce();
+    expect(JSON.parse(f.sent[1]!) as unknown).toMatchObject({ ok: true });
+    f.connection.close();
+    expect(f.closeDesktop).toHaveBeenCalledWith(false);
+  });
+  it("marks an explicit Desktop detach intentional exactly once", async () => {
+    const f = fixture();
+    f.message("valid");
+    f.message({
+      requestId: "a",
+      instanceId: "instance",
+      expectedRevision: 1,
+      command: { action: "attach", reason: "desktop-session" }
+    });
+    f.message({
+      requestId: "b",
+      instanceId: "instance",
+      expectedRevision: 1,
+      command: {
+        action: "detach",
+        reason: "desktop-session",
+        intentional: true
+      }
+    });
+    await settle();
+    expect(f.closeDesktop).toHaveBeenCalledOnce();
+    expect(f.closeDesktop).toHaveBeenCalledWith(true);
+    f.connection.close();
+    expect(f.closeDesktop).toHaveBeenCalledOnce();
+  });
   it("validates the first hello before dispatching requests", async () => {
     const f = fixture();
     f.message("valid");

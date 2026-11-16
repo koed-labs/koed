@@ -22,6 +22,7 @@ export interface HostCore {
   stop(explicit: boolean): HostSnapshot;
   attach(reason: AvailabilityReason): HostSnapshot;
   detach(reason: AvailabilityReason): HostSnapshot;
+  openDesktopSession(): { close(intentional: boolean): void };
 }
 
 export function createControlPlaneHostCore(input: {
@@ -40,6 +41,12 @@ export function createControlPlaneHostCore(input: {
   let persistenceFailed = false;
   let stopPending = false;
   let serial = 0;
+  let desktopSessions = 0;
+  const disconnected = new Set<ReturnType<typeof setTimeout>>();
+  const clearDisconnectGrace = (): void => {
+    for (const timer of disconnected) clearTimeout(timer);
+    disconnected.clear();
+  };
 
   const update = (
     change: (current: ControlIntent) => ControlIntent
@@ -92,6 +99,7 @@ export function createControlPlaneHostCore(input: {
       throw new Error("Explicit Stop prevents automatic start");
     if (state !== "stopped" || session)
       throw new Error("Runtime is not stopped");
+    if (explicit) clearDisconnectGrace();
     update((previous) => ({
       ...previous,
       stopIntent: explicit ? false : previous.stopIntent,
@@ -133,7 +141,13 @@ export function createControlPlaneHostCore(input: {
   };
   const stop = (explicit: boolean): HostSnapshot => {
     try {
-      if (explicit) update((current) => ({ ...current, stopIntent: true }));
+      if (explicit) clearDisconnectGrace();
+      if (explicit)
+        update((current) => ({
+          ...current,
+          stopIntent: true,
+          persistentCli: false
+        }));
     } catch (failure) {
       persistenceFailed = true;
       error = failure instanceof Error ? failure.message : String(failure);
@@ -148,10 +162,67 @@ export function createControlPlaneHostCore(input: {
     }
     return status();
   };
+  const reconcileDesktopDemand = (): void => {
+    if (state === "needs_attention")
+      throw new Error("Runtime requires Operator attention");
+    const current = input.store.read();
+    if (
+      desktopSessions === 0 &&
+      disconnected.size === 0 &&
+      !current.backgroundEnabled &&
+      !current.persistentCli &&
+      (state === "ready" || state === "starting")
+    )
+      stop(false);
+  };
+  const openDesktopSession = (): { close(intentional: boolean): void } => {
+    if (state === "stopping") throw new Error("Runtime is stopping");
+    desktopSessions++;
+    let closed = false;
+    return {
+      close(intentional) {
+        if (closed) return;
+        closed = true;
+        desktopSessions--;
+        if (!intentional) {
+          const timer = setTimeout(() => {
+            disconnected.delete(timer);
+            try {
+              reconcileDesktopDemand();
+            } catch (failure) {
+              error =
+                failure instanceof Error ? failure.message : String(failure);
+              state = "needs_attention";
+            }
+          }, 30_000);
+          timer.unref?.();
+          disconnected.add(timer);
+        } else {
+          try {
+            reconcileDesktopDemand();
+          } catch (failure) {
+            desktopSessions++;
+            closed = false;
+            error =
+              failure instanceof Error ? failure.message : String(failure);
+            state = "needs_attention";
+            throw failure;
+          }
+        }
+      }
+    };
+  };
   const setAgentAvailability = (
     reason: AvailabilityReason,
     enabled: boolean
   ): HostSnapshot => {
+    if (reason === "persistent-cli") {
+      if (state === "needs_attention" || state === "stopping")
+        throw new Error("Runtime cannot change CLI availability");
+      update((current) => ({ ...current, persistentCli: enabled }));
+      if (!enabled) reconcileDesktopDemand();
+      return status();
+    }
     if (reason !== "background-agent")
       throw new Error("Availability reason is not supported");
     if (state !== "stopped" || !input.store.read().runtimeClean)
@@ -166,6 +237,7 @@ export function createControlPlaneHostCore(input: {
     start,
     stop,
     attach: (reason) => setAgentAvailability(reason, true),
-    detach: (reason) => setAgentAvailability(reason, false)
+    detach: (reason) => setAgentAvailability(reason, false),
+    openDesktopSession
   };
 }

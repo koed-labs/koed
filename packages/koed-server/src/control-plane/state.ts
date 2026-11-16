@@ -263,7 +263,9 @@ export function applyControlIntent(
       next = change.explicit ? { ...current, stopIntent: false } : current;
       break;
     case "stop":
-      next = change.explicit ? { ...current, stopIntent: true } : current;
+      next = change.explicit
+        ? { ...current, stopIntent: true, persistentCli: false }
+        : current;
       break;
     case "availability":
       next = {

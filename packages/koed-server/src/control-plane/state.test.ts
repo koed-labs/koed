@@ -285,6 +285,13 @@ describe("control intent transitions", () => {
     });
   });
 
+  it("clears persistent CLI availability on offline explicit Stop", () => {
+    const running = { ...stopped, stopIntent: false, persistentCli: true };
+    expect(
+      applyControlIntent(running, { action: "stop", explicit: true })
+    ).toMatchObject({ stopIntent: true, persistentCli: false });
+  });
+
   it("does not turn session-end stop into a durable explicit stop", () => {
     const running = { ...stopped, stopIntent: false };
     expect(

@@ -19,16 +19,34 @@ export function serveControlConnection(options: {
   let initialized = false;
   let pending = 0;
   let queue = Promise.resolve();
+  let desktop: ReturnType<HostCore["openDesktopSession"]> | undefined;
+  const releaseDesktop = (intentional: boolean) => {
+    const session = desktop;
+    session?.close(intentional);
+    desktop = undefined;
+  };
+  const desktopActions = {
+    attach() {
+      if (desktop) throw new Error("Desktop session already attached");
+      desktop = core.openDesktopSession();
+    },
+    detach(intentional: boolean) {
+      if (!desktop) throw new Error("Desktop session is not attached");
+      releaseDesktop(intentional);
+    }
+  };
   const close = () => {
     if (closed) return;
     closed = true;
     clearTimeout(helloDeadline);
+    releaseDesktop(false);
     connection.close();
   };
   const helloDeadline = setTimeout(close, 10_000);
   const unsubscribeClose = connection.onClose(() => {
     closed = true;
     clearTimeout(helloDeadline);
+    releaseDesktop(false);
   });
   const unsubscribeEnd = connection.onEnd(() => {
     void queue.then(close);
@@ -51,7 +69,7 @@ export function serveControlConnection(options: {
           await connection.send(JSON.stringify(serverHello));
         } else {
           await connection.send(
-            JSON.stringify(dispatchControlRequest(core, value))
+            JSON.stringify(dispatchControlRequest(core, value, desktopActions))
           );
         }
       })

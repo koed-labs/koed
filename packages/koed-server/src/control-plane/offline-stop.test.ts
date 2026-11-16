@@ -46,7 +46,7 @@ it("records a durable explicit Stop without starting a host", () => {
     revision: 5,
     stopIntent: true,
     backgroundEnabled: true,
-    persistentCli: true,
+    persistentCli: false,
     runtimeClean: true
   });
 });

@@ -53,6 +53,113 @@ function fixture(initial: Partial<ControlIntent> = {}) {
 }
 
 describe("control-plane host core", () => {
+  it("stops on last intentional Desktop detach without setting explicit Stop", () => {
+    const f = fixture();
+    const desktop = f.core.openDesktopSession();
+    f.core.start(true);
+    desktop.close(true);
+    expect(f.stop).toHaveBeenCalledOnce();
+    expect(f.store.read().stopIntent).toBe(false);
+  });
+  it("preserves Agent and persistent CLI availability on Desktop detach", () => {
+    for (const reason of [
+      { backgroundEnabled: true },
+      { persistentCli: true }
+    ]) {
+      const f = fixture(reason);
+      const desktop = f.core.openDesktopSession();
+      f.core.start(true);
+      desktop.close(true);
+      expect(f.stop).not.toHaveBeenCalled();
+    }
+  });
+  it("waits for reconnect after unexpected Desktop disconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const desktop = f.core.openDesktopSession();
+      f.core.start(true);
+      desktop.close(false);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(f.stop).not.toHaveBeenCalled();
+      const reconnected = f.core.openDesktopSession();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.stop).not.toHaveBeenCalled();
+      reconnected.close(false);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.stop).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("does not let an unrelated session consume disconnected Desktop grace", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const original = f.core.openDesktopSession();
+      f.core.start(true);
+      original.close(false);
+      const other = f.core.openDesktopSession();
+      other.close(true);
+      expect(f.stop).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.stop).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("invalidates old grace after explicit stop and restart", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const desktop = f.core.openDesktopSession();
+      f.core.start(true);
+      desktop.close(false);
+      f.core.stop(true);
+      f.finish({ clean: true });
+      await Promise.resolve();
+      f.core.start(true);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.stop).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("rejects Desktop attachment while shutdown is in progress", () => {
+    const f = fixture();
+    const desktop = f.core.openDesktopSession();
+    f.core.start(true);
+    desktop.close(true);
+    expect(() => f.core.openDesktopSession()).toThrow("stopping");
+  });
+  it("surfaces an intentional detach when demand cannot be checked", () => {
+    const f = fixture();
+    const desktop = f.core.openDesktopSession();
+    vi.spyOn(f.store, "read").mockImplementation(() => {
+      throw new Error("disk failure");
+    });
+    expect(() => desktop.close(true)).toThrow("disk failure");
+  });
+  it("stops after persistent CLI demand is removed and no Desktop demand remains", () => {
+    const f = fixture({ persistentCli: true });
+    const desktop = f.core.openDesktopSession();
+    f.core.start(true);
+    desktop.close(true);
+    expect(f.stop).not.toHaveBeenCalled();
+    f.core.detach("persistent-cli");
+    expect(f.stop).toHaveBeenCalledOnce();
+  });
+  it("persists CLI availability and clears it on explicit Stop", () => {
+    const f = fixture();
+    f.core.attach("persistent-cli");
+    expect(f.store.read().persistentCli).toBe(true);
+    f.core.start(true);
+    f.core.stop(true);
+    expect(f.store.read()).toMatchObject({
+      persistentCli: false,
+      stopIntent: true
+    });
+  });
   it("persists Agent availability only while stopped without clearing explicit Stop", () => {
     const f = fixture({ stopIntent: true });
     f.core.attach("background-agent");
