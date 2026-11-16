@@ -3,4 +3,4 @@
 "@koed-labs/server": minor
 ---
 
-Show accepted Personal Project scope, execution budgets and source-delivery diagnostics in Desktop Recall activity. Project filters include every Project in a recorded selection without duplicating answers or usage. Use compact outcome labels with a short guide and tooltips. Keep unknown historical measurements explicit and provider usage separate. Show five conversations per expanded Project, with Load more for older entries.
+Show accepted Project scope, execution budgets and source delivery in Desktop Recall activity. Project filters count each answer once. Add compact outcome labels and a short guide. Keep unknown measurements explicit and provider usage separate. Add Caller details with record metadata and the full question. Cap the header and keep tabs visible while content scrolls. Show five conversations per expanded Project, with Load More for older entries.

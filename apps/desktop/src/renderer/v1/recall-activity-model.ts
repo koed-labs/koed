@@ -143,3 +143,12 @@ export const recallDurationLabel = (value: number | null | undefined) =>
     : value < 1000
       ? `${Math.round(value)} ms`
       : `${(value / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s`;
+
+/** Compact header only; retain the original question in Caller details. */
+export function recallQuestionPreview(query: string | null): string {
+  const text = query?.replace(/\s+/g, " ").trim() || "Question unavailable";
+  const characters = [...text];
+  if (characters.length <= 120) return text;
+  const prefix = characters.slice(0, 119).join("");
+  return prefix.replace(/\s+\S*$/, "").trimEnd() + "…";
+}

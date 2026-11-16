@@ -457,8 +457,15 @@ bounded reasons and recovery/failure flags, not omitted source bodies or selecto
 They grant no new source access. At most 100 operations are retained, with an
 explicit truncation flag; the final selected count is separate from display limits.
 
-The detail dialog separates Answer, Recall details and Provider usage. Missing
-historical measurements are unknown, not zero or current defaults. Historical
+The detail dialog separates Answer, Recall details, Caller details and Provider
+usage. Caller details shows the AI Client and version, Conversation ID, record
+ID, and recorded date and time. These four rows precede the full question, which
+Users can copy without losing paragraph breaks. The header shows at most 120
+characters in a fixed two-line area. The header and tabs stay visible while each
+tab's content scrolls. If a historical question exceeds the retained display
+limit, Caller details labels it as a recorded portion instead of a full question.
+
+Missing historical measurements are unknown, not zero or current defaults. Historical
 version-two traces can supply effective limits, prompt consumption and counters,
 but their ambiguous evidence counter is not relabelled as either new evidence
 measurement. Pre-admission hit counts are not relabelled as delivered sources.
