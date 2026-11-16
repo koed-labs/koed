@@ -221,6 +221,30 @@ const harness = (
 };
 
 describe("Desktop manager shared lifecycle", () => {
+  it("preserves control attachment failure when an observed lifecycle stops", async () => {
+    const home = verifiedHome();
+    const { manager, openControlSession } = harness(
+      home,
+      () => lifecycleReply(stopped, true),
+      { sharedControl: true }
+    );
+    openControlSession.mockImplementationOnce(async () => {
+      observed.current = {
+        state: "starting",
+        epoch: "test-starting",
+        pid: 999
+      };
+      manager.lifecycle.refresh();
+      observed.current = { ...stopped };
+      manager.lifecycle.refresh();
+      throw new Error("control attachment sentinel");
+    });
+    await expect(manager.handlers.start_daemon()).resolves.toMatchObject({
+      ok: false,
+      state: "needs_attention",
+      error: "control attachment sentinel"
+    });
+  });
   it("reconnects a lost Desktop session and stops retrying on shutdown", async () => {
     vi.useFakeTimers();
     try {

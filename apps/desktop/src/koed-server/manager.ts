@@ -5580,7 +5580,11 @@ export const createKoedServerManager = ({
       pendingControlStart = pending;
       try {
         const result = await pending;
-        return generation === stopGeneration ? result : stoppedStartResult();
+        return generation === stopGeneration ||
+          (isSupervisorStartupFailureResult(result) &&
+            explicitStopAtStart === explicitStopGeneration)
+          ? result
+          : stoppedStartResult();
       } finally {
         if (pendingControlStart === pending) pendingControlStart = null;
       }
