@@ -30,7 +30,9 @@ describe("installed Agent control client", () => {
       }
     });
     await command("start");
-    expect(calls).toEqual([["/app/cli.js", "start", "--daemon", "--json"]]);
+    expect(calls).toEqual([
+      ["/app/cli.js", "__control-plane-start-agent", "--daemon", "--json"]
+    ]);
   });
   it("treats malformed output as failure rather than accepting it", async () => {
     const command = createInstalledAgentCommand({

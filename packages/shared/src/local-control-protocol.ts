@@ -18,7 +18,11 @@ export const controlCommandSchema = z.discriminatedUnion("action", [
     persistentCli: z.boolean().optional()
   }),
   z.strictObject({ action: z.literal("stop"), explicit: z.boolean() }),
-  z.strictObject({ action: z.literal("attach"), reason }),
+  z.strictObject({
+    action: z.literal("attach"),
+    reason,
+    desktopSessionId: z.string().uuid().optional()
+  }),
   z.strictObject({
     action: z.literal("detach"),
     reason,

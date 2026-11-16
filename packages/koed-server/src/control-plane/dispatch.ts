@@ -8,7 +8,10 @@ import type { HostCore } from "./host-core.js";
 export function dispatchControlRequest(
   core: HostCore,
   value: unknown,
-  desktop?: { attach(): void; detach(intentional: boolean): void }
+  desktop?: {
+    attach(identity?: string): void;
+    detach(intentional: boolean): void;
+  }
 ): ControlReply {
   const request = controlRequestSchema.parse(value);
   const current = core.status();
@@ -52,7 +55,7 @@ export function dispatchControlRequest(
       case "attach":
         if (request.command.reason === "desktop-session") {
           if (!desktop) return fail("unsupported_operation");
-          desktop.attach();
+          desktop.attach(request.command.desktopSessionId);
           return {
             requestId: request.requestId,
             ok: true,

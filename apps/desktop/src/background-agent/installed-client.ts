@@ -14,9 +14,11 @@ export function createInstalledAgentCommand(input: {
     const name =
       command === "start-automatic"
         ? "__control-plane-start-automatic"
-        : command === "stop" || command === "start"
-          ? command
-          : `__control-plane-${command}`;
+        : command === "start"
+          ? "__control-plane-start-agent"
+          : command === "stop"
+            ? command
+            : `__control-plane-${command}`;
     const args = [
       input.entrypoint,
       name,

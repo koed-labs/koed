@@ -26,9 +26,9 @@ export function serveControlConnection(options: {
     desktop = undefined;
   };
   const desktopActions = {
-    attach() {
+    attach(identity?: string) {
       if (desktop) throw new Error("Desktop session already attached");
-      desktop = core.openDesktopSession();
+      desktop = core.openDesktopSession(identity);
     },
     detach(intentional: boolean) {
       if (!desktop) throw new Error("Desktop session is not attached");

@@ -22,7 +22,7 @@ export interface HostCore {
   stop(explicit: boolean): HostSnapshot;
   attach(reason: AvailabilityReason): HostSnapshot;
   detach(reason: AvailabilityReason): HostSnapshot;
-  openDesktopSession(): { close(intentional: boolean): void };
+  openDesktopSession(identity?: string): { close(intentional: boolean): void };
 }
 
 export function createControlPlaneHostCore(input: {
@@ -42,9 +42,13 @@ export function createControlPlaneHostCore(input: {
   let stopPending = false;
   let serial = 0;
   let desktopSessions = 0;
-  const disconnected = new Set<ReturnType<typeof setTimeout>>();
+  const disconnected = new Map<
+    ReturnType<typeof setTimeout>,
+    string | undefined
+  >();
+  const activeDesktopIdentities = new Set<string>();
   const clearDisconnectGrace = (): void => {
-    for (const timer of disconnected) clearTimeout(timer);
+    for (const timer of disconnected.keys()) clearTimeout(timer);
     disconnected.clear();
   };
 
@@ -185,8 +189,21 @@ export function createControlPlaneHostCore(input: {
     )
       stop(false);
   };
-  const openDesktopSession = (): { close(intentional: boolean): void } => {
+  const openDesktopSession = (
+    identity?: string
+  ): { close(intentional: boolean): void } => {
     if (state === "stopping") throw new Error("Runtime is stopping");
+    if (identity && activeDesktopIdentities.has(identity))
+      throw new Error("Desktop session is already attached");
+    if (identity) {
+      for (const [timer, previous] of disconnected) {
+        if (previous === identity) {
+          clearTimeout(timer);
+          disconnected.delete(timer);
+        }
+      }
+      activeDesktopIdentities.add(identity);
+    }
     desktopSessions++;
     let closed = false;
     return {
@@ -194,6 +211,7 @@ export function createControlPlaneHostCore(input: {
         if (closed) return;
         closed = true;
         desktopSessions--;
+        if (identity) activeDesktopIdentities.delete(identity);
         if (!intentional) {
           const timer = setTimeout(() => {
             disconnected.delete(timer);
@@ -206,12 +224,13 @@ export function createControlPlaneHostCore(input: {
             }
           }, 30_000);
           timer.unref?.();
-          disconnected.add(timer);
+          disconnected.set(timer, identity);
         } else {
           try {
             reconcileDesktopDemand();
           } catch (failure) {
             desktopSessions++;
+            if (identity) activeDesktopIdentities.add(identity);
             closed = false;
             error =
               failure instanceof Error ? failure.message : String(failure);

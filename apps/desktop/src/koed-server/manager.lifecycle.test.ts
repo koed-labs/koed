@@ -64,6 +64,7 @@ const harness = (
     invalidManagementHandshake?: boolean;
     sharedControl?: boolean;
     holdControlStart?: boolean;
+    holdControlResume?: boolean;
   } = {}
 ) => {
   const spawned: EventEmitter[] = [];
@@ -149,6 +150,7 @@ const harness = (
     return child;
   });
   let releaseControlStart: (() => void) | undefined;
+  let releaseControlResume: (() => void) | undefined;
   let disconnectControlSession = () => {};
   const openControlSession = vi.fn(async () => {
     let connected = true;
@@ -172,6 +174,11 @@ const harness = (
       _args[0] === "__control-plane-start-desktop"
     )
       releaseControlStart = reply;
+    else if (
+      options.holdControlResume &&
+      _args[0] === "__control-plane-start-automatic"
+    )
+      releaseControlResume = reply;
     else reply();
   });
   const manager = createKoedServerManager({
@@ -208,7 +215,8 @@ const harness = (
     execFile,
     openControlSession,
     disconnectControlSession: () => disconnectControlSession(),
-    releaseStart: () => releaseControlStart?.()
+    releaseStart: () => releaseControlStart?.(),
+    releaseResume: () => releaseControlResume?.()
   };
 };
 
@@ -217,18 +225,52 @@ describe("Desktop manager shared lifecycle", () => {
     vi.useFakeTimers();
     try {
       const home = verifiedHome();
-      const { manager, openControlSession, disconnectControlSession } = harness(
-        home,
-        () => lifecycleReply(stopped, true),
-        { sharedControl: true }
-      );
+      const {
+        manager,
+        openControlSession,
+        disconnectControlSession,
+        execFile
+      } = harness(home, () => lifecycleReply(stopped, true), {
+        sharedControl: true
+      });
       await manager.handlers.start_daemon();
       disconnectControlSession();
       await vi.advanceTimersByTimeAsync(5_000);
       expect(openControlSession).toHaveBeenCalledTimes(2);
+      expect(
+        execFile.mock.calls.some(
+          (call) => call[1]?.[0] === "__control-plane-start-automatic"
+        )
+      ).toBe(true);
       await manager.shutdown();
       await vi.advanceTimersByTimeAsync(10_000);
       expect(openControlSession).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("waits for an in-flight reconnect resume before explicit Stop", async () => {
+    vi.useFakeTimers();
+    try {
+      const home = verifiedHome();
+      const f = harness(home, () => lifecycleReply(stopped, true), {
+        sharedControl: true,
+        holdControlResume: true
+      });
+      await f.manager.handlers.start_daemon();
+      f.disconnectControlSession();
+      await vi.advanceTimersByTimeAsync(5_000);
+      const stopping = f.manager.handlers.stop();
+      await Promise.resolve();
+      expect(
+        f.execFile.mock.calls.some((call) => call[1]?.[0] === "stop")
+      ).toBe(false);
+      f.releaseResume();
+      await stopping;
+      expect(
+        f.execFile.mock.calls.some((call) => call[1]?.[0] === "stop")
+      ).toBe(true);
+      await f.manager.shutdown();
     } finally {
       vi.useRealTimers();
     }

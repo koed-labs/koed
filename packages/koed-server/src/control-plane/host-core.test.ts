@@ -109,6 +109,20 @@ describe("control-plane host core", () => {
       vi.useRealTimers();
     }
   });
+  it("clears only its own reconnect grace before intentional detach", () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const first = f.core.openDesktopSession("desktop-one");
+      f.core.start(true);
+      first.close(false);
+      const reconnected = f.core.openDesktopSession("desktop-one");
+      reconnected.close(true);
+      expect(f.stop).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("does not let an unrelated session consume disconnected Desktop grace", async () => {
     vi.useFakeTimers();
     try {

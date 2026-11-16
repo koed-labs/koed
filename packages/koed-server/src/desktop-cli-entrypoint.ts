@@ -96,13 +96,16 @@ export async function runInstalledDesktopCli(
     );
     return 0;
   }
-  if (
-    platform === "darwin" &&
-    args.length === 1 &&
-    args[0] === "__control-plane-desktop-session"
-  ) {
+  if (platform === "darwin" && args[0] === "__control-plane-desktop-session") {
     const capability = dependencies.desktopRuntimeCapability;
     const invocation = dependencies.supervisorInvocation;
+    if (
+      args.length !== 2 ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        args[1]!
+      )
+    )
+      throw new Error("A valid Desktop session identity is required");
     if (!capability || !invocation || !process.connected || !process.send)
       throw new Error("A Desktop parent IPC connection is required");
     const { openInstalledControlPlane } =
@@ -115,26 +118,30 @@ export async function runInstalledDesktopCli(
       executable,
       entrypoint: invocation.startCommand
     });
-    const sessionResult = await serveDesktopSession(client, {
-      get connected() {
-        return Boolean(process.connected && process.send);
+    const sessionResult = await serveDesktopSession(
+      client,
+      {
+        get connected() {
+          return Boolean(process.connected && process.send);
+        },
+        send(message) {
+          if (!process.connected || !process.send)
+            throw new Error("Desktop parent disconnected");
+          process.send(
+            message as Parameters<NonNullable<typeof process.send>>[0]
+          );
+        },
+        onMessage(listener) {
+          process.on("message", listener);
+          return () => process.off("message", listener);
+        },
+        onDisconnect(listener) {
+          process.on("disconnect", listener);
+          return () => process.off("disconnect", listener);
+        }
       },
-      send(message) {
-        if (!process.connected || !process.send)
-          throw new Error("Desktop parent disconnected");
-        process.send(
-          message as Parameters<NonNullable<typeof process.send>>[0]
-        );
-      },
-      onMessage(listener) {
-        process.on("message", listener);
-        return () => process.off("message", listener);
-      },
-      onDisconnect(listener) {
-        process.on("disconnect", listener);
-        return () => process.off("disconnect", listener);
-      }
-    });
+      args[1]
+    );
     if (process.connected) process.disconnect?.();
     return sessionResult;
   }
@@ -156,6 +163,7 @@ export async function runInstalledDesktopCli(
       args[0] === "__control-plane-stop-implicit" ||
       args[0] === "__control-plane-start-automatic" ||
       args[0] === "__control-plane-start-desktop" ||
+      args[0] === "__control-plane-start-agent" ||
       args[0] === "__control-plane-agent-enable" ||
       args[0] === "__control-plane-agent-disable" ||
       args[0] === "__control-plane-agent-status") &&
@@ -171,7 +179,9 @@ export async function runInstalledDesktopCli(
       (await import("./control-plane/cli.js")).runControlPlaneCli;
     const implicit = args[0] === "__control-plane-stop-implicit";
     const automatic = args[0] === "__control-plane-start-automatic";
-    const desktopStart = args[0] === "__control-plane-start-desktop";
+    const desktopStart =
+      args[0] === "__control-plane-start-desktop" ||
+      args[0] === "__control-plane-start-agent";
     const agentEnable = args[0] === "__control-plane-agent-enable";
     const agentDisable = args[0] === "__control-plane-agent-disable";
     const agentStatus = args[0] === "__control-plane-agent-status";

@@ -1769,6 +1769,7 @@ export const createKoedServerManager = ({
           args[0] === "stop" ||
           args[0] === "__control-plane-stop-implicit" ||
           args[0] === "__control-plane-start-automatic" ||
+          args[0] === "__control-plane-agent-status" ||
           args[0] === "__control-plane-start-desktop")
           ? createControlCliInvocation
           : createCliInvocation;
@@ -5447,18 +5448,72 @@ export const createKoedServerManager = ({
     };
   };
 
+  const desktopControlSessionId = randomUUID();
   let controlDesktopSession: DesktopControlSession | undefined;
   let desktopSessionEverAttached = false;
   let pendingDesktopSession: Promise<DesktopControlSession> | undefined;
   let controlSessionClosing = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingReconnectResume: Promise<void> | undefined;
   const scheduleControlReconnect = () => {
     if (controlSessionClosing || reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined;
-      void ensureDesktopControlSession().catch((error: unknown) => {
-        console.warn("Desktop control session reconnect failed:", error);
-        scheduleControlReconnect();
+      const generation = stopGeneration;
+      const pending = (async () => {
+        try {
+          await ensureDesktopControlSession();
+          if (controlSessionClosing || generation !== stopGeneration) return;
+          const result = await runJson(
+            ["__control-plane-start-automatic", "--daemon"],
+            120_000
+          );
+          if (
+            result &&
+            typeof result === "object" &&
+            "ok" in result &&
+            result.ok === true
+          )
+            return;
+          console.warn(
+            "Desktop control session resume was not confirmed:",
+            result
+          );
+          const status = await runJson(
+            ["__control-plane-agent-status"],
+            30_000
+          );
+          if (controlSessionClosing || generation !== stopGeneration) return;
+          if (
+            status &&
+            typeof status === "object" &&
+            "snapshot" in status &&
+            status.snapshot &&
+            typeof status.snapshot === "object" &&
+            "stopIntent" in status.snapshot &&
+            status.snapshot.stopIntent === true
+          )
+            return;
+          if (
+            status &&
+            typeof status === "object" &&
+            "snapshot" in status &&
+            status.snapshot &&
+            typeof status.snapshot === "object" &&
+            "state" in status.snapshot &&
+            status.snapshot.state === "needs_attention"
+          )
+            return;
+          scheduleControlReconnect();
+        } catch (error) {
+          console.warn("Desktop control session reconnect failed:", error);
+          if (generation === stopGeneration) scheduleControlReconnect();
+        }
+      })();
+      pendingReconnectResume = pending;
+      void pending.finally(() => {
+        if (pendingReconnectResume === pending)
+          pendingReconnectResume = undefined;
       });
     }, 5_000);
     reconnectTimer.unref();
@@ -5468,7 +5523,8 @@ export const createKoedServerManager = ({
     if (!createControlCliInvocation) return;
     if (!pendingDesktopSession) {
       const invocation = createControlCliInvocation([
-        "__control-plane-desktop-session"
+        "__control-plane-desktop-session",
+        desktopControlSessionId
       ]);
       pendingDesktopSession = openControlSession(() =>
         spawn(invocation.command, invocation.args, {
@@ -6175,6 +6231,7 @@ export const createKoedServerManager = ({
     await closeDesktopServices();
     // An explicit Stop must not race ahead of a still-activating control plane.
     if (pendingControlStart) await pendingControlStart;
+    if (pendingReconnectResume) await pendingReconnectResume;
     if (desktopSupervisorProcess && !desktopSupervisorProcess.killed) {
       const child = desktopSupervisorProcess;
       if (child.connected) child.send({ type: "koed.desktop.supervisor.stop" });
@@ -6237,6 +6294,7 @@ export const createKoedServerManager = ({
       if (reconnectTimer) clearTimeout(reconnectTimer);
       await closeDesktopServices();
       await pendingControlStart;
+      await pendingReconnectResume;
       if (pendingDesktopSession)
         await pendingDesktopSession.catch(() => undefined);
       if (!controlDesktopSession)

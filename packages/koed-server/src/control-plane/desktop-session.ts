@@ -10,7 +10,8 @@ export interface DesktopSessionChannel {
 /** The authenticated connection itself represents Desktop's availability demand. */
 export function serveDesktopSession(
   client: ControlClient,
-  channel: DesktopSessionChannel
+  channel: DesktopSessionChannel,
+  desktopSessionId?: string
 ): Promise<number> {
   return new Promise((resolve) => {
     let finished = false;
@@ -81,7 +82,11 @@ export function serveDesktopSession(
         if (!status.ok)
           throw new Error(`Desktop status failed: ${status.code}`);
         const result = await client.request(
-          { action: "attach", reason: "desktop-session" },
+          {
+            action: "attach",
+            reason: "desktop-session",
+            ...(desktopSessionId ? { desktopSessionId } : {})
+          },
           status.snapshot.revision
         );
         if (!result.ok)
