@@ -33,11 +33,13 @@ export function createControlPlaneHostCore(input: {
     persistGenerationBeforeEffects(id: string): void;
   }): RuntimeSession;
 }): HostCore {
-  let state: RuntimeState = input.store.read().runtimeClean
-    ? "stopped"
-    : "needs_attention";
+  const historicalUnclean = !input.store.read().runtimeClean;
+  let currentSessionUncertain = false;
+  let state: RuntimeState = historicalUnclean ? "needs_attention" : "stopped";
   let session: RuntimeSession | undefined;
-  let error: string | undefined;
+  let error: string | undefined = historicalUnclean
+    ? "Previous runtime cleanup was not confirmed"
+    : undefined;
   let persistenceFailed = false;
   let stopPending = false;
   let serial = 0;
@@ -82,13 +84,19 @@ export function createControlPlaneHostCore(input: {
       return;
     }
     try {
-      if (outcome.clean)
+      if (outcome.clean && !historicalUnclean)
         update((current) => ({
           ...current,
           runtimeClean: true,
           protectedGenerationId: null
         }));
-      error = outcome.error;
+      currentSessionUncertain = !outcome.clean || !!outcome.error;
+      error =
+        outcome.error ??
+        (historicalUnclean
+          ? "Previous runtime cleanup was not confirmed"
+          : undefined);
+      // The current session can stop successfully while historical cleanup remains unconfirmed.
       state = outcome.clean && !outcome.error ? "stopped" : "needs_attention";
     } catch (failure) {
       error = failure instanceof Error ? failure.message : String(failure);
@@ -106,11 +114,17 @@ export function createControlPlaneHostCore(input: {
         update((previous) => ({ ...previous, persistentCli: true }));
       return status();
     }
-    if (!current.runtimeClean)
-      throw new Error("Unclean runtime requires Operator attention");
     if (current.stopIntent && !explicit)
       throw new Error("Explicit Stop prevents automatic start");
-    if (state !== "stopped" || session)
+    if (
+      (state !== "stopped" &&
+        !(
+          state === "needs_attention" &&
+          historicalUnclean &&
+          !currentSessionUncertain
+        )) ||
+      session
+    )
       throw new Error("Runtime is not stopped");
     if (explicit) clearDisconnectGrace();
     update((previous) => ({
@@ -133,7 +147,10 @@ export function createControlPlaneHostCore(input: {
             throw new Error("Start was cancelled");
           update((previous) => ({
             ...previous,
-            protectedGenerationId: generationId
+            protectedGenerationId:
+              historicalUnclean && previous.protectedGenerationId
+                ? previous.protectedGenerationId
+                : generationId
           }));
         }
       });
@@ -147,6 +164,7 @@ export function createControlPlaneHostCore(input: {
           })
       );
     } catch (failure) {
+      currentSessionUncertain = true;
       state = "needs_attention";
       error = failure instanceof Error ? failure.message : String(failure);
       throw failure;
@@ -173,6 +191,9 @@ export function createControlPlaneHostCore(input: {
       stopPending = true;
       state = "stopping";
       session?.stop();
+    } else if (historicalUnclean && state !== "stopped") {
+      error = "Previous runtime cleanup was not confirmed";
+      state = "needs_attention";
     }
     return status();
   };
@@ -254,7 +275,7 @@ export function createControlPlaneHostCore(input: {
     }
     if (reason !== "background-agent")
       throw new Error("Availability reason is not supported");
-    if (state !== "stopped" || !input.store.read().runtimeClean)
+    if (state !== "stopped" || currentSessionUncertain)
       throw new Error(
         "Stop Koed and confirm cleanup before changing Agent availability"
       );

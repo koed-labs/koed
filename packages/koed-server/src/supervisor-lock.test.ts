@@ -163,6 +163,26 @@ describe("koed-server supervisor lock", () => {
     });
   });
 
+  it("preserves a live PID even when identity differs under conservative admission", () => {
+    const paths = pathsForTest();
+    const first = acquireKoedServerSupervisorLock(paths, {
+      pid: 101,
+      isProcessRunning: () => true,
+      resolveProcessIdentity: () => "old-identity"
+    });
+    const second = acquireKoedServerSupervisorLock(paths, {
+      pid: 202,
+      isProcessRunning: () => true,
+      resolveProcessIdentity: (pid) =>
+        pid === 101 ? "changed-identity" : "candidate",
+      preserveLivePid: true
+    });
+    expect(second).toMatchObject({ acquired: false, ownerPid: 101 });
+    expect(
+      JSON.parse(readFileSync(first.lockPath, "utf8")) as unknown
+    ).toMatchObject({ processIdentity: "old-identity" });
+  });
+
   it("preserves a live lock when process identity lookup is inconclusive", () => {
     const paths = pathsForTest();
     const first = acquireKoedServerSupervisorLock(paths, {

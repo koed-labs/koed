@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_set>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -187,6 +188,15 @@ Napi::Value flush(const Napi::CallbackInfo &info) {
   if (!connection->stream.flush()) return fail(env, "Local control stream write failed");
   return Napi::Boolean::New(env, !connection->stream.hasPendingWrites());
 }
+Napi::Value tryReclaimLock(const Napi::CallbackInfo &info) {
+  auto env = info.Env();
+  if (info.Length() != 1 || !info[0].IsNumber()) return fail(env, "Invalid reclaim lock descriptor");
+  int fd = info[0].As<Napi::Number>().Int32Value();
+  if (fd < 0) return fail(env, "Invalid reclaim lock descriptor");
+  if (flock(fd, LOCK_EX | LOCK_NB) == 0) return Napi::Boolean::New(env, true);
+  if (errno == EWOULDBLOCK || errno == EAGAIN) return Napi::Boolean::New(env, false);
+  return fail(env, "Unable to acquire reclaim lock");
+}
 Napi::Value closeHandle(const Napi::CallbackInfo &info) {
   auto env = info.Env();
   if (info.Length() != 1 || !info[0].IsExternal()) return fail(env, "Invalid local control handle");
@@ -210,6 +220,7 @@ Napi::Object createLocalControlBinding(Napi::Env env) {
   binding.Set("write", Napi::Function::New(env, write));
   binding.Set("flush", Napi::Function::New(env, flush));
   binding.Set("close", Napi::Function::New(env, closeHandle));
+  binding.Set("tryReclaimLock", Napi::Function::New(env, tryReclaimLock));
   return binding;
 }
 }

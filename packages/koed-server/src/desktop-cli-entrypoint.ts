@@ -3,7 +3,7 @@ import {
   resolveInstalledDesktopResources
 } from "./desktop-cli-authority.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
-import { resolveKoedHome } from "./paths.js";
+import { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 import type { KoedServerCliDependencies } from "./cli-contract.js";
 
 export interface InstalledDesktopCliDependencies {
@@ -16,6 +16,7 @@ export interface InstalledDesktopCliDependencies {
   runControlPlaneHost?: typeof import("./control-plane/host-entrypoint.js").runInstalledControlPlaneHost;
   runControlPlaneCli?: typeof import("./control-plane/cli.js").runControlPlaneCli;
   agentTeamId?: typeof import("./control-plane/installed-client.js").installedAgentTeamId;
+  migrateStoppedLegacyAgent?: typeof import("./control-plane/migrate.js").migrateStoppedLegacyAgent;
   stdout?: Pick<NodeJS.WriteStream, "write">;
   runCli?: (
     args: string[],
@@ -48,6 +49,7 @@ export async function runInstalledDesktopCli(
     runControlPlaneHost,
     runControlPlaneCli,
     agentTeamId,
+    migrateStoppedLegacyAgent,
     stdout = process.stdout,
     runCli,
     stderr = process.stderr
@@ -78,6 +80,29 @@ export async function runInstalledDesktopCli(
       `Koed Desktop CLI could not verify its installation: ${error instanceof Error ? error.message : String(error)}\n`
     );
     return 1;
+  }
+  if (platform === "darwin" && args[0] === "migrate") {
+    if (args.length !== 2 || args[1] !== "--confirm-legacy-stopped") {
+      stderr.write(
+        "Stop the old Desktop and Agent, then run migrate --confirm-legacy-stopped. Do not restart the old installation against this KOED_HOME.\n"
+      );
+      return 1;
+    }
+    try {
+      const migrate =
+        migrateStoppedLegacyAgent ??
+        (await import("./control-plane/migrate.js")).migrateStoppedLegacyAgent;
+      migrate(resolveKoedServerPaths(environment), true);
+      stdout.write(
+        "Legacy Agent state imported. Do not restart the old installation against this KOED_HOME.\n"
+      );
+      return 0;
+    } catch (error) {
+      stderr.write(
+        `Migration failed: ${error instanceof Error ? error.message : String(error)}\n`
+      );
+      return 1;
+    }
   }
   if (
     platform === "darwin" &&
@@ -210,7 +235,8 @@ export async function runInstalledDesktopCli(
         allowAutomaticStart: automatic,
         allowAgentAvailability: agentEnable || agentDisable || agentStatus,
         persistentStart: args[0] === "start" || args[0] === "restart",
-        offlineStop: () => installedClient.tryRecordOfflineStop(environment),
+        offlineStop: () =>
+          installedClient.tryRecordOfflineStop(environment, capability),
         connect: async (command) =>
           installedClient.openInstalledControlPlane({
             capability,

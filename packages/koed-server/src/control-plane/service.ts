@@ -8,10 +8,10 @@ import type { ControlPlaneAdmission } from "./admission.js";
 import { createControlPlaneHostCore, type HostCore } from "./host-core.js";
 import { startControlPlaneHost } from "./host.js";
 import { startControlPlaneRuntime } from "./runtime.js";
-import { createControlStateStore } from "./state.js";
+import { ensureControlState, hasRuntimeEvidence } from "./ensure-state.js";
 import type { ControlTransport } from "./transport.js";
 
-/** Assembles an admitted host without inferring that a missing or unclean state is safe. */
+/** Assemble the host under admission without treating historical state as cleanup proof. */
 export async function startControlPlaneService(input: {
   paths: KoedServerPaths;
   admission: ControlPlaneAdmission;
@@ -20,7 +20,16 @@ export async function startControlPlaneService(input: {
   transport: ControlTransport;
   onFatal(error: Error): void;
 }): Promise<{ core: HostCore; close(): Promise<void> }> {
-  const store = createControlStateStore(input.paths, input.admission);
+  const store = ensureControlState(input.paths, input.admission, {
+    assumeStoppedIfNoEvidence: true
+  });
+  const initial = store.read();
+  if (initial.runtimeClean && hasRuntimeEvidence(input.paths)) {
+    store.write(
+      { ...initial, revision: initial.revision + 1, runtimeClean: false },
+      initial.revision
+    );
+  }
   const owner = deriveDesktopRuntimeOwner(
     input.admission.home,
     input.capability.installationPath
@@ -43,7 +52,10 @@ export async function startControlPlaneService(input: {
     admission: input.admission,
     core,
     transport: input.transport,
-    socketPath: resolve(input.paths.runDir, "control.sock"),
+    socketPath: resolve(
+      input.paths.runDir,
+      `c-${input.admission.instanceId.replaceAll("-", "").slice(0, 12)}`
+    ),
     installationId: owner.installationId,
     productVersion: input.capability.productVersion,
     onFatal: input.onFatal

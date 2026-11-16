@@ -58,7 +58,10 @@ export type LegacyStopEvidence =
 
 export interface ControlStateStore {
   read(): ControlIntent;
-  initialize(legacy: LegacyStopEvidence): void;
+  initialize(
+    legacy: LegacyStopEvidence,
+    options?: { assumeStopped?: boolean }
+  ): void;
   write(next: ControlIntent, expectedRevision: number): void;
 }
 
@@ -210,7 +213,7 @@ export function createControlStateStore(
       assertNoPendingWrite(path);
       return readState(path);
     },
-    initialize(legacy) {
+    initialize(legacy, options = {}) {
       assertControlPlaneAdmission(admission, paths);
       assertPrivateDirectory(directory);
       assertNoPendingWrite(path);
@@ -231,7 +234,7 @@ export function createControlStateStore(
           stopIntent: legacy.kind === "valid" && legacy.stopIntent,
           backgroundEnabled: false,
           persistentCli: false,
-          runtimeClean: false,
+          runtimeClean: options.assumeStopped ?? false,
           protectedGenerationId: null
         },
         true

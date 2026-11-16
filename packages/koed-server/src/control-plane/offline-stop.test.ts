@@ -8,6 +8,7 @@ import {
 import { resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { resolveKoedServerPaths } from "../paths.js";
+import { withLifecycleLock } from "../generation-lifecycle.js";
 import { recordOfflineStop } from "./offline-stop.js";
 
 const roots: string[] = [];
@@ -50,6 +51,15 @@ it("records a durable explicit Stop without starting a host", () => {
     runtimeClean: true
   });
 });
+it("does not claim cleanup when a clean record has prior runtime evidence", () => {
+  const { paths, file } = fixture(true);
+  writeFileSync(paths.runtimeStatePath, "{}", { mode: 0o600 });
+  expect(recordOfflineStop(paths)).toEqual({ clean: false });
+  expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
+    stopIntent: true,
+    runtimeClean: false
+  });
+});
 it("records intent but preserves unclean runtime evidence", () => {
   const { paths, file } = fixture(false);
   expect(recordOfflineStop(paths)).toEqual({ clean: false });
@@ -70,10 +80,56 @@ it("does not overwrite a malformed or stale discovery record", () => {
     stopIntent: false
   });
 });
-it("does not manufacture clean state for a missing home record", () => {
+it("records Stop with the practical fresh-home baseline", () => {
   const { paths, file } = fixture(true);
   rmSync(file);
-  expect(() => recordOfflineStop(paths)).toThrow();
+  expect(recordOfflineStop(paths)).toEqual({ clean: true });
+  expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
+    stopIntent: true,
+    runtimeClean: true
+  });
+});
+it("records Stop after a dead supervisor with reclaim exclusion", () => {
+  const { paths, file } = fixture(true);
+  const discovery = resolve(paths.runDir, "control-plane.json");
+  writeFileSync(
+    discovery,
+    JSON.stringify({
+      schemaVersion: 1,
+      home: paths.koedHome,
+      instanceId: "old",
+      installationId: "install",
+      productVersion: "1",
+      socketPath: resolve(paths.koedHome, "s"),
+      pid: 99999999,
+      processIdentity: "dead"
+    }),
+    { mode: 0o600 }
+  );
+  writeFileSync(
+    resolve(paths.runDir, "koed-server.lock"),
+    JSON.stringify({
+      pid: 99999999,
+      acquiredAt: "2025-01-01T00:00:00.000Z",
+      processIdentity: "dead"
+    }),
+    { mode: 0o600 }
+  );
+  expect(recordOfflineStop(paths, { tryReclaimLock: () => true })).toEqual({
+    clean: true
+  });
+  expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
+    stopIntent: true
+  });
+  expect(JSON.parse(readFileSync(discovery, "utf8"))).toMatchObject({
+    pid: 99999999
+  });
+});
+it("leaves a busy lifecycle operation for the online control path", () => {
+  const { paths } = fixture(true);
+  withLifecycleLock(paths, () =>
+    expect(recordOfflineStop(paths)).toBeUndefined()
+  );
 });
 it("does not take over an existing lock", () => {
   const { paths, file } = fixture(true);

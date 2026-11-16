@@ -53,7 +53,10 @@ export function endControlPlaneSession(
 
 export function acquireControlPlaneAdmission(
   paths: KoedServerPaths,
-  options: { requireAbsentLock?: boolean } = {}
+  options: {
+    requireAbsentLock?: boolean;
+    tryReclaimLock?: (fd: number) => boolean;
+  } = {}
 ): ControlPlaneAdmission | null {
   const home = realpathSync(paths.koedHome);
   if (resolve(paths.runDir) !== resolve(paths.koedHome, "run"))
@@ -63,10 +66,18 @@ export function acquireControlPlaneAdmission(
     koedHome: home,
     runDir: resolve(home, "run")
   };
-  const lock = withLifecycleLock(canonicalPaths, () =>
-    acquireKoedServerSupervisorLock(canonicalPaths, {
-      reclaimStale: !options.requireAbsentLock
-    })
+  const lock = withLifecycleLock(
+    canonicalPaths,
+    () =>
+      acquireKoedServerSupervisorLock(canonicalPaths, {
+        reclaimStale: !options.requireAbsentLock,
+        preserveLivePid: true
+      }),
+    {
+      recoverDeadOwner: options.requireAbsentLock
+        ? undefined
+        : options.tryReclaimLock
+    }
   );
   if (!lock.acquired) return null;
   const record = readSupervisorLock(lock.lockPath);

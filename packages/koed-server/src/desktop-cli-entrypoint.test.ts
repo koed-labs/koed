@@ -83,6 +83,33 @@ it("starts the detached host only after verifying the packaged installation", as
   expect(runCli).not.toHaveBeenCalled();
 });
 
+it("runs migration only after explicit confirmation and installation verification", async () => {
+  const { root, resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const migrate = vi.fn();
+  const stderr = { write: vi.fn() };
+  const options = {
+    moduleUrl: pathToFileURL(entry).href,
+    executable,
+    platform: "darwin" as const,
+    electronVersion: "39.8.10",
+    environment: { KOED_HOME: resolve(root, "home") },
+    verifyBundle: () => capability,
+    migrateStoppedLegacyAgent: migrate,
+    stderr,
+    stdout: { write: vi.fn() }
+  };
+  expect(await runInstalledDesktopCli(["migrate"], options)).toBe(1);
+  expect(migrate).not.toHaveBeenCalled();
+  expect(
+    await runInstalledDesktopCli(
+      ["migrate", "--confirm-legacy-stopped"],
+      options
+    )
+  ).toBe(0);
+  expect(migrate).toHaveBeenCalledOnce();
+});
+
 it("reports Agent eligibility only after verifying the installed bundle", async () => {
   const { resources, entry, executable } = installation();
   const capability = { resourcesPath: resources } as DesktopRuntimeCapability;

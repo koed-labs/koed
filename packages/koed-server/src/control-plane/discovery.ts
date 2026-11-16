@@ -97,6 +97,33 @@ export function readControlDiscovery(
   }
 }
 
+export function reconcileStaleControlDiscovery(
+  paths: KoedServerPaths,
+  admission: ControlPlaneAdmission,
+  socketPath: string
+): void {
+  assertControlPlaneAdmission(admission, paths);
+  assertPrivateRunDirectory(paths);
+  const record = readControlDiscovery(paths);
+  if (!record) return;
+  if (
+    socketPath !== resolve(paths.runDir, "control.sock") ||
+    record.socketPath !== socketPath
+  )
+    throw new Error("Stale control socket path mismatch");
+  try {
+    process.kill(record.pid, 0);
+    throw new Error("Control discovery owner may still be running");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+  // The prior endpoint may still be held open; only its routing metadata is removed.
+  assertControlPlaneAdmission(admission, paths);
+  if (JSON.stringify(readControlDiscovery(paths)) !== JSON.stringify(record))
+    throw new Error("Control discovery changed during reconciliation");
+  unlinkSync(discoveryPath(paths));
+}
+
 export function publishControlDiscovery(
   paths: KoedServerPaths,
   admission: ControlPlaneAdmission,

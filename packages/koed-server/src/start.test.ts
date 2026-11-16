@@ -528,6 +528,61 @@ describe("start supervisor", () => {
     }
   });
 
+  it("reaches packaged selection after a valid dead supervisor record", async () => {
+    const root = realpathSync(tempDir());
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/db",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://operator:8000",
+      MEMORY_API_TOKEN: "test-runtime-token"
+    };
+    const paths = resolveKoedServerPaths(environment);
+    const admission = acquireControlPlaneAdmission(paths)!;
+    writeFileSync(
+      paths.runtimeStatePath,
+      JSON.stringify({
+        pid: 99999999,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        repoRoot: root,
+        apiUrl: "http://localhost:3300",
+        services: []
+      })
+    );
+    const controller = new AbortController();
+    const release = vi.fn(async () => {});
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      "packaged"
+    );
+    const select = vi
+      .spyOn(runtimeSelection, "pinAndResolvePackagedRuntime")
+      .mockImplementation(async () => {
+        controller.abort();
+        return {
+          pin: { generation: { id: "generation-1" }, release },
+          runtime: {}
+        } as never;
+      });
+    try {
+      await expect(
+        startKoedServer({
+          environment,
+          admission,
+          signal: controller.signal,
+          spawn: vi.fn(() => child(10)),
+          spawnSync: () => spawnResult(),
+          persistGenerationBeforeEffects: () => {}
+        })
+      ).rejects.toThrow(/stopped before readiness/);
+      expect(select).toHaveBeenCalledOnce();
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
+
   it("reports unclean when existing runtime evidence blocks a borrowed start", async () => {
     const root = realpathSync(tempDir());
     const environment = { KOED_HOME: root, KOED_REPO_ROOT: root };

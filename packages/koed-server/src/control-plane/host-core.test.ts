@@ -301,10 +301,33 @@ describe("control-plane host core", () => {
     expect(() => f.core.start(false)).toThrow(/stop/i);
     expect(f.startRuntime).not.toHaveBeenCalled();
   });
-  it("keeps an unclean previous runtime blocked", () => {
+  it("allows restart after a historical unclean runtime without claiming cleanup", () => {
     const f = fixture({ runtimeClean: false });
     expect(f.core.status().state).toBe("needs_attention");
-    expect(() => f.core.start(true)).toThrow(/unclean/i);
+    expect(f.core.start(true).state).toBe("starting");
+    expect(f.store.read().runtimeClean).toBe(false);
+  });
+  it("retains historical generation protection after a later clean session", async () => {
+    const f = fixture({
+      runtimeClean: false,
+      protectedGenerationId: "old-generation"
+    });
+    f.core.start(true);
+    f.finish({ clean: true });
+    await Promise.resolve();
+    expect(f.store.read()).toMatchObject({
+      runtimeClean: false,
+      protectedGenerationId: "old-generation"
+    });
+    expect(f.core.status()).toMatchObject({
+      state: "stopped",
+      error: "Previous runtime cleanup was not confirmed"
+    });
+  });
+  it("does not report confirmed Stop for an unclean historical runtime", () => {
+    const f = fixture({ runtimeClean: false });
+    expect(f.core.stop(true).state).toBe("needs_attention");
+    expect(f.store.read().stopIntent).toBe(true);
   });
   it("does not promote uncertain cleanup to clean", async () => {
     const f = fixture();

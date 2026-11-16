@@ -1,5 +1,5 @@
 import type { ControlClient } from "./client.js";
-import { ControlOwnerGoneError } from "./connect-or-launch.js";
+class OfflineStopCompleted extends Error {}
 
 export async function runControlPlaneCli(
   args: string[],
@@ -147,6 +147,14 @@ export async function runControlPlaneCli(
         if (timer) clearTimeout(timer);
       }
     };
+    const boundedRequest = async <T>(promise: Promise<T>): Promise<T> => {
+      try {
+        return await bounded(promise);
+      } catch (error) {
+        if (tryOfflineStop()) throw new OfflineStopCompleted();
+        throw error;
+      }
+    };
     let connectExpired = false;
     const connecting = dependencies.connect(command).then((value) => {
       if (connectExpired) value.close();
@@ -156,13 +164,17 @@ export async function runControlPlaneCli(
       client = await bounded(connecting);
     } catch (error) {
       connectExpired = true;
-      if (error instanceof ControlOwnerGoneError && tryOfflineStop()) return 0;
+      if (tryOfflineStop()) return 0;
       throw error;
     }
-    const status = await bounded(client.request({ action: "status" }, 0));
-    if (!status.ok)
+    const status = await boundedRequest(
+      client.request({ action: "status" }, 0)
+    );
+    if (!status.ok) {
+      if (tryOfflineStop()) return 0;
       throw new Error(`Control-plane status failed: ${status.code}`);
-    let result = await bounded(
+    }
+    let result = await boundedRequest(
       client.request(
         command === "start" && dependencies.persistentStart
           ? {
@@ -174,24 +186,32 @@ export async function runControlPlaneCli(
         status.snapshot.revision
       )
     );
-    // A stale revision proves the mutation was rejected; only Stop may retry it.
+    // A stale revision proves the request was rejected; never replay uncertain failures.
     for (
       let attempt = 0;
-      command === "stop" &&
       !result.ok &&
       result.code === "stale_revision" &&
-      attempt < 3;
+      attempt < 3 &&
+      (command === "stop" || !result.snapshot.stopIntent);
       attempt++
     ) {
-      result = await bounded(
+      result = await boundedRequest(
         client.request(
-          { action: "stop", explicit: !args.includes("--non-explicit") },
+          command === "start" && dependencies.persistentStart
+            ? {
+                action: "start",
+                explicit: !args.includes("--non-explicit"),
+                persistentCli: true
+              }
+            : { action: command, explicit: !args.includes("--non-explicit") },
           result.snapshot.revision
         )
       );
     }
-    if (!result.ok)
+    if (!result.ok) {
+      if (tryOfflineStop()) return 0;
       throw new Error(`Control-plane ${command} failed: ${result.code}`);
+    }
     if (command === "stop") {
       const sleep =
         dependencies.sleep ??
@@ -202,16 +222,23 @@ export async function runControlPlaneCli(
         now() < deadline
       ) {
         await sleep(250);
-        result = await bounded(client.request({ action: "status" }, 0));
-        if (!result.ok)
+        result = await boundedRequest(client.request({ action: "status" }, 0));
+        if (!result.ok) {
+          if (tryOfflineStop()) return 0;
           throw new Error(`Control-plane status failed: ${result.code}`);
+        }
       }
       if (result.snapshot.state !== "stopped")
         throw new Error(
           "Control-plane stop did not confirm cleanup; Operator attention required"
         );
     }
-    const message = command === "start" ? "Koed is starting." : "Koed stopped.";
+    const message =
+      command === "start"
+        ? "Koed is starting."
+        : result.snapshot.error
+          ? `Koed stopped. ${result.snapshot.error}.`
+          : "Koed stopped.";
     dependencies.stdout.write(
       json
         ? `${JSON.stringify({ ok: true, state: result.snapshot.state, message, snapshot: result.snapshot })}\n`
@@ -219,7 +246,12 @@ export async function runControlPlaneCli(
     );
     return 0;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof OfflineStopCompleted) return 0;
+    const detail = error instanceof Error ? error.message : String(error);
+    const message =
+      command === "stop" && !args.includes("--non-explicit")
+        ? `Stop could not be confirmed and may not have been recorded: ${detail}`
+        : detail;
     if (json)
       dependencies.stdout.write(
         `${JSON.stringify({ ok: false, error: message })}\n`

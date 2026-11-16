@@ -39,7 +39,7 @@ describe("detached control-plane process", () => {
   it("acquires a single admission and serves a controlled clean test home", async () => {
     const scratch = resolve(import.meta.dirname, "../../../../scratch");
     mkdirSync(scratch, { recursive: true });
-    const home = mkdtempSync(resolve(scratch, "host-process-"));
+    const home = mkdtempSync(resolve(scratch, "hp-"));
     roots.push(home);
     const paths = resolveKoedServerPaths({ KOED_HOME: home });
     mkdirSync(paths.configDir, { mode: 0o700 });
@@ -72,7 +72,7 @@ describe("detached control-plane process", () => {
   it("refuses an uninitialized home instead of inventing clean evidence", async () => {
     const scratch = resolve(import.meta.dirname, "../../../../scratch");
     mkdirSync(scratch, { recursive: true });
-    const home = mkdtempSync(resolve(scratch, "host-process-"));
+    const home = mkdtempSync(resolve(scratch, "hp-"));
     roots.push(home);
     await expect(
       startControlPlaneProcess({

@@ -62,6 +62,84 @@ describe("packaged control-plane CLI", () => {
       2
     );
   });
+  it("records offline Stop after a rejected response if the owner has exited", async () => {
+    const offlineStop = vi
+      .fn()
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce({ clean: true });
+    const request = vi.fn().mockResolvedValue({
+      requestId: "1",
+      ok: false,
+      code: "blocked",
+      snapshot
+    });
+    const code = await runControlPlaneCli(["stop"], {
+      connect: async () => ({ request, close: vi.fn() }) as ControlClient,
+      offlineStop,
+      stdout: { write: vi.fn() },
+      stderr: { write: vi.fn() }
+    });
+    expect(code).toBe(0);
+    expect(offlineStop).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledOnce();
+  });
+  it("reports an unconfirmed Stop when live-owner admission is unavailable", async () => {
+    const stderr = { write: vi.fn() };
+    const code = await runControlPlaneCli(["stop"], {
+      connect: async () => {
+        throw new Error("connection refused");
+      },
+      offlineStop: () => undefined,
+      stdout: { write: vi.fn() },
+      stderr
+    });
+    expect(code).toBe(1);
+    expect(stderr.write).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Stop could not be confirmed and may not have been recorded"
+      )
+    );
+  });
+  it("records offline Stop when connection fails after the host dies", async () => {
+    const offlineStop = vi
+      .fn()
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce({ clean: true });
+    const code = await runControlPlaneCli(["stop"], {
+      connect: async () => {
+        throw new Error("connection refused");
+      },
+      offlineStop,
+      stdout: { write: vi.fn() },
+      stderr: { write: vi.fn() }
+    });
+    expect(code).toBe(0);
+    expect(offlineStop).toHaveBeenCalledTimes(2);
+  });
+  it.each(["status", "stop"])(
+    "records offline Stop if the host dies during %s",
+    async (phase) => {
+      const request = vi.fn();
+      if (phase === "stop")
+        request.mockResolvedValueOnce({ requestId: "1", ok: true, snapshot });
+      request.mockRejectedValueOnce(new Error("connection lost"));
+      const offlineStop = vi
+        .fn()
+        .mockReturnValueOnce(undefined)
+        .mockReturnValueOnce({ clean: true });
+      const close = vi.fn();
+      const code = await runControlPlaneCli(["stop"], {
+        connect: async () => ({ request, close }) as ControlClient,
+        offlineStop,
+        stdout: { write: vi.fn() },
+        stderr: { write: vi.fn() }
+      });
+      expect(code).toBe(0);
+      expect(offlineStop).toHaveBeenCalledTimes(2);
+      expect(request).toHaveBeenCalledTimes(phase === "stop" ? 2 : 1);
+      expect(close).toHaveBeenCalledOnce();
+    }
+  );
   it("bounds an unresponsive status request during Stop", async () => {
     const request = vi
       .fn()
@@ -230,6 +308,55 @@ describe("packaged control-plane CLI", () => {
       { action: "stop", explicit: true },
       3
     );
+  });
+  it("retries an explicitly rejected stale Start when Stop is not active", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ requestId: "1", ok: true, snapshot })
+      .mockResolvedValueOnce({
+        requestId: "2",
+        ok: false,
+        code: "stale_revision",
+        snapshot: { ...snapshot, revision: 3 }
+      })
+      .mockResolvedValueOnce({
+        requestId: "3",
+        ok: true,
+        snapshot: { ...snapshot, revision: 4, state: "starting" }
+      });
+    const output = { write: vi.fn() };
+    expect(
+      await runControlPlaneCli(["start", "--daemon"], {
+        connect: async () => ({ request, close: vi.fn() }) as ControlClient,
+        stdout: output,
+        stderr: output
+      })
+    ).toBe(0);
+    expect(request).toHaveBeenNthCalledWith(
+      3,
+      { action: "start", explicit: true },
+      3
+    );
+  });
+  it("does not retry stale Start if Stop became active", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ requestId: "1", ok: true, snapshot })
+      .mockResolvedValueOnce({
+        requestId: "2",
+        ok: false,
+        code: "stale_revision",
+        snapshot: { ...snapshot, revision: 3, stopIntent: true }
+      });
+    const output = { write: vi.fn() };
+    expect(
+      await runControlPlaneCli(["start", "--daemon"], {
+        connect: async () => ({ request, close: vi.fn() }) as ControlClient,
+        stdout: output,
+        stderr: output
+      })
+    ).toBe(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
   it("restarts by confirming Stop before sending explicit Start", async () => {
     const request = vi

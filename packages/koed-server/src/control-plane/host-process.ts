@@ -17,12 +17,15 @@ export async function startControlPlaneProcess(input: {
   capability: DesktopRuntimeCapability;
   transport: ControlTransport;
   onFatal(error: Error): void;
+  tryReclaimLock?: (fd: number) => boolean;
 }): Promise<{ core: HostCore; close(): Promise<void> }> {
   if (!validateDesktopRuntimeCapability(input.capability))
     throw new Error("Verified Desktop runtime capability required");
   const paths = resolveKoedServerPaths(input.environment);
   ensureKoedHome(paths);
-  const admission = acquireControlPlaneAdmission(paths);
+  const admission = acquireControlPlaneAdmission(paths, {
+    tryReclaimLock: input.tryReclaimLock
+  });
   if (!admission)
     throw new Error("Another Koed Server Control Plane is already active");
   let service: Awaited<ReturnType<typeof startControlPlaneService>>;

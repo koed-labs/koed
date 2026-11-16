@@ -18,6 +18,7 @@ import {
 } from "./admission.js";
 import {
   publishControlDiscovery,
+  reconcileStaleControlDiscovery,
   readControlDiscovery,
   removeControlDiscovery
 } from "./discovery.js";
@@ -114,6 +115,91 @@ describe("control-plane discovery", () => {
       );
       publishControlDiscovery(f.paths, f.admission, f.record);
       expect(readControlDiscovery(f.paths)).toEqual(f.record);
+    } finally {
+      releaseControlPlaneAdmission(f.admission);
+    }
+  });
+  it("removes dead routing metadata without removing its old socket", () => {
+    const f = fixture();
+    try {
+      const socket = resolve(f.paths.runDir, "control.sock");
+      execFileSync("python3", [
+        "-c",
+        "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])",
+        socket
+      ]);
+      writeFileSync(
+        f.path,
+        JSON.stringify({
+          ...f.record,
+          socketPath: socket,
+          pid: 99999999,
+          instanceId: "previous"
+        }),
+        { mode: 0o600 }
+      );
+      reconcileStaleControlDiscovery(f.paths, f.admission, socket);
+      expect(existsSync(socket)).toBe(true);
+      expect(existsSync(f.path)).toBe(false);
+    } finally {
+      releaseControlPlaneAdmission(f.admission);
+    }
+  });
+  it("removes dead discovery when the old socket is already absent", () => {
+    const f = fixture();
+    try {
+      const socket = resolve(f.paths.runDir, "control.sock");
+      writeFileSync(
+        f.path,
+        JSON.stringify({
+          ...f.record,
+          socketPath: socket,
+          pid: 99999999,
+          instanceId: "previous"
+        }),
+        { mode: 0o600 }
+      );
+      reconcileStaleControlDiscovery(f.paths, f.admission, socket);
+      expect(existsSync(f.path)).toBe(false);
+    } finally {
+      releaseControlPlaneAdmission(f.admission);
+    }
+  });
+  it("preserves discovery when its recorded owner is alive", () => {
+    const f = fixture();
+    try {
+      const socket = resolve(f.paths.runDir, "control.sock");
+      writeFileSync(
+        f.path,
+        JSON.stringify({ ...f.record, socketPath: socket }),
+        { mode: 0o600 }
+      );
+      expect(() =>
+        reconcileStaleControlDiscovery(f.paths, f.admission, socket)
+      ).toThrow("may still be running");
+      expect(existsSync(f.path)).toBe(true);
+    } finally {
+      releaseControlPlaneAdmission(f.admission);
+    }
+  });
+  it("leaves a non-socket artifact alone when replacing dead metadata", () => {
+    const f = fixture();
+    try {
+      const socket = resolve(f.paths.runDir, "control.sock");
+      writeFileSync(socket, "keep");
+      writeFileSync(
+        f.path,
+        JSON.stringify({
+          ...f.record,
+          socketPath: socket,
+          pid: 99999999,
+          instanceId: "previous"
+        }),
+        { mode: 0o600 }
+      );
+      reconcileStaleControlDiscovery(f.paths, f.admission, socket);
+      expect(existsSync(socket)).toBe(true);
+      expect(existsSync(f.path)).toBe(false);
     } finally {
       releaseControlPlaneAdmission(f.admission);
     }

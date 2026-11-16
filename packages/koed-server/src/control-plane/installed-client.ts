@@ -45,18 +45,21 @@ export function installedAgentTeamId(
 }
 
 export function tryRecordOfflineStop(
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  capability: DesktopRuntimeCapability
 ): { clean: boolean } | undefined {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
-  if (readControlDiscovery(paths)) return undefined;
-  try {
-    lstatSync(resolve(paths.runDir, "koed-server.lock"));
-    return undefined;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  return recordOfflineStop(paths);
+  const require = createRequire(import.meta.url);
+  const addon: unknown = require(resolveDesktopControlAddon(capability));
+  if (!addon || typeof addon !== "object" || !("localControl" in addon))
+    throw new Error("Packaged local control addon is unavailable");
+  const native = (
+    addon as { localControl: { tryReclaimLock?: (fd: number) => boolean } }
+  ).localControl;
+  if (typeof native?.tryReclaimLock !== "function")
+    throw new Error("Packaged reclaim lock is unavailable");
+  return recordOfflineStop(paths, { tryReclaimLock: native.tryReclaimLock });
 }
 
 export async function openInstalledControlPlane(input: {
@@ -102,10 +105,39 @@ export async function openInstalledControlPlane(input: {
   let launchFailure: Error | undefined;
   return connectOrLaunchControlPlane({
     launchIfMissing: input.launchIfMissing,
-    waitForOwner: input.launchIfMissing === false,
+    waitForOwner: true,
     launchFailure: () => launchFailure,
     read: () => readControlDiscovery(paths),
     isLocked,
+    hasLiveOwner: () => {
+      const lock = readSupervisorLock(lockPath);
+      if (!lock) return true;
+      try {
+        process.kill(lock.pid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+        return true;
+      }
+      // A live PID cannot be treated as dead solely because identity changed.
+      return true;
+    },
+    isCurrentDiscovery: (record) => {
+      const lock = readSupervisorLock(lockPath);
+      return (
+        !!lock &&
+        lock.pid === record.pid &&
+        lock.processIdentity === record.processIdentity
+      );
+    },
+    isDiscoveryDead: (record) => {
+      try {
+        process.kill(record.pid, 0);
+        return false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+        throw error;
+      }
+    },
     installationId: owner.installationId,
     productVersion: input.capability.productVersion,
     connect: async (record) => {

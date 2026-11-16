@@ -1,5 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
-import { assertControlStateCleanForPruning } from "./control-plane/state.js";
+import {
+  assertControlStateCleanForPruning,
+  createControlStateStore
+} from "./control-plane/state.js";
+import {
+  assertControlPlaneAdmission,
+  type ControlPlaneAdmission
+} from "./control-plane/admission.js";
 import {
   existsSync,
   closeSync,
@@ -46,6 +53,8 @@ import {
   observeStoppedRuntime,
   removeStaleRuntimeRecords
 } from "./stopped-runtime.js";
+
+export class LifecycleLockedError extends Error {}
 
 interface LifecycleLockRecord {
   pid: number;
@@ -128,7 +137,48 @@ const readLockRecord = (path: string): LifecycleLockRecord | null => {
     return null;
   }
 };
-const acquireLifecycleLock = (paths: KoedServerPaths): LifecycleLockRecord => {
+const reclaimDeadLifecycleLock = (
+  path: string,
+  tryLock: (fd: number) => boolean
+): boolean => {
+  // Permanent sibling inode: never unlink it, or contenders could lock different files.
+  const fd = openSync(
+    `${path}.reclaim`,
+    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+    0o600
+  );
+  try {
+    const stat = fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      (stat.mode & 0o077) !== 0 ||
+      (process.getuid && stat.uid !== process.getuid())
+    )
+      throw new Error("Invalid lifecycle reclaim lock file");
+    if (!tryLock(fd)) return false;
+    const owner = readLockRecord(path);
+    if (!owner) return false;
+    // A live PID is never reclaimed, even if its formatted identity differs.
+    if (processIsRunning(owner.pid)) return false;
+    const confirm = readLockRecord(path);
+    if (
+      !confirm ||
+      confirm.pid !== owner.pid ||
+      confirm.processIdentity !== owner.processIdentity ||
+      confirm.token !== owner.token
+    )
+      return false;
+    rmSync(path, { recursive: true });
+    return true;
+  } finally {
+    closeSync(fd);
+  }
+};
+const acquireLifecycleLock = (
+  paths: KoedServerPaths,
+  recoverDeadOwner?: (fd: number) => boolean
+): LifecycleLockRecord => {
   assertDirectoryChain(paths.koedHome, paths.runDir);
   mkdirSync(paths.runDir, { recursive: true, mode: 0o700 });
   assertDirectoryChain(paths.koedHome, paths.runDir);
@@ -151,7 +201,9 @@ const acquireLifecycleLock = (paths: KoedServerPaths): LifecycleLockRecord => {
     return record;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    throw new Error(
+    if (recoverDeadOwner && reclaimDeadLifecycleLock(path, recoverDeadOwner))
+      return acquireLifecycleLock(paths);
+    throw new LifecycleLockedError(
       "runtime lifecycle is locked; if Koed is running, run koed stop and retry. Wait for any active installation. Stale locks require stopped-runtime operator recovery",
       { cause: error }
     );
@@ -182,9 +234,10 @@ const releaseLifecycleLock = (
 // record the other has just replaced. Throws when another lifecycle command holds it.
 export function withLifecycleLock<T>(
   paths: KoedServerPaths,
-  action: () => T
+  action: () => T,
+  options: { recoverDeadOwner?: (fd: number) => boolean } = {}
 ): T {
-  const lock = acquireLifecycleLock(paths);
+  const lock = acquireLifecycleLock(paths, options.recoverDeadOwner);
   try {
     return action();
   } finally {
@@ -280,6 +333,32 @@ export const removeStaleGenerationPin = (paths: KoedServerPaths): boolean => {
   rmSync(generationStatePath(paths), { force: true });
   return true;
 };
+export async function reclaimPriorGenerationPinForStart(
+  paths: KoedServerPaths,
+  admission: ControlPlaneAdmission
+): Promise<void> {
+  assertControlPlaneAdmission(admission, paths);
+  const lock = acquireLifecycleLock(paths);
+  try {
+    await withStoreLock(paths, () => {
+      assertControlPlaneAdmission(admission, paths);
+      const pin = readPinState(paths);
+      if (pin) {
+        if (createControlStateStore(paths, admission).read().runtimeClean)
+          throw new Error(
+            "Prior generation cannot be reclaimed without persisted uncertainty"
+          );
+        if (processIsRunning(pin.pid))
+          throw new Error("runtime generation is running or pinned");
+        // Admission excludes a live supervisor; the accepted crash policy does not prove children exited.
+        rmSync(generationStatePath(paths));
+      }
+      return Promise.resolve();
+    });
+  } finally {
+    releaseLifecycleLock(paths, lock, true);
+  }
+}
 const assertOwner = (
   generation: { readonly owner: Readonly<RuntimeOwner> },
   requester: RuntimeOwner

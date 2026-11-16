@@ -30,10 +30,15 @@ import {
   resolveEffectiveRuntimeConfig
 } from "./effective-runtime-config.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
-import { removeOwnedRuntimeState, writeRuntimeState } from "./runtime-state.js";
+import {
+  assertPriorRuntimeRecordDead,
+  removeOwnedRuntimeState,
+  writeRuntimeState
+} from "./runtime-state.js";
 import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import {
   readCurrentRuntimeOwner,
+  reclaimPriorGenerationPinForStart,
   RuntimePinPublicationError,
   removeStaleGenerationPin,
   withLifecycleLock,
@@ -1021,20 +1026,29 @@ const startKoedServerInternal = async (
   };
   if (admission) {
     assertControlPlaneAdmission(admission, paths);
+    let priorEvidence = false;
     for (const path of [
       paths.runtimeStatePath,
       paths.generationStatePath ??
         resolve(paths.runDir, "runtime-generation.json")
     ]) {
       try {
-        lstatSync(path);
+        const stat = lstatSync(path);
+        if (!stat.isFile() || stat.isSymbolicLink())
+          throw new Error("Invalid runtime evidence path");
+        priorEvidence = true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      throw new Error("Existing runtime evidence requires Operator attention");
     }
-    if (outcome) outcome.clean = true;
+    try {
+      assertPriorRuntimeRecordDead(paths.runtimeStatePath);
+    } catch (error) {
+      throw new Error("Existing runtime evidence requires Operator attention", {
+        cause: error
+      });
+    }
+    if (outcome) outcome.clean = !priorEvidence;
   } else {
     assertObservedOwner(observeRuntimeLifecycle(paths));
   }
@@ -1432,6 +1446,16 @@ const startKoedServerInternal = async (
       assertStartupActive();
       if (outcome) outcome.clean = false;
       startupPhase = "authenticated runtime selection";
+      if (
+        admission &&
+        existsSync(
+          paths.generationStatePath ??
+            resolve(paths.runDir, "runtime-generation.json")
+        )
+      ) {
+        await reclaimPriorGenerationPinForStart(paths, admission);
+        assertStartupActive();
+      }
       if (execution === "packaged") {
         const selected = await pinAndResolvePackagedRuntime(
           paths,

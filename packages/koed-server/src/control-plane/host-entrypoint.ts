@@ -18,7 +18,13 @@ export async function runInstalledControlPlaneHost(input: {
   const addon: unknown = require(resolveDesktopControlAddon(input.capability));
   if (!addon || typeof addon !== "object" || !("localControl" in addon))
     throw new Error("Packaged local control addon is unavailable");
-  const native = (addon as { localControl: NativeLocalControl }).localControl;
+  const native = (
+    addon as {
+      localControl: NativeLocalControl & {
+        tryReclaimLock(fd: number): boolean;
+      };
+    }
+  ).localControl;
   if (
     !native ||
     [
@@ -29,7 +35,8 @@ export async function runInstalledControlPlaneHost(input: {
       "read",
       "write",
       "flush",
-      "close"
+      "close",
+      "tryReclaimLock"
     ].some(
       (key) => typeof native[key as keyof NativeLocalControl] !== "function"
     )
@@ -40,6 +47,7 @@ export async function runInstalledControlPlaneHost(input: {
   const host = await startControlPlaneProcess({
     ...input,
     transport: createNativeControlTransport(native),
+    tryReclaimLock: (fd) => native.tryReclaimLock(fd),
     onFatal(error) {
       fatal = error;
       wake?.();
