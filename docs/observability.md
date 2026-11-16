@@ -419,7 +419,9 @@ their aggregate totals and chart. It also disables older-page navigation until
 Project history is complete. Unfiltered totals remain valid. While history is
 updating, the visible page refreshes every two seconds to continue bounded repair.
 Hidden pages pause polling. Unavailable history uses normal polling, and repair
-retries after ten minutes. A failed repair never reports complete coverage.
+retries pending records after ten minutes. A record indexed with an unavailable
+scope keeps the status `unavailable`, including after a restart, and is not
+retried. A failed repair never reports complete coverage.
 
 Project filters use indexed set containment on the accepted identities, before
 pagination. Each question remains one row, including its linked usage, even when

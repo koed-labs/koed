@@ -231,6 +231,20 @@ export const ensureRecallScopeIndexes = async (
   return { after, skipped, finished: false };
 };
 
+/** Whether any of the owner's history lost its accepted Project identities for
+ * good. Read from the stored projection, so it survives a process restart. */
+const hasUnavailableScope = async (
+  pool: pg.Pool,
+  actor: ActorContext
+): Promise<boolean> =>
+  (
+    await pool.query<{ unavailable: boolean }>(
+      `select exists(select 1 from memory_questions q where ${personalRecallPredicate}
+        and q.recall_scope @> '{"provenance":"unavailable"}'::jsonb) as unavailable`,
+      [actor.userId]
+    )
+  ).rows[0]?.unavailable === true;
+
 /** Run at most one bounded repair pass per owner at a time. Concurrent activity
  * reads (the page loads its overview and list together) share the pass, and an
  * owner whose history is fully projected is not scanned again: final Personal
@@ -265,8 +279,10 @@ export const createRecallScopeRepair = (
       after: current.after
     });
     const skipped = current.skipped + result.skipped;
+    // A finished pass is complete coverage only if no record is still pending
+    // and none was indexed with an unrecoverable selection.
     const status = result.finished
-      ? skipped
+      ? skipped || (await hasUnavailableScope(pool, actor))
         ? "unavailable"
         : "complete"
       : "updating";
@@ -277,6 +293,7 @@ export const createRecallScopeRepair = (
             after: null,
             skipped: 0,
             status,
+            // Retry pending records later; unrecoverable ones are never retried.
             idleUntil: skipped
               ? now() + RECALL_SCOPE_RETRY_MS
               : Number.POSITIVE_INFINITY

@@ -298,6 +298,66 @@ describe.skipIf(!process.env.DATABASE_URL)(
         })
       ).rejects.toThrow();
     });
+    it("reports Project coverage unavailable when a record's accepted Projects cannot be recovered, after a restart too", async () => {
+      const actor = {
+        userId: (
+          await repo.createUser({ email: `${randomUUID()}@example.test` })
+        ).id
+      };
+      const project = await repo.createNamedPersonalProject(actor, {
+        name: "Lost"
+      });
+      const lost = await repo.createFinalMemoryQuestion(actor, {
+        idempotencyKey: randomUUID(),
+        query: "Historical",
+        searchDomain: "project",
+        personalSelection: {
+          version: 1,
+          ownerUserId: actor.userId,
+          target: {
+            kind: "projects",
+            projects: [
+              { projectId: project.projectId, ownerUserId: actor.userId }
+            ],
+            callerSessionId: randomUUID()
+          },
+          callerRepositoryContext: null
+        },
+        status: "answered",
+        answerMarkdown: "Recorded answer"
+      });
+      // Historical record whose only copy of the selection is now invalidated;
+      // it has no legacy project_id to fall back on.
+      await pool.query(
+        "update memory_questions set recall_scope=null where id=$1",
+        [lost.id]
+      );
+      await pool.query(
+        "update encrypted_field_payloads set invalidated_at=now() where source_id=$1 and source_column='retrieval'",
+        [lost.id]
+      );
+      const overview = await repo.getRecallActivityOverview(actor, {
+        ...range,
+        timezone: "UTC"
+      });
+      expect(overview.recordedQuestions).toBe(1);
+      expect(overview.projectScopeStatus).toBe("unavailable");
+      const filtered = await repo.getRecallActivityOverview(actor, {
+        ...range,
+        timezone: "UTC",
+        projectId: project.projectId
+      });
+      expect(filtered.recordedQuestions).toBe(0);
+      expect(filtered.projectScopeStatus).toBe("unavailable");
+      expect(
+        (await repo.listRecallActivity(actor, { ...range, limit: 50 }))
+          .projectScopeStatus
+      ).toBe("unavailable");
+      // A fresh process has no in-memory progress but reads the stored projection.
+      const { createRecallScopeRepair } =
+        await import("../src/recall-activity-scope.js");
+      expect(await createRecallScopeRepair(pool)(actor)).toBe("unavailable");
+    });
     it("never fails activity reads on a record whose retained scope cannot be projected", async () => {
       const actor = {
         userId: (
@@ -423,7 +483,9 @@ describe.skipIf(!process.env.DATABASE_URL)(
       );
       expect(await repair(actor)).toBe("unavailable");
       now += 10 * 60_000;
-      expect(await repair(actor)).toBe("complete");
+      // The retried record is repaired, but the invalidated and foreign records
+      // lost their accepted Projects for good, so coverage stays unavailable.
+      expect(await repair(actor)).toBe("unavailable");
       expect(
         (
           await pool.query(
