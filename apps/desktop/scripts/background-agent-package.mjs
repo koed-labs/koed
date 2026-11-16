@@ -24,6 +24,7 @@ export const createBackgroundAgentLaunchAgentPlist = (productFilename) => {
   <string>Contents/MacOS/${productFilename}</string>
   <key>ProgramArguments</key>
   <array>
+    <string>Contents/MacOS/${productFilename}</string>
     <string>--koed-background-agent</string>
   </array>
   <key>MachServices</key>

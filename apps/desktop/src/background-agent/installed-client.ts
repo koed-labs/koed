@@ -14,13 +14,15 @@ export function createInstalledAgentCommand(input: {
     const name =
       command === "start-automatic"
         ? "__control-plane-start-automatic"
-        : command === "stop"
-          ? "stop"
+        : command === "stop" || command === "start"
+          ? command
           : `__control-plane-${command}`;
     const args = [
       input.entrypoint,
       name,
-      ...(command === "start-automatic" ? ["--daemon"] : []),
+      ...(command === "start-automatic" || command === "start"
+        ? ["--daemon"]
+        : []),
       "--json"
     ];
     try {

@@ -36,7 +36,7 @@ test("LaunchAgent plist uses bundle-relative executable and XPC Mach service", (
   );
   assert.match(
     plist,
-    /<key>ProgramArguments<\/key>\s*<array>\s*<string>--koed-background-agent<\/string>/u
+    /<key>ProgramArguments<\/key>\s*<array>\s*<string>Contents\/MacOS\/Koed<\/string>\s*<string>--koed-background-agent<\/string>/u
   );
   assert.match(
     plist,

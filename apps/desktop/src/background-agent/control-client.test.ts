@@ -106,6 +106,30 @@ describe("Background Agent control client", () => {
     await expect(control.disable()).rejects.toThrow("uncertain cleanup");
     expect(actions).toEqual(["stop"]);
   });
+  it("does not resume when launch registration is disabled", async () => {
+    const commands: string[] = [];
+    const control = createBackgroundAgentControl({
+      ensureStopped: async () => undefined,
+      registration: {
+        get: async () => ({
+          supported: true,
+          enabled: false,
+          status: "disabled"
+        }),
+        set: async () => ({
+          supported: true,
+          enabled: false,
+          status: "disabled"
+        })
+      },
+      command: async (command) => {
+        commands.push(command);
+        return { ok: true };
+      }
+    });
+    await expect(control.resume()).rejects.toThrow("registration");
+    expect(commands).toEqual([]);
+  });
   it("never automatically starts when the Agent is disabled or explicit Stop is set", async () => {
     const commands: string[] = [];
     const control = createBackgroundAgentControl({

@@ -18,6 +18,20 @@ describe("installed Agent control client", () => {
       ["/app/cli.js", "__control-plane-start-automatic", "--daemon", "--json"]
     ]);
   });
+  it("sends a menu Start as an explicit start, not an automatic resume", async () => {
+    const calls: string[][] = [];
+    const command = createInstalledAgentCommand({
+      executable: "/app/Koed",
+      entrypoint: "/app/cli.js",
+      environment: {},
+      run: async (_executable, args) => {
+        calls.push(args);
+        return JSON.stringify({ ok: true });
+      }
+    });
+    await command("start");
+    expect(calls).toEqual([["/app/cli.js", "start", "--daemon", "--json"]]);
+  });
   it("treats malformed output as failure rather than accepting it", async () => {
     const command = createInstalledAgentCommand({
       executable: "/app/Koed",

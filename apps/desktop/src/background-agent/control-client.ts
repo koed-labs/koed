@@ -1,6 +1,7 @@
 import type { BackgroundAgentLaunchService } from "./launch-service.js";
 
 export type AgentCommand =
+  | "start"
   | "stop"
   | "agent-enable"
   | "agent-disable"
@@ -35,6 +36,15 @@ export function createBackgroundAgentControl(input: {
   return {
     resume: (): Promise<void> =>
       serialize(async () => {
+        const registration = await input.registration.get();
+        if (
+          !registration.supported ||
+          !registration.enabled ||
+          registration.status !== "enabled"
+        )
+          throw new Error(
+            "Background Agent registration is not confirmed enabled"
+          );
         const status = await input.command("agent-status");
         if (
           !status.ok ||
