@@ -137,7 +137,7 @@ describe("Desktop supervisor startup deadline", () => {
       ),
       "utf8"
     );
-    const start = source.indexOf("export const startKoedServer = async ({");
+    const start = source.indexOf("const startKoedServerInternal = async (");
     expect(start).toBeGreaterThan(-1);
     const match = /timeoutMs = ([\d_]+),/.exec(source.slice(start));
     expect(match).not.toBeNull();
