@@ -102,3 +102,25 @@ describe("Recall project labels", () => {
     ).toBeNull();
   });
 });
+
+it("keeps unavailable named Project labels unavailable despite stale sidebar data", () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  expect(
+    recallProjectLabel({ projectId: id, projectName: null }, [
+      project({ id, name: "Stale name" })
+    ])
+  ).toBeNull();
+  expect(
+    recallProjectLabel({ projectId: id, projectName: "Renamed" }, [
+      project({ id, name: "Stale name" })
+    ])
+  ).toBe("Renamed");
+});
+
+it("resolves a named Project from the sidebar when no activity API label is known", () => {
+  const id = "00000000-0000-4000-8000-000000000002";
+  expect(
+    recallProjectLabel({ projectId: id }, [project({ id, name: "Live name" })])
+  ).toBe("Live name");
+  expect(recallProjectLabel({ projectId: id }, [])).toBeNull();
+});

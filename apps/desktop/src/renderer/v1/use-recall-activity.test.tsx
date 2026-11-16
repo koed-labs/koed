@@ -10,6 +10,7 @@ import type {
 } from "@koed-labs/shared/personal-desktop";
 import {
   RECALL_OVERVIEW_CHANGE_INTERVAL_MS,
+  RECALL_SCOPE_REPAIR_INTERVAL_MS,
   useRecallActivity
 } from "./use-recall-activity.js";
 
@@ -31,6 +32,63 @@ const page = (name: string): RecallActivityPage => ({
   asOf: name
 });
 const overview = {} as RecallActivityOverview;
+
+it("refreshes incomplete Project history until complete and pauses repair polling while hidden", async () => {
+  vi.useFakeTimers();
+  let status: "updating" | "complete" | "unavailable" = "updating";
+  const list = vi.fn(async () => ({
+    ...page("history"),
+    projectScopeStatus: status
+  }));
+  const stats = vi.fn(async () => ({
+    ...overview,
+    projectScopeStatus: status
+  }));
+  const api = {
+    listRecallActivity: list,
+    recallActivityOverview: stats,
+    subscribe: () => () => {}
+  } as unknown as PersonalDesktopApi;
+  let view!: ReturnType<typeof useRecallActivity>;
+  function View() {
+    view = useRecallActivity(api, input, "UTC");
+    return null;
+  }
+  let visibility = "visible";
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(
+    () => visibility as DocumentVisibilityState
+  );
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root!.render(<View />));
+  expect(view.overview?.projectScopeStatus).toBe("updating");
+  await act(async () =>
+    vi.advanceTimersByTimeAsync(RECALL_SCOPE_REPAIR_INTERVAL_MS)
+  );
+  expect(stats).toHaveBeenCalledTimes(2);
+  visibility = "hidden";
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(stats).toHaveBeenCalledTimes(2);
+  visibility = "visible";
+  status = "complete";
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(RECALL_SCOPE_REPAIR_INTERVAL_MS);
+  });
+  expect(view.overview?.projectScopeStatus).toBe("complete");
+  expect(stats).toHaveBeenCalledTimes(3);
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(stats).toHaveBeenCalledTimes(3);
+  status = "unavailable";
+  await act(async () => view.refresh());
+  expect(stats).toHaveBeenCalledTimes(4);
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(stats).toHaveBeenCalledTimes(4);
+});
 
 it("coalesces changes, throttles overview reads, avoids rehydration, pauses hidden polling and clears denied data", async () => {
   vi.useFakeTimers();

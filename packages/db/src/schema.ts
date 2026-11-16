@@ -12014,6 +12014,8 @@ export const memoryQuestions = pgTable(
     citations: jsonb("citations").$type<unknown>(),
     retrieval: jsonb("retrieval").$type<unknown>(),
     localMemoryWorker: jsonb("local_memory_worker").$type<unknown>(),
+    // Identity-only activity index; the accepted selection remains encrypted.
+    recallScope: jsonb("recall_scope"),
     recallMetadata:
       jsonb("recall_metadata").$type<
         import("@koed-labs/shared").RecallQuestionMetadata
@@ -12026,6 +12028,10 @@ export const memoryQuestions = pgTable(
     answeredAt: timestamp("answered_at", { withTimezone: true })
   },
   (table) => [
+    index("memory_questions_recall_scope_idx").using("gin", table.recallScope),
+    index("memory_questions_recall_scope_pending_idx")
+      .on(table.ownerUserId, table.id)
+      .where(sql`${table.recallScope} is null`),
     index("memory_questions_personal_created_idx")
       .on(table.ownerUserId, table.createdAt.desc(), table.id.desc())
       .where(sql`${table.visibility} = 'personal'`),

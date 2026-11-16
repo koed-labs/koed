@@ -105,16 +105,50 @@ export function recallCallerPresentation(name: string | null | undefined) {
 export const recallTokenLabel = (value: number | null) =>
   value === null ? "Unknown" : value.toLocaleString();
 
-export const recallMemoryResultLabel = (value: string | null | undefined) =>
-  ({
-    found: "Found",
-    not_found: "Not found",
-    insufficient: "Partial evidence",
-    pending_summary: "Pending summaries"
-  })[value ?? ""] ?? "Unknown";
+export const recallOutcomes = {
+  found: {
+    label: "Found",
+    description: "Koed found Memory that supports the answer."
+  },
+  not_found: {
+    label: "Unmatched",
+    description: "Koed found no relevant Memory for this request."
+  },
+  insufficient: {
+    label: "Incomplete",
+    description:
+      "Koed did not reach a complete answer. The information is incomplete or unclear, or the search ended early."
+  },
+  pending_summary: {
+    label: "Pending",
+    description: "Required summaries are not ready. The recall request ended."
+  },
+  unknown: {
+    label: "Unknown",
+    description: "Koed has no recorded outcome for this answer."
+  },
+  error: {
+    label: "Error",
+    description: "An error stopped Koed before it produced a valid answer."
+  }
+};
+
+export const recallOutcomeOptions = Object.entries(recallOutcomes).map(
+  ([value, { label }]) => ({ value, label })
+);
+
 export const recallDurationLabel = (value: number | null | undefined) =>
   value == null
     ? "Unknown"
     : value < 1000
       ? `${Math.round(value)} ms`
       : `${(value / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s`;
+
+/** Compact header only; retain the original question in Caller details. */
+export function recallQuestionPreview(query: string | null): string {
+  const text = query?.replace(/\s+/g, " ").trim() || "Question unavailable";
+  const characters = [...text];
+  if (characters.length <= 120) return text;
+  const prefix = characters.slice(0, 119).join("");
+  return prefix.replace(/\s+\S*$/, "").trimEnd() + "…";
+}

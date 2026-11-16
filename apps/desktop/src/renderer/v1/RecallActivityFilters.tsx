@@ -17,7 +17,8 @@ import type { DesktopProject } from "../../project-memory-ui.js";
 import {
   localRecallDate,
   recallCallerPresentation,
-  recallDateRange
+  recallDateRange,
+  recallOutcomeOptions
 } from "./recall-activity-model.js";
 import { recallProjectLabel } from "./recall-project-label.js";
 import "./project-management/project-management.css";
@@ -137,10 +138,8 @@ export function RecallActivityFilters({
   if (draft.projectId && !projectChoices.has(draft.projectId))
     projectChoices.set(
       draft.projectId,
-      recallProjectLabel(
-        { projectId: draft.projectId, projectName: null },
-        projects
-      ) ?? "Project unavailable"
+      recallProjectLabel({ projectId: draft.projectId }, projects) ??
+        "Project unavailable"
     );
   const [error, setError] = useState<string | null>(null);
   const apply = (event: FormEvent) => {
@@ -228,12 +227,7 @@ export function RecallActivityFilters({
             options={[
               { value: "all", label: "All outcomes" },
               { value: "answered", label: "Answered" },
-              { value: "found", label: "Memory found" },
-              { value: "not_found", label: "No matching Memory" },
-              { value: "insufficient", label: "Partial evidence" },
-              { value: "pending_summary", label: "Summaries pending" },
-              { value: "unknown", label: "Unknown" },
-              { value: "error", label: "Recorded error" }
+              ...recallOutcomeOptions
             ]}
           />
         </label>
@@ -284,7 +278,7 @@ export function RecallActivityFilters({
       </div>
       {error && <p role="alert">{error}</p>}
       <div className="recall-filter-actions">
-        <Button type="submit" size="sm">
+        <Button type="submit" size="sm" className="recall-apply-filters">
           Apply filters
         </Button>
         <Button type="button" variant="ghost" size="sm" onClick={onReset}>

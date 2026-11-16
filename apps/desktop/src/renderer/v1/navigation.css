@@ -288,6 +288,32 @@
   gap: 0;
   transform: none;
 }
+.v1-nav-load-more-row {
+  display: flex;
+  justify-content: center;
+}
+.v1-nav-load-more {
+  height: auto;
+  margin: 4px 0 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--v1-muted);
+}
+.v1-nav-load-more [data-slot="badge"] {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--v1-surface);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  color: inherit;
+}
+.v1-nav-load-more:hover [data-slot="badge"] {
+  background: var(--v1-surface-hover);
+}
 .v1-nav-conversation-wrap {
   position: relative;
 }

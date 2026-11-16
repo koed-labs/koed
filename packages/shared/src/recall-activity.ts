@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  recallExecutionSchema,
+  recallScopeSchema
+} from "./recall-execution.js";
+export * from "./recall-execution.js";
 
 const instant = z.string().datetime({ offset: true });
 export const RECALL_QUERY_MAX_LENGTH = 100_000;
@@ -180,12 +185,25 @@ export const recallActivityQuestionSchema = z
     status: z.enum(["answered", "error"]),
     projectId: z.string().nullable(),
     projectName: z.string().nullable(),
+    scope: recallScopeSchema.nullable().optional(),
     sessionId: z.string().uuid().nullable()
   })
   .strict();
 
+// Coverage of accepted Project identities in historical activity. While not
+// complete, Project-filtered rows, totals and filter choices can be incomplete.
+export const recallProjectScopeStatusSchema = z.enum([
+  "complete",
+  "updating",
+  "unavailable"
+]);
+export type RecallProjectScopeStatus = z.infer<
+  typeof recallProjectScopeStatusSchema
+>;
+
 export const recallActivityPageSchema = z
   .object({
+    projectScopeStatus: recallProjectScopeStatusSchema.optional(),
     questions: z.array(recallActivityQuestionSchema).max(50),
     nextCursor: recallActivityCursorSchema.nullable(),
     asOf: instant
@@ -242,6 +260,7 @@ export const recallActivityDetailSchema = z
     searchCount: count,
     expandCount: count,
     candidateCount: count,
+    execution: recallExecutionSchema.nullable().optional(),
     failure: z.string().max(1000).nullable(),
     evidence: z
       .array(
@@ -310,6 +329,7 @@ export const recallActivityOverviewInputSchema = recallActivityFiltersSchema
   );
 export const recallActivityOverviewSchema = z
   .object({
+    projectScopeStatus: recallProjectScopeStatusSchema.optional(),
     filterOptions: z
       .object({
         projects: z.array(
@@ -329,18 +349,8 @@ export const recallActivityOverviewSchema = z
     bucket: z.enum(["hour", "day", "week", "month"]),
     tokens: recallUsageTotalsSchema,
     linkedQuestions: z.number().int().nonnegative(),
-    tokenTimeline: z
-      .array(
-        z
-          .object({
-            start: instant,
-            totalTokens: count,
-            recordedAttempts: z.number().int().nonnegative(),
-            partial: z.boolean()
-          })
-          .strict()
-      )
-      .max(400),
+    // Accept and discard the retired field from older backend responses.
+    tokenTimeline: z.unknown().optional(),
     recordedQuestions: z.number().int().nonnegative(),
     recordedErrors: z.number().int().nonnegative(),
     memoryResults: z
@@ -372,7 +382,8 @@ export const recallActivityOverviewSchema = z
       )
       .max(400)
   })
-  .strict();
+  .strict()
+  .transform(({ tokenTimeline: _retiredTimeline, ...overview }) => overview);
 export type RecallActivityOverviewInput = z.infer<
   typeof recallActivityOverviewInputSchema
 >;
