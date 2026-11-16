@@ -52,6 +52,7 @@ export const parseArgs = (argv) => {
     json: false,
     build: false,
     missingAssets: false,
+    expectControlPolicyUnavailable: false,
     maskNativeAssets: false,
     skipRendererFaults: false,
     verifyAcceleration: false,
@@ -74,6 +75,10 @@ export const parseArgs = (argv) => {
     }
     if (value === "--missing-assets") {
       options.missingAssets = true;
+      continue;
+    }
+    if (value === "--expect-control-policy-unavailable") {
+      options.expectControlPolicyUnavailable = true;
       continue;
     }
     if (value === "--mask-native-assets") {
@@ -151,6 +156,18 @@ export const parseArgs = (argv) => {
   if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs <= 0) {
     throw new Error("--poll-interval-ms must be a positive integer.");
   }
+  if (
+    options.expectControlPolicyUnavailable &&
+    (options.missingAssets ||
+      options.appImage ||
+      options.verifyAcceleration ||
+      options.embeddingModelSource ||
+      options.exportEmbeddingModel)
+  ) {
+    throw new Error(
+      "--expect-control-policy-unavailable conflicts with runtime smoke options."
+    );
+  }
   if (options.appImageDirect && !options.appImage)
     throw new Error("--appimage-direct requires --appimage.");
   if (options.appImageDirect && options.missingAssets)
@@ -166,6 +183,7 @@ export const parseArgs = (argv) => {
 const usage = `Usage: pnpm desktop:package:smoke -- [options]
 
 Options:
+  --expect-control-policy-unavailable  Verify an ad-hoc macOS package refuses control-plane startup
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
   --appimage <path>         Extract and smoke this exact trusted AppImage
@@ -538,6 +556,22 @@ const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? ""
   };
+};
+
+export const assertControlPolicyUnavailable = (result) => {
+  if (
+    result.error ||
+    result.signal ||
+    typeof result.status !== "number" ||
+    result.status === 0 ||
+    !/^Error: Local control signing policy unavailable\s*$/mu.test(
+      result.stderr ?? ""
+    )
+  ) {
+    throw new Error(
+      "Expected the packaged control plane to reject missing signing policy."
+    );
+  }
 };
 
 export const assertNoSourceCheckoutResolution = (label, payload) => {
@@ -1650,6 +1684,33 @@ const run = async (extractedRoot) => {
   let desktop;
   try {
     const executionPlan = smokeExecutionPlan(options);
+    if (options.expectControlPolicyUnavailable) {
+      if (process.platform !== "darwin")
+        throw new Error("Control policy negative smoke requires macOS.");
+      const installedCli = resolve(
+        layout.appAsarPath,
+        "node_modules/@koed-labs/server/dist/desktop-cli-entrypoint.js"
+      );
+      const result = spawnSync(
+        layout.executable,
+        [layout.runner, "node-script", installedCli, "__control-plane-host"],
+        {
+          cwd: layout.resourcesPath,
+          env: createSmokeEnv(koedHome),
+          encoding: "utf8",
+          timeout: 30_000
+        }
+      );
+      assertControlPolicyUnavailable(result);
+      console.log(
+        JSON.stringify({
+          ok: true,
+          mode: "missing-control-signing-policy",
+          appPath: layout.appPath
+        })
+      );
+      return;
+    }
     if (executionPlan.missingAssets) {
       const runMissingAssets = () => smokeMissingAssets(layout, koedHome);
       const result = await measurePhase(

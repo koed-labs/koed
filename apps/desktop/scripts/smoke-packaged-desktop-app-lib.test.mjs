@@ -32,10 +32,50 @@ import {
   assertNoSourceCheckoutResolution,
   assertFailClosedPrivacy,
   assertFailClosedTeamStart,
+  assertControlPolicyUnavailable,
   parseArgs,
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
 import * as smokeApp from "./smoke-packaged-desktop-app.mjs";
+
+test("negative control smoke only accepts the precise policy failure", () => {
+  assert.equal(
+    parseArgs(["--expect-control-policy-unavailable"])
+      .expectControlPolicyUnavailable,
+    true
+  );
+  assert.throws(
+    () =>
+      parseArgs(["--expect-control-policy-unavailable", "--missing-assets"]),
+    /conflicts/
+  );
+  assert.doesNotThrow(() =>
+    assertControlPolicyUnavailable({
+      status: 1,
+      signal: null,
+      stderr: "Error: Local control signing policy unavailable"
+    })
+  );
+  for (const result of [
+    {
+      status: 0,
+      signal: null,
+      stderr: "Local control signing policy unavailable"
+    },
+    { status: 1, signal: null, stderr: "other failure" },
+    {
+      status: null,
+      signal: "SIGKILL",
+      stderr: "Local control signing policy unavailable"
+    },
+    {
+      status: null,
+      error: new Error("spawn failed"),
+      stderr: "Local control signing policy unavailable"
+    }
+  ])
+    assert.throws(() => assertControlPolicyUnavailable(result));
+});
 
 test("failure diagnostics read failing home before cleanup and retain original cause", async () => {
   const home = createSmokeHome("koed-team-diagnostics-test-");
