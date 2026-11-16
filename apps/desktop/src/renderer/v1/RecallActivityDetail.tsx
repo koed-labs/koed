@@ -158,7 +158,9 @@ export function RecallActivityDetail({
                     )}
                   </span>
                   {detail.execution?.delivery?.operations.some(
-                    (operation) => operation.recovered
+                    (operation) =>
+                      operation.kind === "targeted_expand" &&
+                      operation.recovered
                   ) && (
                     <span className="recall-detail-signal">
                       Targeted recovery

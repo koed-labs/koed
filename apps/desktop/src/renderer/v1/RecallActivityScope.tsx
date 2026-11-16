@@ -65,7 +65,14 @@ export function RecallActivityScope({
               <Folder />
               {(kind === "projects"
                 ? project.projectName
-                : recallProjectLabel(project, inventory)) ??
+                : // Other kinds carry a recorded legacy name, not an API verdict.
+                  recallProjectLabel(
+                    {
+                      projectId: project.projectId,
+                      projectName: project.projectName ?? undefined
+                    },
+                    inventory
+                  )) ??
                 (kind === "folder"
                   ? "Folder unavailable"
                   : kind === "repository"

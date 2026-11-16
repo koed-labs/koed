@@ -31,7 +31,11 @@ export function RecallActivityQuickFilters({
     )
   );
   if (input.projectId && !options.has(input.projectId))
-    options.set(input.projectId, "Project unavailable");
+    options.set(
+      input.projectId,
+      recallProjectLabel({ projectId: input.projectId }, projects) ??
+        "Project unavailable"
+    );
   return (
     <div className="recall-quick-filters">
       <RecallSelect

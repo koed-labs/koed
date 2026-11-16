@@ -145,19 +145,35 @@ const recallActivityRepository = (
     const filterOptions = await pool.query<
       NonNullable<RecallActivityOverview["filterOptions"]>
     >(
+      // A named Project is labelled only by its current active name, so a deleted
+      // one stays unavailable. Other identities use their latest recorded name.
+      // Records still awaiting scope repair contribute their legacy Project.
       `with eligible as (
-         select q.recall_scope, q.project_name, (${recallMetadataSql.callerName}) as caller
+         select q.recall_scope, q.project_id, q.project_name, q.created_at,
+           (${recallMetadataSql.callerName}) as caller
          from memory_questions q where ${choices.predicates.join(" and ")}
+       ), recorded as (
+         select ids.id, e.recall_scope->>'kind' as kind,
+           case when e.recall_scope->>'kind' <> 'projects' then e.project_name end as legacy_name,
+           e.created_at
+         from eligible e cross join lateral jsonb_array_elements_text(e.recall_scope->'projectIds') ids(id)
+         union all
+         select e.project_id, 'unknown', e.project_name, e.created_at
+         from eligible e where e.recall_scope is null and e.project_id is not null
        ), identities as (
-         select distinct ids.id, recall_scope->>'kind' as kind,
-           case when recall_scope->>'kind' <> 'projects' then project_name end as legacy_name
-         from eligible cross join lateral jsonb_array_elements_text(recall_scope->'projectIds') ids(id)
+         select r.*, case when r.kind = 'projects'
+           and r.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+           then r.id::uuid end as named_id
+         from recorded r
        ) select
          coalesce((select jsonb_agg(jsonb_build_object('projectId', project_id,
            'projectName', project_name) order by project_id) from (
-             select ids.id as project_id, max(case when ids.kind = 'projects' then p.name else ids.legacy_name end) as project_name
+             select ids.id as project_id,
+               case when bool_or(ids.kind = 'projects') then max(p.name)
+                 else (array_agg(ids.legacy_name order by ids.created_at desc)
+                   filter (where ids.legacy_name is not null))[1] end as project_name
              from identities ids left join personal_named_projects p
-               on p.owner_user_id=$1 and p.project_id::text=ids.id and p.deleted_at is null
+               on p.owner_user_id=$1 and p.project_id=ids.named_id and p.deleted_at is null
              group by ids.id
            ) p), '[]'::jsonb) as projects,
          coalesce((select jsonb_agg(caller order by caller) from (

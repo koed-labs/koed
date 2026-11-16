@@ -138,10 +138,8 @@ export function RecallActivityFilters({
   if (draft.projectId && !projectChoices.has(draft.projectId))
     projectChoices.set(
       draft.projectId,
-      recallProjectLabel(
-        { projectId: draft.projectId, projectName: null },
-        projects
-      ) ?? "Project unavailable"
+      recallProjectLabel({ projectId: draft.projectId }, projects) ??
+        "Project unavailable"
     );
   const [error, setError] = useState<string | null>(null);
   const apply = (event: FormEvent) => {

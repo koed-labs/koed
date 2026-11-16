@@ -822,6 +822,8 @@ interface ValidatedMemoryAnswerRun {
   markdown: string;
   structuredAnswer: StructuredMemoryAnswer;
   curatedEvidence: unknown[];
+  /** Token cost of `curatedEvidence`, measured once during validation. */
+  curatedEvidenceTokens: number;
 }
 
 const clampLimit = (limit: unknown, fallback: number): number => {
@@ -3009,9 +3011,18 @@ const createMemoryAnswerDynamicToolHandler = (
         state.ledger.searchAttempts +=
           searchPassesFromResult(searchResult) - plannedPasses;
         const hits = hitsFromSearch(searchResult);
-        state.operationSourceKeys = hits.map((item) =>
-          JSON.stringify(evidenceSourceSelector(item))
-        );
+        // Key hits as the normalized candidates they become, so omission reasons match.
+        state.operationSourceKeys = [
+          ...new Set(
+            hits.map((hit, index) =>
+              JSON.stringify(
+                evidenceSourceSelector(
+                  normalizeCandidateIdentity(hit, index, stage)
+                )
+              )
+            )
+          )
+        ];
         const bounded = boundEvidence(
           combineMemoryAnswerCandidateLists(
             state.evidence,
@@ -3181,9 +3192,13 @@ const createMemoryAnswerDynamicToolHandler = (
               selectedKeys.has(JSON.stringify(evidenceSourceSelector(item)))
             )
           : authorizedEvidence;
-        state.operationSourceKeys = expandedEvidence.map((item) =>
-          JSON.stringify(evidenceSourceSelector(item))
-        );
+        state.operationSourceKeys = [
+          ...new Set(
+            expandedEvidence.map((item) =>
+              JSON.stringify(evidenceSourceSelector(item))
+            )
+          )
+        ];
         const bounded = boundEvidence(
           prioritizeExpandedEvidence(state.evidence, expandedEvidence),
           options.config,
@@ -4758,6 +4773,7 @@ const runDynamicToolMemoryAnswer = async (
   rawEvents?: CodexAppServerRawEvent[];
   appServerExecutions: MemoryAnswerAppServerExecution[];
   evidence: unknown[];
+  finalEvidenceBundle: { tokens: number; count: number };
   candidates: unknown[];
   citations: unknown[];
   searches: ToolSearchRecord[];
@@ -4967,6 +4983,7 @@ const runDynamicToolMemoryAnswer = async (
             )
             .filter((item) => item !== undefined)
         : [];
+      const observedCount = items.length;
       if (
         Array.isArray(observedItems) &&
         (items.some(isCompleteEvidence) ||
@@ -5172,26 +5189,38 @@ const runDynamicToolMemoryAnswer = async (
         : [];
       const requested = state.operationSourceKeys as string[] | undefined;
       if (["search", "expand", "scan"].includes(call.tool)) {
+        const kind: RecallDeliveryOperation["kind"] =
+          call.tool === "expand"
+            ? recordFromUnknown(call.arguments).sources === undefined
+              ? "expand"
+              : "targeted_expand"
+            : call.tool === "scan"
+              ? "scan"
+              : "search";
+        // Reuse the handler's own admission count (an expansion record is kept
+        // current through prompt admission) instead of comparing raw hit counts
+        // with merged, deduplicated delivery.
+        const admissionOmitted =
+          field === "expandedEvidence"
+            ? (state.expansionRecords.at(-1)?.omittedSourceCount ?? 0)
+            : Number(observation.omittedEvidenceCount ?? 0) +
+              Math.max(0, observedCount - items.length);
         const operation: RecallDeliveryOperation = {
-          kind:
-            call.tool === "expand"
-              ? recordFromUnknown(call.arguments).sources === undefined
-                ? "expand"
-                : "targeted_expand"
-              : call.tool === "scan"
-                ? "scan"
-                : "search",
+          kind,
           attempt: state.ledger.workerAttempts,
           delivered: requested
             ? deliveredItems.length
             : response.success
               ? 0
               : null,
-          omitted: requested
-            ? Math.max(0, requested.length - deliveredItems.length)
-            : response.success
-              ? 0
-              : null,
+          omitted:
+            requested && response.success
+              ? Math.max(0, admissionOmitted)
+              : requested
+                ? requested.length
+                : response.success
+                  ? 0
+                  : null,
           reasons: [
             ...new Set(
               (state.admissionOmissions ?? [])
@@ -5201,9 +5230,15 @@ const runDynamicToolMemoryAnswer = async (
                 .map((entry) => entry.reason)
             )
           ],
-          recovered: deliveredItems.some((item) =>
-            previousOmissions.has(JSON.stringify(evidenceSourceSelector(item)))
-          ),
+          // Only a targeted expansion is a recovery; another search or expand
+          // that happens to return an earlier omission is ordinary delivery.
+          recovered:
+            kind === "targeted_expand" &&
+            deliveredItems.some((item) =>
+              previousOmissions.has(
+                JSON.stringify(evidenceSourceSelector(item))
+              )
+            ),
           failed: !response.success
         };
         if (state.ledger.deliveryOperations.length < 100)
@@ -5465,7 +5500,19 @@ const runDynamicToolMemoryAnswer = async (
         "Memory answer worker returned found without resolvable supporting evidence"
       );
     }
-    return { markdown, structuredAnswer, curatedEvidence };
+    // Measure the final bundle here, where it was already bounded, rather than
+    // re-tokenizing the recorded evidence afterwards.
+    const curatedEvidenceTokens =
+      curatedEvidence.length === selectedEvidence.length
+        ? selectedEvidenceBudget.tokenEstimate
+        : boundEvidence(curatedEvidence, options.config, { allowEmpty: true })
+            .tokenEstimate;
+    return {
+      markdown,
+      structuredAnswer,
+      curatedEvidence,
+      curatedEvidenceTokens
+    };
   };
 
   const validate = (run: MemoryAnswerAttemptRun): ValidatedMemoryAnswerRun => {
@@ -5508,7 +5555,8 @@ const runDynamicToolMemoryAnswer = async (
   }
   const { run, validated } = retryResult;
   const { result } = run;
-  const { markdown, structuredAnswer, curatedEvidence } = validated;
+  const { markdown, structuredAnswer, curatedEvidence, curatedEvidenceTokens } =
+    validated;
   const primaryThreadId =
     normalizeExecutionPrimaryThreadIds(appServerExecutions) ??
     result.primaryThreadId ??
@@ -5527,6 +5575,10 @@ const runDynamicToolMemoryAnswer = async (
     rawEvents: result.rawEvents,
     appServerExecutions,
     evidence: curatedEvidence,
+    finalEvidenceBundle: {
+      tokens: curatedEvidenceTokens,
+      count: curatedEvidence.length
+    },
     candidates: state.evidence,
     citations: citationsFromHits(curatedEvidence),
     searches: state.searches,
@@ -5650,10 +5702,7 @@ export const answerWithMemoryWorker = async (
             activityExecution: recordRecallExecution(
               config,
               answer.budgetLedger,
-              {
-                tokens: boundEvidence(answer.evidence, config).tokenEstimate,
-                count: answer.evidence.length
-              }
+              answer.finalEvidenceBundle
             ),
             mode:
               evaluation.retrievalVariant !== "production"

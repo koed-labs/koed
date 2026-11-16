@@ -479,6 +479,76 @@ describe.skipIf(!process.env.DATABASE_URL)(
       await repair(actor);
       expect(scans()).toBe(3);
     });
+    it("labels Project filter choices by current named Project, never a stale legacy name", async () => {
+      const actor = {
+        userId: (
+          await repo.createUser({ email: `${randomUUID()}@example.test` })
+        ).id
+      };
+      const live = await repo.createNamedPersonalProject(actor, {
+        name: "Alpha"
+      });
+      const removed = await repo.createNamedPersonalProject(actor, {
+        name: "Beta"
+      });
+      for (const project of [live, removed]) {
+        await repo.createFinalMemoryQuestion(actor, {
+          idempotencyKey: randomUUID(),
+          query: "Named",
+          searchDomain: "project",
+          personalSelection: {
+            version: 1,
+            ownerUserId: actor.userId,
+            target: {
+              kind: "projects",
+              projects: [
+                { projectId: project.projectId, ownerUserId: actor.userId }
+              ],
+              callerSessionId: randomUUID()
+            },
+            callerRepositoryContext: null
+          },
+          status: "answered",
+          answerMarkdown: "Recorded answer"
+        });
+        // Legacy history recorded a name that sorts after the current one.
+        await repo.createFinalMemoryQuestion(actor, {
+          idempotencyKey: randomUUID(),
+          query: "Legacy",
+          searchDomain: "project",
+          projectId: project.projectId,
+          projectName: "Zeta",
+          status: "answered",
+          answerMarkdown: "Recorded answer"
+        });
+      }
+      await repo.createFinalMemoryQuestion(actor, {
+        idempotencyKey: randomUUID(),
+        query: "Legacy repository",
+        searchDomain: "project",
+        projectId: "legacy-repository",
+        projectName: "Legacy",
+        status: "answered",
+        answerMarkdown: "Recorded answer"
+      });
+      await pool.query(
+        "update personal_named_projects set deleted_at=now() where owner_user_id=$1 and project_id=$2",
+        [actor.userId, removed.projectId]
+      );
+      const choices = new Map(
+        (
+          (
+            await repo.getRecallActivityOverview(actor, {
+              ...range,
+              timezone: "UTC"
+            })
+          ).filterOptions?.projects ?? []
+        ).map((choice) => [choice.projectId, choice.projectName])
+      );
+      expect(choices.get(live.projectId)).toBe("Alpha");
+      expect(choices.get(removed.projectId)).toBeNull();
+      expect(choices.get("legacy-repository")).toBe("Legacy");
+    });
     it("preserves legacy Project filtering, missing diagnostics, and runtime overrides on errors", async () => {
       const actor = {
         userId: (
