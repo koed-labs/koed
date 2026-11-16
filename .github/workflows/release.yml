@@ -964,6 +964,7 @@ jobs:
           APPLE_API_KEY: ${{ steps.signing.outputs.apple-api-key-path }}
           APPLE_API_KEY_ID: ${{ secrets.DESKTOP_MACOS_APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.DESKTOP_MACOS_APPLE_API_ISSUER }}
+          DESKTOP_MACOS_APPLE_TEAM_ID: ${{ vars.DESKTOP_MACOS_APPLE_TEAM_ID }}
         run: |
           pnpm desktop:package:release
           node scripts/verify-frozen-component-assets.mjs release-components "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}"

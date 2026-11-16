@@ -15,7 +15,8 @@ function fixture() {
     start: vi.fn(() => snapshot),
     stop: vi.fn(() => snapshot),
     attach: vi.fn(() => snapshot),
-    detach: vi.fn(() => snapshot)
+    detach: vi.fn(() => snapshot),
+    openDesktopSession: vi.fn(() => ({ close: vi.fn() }))
   };
   return core;
 }
