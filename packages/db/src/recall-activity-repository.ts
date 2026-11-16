@@ -1,5 +1,5 @@
 import {
-  ensureRecallScopeIndexes,
+  createRecallScopeRepair,
   recallScopeSql
 } from "./recall-activity-scope.js";
 import { projectRecallExecution } from "./recall-activity-execution.js";
@@ -60,14 +60,21 @@ export interface RecallActivityRepository {
 export const createRecallActivityRepository = (
   pool: pg.Pool,
   options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider } = {}
+): RecallActivityRepository =>
+  recallActivityRepository(
+    pool,
+    options,
+    createRecallScopeRepair(pool, options.envelopeEncryptionProvider)
+  );
+
+const recallActivityRepository = (
+  pool: pg.Pool,
+  options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider },
+  repairScope: ReturnType<typeof createRecallScopeRepair>
 ): RecallActivityRepository => ({
   async getRecallActivityOverview(actor, rawInput) {
     const input = recallActivityOverviewInputSchema.parse(rawInput);
-    await ensureRecallScopeIndexes(
-      pool,
-      actor,
-      options.envelopeEncryptionProvider
-    );
+    await repairScope(actor);
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     const days = (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000;
     const bucket =
@@ -168,11 +175,6 @@ export const createRecallActivityRepository = (
     };
   },
   async getRecallActivity(actor, questionId) {
-    await ensureRecallScopeIndexes(
-      pool,
-      actor,
-      options.envelopeEncryptionProvider
-    );
     const eligible = await pool.query<
       {
         id: string;
@@ -292,11 +294,7 @@ export const createRecallActivityRepository = (
   },
   async listRecallActivity(actor, rawInput) {
     const input = recallActivityListInputSchema.parse(rawInput);
-    await ensureRecallScopeIndexes(
-      pool,
-      actor,
-      options.envelopeEncryptionProvider
-    );
+    await repairScope(actor);
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     if (input.cursor)
       predicates.push(`(q.created_at, q.id) <

@@ -125,27 +125,49 @@ const decryptRetrievals = async (
   return { payloads, failed };
 };
 
-/** Upgrade old history once, in bounded batches. Read only retained retrieval
- * metadata, never answer, evidence or worker payloads; never consult membership.
- * A record that cannot be projected never fails the read: a transient failure
- * (no encryption provider, an envelope that does not decrypt) leaves it pending
- * for a later read, and a permanently unreadable selection is indexed as unknown. */
+const REPAIR_BATCH = 100;
+/** Records projected per activity read, so no request repairs a whole history. */
+export const RECALL_SCOPE_REPAIR_BUDGET = 500;
+/** How long a completed pass that had to skip records waits before retrying. */
+const RECALL_SCOPE_RETRY_MS = 10 * 60_000;
+
+export interface RecallScopeRepairPass {
+  /** Last record examined; the next pass resumes after it. */
+  after: string | null;
+  /** Records left pending because of a possibly transient failure. */
+  skipped: number;
+  /** No pending record remains after `after`. */
+  finished: boolean;
+}
+
+/** Upgrade old history in bounded batches, resuming after `after`. Read only
+ * retained retrieval metadata, never answer, evidence or worker payloads; never
+ * consult membership. A record that cannot be projected never fails the read: a
+ * transient failure (no encryption provider, an envelope that does not decrypt)
+ * leaves it pending for a later pass, and a permanently unreadable selection is
+ * indexed as unknown. */
 export const ensureRecallScopeIndexes = async (
   pool: pg.Pool,
   actor: ActorContext,
-  provider?: EnvelopeEncryptionProvider
-): Promise<void> => {
-  // Advance past skipped rows so pending records are not refetched in a loop.
-  let after: string | null = null;
-  for (;;) {
+  provider?: EnvelopeEncryptionProvider,
+  {
+    after = null,
+    budget = RECALL_SCOPE_REPAIR_BUDGET
+  }: { after?: string | null; budget?: number } = {}
+): Promise<RecallScopeRepairPass> => {
+  let skipped = 0;
+  let remaining = budget;
+  while (remaining > 0) {
+    // Advance past skipped rows so pending records are not refetched in a loop.
     const { rows }: { rows: PendingRow[] } = await pool.query<PendingRow>(
       `select q.id, q.search_domain as "searchDomain", q.project_id as "projectId", q.retrieval
       from memory_questions q where ${personalRecallPredicate} and q.recall_scope is null
         and ($2::uuid is null or q.id > $2::uuid)
-      order by q.id limit 100`,
-      [actor.userId, after]
+      order by q.id limit $3`,
+      [actor.userId, after, Math.min(REPAIR_BATCH, remaining)]
     );
-    if (!rows.length) return;
+    if (!rows.length) return { after, skipped, finished: true };
+    remaining -= rows.length;
     after = rows[rows.length - 1]!.id;
     const encrypted = rows.filter(
       (row) => row.retrieval?.contentEncrypted === true
@@ -182,6 +204,7 @@ export const ensureRecallScopeIndexes = async (
       }
       updates.push({ id: row.id, scope });
     }
+    skipped += rows.length - updates.length;
     if (updates.length)
       await pool.query(
         `update memory_questions q set recall_scope = u.scope
@@ -190,6 +213,57 @@ export const ensureRecallScopeIndexes = async (
         [actor.userId, JSON.stringify(updates)]
       );
   }
+  return { after, skipped, finished: false };
+};
+
+/** Run at most one bounded repair pass per owner at a time. Concurrent activity
+ * reads (the page loads its overview and list together) share the pass, and an
+ * owner whose history is fully projected is not scanned again: final Personal
+ * MCP history writes its projection when it is recorded. Repair is best effort;
+ * a pending record reads with a null scope and legacy Project filtering. */
+export const createRecallScopeRepair = (
+  pool: pg.Pool,
+  provider?: EnvelopeEncryptionProvider,
+  now: () => number = Date.now
+) => {
+  const progress = new Map<
+    string,
+    { after: string | null; skipped: number; idleUntil: number }
+  >();
+  const running = new Map<string, Promise<void>>();
+  const pass = async (actor: ActorContext) => {
+    const current = progress.get(actor.userId) ?? {
+      after: null,
+      skipped: 0,
+      idleUntil: 0
+    };
+    if (current.idleUntil > now()) return;
+    const result = await ensureRecallScopeIndexes(pool, actor, provider, {
+      after: current.after
+    });
+    const skipped = current.skipped + result.skipped;
+    progress.set(
+      actor.userId,
+      result.finished
+        ? {
+            after: null,
+            skipped: 0,
+            idleUntil: skipped
+              ? now() + RECALL_SCOPE_RETRY_MS
+              : Number.POSITIVE_INFINITY
+          }
+        : { after: result.after, skipped, idleUntil: 0 }
+    );
+  };
+  return (actor: ActorContext): Promise<void> => {
+    const active = running.get(actor.userId);
+    if (active) return active;
+    const next = pass(actor)
+      .catch(() => undefined)
+      .finally(() => running.delete(actor.userId));
+    running.set(actor.userId, next);
+    return next;
+  };
 };
 
 // Read labels only from this owner's active Projects. Deletion never removes

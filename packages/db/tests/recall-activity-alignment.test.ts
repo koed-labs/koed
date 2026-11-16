@@ -194,6 +194,11 @@ describe.skipIf(!process.env.DATABASE_URL)(
         "update personal_named_projects set deleted_at=now() where owner_user_id=$1 and project_id=$2",
         [actor.userId, b.projectId]
       );
+      // Detail reads never run the history repair; the activity list does.
+      expect(
+        (await repo.getRecallActivity(actor, first.id))?.question.scope
+      ).toBeNull();
+      await repo.listRecallActivity(actor, { ...range, limit: 1 });
       const detail = recallActivityDetailSchema.parse(
         await repo.getRecallActivity(actor, first.id)
       );
@@ -398,6 +403,81 @@ describe.skipIf(!process.env.DATABASE_URL)(
           )
         ).rows.map((row) => row.id)
       ).toEqual([corrupt.id]);
+    });
+    it("repairs history in bounded passes that resume, share concurrent reads, and stop once complete", async () => {
+      const { createRecallScopeRepair, ensureRecallScopeIndexes } =
+        await import("../src/recall-activity-scope.js");
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 73).toString("base64")
+      );
+      const actor = {
+        userId: (
+          await repo.createUser({ email: `${randomUUID()}@example.test` })
+        ).id
+      };
+      const ids: string[] = [];
+      for (let index = 0; index < 3; index += 1)
+        ids.push(
+          (
+            await repo.createFinalMemoryQuestion(actor, {
+              idempotencyKey: randomUUID(),
+              query: "Historical",
+              searchDomain: "global",
+              status: "answered",
+              answerMarkdown: "Recorded answer"
+            })
+          ).id
+        );
+      ids.sort();
+      const pending = async () =>
+        (
+          await pool.query<{ id: string }>(
+            "select id from memory_questions where owner_user_id=$1 and recall_scope is null order by id",
+            [actor.userId]
+          )
+        ).rows.map((row) => row.id);
+      const reset = () =>
+        pool.query(
+          "update memory_questions set recall_scope=null where owner_user_id=$1",
+          [actor.userId]
+        );
+      await reset();
+      const first = await ensureRecallScopeIndexes(pool, actor, provider, {
+        budget: 2
+      });
+      expect(first).toEqual({ after: ids[1], skipped: 0, finished: false });
+      expect(await pending()).toEqual([ids[2]]);
+      expect(
+        await ensureRecallScopeIndexes(pool, actor, provider, {
+          after: first.after,
+          budget: 2
+        })
+      ).toMatchObject({ skipped: 0, finished: true });
+      expect(await pending()).toEqual([]);
+
+      await reset();
+      const queries: string[] = [];
+      const counted = new Proxy(pool, {
+        get: (target, key) =>
+          key === "query"
+            ? (text: string, ...rest: unknown[]) => {
+                queries.push(text);
+                return (target.query as (...args: unknown[]) => unknown)(
+                  text,
+                  ...rest
+                );
+              }
+            : (Reflect.get(target, key) as unknown)
+      });
+      const repair = createRecallScopeRepair(counted, provider);
+      await Promise.all([repair(actor), repair(actor)]);
+      expect(await pending()).toEqual([]);
+      const scans = () =>
+        queries.filter((text) => text.includes("recall_scope is null")).length;
+      // One shared pass: a batch read, its guarded update, and the empty final scan.
+      expect(scans()).toBe(3);
+      await repair(actor);
+      expect(scans()).toBe(3);
     });
     it("preserves legacy Project filtering, missing diagnostics, and runtime overrides on errors", async () => {
       const actor = {

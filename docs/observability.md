@@ -398,10 +398,14 @@ is an identity-only query projection, extending the existing `project_id` metada
 boundary to a set of Project identifiers and a scope kind/provenance. It contains
 no names, paths, calling Conversation, query, evidence, or worker content. Final
 Personal MCP history writes it in the same transaction as the encrypted record.
-Existing history is projected once, in batches of 100, from its retained encrypted
-retrieval metadata on first activity access. This repair does not read answer,
-evidence or worker payloads, and never reconstructs current membership. A record
-that cannot be projected never fails an activity read. Failed decryption, or a
+Existing history is projected once from its retained encrypted retrieval
+metadata, in batches of 100 and at most 500 records per activity overview or list
+read, resuming where the previous read stopped. Concurrent reads by the same User
+share one pass, a fully projected history is not scanned again, and detail reads
+never run the repair. A record still pending reads with a null scope and legacy
+Project filtering. This repair does not read answer, evidence or worker payloads,
+and never reconstructs current membership. A record that cannot be projected
+never fails an activity read. Failed decryption, or a
 missing encryption provider, leaves that record pending for a later read. An
 invalidated payload or a selection that fails owner authorization is recorded as
 an unknown, unavailable scope that keeps only its legacy Project identity.
