@@ -191,7 +191,8 @@ export async function runInstalledDesktopCli(
       args[0] === "__control-plane-start-agent" ||
       args[0] === "__control-plane-agent-enable" ||
       args[0] === "__control-plane-agent-disable" ||
-      args[0] === "__control-plane-agent-status") &&
+      args[0] === "__control-plane-agent-status" ||
+      args[0] === "__control-plane-startup-status") &&
     !args.includes("--help") &&
     !args.includes("-h")
   ) {
@@ -209,7 +210,9 @@ export async function runInstalledDesktopCli(
       args[0] === "__control-plane-start-agent";
     const agentEnable = args[0] === "__control-plane-agent-enable";
     const agentDisable = args[0] === "__control-plane-agent-disable";
-    const agentStatus = args[0] === "__control-plane-agent-status";
+    const startupStatus = args[0] === "__control-plane-startup-status";
+    const agentStatus =
+      args[0] === "__control-plane-agent-status" || startupStatus;
     const installedClient = await import("./control-plane/installed-client.js");
     return runControl(
       implicit
@@ -243,7 +246,7 @@ export async function runInstalledDesktopCli(
             environment,
             executable,
             entrypoint: invocation.startCommand,
-            launchIfMissing: command !== "stop"
+            launchIfMissing: command !== "stop" && !startupStatus
           })
       }
     );

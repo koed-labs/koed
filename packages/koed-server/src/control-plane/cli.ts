@@ -210,7 +210,13 @@ export async function runControlPlaneCli(
     }
     if (!result.ok) {
       if (tryOfflineStop()) return 0;
-      throw new Error(`Control-plane ${command} failed: ${result.code}`);
+      throw new Error(
+        command === "start" &&
+          result.snapshot.state === "needs_attention" &&
+          result.snapshot.error
+          ? result.snapshot.error
+          : `Control-plane ${command} failed: ${result.code}`
+      );
     }
     if (command === "stop") {
       const sleep =

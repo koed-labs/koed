@@ -221,6 +221,195 @@ const harness = (
 };
 
 describe("Desktop manager shared lifecycle", () => {
+  it("surfaces a terminal control-plane startup error without waiting for health polling", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, execFile } = harness(
+        verifiedHome(),
+        () => lifecycleReply(stopped, true),
+        { sharedControl: true }
+      );
+      execFile.mockImplementation((_command, args, _options, callback) => {
+        const result =
+          args[0] === "__control-plane-startup-status"
+            ? {
+                ok: true,
+                snapshot: {
+                  state: "needs_attention",
+                  error: "API startup sentinel"
+                }
+              }
+            : { ok: true, state: "starting" };
+        callback(null, JSON.stringify(result), "");
+      });
+      let settled: unknown;
+      void Promise.resolve(manager.handlers.start()).then((result: unknown) => {
+        settled = result;
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toMatchObject({
+        ok: false,
+        state: "needs_attention",
+        error: "API startup sentinel"
+      });
+      expect(
+        execFile.mock.calls.some(
+          (call) => call[1]?.[0] === "__control-plane-startup-status"
+        )
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("checks for terminal failure when the health probe stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, execFile } = harness(
+        verifiedHome(),
+        () => lifecycleReply(stopped, true),
+        { sharedControl: true }
+      );
+      let probes = 0;
+      execFile.mockImplementation((_command, args, opts, callback) => {
+        if (args[0] === "status") {
+          setTimeout(
+            () => callback(new Error("timed out"), "", ""),
+            opts.timeout
+          );
+        } else {
+          const result =
+            args[0] === "__control-plane-startup-status" && ++probes > 1
+              ? {
+                  ok: true,
+                  snapshot: {
+                    state: "needs_attention",
+                    error: "API failed during health probe"
+                  }
+                }
+              : { ok: true, state: "starting" };
+          callback(null, JSON.stringify(result), "");
+        }
+      });
+      let settled: unknown;
+      void Promise.resolve(manager.handlers.start()).then((result: unknown) => {
+        settled = result;
+      });
+      await vi.advanceTimersByTimeAsync(6_100);
+      expect(settled).toMatchObject({
+        ok: false,
+        error: "API failed during health probe"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("reports a timeout rather than success when services never become ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, execFile } = harness(
+        verifiedHome(),
+        () => lifecycleReply(stopped, true),
+        { sharedControl: true }
+      );
+      const component = { state: "starting" };
+      execFile.mockImplementation((_command, args, _opts, callback) => {
+        const result =
+          args[0] === "status"
+            ? {
+                ok: true,
+                state: "starting",
+                koedHome: "/test",
+                generatedAt: new Date().toISOString(),
+                runtimeMode: "local-personal",
+                dependencyMode: "external",
+                api: { ...component, url: "http://localhost" },
+                database: component,
+                redis: component,
+                workerQueues: component,
+                embeddingService: component,
+                privacyService: component,
+                localAiRuntime: component,
+                apiToken: { ...component, configured: false }
+              }
+            : { ok: true, snapshot: { state: "starting" } };
+        callback(null, JSON.stringify(result), "");
+      });
+      const pending = Promise.resolve(manager.handlers.start());
+      await vi.advanceTimersByTimeAsync(91_000);
+      expect(await pending).toMatchObject({
+        ok: false,
+        state: "needs_attention"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("bounds the total startup wait even when status commands stall", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, execFile } = harness(
+        verifiedHome(),
+        () => lifecycleReply(stopped, true),
+        { sharedControl: true }
+      );
+      execFile.mockImplementation((_command, args, opts, callback) => {
+        if (
+          args[0] === "status" ||
+          args[0] === "__control-plane-startup-status"
+        ) {
+          setTimeout(
+            () => callback(new Error("timeout"), "", ""),
+            opts.timeout
+          );
+        } else
+          callback(null, JSON.stringify({ ok: true, state: "starting" }), "");
+      });
+      let settled: unknown;
+      void Promise.resolve(manager.handlers.start()).then((result: unknown) => {
+        settled = result;
+      });
+      await vi.advanceTimersByTimeAsync(91_000);
+      expect(settled).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("does not treat a transient or malformed startup probe as a terminal failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, execFile } = harness(
+        verifiedHome(),
+        () => lifecycleReply(stopped, true),
+        { sharedControl: true }
+      );
+      let probes = 0;
+      execFile.mockImplementation((_command, args, _options, callback) => {
+        const result =
+          args[0] === "__control-plane-startup-status"
+            ? ++probes === 1
+              ? { ok: true, snapshot: { state: "needs_attention" } }
+              : {
+                  ok: true,
+                  snapshot: {
+                    state: "needs_attention",
+                    error: "actual failure"
+                  }
+                }
+            : { ok: true, state: "starting" };
+        callback(null, JSON.stringify(result), "");
+      });
+      let settled: unknown;
+      void Promise.resolve(manager.handlers.start()).then((result: unknown) => {
+        settled = result;
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(settled).toMatchObject({ ok: false, error: "actual failure" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("preserves control attachment failure when an observed lifecycle stops", async () => {
     const home = verifiedHome();
     const { manager, openControlSession } = harness(

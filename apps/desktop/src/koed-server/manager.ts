@@ -1770,6 +1770,7 @@ export const createKoedServerManager = ({
           args[0] === "__control-plane-stop-implicit" ||
           args[0] === "__control-plane-start-automatic" ||
           args[0] === "__control-plane-agent-status" ||
+          args[0] === "__control-plane-startup-status" ||
           args[0] === "__control-plane-start-desktop")
           ? createControlCliInvocation
           : createCliInvocation;
@@ -2164,13 +2165,13 @@ export const createKoedServerManager = ({
       });
   };
 
-  const runDesktopStatus = (startup = false): Promise<unknown> =>
+  const runDesktopStatus = (
+    startup = false,
+    timeout = statusCommandTimeoutMs
+  ): Promise<unknown> =>
     desktopSupervisorProcess && desktopSupervisorNonce
       ? requestDesktopStatusRpc("status", startup)
-      : runJson(
-          startup ? ["status", "--startup"] : ["status"],
-          statusCommandTimeoutMs
-        );
+      : runJson(startup ? ["status", "--startup"] : ["status"], timeout);
 
   const statusLifecycle = (observation: RuntimeLifecycleObservation) => ({
     state: observation.state,
@@ -2244,9 +2245,44 @@ export const createKoedServerManager = ({
     const cancelled = () =>
       expectedGeneration !== undefined && expectedGeneration !== stopGeneration;
     let latest: unknown = null;
+    const deadline = Date.now() + attemptLimit * 1_000;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
       if (cancelled()) return stoppedStartResult();
-      const result = await runDesktopStatus(true);
+      if (createControlCliInvocation && Date.now() >= deadline) break;
+      if (createControlCliInvocation) {
+        const control = await runJson(
+          ["__control-plane-startup-status"],
+          Math.min(5_000, deadline - Date.now())
+        );
+        if (cancelled()) return stoppedStartResult();
+        if (
+          control &&
+          typeof control === "object" &&
+          "ok" in control &&
+          control.ok === true &&
+          "snapshot" in control &&
+          control.snapshot &&
+          typeof control.snapshot === "object" &&
+          "state" in control.snapshot &&
+          control.snapshot.state === "needs_attention" &&
+          "error" in control.snapshot &&
+          typeof control.snapshot.error === "string" &&
+          control.snapshot.error.trim()
+        ) {
+          return {
+            ok: false,
+            state: "needs_attention",
+            error: control.snapshot.error
+          };
+        }
+      }
+      if (createControlCliInvocation && Date.now() >= deadline) break;
+      const result = await runDesktopStatus(
+        true,
+        createControlCliInvocation
+          ? Math.min(5_000, deadline - Date.now())
+          : statusCommandTimeoutMs
+      );
       if (cancelled()) return stoppedStartResult();
       latest = isRenderableKoedServerStartupStatus(result)
         ? result
@@ -2260,6 +2296,14 @@ export const createKoedServerManager = ({
       await sleep(1_000);
     }
     if (cancelled()) return stoppedStartResult();
+    if (createControlCliInvocation) {
+      return {
+        ok: false,
+        state: "needs_attention",
+        error: "Timed out waiting for Koed services to become ready.",
+        ...(latest ? { lastStatus: latest } : {})
+      };
+    }
     return (
       latest ?? {
         ok: false,
@@ -5736,7 +5780,8 @@ export const createKoedServerManager = ({
     }
     const ready = await pollUntilReady(90, generation);
     if (generation !== stopGeneration) return stoppedStartResult();
-    await personalSyncStatusWithLanRelay().catch(() => undefined);
+    if (resultOk(ready))
+      await personalSyncStatusWithLanRelay().catch(() => undefined);
     return generation === stopGeneration ? ready : stoppedStartResult();
   };
 
@@ -5777,7 +5822,8 @@ export const createKoedServerManager = ({
       }
       const ready = await pollUntilReady(30, generation);
       if (generation !== stopGeneration) return stoppedStartResult();
-      await personalSyncStatusWithLanRelay().catch(() => undefined);
+      if (resultOk(ready))
+        await personalSyncStatusWithLanRelay().catch(() => undefined);
       return generation === stopGeneration ? ready : stoppedStartResult();
     } catch (error) {
       return {

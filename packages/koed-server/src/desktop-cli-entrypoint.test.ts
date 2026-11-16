@@ -157,6 +157,48 @@ it("routes packaged macOS start and stop to the control plane", async () => {
   expect(runCli).not.toHaveBeenCalled();
 });
 
+it("probes startup status without launching a missing control plane", async () => {
+  const { resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const installed = await import("./control-plane/installed-client.js");
+  const open = vi
+    .spyOn(installed, "openInstalledControlPlane")
+    .mockResolvedValue({} as never);
+  const runControlPlaneCli = vi.fn(
+    async (
+      args: string[],
+      deps: Parameters<
+        typeof import("./control-plane/cli.js").runControlPlaneCli
+      >[1]
+    ) => {
+      expect(args).toEqual(["agent-status", "--json"]);
+      await deps.connect("start");
+      return 0;
+    }
+  );
+  try {
+    expect(
+      await runInstalledDesktopCli(
+        ["__control-plane-startup-status", "--json"],
+        {
+          moduleUrl: pathToFileURL(entry).href,
+          executable,
+          platform: "darwin",
+          electronVersion: "39.8.10",
+          environment: {},
+          verifyBundle: () => capability,
+          runControlPlaneCli
+        }
+      )
+    ).toBe(0);
+    expect(open).toHaveBeenCalledWith(
+      expect.objectContaining({ launchIfMissing: false })
+    );
+  } finally {
+    open.mockRestore();
+  }
+});
+
 it("fails closed before running any command outside its installation", async () => {
   const { entry } = installation();
   const runCli = vi.fn(async () => 0);

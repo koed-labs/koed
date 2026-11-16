@@ -35,6 +35,30 @@ describe("packaged control-plane CLI", () => {
     );
     expect(close).toHaveBeenCalledOnce();
   });
+  it("preserves an existing terminal startup error when the host rejects Start", async () => {
+    const failed = {
+      ...snapshot,
+      state: "needs_attention",
+      error: "API startup sentinel"
+    };
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, snapshot: failed })
+      .mockResolvedValueOnce({ ok: false, code: "blocked", snapshot: failed });
+    const stdout = { write: vi.fn() };
+    expect(
+      await runControlPlaneCli(["start", "--daemon", "--json"], {
+        connect: async () =>
+          ({ request, close: vi.fn() }) as unknown as ControlClient,
+        stdout,
+        stderr: { write: vi.fn() }
+      })
+    ).toBe(1);
+    expect(JSON.parse(String(stdout.write.mock.calls[0]?.[0]))).toMatchObject({
+      ok: false,
+      error: "API startup sentinel"
+    });
+  });
   it("records persistent CLI demand before starting when requested", async () => {
     const request = vi
       .fn()
