@@ -1,12 +1,15 @@
 import type { ControlClient } from "./client.js";
 import type { ControlDiscovery } from "./discovery.js";
 
+export class ControlOwnerGoneError extends Error {}
+
 /** Discovery is routing metadata, not an authentication decision. */
 export async function connectOrLaunchControlPlane(input: {
   read(): ControlDiscovery | undefined;
   isLocked(): boolean;
   launch(): void;
   launchIfMissing?: boolean;
+  waitForOwner?: boolean;
   launchFailure?: () => Error | undefined;
   connect(discovery: ControlDiscovery): Promise<ControlClient>;
   installationId: string;
@@ -27,14 +30,35 @@ export async function connectOrLaunchControlPlane(input: {
   };
   const existing = input.read();
   if (existing) return connect(existing);
-  if (input.isLocked())
+  if (input.isLocked()) {
+    if (!input.waitForOwner)
+      throw new Error(
+        "Koed has an owner but no control-plane endpoint; Operator attention required"
+      );
+    const now = input.now ?? Date.now;
+    const sleep =
+      input.sleep ??
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const deadline = now() + Math.min(input.timeoutMs ?? 10_000, 10_000);
+    while (now() < deadline && input.isLocked()) {
+      await sleep(100);
+      const discovery = input.read();
+      if (discovery) return connect(discovery);
+    }
+    if (!input.isLocked())
+      throw new ControlOwnerGoneError(
+        "Control-plane owner exited before publishing discovery"
+      );
     throw new Error(
       "Koed has an owner but no control-plane endpoint; Operator attention required"
     );
-  if (input.launchIfMissing === false)
-    throw new Error(
-      "No control-plane endpoint is available; Stop was not recorded"
-    );
+  }
+  if (input.launchIfMissing === false) {
+    const message =
+      "No control-plane endpoint is available; Stop was not recorded";
+    if (input.waitForOwner) throw new ControlOwnerGoneError(message);
+    throw new Error(message);
+  }
   input.launch();
   const now = input.now ?? Date.now;
   const sleep =

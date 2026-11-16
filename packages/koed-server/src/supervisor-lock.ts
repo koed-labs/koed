@@ -139,6 +139,7 @@ export const acquireKoedServerSupervisorLock = (
     isProcessRunning?: (pid: number) => boolean;
     resolveProcessIdentity?: (pid: number) => string | null;
     sourceOwner?: RuntimeOwner;
+    reclaimStale?: boolean;
     // Exclusion for removing a stale record. The supervisor passes the lifecycle
     // lock, which stale-record cleanup in koed stop also takes.
     exclusive?: (action: () => void) => void;
@@ -184,6 +185,7 @@ export const acquireKoedServerSupervisorLock = (
       return { acquired: true, lockPath, ownerPid: pid, processIdentity };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (options.reclaimStale === false) return { acquired: false, lockPath };
       const observed = readLockText(lockPath);
       const owner = observed === null ? null : parseSupervisorLock(observed);
       if (!owner) return { acquired: false, lockPath };

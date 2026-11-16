@@ -57,6 +57,27 @@ describe("connect or launch", () => {
     ).rejects.toThrow("incompatible");
     expect(launch).not.toHaveBeenCalled();
   });
+  it("waits for a concurrent owner to publish before connecting for Stop", async () => {
+    const client = {} as ControlClient;
+    let time = 0;
+    const connect = vi.fn(async () => client);
+    await expect(
+      connectOrLaunchControlPlane({
+        read: () => (time ? discovery : undefined),
+        isLocked: () => true,
+        launch: vi.fn(),
+        launchIfMissing: false,
+        waitForOwner: true,
+        connect,
+        installationId: "install",
+        productVersion: "1",
+        now: () => time,
+        sleep: async () => {
+          time += 100;
+        }
+      })
+    ).resolves.toBe(client);
+  });
   it("does not launch a persistent host for Stop", async () => {
     const launch = vi.fn();
     await expect(

@@ -1,4 +1,5 @@
 import type { ControlClient } from "./client.js";
+import { ControlOwnerGoneError } from "./connect-or-launch.js";
 
 export async function runControlPlaneCli(
   args: string[],
@@ -11,6 +12,7 @@ export async function runControlPlaneCli(
     stopTimeoutMs?: number;
     allowImplicitStop?: boolean;
     allowAutomaticStart?: boolean;
+    offlineStop?: () => { clean: boolean } | undefined;
   }
 ): Promise<number> {
   const json = args.includes("--json");
@@ -71,6 +73,22 @@ export async function runControlPlaneCli(
       (command === "stop" && args.includes("--daemon"))
     )
       throw new Error("Unsupported control-plane command option");
+    const tryOfflineStop = (): boolean => {
+      if (command !== "stop" || args.includes("--non-explicit")) return false;
+      const offline = dependencies.offlineStop?.();
+      if (!offline) return false;
+      if (!offline.clean)
+        throw new Error(
+          "Stop intent recorded; runtime cleanup remains unconfirmed"
+        );
+      dependencies.stdout.write(
+        json
+          ? `${JSON.stringify({ ok: true, state: "stopped", message: "Koed stopped." })}\n`
+          : "Koed stopped.\n"
+      );
+      return true;
+    };
+    if (tryOfflineStop()) return 0;
     const now = dependencies.now ?? Date.now;
     const deadline = now() + (dependencies.stopTimeoutMs ?? 90_000);
     const bounded = async <T>(promise: Promise<T>): Promise<T> => {
@@ -99,6 +117,7 @@ export async function runControlPlaneCli(
       client = await bounded(connecting);
     } catch (error) {
       connectExpired = true;
+      if (error instanceof ControlOwnerGoneError && tryOfflineStop()) return 0;
       throw error;
     }
     const status = await bounded(client.request({ action: "status" }, 0));

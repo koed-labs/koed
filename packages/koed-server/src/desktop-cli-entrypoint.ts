@@ -106,6 +106,7 @@ export async function runInstalledDesktopCli(
       (await import("./control-plane/cli.js")).runControlPlaneCli;
     const implicit = args[0] === "__control-plane-stop-implicit";
     const automatic = args[0] === "__control-plane-start-automatic";
+    const installedClient = await import("./control-plane/installed-client.js");
     return runControl(
       implicit
         ? ["stop", "--non-explicit", ...args.slice(1)]
@@ -117,10 +118,9 @@ export async function runInstalledDesktopCli(
         stderr,
         allowImplicitStop: implicit,
         allowAutomaticStart: automatic,
+        offlineStop: () => installedClient.tryRecordOfflineStop(environment),
         connect: async (command) =>
-          (
-            await import("./control-plane/installed-client.js")
-          ).openInstalledControlPlane({
+          installedClient.openInstalledControlPlane({
             capability,
             environment,
             executable,

@@ -22,10 +22,26 @@ import {
 import { connectControlClient } from "./client.js";
 import { connectOrLaunchControlPlane } from "./connect-or-launch.js";
 import { readControlDiscovery, type ControlDiscovery } from "./discovery.js";
+import { recordOfflineStop } from "./offline-stop.js";
 import {
   createNativeControlTransport,
   type NativeLocalControl
 } from "./native-transport.js";
+
+export function tryRecordOfflineStop(
+  environment: NodeJS.ProcessEnv
+): { clean: boolean } | undefined {
+  const paths = resolveKoedServerPaths(environment);
+  ensureKoedHome(paths);
+  if (readControlDiscovery(paths)) return undefined;
+  try {
+    lstatSync(resolve(paths.runDir, "koed-server.lock"));
+    return undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return recordOfflineStop(paths);
+}
 
 export async function openInstalledControlPlane(input: {
   capability: DesktopRuntimeCapability;
@@ -70,6 +86,7 @@ export async function openInstalledControlPlane(input: {
   let launchFailure: Error | undefined;
   return connectOrLaunchControlPlane({
     launchIfMissing: input.launchIfMissing,
+    waitForOwner: input.launchIfMissing === false,
     launchFailure: () => launchFailure,
     read: () => readControlDiscovery(paths),
     isLocked,

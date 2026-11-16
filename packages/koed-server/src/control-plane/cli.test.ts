@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runControlPlaneCli } from "./cli.js";
+import { ControlOwnerGoneError } from "./connect-or-launch.js";
 import type { ControlClient } from "./client.js";
 import type { ControlSnapshot } from "@koed-labs/shared/local-control-protocol";
 const snapshot: ControlSnapshot = {
@@ -84,6 +85,43 @@ describe("packaged control-plane CLI", () => {
       { action: "stop", explicit: false },
       2
     );
+  });
+  it("records Stop if a transient owner exits before publishing", async () => {
+    const offlineStop = vi
+      .fn()
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce({ clean: true });
+    const stdout = { write: vi.fn() };
+    expect(
+      await runControlPlaneCli(["stop", "--json"], {
+        connect: async () => {
+          throw new ControlOwnerGoneError("gone");
+        },
+        offlineStop,
+        stdout,
+        stderr: { write: vi.fn() }
+      })
+    ).toBe(0);
+    expect(offlineStop).toHaveBeenCalledTimes(2);
+  });
+  it("records Stop offline without connecting, but does not claim unclean cleanup", async () => {
+    const connect = vi.fn();
+    const stdout = { write: vi.fn() };
+    const stderr = { write: vi.fn() };
+    const code = await runControlPlaneCli(["stop", "--json"], {
+      connect,
+      stdout,
+      stderr,
+      offlineStop: () => ({ clean: false })
+    });
+    expect(code).toBe(1);
+    expect(connect).not.toHaveBeenCalled();
+    const result = JSON.parse(String(stdout.write.mock.calls[0]![0])) as {
+      ok: boolean;
+      error: string;
+    };
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/recorded.*cleanup/i);
   });
   it("retries an explicitly rejected stale Stop with the returned revision", async () => {
     const request = vi
