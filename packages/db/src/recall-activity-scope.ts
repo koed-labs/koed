@@ -2,6 +2,7 @@ import {
   authorizedPersonalSelectionSnapshot,
   personalSelectionLegacyScope,
   type EnvelopeEncryptionProvider,
+  type PersonalSelectionSnapshot,
   type RecallScope
 } from "@koed-labs/shared";
 import type pg from "pg";
@@ -24,9 +25,22 @@ export const recallScopeIndex = (
   owner: string,
   selection: unknown,
   legacy: { searchDomain: string; projectId: string | null }
+): ScopeIndex =>
+  recallScopeIndexFromSnapshot(
+    owner,
+    selection == null
+      ? undefined
+      : authorizedPersonalSelectionSnapshot(selection, owner),
+    legacy
+  );
+
+/** As `recallScopeIndex`, for a selection the caller has already authorized. */
+export const recallScopeIndexFromSnapshot = (
+  owner: string,
+  accepted: PersonalSelectionSnapshot | undefined,
+  legacy: { searchDomain: string; projectId: string | null }
 ): ScopeIndex => {
-  if (selection != null) {
-    const accepted = authorizedPersonalSelectionSnapshot(selection, owner);
+  if (accepted) {
     const target = accepted.target;
     if (target.kind === "projects" || target.kind === "project") {
       const projects =

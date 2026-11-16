@@ -77,8 +77,7 @@
 .recall-facts dd {
   margin: 4px 0 0;
 }
-.recall-detail .recall-table-wrap,
-.recall-timeline-values {
+.recall-detail .recall-table-wrap {
   height: auto;
   overflow: hidden;
   max-height: 280px;
@@ -118,29 +117,8 @@
   width: 100%;
   overflow: visible;
 }
-.recall-chart-line {
-  fill: none;
-  stroke: var(--v1-accent);
-  stroke-width: 2;
-}
 .recall-chart circle {
   fill: var(--v1-accent);
-}
-.recall-chart-axis {
-  stroke: var(--v1-border);
-}
-.recall-chart-scale {
-  margin: 0 0 8px;
-  color: var(--v1-muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.recall-chart-labels {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--v1-muted);
-  font-size: 11px;
 }
 .recall-metrics-dialog .recall-dialog-content > p {
   margin-top: 14px;
@@ -182,17 +160,6 @@
 .recall-answer-dialog .recall-dialog-content {
   padding: 24px 30px;
 }
-.recall-detail-heading {
-  margin-bottom: 24px;
-  padding-right: 28px;
-}
-.recall-detail-heading [data-slot="dialog-title"] {
-  font-size: 12px;
-}
-.recall-detail-heading [data-slot="dialog-description"] {
-  font-size: 11px;
-  color: var(--v1-muted);
-}
 .recall-detail-meta {
   display: flex;
   align-items: center;
@@ -209,21 +176,6 @@
   font-weight: 500;
   letter-spacing: -0.5px;
   white-space: pre-wrap;
-}
-.recall-detail-context {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 25px;
-  font-size: 11px;
-  color: var(--v1-muted);
-}
-.recall-detail-project {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .recall-answer-dialog [data-slot="tabs-tab"] {
   font-size: 12px;
@@ -304,22 +256,6 @@
 }
 .recall-citations p {
   margin-top: 12px;
-}
-.recall-detail-foot {
-  display: flex;
-  gap: 8px;
-  margin-top: 28px;
-  padding-top: 16px;
-  border-top: 1px solid var(--v1-hairline);
-  color: var(--v1-muted);
-  font-size: 10px;
-  line-height: 1.7;
-}
-.recall-detail-foot > svg {
-  width: 13px;
-  height: 13px;
-  flex: none;
-  margin-top: 2px;
 }
 .recall-detail-facts {
   margin: 15px 0;

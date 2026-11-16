@@ -98,6 +98,25 @@ it("renders runtime allowances and accepted scope without guessing defaults or r
     );
     expect(container.textContent).toContain("Source delivery was not recorded");
     expect(container.textContent).not.toContain("24,000");
+    expect(
+      container.querySelector('[aria-label="Recorded counts"]')
+    ).toBeNull();
+    await act(async () =>
+      root.render(
+        <RecallActivityExecution
+          detail={{
+            ...detail,
+            execution: null,
+            searchCount: 3,
+            expandCount: 1,
+            candidateCount: null
+          }}
+        />
+      )
+    );
+    expect(
+      container.querySelector('[aria-label="Recorded counts"]')?.textContent
+    ).toBe("searches3expansions1candidatesUnknown");
   } finally {
     await act(async () => root.unmount());
   }

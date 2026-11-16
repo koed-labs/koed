@@ -137,9 +137,6 @@ export const recallOutcomeOptions = Object.entries(recallOutcomes).map(
   ([value, { label }]) => ({ value, label })
 );
 
-export const recallMemoryResultLabel = (value: string | null | undefined) =>
-  recallOutcomeOptions.find((option) => option.value === value)?.label ??
-  recallOutcomes.unknown.label;
 export const recallDurationLabel = (value: number | null | undefined) =>
   value == null
     ? "Unknown"

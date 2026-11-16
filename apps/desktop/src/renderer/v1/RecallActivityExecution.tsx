@@ -155,9 +155,35 @@ export function RecallActivityExecution({
               </div>
             </>
           ) : (
-            <Missing>
-              Execution budgets were not recorded for this answer.
-            </Missing>
+            <>
+              <Missing>
+                Execution budgets were not recorded for this answer.
+              </Missing>
+              {/* Older records still carry their worker's own counters. */}
+              {[
+                detail.searchCount,
+                detail.expandCount,
+                detail.candidateCount
+              ].some((value) => value != null) && (
+                <div
+                  className="recall-execution-counts"
+                  aria-label="Recorded counts"
+                >
+                  {(
+                    [
+                      ["searches", detail.searchCount],
+                      ["expansions", detail.expandCount],
+                      ["candidates", detail.candidateCount]
+                    ] as const
+                  ).map(([key, value]) => (
+                    <div key={key}>
+                      <span>{key}</span>
+                      <strong>{number(value)}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
           <div className="recall-execution-footer">
             {Boolean(budgets?.exhausted.length) && (

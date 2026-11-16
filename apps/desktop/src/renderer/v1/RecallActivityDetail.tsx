@@ -133,9 +133,16 @@ export function RecallActivityDetail({
                     <span className="recall-client-name">{caller.label}</span>
                   </span>
                   <time dateTime={detail.question.recordedAt}>
-                    {new Date(detail.question.recordedAt).toLocaleDateString(
+                    {new Date(detail.question.recordedAt).toLocaleString(
                       undefined,
-                      { day: "numeric", month: "long", year: "numeric" }
+                      {
+                        day: "numeric",
+                        month: "long",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        hourCycle: "h23"
+                      }
                     )}
                   </time>
                 </div>
@@ -281,6 +288,34 @@ export function RecallActivityDetail({
                       detail={detail}
                       projects={projects}
                     />
+                    <dl className="recall-detail-facts" aria-label="Record">
+                      <div>
+                        <dt>Calling AI Client</dt>
+                        <dd>
+                          {detail.question.metadata?.caller?.name ?? "Unknown"}
+                          {detail.question.metadata?.caller?.version &&
+                            ` · ${detail.question.metadata.caller.version}`}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Conversation</dt>
+                        <dd>{detail.question.sessionId ?? "Not recorded"}</dd>
+                      </div>
+                      <div>
+                        <dt>Record</dt>
+                        <dd>
+                          <code>{detail.question.id}</code>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Recorded at</dt>
+                        <dd>
+                          {new Date(
+                            detail.question.recordedAt
+                          ).toLocaleString()}
+                        </dd>
+                      </div>
+                    </dl>
                   </TabsPanel>
                 </Tabs>
               </>
