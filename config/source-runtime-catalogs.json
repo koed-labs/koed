@@ -1,79 +1,79 @@
 {
   "schemaVersion": 2,
-  "sourceRelease": "v0.11.1",
+  "sourceRelease": "v1.0.0",
   "provenance": {
-    "releaseId": 436842814,
-    "nativeCatalogAssetId": 718294078,
-    "nativeCatalogUrl": "https://github.com/koed-labs/koed/releases/download/v0.11.1/native-runtime-catalog.json",
-    "nativeCatalogSha256": "5a1aa6586d2d08346f27dd0f6e1568624230d8276589d35b3e0318ec863e26dc"
+    "releaseId": 442895099,
+    "nativeCatalogAssetId": 739391624,
+    "nativeCatalogUrl": "https://github.com/koed-labs/koed/releases/download/v1.0.0/native-runtime-catalog.json",
+    "nativeCatalogSha256": "e7ee211fcf3717405e4a250e5810eb94f93fa926404f9dc4ea85ebb8279080e2"
   },
   "native": {
     "schemaVersion": 1,
     "minimumCoreVersion": "0.10.3",
     "core": {
-      "recipeId": "3772839512c2caebac0f9d27b4d2da2bb345ac713dce414019068bcef2e008a5",
-      "runtimeVersion": "0.11.1",
+      "recipeId": "f4ff165a91e23eae1278c93ee7a72376cc4e7418eea30c16ee6561cde66690e6",
+      "runtimeVersion": "1.0.0",
+      "url": "https://github.com/koed-labs/koed/releases/download/v1.0.0/koed-native-core-f4ff165a91e23eae1278c93ee7a72376cc4e7418eea30c16ee6561cde66690e6-linux-x64.tar.gz",
+      "sha256": "1e46555a37e69f20838fc7a78340e8519146fa20e8eb269261e638291dcbd98e",
+      "manifestSha256": "4a6d8968f6505e6338d66f9bc039635fcc5a42c0ac39494f07be17fc6f43bc7d",
       "target": {
+        "platform": "linux",
         "architecture": "x64",
         "libc": {
           "family": "glibc",
           "minimumVersion": "2.35"
-        },
-        "platform": "linux"
+        }
       },
+      "archiveBytes": 23988967,
+      "expandedBytes": 56990678,
       "contracts": {
-        "embedding": 1,
         "layout": 1,
+        "embedding": 1,
         "postgres": 1
       },
       "components": {
-        "llamaCpp": {
-          "revision": "7221e24f579efbb5fd2a2ced1fffaef1aff2fe0d",
-          "version": "b10514"
+        "postgres": {
+          "major": 17,
+          "version": "17.6"
         },
         "pgvector": {
           "version": "0.8.3"
         },
-        "postgres": {
-          "major": 17,
-          "version": "17.6"
+        "llamaCpp": {
+          "version": "b10514",
+          "revision": "7221e24f579efbb5fd2a2ced1fffaef1aff2fe0d"
         }
-      },
-      "sha256": "eba95ee796f67c3d8f2468e2bb98a313a92f6180144e255a9b127d7783b7b8a7",
-      "archiveBytes": 23988984,
-      "expandedBytes": 56990680,
-      "manifestSha256": "56da4b6e4870782dda6892e48dbef64226910d2862cfaf23585a71e0651418b6",
-      "url": "https://github.com/koed-labs/koed/releases/download/v0.11.1/koed-native-core-3772839512c2caebac0f9d27b4d2da2bb345ac713dce414019068bcef2e008a5-linux-x64.tar.gz"
+      }
     },
     "cuda": {
-      "recipeId": "5fc63b4396c94d35c3f9c30c1ca592e178357cbf1717dac10216c2de37dfda70",
-      "runtimeVersion": "0.11.1",
+      "recipeId": "16722edc4647561a6615063cd1ad29bcf4da8ec9bc2666847069441f592a7f93",
+      "runtimeVersion": "1.0.0",
+      "url": "https://github.com/koed-labs/koed/releases/download/v1.0.0/koed-native-cuda-16722edc4647561a6615063cd1ad29bcf4da8ec9bc2666847069441f592a7f93-linux-x64.tar.gz",
+      "sha256": "b63eca8bb05e1ef37e38bcd3d70edda3edb9b0fe984a35e9f18aa77fb4b07188",
+      "manifestSha256": "47de6e6876ead9bf052477249f0a7ccaffba615de5daf9506a87ef9c4055eba6",
       "target": {
+        "platform": "linux",
         "architecture": "x64",
         "libc": {
           "family": "glibc",
           "minimumVersion": "2.35"
-        },
-        "platform": "linux"
+        }
       },
+      "archiveBytes": 711354383,
+      "expandedBytes": 1467990043,
       "contracts": {
-        "embedding": 1,
-        "layout": 1
+        "layout": 1,
+        "embedding": 1
       },
       "llamaCpp": {
-        "revision": "7221e24f579efbb5fd2a2ced1fffaef1aff2fe0d",
-        "version": "b10514"
+        "version": "b10514",
+        "revision": "7221e24f579efbb5fd2a2ced1fffaef1aff2fe0d"
       },
       "cuda": {
-        "architectures": [75, 80, 86, 89, 90],
+        "toolkitVersion": "12.4",
         "minimumDriverLinux": "550.54.14",
-        "toolkitVersion": "12.4"
-      },
-      "sha256": "da8423ddc84ce0e95b7857a799b2d542dbc188c154cbf6869aaa165dbdc02a86",
-      "archiveBytes": 711229069,
-      "expandedBytes": 1467863069,
-      "manifestSha256": "c4a0bfc9f908d7774009ee6d45e34a54393d23b53ca9b567da73f72e8225cb3e",
-      "url": "https://github.com/koed-labs/koed/releases/download/v0.11.1/koed-native-cuda-5fc63b4396c94d35c3f9c30c1ca592e178357cbf1717dac10216c2de37dfda70-linux-x64.tar.gz"
+        "architectures": [75, 80, 86, 89, 90]
+      }
     }
   }
 }
