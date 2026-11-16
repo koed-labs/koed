@@ -41,6 +41,9 @@ importers:
       oxlint-tsgolint:
         specifier: 7.0.2005
         version: 7.0.2005
+      plist:
+        specifier: 3.1.0
+        version: 3.1.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
