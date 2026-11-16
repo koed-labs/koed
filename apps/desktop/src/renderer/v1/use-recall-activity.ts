@@ -19,6 +19,7 @@ type View = {
 // read is cheap and follows every change; the overview aggregates the whole
 // range, so changes refresh it at most this often, with one trailing catch-up.
 export const RECALL_OVERVIEW_CHANGE_INTERVAL_MS = 10_000;
+export const RECALL_SCOPE_REPAIR_INTERVAL_MS = 2_000;
 const canRetain = (error: unknown) =>
   Boolean(
     error &&
@@ -141,17 +142,25 @@ export function useRecallActivity(
       clearTimeout(poll);
       if (!active || !visible()) return;
       const fallback = Math.min(300_000, 60_000 * 2 ** failures);
+      const repairing =
+        failures === 0 &&
+        [
+          pageRef.current?.value.projectScopeStatus,
+          overviewRef.current?.value.projectScopeStatus
+        ].includes("updating");
       poll = setTimeout(
         () => void run(true),
-        overviewStale
-          ? Math.min(
-              fallback,
-              Math.max(
-                0,
-                lastOverview + RECALL_OVERVIEW_CHANGE_INTERVAL_MS - Date.now()
+        repairing
+          ? RECALL_SCOPE_REPAIR_INTERVAL_MS
+          : overviewStale
+            ? Math.min(
+                fallback,
+                Math.max(
+                  0,
+                  lastOverview + RECALL_OVERVIEW_CHANGE_INTERVAL_MS - Date.now()
+                )
               )
-            )
-          : fallback
+            : fallback
       );
     };
     // true always reads the overview, "changed" reads it when the change

@@ -74,8 +74,8 @@ days uses daily buckets, and thirty days groups daily server totals into ten
 three-day intervals. Custom ranges retain bounded day/week/month aggregation.
 Chart totals cover the entire filtered range, independently of the displayed
 50-row page. The question search is labelled as page-only and does not change
-aggregate metrics or decrypt additional history. Known usage history and coverage
-notes remain available under About these metrics.
+aggregate metrics or decrypt additional history. About outcomes explains the
+outcome labels. Provider usage remains available in each answer's detail view.
 
 Only explicitly linked usage contributes to list totals and charts. Most older
 durable-task history has no question link and remains unknown. Opening one
@@ -412,11 +412,21 @@ an unknown, unavailable scope that keeps only its legacy Project identity.
 Historical records with no selection retain their legacy identity or an unknown
 scope; no missing or unreadable selection becomes Global.
 
+List and overview responses report `projectScopeStatus`: `complete`, `updating`,
+or `unavailable`. Until it is complete, Project-filtered rows, totals and choices
+can omit historical answers. Desktop marks those results as incomplete and hides
+their aggregate totals and chart. It also disables older-page navigation until
+Project history is complete. Unfiltered totals remain valid. While history is
+updating, the visible page refreshes every two seconds to continue bounded repair.
+Hidden pages pause polling. Unavailable history uses normal polling, and repair
+retries after ten minutes. A failed repair never reports complete coverage.
+
 Project filters use indexed set containment on the accepted identities, before
 pagination. Each question remains one row, including its linked usage, even when
 several selected Projects overlap. Filter choices cover the whole selected date
-range independently of active filters. Question and token timelines keep their
-recorded-time and observation-time boundaries. Ordinary overview reads require
+range independently of active filters. Question charts use recorded time; token
+totals use usage observation time. The overview no longer computes or returns the
+unused `tokenTimeline` series. Ordinary overview reads require
 no content decryption after the scope projection exists.
 
 The Local AI Runtime emits a bounded `activityExecution` snapshot inside encrypted

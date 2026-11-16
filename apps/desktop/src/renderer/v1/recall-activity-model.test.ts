@@ -54,7 +54,6 @@ const overview = (
     recordedAttempts: 0,
     includesEstimates: false
   },
-  tokenTimeline: [],
   questions: starts.map((start) => ({
     start,
     count: 4,

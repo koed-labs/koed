@@ -57,7 +57,6 @@ const fixture = async (credential: "token" | "oauth" | "browser") => {
     bucket: "day",
     tokens: usage,
     linkedQuestions: 0,
-    tokenTimeline: [],
     recordedQuestions: 1,
     recordedErrors: 0,
     memoryResults: {

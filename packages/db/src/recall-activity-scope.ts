@@ -3,6 +3,7 @@ import {
   personalSelectionLegacyScope,
   type EnvelopeEncryptionProvider,
   type PersonalSelectionSnapshot,
+  type RecallProjectScopeStatus,
   type RecallScope
 } from "@koed-labs/shared";
 import type pg from "pg";
@@ -242,38 +243,62 @@ export const createRecallScopeRepair = (
 ) => {
   const progress = new Map<
     string,
-    { after: string | null; skipped: number; idleUntil: number }
+    {
+      after: string | null;
+      skipped: number;
+      idleUntil: number;
+      status: RecallProjectScopeStatus;
+    }
   >();
-  const running = new Map<string, Promise<void>>();
-  const pass = async (actor: ActorContext) => {
+  const running = new Map<string, Promise<RecallProjectScopeStatus>>();
+  const pass = async (
+    actor: ActorContext
+  ): Promise<RecallProjectScopeStatus> => {
     const current = progress.get(actor.userId) ?? {
       after: null,
       skipped: 0,
-      idleUntil: 0
+      idleUntil: 0,
+      status: "updating" as const
     };
-    if (current.idleUntil > now()) return;
+    if (current.idleUntil > now()) return current.status;
     const result = await ensureRecallScopeIndexes(pool, actor, provider, {
       after: current.after
     });
     const skipped = current.skipped + result.skipped;
+    const status = result.finished
+      ? skipped
+        ? "unavailable"
+        : "complete"
+      : "updating";
     progress.set(
       actor.userId,
       result.finished
         ? {
             after: null,
             skipped: 0,
+            status,
             idleUntil: skipped
               ? now() + RECALL_SCOPE_RETRY_MS
               : Number.POSITIVE_INFINITY
           }
-        : { after: result.after, skipped, idleUntil: 0 }
+        : { after: result.after, skipped, idleUntil: 0, status }
     );
+    return status;
   };
-  return (actor: ActorContext): Promise<void> => {
+  return (actor: ActorContext): Promise<RecallProjectScopeStatus> => {
     const active = running.get(actor.userId);
     if (active) return active;
     const next = pass(actor)
-      .catch(() => undefined)
+      .catch((): RecallProjectScopeStatus => {
+        const current = progress.get(actor.userId);
+        progress.set(actor.userId, {
+          after: current?.after ?? null,
+          skipped: current?.skipped ?? 0,
+          idleUntil: now() + RECALL_SCOPE_RETRY_MS,
+          status: "unavailable"
+        });
+        return "unavailable";
+      })
       .finally(() => running.delete(actor.userId));
     running.set(actor.userId, next);
     return next;

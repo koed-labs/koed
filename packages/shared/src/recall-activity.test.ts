@@ -3,9 +3,69 @@ import {
   RECALL_CALLER_LABEL_CHARACTERS,
   recallCallerLabel,
   recallCallerSchema,
+  recallActivityOverviewSchema,
   recallQuestionMetadataSchema,
   recallQuestionReportedMetadataSchema
 } from "./recall-activity.js";
+
+it("decodes old and new overview responses without retaining the retired timeline", () => {
+  const overview = {
+    asOf: "2026-11-16T12:00:00Z",
+    timezone: "UTC",
+    bucket: "day",
+    tokens: {
+      coverage: "recorded",
+      inputTokens: 20,
+      cachedInputTokens: 0,
+      outputTokens: 10,
+      reasoningOutputTokens: 0,
+      totalTokens: 30,
+      recordedAttempts: 1,
+      includesEstimates: false
+    },
+    linkedQuestions: 1,
+    recordedQuestions: 1,
+    recordedErrors: 0,
+    memoryResults: {
+      found: 1,
+      not_found: 0,
+      insufficient: 0,
+      pending_summary: 0,
+      unknown: 0,
+      foundPercentage: 100
+    },
+    knownDurations: 0,
+    medianDurationMs: null,
+    questions: []
+  };
+  expect(
+    recallActivityOverviewSchema.parse({
+      ...overview,
+      tokenTimeline: [
+        {
+          start: overview.asOf,
+          totalTokens: 30,
+          recordedAttempts: 1,
+          partial: false
+        }
+      ]
+    })
+  ).toEqual(overview);
+  for (const projectScopeStatus of ["complete", "updating", "unavailable"])
+    expect(
+      recallActivityOverviewSchema.parse({ ...overview, projectScopeStatus })
+    ).toEqual({ ...overview, projectScopeStatus });
+  expect(
+    recallActivityOverviewSchema.safeParse({
+      ...overview,
+      projectScopeStatus: "ready"
+    }).success
+  ).toBe(false);
+  expect(
+    recallActivityOverviewSchema.safeParse({ ...overview, unexpected: true })
+      .success
+  ).toBe(false);
+});
 
 describe("Recall caller labels", () => {
   it("keeps ordinary AI Client names and versions", () => {

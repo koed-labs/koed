@@ -49,7 +49,6 @@ it("keeps overview totals independent of pagination and page-only search, and ap
     recordedErrors: 2,
     linkedQuestions: 0,
     tokens: usage,
-    tokenTimeline: [],
     memoryResults: {
       found: 60,
       not_found: 20,

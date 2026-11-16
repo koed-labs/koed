@@ -241,12 +241,7 @@ describe.skipIf(!process.env.DATABASE_URL)(
         expect(overview.memoryResults.foundPercentage).toBe(100);
         expect(overview.medianDurationMs).toBe(1000);
         expect(overview.tokens.totalTokens).toBe(20);
-        expect(
-          overview.tokenTimeline.reduce(
-            (sum, bin) => sum + (bin.totalTokens ?? 0),
-            0
-          )
-        ).toBe(20);
+        expect(overview).not.toHaveProperty("tokenTimeline");
         expect(
           overview.questions.reduce((sum, bin) => sum + bin.count, 0)
         ).toBe(2);
@@ -365,6 +360,10 @@ describe.skipIf(!process.env.DATABASE_URL)(
           })
         ]
       );
+      const original = await pool.query<{ tag: Buffer }>(
+        "select tag from encrypted_field_payloads where source_id=$1 and source_column='retrieval'",
+        [corrupt.id]
+      );
       await pool.query(
         "update encrypted_field_payloads set tag=ciphertext where source_id=$1 and source_column='retrieval'",
         [corrupt.id]
@@ -374,6 +373,7 @@ describe.skipIf(!process.env.DATABASE_URL)(
         limit: 50
       });
       expect(page.questions).toHaveLength(4);
+      expect(page.projectScopeStatus).toBe("unavailable");
       const scopes = new Map(page.questions.map((q) => [q.id, q.scope]));
       expect(scopes.get(readable.id)).toMatchObject({
         kind: "projects",
@@ -394,7 +394,10 @@ describe.skipIf(!process.env.DATABASE_URL)(
       expect(scopes.get(corrupt.id)).toBeNull();
       await expect(
         repo.getRecallActivityOverview(actor, { ...range, timezone: "UTC" })
-      ).resolves.toMatchObject({ recordedQuestions: 4 });
+      ).resolves.toMatchObject({
+        recordedQuestions: 4,
+        projectScopeStatus: "unavailable"
+      });
       expect(
         (
           await pool.query<{ id: string }>(
@@ -403,6 +406,32 @@ describe.skipIf(!process.env.DATABASE_URL)(
           )
         ).rows.map((row) => row.id)
       ).toEqual([corrupt.id]);
+      const { createRecallScopeRepair } =
+        await import("../src/recall-activity-scope.js");
+      let now = 0;
+      const repair = createRecallScopeRepair(
+        pool,
+        createLocalTestKeyEnvelopeEncryptionProvider(
+          Buffer.alloc(32, 73).toString("base64")
+        ),
+        () => now
+      );
+      expect(await repair(actor)).toBe("unavailable");
+      await pool.query(
+        "update encrypted_field_payloads set tag=$2 where source_id=$1 and source_column='retrieval'",
+        [corrupt.id, original.rows[0]!.tag]
+      );
+      expect(await repair(actor)).toBe("unavailable");
+      now += 10 * 60_000;
+      expect(await repair(actor)).toBe("complete");
+      expect(
+        (
+          await pool.query(
+            "select id from memory_questions where id=$1 and recall_scope is null",
+            [corrupt.id]
+          )
+        ).rows
+      ).toEqual([]);
     });
     it("repairs history in bounded passes that resume, share concurrent reads, and stop once complete", async () => {
       const { createRecallScopeRepair, ensureRecallScopeIndexes } =
@@ -470,14 +499,90 @@ describe.skipIf(!process.env.DATABASE_URL)(
             : (Reflect.get(target, key) as unknown)
       });
       const repair = createRecallScopeRepair(counted, provider);
-      await Promise.all([repair(actor), repair(actor)]);
+      expect(await Promise.all([repair(actor), repair(actor)])).toEqual([
+        "complete",
+        "complete"
+      ]);
       expect(await pending()).toEqual([]);
       const scans = () =>
         queries.filter((text) => text.includes("recall_scope is null")).length;
       // One shared pass: a batch read, its guarded update, and the empty final scan.
       expect(scans()).toBe(3);
-      await repair(actor);
+      expect(await repair(actor)).toBe("complete");
       expect(scans()).toBe(3);
+    });
+    it("reports incomplete Project coverage until bounded historical repair finishes", async () => {
+      const actor = {
+        userId: (
+          await repo.createUser({ email: `${randomUUID()}@example.test` })
+        ).id
+      };
+      const a = await repo.createNamedPersonalProject(actor, {
+        name: "History A"
+      });
+      const b = await repo.createNamedPersonalProject(actor, {
+        name: "History B"
+      });
+      const personalSelection: PersonalSelectionSnapshot = {
+        version: 1,
+        ownerUserId: actor.userId,
+        target: {
+          kind: "projects",
+          projects: [a, b].map((p) => ({
+            ownerUserId: actor.userId,
+            projectId: p.projectId
+          })),
+          callerSessionId: randomUUID()
+        },
+        callerRepositoryContext: null
+      };
+      for (let i = 0; i < 501; i++)
+        await repo.createFinalMemoryQuestion(actor, {
+          idempotencyKey: randomUUID(),
+          query: "Historical answer",
+          searchDomain: "project",
+          personalSelection,
+          status: "answered",
+          answerMarkdown: "Recorded answer"
+        });
+      await pool.query(
+        "update memory_questions set recall_scope=null where owner_user_id=$1",
+        [actor.userId]
+      );
+      const input = { ...range, timezone: "UTC", projectId: b.projectId };
+      const [first, page, all] = await Promise.all([
+        repo.getRecallActivityOverview(actor, input),
+        repo.listRecallActivity(actor, {
+          ...range,
+          projectId: b.projectId,
+          limit: 50,
+          hydrate: false
+        }),
+        repo.getRecallActivityOverview(actor, { ...range, timezone: "UTC" })
+      ]);
+      expect(first).toMatchObject({
+        recordedQuestions: 500,
+        projectScopeStatus: "updating"
+      });
+      expect(page.projectScopeStatus).toBe("updating");
+      expect(all).toMatchObject({
+        recordedQuestions: 501,
+        projectScopeStatus: "updating"
+      });
+      const [complete, completePage] = await Promise.all([
+        repo.getRecallActivityOverview(actor, input),
+        repo.listRecallActivity(actor, {
+          ...range,
+          projectId: b.projectId,
+          limit: 50,
+          hydrate: false
+        })
+      ]);
+      expect(complete).toMatchObject({
+        recordedQuestions: 501,
+        projectScopeStatus: "complete"
+      });
+      expect(completePage.projectScopeStatus).toBe("complete");
     });
     it("labels Project filter choices by current named Project, never a stale legacy name", async () => {
       const actor = {

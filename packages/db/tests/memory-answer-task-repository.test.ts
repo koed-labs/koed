@@ -933,7 +933,7 @@ describeDb("durable Memory Answer task repository", () => {
       expect(legacy.recordedQuestions).toBe(stats.recordedQuestions);
       expect(stats.bucket).toBe("hour");
       expect(stats.questions).toHaveLength(range.hours);
-      expect(stats.tokenTimeline).toHaveLength(range.hours);
+      expect(stats).not.toHaveProperty("tokenTimeline");
       expect(new Set(stats.questions.map((point) => point.start)).size).toBe(
         range.hours
       );
@@ -945,14 +945,6 @@ describeDb("durable Memory Answer task repository", () => {
       );
       expect(stats.recordedQuestions).toBe(3);
       expect(stats.tokens.totalTokens).toBe(30);
-      expect(
-        stats.tokenTimeline.slice(0, 3).map((point) => point.totalTokens)
-      ).toEqual([10, 10, 10]);
-      expect(
-        stats.tokenTimeline
-          .slice(3)
-          .every((point) => point.totalTokens === null)
-      ).toBe(true);
     }
   );
 

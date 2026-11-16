@@ -74,7 +74,7 @@ const recallActivityRepository = (
 ): RecallActivityRepository => ({
   async getRecallActivityOverview(actor, rawInput) {
     const input = recallActivityOverviewInputSchema.parse(rawInput);
-    await repairScope(actor);
+    const projectScopeStatus = await repairScope(actor);
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     const days = (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000;
     const bucket =
@@ -127,12 +127,7 @@ const recallActivityRepository = (
          from buckets b left join totals t using (bucket)`,
       values
     );
-    const tokenOverview = await loadRecallTokenOverview(
-      pool,
-      actor,
-      input,
-      bucket
-    );
+    const tokenOverview = await loadRecallTokenOverview(pool, actor, input);
     const { usageIncomplete, ...summary } = result.rows[0]!;
     if (usageIncomplete && tokenOverview.tokens.coverage === "recorded")
       tokenOverview.tokens.coverage = "partial";
@@ -184,6 +179,7 @@ const recallActivityRepository = (
     return {
       ...summary,
       ...tokenOverview,
+      projectScopeStatus,
       filterOptions: filterOptions.rows[0]!,
       asOf: new Date().toISOString(),
       timezone: input.timezone,
@@ -310,7 +306,7 @@ const recallActivityRepository = (
   },
   async listRecallActivity(actor, rawInput) {
     const input = recallActivityListInputSchema.parse(rawInput);
-    await repairScope(actor);
+    const projectScopeStatus = await repairScope(actor);
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     if (input.cursor)
       predicates.push(`(q.created_at, q.id) <
@@ -388,6 +384,7 @@ const recallActivityRepository = (
     const last = questions.at(-1);
     return {
       questions,
+      projectScopeStatus,
       nextCursor:
         result.rows.length > input.limit && last
           ? { recordedAt: last.recordedAt, id: last.id }

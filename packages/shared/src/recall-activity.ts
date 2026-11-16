@@ -190,8 +190,20 @@ export const recallActivityQuestionSchema = z
   })
   .strict();
 
+// Coverage of accepted Project identities in historical activity. While not
+// complete, Project-filtered rows, totals and filter choices can be incomplete.
+export const recallProjectScopeStatusSchema = z.enum([
+  "complete",
+  "updating",
+  "unavailable"
+]);
+export type RecallProjectScopeStatus = z.infer<
+  typeof recallProjectScopeStatusSchema
+>;
+
 export const recallActivityPageSchema = z
   .object({
+    projectScopeStatus: recallProjectScopeStatusSchema.optional(),
     questions: z.array(recallActivityQuestionSchema).max(50),
     nextCursor: recallActivityCursorSchema.nullable(),
     asOf: instant
@@ -317,6 +329,7 @@ export const recallActivityOverviewInputSchema = recallActivityFiltersSchema
   );
 export const recallActivityOverviewSchema = z
   .object({
+    projectScopeStatus: recallProjectScopeStatusSchema.optional(),
     filterOptions: z
       .object({
         projects: z.array(
@@ -336,18 +349,8 @@ export const recallActivityOverviewSchema = z
     bucket: z.enum(["hour", "day", "week", "month"]),
     tokens: recallUsageTotalsSchema,
     linkedQuestions: z.number().int().nonnegative(),
-    tokenTimeline: z
-      .array(
-        z
-          .object({
-            start: instant,
-            totalTokens: count,
-            recordedAttempts: z.number().int().nonnegative(),
-            partial: z.boolean()
-          })
-          .strict()
-      )
-      .max(400),
+    // Accept and discard the retired field from older backend responses.
+    tokenTimeline: z.unknown().optional(),
     recordedQuestions: z.number().int().nonnegative(),
     recordedErrors: z.number().int().nonnegative(),
     memoryResults: z
@@ -379,7 +382,8 @@ export const recallActivityOverviewSchema = z
       )
       .max(400)
   })
-  .strict();
+  .strict()
+  .transform(({ tokenTimeline: _retiredTimeline, ...overview }) => overview);
 export type RecallActivityOverviewInput = z.infer<
   typeof recallActivityOverviewInputSchema
 >;

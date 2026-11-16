@@ -27,6 +27,7 @@ export function RecallActivityTable({
   loadedCount,
   loading,
   unavailable,
+  incomplete = false,
   pageNumber,
   hasOlder,
   search,
@@ -41,6 +42,7 @@ export function RecallActivityTable({
   loadedCount: number;
   loading: boolean;
   unavailable: boolean;
+  incomplete?: boolean;
   pageNumber: number;
   hasOlder: boolean;
   search: string;
@@ -184,14 +186,20 @@ export function RecallActivityTable({
           <div className="recall-empty" role="status">
             <Search />
             <strong>
-              {unavailable ? "Activity unavailable" : "No matching activity"}
+              {unavailable
+                ? "Activity unavailable"
+                : incomplete
+                  ? "Results incomplete"
+                  : "No matching activity"}
             </strong>
             <p>
               {unavailable
                 ? "Reconnect to your memory backend and refresh."
-                : search
-                  ? "No questions on this page match your search."
-                  : "No recorded Memory Answers match these filters."}
+                : incomplete
+                  ? "Project history is not ready. Try again or clear the Project filter."
+                  : search
+                    ? "No questions on this page match your search."
+                    : "No recorded Memory Answers match these filters."}
             </p>
             {!unavailable && (
               <Button variant="outline" size="sm" onClick={onReset}>
@@ -207,6 +215,7 @@ export function RecallActivityTable({
             ? `${rows.length} of ${loadedCount} on this page`
             : `${loadedCount} shown`}
           <span className="recall-page-number"> · Page {pageNumber}</span>
+          {incomplete && " · Results incomplete"}
         </span>
         <div className="recall-pagination">
           <Button

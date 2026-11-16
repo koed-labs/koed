@@ -201,6 +201,16 @@ the accepted scope kind, provenance and owner-authorized Project labels; the
 renderer must not replace it with current Conversation memberships. Project-union
 filters use the same retained set in list, overview and linked-usage queries.
 
+List and overview responses include `projectScopeStatus`: `complete`, `updating`,
+or `unavailable`. It describes coverage of historical Project identities.
+Project-filtered results are incomplete until this status is `complete`.
+Desktop hides their totals and chart, labels the partial rows, and refreshes
+every two seconds while history is updating and the page is visible. Unavailable
+history uses the normal polling interval. Unfiltered totals remain valid.
+The field is optional for older backend responses. New overview responses omit
+the unused `tokenTimeline` field. The decoder discards this field from older
+responses. Token totals and coverage remain.
+
 Recall detail also includes optional nullable `execution` data validated by
 `recallExecutionSchema`: effective allowances, consumption/remaining values,
 exhaustion, ordered post-admission delivery operations, and final selected evidence

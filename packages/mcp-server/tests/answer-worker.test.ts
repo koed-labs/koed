@@ -4266,9 +4266,16 @@ process.stdin.once("data", () => {
         {
           client: {
             async search(input) {
-              // Snake-case hits, one repeated, that cannot all be admitted.
+              // Both the delivered and omitted source have duplicate hits.
               return input.query === "later search"
-                ? { hits: [laterHit, laterHit] }
+                ? {
+                    hits: [
+                      laterHit,
+                      laterHit,
+                      { ...laterHit, source_id: "other-later-event" },
+                      { ...laterHit, source_id: "other-later-event" }
+                    ]
+                  }
                 : { retrieval: { stages: [] } };
             },
             async expand(nodeId) {
@@ -4326,8 +4333,11 @@ process.stdin.once("data", () => {
       );
       expect(operations.some((operation) => operation.recovered)).toBe(false);
       expect(search).toBeDefined();
-      expect((search!.delivered ?? 0) + (search!.omitted ?? 0)).toBe(1);
-      if (search!.omitted) expect(search!.reasons).not.toEqual([]);
+      expect(search).toMatchObject({
+        delivered: 1,
+        omitted: 1,
+        reasons: ["candidates"]
+      });
       expect(execution.budgets?.finalEvidenceBundle.consumed).toBeGreaterThan(
         0
       );

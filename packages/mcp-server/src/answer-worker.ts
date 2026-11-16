@@ -3064,9 +3064,13 @@ const createMemoryAnswerDynamicToolHandler = (
           phase: "worker",
           durationMs: Date.now() - started
         });
-        const hitKeys = hits.map((hit, index) =>
-          sourceKey(normalizeCandidateIdentity(hit, index, stage))
-        );
+        const hitKeys = [
+          ...new Set(
+            hits.map((hit, index) =>
+              sourceKey(normalizeCandidateIdentity(hit, index, stage))
+            )
+          )
+        ];
         const admittedHits = state.evidence.filter((candidate) =>
           hitKeys.includes(sourceKey(candidate))
         );
