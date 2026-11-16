@@ -11,6 +11,7 @@ import {
   terminateChild,
   trustedClick,
   waitForRendererTarget,
+  waitForDevtoolsPort,
   waitFor
 } from "./smoke-packaged-renderer-faults.mjs";
 
@@ -99,6 +100,66 @@ test("packaged fault fixtures preserve the trusted renderer origin and serve onl
   } finally {
     await fixture.dispose();
   }
+});
+
+test("finds the unique Chromium-assigned DevTools port", async (t) => {
+  mkdirSync(resolve(import.meta.dirname, "../../../scratch"), {
+    recursive: true
+  });
+  const root = mkdtempSync(
+    resolve(import.meta.dirname, "../../../scratch/devtools-port-")
+  );
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let reads = 0;
+  const port = await waitForDevtoolsPort({
+    userDataDir: root,
+    readChildExit: () => false,
+    delayImpl: async () => {
+      if (++reads === 1)
+        writeFileSync(
+          resolve(root, "DevToolsActivePort"),
+          "43210\n/devtools/browser/example\n"
+        );
+    }
+  });
+  assert.equal(port, 43210);
+  writeFileSync(
+    resolve(root, "DevToolsActivePort"),
+    "99999\n/devtools/browser/example\n"
+  );
+  await assert.rejects(
+    () =>
+      waitForDevtoolsPort({ userDataDir: root, readChildExit: () => false }),
+    /invalid/i
+  );
+});
+
+test("DevTools port discovery stops at its deadline or child exit", async (t) => {
+  mkdirSync(resolve(import.meta.dirname, "../../../scratch"), {
+    recursive: true
+  });
+  const root = mkdtempSync(
+    resolve(import.meta.dirname, "../../../scratch/devtools-port-")
+  );
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let clock = 0;
+  assert.equal(
+    await waitForDevtoolsPort({
+      userDataDir: root,
+      readChildExit: () => false,
+      startupTimeoutMs: 75,
+      now: () => clock,
+      delayImpl: async (ms) => {
+        clock += ms;
+      }
+    }),
+    undefined
+  );
+  assert.equal(clock, 75);
+  assert.equal(
+    await waitForDevtoolsPort({ userDataDir: root, readChildExit: () => true }),
+    undefined
+  );
 });
 
 test("trusted renderer clicks foreground the page and dispatch real mouse input", async () => {
