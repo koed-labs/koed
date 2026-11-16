@@ -666,12 +666,12 @@ export const resolveMemoryAnswerWorkerConfig = (
     ),
     maxEvidenceTokens: parsePositiveInteger(
       resolveEnvValue(env, "MEMORY_ANSWER_MAX_EVIDENCE_TOKENS"),
-      12_000,
+      24_000,
       { min: 256, max: 100_000 }
     ),
     maxPromptTokens: parsePositiveInteger(
       resolveEnvValue(env, "MEMORY_ANSWER_MAX_PROMPT_TOKENS"),
-      24_000,
+      48_000,
       { min: 512, max: 200_000 }
     ),
     executablePath:
@@ -715,6 +715,7 @@ interface ToolExpansionRecord {
   phase: "worker";
   durationMs: number;
   sourceItemCount: number;
+  omittedSourceCount?: number;
   errorClass?: string;
 }
 
@@ -778,6 +779,8 @@ const markBudgetExhaustionFromError = (
 };
 
 interface MemoryAnswerToolState {
+  admissionOmissions?: EvidenceAdmissionOmission[];
+  expansionSourceKeys?: string[];
   query: string;
   retrievalScope: string;
   searchDomain: string;
@@ -1933,13 +1936,193 @@ const isCompleteEvidence = (item: unknown): boolean => {
   );
 };
 
+/** Model observations are views, never the authority used for final citations. */
+const workerEvidenceView = (item: unknown): Record<string, unknown> => {
+  const record = recordFromUnknown(sanitizeTeamIdentityMetadata(item));
+  const fields = [
+    "sourceType",
+    "sourceId",
+    "sourceChunkIndex",
+    "nodeId",
+    "visibility",
+    "summaryText",
+    "title",
+    "score",
+    "retrievalStage",
+    "fullCanonicalEvent",
+    "summaryRepresentation",
+    "sourceGeneration",
+    "sourcePosition",
+    "expandedFromNodeId",
+    "parentNodeIds",
+    "corroborationGroupId",
+    "actor",
+    "turnId",
+    "createdAt",
+    "occurredAt",
+    "capturedAt",
+    "sourceRevision",
+    "freshness",
+    "representation",
+    "provenance",
+    "provenanceId",
+    "sourceChunkCount",
+    "grantProvenance",
+    "visibilityProvenance",
+    "generationProvenance",
+    "supportingContext",
+    "lexicalAnchors"
+  ];
+  return {
+    ...Object.fromEntries(
+      fields
+        .filter((key) => record[key] !== undefined)
+        .map((key) => [key, record[key]])
+    ),
+    ...(record.summaryText === undefined
+      ? {
+          summaryText: stringField(record, [
+            "summary_text",
+            "text",
+            "content",
+            "body"
+          ])
+        }
+      : {})
+  };
+};
+
+const evidenceTokenCost = (
+  item: unknown,
+  config: MemoryAnswerWorkerConfig
+): number =>
+  countTokensForModel(JSON.stringify(workerEvidenceView(item)), {
+    model: config.model
+  }).tokens;
+
+const expansionSourceSelectorSchema = z
+  .object({
+    source_type: z.string().min(1).max(128),
+    source_id: z.string().min(1).max(512),
+    source_chunk_index: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+  })
+  .strict();
+const expansionSourceSelectorsSchema = z
+  .array(expansionSourceSelectorSchema)
+  .min(1)
+  .max(50)
+  .refine(
+    (sources) =>
+      new Set(sources.map((source) => JSON.stringify(source))).size ===
+      sources.length
+  );
+type EvidenceSourceSelector = z.infer<typeof expansionSourceSelectorSchema>;
+interface EvidenceAdmissionOmission {
+  source: EvidenceSourceSelector;
+  nodeId?: string;
+  reason:
+    | "evidence_tokens"
+    | "evidence_items"
+    | "candidates"
+    | "prompt_tokens"
+    | "recovery_reserve";
+  requiredTokens: number;
+}
+const evidenceSourceSelector = (item: unknown): EvidenceSourceSelector => {
+  const record = recordFromUnknown(item);
+  return {
+    source_type:
+      typeof record.sourceType === "string" ? record.sourceType : "unknown",
+    source_id:
+      typeof record.sourceId === "string"
+        ? record.sourceId
+        : typeof record.nodeId === "string"
+          ? record.nodeId
+          : "unknown",
+    source_chunk_index: Number.isSafeInteger(record.sourceChunkIndex)
+      ? Number(record.sourceChunkIndex)
+      : 0
+  };
+};
+const omittedEvidence = (
+  items: unknown[],
+  reason: EvidenceAdmissionOmission["reason"],
+  config: MemoryAnswerWorkerConfig,
+  requiredTokens = items.reduce<number>(
+    (sum, item) => sum + evidenceTokenCost(item, config),
+    0
+  )
+): EvidenceAdmissionOmission[] =>
+  items.map((item) => {
+    const record = recordFromUnknown(item);
+    const nodeId =
+      stringField(record, ["expandedFromNodeId"]) ??
+      (record.sourceType === "memory_node"
+        ? stringField(record, ["sourceId", "nodeId"])
+        : undefined);
+    return {
+      source: evidenceSourceSelector(item),
+      ...(nodeId ? { nodeId } : {}),
+      reason,
+      requiredTokens
+    };
+  });
+const retainAdmissionOmissions = (
+  state: MemoryAnswerToolState,
+  omissions: EvidenceAdmissionOmission[],
+  admitted: unknown[] = state.evidence
+): void => {
+  const entries = new Map(
+    [...(state.admissionOmissions ?? []), ...omissions].map((entry) => [
+      JSON.stringify(entry.source),
+      entry
+    ])
+  );
+  for (const item of admitted)
+    entries.delete(JSON.stringify(evidenceSourceSelector(item)));
+  state.admissionOmissions = [...entries.values()];
+};
+
+// A newly requested independent source observation need not inherit an older search window.
+const prioritizeExpandedEvidence = (
+  existing: unknown[],
+  incoming: unknown[]
+): unknown[] => {
+  const keys = new Set(incoming.map(sourceKey));
+  const retainedWindows = new Set(
+    rankedEvidenceGroups(existing).flatMap((group) =>
+      group.windowId && !group.items.some((item) => keys.has(sourceKey(item)))
+        ? [group.windowId]
+        : []
+    )
+  );
+  const retained = retainEventWindowMemberships(existing, retainedWindows);
+  const merged = appendEvidence(retained, incoming);
+  return [
+    ...incoming.map((item) =>
+      isCompleteEvidence(item)
+        ? item
+        : (merged.find(
+            (candidate) => sourceKey(candidate) === sourceKey(item)
+          ) ?? item)
+    ),
+    ...retained.filter((item) => !keys.has(sourceKey(item)))
+  ];
+};
+
 const boundEvidence = (
   evidence: unknown[],
-  config: MemoryAnswerWorkerConfig
+  config: MemoryAnswerWorkerConfig,
+  options: { allowEmpty?: boolean; workerView?: boolean } = {}
 ): {
   evidence: unknown[];
   tokenEstimate: number;
   exhausted: MemoryAnswerBudgetKind[];
+  omissions: EvidenceAdmissionOmission[];
 } => {
   const bounded: unknown[] = [];
   const admittedKeys = new Set<string>();
@@ -1947,6 +2130,7 @@ const boundEvidence = (
   evidence = mergeCompleteSummaryEvidence(eventWindowEvidence(evidence));
   let tokenEstimate = 0;
   const exhausted: MemoryAnswerBudgetKind[] = [];
+  const omissions: EvidenceAdmissionOmission[] = [];
   if (evidence.length > config.maxCandidates) exhausted.push("candidates");
   if (evidence.length > config.maxEvidenceItems)
     exhausted.push("evidence_items");
@@ -1968,6 +2152,15 @@ const boundEvidence = (
       bounded.length + safeGroup.length >
       Math.min(config.maxCandidates, config.maxEvidenceItems)
     ) {
+      omissions.push(
+        ...omittedEvidence(
+          safeGroup,
+          bounded.length + safeGroup.length > config.maxCandidates
+            ? "candidates"
+            : "evidence_items",
+          config
+        )
+      );
       if (
         bounded.length + safeGroup.length > config.maxCandidates &&
         !exhausted.includes("candidates")
@@ -2003,12 +2196,17 @@ const boundEvidence = (
         : summaryText || lexicalAnchors || supportingContext
           ? { summaryText, lexicalAnchors, supportingContext }
           : safeCandidate;
-      const tokens = countTokensForModel(JSON.stringify(budgetContent), {
-        model: config.model
-      }).tokens;
+      const tokens = options.workerView
+        ? evidenceTokenCost(safeCandidate, config)
+        : countTokensForModel(JSON.stringify(budgetContent), {
+            model: config.model
+          }).tokens;
       groupTokens += tokens;
     }
     if (tokenEstimate + groupTokens > config.maxEvidenceTokens) {
+      omissions.push(
+        ...omittedEvidence(safeGroup, "evidence_tokens", config, groupTokens)
+      );
       if (!exhausted.includes("evidence_tokens")) {
         exhausted.push("evidence_tokens");
       }
@@ -2020,6 +2218,7 @@ const boundEvidence = (
     tokenEstimate += groupTokens;
   }
   if (
+    !options.allowEmpty &&
     bounded.length === 0 &&
     evidence.some(
       (item) => eventWindowIds(item).length > 0 || isCompleteEvidence(item)
@@ -2030,7 +2229,8 @@ const boundEvidence = (
   return {
     evidence: retainEventWindowMemberships(bounded, admittedWindows),
     tokenEstimate,
-    exhausted
+    exhausted,
+    omissions
   };
 };
 
@@ -2119,13 +2319,24 @@ const mergeObservedEvidence = (existing: unknown[], items: unknown[]) => {
   return mergeCompleteSummaryEvidence([...merged.values()]);
 };
 
-const indexedEvidenceObservation = (evidence: unknown[], items: unknown[]) => {
+const indexedEvidenceObservation = (
+  evidence: unknown[],
+  items: unknown[],
+  config: MemoryAnswerWorkerConfig
+) => {
   const indexes = new Map(
     evidence.map((candidate, index) => [observedEvidenceKey(candidate), index])
   );
   return items.map((item) => ({
     evidence_index: indexes.get(observedEvidenceKey(item)) ?? -1,
-    item
+    ...(isCompleteEvidence(item)
+      ? {
+          finalEvidenceTokens: countTokensForModel(JSON.stringify(item), {
+            model: config.model
+          }).tokens
+        }
+      : {}),
+    item: workerEvidenceView(item)
   }));
 };
 
@@ -2139,7 +2350,10 @@ const observeEvidence = (
   // Keep that finite history separate from the reranked working set.
   const observations = 1 + config.maxSearches + config.maxExpansions;
   const added = merged.slice(state.observedEvidence.length);
-  const bounded = boundEvidence(added, config);
+  const bounded = boundEvidence(added, config, {
+    workerView: true,
+    allowEmpty: true
+  });
   const totalTokens = state.observedEvidenceTokens + bounded.tokenEstimate;
   if (
     bounded.evidence.length !== added.length ||
@@ -2150,7 +2364,7 @@ const observeEvidence = (
     throw new Error("Memory answer observed-evidence budget exhausted");
   state.observedEvidence = merged;
   state.observedEvidenceTokens = totalTokens;
-  return indexedEvidenceObservation(merged, items);
+  return indexedEvidenceObservation(merged, items, config);
 };
 
 export const evidenceSelectedByAnswer = (
@@ -2312,8 +2526,30 @@ const toolStateSummary = (
   expansionCount: state.ledger.expansionAttempts,
   candidateCount: state.evidence.length,
   evidenceTokenEstimate: state.ledger.evidenceTokenEstimate,
+  omittedSources: (state.admissionOmissions ?? []).slice(0, 50),
+  omittedSourceCount: state.admissionOmissions?.length ?? 0,
+  omittedSourcesTruncated: (state.admissionOmissions?.length ?? 0) > 50,
+  configuredBudgets: {
+    evidenceTokens: config.maxEvidenceTokens,
+    promptTokens: config.maxPromptTokens,
+    evidenceItems: config.maxEvidenceItems,
+    candidates: config.maxCandidates
+  },
   errorCount: state.errors.length,
   remainingBudgets: {
+    evidenceTokens: Math.max(
+      0,
+      config.maxEvidenceTokens - state.ledger.evidenceTokenEstimate
+    ),
+    promptTokens: Math.max(
+      0,
+      config.maxPromptTokens - state.ledger.promptTokenEstimateConsumed
+    ),
+    evidenceItems: Math.max(
+      0,
+      Math.min(config.maxCandidates, config.maxEvidenceItems) -
+        state.evidence.length
+    ),
     searches: Math.max(0, config.maxSearches - state.ledger.searchAttempts),
     expansions: Math.max(
       0,
@@ -2454,11 +2690,31 @@ const dynamicToolSpecs = (): CodexAppServerDynamicToolSpec[] => [
     namespace: MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE,
     name: "expand",
     description:
-      "Expand a relevant Koed LCM node into its underlying source items when summaries are promising but insufficient.",
+      "Expand a relevant Koed LCM node into complete underlying sources. Optionally select exact sources from an earlier omittedSources descriptor to prioritize those sources in the working set; unknown sources are rejected. Previously observed evidence indices remain usable for final support.",
     inputSchema: {
       type: "object",
       properties: {
         nodeId: { type: "string" },
+        sources: {
+          type: "array",
+          minItems: 1,
+          maxItems: 50,
+          uniqueItems: true,
+          items: {
+            type: "object",
+            properties: {
+              source_type: { type: "string", minLength: 1, maxLength: 128 },
+              source_id: { type: "string", minLength: 1, maxLength: 512 },
+              source_chunk_index: {
+                type: "integer",
+                minimum: 0,
+                maximum: Number.MAX_SAFE_INTEGER
+              }
+            },
+            required: ["source_type", "source_id", "source_chunk_index"],
+            additionalProperties: false
+          }
+        },
         search_domain: {
           type: "string",
           enum: ["project", "session", "global"]
@@ -2753,10 +3009,12 @@ const createMemoryAnswerDynamicToolHandler = (
             [{ query: searchQuery, stage, hits }],
             state.evaluation.fusion
           ),
-          options.config
+          options.config,
+          { allowEmpty: true, workerView: true }
         );
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
+        retainAdmissionOmissions(state, bounded.omissions);
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
         state.citations = appendCitations(
           state.citations,
@@ -2854,6 +3112,17 @@ const createMemoryAnswerDynamicToolHandler = (
         state.errors.push(message);
         return dynamicToolResult({ kind: "validation_error", message }, false);
       }
+      const selectors =
+        args.sources === undefined
+          ? undefined
+          : expansionSourceSelectorsSchema.safeParse(args.sources);
+      if (selectors && !selectors.success) {
+        state.errors.push("Invalid expansion sources.");
+        return dynamicToolResult(
+          { kind: "validation_error", message: "Invalid expansion sources." },
+          false
+        );
+      }
       const { searchDomain, sessionId, projectId } = normalizeDomain(args);
       const started = Date.now();
       state.ledger.expansionAttempts += 1;
@@ -2869,13 +3138,48 @@ const createMemoryAnswerDynamicToolHandler = (
             sourceBefore: options.sourceBefore
           })
         );
-        const expandedEvidence = evidenceFromExpansion(expanded);
+        const authorizedEvidence = evidenceFromExpansion(expanded);
+        state.expansionSourceKeys = authorizedEvidence.map((item) =>
+          JSON.stringify(evidenceSourceSelector(item))
+        );
+        const selectedKeys = selectors?.success
+          ? new Set(selectors.data.map((source) => JSON.stringify(source)))
+          : undefined;
+        if (
+          selectedKeys &&
+          [...selectedKeys].some(
+            (key) =>
+              !authorizedEvidence.some(
+                (item) => JSON.stringify(evidenceSourceSelector(item)) === key
+              )
+          )
+        ) {
+          state.errors.push("Invalid expansion sources.");
+          state.expansionRecords.push({
+            nodeId,
+            phase: "worker",
+            durationMs: Date.now() - started,
+            sourceItemCount: 0,
+            errorClass: "ValidationError"
+          });
+          return dynamicToolResult(
+            { kind: "validation_error", message: "Invalid expansion sources." },
+            false
+          );
+        }
+        const expandedEvidence = selectedKeys
+          ? authorizedEvidence.filter((item) =>
+              selectedKeys.has(JSON.stringify(evidenceSourceSelector(item)))
+            )
+          : authorizedEvidence;
         const bounded = boundEvidence(
-          appendEvidence(state.evidence, expandedEvidence),
-          options.config
+          prioritizeExpandedEvidence(state.evidence, expandedEvidence),
+          options.config,
+          { allowEmpty: true, workerView: true }
         );
         recordEvidenceBudgetExhaustions(state.ledger, bounded);
         state.evidence = bounded.evidence;
+        retainAdmissionOmissions(state, bounded.omissions);
         state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
         state.citations = appendCitations(
           state.citations,
@@ -2890,7 +3194,9 @@ const createMemoryAnswerDynamicToolHandler = (
           nodeId,
           phase: "worker",
           durationMs: Date.now() - started,
-          sourceItemCount: admittedExpandedEvidence.length
+          sourceItemCount: admittedExpandedEvidence.length,
+          omittedSourceCount:
+            expandedEvidence.length - admittedExpandedEvidence.length
         };
         state.expansionRecords.push(expansionRecord);
         state.expansions.push(expansionRecord);
@@ -2945,6 +3251,8 @@ const buildDynamicMemoryAnswerPrompt = (
       memory_status: "found | not_found | insufficient | pending_summary",
       relevant_memory_found:
         "true when selected supporting evidence is nonempty, including partial evidence for insufficient",
+      final_support_budget:
+        "Selected complete evidence must also fit the configured evidence-token limit using each observation's finalEvidenceTokens (rich final Evidence Bundle cost), not only the compact helper observation cost. Select only necessary support.",
       answer_markdown: "Concise markdown answer for the main agent.",
       relevance_explanation:
         "Short explanation of why selected evidence is relevant, including recency/conflict reasoning when evidence differs over time, or why no relevant memory was found.",
@@ -2984,9 +3292,9 @@ const buildDynamicMemoryAnswerPrompt = (
         {
           evidence: indexedEvidenceObservation(
             mergeObservedEvidence(state.observedEvidence, state.evidence),
-            state.evidence
+            state.evidence,
+            config
           ),
-          citations: state.citations,
           retrievals: state.retrievals.map(workerRetrievalDiagnostic),
           retrievalHints: state.retrievalHints,
           conversationContext: state.conversationContext,
@@ -3030,7 +3338,8 @@ const buildDynamicMemoryAnswerPrompt = (
     );
     const observations = indexedEvidenceObservation(
       mergeObservedEvidence(state.observedEvidence, state.evidence),
-      state.evidence
+      state.evidence,
+      config
     );
     const boundedObservations: unknown[] = Array.isArray(
       firstPassContext.evidence
@@ -3042,12 +3351,15 @@ const buildDynamicMemoryAnswerPrompt = (
         ? observation
         : boundedObservations[index]
     );
+    firstPassContext.admission = toolStateSummary(state, config);
     const initialEvidenceSection = [
       state.evidence.length > 0
         ? "Initial evidence and first-pass diagnostics JSON:"
-        : state.evaluation.scriptedFirstPass
-          ? "The scripted first pass found no initial evidence. Retrieval errors and diagnostics still follow; use follow-up semantic searches only when budget remains."
-          : "No scripted first pass ran. Start without scripted evidence and use only the enabled worker retrieval tools within the shared budget.",
+        : (state.admissionOmissions?.length ?? 0) > 0
+          ? "Complete evidence was omitted by admission limits. Omitted source descriptors are navigation only, not observed evidence. Expand a descriptor's node with its exact sources selector when possible; otherwise report insufficient, never not_found merely because a body could not fit."
+          : state.evaluation.scriptedFirstPass
+            ? "The scripted first pass found no initial evidence. Retrieval errors and diagnostics still follow; use follow-up semantic searches only when budget remains."
+            : "No scripted first pass ran. Start without scripted evidence and use only the enabled worker retrieval tools within the shared budget.",
       JSON.stringify(firstPassContext, null, 2)
     ].join("\n");
     return (
@@ -3085,8 +3397,14 @@ const buildDynamicMemoryAnswerPrompt = (
     markBudgetExhausted(state.ledger, "prompt_tokens");
     const groups = rankedEvidenceGroups(state.evidence);
     const group = groups.at(-1)!;
-    trimmedWindowsOnly &&= group.windowId !== undefined;
-    trimmedWindow ||= group.windowId !== undefined;
+    retainAdmissionOmissions(
+      state,
+      omittedEvidence(group.items, "prompt_tokens", config)
+    );
+    trimmedWindowsOnly &&=
+      group.windowId !== undefined || group.items.every(isCompleteEvidence);
+    trimmedWindow ||=
+      group.windowId !== undefined || group.items.some(isCompleteEvidence);
     if (group.windowId) {
       const remainingWindows = new Set(
         groups.flatMap((entry) =>
@@ -3104,16 +3422,15 @@ const buildDynamicMemoryAnswerPrompt = (
         (item) => !group.items.includes(item)
       );
     }
-    if (
-      state.evidence.length === 0 &&
-      (group.windowId || group.items.some(isCompleteEvidence))
-    ) {
-      throw new Error(
-        "Memory answer prompt-token budget exhausted: no complete event context window or LCM Summary fits"
-      );
-    }
-    const bounded = boundEvidence(state.evidence, config);
+    const bounded = boundEvidence(state.evidence, config, {
+      allowEmpty: true,
+      workerView: true
+    });
     state.evidence = bounded.evidence;
+    retainAdmissionOmissions(state, [
+      ...(state.admissionOmissions ?? []),
+      ...omittedEvidence(group.items, "prompt_tokens", config)
+    ]);
     state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
     prompt = render();
     promptTokenEstimate = countTokensForModel(prompt, { model: config.model });
@@ -3122,7 +3439,7 @@ const buildDynamicMemoryAnswerPrompt = (
     throw new Error(
       promptSuffix
         ? "Memory answer validation feedback exceeds prompt-token budget"
-        : `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)`
+        : `Memory answer prompt-token budget exhausted (${promptTokenEstimate.tokens} > ${promptTokenLimit} remaining)${state.admissionOmissions?.length ? ": complete event context window or LCM Summary omitted; navigation metadata also requires space" : ""}`
     );
   }
   if (trimmedWindow && trimmedWindowsOnly && !priorOperationalPromptFailure)
@@ -4492,7 +4809,8 @@ const runDynamicToolMemoryAnswer = async (
       ],
       options.evaluation.fusion
     ),
-    options.config
+    options.config,
+    { allowEmpty: true, workerView: true }
   );
   ledger.evidenceTokenEstimate = initialBoundedEvidence.tokenEstimate;
   recordEvidenceBudgetExhaustions(ledger, initialBoundedEvidence);
@@ -4508,6 +4826,7 @@ const runDynamicToolMemoryAnswer = async (
     sourceBefore: options.sourceBefore,
     limit: options.limit,
     evidence: initialBoundedEvidence.evidence,
+    admissionOmissions: initialBoundedEvidence.omissions,
     observedEvidence: [],
     observedEvidenceTokens: 0,
     citations: appendCitations(
@@ -4605,26 +4924,125 @@ const runDynamicToolMemoryAnswer = async (
         : "expandedEvidence";
       const observedItems = observation[field];
       let items: unknown[] = Array.isArray(observedItems)
-        ? (observedItems as unknown[]).map(
-            (entry) => recordFromUnknown(entry).item
-          )
+        ? (observedItems as unknown[])
+            .map(
+              (entry) =>
+                state.observedEvidence[
+                  Number(recordFromUnknown(entry).evidence_index)
+                ]
+            )
+            .filter((item) => item !== undefined)
         : [];
-      if (items.some(isCompleteEvidence)) {
-        let tokens = countTokensForModel(response.text, {
-          model: options.config.model
-        }).tokens;
+      if (
+        Array.isArray(observedItems) &&
+        (items.some(isCompleteEvidence) ||
+          (state.admissionOmissions?.length ?? 0) > 0)
+      ) {
+        const expansionRecord =
+          field === "expandedEvidence"
+            ? state.expansionRecords.at(-1)
+            : undefined;
+        const requestedSourceCount = expansionRecord
+          ? expansionRecord.sourceItemCount +
+            (expansionRecord.omittedSourceCount ?? 0)
+          : 0;
+        observation.reservedPromptTokens = 0;
+        const refresh = () => {
+          const record =
+            field === "expandedEvidence"
+              ? state.expansionRecords.at(-1)
+              : undefined;
+          if (record && !record.errorClass) {
+            record.sourceItemCount = items.length;
+            record.omittedSourceCount = requestedSourceCount - items.length;
+          }
+          observation[field] = indexedEvidenceObservation(
+            state.observedEvidence,
+            items,
+            options.config
+          );
+          observation.state = toolStateSummary(state, options.config);
+          // Include the response itself in the advertised remaining cumulative budget.
+          let tokens = 0;
+          for (let iteration = 0; iteration < 8; iteration += 1) {
+            recordFromUnknown(
+              recordFromUnknown(observation.state).remainingBudgets
+            ).promptTokens = Math.max(
+              0,
+              options.config.maxPromptTokens -
+                state.ledger.promptTokenEstimateConsumed -
+                tokens
+            );
+            response = dynamicToolResult(observation, response.success);
+            const next = countTokensForModel(response.text, {
+              model: options.config.model
+            }).tokens;
+            if (tokens === next) break;
+            tokens = next;
+          }
+          return countTokensForModel(response.text, {
+            model: options.config.model
+          }).tokens;
+        };
+        let tokens = refresh();
+        const recoveryReserve = () => {
+          if (
+            field !== "expandedEvidence" ||
+            recordFromUnknown(call.arguments).sources !== undefined ||
+            state.ledger.expansionAttempts >= options.config.maxExpansions
+          )
+            return 0;
+          const navigationTokens = countTokensForModel(
+            JSON.stringify({ ...observation, [field]: [] }),
+            { model: options.config.model }
+          ).tokens;
+          const available =
+            options.config.maxPromptTokens -
+            state.ledger.promptTokenEstimateConsumed;
+          const costs = (state.admissionOmissions ?? [])
+            .filter(
+              (entry) =>
+                entry.nodeId === observation.nodeId &&
+                state.expansionSourceKeys?.includes(
+                  JSON.stringify(entry.source)
+                ) &&
+                entry.source.source_type !== "memory_node" &&
+                !previousObservedEvidence.some(
+                  (item) =>
+                    isCompleteEvidence(item) &&
+                    JSON.stringify(evidenceSourceSelector(item)) ===
+                      JSON.stringify(entry.source)
+                ) &&
+                entry.requiredTokens <= options.config.maxEvidenceTokens
+            )
+            .map((entry) => entry.requiredTokens + navigationTokens + 64)
+            .filter((cost) => cost + navigationTokens + 64 <= available);
+          // Keep one further complete-source observation reachable when this expansion is incomplete.
+          return costs.length ? Math.max(...costs) : 0;
+        };
         let trimmedWindowsOnly = true;
         let trimmedWindow = false;
         while (
-          state.ledger.promptTokenEstimateConsumed + tokens >
+          state.ledger.promptTokenEstimateConsumed +
+            tokens +
+            recoveryReserve() >
             options.config.maxPromptTokens &&
           items.length > 0
         ) {
-          markBudgetExhausted(state.ledger, "prompt_tokens");
+          const reason =
+            state.ledger.promptTokenEstimateConsumed + tokens >
+            options.config.maxPromptTokens
+              ? "prompt_tokens"
+              : "recovery_reserve";
+          if (reason === "prompt_tokens")
+            markBudgetExhausted(state.ledger, "prompt_tokens");
           const groups = rankedEvidenceGroups(items);
           const last = groups.at(-1)!;
-          trimmedWindowsOnly &&= last.windowId !== undefined;
-          trimmedWindow ||= last.windowId !== undefined;
+          const removed = last.items;
+          trimmedWindowsOnly &&=
+            last.windowId !== undefined || last.items.every(isCompleteEvidence);
+          trimmedWindow ||=
+            last.windowId !== undefined || last.items.some(isCompleteEvidence);
           if (last.windowId) {
             items = retainEventWindowMemberships(
               items,
@@ -4639,31 +5057,47 @@ const runDynamicToolMemoryAnswer = async (
           } else {
             items = items.filter((item) => !last.items.includes(item));
           }
-          if (!items.length) break;
           const bounded = boundEvidence(
-            appendEvidence(previousEvidence, items),
-            options.config
+            field === "expandedEvidence"
+              ? prioritizeExpandedEvidence(previousEvidence, items)
+              : appendEvidence(previousEvidence, items),
+            options.config,
+            { allowEmpty: true, workerView: true }
           );
           state.evidence = bounded.evidence;
           state.ledger.evidenceTokenEstimate = bounded.tokenEstimate;
           state.observedEvidence = previousObservedEvidence;
           state.observedEvidenceTokens = previousObservedTokens;
-          observation[field] = observeEvidence(state, items, options.config);
-          observation.state = toolStateSummary(state, options.config);
-          response = dynamicToolResult(observation);
-          tokens = countTokensForModel(response.text, {
-            model: options.config.model
-          }).tokens;
+          observeEvidence(state, items, options.config);
+          // An omitted returned source is navigation, not an observed citation.
+          retainAdmissionOmissions(
+            state,
+            omittedEvidence(removed, reason, options.config),
+            items
+          );
+          tokens = refresh();
+        }
+        observation.reservedPromptTokens = recoveryReserve();
+        tokens = refresh();
+        if (
+          Number(observation.reservedPromptTokens) >
+          options.config.maxPromptTokens -
+            state.ledger.promptTokenEstimateConsumed -
+            tokens
+        ) {
+          observation.reservedPromptTokens = 0;
+          tokens = refresh();
         }
         if (
-          items.length === 0 ||
           state.ledger.promptTokenEstimateConsumed + tokens >
-            options.config.maxPromptTokens
+          options.config.maxPromptTokens
         ) {
           state.evidence = previousEvidence;
           state.ledger.evidenceTokenEstimate = previousEvidenceTokens;
           state.observedEvidence = previousObservedEvidence;
           state.observedEvidenceTokens = previousObservedTokens;
+          items = [];
+          refresh();
           markBudgetExhausted(state.ledger, "prompt_tokens");
           const message =
             "Memory answer prompt-token budget exhausted: complete event context observation or LCM Summary cannot fit";
@@ -4672,6 +5106,20 @@ const runDynamicToolMemoryAnswer = async (
             { kind: "budget_exhausted", message },
             false
           );
+          let errorTokens = countTokensForModel(response.text, {
+            model: options.config.model
+          }).tokens;
+          if (
+            state.ledger.promptTokenEstimateConsumed + errorTokens >
+            options.config.maxPromptTokens
+          ) {
+            response = dynamicToolResult({ kind: "budget_exhausted" }, false);
+            errorTokens = countTokensForModel(response.text, {
+              model: options.config.model
+            }).tokens;
+          }
+          // A mandatory failed-tool protocol envelope can remain at zero headroom; never hide its cost.
+          state.ledger.promptTokenEstimateConsumed += errorTokens;
         } else {
           state.ledger.promptTokenEstimateConsumed += tokens;
           if (
@@ -4846,7 +5294,7 @@ const runDynamicToolMemoryAnswer = async (
       !notFoundAfterSearchBudget
     ) {
       throw new Error(
-        `Memory answer budget exhausted: ${state.ledger.budgetExhaustions.join(", ")}`
+        `Memory answer budget exhausted: ${state.ledger.budgetExhaustions.join(", ")} (complete event context window or LCM Summary admission incomplete)`
       );
     }
     if (
@@ -5153,9 +5601,11 @@ export const answerWithMemoryWorker = async (
                 return {
                   nodeId: detail.nodeId,
                   visibility: detail.visibility,
-                  sourceItemCount: Array.isArray(detail.sourceItems)
-                    ? detail.sourceItems.length
-                    : 0
+                  sourceItemCount:
+                    typeof detail.sourceItemCount === "number"
+                      ? detail.sourceItemCount
+                      : 0,
+                  omittedSourceCount: detail.omittedSourceCount
                 };
               }),
             trace: memoryAnswerTrace({
