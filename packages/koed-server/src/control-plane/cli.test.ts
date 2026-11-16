@@ -86,6 +86,58 @@ describe("packaged control-plane CLI", () => {
       2
     );
   });
+  it("reports the central Agent availability and Stop intent", async () => {
+    const request = vi.fn().mockResolvedValue({
+      ok: true,
+      requestId: "1",
+      snapshot: { ...snapshot, backgroundEnabled: true, stopIntent: true }
+    });
+    const stdout = { write: vi.fn() };
+    const result = await runControlPlaneCli(["agent-status", "--json"], {
+      connect: async () => ({ request, close: vi.fn() }) as ControlClient,
+      stdout,
+      stderr: { write: vi.fn() },
+      allowAgentAvailability: true
+    });
+    expect(result).toBe(0);
+    const output = JSON.parse(String(stdout.write.mock.calls[0]![0])) as {
+      snapshot: { backgroundEnabled: boolean; stopIntent: boolean };
+    };
+    expect(output.snapshot).toMatchObject({
+      backgroundEnabled: true,
+      stopIntent: true
+    });
+  });
+  it("allows only an authorized Agent availability command", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValue({ requestId: "1", ok: true, snapshot });
+    const connect = vi.fn(
+      async () => ({ request, close: vi.fn() }) as ControlClient
+    );
+    const output = { write: vi.fn() };
+    expect(
+      await runControlPlaneCli(["agent-enable"], {
+        connect,
+        stdout: output,
+        stderr: output
+      })
+    ).toBe(1);
+    expect(connect).not.toHaveBeenCalled();
+    expect(
+      await runControlPlaneCli(["agent-enable"], {
+        connect,
+        stdout: output,
+        stderr: output,
+        allowAgentAvailability: true
+      })
+    ).toBe(0);
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      { action: "attach", reason: "background-agent" },
+      2
+    );
+  });
   it("records Stop if a transient owner exits before publishing", async () => {
     const offlineStop = vi
       .fn()

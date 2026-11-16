@@ -28,6 +28,22 @@ import {
   type NativeLocalControl
 } from "./native-transport.js";
 
+export function installedAgentTeamId(
+  capability: DesktopRuntimeCapability
+): string {
+  const require = createRequire(import.meta.url);
+  const addon: unknown = require(resolveDesktopControlAddon(capability));
+  if (
+    !addon ||
+    typeof addon !== "object" ||
+    !("teamId" in addon) ||
+    typeof addon.teamId !== "string" ||
+    !/^[A-Z0-9]{10}$/u.test(addon.teamId)
+  )
+    throw new Error("Background Agent signing identity is unavailable");
+  return addon.teamId;
+}
+
 export function tryRecordOfflineStop(
   environment: NodeJS.ProcessEnv
 ): { clean: boolean } | undefined {

@@ -83,6 +83,30 @@ it("starts the detached host only after verifying the packaged installation", as
   expect(runCli).not.toHaveBeenCalled();
 });
 
+it("reports Agent eligibility only after verifying the installed bundle", async () => {
+  const { resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const stdout = { write: vi.fn() };
+  const team = vi.fn(() => "ABCDE12345");
+  await expect(
+    runInstalledDesktopCli(["__control-plane-agent-eligibility"], {
+      moduleUrl: pathToFileURL(entry).href,
+      executable,
+      platform: "darwin",
+      electronVersion: "39.8.10",
+      environment: {},
+      verifyBundle: () => capability,
+      agentTeamId: team,
+      stdout
+    })
+  ).resolves.toBe(0);
+  expect(team).toHaveBeenCalledWith(capability);
+  expect(JSON.parse(String(stdout.write.mock.calls[0]![0]))).toMatchObject({
+    ok: true,
+    teamId: "ABCDE12345"
+  });
+});
+
 it("routes packaged macOS start and stop to the control plane", async () => {
   const { resources, entry, executable } = installation();
   const capability = { resourcesPath: resources } as DesktopRuntimeCapability;

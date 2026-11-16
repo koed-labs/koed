@@ -105,6 +105,16 @@ describe("background-agent launch service", () => {
     });
   });
 
+  it("refuses an unknown registration status rather than reporting disabled", async () => {
+    const controller = createBackgroundAgentLaunchService({
+      ...supportedInput(),
+      getLoginItemSettings: () => loginSettings({ status: undefined })
+    });
+    await expect(controller.get()).rejects.toThrow(
+      "registration status is unavailable"
+    );
+  });
+
   it("recognizes only the dedicated agent argument", () => {
     expect(isBackgroundAgentLaunch([BACKGROUND_AGENT_LAUNCH_ARGUMENT])).toBe(
       true

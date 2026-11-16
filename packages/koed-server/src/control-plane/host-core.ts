@@ -1,3 +1,4 @@
+import type { AvailabilityReason } from "@koed-labs/shared/local-control-protocol";
 import type { ControlStateStore, ControlIntent } from "./state.js";
 import type { RuntimeSession, RuntimeCleanupOutcome } from "./runtime.js";
 
@@ -12,12 +13,15 @@ export interface HostSnapshot {
   revision: number;
   state: RuntimeState;
   stopIntent: boolean;
+  backgroundEnabled: boolean;
   error?: string;
 }
 export interface HostCore {
   status(): HostSnapshot;
   start(explicit: boolean): HostSnapshot;
   stop(explicit: boolean): HostSnapshot;
+  attach(reason: AvailabilityReason): HostSnapshot;
+  detach(reason: AvailabilityReason): HostSnapshot;
 }
 
 export function createControlPlaneHostCore(input: {
@@ -55,6 +59,7 @@ export function createControlPlaneHostCore(input: {
       revision: current.revision,
       state,
       stopIntent: current.stopIntent,
+      backgroundEnabled: current.backgroundEnabled,
       ...(error ? { error } : {})
     };
   };
@@ -143,5 +148,24 @@ export function createControlPlaneHostCore(input: {
     }
     return status();
   };
-  return { status, start, stop };
+  const setAgentAvailability = (
+    reason: AvailabilityReason,
+    enabled: boolean
+  ): HostSnapshot => {
+    if (reason !== "background-agent")
+      throw new Error("Availability reason is not supported");
+    if (state !== "stopped" || !input.store.read().runtimeClean)
+      throw new Error(
+        "Stop Koed and confirm cleanup before changing Agent availability"
+      );
+    update((current) => ({ ...current, backgroundEnabled: enabled }));
+    return status();
+  };
+  return {
+    status,
+    start,
+    stop,
+    attach: (reason) => setAgentAvailability(reason, true),
+    detach: (reason) => setAgentAvailability(reason, false)
+  };
 }

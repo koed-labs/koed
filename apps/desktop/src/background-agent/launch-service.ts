@@ -113,8 +113,7 @@ const stateFromSettings = (
       supported: true
     };
   }
-  return settings.openAtLogin &&
-    (settings.status === undefined || settings.status === "enabled")
-    ? enabledState()
-    : disabledState();
+  if (settings.status === "enabled") return enabledState();
+  if (settings.status === "not-registered") return disabledState();
+  throw new Error("Background Agent registration status is unavailable.");
 };

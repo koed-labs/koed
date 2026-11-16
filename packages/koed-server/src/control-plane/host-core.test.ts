@@ -53,6 +53,30 @@ function fixture(initial: Partial<ControlIntent> = {}) {
 }
 
 describe("control-plane host core", () => {
+  it("persists Agent availability only while stopped without clearing explicit Stop", () => {
+    const f = fixture({ stopIntent: true });
+    f.core.attach("background-agent");
+    expect(f.store.read()).toMatchObject({
+      backgroundEnabled: true,
+      stopIntent: true
+    });
+    expect(f.core.status()).toMatchObject({
+      backgroundEnabled: true,
+      stopIntent: true
+    });
+    f.core.detach("background-agent");
+    expect(f.store.read()).toMatchObject({
+      backgroundEnabled: false,
+      stopIntent: true
+    });
+  });
+  it("refuses Agent availability changes until runtime cleanup is confirmed", () => {
+    const f = fixture();
+    f.core.start(true);
+    expect(() => f.core.attach("background-agent")).toThrow();
+    expect(() => f.core.detach("background-agent")).toThrow();
+    expect(f.store.read().backgroundEnabled).toBe(false);
+  });
   it("durably records Stop before cancelling an in-flight start", async () => {
     const f = fixture();
     expect(f.core.start(true).state).toBe("starting");

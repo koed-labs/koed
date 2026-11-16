@@ -15,6 +15,7 @@ export interface InstalledDesktopCliDependencies {
   verifyBundle?: typeof verifyDesktopRuntimeBundle;
   runControlPlaneHost?: typeof import("./control-plane/host-entrypoint.js").runInstalledControlPlaneHost;
   runControlPlaneCli?: typeof import("./control-plane/cli.js").runControlPlaneCli;
+  agentTeamId?: typeof import("./control-plane/installed-client.js").installedAgentTeamId;
   stdout?: Pick<NodeJS.WriteStream, "write">;
   runCli?: (
     args: string[],
@@ -46,6 +47,7 @@ export async function runInstalledDesktopCli(
     verifyBundle = verifyDesktopRuntimeBundle,
     runControlPlaneHost,
     runControlPlaneCli,
+    agentTeamId,
     stdout = process.stdout,
     runCli,
     stderr = process.stderr
@@ -77,6 +79,23 @@ export async function runInstalledDesktopCli(
     );
     return 1;
   }
+  if (
+    platform === "darwin" &&
+    args.length === 1 &&
+    args[0] === "__control-plane-agent-eligibility"
+  ) {
+    const capability = dependencies.desktopRuntimeCapability;
+    if (!capability)
+      throw new Error("Verified Desktop runtime capability required");
+    const resolveTeam =
+      agentTeamId ??
+      (await import("./control-plane/installed-client.js"))
+        .installedAgentTeamId;
+    stdout.write(
+      `${JSON.stringify({ ok: true, teamId: resolveTeam(capability) })}\n`
+    );
+    return 0;
+  }
   if (args.length === 1 && args[0] === "__control-plane-host") {
     const capability = dependencies.desktopRuntimeCapability;
     if (!capability)
@@ -93,7 +112,10 @@ export async function runInstalledDesktopCli(
       args[0] === "stop" ||
       args[0] === "restart" ||
       args[0] === "__control-plane-stop-implicit" ||
-      args[0] === "__control-plane-start-automatic") &&
+      args[0] === "__control-plane-start-automatic" ||
+      args[0] === "__control-plane-agent-enable" ||
+      args[0] === "__control-plane-agent-disable" ||
+      args[0] === "__control-plane-agent-status") &&
     !args.includes("--help") &&
     !args.includes("-h")
   ) {
@@ -106,18 +128,31 @@ export async function runInstalledDesktopCli(
       (await import("./control-plane/cli.js")).runControlPlaneCli;
     const implicit = args[0] === "__control-plane-stop-implicit";
     const automatic = args[0] === "__control-plane-start-automatic";
+    const agentEnable = args[0] === "__control-plane-agent-enable";
+    const agentDisable = args[0] === "__control-plane-agent-disable";
+    const agentStatus = args[0] === "__control-plane-agent-status";
     const installedClient = await import("./control-plane/installed-client.js");
     return runControl(
       implicit
         ? ["stop", "--non-explicit", ...args.slice(1)]
         : automatic
           ? ["start", "--non-explicit", ...args.slice(1)]
-          : args,
+          : agentEnable || agentDisable || agentStatus
+            ? [
+                agentEnable
+                  ? "agent-enable"
+                  : agentDisable
+                    ? "agent-disable"
+                    : "agent-status",
+                ...args.slice(1)
+              ]
+            : args,
       {
         stdout,
         stderr,
         allowImplicitStop: implicit,
         allowAutomaticStart: automatic,
+        allowAgentAvailability: agentEnable || agentDisable || agentStatus,
         offlineStop: () => installedClient.tryRecordOfflineStop(environment),
         connect: async (command) =>
           installedClient.openInstalledControlPlane({

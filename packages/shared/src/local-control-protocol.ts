@@ -41,6 +41,7 @@ export const controlSnapshotSchema = z.strictObject({
     "needs_attention"
   ]),
   stopIntent: z.boolean(),
+  backgroundEnabled: z.boolean().optional(),
   error: z.string().max(4096).optional()
 });
 

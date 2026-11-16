@@ -42,6 +42,18 @@ export function dispatchControlRequest(
           ok: true,
           snapshot: core.stop(request.command.explicit)
         };
+      case "attach":
+        return {
+          requestId: request.requestId,
+          ok: true,
+          snapshot: core.attach(request.command.reason)
+        };
+      case "detach":
+        return {
+          requestId: request.requestId,
+          ok: true,
+          snapshot: core.detach(request.command.reason)
+        };
       default:
         return fail("unsupported_operation");
     }

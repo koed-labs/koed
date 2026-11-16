@@ -6,13 +6,16 @@ const snapshot: HostSnapshot = {
   instanceId: "current",
   revision: 4,
   state: "stopped",
-  stopIntent: false
+  stopIntent: false,
+  backgroundEnabled: false
 };
 function fixture() {
   const core: HostCore = {
     status: vi.fn(() => snapshot),
     start: vi.fn(() => snapshot),
-    stop: vi.fn(() => snapshot)
+    stop: vi.fn(() => snapshot),
+    attach: vi.fn(() => snapshot),
+    detach: vi.fn(() => snapshot)
   };
   return core;
 }
@@ -37,6 +40,27 @@ describe("control request dispatch", () => {
       dispatchControlRequest(core, request({ action: "stop", explicit: true }))
     ).toMatchObject({ ok: true });
     expect(core.stop).toHaveBeenCalledWith(true);
+  });
+  it("dispatches Agent availability through the control plane", () => {
+    const core = fixture();
+    expect(
+      dispatchControlRequest(
+        core,
+        request({ action: "attach", reason: "background-agent" })
+      )
+    ).toMatchObject({ ok: true });
+    expect(
+      dispatchControlRequest(
+        core,
+        request({
+          action: "detach",
+          reason: "background-agent",
+          intentional: true
+        })
+      )
+    ).toMatchObject({ ok: true });
+    expect(core.attach).toHaveBeenCalledWith("background-agent");
+    expect(core.detach).toHaveBeenCalledWith("background-agent");
   });
   it("rejects stale revisions and other control-plane instances without effects", () => {
     const core = fixture();

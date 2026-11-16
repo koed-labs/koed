@@ -12,6 +12,7 @@ export async function runControlPlaneCli(
     stopTimeoutMs?: number;
     allowImplicitStop?: boolean;
     allowAutomaticStart?: boolean;
+    allowAgentAvailability?: boolean;
     offlineStop?: () => { clean: boolean } | undefined;
   }
 ): Promise<number> {
@@ -51,6 +52,43 @@ export async function runControlPlaneCli(
   }
   let client: ControlClient | undefined;
   try {
+    if (
+      command === "agent-enable" ||
+      command === "agent-disable" ||
+      command === "agent-status"
+    ) {
+      if (
+        !dependencies.allowAgentAvailability ||
+        args.slice(1).some((arg) => arg !== "--json")
+      )
+        throw new Error("Unsupported control-plane command");
+      client = await dependencies.connect("start");
+      const status = await client.request({ action: "status" }, 0);
+      if (!status.ok)
+        throw new Error(`Control-plane status failed: ${status.code}`);
+      if (command === "agent-status") {
+        dependencies.stdout.write(
+          json
+            ? `${JSON.stringify({ ok: true, snapshot: status.snapshot })}\n`
+            : `${status.snapshot.state}\n`
+        );
+        return 0;
+      }
+      const result = await client.request(
+        command === "agent-enable"
+          ? { action: "attach", reason: "background-agent" }
+          : { action: "detach", reason: "background-agent", intentional: true },
+        status.snapshot.revision
+      );
+      if (!result.ok)
+        throw new Error(`Agent availability failed: ${result.code}`);
+      dependencies.stdout.write(
+        json
+          ? `${JSON.stringify({ ok: true, snapshot: result.snapshot })}\n`
+          : "Agent availability updated.\n"
+      );
+      return 0;
+    }
     if (command !== "start" && command !== "stop")
       throw new Error("Unsupported control-plane command");
     if (command === "start" && !args.includes("--daemon"))
