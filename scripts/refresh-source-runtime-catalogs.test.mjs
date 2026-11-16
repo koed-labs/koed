@@ -15,9 +15,19 @@ import { canonicalArtifactJson } from "../packages/koed-server/src/artifact-cano
 import { refreshSourceRuntimeCatalogs } from "./refresh-source-runtime-catalogs.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const baseline = JSON.parse(
-  readFileSync(resolve(repoRoot, "config/source-runtime-catalogs.json"), "utf8")
-);
+// Fixture releases use fixed v0.x tags, so pin the seeded "previously reviewed"
+// release below them. Otherwise each real pin refresh (Version Koed) that
+// moves config/source-runtime-catalogs.json past those tags turns every
+// fixture release into a refused downgrade.
+const baseline = {
+  ...JSON.parse(
+    readFileSync(
+      resolve(repoRoot, "config/source-runtime-catalogs.json"),
+      "utf8"
+    )
+  ),
+  sourceRelease: "v0.11.1"
+};
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const roots = [];
 afterEach(() => {
