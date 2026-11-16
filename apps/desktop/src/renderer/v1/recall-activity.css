@@ -173,6 +173,17 @@
   gap: 8px;
   margin-top: 16px;
 }
+.v1-app[data-theme="light"] .recall-apply-filters,
+:root.light .recall-apply-filters {
+  background: var(--v1-accent-soft);
+  border-color: color-mix(in srgb, var(--v1-accent) 25%, transparent);
+  color: var(--v1-accent-text);
+  box-shadow: none;
+}
+.v1-app[data-theme="light"] .recall-apply-filters:hover,
+:root.light .recall-apply-filters:hover {
+  background: color-mix(in srgb, var(--v1-accent) 18%, transparent);
+}
 .recall-notice {
   display: flex;
   justify-content: space-between;
@@ -308,14 +319,21 @@
   font-variant-numeric: tabular-nums;
 }
 .recall-table th:nth-child(2) {
-  width: 160px;
+  width: 112px;
 }
 .recall-table th:nth-child(3) {
-  width: 76px;
+  width: 72px;
 }
-.recall-table th:nth-child(4),
+.recall-table th:nth-child(4) {
+  width: 80px;
+}
 .recall-table th:nth-child(5) {
-  width: 84px;
+  width: 72px;
+}
+.recall-table th:not(:first-child),
+.recall-table td:not(:first-child) {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 .recall-table th:first-child,
 .recall-table td:first-child {
@@ -770,4 +788,29 @@
 }
 .recall-client-logo {
   flex: none;
+}
+.recall-row-meta {
+  flex-wrap: wrap;
+}
+.recall-quick-filters {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+.recall-quick-filters [data-slot="select-trigger"] {
+  max-width: 210px;
+  min-width: 145px;
+}
+@media (max-width: 950px) {
+  .recall-toolbar {
+    flex-wrap: wrap;
+  }
+  .recall-quick-filters {
+    flex-wrap: wrap;
+  }
+  .recall-quick-filters [data-slot="select-trigger"] {
+    max-width: 170px;
+    min-width: 125px;
+  }
 }

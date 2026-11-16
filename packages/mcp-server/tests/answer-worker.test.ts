@@ -2599,6 +2599,43 @@ process.stdin.once("data", () => {
         ]);
         expect(response.evidenceBundle?.evidence).toHaveLength(2);
         expect(response.evidenceBundle?.retrieval).toMatchObject({
+          activityExecution: {
+            version: 1,
+            budgets: {
+              evidenceWorkingSet: {
+                limit: crowded ? 12000 : 1600,
+                consumed: expect.any(Number) as unknown
+              },
+              finalEvidenceBundle: {
+                limit: crowded ? 12000 : 1600,
+                consumed: expect.any(Number) as unknown
+              },
+              cumulativePrompt: {
+                limit: 24000,
+                consumed: expect.any(Number) as unknown
+              },
+              attempts: { limit: 1, consumed: 1 }
+            },
+            delivery: {
+              finalSelected: 2,
+              truncated: false,
+              operations: [
+                { kind: "scan", delivered: 0, omitted: 0 },
+                {
+                  kind: "expand",
+                  delivered: firstCount,
+                  omitted: sourceItems.length - firstCount,
+                  recovered: false
+                },
+                {
+                  kind: "targeted_expand",
+                  delivered: 1,
+                  omitted: 0,
+                  recovered: true
+                }
+              ]
+            }
+          },
           expansions: [
             {
               sourceItemCount: firstCount,

@@ -146,6 +146,33 @@
   margin-top: 14px;
   line-height: 1.65;
 }
+.v1-app.recall-metrics-dialog {
+  width: min(660px, calc(100vw - 48px));
+  max-width: 660px;
+}
+.recall-detail .recall-outcome-guide {
+  margin-top: 20px;
+}
+.recall-detail .recall-outcome-guide th:first-child {
+  width: 104px;
+  padding-left: 0;
+}
+.recall-detail .recall-outcome-guide th:last-child,
+.recall-detail .recall-outcome-guide td:last-child {
+  padding-right: 0;
+}
+.recall-detail .recall-outcome-guide td {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--v1-fg2);
+}
+.recall-outcome-guide .recall-outcome {
+  font-size: 11px;
+}
+.recall-outcome-guide-note {
+  font-size: 11px;
+  color: var(--v1-muted);
+}
 
 .v1-app.recall-answer-dialog {
   width: 630px;
@@ -351,4 +378,108 @@
   .recall-detail .recall-question-title {
     font-size: 20px;
   }
+}
+
+/* Approved Recall activity Option A detail layout. */
+.v1-app.recall-answer-dialog {
+  width: 960px;
+  max-width: calc(100vw - 70px);
+  max-height: calc(100dvh - 110px);
+}
+.recall-answer-dialog .recall-dialog-content {
+  padding: 28px;
+}
+.recall-detail-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 13px;
+  padding-right: 30px;
+  color: var(--v1-muted);
+  font-size: 10px;
+}
+.recall-detail-eyebrow time {
+  text-transform: uppercase;
+  letter-spacing: 1.3px;
+}
+.recall-detail .recall-question-title {
+  margin: 0;
+  max-width: 750px;
+  padding-right: 16px;
+  font-size: 22px;
+  line-height: 1.4;
+  font-weight: 550;
+}
+.recall-detail-meta {
+  justify-content: flex-start;
+  gap: 12px;
+  margin-top: 13px;
+  margin-bottom: 23px;
+  font-size: 11px;
+}
+.recall-answer-dialog [data-slot="tabs-list"] {
+  margin-bottom: 0;
+}
+.recall-answer-dialog [data-slot="tabs-panel"] {
+  padding-block: 12px 0;
+}
+.recall-answer-heading {
+  margin-top: 0;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--v1-fg);
+}
+.recall-detail .recall-usage-detail {
+  margin-top: 0;
+}
+.recall-detail .recall-source {
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--v1-hairline);
+  border-radius: 0;
+  background: transparent;
+}
+.recall-source summary {
+  padding: 12px 0;
+  align-items: center;
+  font-size: 12px;
+}
+.recall-source summary small {
+  display: none;
+}
+.recall-source summary:after {
+  content: "⌄";
+  margin-left: auto;
+  color: var(--v1-muted);
+}
+.recall-source[open] summary:after {
+  content: "⌃";
+}
+@media (max-width: 680px) {
+  .v1-app.recall-answer-dialog {
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 40px);
+  }
+  .recall-answer-dialog .recall-dialog-content {
+    padding: 24px;
+  }
+}
+.recall-answer-text {
+  max-width: 700px;
+  line-height: 1.85;
+}
+.recall-detail-signal {
+  padding-left: 12px;
+  border-left: 1px solid var(--v1-border);
+}
+.recall-usage-number {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 15px 0;
+  font-size: 30px;
+}
+.recall-usage-number small {
+  font-size: 11px;
 }

@@ -91,3 +91,46 @@ it("accepts bounded usage expectations and reserves task run counts for the serv
     }).success
   ).toBe(false);
 });
+
+it("bounds runtime diagnostics and keeps missing measurements distinct from zero", async () => {
+  const { recallExecutionSchema } = await import("./recall-execution.js");
+  const operation = {
+    kind: "expand",
+    attempt: 1,
+    delivered: 0,
+    omitted: null,
+    reasons: [],
+    recovered: false,
+    failed: false
+  };
+  const valid = {
+    version: 1,
+    budgets: null,
+    delivery: { operations: [operation], truncated: false, finalSelected: null }
+  };
+  expect(
+    recallExecutionSchema.parse(valid).delivery?.operations[0]
+  ).toMatchObject({ delivered: 0, omitted: null });
+  expect(
+    recallExecutionSchema.safeParse({
+      ...valid,
+      delivery: { ...valid.delivery, operations: Array(101).fill(operation) }
+    }).success
+  ).toBe(false);
+  for (const change of [
+    { delivered: -1 },
+    { omitted: Infinity },
+    { reasons: ["guessed"] },
+    { sourceBody: "private" }
+  ]) {
+    expect(
+      recallExecutionSchema.safeParse({
+        ...valid,
+        delivery: {
+          ...valid.delivery,
+          operations: [{ ...operation, ...change }]
+        }
+      }).success
+    ).toBe(false);
+  }
+});

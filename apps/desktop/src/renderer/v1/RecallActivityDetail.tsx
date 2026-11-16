@@ -1,3 +1,4 @@
+import { RecallActivityExecution } from "./RecallActivityExecution.js";
 import {
   Button,
   Dialog,
@@ -10,8 +11,8 @@ import {
   TabsPanel,
   TabsTab
 } from "@koed-labs/ui";
-import { Check, Copy, FileText, Info, Layers } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, Copy, FileText, Layers } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type {
   PersonalDesktopApi,
   RecallActivityDetail as Detail
@@ -24,11 +25,10 @@ import { AiClientLogo } from "../views/personal/AiClientLogo.js";
 import { RecallActivityOutcome } from "./RecallActivityOutcome.js";
 import {
   recallCallerPresentation,
-  recallTokenLabel
+  recallDurationLabel
 } from "./recall-activity-model.js";
 import { RecallActivityUsage } from "./RecallActivityUsage.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
-import { recallProjectLabel } from "./recall-project-label.js";
 import "./recall-detail.css";
 
 export function RecallActivityDetail({
@@ -52,10 +52,6 @@ export function RecallActivityDetail({
     "idle"
   );
   const heading = useRef<HTMLHeadingElement>(null);
-  const projectName = useMemo(
-    () => (detail ? recallProjectLabel(detail.question, projects) : null),
-    [detail, projects]
-  );
   const memoryStatus = detail?.question.metadata
     ? detail.question.metadata.memoryStatus
     : detail?.memoryStatus;
@@ -106,14 +102,17 @@ export function RecallActivityDetail({
       >
         <ScrollArea className="recall-dialog-scroll">
           <div className="recall-dialog-content">
-            <header className="recall-detail-heading">
-              <DialogTitle id="recall-detail-title" tabIndex={-1} ref={heading}>
-                Memory Answer
-              </DialogTitle>
-              <DialogDescription>
-                Recorded question, answer, and usage
-              </DialogDescription>
-            </header>
+            <DialogTitle
+              className="sr-only"
+              id="recall-detail-title"
+              tabIndex={-1}
+              ref={heading}
+            >
+              Memory Answer
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              Recorded question, answer, recall details and provider usage
+            </DialogDescription>
             {error ? (
               <p role="alert" className="recall-detail-state">
                 This Memory Answer is unavailable or your access has changed.
@@ -124,21 +123,19 @@ export function RecallActivityDetail({
               </p>
             ) : (
               <>
-                <div className="recall-detail-meta">
-                  <RecallActivityOutcome
-                    status={detail.question.status}
-                    memoryStatus={memoryStatus ?? null}
-                  />
+                <div className="recall-detail-eyebrow">
+                  <span className={`recall-client ${caller.icon ?? ""}`}>
+                    {caller.icon && (
+                      <span className="recall-client-logo">
+                        <AiClientLogo id={caller.icon} />
+                      </span>
+                    )}
+                    <span className="recall-client-name">{caller.label}</span>
+                  </span>
                   <time dateTime={detail.question.recordedAt}>
-                    {new Date(detail.question.recordedAt).toLocaleString(
+                    {new Date(detail.question.recordedAt).toLocaleDateString(
                       undefined,
-                      {
-                        day: "numeric",
-                        month: "short",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        hourCycle: "h23"
-                      }
+                      { day: "numeric", month: "long", year: "numeric" }
                     )}
                   </time>
                 </div>
@@ -150,29 +147,29 @@ export function RecallActivityDetail({
                     This view shows a shortened question.
                   </p>
                 )}
-                <div className="recall-detail-context">
-                  <span
-                    className={`recall-client ${caller.icon ?? ""}`}
-                    title={detail.question.metadata?.caller?.name ?? undefined}
-                  >
-                    {caller.icon && (
-                      <span className="recall-client-logo">
-                        <AiClientLogo id={caller.icon} />
-                      </span>
+                <div className="recall-detail-meta">
+                  <RecallActivityOutcome
+                    status={detail.question.status}
+                    memoryStatus={memoryStatus ?? null}
+                  />
+                  <span>
+                    {recallDurationLabel(
+                      detail.question.metadata?.timing?.durationMs
                     )}
-                    <span className="recall-client-name">{caller.label}</span>
                   </span>
-                  {projectName && (
-                    <span className="recall-detail-project">
-                      in {projectName}
+                  {detail.execution?.delivery?.operations.some(
+                    (operation) => operation.recovered
+                  ) && (
+                    <span className="recall-detail-signal">
+                      Targeted recovery
                     </span>
                   )}
                 </div>
                 <Tabs defaultValue="answer" key={detail.question.id}>
                   <TabsList aria-label="Memory Answer details">
                     <TabsTab value="answer">Answer</TabsTab>
-                    <TabsTab value="usage">Usage</TabsTab>
-                    <TabsTab value="context">Context</TabsTab>
+                    <TabsTab value="recall">Recall details</TabsTab>
+                    <TabsTab value="usage">Provider usage</TabsTab>
                   </TabsList>
                   <TabsPanel value="answer">
                     <div className="recall-answer-heading">
@@ -273,87 +270,15 @@ export function RecallActivityDetail({
                         Long content has been shortened for this view.
                       </p>
                     )}
-                    <footer className="recall-detail-foot">
-                      <Info />
-                      <span>
-                        Answer Synthesis is performed by an AI Client. This is
-                        the retained answer and evidence for this record.
-                      </span>
-                    </footer>
                   </TabsPanel>
                   <TabsPanel value="usage">
                     <RecallActivityUsage detail={detail} />
                   </TabsPanel>
-                  <TabsPanel value="context">
-                    <dl className="recall-detail-facts">
-                      <div>
-                        <dt>Recorded Project</dt>
-                        <dd>
-                          {projectName ??
-                            (detail.question.projectId
-                              ? "Project unavailable"
-                              : "Not recorded")}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Search Domain</dt>
-                        <dd>
-                          {
-                            {
-                              global: "All Memory",
-                              project: "Project",
-                              session: "Conversation"
-                            }[detail.question.searchDomain]
-                          }
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Status</dt>
-                        <dd>
-                          {detail.question.status === "answered"
-                            ? "Answered"
-                            : "Recorded error"}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Calling AI Client</dt>
-                        <dd>
-                          {detail.question.metadata?.caller?.name ?? "Unknown"}
-                          {detail.question.metadata?.caller?.version &&
-                            ` · ${detail.question.metadata.caller.version}`}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Conversation</dt>
-                        <dd>{detail.question.sessionId ?? "Not recorded"}</dd>
-                      </div>
-                      <div>
-                        <dt>Record</dt>
-                        <dd>
-                          <code>{detail.question.id}</code>
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Recorded at</dt>
-                        <dd>
-                          {new Date(
-                            detail.question.recordedAt
-                          ).toLocaleString()}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Searches / expansions / candidates</dt>
-                        <dd>
-                          {[
-                            detail.searchCount,
-                            detail.expandCount,
-                            detail.candidateCount
-                          ]
-                            .map(recallTokenLabel)
-                            .join(" / ")}
-                        </dd>
-                      </div>
-                    </dl>
+                  <TabsPanel value="recall">
+                    <RecallActivityExecution
+                      detail={detail}
+                      projects={projects}
+                    />
                   </TabsPanel>
                 </Tabs>
               </>

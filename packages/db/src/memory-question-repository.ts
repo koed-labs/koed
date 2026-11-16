@@ -1,3 +1,4 @@
+import { recallScopeIndex } from "./recall-activity-scope.js";
 import {
   recallQuestionMetadataSchema,
   type RecallQuestionMetadata
@@ -1386,6 +1387,26 @@ export const createMemoryQuestionRepository = (
             retrieval: input.retrieval,
             local_memory_worker: input.localMemoryWorker
           }
+        );
+      }
+      if (
+        inserted &&
+        !row.team_workspace_id &&
+        !row.team_authorization &&
+        row.origin === "mcp_memory_answer"
+      ) {
+        await client.query(
+          "update memory_questions set recall_scope=$2::jsonb where id=$1 and owner_user_id=$3",
+          [
+            row.id,
+            JSON.stringify(
+              recallScopeIndex(actor.userId, personalSelection, {
+                searchDomain: input.searchDomain,
+                projectId: input.projectId ?? null
+              })
+            ),
+            actor.userId
+          ]
         );
       }
       return { id: row.id };

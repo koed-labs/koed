@@ -381,3 +381,67 @@ active capacity excludes worker pools whose profile heartbeat has expired.
 
 Attach only the content-safe summary required by the structured release record
 in [Collaboration Launch Validation](collaboration-launch-validation.md).
+
+### Accepted scope and execution details
+
+Recall activity displays the selection accepted for each recorded Memory Answer.
+A selection can contain several named Projects even when `project_id` is null.
+Project badges identify the accepted set, not the Projects that contributed
+selected evidence. Moving or excluding a Conversation does not rewrite that set.
+Names resolve only against the owning User's active Projects; a deleted or
+unavailable Project keeps its identity and displays an unavailable label. Exact
+Folder, repository, Global and Conversation selections remain distinct. The
+calling Conversation used to resolve a Project union is not a Conversation filter.
+
+The complete selection remains in encrypted retrieval metadata. `recall_scope`
+is an identity-only query projection, extending the existing `project_id` metadata
+boundary to a set of Project identifiers and a scope kind/provenance. It contains
+no names, paths, calling Conversation, query, evidence, or worker content. Final
+Personal MCP history writes it in the same transaction as the encrypted record.
+Existing history is projected once, in batches of 100, from its retained encrypted
+retrieval metadata on first activity access. This repair does not read answer,
+evidence or worker payloads, and never reconstructs current membership. Failed
+decryption leaves repair pending. Historical records with no selection retain
+their legacy identity or an unknown scope; no missing selection becomes Global.
+
+Project filters use indexed set containment on the accepted identities, before
+pagination. Each question remains one row, including its linked usage, even when
+several selected Projects overlap. Filter choices cover the whole selected date
+range independently of active filters. Question and token timelines keep their
+recorded-time and observation-time boundaries. Ordinary overview reads require
+no content decryption after the scope projection exists.
+
+The Local AI Runtime emits a bounded `activityExecution` snapshot inside encrypted
+retrieval metadata. The activity API validates and projects it; Desktop does not
+parse traces, estimate token costs or reconstruct admission policy. Each snapshot
+covers one worker execution, including its synthesis/validation retries. A durable
+task retry starts another execution; the final question retains its last execution,
+while Provider usage can include linked usage from earlier task attempts.
+
+- **Evidence working set** is the last helper-visible working-set estimate. It is
+  not cumulative across searches or retries.
+- **Final Evidence Bundle** is the selected support's token cost with its full
+  reference metadata, recorded after final selection. It can differ from the
+  working set. Failed executions without a final selection leave this unknown.
+- **Cumulative prompt** is the runtime's cumulative prompt/observation estimate
+  across attempts in that execution. It is not provider usage or billing.
+- Searches, expansions and attempts use the same ledger and effective limits.
+  Configured limits, remaining allowances and exhaustion stay attached to that
+  execution. Changing today's settings does not change historical measurements.
+
+Source delivery operations are recorded in order after prompt admission. Counts
+refer to each operation, not unique sources across operations; repeated delivery
+and a parent summary with expanded children are not independent corroboration.
+A targeted recovery keeps the earlier omission and records the later delivery.
+Reasons distinguish candidate/item/evidence-token limits, prompt-token limits and
+room reserved for recovery. Diagnostics contain only counts, attempt numbers,
+bounded reasons and recovery/failure flags, not omitted source bodies or selectors.
+They grant no new source access. At most 100 operations are retained, with an
+explicit truncation flag; the final selected count is separate from display limits.
+
+The detail dialog separates Answer, Recall details and Provider usage. Missing
+historical measurements are unknown, not zero or current defaults. Historical
+version-two traces can supply effective limits, prompt consumption and counters,
+but their ambiguous evidence counter is not relabelled as either new evidence
+measurement. Pre-admission hit counts are not relabelled as delivered sources.
+Shortening an Evidence Bundle for Desktop display does not change runtime counts.

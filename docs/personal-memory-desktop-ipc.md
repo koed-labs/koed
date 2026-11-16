@@ -195,3 +195,18 @@ This covers local calendar days across daylight-saving changes. Existing callers
 that omit the field retain automatic day/week/month buckets. Desktop uses hourly
 buckets for Today and groups full-range daily totals for longer preset charts;
 pagination never determines chart totals.
+
+Recall questions now include an optional nullable `scope` projection. It identifies
+the accepted scope kind, provenance and owner-authorized Project labels; the
+renderer must not replace it with current Conversation memberships. Project-union
+filters use the same retained set in list, overview and linked-usage queries.
+
+Recall detail also includes optional nullable `execution` data validated by
+`recallExecutionSchema`: effective allowances, consumption/remaining values,
+exhaustion, ordered post-admission delivery operations, and final selected evidence
+count. These values come from the runtime's retained execution snapshot. They are
+separate from `usage`, which keeps its existing provider accuracy and coverage
+semantics. Missing older fields stay unknown. Operation lists are bounded at 100
+with explicit truncation. No raw trace or omitted evidence content reaches this
+surface. See `docs/observability.md` for the accounting boundaries and one-time
+historical scope projection.

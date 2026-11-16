@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  recallExecutionSchema,
+  recallScopeSchema
+} from "./recall-execution.js";
+export * from "./recall-execution.js";
 
 const instant = z.string().datetime({ offset: true });
 export const RECALL_QUERY_MAX_LENGTH = 100_000;
@@ -180,6 +185,7 @@ export const recallActivityQuestionSchema = z
     status: z.enum(["answered", "error"]),
     projectId: z.string().nullable(),
     projectName: z.string().nullable(),
+    scope: recallScopeSchema.nullable().optional(),
     sessionId: z.string().uuid().nullable()
   })
   .strict();
@@ -242,6 +248,7 @@ export const recallActivityDetailSchema = z
     searchCount: count,
     expandCount: count,
     candidateCount: count,
+    execution: recallExecutionSchema.nullable().optional(),
     failure: z.string().max(1000).nullable(),
     evidence: z
       .array(

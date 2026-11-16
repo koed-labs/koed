@@ -43,6 +43,12 @@ const fixture = async (credential: "token" | "oauth" | "browser") => {
     status: "answered",
     projectId: null,
     projectName: null,
+    scope: {
+      kind: "global",
+      provenance: "accepted",
+      projects: [],
+      label: null
+    },
     sessionId: null
   };
   const getRecallActivityOverview = vi.fn(async () => ({
@@ -82,6 +88,25 @@ const fixture = async (credential: "token" | "oauth" | "browser") => {
           searchCount: null,
           expandCount: null,
           candidateCount: null,
+          execution: {
+            version: 1,
+            budgets: null,
+            delivery: {
+              operations: [
+                {
+                  kind: "targeted_expand",
+                  attempt: 2,
+                  delivered: 1,
+                  omitted: 0,
+                  reasons: [],
+                  recovered: true,
+                  failed: false
+                }
+              ],
+              truncated: false,
+              finalSelected: 1
+            }
+          },
           failure: null,
           evidence: [],
           citations: [],
@@ -162,6 +187,17 @@ describe("Recall activity credential boundaries", () => {
       expect(response.statusCode, response.body).toBe(200);
       expect(response.headers["cache-control"]).toBe("no-store");
     }
+    const projected = (await test.get(paths(test.question.id)[2]!)).json<{
+      question: { scope: unknown };
+      execution: { delivery: unknown };
+    }>();
+    expect(projected.question.scope).toEqual(test.question.scope);
+    expect(projected.execution.delivery).toMatchObject({
+      operations: [
+        { kind: "targeted_expand", delivered: 1, omitted: 0, recovered: true }
+      ],
+      finalSelected: 1
+    });
     const actor = { userId: test.user.id };
     expect(test.getRecallActivityOverview).toHaveBeenCalledWith(
       actor,

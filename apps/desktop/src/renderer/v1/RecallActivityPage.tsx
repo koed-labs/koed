@@ -1,3 +1,4 @@
+import { RecallActivityQuickFilters } from "./RecallActivityQuickFilters.js";
 import { useEffect, useRef, useState } from "react";
 import { Button, Input } from "@koed-labs/ui";
 import { Filter, Info, RefreshCw, Search, X } from "lucide-react";
@@ -186,6 +187,20 @@ export function RecallActivityPage({
             </Button>
           )}
         </div>
+        <RecallActivityQuickFilters
+          input={filters}
+          choices={
+            overview?.filterOptions?.projects ??
+            rows.flatMap(
+              (row) =>
+                row.scope?.projects ?? [
+                  { projectId: row.projectId, projectName: row.projectName }
+                ]
+            )
+          }
+          projects={projects}
+          onChange={apply}
+        />
         <Button
           variant="outline"
           size="icon"
@@ -243,6 +258,7 @@ export function RecallActivityPage({
         <RecallActivityTable
           key={JSON.stringify(filters)}
           rows={matching}
+          projects={projects}
           total={overview?.recordedQuestions ?? null}
           loadedCount={rows.length}
           loading={loading}
@@ -284,11 +300,10 @@ export function RecallActivityPage({
         </span>
         <Button variant="ghost" size="sm" onClick={() => setCoverageOpen(true)}>
           <Info />
-          About these metrics
+          About outcomes
         </Button>
       </footer>
       <RecallActivityCoverage
-        overview={overview}
         open={coverageOpen}
         onOpenChange={setCoverageOpen}
       />

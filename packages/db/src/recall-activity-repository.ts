@@ -1,4 +1,9 @@
 import {
+  ensureRecallScopeIndexes,
+  recallScopeSql
+} from "./recall-activity-scope.js";
+import { projectRecallExecution } from "./recall-activity-execution.js";
+import {
   personalRecallPredicate,
   recallActivityFilter,
   recallActivityBuckets,
@@ -58,6 +63,11 @@ export const createRecallActivityRepository = (
 ): RecallActivityRepository => ({
   async getRecallActivityOverview(actor, rawInput) {
     const input = recallActivityOverviewInputSchema.parse(rawInput);
+    await ensureRecallScopeIndexes(
+      pool,
+      actor,
+      options.envelopeEncryptionProvider
+    );
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     const days = (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000;
     const bucket =
@@ -129,13 +139,19 @@ export const createRecallActivityRepository = (
       NonNullable<RecallActivityOverview["filterOptions"]>
     >(
       `with eligible as (
-         select q.project_id, q.project_name, (${recallMetadataSql.callerName}) as caller
+         select q.recall_scope, q.project_name, (${recallMetadataSql.callerName}) as caller
          from memory_questions q where ${choices.predicates.join(" and ")}
+       ), identities as (
+         select distinct ids.id, recall_scope->>'kind' as kind,
+           case when recall_scope->>'kind' <> 'projects' then project_name end as legacy_name
+         from eligible cross join lateral jsonb_array_elements_text(recall_scope->'projectIds') ids(id)
        ) select
          coalesce((select jsonb_agg(jsonb_build_object('projectId', project_id,
            'projectName', project_name) order by project_id) from (
-             select project_id, max(project_name) as project_name from eligible
-             where project_id is not null group by project_id
+             select ids.id as project_id, max(case when ids.kind = 'projects' then p.name else ids.legacy_name end) as project_name
+             from identities ids left join personal_named_projects p
+               on p.owner_user_id=$1 and p.project_id::text=ids.id and p.deleted_at is null
+             group by ids.id
            ) p), '[]'::jsonb) as projects,
          coalesce((select jsonb_agg(caller order by caller) from (
            select distinct caller from eligible where caller is not null
@@ -152,8 +168,18 @@ export const createRecallActivityRepository = (
     };
   },
   async getRecallActivity(actor, questionId) {
-    const eligible = await pool.query<{ id: string } & RecallMetadataColumns>(
-      `select q.id, ${recallMetadataColumns} from memory_questions q where ${personalRecallPredicate} and q.id = $2`,
+    await ensureRecallScopeIndexes(
+      pool,
+      actor,
+      options.envelopeEncryptionProvider
+    );
+    const eligible = await pool.query<
+      {
+        id: string;
+        scope: RecallActivityQuestion["scope"];
+      } & RecallMetadataColumns
+    >(
+      `select q.id, ${recallScopeSql} as scope, ${recallMetadataColumns} from memory_questions q where ${personalRecallPredicate} and q.id = $2`,
       [actor.userId, questionId]
     );
     if (!eligible.rows[0]) return null;
@@ -221,6 +247,7 @@ export const createRecallActivityRepository = (
     const result: RecallActivityDetail = {
       question: {
         metadata: recallMetadataFromRow(eligible.rows[0]),
+        scope: eligible.rows[0].scope,
         id: detail.id,
         recordedAt: detail.createdAt,
         updatedAt: detail.updatedAt,
@@ -250,6 +277,7 @@ export const createRecallActivityRepository = (
       searchCount: number(worker.searchCount),
       expandCount: number(worker.expandCount),
       candidateCount: number(worker.candidateCount),
+      execution: projectRecallExecution(detail.retrieval),
       failure:
         detail.status === "error"
           ? (safeFailure[String(worker.skippedReason)] ??
@@ -264,6 +292,11 @@ export const createRecallActivityRepository = (
   },
   async listRecallActivity(actor, rawInput) {
     const input = recallActivityListInputSchema.parse(rawInput);
+    await ensureRecallScopeIndexes(
+      pool,
+      actor,
+      options.envelopeEncryptionProvider
+    );
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     if (input.cursor)
       predicates.push(`(q.created_at, q.id) <
@@ -271,7 +304,7 @@ export const createRecallActivityRepository = (
     const result = await pool.query<
       Omit<RecallActivityQuestion, "metadata" | "usage"> & RecallMetadataColumns
     >(
-      `select q.id, q.query, ${recallMetadataColumns}, q.search_domain as "searchDomain", q.status,
+      `select q.id, q.query, ${recallScopeSql} as scope, ${recallMetadataColumns}, q.search_domain as "searchDomain", q.status,
          q.project_id as "projectId", q.project_name as "projectName", q.session_id as "sessionId",
          to_char(q.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "recordedAt",
          to_char(q.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "updatedAt"
@@ -300,7 +333,8 @@ export const createRecallActivityRepository = (
       status: row.status,
       projectId: row.projectId,
       projectName: row.projectName,
-      sessionId: row.sessionId
+      sessionId: row.sessionId,
+      scope: row.scope
     }));
     // Decrypt only selected question text, in one payload read for the page.
     // No answer, Evidence Bundle, or worker payload is hydrated for a history row.

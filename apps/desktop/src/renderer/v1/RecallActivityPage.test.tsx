@@ -189,7 +189,7 @@ it("keeps overview totals independent of pagination and page-only search, and ap
     };
     await choose("Recorded Project", "koed");
     await choose("Calling AI Client", "Unknown AI Client");
-    await choose("Memory outcome", "Memory found");
+    await choose("Memory outcome", "Found");
     await act(async () =>
       form.dispatchEvent(
         new Event("submit", { bubbles: true, cancelable: true })

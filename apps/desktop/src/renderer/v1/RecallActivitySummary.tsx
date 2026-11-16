@@ -1,4 +1,5 @@
 import {
+  Badge,
   Card,
   Dialog,
   DialogPopup,
@@ -11,9 +12,9 @@ import { MessageSquare, Layers, Clock3, Zap } from "lucide-react";
 import type { RecallActivityOverview } from "@koed-labs/shared/personal-desktop";
 import {
   recallDurationLabel,
+  recallOutcomes,
   recallTokenLabel
 } from "./recall-activity-model.js";
-import { RecallTimeline } from "./RecallTimeline.js";
 
 export function RecallActivitySummary({
   overview,
@@ -43,7 +44,7 @@ export function RecallActivitySummary({
           ? "—"
           : `${overview.memoryResults.foundPercentage.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`,
       note: overview
-        ? `${overview.memoryResults.found.toLocaleString()} of ${(overview.memoryResults.found + overview.memoryResults.not_found).toLocaleString()} found / not found`
+        ? `${overview.memoryResults.found.toLocaleString()} of ${(overview.memoryResults.found + overview.memoryResults.not_found).toLocaleString()} found / unmatched`
         : "No known results"
     },
     {
@@ -92,11 +93,9 @@ export function RecallActivitySummary({
 }
 
 export function RecallActivityCoverage({
-  overview,
   open,
   onOpenChange
 }: {
-  overview: RecallActivityOverview | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -105,59 +104,39 @@ export function RecallActivityCoverage({
       <DialogPopup className="v1-app recall-activity recall-detail recall-metrics-dialog">
         <ScrollArea className="recall-dialog-scroll">
           <div className="recall-dialog-content">
-            <DialogTitle>About these metrics</DialogTitle>
+            <DialogTitle>Memory outcomes</DialogTitle>
             <DialogDescription>
-              Recorded Memory Answers and known Answer Synthesis usage.
+              Each outcome shows what Koed found or why it did not answer.
             </DialogDescription>
-            <p>
-              Requests that ended before a final answer was recorded may be
-              absent. Recorded errors are not recall misses.
+            <table className="recall-outcome-guide">
+              <caption className="sr-only">Memory outcome meanings</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Meaning</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(recallOutcomes).map(
+                  ([outcome, presentation]) => (
+                    <tr key={outcome}>
+                      <th scope="row">
+                        <Badge
+                          variant="outline"
+                          className={`recall-outcome is-${outcome}`}
+                        >
+                          {presentation.label}
+                        </Badge>
+                      </th>
+                      <td>{presentation.description}</td>
+                    </tr>
+                  )
+                )}
+              </tbody>
+            </table>
+            <p className="recall-outcome-guide-note">
+              Only Found and Unmatched count toward the Memory found percentage.
             </p>
-            <p>
-              Memory found is found ÷ (found + not found). Partial evidence,
-              pending summaries, unknown results and errors are excluded.
-              Missing results remain unknown.
-            </p>
-            <p>
-              Duration measures task acceptance to completion, including
-              queueing and retries. It is not client request latency. The median
-              uses every known duration in the filtered range.
-            </p>
-            <p>
-              Only linked usage contributes to these totals. Older answers often
-              lack links; unknown usage is not zero. Token dates describe when
-              usage was observed, which may differ from the answer’s recorded
-              date. Totals may be partial and are not a complete billing total.
-            </p>
-            <p>
-              Date, caller, outcome and advanced filters apply to the whole
-              range. Question search only finds text on the loaded page and does
-              not change the overview.
-            </p>
-            {overview && (
-              <>
-                <p className="recall-coverage">
-                  {overview.knownDurations.toLocaleString()} measured durations
-                  · {overview.memoryResults.unknown.toLocaleString()} unknown
-                  results · {overview.tokens.recordedAttempts.toLocaleString()}{" "}
-                  recorded usage attempts
-                  {overview.tokens.includesEstimates
-                    ? " · includes estimates"
-                    : ""}
-                  . Updated {new Date(overview.asOf).toLocaleString()}.
-                </p>
-                <RecallTimeline
-                  title={`Known synthesis tokens by observation ${overview.bucket}`}
-                  points={overview.tokenTimeline.map((point) => ({
-                    start: point.start,
-                    value: point.totalTokens
-                  }))}
-                  timezone={overview.timezone}
-                  unit="Known tokens"
-                  hourly={overview.bucket === "hour"}
-                />
-              </>
-            )}
           </div>
         </ScrollArea>
       </DialogPopup>

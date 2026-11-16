@@ -1,3 +1,5 @@
+import type { DesktopProject } from "../../project-memory-ui.js";
+import { RecallActivityScope } from "./RecallActivityScope.js";
 import type { MouseEvent } from "react";
 import {
   Button,
@@ -20,6 +22,7 @@ import { RecallActivityOutcome } from "./RecallActivityOutcome.js";
 
 export function RecallActivityTable({
   rows,
+  projects = [],
   total,
   loadedCount,
   loading,
@@ -33,6 +36,7 @@ export function RecallActivityTable({
   onReset
 }: {
   rows: RecallActivityQuestion[];
+  projects?: readonly DesktopProject[];
   total: number | null;
   loadedCount: number;
   loading: boolean;
@@ -118,6 +122,10 @@ export function RecallActivityTable({
                               {caller.label}
                             </span>
                           </span>
+                          <RecallActivityScope
+                            question={row}
+                            projects={projects}
+                          />
                         </div>
                       </td>
                       <td>

@@ -22,6 +22,12 @@ export function recallProjectLabel(
 ): string | null {
   const id = question.projectId;
   if (!id) return displayName(question.projectName);
+  // Named Project labels are resolved by the owner-authorized activity API.
+  // A stale sidebar must not resurrect a deleted Project's name.
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+  )
+    return displayName(question.projectName);
   const project =
     projects.find(
       (candidate) =>

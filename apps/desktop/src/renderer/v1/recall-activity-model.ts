@@ -105,13 +105,41 @@ export function recallCallerPresentation(name: string | null | undefined) {
 export const recallTokenLabel = (value: number | null) =>
   value === null ? "Unknown" : value.toLocaleString();
 
+export const recallOutcomes = {
+  found: {
+    label: "Found",
+    description: "Koed found Memory that supports the answer."
+  },
+  not_found: {
+    label: "Unmatched",
+    description: "Koed found no relevant Memory for this request."
+  },
+  insufficient: {
+    label: "Incomplete",
+    description:
+      "Koed did not reach a complete answer. The information is incomplete or unclear, or the search ended early."
+  },
+  pending_summary: {
+    label: "Pending",
+    description: "Required summaries are not ready. The recall request ended."
+  },
+  unknown: {
+    label: "Unknown",
+    description: "Koed has no recorded outcome for this answer."
+  },
+  error: {
+    label: "Error",
+    description: "An error stopped Koed before it produced a valid answer."
+  }
+};
+
+export const recallOutcomeOptions = Object.entries(recallOutcomes).map(
+  ([value, { label }]) => ({ value, label })
+);
+
 export const recallMemoryResultLabel = (value: string | null | undefined) =>
-  ({
-    found: "Found",
-    not_found: "Not found",
-    insufficient: "Partial evidence",
-    pending_summary: "Pending summaries"
-  })[value ?? ""] ?? "Unknown";
+  recallOutcomeOptions.find((option) => option.value === value)?.label ??
+  recallOutcomes.unknown.label;
 export const recallDurationLabel = (value: number | null | undefined) =>
   value == null
     ? "Unknown"
