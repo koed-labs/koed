@@ -20,6 +20,18 @@ interface ScopeIndex {
   projectIds: string[];
 }
 
+/** A version-zero Project selection names a retained repository identity. Only
+ * Git identities are repositories; a non-Git project is a directory, and any
+ * other identity cannot be classified honestly. Membership is never inferred. */
+const legacyProjectKind = (
+  kind: string
+): Extract<ScopeIndex["kind"], "repository" | "folder" | "unknown"> =>
+  kind === "portable_repository" || kind === "device_local_repository"
+    ? "repository"
+    : kind === "non_git_project"
+      ? "folder"
+      : "unknown";
+
 /** Only routing identities are indexed, as with the existing project_id column.
  * The complete accepted selection, caller context and diagnostics stay encrypted. */
 export const recallScopeIndex = (
@@ -60,7 +72,7 @@ export const recallScopeIndexFromSnapshot = (
     return {
       kind:
         target.kind === "legacy_project"
-          ? "repository"
+          ? legacyProjectKind(target.repository.kind)
           : target.kind === "legacy_session"
             ? "session"
             : target.kind,

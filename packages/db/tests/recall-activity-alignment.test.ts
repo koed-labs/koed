@@ -839,6 +839,32 @@ it("keeps explicit Folder, repository, Global and Conversation identities distin
       legacy
     )
   ).toMatchObject({ kind: "repository", provenance: "accepted" });
+  // A historical non-Git project is a directory, not a Git repository.
+  expect(
+    recallScopeIndex(
+      ownerUserId,
+      {
+        version: 0,
+        ownerUserId,
+        callerRepositoryContext: null,
+        target: {
+          kind: "legacy_project",
+          repository: {
+            kind: "non_git_project",
+            key: "ng_notes",
+            root: "/notes",
+            branch: null,
+            checkoutId: null,
+            originatingDeviceId: "device",
+            selectedRemote: null,
+            anchorDisplay: null,
+            reason: "non_git"
+          }
+        }
+      },
+      legacy
+    )
+  ).toMatchObject({ kind: "folder", provenance: "accepted" });
   expect(
     recallScopeIndex(
       ownerUserId,
