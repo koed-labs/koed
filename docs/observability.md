@@ -400,9 +400,13 @@ no names, paths, calling Conversation, query, evidence, or worker content. Final
 Personal MCP history writes it in the same transaction as the encrypted record.
 Existing history is projected once, in batches of 100, from its retained encrypted
 retrieval metadata on first activity access. This repair does not read answer,
-evidence or worker payloads, and never reconstructs current membership. Failed
-decryption leaves repair pending. Historical records with no selection retain
-their legacy identity or an unknown scope; no missing selection becomes Global.
+evidence or worker payloads, and never reconstructs current membership. A record
+that cannot be projected never fails an activity read. Failed decryption, or a
+missing encryption provider, leaves that record pending for a later read. An
+invalidated payload or a selection that fails owner authorization is recorded as
+an unknown, unavailable scope that keeps only its legacy Project identity.
+Historical records with no selection retain their legacy identity or an unknown
+scope; no missing or unreadable selection becomes Global.
 
 Project filters use indexed set containment on the accepted identities, before
 pagination. Each question remains one row, including its linked usage, even when

@@ -298,6 +298,107 @@ describe.skipIf(!process.env.DATABASE_URL)(
         })
       ).rejects.toThrow();
     });
+    it("never fails activity reads on a record whose retained scope cannot be projected", async () => {
+      const actor = {
+        userId: (
+          await repo.createUser({ email: `${randomUUID()}@example.test` })
+        ).id
+      };
+      const project = await repo.createNamedPersonalProject(actor, {
+        name: "Readable"
+      });
+      const record = () =>
+        repo.createFinalMemoryQuestion(actor, {
+          idempotencyKey: randomUUID(),
+          query: "Historical",
+          searchDomain: "project",
+          personalSelection: {
+            version: 1,
+            ownerUserId: actor.userId,
+            target: {
+              kind: "projects",
+              projects: [
+                { projectId: project.projectId, ownerUserId: actor.userId }
+              ],
+              callerSessionId: randomUUID()
+            },
+            callerRepositoryContext: null
+          },
+          status: "answered",
+          answerMarkdown: "Recorded answer"
+        });
+      const readable = await record();
+      const invalidated = await record();
+      const foreign = await record();
+      const corrupt = await record();
+      const ids = [readable.id, invalidated.id, foreign.id, corrupt.id];
+      await pool.query(
+        "update memory_questions set recall_scope=null where id = any($1::uuid[])",
+        [ids]
+      );
+      await pool.query(
+        "update memory_questions set project_id='legacy-invalidated' where id=$1",
+        [invalidated.id]
+      );
+      await pool.query(
+        "update encrypted_field_payloads set invalidated_at=now() where source_id=$1 and source_column='retrieval'",
+        [invalidated.id]
+      );
+      // A retained selection that no longer passes owner authorization never
+      // falls back to the legacy Global domain.
+      await pool.query(
+        "update memory_questions set search_domain='global', retrieval=$2::jsonb where id=$1",
+        [
+          foreign.id,
+          JSON.stringify({
+            personal_selection: {
+              version: 1,
+              ownerUserId: randomUUID(),
+              target: { kind: "global" },
+              callerRepositoryContext: null
+            }
+          })
+        ]
+      );
+      await pool.query(
+        "update encrypted_field_payloads set tag=ciphertext where source_id=$1 and source_column='retrieval'",
+        [corrupt.id]
+      );
+      const page = await repo.listRecallActivity(actor, {
+        ...range,
+        limit: 50
+      });
+      expect(page.questions).toHaveLength(4);
+      const scopes = new Map(page.questions.map((q) => [q.id, q.scope]));
+      expect(scopes.get(readable.id)).toMatchObject({
+        kind: "projects",
+        provenance: "accepted",
+        projects: [{ projectId: project.projectId, projectName: "Readable" }]
+      });
+      expect(scopes.get(invalidated.id)).toMatchObject({
+        kind: "unknown",
+        provenance: "unavailable",
+        projects: [{ projectId: "legacy-invalidated" }]
+      });
+      expect(scopes.get(foreign.id)).toMatchObject({
+        kind: "unknown",
+        provenance: "unavailable",
+        projects: []
+      });
+      // A failed decryption may be transient, so the record stays pending.
+      expect(scopes.get(corrupt.id)).toBeNull();
+      await expect(
+        repo.getRecallActivityOverview(actor, { ...range, timezone: "UTC" })
+      ).resolves.toMatchObject({ recordedQuestions: 4 });
+      expect(
+        (
+          await pool.query<{ id: string }>(
+            "select id from memory_questions where id = any($1::uuid[]) and recall_scope is null",
+            [ids]
+          )
+        ).rows.map((row) => row.id)
+      ).toEqual([corrupt.id]);
+    });
     it("preserves legacy Project filtering, missing diagnostics, and runtime overrides on errors", async () => {
       const actor = {
         userId: (

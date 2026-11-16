@@ -65,77 +65,130 @@ export const recallScopeIndex = (
   };
 };
 
+/** A retained selection that can no longer be read (invalidated or missing
+ * payload, or a selection that fails owner authorization) is permanent. Index it
+ * as an unknown scope that keeps only the legacy Project identity, never Global. */
+const unavailableScope = (row: { projectId: string | null }): ScopeIndex => ({
+  kind: "unknown",
+  provenance: "unavailable",
+  projectIds: row.projectId ? [row.projectId] : []
+});
+
+type PendingRow = {
+  id: string;
+  searchDomain: string;
+  projectId: string | null;
+  retrieval: Record<string, unknown> | null;
+};
+
+const retrievalReference = (id: string) => ({
+  sourceTable: "memory_questions" as const,
+  sourceId: id,
+  sourceColumn: "retrieval"
+});
+
+/** Decrypt a batch, isolating envelopes that fail so one record cannot block
+ * the rest. Rows whose decryption throws are omitted and stay pending. */
+const decryptRetrievals = async (
+  pool: pg.Pool,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  rows: PendingRow[]
+): Promise<{ payloads: Map<string, unknown>; failed: Set<string> }> => {
+  const payloads = new Map<string, unknown>();
+  const failed = new Set<string>();
+  const read = async (batch: PendingRow[]) => {
+    const result = await decryptAuthorizedEncryptedFieldPayloadsWithClient(
+      pool,
+      actor,
+      provider,
+      batch.map((row) => retrievalReference(row.id))
+    );
+    for (const row of batch)
+      payloads.set(
+        row.id,
+        result.get(encryptedFieldReferenceKey(retrievalReference(row.id)))
+          ?.plaintext
+      );
+  };
+  try {
+    await read(rows);
+  } catch {
+    for (const row of rows) {
+      try {
+        await read([row]);
+      } catch {
+        failed.add(row.id);
+      }
+    }
+  }
+  return { payloads, failed };
+};
+
 /** Upgrade old history once, in bounded batches. Read only retained retrieval
  * metadata, never answer, evidence or worker payloads; never consult membership.
- * Failure leaves the projection pending rather than making unknown scope Global. */
+ * A record that cannot be projected never fails the read: a transient failure
+ * (no encryption provider, an envelope that does not decrypt) leaves it pending
+ * for a later read, and a permanently unreadable selection is indexed as unknown. */
 export const ensureRecallScopeIndexes = async (
   pool: pg.Pool,
   actor: ActorContext,
   provider?: EnvelopeEncryptionProvider
 ): Promise<void> => {
+  // Advance past skipped rows so pending records are not refetched in a loop.
+  let after: string | null = null;
   for (;;) {
-    const { rows } = await pool.query<{
-      id: string;
-      searchDomain: string;
-      projectId: string | null;
-      retrieval: Record<string, unknown> | null;
-    }>(
+    const { rows }: { rows: PendingRow[] } = await pool.query<PendingRow>(
       `select q.id, q.search_domain as "searchDomain", q.project_id as "projectId", q.retrieval
       from memory_questions q where ${personalRecallPredicate} and q.recall_scope is null
+        and ($2::uuid is null or q.id > $2::uuid)
       order by q.id limit 100`,
-      [actor.userId]
+      [actor.userId, after]
     );
     if (!rows.length) return;
-    const references = rows
-      .filter((row) => row.retrieval?.contentEncrypted === true)
-      .map((row) => ({
-        sourceTable: "memory_questions" as const,
-        sourceId: row.id,
-        sourceColumn: "retrieval"
-      }));
-    if (references.length && !provider)
-      throw new Error("Question encryption is unavailable");
-    const payloads = references.length
-      ? await decryptAuthorizedEncryptedFieldPayloadsWithClient(
-          pool,
-          actor,
-          provider!,
-          references
-        )
-      : new Map<string, { plaintext: unknown }>();
-    const updates = rows.map((row) => {
+    after = rows[rows.length - 1]!.id;
+    const encrypted = rows.filter(
+      (row) => row.retrieval?.contentEncrypted === true
+    );
+    const { payloads, failed } =
+      encrypted.length && provider
+        ? await decryptRetrievals(pool, actor, provider, encrypted)
+        : { payloads: new Map<string, unknown>(), failed: new Set<string>() };
+    const updates: { id: string; scope: ScopeIndex }[] = [];
+    for (const row of rows) {
       let retrieval = row.retrieval;
       if (retrieval?.contentEncrypted === true) {
-        const plaintext = payloads.get(
-          encryptedFieldReferenceKey({
-            sourceTable: "memory_questions",
-            sourceId: row.id,
-            sourceColumn: "retrieval"
-          })
-        )?.plaintext;
+        if (!provider || failed.has(row.id)) continue;
+        const plaintext = payloads.get(row.id);
         if (
           !plaintext ||
           typeof plaintext !== "object" ||
           Array.isArray(plaintext)
-        )
-          throw new Error("Retained scope is unavailable");
+        ) {
+          updates.push({ id: row.id, scope: unavailableScope(row) });
+          continue;
+        }
         retrieval = plaintext as Record<string, unknown>;
       }
-      return {
-        id: row.id,
-        scope: recallScopeIndex(
+      let scope: ScopeIndex;
+      try {
+        scope = recallScopeIndex(
           actor.userId,
           retrieval?.personal_selection,
           row
-        )
-      };
-    });
-    await pool.query(
-      `update memory_questions q set recall_scope = u.scope
-      from jsonb_to_recordset($2::jsonb) as u(id uuid, scope jsonb)
-      where q.owner_user_id = $1 and q.id = u.id and q.recall_scope is null`,
-      [actor.userId, JSON.stringify(updates)]
-    );
+        );
+      } catch {
+        scope = unavailableScope(row);
+      }
+      updates.push({ id: row.id, scope });
+    }
+    if (updates.length)
+      await pool.query(
+        `update memory_questions q set recall_scope = u.scope
+        from jsonb_to_recordset($2::jsonb) as u(id uuid, scope jsonb)
+        where q.owner_user_id = $1 and q.id = u.id and q.recall_scope is null`,
+        [actor.userId, JSON.stringify(updates)]
+      );
   }
 };
 
