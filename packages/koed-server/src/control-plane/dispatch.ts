@@ -35,7 +35,13 @@ export function dispatchControlRequest(
         return {
           requestId: request.requestId,
           ok: true,
-          snapshot: core.start(request.command.explicit)
+          snapshot:
+            request.command.persistentCli === undefined
+              ? core.start(request.command.explicit)
+              : core.start(
+                  request.command.explicit,
+                  request.command.persistentCli
+                )
         };
       case "stop":
         return {

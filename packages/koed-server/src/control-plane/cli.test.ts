@@ -35,6 +35,33 @@ describe("packaged control-plane CLI", () => {
     );
     expect(close).toHaveBeenCalledOnce();
   });
+  it("records persistent CLI demand before starting when requested", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ requestId: "1", ok: true, snapshot })
+      .mockResolvedValueOnce({
+        requestId: "2",
+        ok: true,
+        snapshot: { ...snapshot, revision: 3 }
+      })
+      .mockResolvedValueOnce({
+        requestId: "3",
+        ok: true,
+        snapshot: { ...snapshot, revision: 4, state: "starting" }
+      });
+    const code = await runControlPlaneCli(["start", "--daemon"], {
+      connect: async () => ({ request, close: vi.fn() }) as ControlClient,
+      stdout: { write: vi.fn() },
+      stderr: { write: vi.fn() },
+      persistentStart: true
+    });
+    expect(code).toBe(0);
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      { action: "start", explicit: true, persistentCli: true },
+      2
+    );
+  });
   it("bounds an unresponsive status request during Stop", async () => {
     const request = vi
       .fn()

@@ -149,13 +149,27 @@ const harness = (
     return child;
   });
   let releaseControlStart: (() => void) | undefined;
+  let disconnectControlSession = () => {};
+  const openControlSession = vi.fn(async () => {
+    let connected = true;
+    return {
+      isConnected: () => connected,
+      onClose: (listener: () => void) => {
+        disconnectControlSession = () => {
+          connected = false;
+          listener();
+        };
+      },
+      detach: async () => ({ ok: true })
+    };
+  });
   const execFile = vi.fn((_command, _args, _options, callback) => {
     const reply = () =>
       callback(null, JSON.stringify({ ok: true, state: "stopped" }), "");
     if (
       options.holdControlStart &&
       _command === "/installed-control" &&
-      _args[0] === "start"
+      _args[0] === "__control-plane-start-desktop"
     )
       releaseControlStart = reply;
     else reply();
@@ -171,7 +185,8 @@ const harness = (
             command: "/installed-control",
             args,
             env: {}
-          })
+          }),
+          openControlSession
         }
       : {}),
     createSupervisorInvocation: () => ({
@@ -191,11 +206,47 @@ const harness = (
     spawned,
     actions,
     execFile,
+    openControlSession,
+    disconnectControlSession: () => disconnectControlSession(),
     releaseStart: () => releaseControlStart?.()
   };
 };
 
 describe("Desktop manager shared lifecycle", () => {
+  it("reconnects a lost Desktop session and stops retrying on shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const home = verifiedHome();
+      const { manager, openControlSession, disconnectControlSession } = harness(
+        home,
+        () => lifecycleReply(stopped, true),
+        { sharedControl: true }
+      );
+      await manager.handlers.start_daemon();
+      disconnectControlSession();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(openControlSession).toHaveBeenCalledTimes(2);
+      await manager.shutdown();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(openControlSession).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("reports uncertainty when shutdown follows a lost Desktop session", async () => {
+    const home = verifiedHome();
+    const { manager, disconnectControlSession } = harness(
+      home,
+      () => lifecycleReply(stopped, true),
+      { sharedControl: true }
+    );
+    await manager.handlers.start_daemon();
+    disconnectControlSession();
+    await expect(manager.shutdown()).resolves.toMatchObject({
+      ok: false,
+      state: "needs_attention"
+    });
+  });
   it("routes selected packaged starts and stops through the installed control CLI", async () => {
     const home = verifiedHome();
     const { manager, spawn, execFile } = harness(
@@ -209,7 +260,9 @@ describe("Desktop manager shared lifecycle", () => {
     expect(spawn).not.toHaveBeenCalled();
     expect(
       execFile.mock.calls.some(
-        (call) => call[0] === "/installed-control" && call[1]?.[0] === "start"
+        (call) =>
+          call[0] === "/installed-control" &&
+          call[1]?.[0] === "__control-plane-start-desktop"
       )
     ).toBe(true);
     await manager.handlers.stop();
@@ -249,9 +302,11 @@ describe("Desktop manager shared lifecycle", () => {
     );
     const start = manager.handlers.start_daemon();
     await vi.waitFor(() =>
-      expect(execFile.mock.calls.some((call) => call[1]?.[0] === "start")).toBe(
-        true
-      )
+      expect(
+        execFile.mock.calls.some(
+          (call) => call[1]?.[0] === "__control-plane-start-desktop"
+        )
+      ).toBe(true)
     );
     const queuedStart = manager.handlers.start_daemon();
     const stop = manager.handlers.stop();
@@ -262,7 +317,9 @@ describe("Desktop manager shared lifecycle", () => {
     releaseStart();
     await Promise.all([start, queuedStart, stop]);
     expect(
-      execFile.mock.calls.filter((call) => call[1]?.[0] === "start")
+      execFile.mock.calls.filter(
+        (call) => call[1]?.[0] === "__control-plane-start-desktop"
+      )
     ).toHaveLength(1);
     expect(execFile.mock.calls.some((call) => call[1]?.[0] === "stop")).toBe(
       true

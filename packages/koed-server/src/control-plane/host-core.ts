@@ -18,7 +18,7 @@ export interface HostSnapshot {
 }
 export interface HostCore {
   status(): HostSnapshot;
-  start(explicit: boolean): HostSnapshot;
+  start(explicit: boolean, persistentCli?: boolean): HostSnapshot;
   stop(explicit: boolean): HostSnapshot;
   attach(reason: AvailabilityReason): HostSnapshot;
   detach(reason: AvailabilityReason): HostSnapshot;
@@ -91,8 +91,17 @@ export function createControlPlaneHostCore(input: {
       state = "needs_attention";
     }
   };
-  const start = (explicit: boolean): HostSnapshot => {
+  const start = (explicit: boolean, persistentCli = false): HostSnapshot => {
     const current = input.store.read();
+    if (
+      session &&
+      !current.stopIntent &&
+      (state === "starting" || state === "ready")
+    ) {
+      if (persistentCli && !current.persistentCli)
+        update((previous) => ({ ...previous, persistentCli: true }));
+      return status();
+    }
     if (!current.runtimeClean)
       throw new Error("Unclean runtime requires Operator attention");
     if (current.stopIntent && !explicit)
@@ -103,6 +112,7 @@ export function createControlPlaneHostCore(input: {
     update((previous) => ({
       ...previous,
       stopIntent: explicit ? false : previous.stopIntent,
+      persistentCli: persistentCli || previous.persistentCli,
       runtimeClean: false
     }));
     state = "starting";

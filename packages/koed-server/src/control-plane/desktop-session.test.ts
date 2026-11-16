@@ -5,6 +5,7 @@ import type { ControlClient } from "./client.js";
 function fixture() {
   let onMessage: (value: unknown) => void = () => {};
   let onDisconnect: () => void = () => {};
+  let onClientClose: (error: Error) => void = () => {};
   const snapshot = {
     instanceId: "i",
     revision: 1,
@@ -16,7 +17,14 @@ function fixture() {
     ok: true as const,
     snapshot
   }));
-  const client: ControlClient = { request, close: vi.fn() };
+  const client: ControlClient = {
+    request,
+    close: vi.fn(),
+    onClose: (listener) => {
+      onClientClose = listener;
+      return () => {};
+    }
+  };
   const channel = {
     connected: true,
     send: vi.fn(),
@@ -34,7 +42,8 @@ function fixture() {
     channel,
     request,
     message: (value: unknown) => onMessage(value),
-    disconnect: () => onDisconnect()
+    disconnect: () => onDisconnect(),
+    closeClient: () => onClientClose(new Error("lost host"))
   };
 }
 
@@ -57,6 +66,15 @@ describe("Desktop control session", () => {
     );
     expect(f.client.close).toHaveBeenCalledOnce();
     expect(f.channel.send).toHaveBeenCalledWith({ type: "detached", ok: true });
+  });
+  it("exits if its authenticated control connection closes", async () => {
+    const f = fixture();
+    const done = serveDesktopSession(f.client, f.channel);
+    await vi.waitFor(() =>
+      expect(f.channel.send).toHaveBeenCalledWith({ type: "ready" })
+    );
+    f.closeClient();
+    expect(await done).toBe(1);
   });
   it("closes without intentional detach on parent disconnect", async () => {
     const f = fixture();

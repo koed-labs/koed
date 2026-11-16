@@ -1,5 +1,9 @@
 import { createPerformanceController } from "./performance-controller.js";
 import {
+  openDesktopControlSession,
+  type DesktopControlSession
+} from "./control-session.js";
+import {
   createPerformanceManagement,
   type PerformanceSnapshot,
   type DesktopPerformanceApi
@@ -251,6 +255,7 @@ export interface KoedServerManagerOptions {
   environment: NodeJS.ProcessEnv;
   createCliInvocation: (args: string[]) => NodeEntrypointInvocation;
   createControlCliInvocation?: (args: string[]) => NodeEntrypointInvocation;
+  openControlSession?: typeof openDesktopControlSession;
   createSupervisorInvocation?: () => NodeEntrypointInvocation;
   packagedResourcesPath?: string;
   productVersion?: string;
@@ -1566,6 +1571,7 @@ export const createKoedServerManager = ({
   environment,
   createCliInvocation,
   createControlCliInvocation,
+  openControlSession = openDesktopControlSession,
   createSupervisorInvocation,
   packagedResourcesPath,
   productVersion,
@@ -1762,7 +1768,8 @@ export const createKoedServerManager = ({
         (args[0] === "start" ||
           args[0] === "stop" ||
           args[0] === "__control-plane-stop-implicit" ||
-          args[0] === "__control-plane-start-automatic")
+          args[0] === "__control-plane-start-automatic" ||
+          args[0] === "__control-plane-start-desktop")
           ? createControlCliInvocation
           : createCliInvocation;
       const invocation = factory([...args, "--json"]);
@@ -5440,6 +5447,53 @@ export const createKoedServerManager = ({
     };
   };
 
+  let controlDesktopSession: DesktopControlSession | undefined;
+  let desktopSessionEverAttached = false;
+  let pendingDesktopSession: Promise<DesktopControlSession> | undefined;
+  let controlSessionClosing = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleControlReconnect = () => {
+    if (controlSessionClosing || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      void ensureDesktopControlSession().catch((error: unknown) => {
+        console.warn("Desktop control session reconnect failed:", error);
+        scheduleControlReconnect();
+      });
+    }, 5_000);
+    reconnectTimer.unref();
+  };
+  const ensureDesktopControlSession = async (): Promise<void> => {
+    if (controlDesktopSession?.isConnected()) return;
+    if (!createControlCliInvocation) return;
+    if (!pendingDesktopSession) {
+      const invocation = createControlCliInvocation([
+        "__control-plane-desktop-session"
+      ]);
+      pendingDesktopSession = openControlSession(() =>
+        spawn(invocation.command, invocation.args, {
+          cwd: repoRoot,
+          env: invocation.env,
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+          detached: false
+        })
+      );
+    }
+    try {
+      const session = await pendingDesktopSession;
+      if (controlDesktopSession !== session) {
+        controlDesktopSession = session;
+        desktopSessionEverAttached = true;
+        session.onClose?.(() => {
+          if (controlDesktopSession !== session) return;
+          controlDesktopSession = undefined;
+          scheduleControlReconnect();
+        });
+      }
+    } finally {
+      pendingDesktopSession = undefined;
+    }
+  };
   let pendingControlStart: Promise<unknown> | null = null;
   const requestDaemonStartUnlocked = async (
     generation: number,
@@ -5448,10 +5502,25 @@ export const createKoedServerManager = ({
   ) => {
     if (createControlCliInvocation) {
       if (generation !== stopGeneration) return stoppedStartResult();
-      const pending = runJson(
-        [automatic ? "__control-plane-start-automatic" : "start", "--daemon"],
-        120_000
-      );
+      const pending = (async () => {
+        try {
+          await ensureDesktopControlSession();
+        } catch (error) {
+          return supervisorStartupFailureResult(
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+        if (generation !== stopGeneration) return stoppedStartResult();
+        return runJson(
+          [
+            automatic
+              ? "__control-plane-start-automatic"
+              : "__control-plane-start-desktop",
+            "--daemon"
+          ],
+          120_000
+        );
+      })();
       pendingControlStart = pending;
       try {
         const result = await pending;
@@ -6163,6 +6232,28 @@ export const createKoedServerManager = ({
     lifecycle.stop();
     accelerationSession?.child.kill("SIGTERM");
     accelerationSession = null;
+    if (createControlCliInvocation) {
+      controlSessionClosing = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      await closeDesktopServices();
+      await pendingControlStart;
+      if (pendingDesktopSession)
+        await pendingDesktopSession.catch(() => undefined);
+      if (!controlDesktopSession)
+        return desktopSessionEverAttached
+          ? {
+              ok: false,
+              state: "needs_attention",
+              error:
+                "Desktop control session disconnected before intentional detach"
+            }
+          : { ok: true, state: "detached" };
+      const result = await controlDesktopSession.detach();
+      controlDesktopSession = undefined;
+      return result.ok
+        ? { ok: true, state: "detached" }
+        : { ok: false, state: "needs_attention", error: result.error };
+    }
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
       await closeDesktopServices();
       return {

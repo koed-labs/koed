@@ -18,11 +18,13 @@ export function serveDesktopSession(
     let detaching = false;
     let unsubscribeMessage = () => {};
     let unsubscribeDisconnect = () => {};
+    let unsubscribeClose = () => {};
     const finish = (code: number) => {
       if (finished) return;
       finished = true;
       unsubscribeMessage();
       unsubscribeDisconnect();
+      unsubscribeClose();
       client.close();
       resolve(code);
     };
@@ -67,6 +69,8 @@ export function serveDesktopSession(
         void detach();
     });
     unsubscribeDisconnect = channel.onDisconnect(() => finish(0));
+    unsubscribeClose = client.onClose?.(() => finish(1)) ?? (() => {});
+    if (finished) return;
     if (!channel.connected) {
       finish(1);
       return;

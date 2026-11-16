@@ -13,6 +13,7 @@ export async function runControlPlaneCli(
     allowImplicitStop?: boolean;
     allowAutomaticStart?: boolean;
     allowAgentAvailability?: boolean;
+    persistentStart?: boolean;
     offlineStop?: () => { clean: boolean } | undefined;
   }
 ): Promise<number> {
@@ -163,7 +164,13 @@ export async function runControlPlaneCli(
       throw new Error(`Control-plane status failed: ${status.code}`);
     let result = await bounded(
       client.request(
-        { action: command, explicit: !args.includes("--non-explicit") },
+        command === "start" && dependencies.persistentStart
+          ? {
+              action: "start",
+              explicit: !args.includes("--non-explicit"),
+              persistentCli: true
+            }
+          : { action: command, explicit: !args.includes("--non-explicit") },
         status.snapshot.revision
       )
     );

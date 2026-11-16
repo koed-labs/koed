@@ -115,7 +115,7 @@ export async function runInstalledDesktopCli(
       executable,
       entrypoint: invocation.startCommand
     });
-    return serveDesktopSession(client, {
+    const sessionResult = await serveDesktopSession(client, {
       get connected() {
         return Boolean(process.connected && process.send);
       },
@@ -135,6 +135,8 @@ export async function runInstalledDesktopCli(
         return () => process.off("disconnect", listener);
       }
     });
+    if (process.connected) process.disconnect?.();
+    return sessionResult;
   }
   if (args.length === 1 && args[0] === "__control-plane-host") {
     const capability = dependencies.desktopRuntimeCapability;
@@ -153,6 +155,7 @@ export async function runInstalledDesktopCli(
       args[0] === "restart" ||
       args[0] === "__control-plane-stop-implicit" ||
       args[0] === "__control-plane-start-automatic" ||
+      args[0] === "__control-plane-start-desktop" ||
       args[0] === "__control-plane-agent-enable" ||
       args[0] === "__control-plane-agent-disable" ||
       args[0] === "__control-plane-agent-status") &&
@@ -168,6 +171,7 @@ export async function runInstalledDesktopCli(
       (await import("./control-plane/cli.js")).runControlPlaneCli;
     const implicit = args[0] === "__control-plane-stop-implicit";
     const automatic = args[0] === "__control-plane-start-automatic";
+    const desktopStart = args[0] === "__control-plane-start-desktop";
     const agentEnable = args[0] === "__control-plane-agent-enable";
     const agentDisable = args[0] === "__control-plane-agent-disable";
     const agentStatus = args[0] === "__control-plane-agent-status";
@@ -177,22 +181,25 @@ export async function runInstalledDesktopCli(
         ? ["stop", "--non-explicit", ...args.slice(1)]
         : automatic
           ? ["start", "--non-explicit", ...args.slice(1)]
-          : agentEnable || agentDisable || agentStatus
-            ? [
-                agentEnable
-                  ? "agent-enable"
-                  : agentDisable
-                    ? "agent-disable"
-                    : "agent-status",
-                ...args.slice(1)
-              ]
-            : args,
+          : desktopStart
+            ? ["start", ...args.slice(1)]
+            : agentEnable || agentDisable || agentStatus
+              ? [
+                  agentEnable
+                    ? "agent-enable"
+                    : agentDisable
+                      ? "agent-disable"
+                      : "agent-status",
+                  ...args.slice(1)
+                ]
+              : args,
       {
         stdout,
         stderr,
         allowImplicitStop: implicit,
         allowAutomaticStart: automatic,
         allowAgentAvailability: agentEnable || agentDisable || agentStatus,
+        persistentStart: args[0] === "start" || args[0] === "restart",
         offlineStop: () => installedClient.tryRecordOfflineStop(environment),
         connect: async (command) =>
           installedClient.openInstalledControlPlane({

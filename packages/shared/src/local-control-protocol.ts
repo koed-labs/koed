@@ -12,7 +12,11 @@ const reason = z.enum([
 
 export const controlCommandSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("status") }),
-  z.strictObject({ action: z.literal("start"), explicit: z.boolean() }),
+  z.strictObject({
+    action: z.literal("start"),
+    explicit: z.boolean(),
+    persistentCli: z.boolean().optional()
+  }),
   z.strictObject({ action: z.literal("stop"), explicit: z.boolean() }),
   z.strictObject({ action: z.literal("attach"), reason }),
   z.strictObject({

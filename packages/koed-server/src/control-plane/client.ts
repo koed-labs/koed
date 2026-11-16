@@ -18,6 +18,7 @@ export interface ControlClient {
     expectedRevision: number
   ): Promise<ControlReply>;
   close(): void;
+  onClose?(listener: (error: Error) => void): () => void;
 }
 
 export async function connectControlClient(input: {
@@ -47,6 +48,7 @@ export async function connectControlClient(input: {
   >();
   let authenticated = false;
   let closed = false;
+  const closeListeners = new Set<(error: Error) => void>();
   let resolveHello!: () => void;
   let rejectHello!: (error: Error) => void;
   const helloPromise = new Promise<void>((resolve, reject) => {
@@ -66,6 +68,8 @@ export async function connectControlClient(input: {
     }
     pending.clear();
     connection.close();
+    for (const listener of closeListeners) listener(error);
+    closeListeners.clear();
   };
   const helloTimeout = setTimeout(
     () => close(new Error("Control hello timed out")),
@@ -170,6 +174,14 @@ export async function connectControlClient(input: {
           });
       });
     },
-    close: () => close()
+    close: () => close(),
+    onClose(listener) {
+      if (closed) {
+        listener(new Error("Control connection closed"));
+        return () => {};
+      }
+      closeListeners.add(listener);
+      return () => closeListeners.delete(listener);
+    }
   };
 }

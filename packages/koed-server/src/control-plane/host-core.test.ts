@@ -53,6 +53,23 @@ function fixture(initial: Partial<ControlIntent> = {}) {
 }
 
 describe("control-plane host core", () => {
+  it("reuses a running runtime on Desktop start without creating CLI demand", () => {
+    const f = fixture();
+    f.core.start(true);
+    expect(f.core.start(true).state).toBe("starting");
+    expect(f.store.read().persistentCli).toBe(false);
+    expect(f.startRuntime).toHaveBeenCalledOnce();
+  });
+  it("allows a CLI start to add persistent demand to an existing runtime", () => {
+    const f = fixture();
+    const desktop = f.core.openDesktopSession();
+    f.core.start(true);
+    f.core.start(true, true);
+    expect(f.store.read().persistentCli).toBe(true);
+    expect(f.startRuntime).toHaveBeenCalledOnce();
+    desktop.close(true);
+    expect(f.stop).not.toHaveBeenCalled();
+  });
   it("stops on last intentional Desktop detach without setting explicit Stop", () => {
     const f = fixture();
     const desktop = f.core.openDesktopSession();
