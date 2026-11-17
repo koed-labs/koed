@@ -48,7 +48,7 @@ Desktop imports only these five public values from the root file.
 For a different source environment file, set `KOED_ENV_PATH` before starting Desktop.
 Missing or unreadable environment files do not block local startup.
 
-Configuration follows this order, with the first defined value taking precedence:
+Source configuration follows this order, with the first nonempty value taking precedence:
 
 1. Explicit `KOED_ACCOUNT_*` process values.
 2. Explicit `DESKTOP_ACCOUNT_*` process values.
@@ -58,21 +58,22 @@ Configuration follows this order, with the first defined value taking precedence
 Packaged apps do not read checkout `.env` files or `KOED_ENV_PATH` for accounts.
 Release packaging reads explicit build inputs instead.
 A local source configuration cannot enable sign-in in a release package.
-Packaged apps use the bundled forwarder URL and ignore runtime overrides for that URL.
+Packaged apps use the complete bundled account configuration and ignore runtime account overrides.
 
-| Process variable             | Purpose                                                                                  |
-| ---------------------------- | ---------------------------------------------------------------------------------------- |
-| `KOED_ACCOUNT_ENABLED`       | Set exactly `true` to enable sign-in. Set `false` to override bundled values.            |
-| `KOED_ACCOUNT_CLIENT_ID`     | The public WorkOS Client ID for the Desktop application.                                 |
-| `KOED_ACCOUNT_ENVIRONMENT`   | The WorkOS environment, such as `staging` or `production`.                               |
-| `KOED_ACCOUNT_LOGIN_MODE`    | Use `forwarder` for the configured HTTPS callback. Use `direct` for the native callback. |
-| `KOED_ACCOUNT_FORWARDER_URL` | The full HTTPS callback URL, required in forwarder mode.                                 |
+| Process variable             | Purpose                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `KOED_ACCOUNT_ENABLED`       | Set exactly `true` to enable sign-in in source or build configuration. Set `false` to disable it. |
+| `KOED_ACCOUNT_CLIENT_ID`     | The public WorkOS Client ID for the Desktop application.                                          |
+| `KOED_ACCOUNT_ENVIRONMENT`   | The WorkOS environment, such as `staging` or `production`.                                        |
+| `KOED_ACCOUNT_LOGIN_MODE`    | Use `forwarder` for the configured HTTPS callback. Use `direct` for the native callback.          |
+| `KOED_ACCOUNT_FORWARDER_URL` | The full HTTPS callback URL, required in forwarder mode.                                          |
 
 `KOED_ACCOUNT_FORWARDER_URL` sets the full HTTPS callback URL in source runs and package builds.
 The root `.env` name is `DESKTOP_ACCOUNT_FORWARDER_URL`.
 Forwarder mode requires this value. Direct mode does not use it.
 
-Older configuration files without a login mode use `direct`.
+Local configuration without a login mode, or with a blank mode, uses `direct`.
+Enabled release builds still require explicit account inputs.
 Missing or invalid account configuration leaves local startup available.
 Do not put a WorkOS API key or provider secret in Desktop configuration.
 
@@ -80,8 +81,8 @@ Do not put a WorkOS API key or provider secret in Desktop configuration.
 
 The callback is the URL that receives the WorkOS sign-in response.
 A native URL opens a registered desktop application.
-In `forwarder` mode, WorkOS sends the response to the Cloudflare Worker over HTTPS.
-The Worker opens a fixed native URL, which returns the response to Desktop.
+In `forwarder` mode, WorkOS sends the response to your forwarder over HTTPS.
+The forwarder opens a fixed native URL, which returns the response to Desktop.
 
 The forwarder URL comes from your local or build configuration.
 It must use HTTPS on the standard port and end with exactly `/desktop/callback`.
@@ -99,7 +100,7 @@ In your WorkOS staging environment:
 1. Deploy your forwarder before enabling `forwarder` mode in Desktop.
 2. Add the exact `DESKTOP_ACCOUNT_FORWARDER_URL` value to Redirect URIs.
 3. Allow `ai.koed.desktop.auth.dev://callback` for direct mode.
-4. Set the default Sign-out URI to your forwarder's `/desktop/logout` page.
+4. Set the default Sign-out URI to your forwarder's sign-out return page.
 5. Enable email/password registration, email verification, password recovery, Google, and GitHub.
 6. Use a real inbox to test email delivery.
 
@@ -116,8 +117,10 @@ Packaging reads these build inputs directly and does not load the root `.env`.
 
 The packager includes public account configuration without changing the disabled source file.
 Installed apps read that configuration without shell variables.
+Enabled packages register only their selected account callback scheme.
+Packages with accounts disabled do not register an account scheme.
 Packaging rejects missing or invalid forwarder URLs when `forwarder` mode is enabled.
-Changing the URL in an installed app requires a new package.
+Changing account configuration in an installed app requires a new package.
 Do not include a WorkOS API key or provider secret in a package.
 
 ## Credentials and session storage
@@ -126,13 +129,12 @@ PKCE protects the exchange of authorization codes.
 It binds a sign-in response to the Desktop installation that started it.
 Electron main keeps the PKCE verifier, the secret required for the code exchange.
 It exchanges the authorization code directly with WorkOS and makes sure that the session identifies a verified User.
-Cloudflare receives the code and protected sign-in state.
+Your forwarder receives the code and protected sign-in state.
 It cannot exchange the code without the verifier.
-The Worker does not authenticate the User or grant access.
+The forwarder does not authenticate the User or grant access.
 
 The renderer, the process that displays the interface, receives only account status and read-only profile fields.
 Tokens, callback URLs, PKCE material, and provider error payloads stay outside renderer state and support exports.
-The WorkOS bridge that exposes tokens is not registered.
 Team and device credentials remain under separate `koed-server` control.
 
 Electron `safeStorage` encrypts the session, cached profile, sign-in attempt, and installation secret.
@@ -149,16 +151,18 @@ Sign-out and cancellation remove the file immediately and prevent unfinished sto
 Desktop accepts each callback once, against matching encrypted state that expires after ten minutes.
 It rejects late callbacks after cancellation, sign-out, or a replacement attempt.
 Session refresh and callback completion run in sequence to protect rotated credentials.
-The browser handoff link expires after five minutes.
 
 During restoration or an explicit profile refresh, Desktop requests a fresh session from WorkOS.
 A temporary outage can leave a cached profile visible, but the profile grants no access.
+A stale cached account remains signed in without granting authorization.
+Focus and connectivity events retry the refresh at most once every 30 seconds.
+A failed refresh does not create a polling loop.
 An expired or revoked session requires sign-in again.
 Desktop detects revocation through refresh, rather than relying only on an unexpired access token.
 
 Sign-out clears local credentials before opening WorkOS browser sign-out.
 Opening the browser does not prove that remote sign-out completed.
-The `/desktop/logout` return page also does not end a session when visited directly.
+A sign-out return page does not end a session when visited directly.
 
 ## Profile pictures
 
@@ -172,16 +176,19 @@ The renderer requests pictures with `no-referrer` and no WorkOS token.
 
 ## Troubleshooting
 
+Desktop requires a keyless WorkOS client.
+Do not export `WORKOS_API_KEY` into the Desktop process.
+If that variable is present, sign-in stops before creating a client.
+The root account loader does not import it from `.env`.
+
 If automatic browser handoff fails, select Open Koed on the return page.
 If the app is absent or the link expires, open Koed and start sign-in again.
-An empty `/desktop/callback` returns `400`, and the Worker root returns `404`.
-These responses do not establish a service failure.
 
-If the Worker is unavailable, select Cancel sign-in in the account menu.
+If the forwarder is unavailable, select Cancel sign-in in the account menu.
 An unanswered Desktop attempt expires after ten minutes.
 Local Personal Memory remains available.
 
-For a source launch without the Worker, run:
+For a source launch without the forwarder, run:
 
 ```sh
 KOED_ACCOUNT_LOGIN_MODE=direct pnpm desktop:start
@@ -198,7 +205,7 @@ Test these cases with your WorkOS staging application:
 - Automatic browser handoff and the manual Open Koed action.
 - Callbacks with the installed app open and fully closed, on each shipping platform.
 - Session restoration, provider revocation, cancellation, and local/browser sign-out.
-- Local Personal Memory while signed out, offline, or unable to reach the Worker.
+- Local Personal Memory while signed out, offline, or unable to reach the forwarder.
 
 The presentation test uses synthetic account data without provider credentials.
 Run `pnpm --filter @koed-labs/desktop test:browser:account` on a host that supports the Electron interface.

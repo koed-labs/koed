@@ -1,10 +1,30 @@
 import {
   accountStateSchema,
   type AccountCommand,
+  type AccountMessageCode,
   type AccountState
 } from "@koed-labs/shared/account";
 import type { AccountConfig } from "./config.js";
 import type { AccountRuntime } from "./runtime.js";
+import { AccountOperationError } from "./errors.js";
+
+const messages: Record<AccountMessageCode, string> = {
+  configuration_invalid:
+    "Account configuration is invalid. Restart Desktop without a WorkOS API key in its environment.",
+  storage_unavailable: "Secure account storage is unavailable. Try again.",
+  browser_unavailable: "The sign-in browser did not open. Try again.",
+  operation_failed:
+    "The account action failed. Try again. Local Personal Memory remains available.",
+  session_expired: "Sign in again to refresh your account.",
+  sign_out_complete:
+    "Signed out on this device. Complete browser sign-out if prompted.",
+  sign_out_failed:
+    "Secure account storage could not be cleared. Retry sign-out.",
+  browser_sign_out_failed:
+    "Signed out on this device. WorkOS browser sign-out could not be opened.",
+  sign_in_expired: "Sign-in expired. Try again when you are ready.",
+  sign_in_failed: "Sign-in did not complete. Try again when you are ready."
+};
 
 export function createAccountController(input: {
   config: AccountConfig | null;
@@ -15,6 +35,7 @@ export function createAccountController(input: {
     profile: null,
     stale: false,
     busy: false,
+    messageCode: null,
     message: null,
     revision: 0
   };
@@ -32,6 +53,11 @@ export function createAccountController(input: {
     state = accountStateSchema.parse({
       ...state,
       ...patch,
+      ...(patch.messageCode !== undefined
+        ? {
+            message: patch.messageCode ? messages[patch.messageCode] : null
+          }
+        : {}),
       revision: state.revision + 1
     });
     for (const listener of listeners) listener(state);
@@ -58,15 +84,17 @@ export function createAccountController(input: {
     return publish({
       status: terminal
         ? "reauthentication_required"
-        : state.status === "signing_in" || state.status === "restoring"
-          ? "signed_out"
-          : state.status,
+        : state.profile
+          ? "signed_in"
+          : "signed_out",
       profile: terminal ? null : state.profile,
       stale: !terminal && !!state.profile,
       busy: false,
-      message: terminal
-        ? "Sign in again to refresh your account."
-        : "WorkOS could not be reached. Local Personal Memory is still available."
+      messageCode: terminal
+        ? "session_expired"
+        : error instanceof AccountOperationError
+          ? error.code
+          : "operation_failed"
     });
   };
   const refresh = async (version: number) => {
@@ -80,7 +108,13 @@ export function createAccountController(input: {
       if (version !== generation) return state;
       if (!session) {
         if (version === generation)
-          publish({ status: "signed_out", profile: null, busy: false });
+          publish({
+            status: "signed_out",
+            profile: null,
+            stale: false,
+            busy: false,
+            messageCode: null
+          });
         return state;
       }
       const validated = await sdk().validate(session, true);
@@ -95,7 +129,7 @@ export function createAccountController(input: {
           profile,
           stale: false,
           busy: false,
-          message: null
+          messageCode: null
         });
       }
     } catch (error) {
@@ -119,7 +153,7 @@ export function createAccountController(input: {
         status: "signed_out",
         profile: null,
         busy: false,
-        message: null
+        messageCode: null
       });
     }
     if (command.operation === "signOut") {
@@ -133,8 +167,7 @@ export function createAccountController(input: {
           status: "reauthentication_required",
           profile: null,
           busy: false,
-          message:
-            "Secure account storage could not be cleared. Retry sign-out."
+          messageCode: "sign_out_failed"
         });
       }
       const version = generation;
@@ -143,7 +176,7 @@ export function createAccountController(input: {
         profile: null,
         stale: false,
         busy: false,
-        message: null
+        messageCode: null
       });
       if (session) {
         let opened = false;
@@ -155,9 +188,9 @@ export function createAccountController(input: {
         }
         if (version === generation)
           publish({
-            message: opened
-              ? "Signed out on this device. Complete browser sign-out if prompted."
-              : "Signed out on this device. WorkOS browser sign-out could not be opened."
+            messageCode: opened
+              ? "sign_out_complete"
+              : "browser_sign_out_failed"
           });
       }
       return state;
@@ -171,7 +204,7 @@ export function createAccountController(input: {
         profile: null,
         stale: false,
         busy: true,
-        message: null
+        messageCode: null
       });
       try {
         sdk().clear();
@@ -190,7 +223,7 @@ export function createAccountController(input: {
               status: "signed_out",
               profile: null,
               busy: false,
-              message: "Sign-in expired. Try again when you are ready."
+              messageCode: "sign_in_expired"
             });
           }, 600000);
           signInDeadline.unref();
@@ -202,7 +235,7 @@ export function createAccountController(input: {
     }
     if (isSigningIn()) return state;
     const version = generation;
-    publish({ busy: true, message: null });
+    publish({ busy: true, messageCode: null });
     return serial(() => refresh(version));
   };
   return {
@@ -269,7 +302,7 @@ export function createAccountController(input: {
               profile: null,
               stale: false,
               busy: false,
-              message: "Sign-in did not complete. Try again when you are ready."
+              messageCode: "sign_in_failed"
             });
             return;
           }
@@ -291,7 +324,7 @@ export function createAccountController(input: {
             profile,
             stale: false,
             busy: false,
-            message: null
+            messageCode: null
           });
         } catch (error) {
           fail(error, version);

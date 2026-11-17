@@ -420,15 +420,17 @@ a server secret. Electron main exchanges the authorization code directly with
 WorkOS. Sign-in does not grant access to local Personal Memory or replace
 `koed-server` control of Team and device credentials.
 
-In forwarder mode, Cloudflare receives the authorization code and sealed state.
+In forwarder mode, your forwarder receives the authorization code and sealed state.
 Its return page opens the fixed native Desktop callback. Electron main retains
-the PKCE verifier, the secret required to exchange the code. The Worker does
+the PKCE verifier, the secret required to exchange the code. The forwarder does
 not authenticate the response or grant access. Build configuration supplies the
 HTTPS callback. Desktop requires the exact `/desktop/callback` path, the standard
 HTTPS port, and a URL without credentials, queries, fragments, or normalization.
-Installed apps use the bundled URL and ignore runtime overrides for that URL.
+Installed apps use the complete bundled account configuration and ignore runtime account overrides.
 Browser parameters cannot change the destination or the native callback.
 
+The WorkOS integration uses the public exports of one pinned session-library version.
+It rejects an inherited `WORKOS_API_KEY` before client creation.
 The interface receives read-only profile data without provider tokens.
 Desktop accepts HTTPS picture URLs only from the allowed WorkOS, Google, and
 GitHub image hosts. Image requests use `no-referrer` and no WorkOS token.

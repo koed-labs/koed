@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAccountController } from "./controller.js";
 import type { AccountRuntime } from "./runtime.js";
 import type { AccountConfig } from "./config.js";
+import { AccountOperationError } from "./errors.js";
 const FORWARDER_URL = "https://login.example.test/desktop/callback";
 const profile = {
   id: "user_1",
@@ -94,6 +95,107 @@ describe("optional account lifecycle", () => {
     expect(JSON.stringify(snapshots)).not.toMatch(
       /sensitive|secret-code|sealed/
     );
+  });
+  it("restores a stale signed-in profile offline and recovers without restarting", async () => {
+    const { controller, runtime, credentials } = fixture();
+    vi.mocked(runtime.getProfile).mockResolvedValue(profile);
+    vi.mocked(runtime.read).mockResolvedValue(credentials);
+    vi.mocked(runtime.validate).mockRejectedValueOnce(
+      new TypeError("private network detail")
+    );
+    await controller.restore();
+    expect(controller.current()).toMatchObject({
+      status: "signed_in",
+      profile,
+      stale: true,
+      busy: false,
+      messageCode: "operation_failed"
+    });
+    expect(runtime.clear).not.toHaveBeenCalled();
+    await controller.command({ operation: "refreshProfile" });
+    expect(controller.current()).toMatchObject({
+      status: "signed_in",
+      profile,
+      stale: false,
+      message: null
+    });
+  });
+  it("clears a revoked offline session when refresh returns a terminal failure", async () => {
+    const { controller, runtime, credentials } = fixture();
+    vi.mocked(runtime.getProfile).mockResolvedValue(profile);
+    vi.mocked(runtime.read).mockResolvedValue(credentials);
+    vi.mocked(runtime.validate).mockRejectedValueOnce(new Error("offline"));
+    await controller.restore();
+    const error = new Error("revoked");
+    error.name = "TokenValidationError";
+    vi.mocked(runtime.validate).mockRejectedValueOnce(error);
+    await controller.command({ operation: "refreshProfile" });
+    expect(controller.current()).toMatchObject({
+      status: "reauthentication_required",
+      profile: null,
+      stale: false,
+      messageCode: "session_expired"
+    });
+    expect(runtime.clear).toHaveBeenCalled();
+  });
+  it("does not restore an account when sign-out overtakes a recovery refresh", async () => {
+    const { controller, runtime, credentials } = fixture();
+    vi.mocked(runtime.getProfile).mockResolvedValue(profile);
+    vi.mocked(runtime.read).mockResolvedValue(credentials);
+    vi.mocked(runtime.validate).mockRejectedValueOnce(new Error("offline"));
+    await controller.restore();
+    let release!: (
+      value: Awaited<ReturnType<AccountRuntime["validate"]>>
+    ) => void;
+    vi.mocked(runtime.validate).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    const refresh = controller.command({ operation: "refreshProfile" });
+    await vi.waitFor(() => expect(runtime.validate).toHaveBeenCalledTimes(2));
+    await controller.command({ operation: "signOut" });
+    release({ session: credentials, claims: { sub: profile.id } } as Awaited<
+      ReturnType<AccountRuntime["validate"]>
+    >);
+    await refresh;
+    expect(controller.current()).toMatchObject({
+      status: "signed_out",
+      profile: null,
+      stale: false
+    });
+    expect(runtime.save).not.toHaveBeenCalled();
+    expect(runtime.setProfile).not.toHaveBeenCalled();
+  });
+  it("reports secure storage failures without describing them as network errors", async () => {
+    const { controller, runtime } = fixture();
+    vi.mocked(runtime.getProfile).mockRejectedValueOnce(
+      new AccountOperationError(
+        "storage_unavailable",
+        new Error("private keychain data")
+      )
+    );
+    await controller.restore();
+    expect(controller.current()).toMatchObject({
+      status: "signed_out",
+      messageCode: "storage_unavailable"
+    });
+    expect(controller.current().message).toContain("Secure account storage");
+    expect(JSON.stringify(controller.current())).not.toMatch(
+      /WorkOS could not be reached|private keychain/
+    );
+  });
+  it("distinguishes browser launch failure from authentication failures", async () => {
+    const { controller, runtime } = fixture();
+    vi.mocked(runtime.begin).mockRejectedValueOnce(
+      new AccountOperationError("browser_unavailable")
+    );
+    await controller.command({ operation: "signIn", screen: "sign-in" });
+    expect(controller.current()).toMatchObject({
+      status: "signed_out",
+      messageCode: "browser_unavailable"
+    });
   });
   it("ignores callbacks after cancellation and callbacks from another environment", async () => {
     const { controller, runtime } = fixture();

@@ -8,12 +8,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage } from "electron";
-import type { Session } from "@workos/authkit-electron";
+import type { Session } from "@workos/authkit-session";
 import {
   accountProfileSchema,
   type AccountProfile
 } from "@koed-labs/shared/account";
 import type { AccountConfig } from "./config.js";
+import { AccountOperationError } from "./errors.js";
 
 type StoredAccount = {
   session: Session | null;
@@ -97,12 +98,16 @@ export function createAccountStorage(config: AccountConfig) {
       if (version !== epoch)
         throw new Error("Account storage operation was cancelled");
     };
-    const work = tail.then(async () => {
-      assertCurrent();
-      const data = await read(assertCurrent);
-      assertCurrent();
-      return operation(data, assertCurrent);
-    });
+    const work = tail
+      .then(async () => {
+        assertCurrent();
+        const data = await read(assertCurrent);
+        assertCurrent();
+        return operation(data, assertCurrent);
+      })
+      .catch((error) => {
+        throw new AccountOperationError("storage_unavailable", error);
+      });
     tail = work.catch(() => undefined);
     return work;
   };
@@ -156,7 +161,11 @@ export function createAccountStorage(config: AccountConfig) {
       epoch++;
       cached = null;
       // Clearing does not wait for a keychain prompt or permit an older write to revive the file.
-      if (existsSync(file)) unlinkSync(file);
+      try {
+        if (existsSync(file)) unlinkSync(file);
+      } catch {
+        throw new AccountOperationError("storage_unavailable");
+      }
       return session;
     }
   };

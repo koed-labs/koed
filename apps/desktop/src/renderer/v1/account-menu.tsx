@@ -55,11 +55,7 @@ export function AccountMenu({
   const profile = state.profile;
   const signingIn = state.status === "signing_in";
   const message =
-    state.status === "signed_out" &&
-    state.message ===
-      "Signed out on this device. Complete browser sign-out if prompted."
-      ? null
-      : state.message;
+    state.messageCode === "sign_out_complete" ? null : state.message;
   const name = profile?.displayName || profile?.email || "Account";
   const detail = error
     ? "Account action needs attention"
@@ -71,7 +67,7 @@ export function AccountMenu({
           ? "Sign in again"
           : profile
             ? state.stale
-              ? "Offline · Cached profile"
+              ? "Cached profile"
               : profile.email
             : "Sign in";
   return (

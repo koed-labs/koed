@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthKitCore, TokenRefreshError } from "@workos/authkit-session";
-import type { Session } from "@workos/authkit-electron";
+import type { Session } from "@workos/authkit-session";
 const os = vi.hoisted(() => ({
   directory: "",
   available: true,
@@ -71,6 +71,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   rmSync(os.directory, { recursive: true, force: true });
 });
 describe("account persistence boundary", () => {
@@ -97,7 +98,10 @@ describe("account persistence boundary", () => {
       new Error("Keychain locked")
     );
     const next = { ...session, refreshToken: "rotated-refresh-material" };
-    await expect(runtime.save(next)).rejects.toThrow("Keychain locked");
+    await expect(runtime.save(next)).rejects.toMatchObject({
+      code: "storage_unavailable",
+      cause: expect.objectContaining({ message: "Keychain locked" })
+    });
     expect(await runtime.read()).toEqual(session);
     expect(readdirSync(os.directory)).toHaveLength(1);
     await runtime.save(next);
@@ -122,7 +126,12 @@ describe("account persistence boundary", () => {
       }
     );
     const saving = runtime.save({ ...session, refreshToken: "later-refresh" });
-    const rejected = expect(saving).rejects.toThrow("cancelled");
+    const rejected = expect(saving).rejects.toMatchObject({
+      code: "storage_unavailable",
+      cause: expect.objectContaining({
+        message: expect.stringContaining("cancelled")
+      })
+    });
     await entered;
     expect(runtime.clear()?.user.id).toBe("user_1");
     expect(readdirSync(os.directory)).toEqual([]);
@@ -150,7 +159,12 @@ describe("account persistence boundary", () => {
     const open = vi.fn(async (_url: string) => undefined);
     const runtime = createAccountRuntime(config, open);
     const begin = runtime.begin("sign-in", () => true);
-    const rejected = expect(begin).rejects.toThrow("cancelled");
+    const rejected = expect(begin).rejects.toMatchObject({
+      code: "storage_unavailable",
+      cause: expect.objectContaining({
+        message: expect.stringContaining("cancelled")
+      })
+    });
     await entered;
     runtime.cancel();
     release();
@@ -182,7 +196,12 @@ describe("account persistence boundary", () => {
       }
     );
     const reading = runtime.read();
-    const rejected = expect(reading).rejects.toThrow("cancelled");
+    const rejected = expect(reading).rejects.toMatchObject({
+      code: "storage_unavailable",
+      cause: expect.objectContaining({
+        message: expect.stringContaining("cancelled")
+      })
+    });
     await entered;
     expect(runtime.clear()?.user.id).toBe("user_1");
     release();
@@ -209,7 +228,9 @@ describe("account persistence boundary", () => {
   it("never persists credentials without OS encryption", async () => {
     const runtime = createAccountRuntime(config, vi.fn());
     os.available = false;
-    await expect(runtime.save(session)).rejects.toThrow("secure storage");
+    await expect(runtime.save(session)).rejects.toMatchObject({
+      code: "storage_unavailable"
+    });
     expect(readdirSync(os.directory)).toEqual([]);
   });
   it("removes cached identity and credentials together on sign-out", async () => {
@@ -460,6 +481,24 @@ describe("account persistence boundary", () => {
       )
     ).toBe(false);
   });
+  it("rejects inherited administrative keys before client construction while preserving local credential access", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    vi.stubEnv("WORKOS_API_KEY", "synthetic-administrative-key-never-send");
+    const open = vi.fn();
+    const runtime = createAccountRuntime(config, open);
+    await runtime.save(session);
+    expect(await runtime.read()).toEqual(session);
+    await expect(runtime.begin("sign-in", () => true)).rejects.toMatchObject({
+      code: "configuration_invalid"
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(runtime.clear()).toEqual(session);
+    expect(process.env.WORKOS_API_KEY).toBe(
+      "synthetic-administrative-key-never-send"
+    );
+  });
   it("uses the HTTPS redirect with real SDK PKCE and exchanges only in main with WorkOS", async () => {
     const fetch = vi.fn(
       async (_url: unknown, _init?: RequestInit) =>
@@ -507,6 +546,10 @@ describe("account persistence boundary", () => {
       code: "synthetic-code"
     });
     expect(body.client_secret).toBeUndefined();
+    expect(new Headers(init?.headers).get("authorization")).toBeNull();
+    expect(JSON.stringify(fetch.mock.calls)).not.toContain(
+      "synthetic-administrative-key-never-send"
+    );
     expect(
       createHash("sha256").update(body.code_verifier).digest("base64url")
     ).toBe(authorization.searchParams.get("code_challenge"));

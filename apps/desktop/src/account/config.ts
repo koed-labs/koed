@@ -36,9 +36,10 @@ export function desktopAccountEnvironment(input: {
   const result = { ...input.environment };
   for (const [rootKey, accountKey] of Object.entries(desktopAccountKeys)) {
     const value =
-      input.environment[accountKey] ??
-      input.environment[rootKey] ??
-      fileValues[rootKey];
+      input.environment[accountKey]?.trim() ||
+      input.environment[rootKey]?.trim() ||
+      fileValues[rootKey]?.trim() ||
+      undefined;
     if (value !== undefined) result[accountKey] = value;
   }
   return result;
@@ -66,9 +67,11 @@ export function packagedAccountConfig(
   } catch {
     // Missing or invalid optional configuration never blocks local startup.
   }
-  const resolved = { ...defaults, ...environment };
-  // Packaged handoff destinations come only from the reviewed build artifact.
-  if (packaged)
-    resolved.KOED_ACCOUNT_FORWARDER_URL = defaults.KOED_ACCOUNT_FORWARDER_URL;
-  return accountConfig(resolved);
+  // Installed account behavior comes only from the reviewed build artifact.
+  const overrides = Object.fromEntries(
+    Object.values(desktopAccountKeys)
+      .map((key) => [key, environment[key]?.trim() || undefined])
+      .filter(([, value]) => value !== undefined)
+  );
+  return accountConfig(packaged ? defaults : { ...defaults, ...overrides });
 }

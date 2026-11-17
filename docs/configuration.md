@@ -1524,7 +1524,7 @@ Local Personal Memory remains available without sign-in.
 To enable accounts, set the five `DESKTOP_ACCOUNT_*` values in the root `.env`
 after running `pnpm env:sync` and `pnpm env:setup`.
 
-Explicit `KOED_ACCOUNT_*` process values take precedence over `DESKTOP_ACCOUNT_*`
+In source runs, nonempty `KOED_ACCOUNT_*` process values take precedence over `DESKTOP_ACCOUNT_*`
 process values and values from the root file. Packaged apps do not read checkout
 environment files. Local packaging reads the `KOED_ACCOUNT_*` process values
 and includes public account configuration in the app.
@@ -1532,8 +1532,8 @@ and includes public account configuration in the app.
 In `forwarder` mode, WorkOS returns to an HTTPS page that opens the native
 Desktop callback. Set `DESKTOP_ACCOUNT_FORWARDER_URL` to the full HTTPS callback
 URL, with the path `/desktop/callback`. Package builds use
-`KOED_ACCOUNT_FORWARDER_URL` and bundle the value. Installed apps ignore runtime
-overrides for this URL. Use `KOED_ACCOUNT_LOGIN_MODE=direct` to return from WorkOS
+`KOED_ACCOUNT_FORWARDER_URL` and bundle the value. Installed apps ignore all
+runtime account configuration overrides. Use `KOED_ACCOUNT_LOGIN_MODE=direct` to return from WorkOS
 directly to Desktop. Both modes use the same encrypted session file within an
 environment.
 

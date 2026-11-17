@@ -109,7 +109,6 @@ export default defineConfig({
     ]
   },
   test: {
-    server: { deps: { inline: ["@workos/authkit-electron"] } },
     // Ignored dependency snapshots and preview checkouts are not test sources.
     exclude: [...configDefaults.exclude, "scratch/**", ".pnpm-store/**"],
     globals: true,

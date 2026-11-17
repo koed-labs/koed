@@ -84,6 +84,32 @@ describe("source Desktop account environment", () => {
       )?.redirectUri
     ).toBe("https://canonical.example.test/desktop/callback");
   });
+  it("treats blank source overrides as unset and defaults a blank local login mode to direct", () => {
+    writeFileSync(join(directory, ".env"), rootConfig);
+    expect(
+      accountConfig(
+        load({
+          KOED_ACCOUNT_ENABLED: " ",
+          KOED_ACCOUNT_CLIENT_ID: "",
+          DESKTOP_ACCOUNT_CLIENT_ID: " ",
+          KOED_ACCOUNT_LOGIN_MODE: "",
+          KOED_ACCOUNT_FORWARDER_URL: " "
+        })
+      )
+    ).toMatchObject({
+      clientId: "client_rootfixture",
+      loginMode: "forwarder",
+      redirectUri: FORWARDER_URL
+    });
+    expect(
+      accountConfig({
+        KOED_ACCOUNT_ENABLED: "true",
+        KOED_ACCOUNT_CLIENT_ID: "client_test",
+        KOED_ACCOUNT_ENVIRONMENT: "staging",
+        KOED_ACCOUNT_LOGIN_MODE: " "
+      })
+    ).toMatchObject({ loginMode: "direct" });
+  });
   it("supports an explicit source env path and leaves missing files optional", () => {
     expect(accountConfig(load())).toBeNull();
     writeFileSync(join(directory, ".env"), "DESKTOP_ACCOUNT_ENABLED=false\n");
@@ -139,7 +165,7 @@ describe("packaged public account configuration", () => {
       )
     ).toMatchObject({ environment: "staging", loginMode: "forwarder" });
   });
-  it("supports Finder launches with public packaged defaults and explicit disablement", () => {
+  it("supports Finder launches and ignores runtime account disablement", () => {
     const file = join(directory, "account-config.json");
     writeFileSync(
       file,
@@ -157,7 +183,7 @@ describe("packaged public account configuration", () => {
     });
     expect(
       packagedAccountConfig(file, { KOED_ACCOUNT_ENABLED: "false" })
-    ).toBeNull();
+    ).toMatchObject({ clientId: "client_test", environment: "production" });
   });
   it("uses a configured HTTPS staging redirect while keeping the native callback and direct mode", () => {
     const file = join(directory, "account-config.json");
@@ -179,13 +205,17 @@ describe("packaged public account configuration", () => {
       callbackUri: "ai.koed.desktop.auth.dev://callback"
     });
     expect(
-      packagedAccountConfig(file, { KOED_ACCOUNT_LOGIN_MODE: "direct" })
+      packagedAccountConfig(
+        file,
+        { KOED_ACCOUNT_LOGIN_MODE: "direct" },
+        { packaged: false }
+      )
     ).toMatchObject({
       loginMode: "direct",
       redirectUri: "ai.koed.desktop.auth.dev://callback"
     });
   });
-  it("bundles the configured production URL and ignores a runtime forwarder override", () => {
+  it("bundles the production configuration and ignores all runtime account overrides", () => {
     const file = join(directory, "account-config.json");
     writeFileSync(
       file,
@@ -204,6 +234,16 @@ describe("packaged public account configuration", () => {
       redirectUri: FORWARDER_URL,
       callbackUri: "ai.koed.desktop.auth://callback"
     });
+    expect(
+      packagedAccountConfig(file, {
+        KOED_ACCOUNT_ENABLED: "false",
+        KOED_ACCOUNT_CLIENT_ID: "client_override",
+        KOED_ACCOUNT_ENVIRONMENT: "staging",
+        KOED_ACCOUNT_LOGIN_MODE: "direct",
+        KOED_ACCOUNT_FORWARDER_URL:
+          "https://runtime.example.test/desktop/callback"
+      })
+    ).toEqual(packagedAccountConfig(file, {}));
     expect(
       packagedAccountConfig(
         file,
@@ -225,7 +265,11 @@ describe("packaged public account configuration", () => {
       )?.redirectUri
     ).toBe("https://source.example.test/desktop/callback");
     expect(
-      packagedAccountConfig(file, { KOED_ACCOUNT_LOGIN_MODE: "direct" })
+      packagedAccountConfig(
+        file,
+        { KOED_ACCOUNT_LOGIN_MODE: "direct" },
+        { packaged: false }
+      )
     ).toMatchObject({
       loginMode: "direct",
       redirectUri: "ai.koed.desktop.auth://callback",
@@ -317,6 +361,20 @@ describe("packaged public account configuration", () => {
         packagedAccountConfig(file, override, { packaged: true })
       ).toBeNull();
     }
+  });
+  it("does not enable a disabled installed package from the process environment", () => {
+    const file = join(directory, "account-config.json");
+    writeFileSync(file, JSON.stringify({ enabled: false }));
+    const runtime = {
+      KOED_ACCOUNT_ENABLED: "true",
+      KOED_ACCOUNT_CLIENT_ID: "client_runtime",
+      KOED_ACCOUNT_ENVIRONMENT: "production",
+      KOED_ACCOUNT_LOGIN_MODE: "direct"
+    };
+    expect(packagedAccountConfig(file, runtime)).toBeNull();
+    expect(
+      packagedAccountConfig(file, runtime, { packaged: false })
+    ).not.toBeNull();
   });
   it("leaves accounts unavailable for malformed or secret-bearing files", () => {
     const file = join(directory, "account-config.json");

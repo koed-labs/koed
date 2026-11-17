@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, URL } from "node:url";
 import process from "node:process";
 import console from "node:console";
 import {
@@ -31,7 +31,7 @@ export function desktopAccountBuildConfig({
     readFileSync(resolve(appDirectory, "account-config.json"), "utf8")
   );
   const enabled =
-    environment.KOED_ACCOUNT_ENABLED ??
+    (environment.KOED_ACCOUNT_ENABLED?.trim() || undefined) ??
     (release ? undefined : String(source.enabled));
   if (enabled !== "true" && enabled !== "false")
     throw new Error(
@@ -41,18 +41,18 @@ export function desktopAccountBuildConfig({
   const config = {
     enabled: true,
     clientId:
-      environment.KOED_ACCOUNT_CLIENT_ID?.trim() ??
+      (environment.KOED_ACCOUNT_CLIENT_ID?.trim() || undefined) ??
       (release ? undefined : source.clientId),
     environment:
-      environment.KOED_ACCOUNT_ENVIRONMENT?.trim() ??
+      (environment.KOED_ACCOUNT_ENVIRONMENT?.trim() || undefined) ??
       (release ? undefined : source.environment),
     loginMode:
-      environment.KOED_ACCOUNT_LOGIN_MODE?.trim() ??
+      (environment.KOED_ACCOUNT_LOGIN_MODE?.trim() || undefined) ??
       (release ? undefined : (source.loginMode ?? "direct"))
   };
   if (config.loginMode === "forwarder")
     config.forwarderUrl =
-      environment.KOED_ACCOUNT_FORWARDER_URL?.trim() ??
+      (environment.KOED_ACCOUNT_FORWARDER_URL?.trim() || undefined) ??
       (release ? undefined : source.forwarderUrl);
   if (release && config.environment !== "production")
     throw new Error(
@@ -92,10 +92,47 @@ export function prepareDesktopAccountConfig(options = {}) {
 }
 
 export default function beforePack(context) {
-  prepareDesktopAccountConfig({
+  const config = prepareDesktopAccountConfig({
     appDirectory: context.packager.projectDir,
     release: process.env.KOED_ACCOUNT_RELEASE === "true"
   });
+  const native = config.enabled
+    ? resolveAccountConfig({
+        KOED_ACCOUNT_ENABLED: "true",
+        KOED_ACCOUNT_CLIENT_ID: config.clientId,
+        KOED_ACCOUNT_ENVIRONMENT: config.environment,
+        KOED_ACCOUNT_LOGIN_MODE: config.loginMode,
+        KOED_ACCOUNT_FORWARDER_URL: config.forwarderUrl
+      })?.callbackUri
+    : undefined;
+  // beforePack runs before native metadata is generated on macOS and Linux.
+  const configured = context.packager.config.protocols;
+  const protocols = Array.isArray(configured)
+    ? configured
+    : configured
+      ? [configured]
+      : [];
+  const unrelated = protocols
+    .map((protocol) => ({
+      ...protocol,
+      schemes: protocol.schemes.filter(
+        (scheme) =>
+          scheme !== "ai.koed.desktop.auth" &&
+          scheme !== "ai.koed.desktop.auth.dev"
+      )
+    }))
+    .filter((protocol) => protocol.schemes.length > 0);
+  context.packager.config.protocols = [
+    ...unrelated,
+    ...(native
+      ? [
+          {
+            name: "Koed account sign-in",
+            schemes: [new URL(native).protocol.slice(0, -1)]
+          }
+        ]
+      : [])
+  ];
 }
 
 if (

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
   mkdirSync,
+  copyFileSync,
+  symlinkSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -9,9 +11,11 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import process from "node:process";
+import { execFileSync } from "node:child_process";
 import { createPackage } from "@electron/asar";
 import { resolveAccountConfig } from "@koed-labs/shared/account";
-import {
+import beforePack, {
   desktopAccountBuildConfig,
   prepareDesktopAccountConfig
 } from "./prepare-account-config.mjs";
@@ -304,6 +308,110 @@ test("inspects ASAR config for disabled and production builds and rejects missin
     verifyPackagedAccountConfig(asar, {
       appDirectory: f.appDirectory,
       environment: production
+    })
+  );
+});
+
+test("the release CLI uses only explicit production inputs and fails closed without a forwarder", (t) => {
+  const f = fixture(t);
+  const scripts = resolve(f.appDirectory, "scripts");
+  mkdirSync(scripts);
+  copyFileSync(
+    resolve(import.meta.dirname, "prepare-account-config.mjs"),
+    resolve(scripts, "prepare-account-config.mjs")
+  );
+  symlinkSync(
+    resolve(import.meta.dirname, "../node_modules"),
+    resolve(f.appDirectory, "node_modules"),
+    "dir"
+  );
+  const run = (environment) =>
+    execFileSync(
+      process.execPath,
+      [resolve(scripts, "prepare-account-config.mjs"), "--release"],
+      {
+        env: { ...process.env, ...environment },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+  assert.match(run(production), /Prepared production Desktop accounts/);
+  assert.equal(
+    JSON.parse(readFileSync(f.output, "utf8")).forwarderUrl,
+    production.KOED_ACCOUNT_FORWARDER_URL
+  );
+  assert.throws(() => run({ ...production, KOED_ACCOUNT_FORWARDER_URL: "" }));
+  assert.equal(existsSync(f.output), false);
+  assert.match(
+    run({ KOED_ACCOUNT_ENABLED: "false" }),
+    /Prepared disabled Desktop accounts/
+  );
+});
+test("beforePack registers only the selected account scheme and preserves pairing", (t) => {
+  const f = fixture(t);
+  const keys = [...Object.keys(production), "KOED_ACCOUNT_RELEASE"];
+  const previous = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]])
+  );
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  for (const [environment, schemes] of [
+    [production, ["koed-pair", "ai.koed.desktop.auth"]],
+    [
+      { ...production, KOED_ACCOUNT_ENVIRONMENT: "staging" },
+      ["koed-pair", "ai.koed.desktop.auth.dev"]
+    ],
+    [{ ...production, KOED_ACCOUNT_ENABLED: "false" }, ["koed-pair"]]
+  ]) {
+    Object.assign(process.env, environment);
+    delete process.env.KOED_ACCOUNT_RELEASE;
+    const config = {
+      protocols: [
+        { name: "pairing", schemes: ["koed-pair"] },
+        {
+          name: "old",
+          schemes: ["ai.koed.desktop.auth", "ai.koed.desktop.auth.dev"]
+        }
+      ]
+    };
+    beforePack({ packager: { projectDir: f.appDirectory, config } });
+    assert.deepEqual(
+      config.protocols.flatMap((protocol) => protocol.schemes),
+      schemes
+    );
+  }
+});
+test("blank local settings fall back to source defaults while releases still require explicit inputs", (t) => {
+  const f = fixture(t);
+  writeFileSync(
+    resolve(f.appDirectory, "account-config.json"),
+    JSON.stringify({
+      enabled: true,
+      clientId: "client_fixture",
+      environment: "staging",
+      loginMode: "forwarder",
+      forwarderUrl: "https://source.example.test/desktop/callback"
+    })
+  );
+  const blanks = Object.fromEntries(
+    Object.keys(production).map((key) => [key, " "])
+  );
+  assert.equal(
+    desktopAccountBuildConfig({
+      appDirectory: f.appDirectory,
+      environment: blanks
+    }).forwarderUrl,
+    "https://source.example.test/desktop/callback"
+  );
+  assert.throws(() =>
+    desktopAccountBuildConfig({
+      appDirectory: f.appDirectory,
+      environment: blanks,
+      release: true
     })
   );
 });

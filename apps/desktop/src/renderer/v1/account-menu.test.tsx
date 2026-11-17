@@ -168,6 +168,25 @@ describe("rail account menu", () => {
     root = createRoot(mount);
   });
 
+  it("hides successful sign-out by code and preserves sign-out errors", async () => {
+    const f = fixture({
+      ...signedOut,
+      messageCode: "sign_out_complete",
+      message: "Different success wording"
+    });
+    await render(f.api);
+    await open();
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toContain(
+      "Different success wording"
+    );
+    await act(async () =>
+      f.publish({
+        messageCode: "browser_sign_out_failed",
+        message: "Browser logout failed"
+      })
+    );
+    expect(document.body.textContent).toContain("Browser logout failed");
+  });
   it("keeps unknown availability hidden after a bridge failure and retries the local read on focus", async () => {
     const f = fixture();
     vi.mocked(f.api.getState).mockRejectedValueOnce(

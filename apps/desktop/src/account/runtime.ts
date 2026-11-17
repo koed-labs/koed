@@ -1,34 +1,50 @@
 import {
   AuthKitCore,
   AuthOperations,
-  sessionEncryption
+  sessionEncryption,
+  type AuthKitPublicConfig,
+  type Session
 } from "@workos/authkit-session";
-import type { Session } from "@workos/authkit-electron";
-import {
-  createPublicWorkOS,
-  toAuthKitConfig
-} from "@workos/authkit-electron/internals";
+import { createWorkOS, type WorkOS } from "@workos-inc/node";
 import {
   accountProfileSchema,
   accountProfilePictureUrlSchema
 } from "@koed-labs/shared/account";
 import type { AccountConfig } from "./config.js";
 import { createAccountStorage } from "./storage.js";
+import { AccountOperationError } from "./errors.js";
 
 export function createAccountRuntime(
   config: AccountConfig,
   openExternal: (url: string) => Promise<unknown>
 ) {
   const storage = createAccountStorage(config);
-  const client = createPublicWorkOS(config.clientId);
-  let sdk: { core: AuthKitCore; operations: AuthOperations } | undefined;
+  let sdk:
+    | { core: AuthKitCore; operations: AuthOperations; client: WorkOS }
+    | undefined;
   const provider = async () => {
     if (!sdk) {
+      // The pinned SDK inherits this key even through its public factory.
+      // Check immediately before construction, without changing global state.
+      if (process.env.WORKOS_API_KEY !== undefined)
+        throw new AccountOperationError("configuration_invalid");
+      // Core types a full WorkOS client but uses only public operations here.
+      const client = createWorkOS({
+        clientId: config.clientId
+      }) as unknown as WorkOS;
       const password = await storage.cookiePassword();
       if (!sdk) {
-        const sdkConfig = toAuthKitConfig(config, password);
+        const sdkConfig: AuthKitPublicConfig = {
+          clientId: config.clientId,
+          redirectUri: config.redirectUri,
+          cookiePassword: password,
+          cookieName: "wos-session",
+          cookieMaxAge: 60 * 60 * 24 * 400,
+          apiHttps: true
+        };
         const core = new AuthKitCore(sdkConfig, client, sessionEncryption);
         sdk = {
+          client,
           core,
           operations: new AuthOperations(
             core,
@@ -52,7 +68,13 @@ export function createAccountRuntime(
 
       if (!isCurrent()) return;
       await storage.setPending(sealedState);
-      if (isCurrent()) await openExternal(url);
+      if (isCurrent()) {
+        try {
+          await openExternal(url);
+        } catch (error) {
+          throw new AccountOperationError("browser_unavailable", error);
+        }
+      }
     },
     hasPending: storage.hasPending,
     cancel: () => {
@@ -62,7 +84,7 @@ export function createAccountRuntime(
     setProfile: storage.setProfile,
     async callback(code: string, state: string) {
       const stored = await storage.takePending(state);
-      const { core } = await provider();
+      const { core, client } = await provider();
       const { codeVerifier } = await core.verifyCallbackState({
         stateFromUrl: state,
         cookieValue: stored ?? undefined

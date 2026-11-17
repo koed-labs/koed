@@ -52,8 +52,6 @@ export default defineConfig(({ mode }) => ({
     }
   },
   test: {
-    // Transform the public SDK adapter so Electron's test mock applies to its imports.
-    server: { deps: { inline: ["@workos/authkit-electron"] } },
     setupFiles: ["../../scripts/vitest-react-setup.mjs"],
     alias: {
       "@koed-labs/mcp-server/managed-conversation-command-types": resolve(

@@ -53,7 +53,7 @@ export function resolveAccountConfig(
     enabled: true,
     clientId: environment.KOED_ACCOUNT_CLIENT_ID?.trim(),
     environment: environment.KOED_ACCOUNT_ENVIRONMENT?.trim(),
-    loginMode: environment.KOED_ACCOUNT_LOGIN_MODE?.trim() ?? "direct",
+    loginMode: environment.KOED_ACCOUNT_LOGIN_MODE?.trim() || "direct",
     forwarderUrl:
       environment.KOED_ACCOUNT_LOGIN_MODE?.trim() === "forwarder"
         ? environment.KOED_ACCOUNT_FORWARDER_URL
@@ -116,6 +116,19 @@ export const accountProfileSchema = z
     profilePictureUrl: accountProfilePictureUrlSchema.nullable().optional()
   })
   .strict();
+export const accountMessageCodeSchema = z.enum([
+  "configuration_invalid",
+  "storage_unavailable",
+  "browser_unavailable",
+  "operation_failed",
+  "session_expired",
+  "sign_out_complete",
+  "sign_out_failed",
+  "browser_sign_out_failed",
+  "sign_in_expired",
+  "sign_in_failed"
+]);
+export type AccountMessageCode = z.infer<typeof accountMessageCodeSchema>;
 export const accountStateSchema = z
   .object({
     status: z.enum([
@@ -130,6 +143,7 @@ export const accountStateSchema = z
     stale: z.boolean(),
     busy: z.boolean(),
     message: z.string().max(300).nullable(),
+    messageCode: accountMessageCodeSchema.nullable().optional(),
     revision: z.number().int().nonnegative()
   })
   .strict();

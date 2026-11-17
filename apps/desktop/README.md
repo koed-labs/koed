@@ -190,7 +190,8 @@ Source builds disable optional WorkOS sign-in and hide the account badge.
 To enable it locally, set the five `DESKTOP_ACCOUNT_*` values in the root `.env`
 after running `pnpm env:setup`. Packaged apps read their bundled account
 configuration instead of checkout environment files. The forwarder URL comes
-from build configuration and stays fixed in the installed app. See
+from build configuration. The complete account configuration stays fixed in
+the installed app. See
 [Desktop accounts](../../docs/desktop-accounts.md) for developer setup and local
 package configuration.
 Local Personal Memory remains available without sign-in.

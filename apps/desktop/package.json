@@ -43,7 +43,6 @@
     "@koed-labs/server": "workspace:*",
     "@koed-labs/shared": "workspace:*",
     "@workos-inc/node": "10.4.0",
-    "@workos/authkit-electron": "0.1.2",
     "@workos/authkit-session": "0.9.1",
     "ws": "8.21.3",
     "zod": "^4.4.3"
