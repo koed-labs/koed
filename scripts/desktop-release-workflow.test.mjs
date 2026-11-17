@@ -18,8 +18,38 @@ test("all job dependencies exist; publication requires successful signer", () =>
     /needs\['signed-desktop-release-assets'\]\.result == 'success'/
   );
 });
+test("macOS release jobs route separately and Linux stays hosted", () => {
+  for (const [name, route] of [
+    ["frozen-component-release-assets", "route-frozen-components"],
+    ["frozen-macos-native-runtime", "route-frozen-macos-runtime"],
+    ["macos-native-packages", "route-macos-native-packages"],
+    ["standalone-koed-server-release-assets", "route-standalone-server"]
+  ]) {
+    assert.ok(jobs[name].needs.includes(route));
+    assert.equal(
+      jobs[route].uses,
+      "./.github/workflows/route-macos-runner.yml"
+    );
+    assert.match(
+      jobs[name]["runs-on"],
+      new RegExp(`needs\\.${route}\\.outputs\\.runner`)
+    );
+  }
+  for (const name of [
+    "frozen-component-release-assets",
+    "standalone-koed-server-release-assets"
+  ]) {
+    const matrix = jobs[name].strategy.matrix.include;
+    assert.equal(
+      matrix.find((entry) => entry.platform === "linux").runner,
+      "ubuntu-24.04"
+    );
+    assert.match(jobs[name]["runs-on"], /matrix\.platform == 'macos'/);
+  }
+});
 test("signer restricted to approved main SHA, inline production builder, scoped secrets", () => {
   assert.equal(desktop.environment, "desktop-release");
+  assert.equal(desktop["runs-on"], "xcode-27");
   assert.match(desktop.if, /github.ref == 'refs\/heads\/main'/);
   assert.equal(step("Checkout").with.ref, "${{ github.sha }}");
   assert.match(

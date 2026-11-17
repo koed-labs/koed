@@ -11,11 +11,11 @@ acceptance test remain separate qualification gates.
 ## Trust boundary
 
 The build job checks out and executes the requested PR **without Apple signing or
-notarization credentials**. A fresh trusted-main inspector downloads the run's
+notarization credentials**. A separate trusted-main inspector downloads the run's
 unsigned artifact, checks its archive and bundle, independently hashes it, and
 posts a tuple to the workflow summary. A protected environment requires an
 independent reviewer to inspect the exact tuple and candidate changes before
-approval. The fresh signer checks the tuple, current PR head, protected main,
+approval. The signer checks the tuple, current PR head, protected main,
 environment policy, artifact ID, and digest again before signing. It processes
 candidate files as hostile data and does not run candidate executables, scripts,
 hooks, entitlements, packaging configuration, or dependencies.
@@ -23,11 +23,11 @@ hooks, entitlements, packaging configuration, or dependencies.
 The signer uses a temporary keychain and trusted-main signing code and
 entitlements, refreshes runtime manifests after nested signing and before the
 outer seal, then notarizes and staples an app ZIP and a DMG. It uploads an
-explicitly **UNVERIFIED** intermediate. A separate runner without Apple signing
-material verifies hashes, Team ID, signatures, Gatekeeper and stapling, then runs
+explicitly **UNVERIFIED** intermediate. A separate job without Apple signing
+secrets verifies hashes, Team ID, signatures, Gatekeeper and stapling, then runs
 trusted-main smoke of the candidate-reported CLI version and Desktop ready/quit
 lifecycle.
-A final fresh job re-downloads the original signed bytes,
+A final GitHub-hosted job re-downloads the original signed bytes,
 checks their hashes, and uploads a tester-ready artifact only after smoke succeeds.
 The intermediate can still be downloaded by people with Actions access; it is not
 a passed candidate. Artifacts are retained for 14 days and are not confidential.
@@ -78,10 +78,24 @@ restrict that authority and monitor changes.
    commit or print credential material.
 
 The macOS `security` tool receives the transient keychain password and `.p12`
-password as process arguments. A fresh isolated runner and the absence of candidate
-execution in that job limit exposure, but administrators must restrict runner and
-job diagnostics access; do not use a persistent self-hosted runner. Cleanup failure
-fails the job and prevents artifact upload.
+password as process arguments. Restrict runner and job diagnostics access. Cleanup
+failure fails the job and prevents artifact upload.
+
+Candidate and production signing jobs run on fresh GitHub-hosted runners, not on
+the persistent Macs. The build, inspection and smoke jobs can run on those Macs;
+malicious candidate code can persist there and tamper with later jobs and artifacts.
+The runners are also available to other eligible repository workflows, not just
+this manual workflow: a PR that changes a workflow may be able to target them,
+subject to GitHub's workflow approval policies. Routing alone does not restrict
+runner access. See GitHub's self-hosted runner security guidance.
+
+Before each non-signing macOS job, a GitHub-hosted router polls for either idle
+`koed-shf-macos-arm64` or `koed-zom-macos-arm64` for up to two minutes, then
+selects GitHub-hosted `xcode-27` macOS 27 ARM64. Set the repository secret
+`KOED_RUNNER_STATUS_TOKEN` to a fine-grained token with repository Administration
+read access; missing credentials or API errors fall back to GitHub-hosted. Selection
+is not a reservation: concurrent routers can select the same runner, and a runner
+that goes offline after selection can leave a job queued.
 
 ## Dispatch and review
 

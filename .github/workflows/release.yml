@@ -168,11 +168,18 @@ jobs:
           )"
           echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
 
+  route-frozen-components:
+    needs: release
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+    uses: ./.github/workflows/route-macos-runner.yml
+    secrets:
+      KOED_RUNNER_STATUS_TOKEN: ${{ secrets.KOED_RUNNER_STATUS_TOKEN }}
+
   frozen-component-release-assets:
     name: Freeze component assets (${{ matrix.platform }} ${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform == 'macos' && fromJSON(needs.route-frozen-components.outputs.runner) || matrix.runner }}
     timeout-minutes: 30
-    needs: release
+    needs: [release, route-frozen-components]
     if: needs.release.outputs.desktop_assets_enabled == 'true'
     permissions:
       contents: read
@@ -185,7 +192,7 @@ jobs:
             runner: ubuntu-24.04
           - platform: macos
             arch: arm64
-            runner: macos-15
+            runner: xcode-27
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -335,11 +342,18 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
         run: node scripts/ensure-release-assets.mjs "$TAG" release-native/*
 
-  frozen-macos-native-runtime:
-    name: Build and freeze macOS native runtime
+  route-frozen-macos-runtime:
     needs: release
     if: needs.release.outputs.desktop_assets_enabled == 'true'
-    runs-on: macos-15
+    uses: ./.github/workflows/route-macos-runner.yml
+    secrets:
+      KOED_RUNNER_STATUS_TOKEN: ${{ secrets.KOED_RUNNER_STATUS_TOKEN }}
+
+  frozen-macos-native-runtime:
+    name: Build and freeze macOS native runtime
+    needs: [release, route-frozen-macos-runtime]
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+    runs-on: ${{ fromJSON(needs.route-frozen-macos-runtime.outputs.runner) }}
     timeout-minutes: 150
     permissions:
       contents: read
@@ -395,11 +409,24 @@ jobs:
           compression-level: 0
           retention-days: 30
 
-  macos-native-packages:
-    name: Stage frozen macOS core and complete native catalog
+  route-macos-native-packages:
     needs: [release, linux-native-packages, frozen-macos-native-runtime]
     if: needs.release.outputs.desktop_assets_enabled == 'true'
-    runs-on: macos-15
+    uses: ./.github/workflows/route-macos-runner.yml
+    secrets:
+      KOED_RUNNER_STATUS_TOKEN: ${{ secrets.KOED_RUNNER_STATUS_TOKEN }}
+
+  macos-native-packages:
+    name: Stage frozen macOS core and complete native catalog
+    needs:
+      [
+        release,
+        linux-native-packages,
+        frozen-macos-native-runtime,
+        route-macos-native-packages
+      ]
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+    runs-on: ${{ fromJSON(needs.route-macos-native-packages.outputs.runner) }}
     timeout-minutes: 45
     permissions:
       contents: write
@@ -479,13 +506,26 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
         run: node scripts/ensure-release-assets.mjs "$TAG" release-native/koed-native-core-*-macos-arm64.tar.gz release-native/koed-native-core-*-macos-arm64.tar.gz.sha256 release-native/native-core-manifest-macos-arm64.json release-native/native-runtime-catalog.json
 
+  route-standalone-server:
+    needs: [release, component-manifest-catalog, macos-native-packages]
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+    uses: ./.github/workflows/route-macos-runner.yml
+    secrets:
+      KOED_RUNNER_STATUS_TOKEN: ${{ secrets.KOED_RUNNER_STATUS_TOKEN }}
+
   standalone-koed-server-release-assets:
     name: Standalone koed-server release assets (${{ matrix.platform }} ${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform == 'macos' && fromJSON(needs.route-standalone-server.outputs.runner) || matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: write
-    needs: [release, component-manifest-catalog, macos-native-packages]
+    needs:
+      [
+        release,
+        component-manifest-catalog,
+        macos-native-packages,
+        route-standalone-server
+      ]
     if: needs.release.outputs.desktop_assets_enabled == 'true'
     env:
       KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json
@@ -498,7 +538,7 @@ jobs:
             runner: ubuntu-24.04
           - platform: macos
             arch: arm64
-            runner: macos-15
+            runner: xcode-27
 
     steps:
       - name: Checkout
@@ -890,7 +930,7 @@ jobs:
 
   signed-desktop-release-assets:
     name: Signed Desktop release assets
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 150
     needs:
       [

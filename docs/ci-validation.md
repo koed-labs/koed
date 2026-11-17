@@ -131,7 +131,11 @@ default-branch payload but cannot populate a cache for other pull requests. A
 separate `Native runtime cache` workflow is the only writer for this payload. It
 runs from trusted `push`, scheduled, or manual events on `main`, validates every
 restored payload, and saves a cold-built payload only after independent
-validation succeeds. Its immutable key has no partial restore fallback.
+validation succeeds. Its immutable key has no partial restore fallback. PR macOS
+jobs run on GitHub-hosted `xcode-27`; cache maintenance prefers the persistent
+self-hosted Mac and falls back to `xcode-27` after a bounded availability check.
+Different Xcode fingerprints result in different cache entries. See
+[signed candidate runner setup and risks](signed-candidate-artifacts.md).
 
 This tier builds and ad-hoc-signs the Electron `dir` target, verifies the
 unpacked `.app` once, and runs the complete healthy packaged smoke. The pinned

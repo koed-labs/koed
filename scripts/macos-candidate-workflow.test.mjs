@@ -14,20 +14,41 @@ const workflow = () =>
     )
   );
 
-test("candidate workflow is manual, least privilege and separated across fresh jobs", () => {
+test("candidate workflow is manual, least privilege and separated across jobs", () => {
   const yaml = workflow();
   assert.deepEqual(Object.keys(yaml.on), ["workflow_dispatch"]);
   assert.deepEqual(Object.keys(yaml.jobs), [
     "prepare",
+    "route-build",
     "build",
+    "route-inspect",
     "inspect",
     "sign",
+    "route-smoke",
     "smoke",
     "publish"
   ]);
+  for (const job of ["build", "inspect", "smoke"]) {
+    const route = `route-${job}`;
+    assert.ok(yaml.jobs[job].needs.includes(route));
+    assert.equal(
+      yaml.jobs[route].uses,
+      "./.github/workflows/route-macos-runner.yml"
+    );
+    assert.equal(
+      yaml.jobs[job]["runs-on"],
+      `\${{ fromJSON(needs.${route}.outputs.runner) }}`
+    );
+  }
   assert.equal(yaml.jobs.sign.environment, "desktop-candidate-signing");
   assert.deepEqual(yaml.jobs.sign.needs, ["prepare", "inspect"]);
-  assert.deepEqual(yaml.jobs.smoke.needs, ["prepare", "inspect", "sign"]);
+  assert.equal(yaml.jobs.sign["runs-on"], "xcode-27");
+  assert.deepEqual(yaml.jobs.smoke.needs, [
+    "prepare",
+    "inspect",
+    "sign",
+    "route-smoke"
+  ]);
   assert.deepEqual(yaml.jobs.publish.needs, [
     "prepare",
     "inspect",
