@@ -26,6 +26,8 @@ files:
   - "!node_modules/@koed-labs/server/**/*.test.ts"
   - "!node_modules/@koed-labs/server/tsconfig.json"
   - "!node_modules/@koed-labs/server/tsconfig.tsbuildinfo"
+  # SDK dependencies use these declarations during development, not at runtime.
+  - "!node_modules/type-fest/**"
 
 asarUnpack:
   - dist-electron/koed-server/node-entrypoint-runner.js

@@ -2,10 +2,19 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "yaml";
+import { desktopAccountBuildConfig } from "../apps/desktop/scripts/prepare-account-config.mjs";
 const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const jobs = workflow.jobs;
 const desktop = jobs["signed-desktop-release-assets"];
 const step = (name) => desktop.steps.find((s) => s.name === name);
+test("CI supplies disabled account configuration to release packaging without provider credentials", () => {
+  const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  assert.equal(ci.env.KOED_ACCOUNT_ENABLED, "false");
+  assert.deepEqual(
+    desktopAccountBuildConfig({ environment: ci.env, release: true }),
+    { enabled: false }
+  );
+});
 test("both Desktop release jobs generate public production config before packaging", () => {
   for (const [name, buildName] of [
     ["signed-desktop-release-assets", "Build signed Desktop artifacts"],
