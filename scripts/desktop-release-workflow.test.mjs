@@ -6,6 +6,60 @@ const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const jobs = workflow.jobs;
 const desktop = jobs["signed-desktop-release-assets"];
 const step = (name) => desktop.steps.find((s) => s.name === name);
+test("both Desktop release jobs generate public production config before packaging", () => {
+  for (const [name, buildName] of [
+    ["signed-desktop-release-assets", "Build signed Desktop artifacts"],
+    ["linux-desktop-release-assets", "Build Linux Desktop artifacts"]
+  ]) {
+    const job = jobs[name];
+    assert.equal(
+      job.env.KOED_ACCOUNT_ENABLED,
+      "${{ vars.DESKTOP_ACCOUNT_ENABLED || 'false' }}"
+    );
+    assert.equal(
+      job.env.KOED_ACCOUNT_CLIENT_ID,
+      "${{ vars.DESKTOP_ACCOUNT_CLIENT_ID }}"
+    );
+    assert.equal(job.env.KOED_ACCOUNT_ENVIRONMENT, "production");
+    assert.equal(
+      job.env.KOED_ACCOUNT_LOGIN_MODE,
+      "${{ vars.DESKTOP_ACCOUNT_LOGIN_MODE }}"
+    );
+    assert.equal(
+      job.env.KOED_ACCOUNT_FORWARDER_URL,
+      "${{ vars.DESKTOP_ACCOUNT_FORWARDER_URL }}"
+    );
+    const prepare = job.steps.findIndex(
+      (s) => s.name === "Prepare Desktop account configuration"
+    );
+    assert.ok(
+      prepare >= 0 && prepare < job.steps.findIndex((s) => s.name === buildName)
+    );
+    assert.match(
+      job.steps[prepare].run,
+      /prepare-account-config\.mjs --release/
+    );
+  }
+  const builder = parse(
+    readFileSync("apps/desktop/electron-builder.yml", "utf8")
+  );
+  assert.equal(builder.beforePack, "scripts/prepare-account-config.mjs");
+  assert.ok(
+    builder.files.some(
+      (value) =>
+        value.from === ".account-build" &&
+        value.to === "." &&
+        value.filter.includes("account-config.json")
+    )
+  );
+  assert.ok(!builder.files.includes("account-config.json"));
+  const pkg = JSON.parse(readFileSync("apps/desktop/package.json", "utf8"));
+  for (const command of ["package:release", "package:linux:release"])
+    assert.match(
+      pkg.scripts[command],
+      /KOED_ACCOUNT_RELEASE=true .*electron-builder/
+    );
+});
 test("all job dependencies exist; publication requires successful signer", () => {
   for (const job of Object.values(jobs))
     for (const need of [job.needs ?? []].flat())

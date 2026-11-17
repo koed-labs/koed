@@ -20,6 +20,8 @@ import {
   Settings
 } from "lucide-react";
 import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
+import { AccountMenu } from "./account-menu.js";
+import type { AccountDesktopApi } from "@koed-labs/shared/account";
 import {
   DesktopUpdateDot,
   DesktopUpdateNotice
@@ -54,6 +56,7 @@ type Props = {
   onRetry: () => void;
   management?: SidebarManagement;
   update?: DesktopUpdateController;
+  accountApi?: AccountDesktopApi;
 };
 export function NavigationShell(props: Props) {
   return (
@@ -153,6 +156,7 @@ function ShellContent(props: Props) {
               </>,
               props.onSettings
             )}
+            <AccountMenu api={props.accountApi} />
           </SidebarMenu>
         </SidebarFooter>
       </Sidebar>
