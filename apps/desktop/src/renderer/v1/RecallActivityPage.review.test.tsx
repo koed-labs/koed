@@ -57,7 +57,6 @@ const fixture = () => {
     bucket: "day",
     tokens: usage,
     linkedQuestions: 0,
-    tokenTimeline: [],
     recordedQuestions: 2,
     recordedErrors: 0,
     memoryResults: {
@@ -135,6 +134,55 @@ const choose = async (label: string, option: string) => {
   expect(element, option).toBeTruthy();
   await act(async () => element!.click());
 };
+
+it("withholds incomplete Project totals and charts until history is ready", async () => {
+  const { api, list } = fixture();
+  const initial = await api.recallActivityOverview!({
+    from: "2026-01-01T00:00:00Z",
+    to: "2027-01-01T00:00:00Z",
+    timezone: "UTC"
+  });
+  let status: "updating" | "complete" | "unavailable" = "updating";
+  vi.mocked(api.recallActivityOverview!).mockImplementation(async () => ({
+    ...initial,
+    recordedQuestions: 500,
+    projectScopeStatus: status
+  }));
+  const initialPage = await list({
+    from: "2026-01-01T00:00:00Z",
+    to: "2027-01-01T00:00:00Z",
+    limit: 50
+  });
+  list.mockImplementation(async () => ({
+    ...initialPage,
+    projectScopeStatus: status
+  }));
+  await render(api);
+  expect(container.querySelector(".recall-stats")?.textContent).toContain(
+    "500"
+  );
+  await choose("Project filter", "Project B");
+  expect(container.textContent).toContain("Updating Project history");
+  expect(container.querySelector(".recall-stats")?.textContent).not.toContain(
+    "500"
+  );
+  expect(container.querySelector(".recall-count")).toBeNull();
+  expect(container.querySelector(".recall-bars")).toBeNull();
+  expect(container.textContent).toContain("Results incomplete");
+  status = "unavailable";
+  await click("Refresh activity");
+  expect(container.textContent).toContain(
+    "Some Project history is unavailable"
+  );
+  expect(container.querySelector(".recall-count")).toBeNull();
+  status = "complete";
+  await click("Refresh activity");
+  expect(container.textContent).not.toContain("Project history");
+  expect(container.querySelector(".recall-count")?.textContent).toBe("500");
+  expect(container.querySelector(".recall-stats")?.textContent).toContain(
+    "500"
+  );
+});
 
 it("offers projects and callers outside the loaded page and retains them after selection", async () => {
   const { api, list } = fixture();

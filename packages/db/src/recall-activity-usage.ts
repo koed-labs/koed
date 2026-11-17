@@ -9,8 +9,7 @@ import type {
 import type { ActorContext } from "./types.js";
 import {
   personalRecallPredicate,
-  recallActivityFilter,
-  recallActivityBuckets
+  recallActivityFilter
 } from "./recall-activity-query.js";
 
 export const recallUsageEligibility = `u.visibility = 'personal'
@@ -168,11 +167,8 @@ export const loadLinkedRecallUsage = async (
 export const loadRecallTokenOverview = async (
   pool: pg.Pool,
   actor: ActorContext,
-  input: RecallActivityOverviewInput,
-  bucket: RecallActivityOverview["bucket"]
-): Promise<
-  Pick<RecallActivityOverview, "tokens" | "linkedQuestions" | "tokenTimeline">
-> => {
+  input: RecallActivityOverviewInput
+): Promise<Pick<RecallActivityOverview, "tokens" | "linkedQuestions">> => {
   // Token time is observation time. A question may finish outside this range.
   // Keep q.id as UUID so broad history joins can use its primary key. Casting
   // that indexed column to text caused a full question scan for each usage row.
@@ -183,9 +179,10 @@ export const loadRecallTokenOverview = async (
     input,
     false
   );
-  const buckets = recallActivityBuckets(input, bucket, bind);
+  const from = bind(input.from);
+  const to = bind(input.to);
   const result = await pool.query<
-    Pick<RecallActivityOverview, "tokens" | "linkedQuestions" | "tokenTimeline">
+    Pick<RecallActivityOverview, "tokens" | "linkedQuestions">
   >(
     `with eligible as (
        select u.*, q.id as question_id,
@@ -195,22 +192,10 @@ export const loadRecallTokenOverview = async (
            then ref.source_id::uuid end
        join workflow_token_usage u on u.id = ref.workflow_token_usage_id and u.owner_user_id = q.owner_user_id
        where ${predicates.join(" and ")} and ${recallUsageEligibility} and ${compatibleQuestionUsage}
-         and u.observed_at >= ${buckets.from}::timestamptz and u.observed_at < ${buckets.to}::timestamptz
-     ), summary as (select ${usageAggregates("u.usage_incomplete")} from eligible u),
-     totals as (
-       select ${buckets.group("observed_at")} as bucket,
-         sum(total_tokens)::float8 as tokens, count(*)::int as attempts,
-         bool_or(total_tokens is null or usage_accuracy <> 'provider_reported' or usage_incomplete) as partial
-       from eligible group by 1
-     ), buckets as (
-       select ${buckets.series} as bucket
-     ) select (select row_to_json(summary) from summary) as tokens,
-         (select count(distinct question_id)::int from eligible) as "linkedQuestions",
-         jsonb_agg(jsonb_build_object(
-           'start', to_char(${buckets.start}, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-           'totalTokens', t.tokens, 'recordedAttempts', coalesce(t.attempts, 0), 'partial', coalesce(t.partial, true))
-           order by b.bucket) as "tokenTimeline"
-       from buckets b left join totals t using (bucket)`,
+         and u.observed_at >= ${from}::timestamptz and u.observed_at < ${to}::timestamptz
+     ), summary as (select ${usageAggregates("u.usage_incomplete")} from eligible u)
+     select (select row_to_json(summary) from summary) as tokens,
+       (select count(distinct question_id)::int from eligible) as "linkedQuestions"`,
     values
   );
   return result.rows[0]!;

@@ -1,3 +1,4 @@
+import { recallScopeIndexFromSnapshot } from "./recall-activity-scope.js";
 import {
   recallQuestionMetadataSchema,
   type RecallQuestionMetadata
@@ -1161,13 +1162,14 @@ export const createMemoryQuestionRepository = (
           retrieval,
           local_memory_worker,
           recall_metadata,
+          recall_scope,
           answered_at,
           attempt_count
         )
         values (
           $1, 'personal', $2, $3, $4, $23::jsonb, $5, $6, $7, $8, $9, $10, $11, null, null, $12, $13,
           $14::memory_question_status, $15, $16, $17::jsonb, $18::jsonb,
-          $19::jsonb, $20::jsonb, $21::jsonb, $24::jsonb, now(), $22
+          $19::jsonb, $20::jsonb, $21::jsonb, $24::jsonb, $25::jsonb, now(), $22
         )
         on conflict (owner_user_id, idempotency_key) do nothing
         returning
@@ -1253,6 +1255,17 @@ export const createMemoryQuestionRepository = (
                     input.status === "answered"
                       ? input.recallMetadata.memoryStatus
                       : null
+                })
+              )
+            : null,
+          // Identity-only activity index, written with the encrypted record.
+          !input.teamWorkspaceId &&
+          !teamAuthority &&
+          (input.origin ?? "mcp_memory_answer") === "mcp_memory_answer"
+            ? JSON.stringify(
+                recallScopeIndexFromSnapshot(actor.userId, personalSelection, {
+                  searchDomain: input.searchDomain,
+                  projectId: input.projectId ?? null
                 })
               )
             : null

@@ -7,6 +7,7 @@ import type {
   SDKMessage
 } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RecallExecution } from "@koed-labs/shared";
 
 const sdk = vi.hoisted(() => ({ query: vi.fn() }));
 
@@ -2599,6 +2600,43 @@ process.stdin.once("data", () => {
         ]);
         expect(response.evidenceBundle?.evidence).toHaveLength(2);
         expect(response.evidenceBundle?.retrieval).toMatchObject({
+          activityExecution: {
+            version: 1,
+            budgets: {
+              evidenceWorkingSet: {
+                limit: crowded ? 12000 : 1600,
+                consumed: expect.any(Number) as unknown
+              },
+              finalEvidenceBundle: {
+                limit: crowded ? 12000 : 1600,
+                consumed: expect.any(Number) as unknown
+              },
+              cumulativePrompt: {
+                limit: 24000,
+                consumed: expect.any(Number) as unknown
+              },
+              attempts: { limit: 1, consumed: 1 }
+            },
+            delivery: {
+              finalSelected: 2,
+              truncated: false,
+              operations: [
+                { kind: "scan", delivered: 0, omitted: 0 },
+                {
+                  kind: "expand",
+                  delivered: firstCount,
+                  omitted: sourceItems.length - firstCount,
+                  recovered: false
+                },
+                {
+                  kind: "targeted_expand",
+                  delivered: 1,
+                  omitted: 0,
+                  recovered: true
+                }
+              ]
+            }
+          },
           expansions: [
             {
               sourceItemCount: firstCount,
@@ -4205,6 +4243,109 @@ process.stdin.once("data", () => {
       }
     }
   );
+
+  it("records later-search delivery against normalized hits without inventing omissions or recoveries", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-answer-delivery-")
+    );
+    try {
+      const laterHit = {
+        source_type: "memory_event",
+        source_id: "later-event",
+        source_chunk_index: 0,
+        visibility: "personal",
+        summary_text: "Later candidate"
+      };
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "Which saved decision applies?",
+            evidence: []
+          }
+        },
+        {
+          client: {
+            async search(input) {
+              // Both the delivered and omitted source have duplicate hits.
+              return input.query === "later search"
+                ? {
+                    hits: [
+                      laterHit,
+                      laterHit,
+                      { ...laterHit, source_id: "other-later-event" },
+                      { ...laterHit, source_id: "other-later-event" }
+                    ]
+                  }
+                : { retrieval: { stages: [] } };
+            },
+            async expand(nodeId) {
+              return {
+                expanded: {
+                  nodeId,
+                  visibility: "personal",
+                  sourceItems: [
+                    {
+                      sourceId: "original-event",
+                      sourceChunkIndex: 0,
+                      text: "GROUNDED_CHILD_EVIDENCE: the saved decision."
+                    }
+                  ]
+                }
+              };
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                mode: "expandThenSearch",
+                answer: {
+                  ...answerObject("The saved decision applies."),
+                  evidence: [
+                    {
+                      evidence_index: 0,
+                      relevance: "saved decision",
+                      support: "the saved decision"
+                    }
+                  ]
+                }
+              }),
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_CANDIDATES: "1",
+            MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "1"
+          })
+        }
+      );
+      expect(
+        response.localMemoryWorker.usedFallback,
+        response.localMemoryWorker.errorMessage
+      ).toBe(false);
+      const execution = (
+        response.evidenceBundle?.retrieval as
+          | { activityExecution?: RecallExecution }
+          | undefined
+      )?.activityExecution;
+      if (!execution) throw new Error("Missing execution snapshot");
+      const operations = execution.delivery?.operations ?? [];
+      const search = operations.find(
+        (operation) => operation.kind === "search"
+      );
+      expect(operations.some((operation) => operation.recovered)).toBe(false);
+      expect(search).toBeDefined();
+      expect(search).toMatchObject({
+        delivered: 1,
+        omitted: 1,
+        reasons: ["candidates"]
+      });
+      expect(execution.budgets?.finalEvidenceBundle.consumed).toBeGreaterThan(
+        0
+      );
+      expect(execution.delivery?.finalSelected).toBe(1);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   it("enforces the final evidence-token budget across earlier observations", async () => {
     const directory = fs.mkdtempSync(

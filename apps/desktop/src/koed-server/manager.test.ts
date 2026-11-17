@@ -254,7 +254,6 @@ describe("Koed server desktop manager", () => {
         bucket: "day",
         tokens: usage,
         linkedQuestions: 0,
-        tokenTimeline: [],
         recordedQuestions: 1,
         recordedErrors: 0,
         memoryResults: {
