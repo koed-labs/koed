@@ -22,7 +22,7 @@ test("both component targets freeze before complete catalog and control-plane pa
       .sort(),
     ["linux-x64", "macos-arm64"]
   );
-  assert.equal(frozen.needs, "release");
+  assert.deepEqual(frozen.needs, ["release", "route-frozen-components"]);
   assert.ok(
     !frozen.steps.some((step) =>
       /public-package|koed-server:package|desktop:package/.test(step.run ?? "")
