@@ -108,9 +108,9 @@ const harness = (
                 epoch: `${child.pid}:starting`,
                 pid: child.pid
               };
-              manager.lifecycle.refresh();
+              void manager.lifecycle.refresh();
               observed.current = { ...stopped };
-              manager.lifecycle.refresh();
+              void manager.lifecycle.refresh();
               child.emit("message", {
                 type: "koed.desktop.supervisor.start-failed",
                 nonce: message.nonce,
@@ -853,12 +853,12 @@ describe("Desktop manager shared lifecycle", () => {
       resolveLifecycle = resolve;
     });
     const { manager, spawn } = harness(home, () => pendingLifecycle);
-    manager.lifecycle.refresh();
+    await manager.lifecycle.refresh();
     observed.current = { ...stopped };
     const starting = manager.handlers.start_daemon();
     await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
 
-    manager.lifecycle.refresh();
+    await manager.lifecycle.refresh();
     resolveLifecycle({ ...stopped, owned: false });
 
     await expect(starting).resolves.toMatchObject({
@@ -950,7 +950,7 @@ describe("Desktop manager shared lifecycle", () => {
     }) as never);
     const changes: string[] = [];
     manager.lifecycle.subscribe((next) => changes.push(next.state));
-    manager.lifecycle.refresh();
+    await manager.lifecycle.refresh();
     observed.current = live(81);
     await expect(manager.handlers.status()).resolves.toMatchObject({
       lifecycle: { state: "stopped" }
