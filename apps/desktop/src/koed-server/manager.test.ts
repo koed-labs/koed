@@ -3303,6 +3303,16 @@ describe("Koed server desktop manager", () => {
     );
   });
 
+  it("trims the Team collaboration flag for the Desktop-managed runtime", () => {
+    expect(
+      createKoedEnvironment(
+        "/repo",
+        { KOED_TEAM_COLLABORATION_ENABLED: " true " },
+        { desktopManagedLocal: true }
+      ).KOED_TEAM_COLLABORATION_ENABLED
+    ).toBe("true");
+  });
+
   it("does not enable Team collaboration for non-Desktop server environments", () => {
     expect(createKoedEnvironment("/repo", {})).not.toHaveProperty(
       "KOED_TEAM_COLLABORATION_ENABLED"
