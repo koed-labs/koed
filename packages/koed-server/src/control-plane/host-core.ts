@@ -1,4 +1,5 @@
 import type { AvailabilityReason } from "@koed-labs/shared/local-control-protocol";
+import { StartupCancellationError } from "../start.js";
 import type { ControlStateStore, ControlIntent } from "./state.js";
 import type { RuntimeSession, RuntimeCleanupOutcome } from "./runtime.js";
 
@@ -146,8 +147,12 @@ export function createControlPlaneHostCore(input: {
           if (serial === id && state === "starting") state = "ready";
         },
         persistGenerationBeforeEffects: (generationId) => {
+          if (serial === id && stopPending && state === "stopping")
+            throw new StartupCancellationError("Start was cancelled");
           if (serial !== id || state !== "starting")
-            throw new Error("Start was cancelled");
+            throw new Error(
+              "Cannot persist generation outside its active startup"
+            );
           update((previous) => ({
             ...previous,
             protectedGenerationId:

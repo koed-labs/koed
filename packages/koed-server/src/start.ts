@@ -9,7 +9,10 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
+import {
+  setImmediate as nextTurn,
+  setTimeout as delay
+} from "node:timers/promises";
 import { existsSync, lstatSync, mkdirSync } from "node:fs";
 import {
   assertControlPlaneAdmission,
@@ -839,6 +842,8 @@ const createManagedProcessMonitor = (
 ): {
   watch: (name: string, child: ChildProcess) => void;
   result: Promise<void>;
+  readonly failure: Error | undefined;
+  expectStop: (child: ChildProcess) => void;
   dispose: () => void;
 } => {
   const expectedSignals = new Set(
@@ -857,7 +862,9 @@ const createManagedProcessMonitor = (
     resolveResult = resolvePromise;
     rejectResult = rejectPromise;
   });
+  const stopping = new WeakSet<ChildProcess>();
   let settled = false;
+  let failure: Error | undefined;
   const dispose = () => {
     for (const [child, listener] of listeners) {
       child.off("exit", listener.exit);
@@ -868,6 +875,7 @@ const createManagedProcessMonitor = (
   const settle = (error?: Error) => {
     if (settled) return;
     settled = true;
+    failure = error;
     dispose();
     if (error) rejectResult(error);
     else resolveResult();
@@ -897,8 +905,14 @@ const createManagedProcessMonitor = (
         return;
       }
       const listener = {
-        exit: (code: number | null, signal: NodeJS.Signals | null) =>
-          recordExit(name, code, signal),
+        exit: (code: number | null, signal: NodeJS.Signals | null) => {
+          if (
+            stopping.has(child) &&
+            (code === 0 || signal === "SIGTERM" || signal === "SIGKILL")
+          )
+            return;
+          recordExit(name, code, signal);
+        },
         error: (error: Error) =>
           settle(
             new Error(
@@ -914,6 +928,12 @@ const createManagedProcessMonitor = (
       child.once("error", listener.error);
     },
     result,
+    expectStop: (child) => {
+      stopping.add(child);
+    },
+    get failure() {
+      return failure;
+    },
     dispose
   };
 };
@@ -931,11 +951,20 @@ export const waitForManagedProcessExits = (
   return monitor.result;
 };
 
+export class StartupCancellationError extends Error {
+  constructor(
+    message = "Koed startup was stopped before readiness.",
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = "StartupCancellationError";
+  }
+}
+
 export const startKoedServer = async (
   options: KoedServerStartOptions = {}
 ): Promise<void> => {
-  if (options.signal?.aborted)
-    throw new Error("Koed startup was stopped before readiness.");
+  if (options.signal?.aborted) throw new StartupCancellationError();
   if (!options.admission) return startKoedServerInternal(options);
   const session = beginControlPlaneSession(options.admission);
   const outcome = { clean: false };
@@ -971,9 +1000,10 @@ const startKoedServerInternal = async (
   ) {
     throw new Error("validated private Desktop runtime capability is required");
   }
+  let shutdownPending = false;
   const assertStartupActive = (): void => {
-    if (signal?.aborted)
-      throw new Error("Koed startup was stopped before readiness.");
+    if (signal?.aborted || shutdownPending)
+      throw new StartupCancellationError();
   };
   const requestedEnvironment = environment;
   const startupId = randomBytes(12).toString("hex");
@@ -1308,6 +1338,7 @@ const startKoedServerInternal = async (
       | undefined;
     let cleanupPromise: Promise<void> | undefined;
     let cleanupCompleted = false;
+    let startupFailure: Error | undefined;
     const cleanupStartedResources = (): Promise<void> => {
       cleanupStarted = true;
       if (cleanupPromise) return cleanupPromise;
@@ -1329,8 +1360,10 @@ const startKoedServerInternal = async (
         ];
         for (const name of shutdownOrder) {
           try {
+            const child = managedChildren[name];
+            if (child) managedProcessMonitor.expectStop(child);
             await stopChildProcess(
-              managedChildren[name],
+              child,
               5_000,
               name,
               name === "embeddingService" &&
@@ -1378,7 +1411,10 @@ const startKoedServerInternal = async (
     };
     let requestShutdown: () => void = () => undefined;
     const shutdownRequested = new Promise<void>((resolveShutdown) => {
-      requestShutdown = resolveShutdown;
+      requestShutdown = () => {
+        shutdownPending = true;
+        resolveShutdown();
+      };
     });
     const waitForStartupReadiness = async (
       isReady?: (
@@ -1392,8 +1428,11 @@ const startKoedServerInternal = async (
         managedProcessOutcome.then(({ error }) => {
           throw error ?? new Error("Managed processes stopped during startup.");
         }),
-        shutdownRequested.then(() => {
-          throw new Error("Koed startup was stopped before readiness.");
+        shutdownRequested.then(async () => {
+          // Let failures already queued by a child or probe surface before
+          // cancelling a probe that may otherwise never finish.
+          await nextTurn();
+          throw new StartupCancellationError();
         })
       ]);
       try {
@@ -1465,6 +1504,7 @@ const startKoedServerInternal = async (
           desktopRuntimeCapability
         );
         generationPin = selected.pin;
+        assertStartupActive();
         appRuntime = selected.runtime;
         if (admission) {
           if (!persistGenerationBeforeEffects)
@@ -1736,6 +1776,7 @@ const startKoedServerInternal = async (
           `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed status --json for details.`
         );
       }
+      assertStartupActive();
       emitStartupMilestone("api_and_database_ready");
       if (desktopManagedLocal) {
         const desktopApiToken = await provisionDesktopApiToken(
@@ -1764,6 +1805,7 @@ const startKoedServerInternal = async (
         emitStartupMilestone("packaged_personal_credential_provisioned");
       }
 
+      assertStartupActive();
       const finalApiToken = resolveActiveIntegrationApiToken(
         paths,
         refreshedEnv,
@@ -1888,6 +1930,7 @@ const startKoedServerInternal = async (
           `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed status --json for details.`
         );
       }
+      assertStartupActive();
       if (localAiRuntimeEnabled) {
         stopCapabilityMaintenance = maintainUpstreamCapabilities(paths, {
           onError: () =>
@@ -1910,19 +1953,30 @@ const startKoedServerInternal = async (
         })
       ]);
       await cleanupStartedResources();
+      if (managedProcessMonitor.failure) throw managedProcessMonitor.failure;
     } catch (error) {
+      const failure = () =>
+        error instanceof StartupCancellationError
+          ? (managedProcessMonitor.failure ?? error)
+          : error;
       if (error instanceof RuntimePinPublicationError)
         pinPublicationUncertain = true;
       if (!startupReady) emitStartupMilestone("startup_failed");
       try {
         await cleanupStartedResources();
+        const original = failure();
+        startupFailure =
+          original instanceof Error
+            ? original
+            : new Error(String(original), { cause: original });
       } catch (cleanupError) {
-        throw new Error(
-          `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        const original = failure();
+        startupFailure = new AggregateError(
+          [original, cleanupError],
+          `${original instanceof Error ? original.message : String(original)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
           { cause: cleanupError }
         );
       }
-      throw error;
     } finally {
       stopCapabilityMaintenance();
       stopSupervisorExitMonitor();
@@ -1934,10 +1988,17 @@ const startKoedServerInternal = async (
       managedProcessMonitor.dispose();
       if (runtimeStateWritten && cleanupCompleted) {
         try {
-          removeOwnedRuntimeState(paths.runtimeStatePath, {
-            pid: process.pid,
-            startedAt: supervisorStartedAt
-          });
+          if (
+            !removeOwnedRuntimeState(paths.runtimeStatePath, {
+              pid: process.pid,
+              startedAt: supervisorStartedAt
+            })
+          ) {
+            cleanupEvidenceUncertain = true;
+            console.warn(
+              "Could not clear runtime state: ownership changed during startup or shutdown."
+            );
+          }
         } catch (error) {
           cleanupEvidenceUncertain = true;
           console.warn(
@@ -1975,20 +2036,35 @@ const startKoedServerInternal = async (
         }
       }
       if (cleanupCompleted && !pinPublicationUncertain) {
-        await generationPin?.release();
-        if (outcome) outcome.clean = !cleanupEvidenceUncertain;
-        if (!cleanupEvidenceUncertain || !admission) releaseSupervisorLock();
+        try {
+          await generationPin?.release();
+          if (!cleanupEvidenceUncertain || !admission) releaseSupervisorLock();
+          if (outcome) outcome.clean = !cleanupEvidenceUncertain;
+        } catch (error) {
+          const release =
+            error instanceof Error ? error.message : String(error);
+          startupFailure = startupFailure
+            ? new AggregateError(
+                [startupFailure, error],
+                `${startupFailure.message} Cleanup failed: ${release}`,
+                { cause: error }
+              )
+            : error instanceof Error
+              ? error
+              : new Error(release, { cause: error });
+        }
       } else {
         console.error(
           "Supervisor cleanup could not confirm all managed children exited; retaining runtime generation pin and supervisor lock."
         );
       }
     }
+    if (startupFailure) throw startupFailure;
   } catch (error) {
-    throw new Error(
-      `${startupPhase} failed: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error }
-    );
+    const message = `${startupPhase} failed: ${error instanceof Error ? error.message : String(error)}`;
+    if (error instanceof StartupCancellationError)
+      throw new StartupCancellationError(message, { cause: error });
+    throw new Error(message, { cause: error });
   } finally {
     if (!cleanupStarted) releaseSupervisorLock();
   }

@@ -230,6 +230,23 @@ describe("control-plane host core", () => {
     });
     expect(f.store.read().runtimeClean).toBe(true);
   });
+  it("marks generation persistence rejected by Stop as startup cancellation", () => {
+    const f = fixture();
+    let persist!: (id: string) => void;
+    f.startRuntime.mockImplementationOnce(
+      (callbacks?: { persistGenerationBeforeEffects(id: string): void }) => {
+        persist = callbacks!.persistGenerationBeforeEffects;
+        return { stop: f.stop, done: new Promise(() => {}) };
+      }
+    );
+    f.core.start(true);
+    f.core.stop(true);
+    expect(() => persist("generation")).toThrow(
+      expect.objectContaining({ name: "StartupCancellationError" })
+    );
+    expect(f.store.read().protectedGenerationId).toBeNull();
+  });
+
   it("cancels startup even when persisting Stop fails", () => {
     const f = fixture();
     f.core.start(true);
