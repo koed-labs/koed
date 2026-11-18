@@ -83,8 +83,10 @@ failure fails the job and prevents artifact upload.
 
 Candidate build, inspection, signing, and smoke jobs each run on a separate fresh
 GitHub-hosted `xcode-27` macOS runner. Production release and trusted cache jobs
-also use GitHub-hosted runners. This prevents state left by candidate execution
-from persisting into a later job; it does not make candidate artifacts trustworthy.
+also use GitHub-hosted runners. The candidate workflow disables cache access with
+`cache-mode: none` so candidate code cannot poison shared Actions caches. These
+controls isolate the runner and Actions cache, not the network, artifact transfers,
+or other shared services; they do not make candidate artifacts trustworthy.
 
 Self-hosted runners registered separately with the public repository remain
 available to other eligible workflows, including potentially modified PR workflows.

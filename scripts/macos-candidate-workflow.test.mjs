@@ -57,6 +57,17 @@ test("candidate workflow is manual, least privilege and separated across jobs", 
   );
 });
 
+test("candidate execution cannot read or poison shared caches", () => {
+  const yaml = workflow();
+  assert.equal(yaml["cache-mode"], "none");
+  for (const [name, job] of Object.entries(yaml.jobs)) {
+    assert.ok(
+      job["cache-mode"] === undefined || job["cache-mode"] === "none",
+      `${name} must not override the cache restriction`
+    );
+  }
+});
+
 test("signer checks out only trusted workflow code; candidate executes only without signing secrets", () => {
   const yaml = workflow();
   const checkout = yaml.jobs.sign.steps.find((step) =>

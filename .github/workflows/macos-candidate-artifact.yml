@@ -17,6 +17,8 @@ permissions:
   actions: read
   pull-requests: read
 
+cache-mode: none
+
 jobs:
   prepare:
     runs-on: ubuntu-24.04
