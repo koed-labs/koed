@@ -308,6 +308,7 @@ export interface KoedServerManagerOptions {
     operation: string;
   }) => Promise<boolean>;
   observeLifecycle?: () => RuntimeLifecycleObservation;
+  onPersonalMemoryStartupReady?: () => void;
 }
 
 export interface KoedServerManager {
@@ -1580,7 +1581,8 @@ export const createKoedServerManager = ({
   personalDevicePairingStore,
   managedConversationDraftStore,
   confirmSourceControlMutation,
-  observeLifecycle
+  observeLifecycle,
+  onPersonalMemoryStartupReady
 }: KoedServerManagerOptions): KoedServerManager => {
   const lifecyclePaths = resolveKoedServerPaths(environment);
   const cachedPid = cachedProcessIdentity({
@@ -1639,6 +1641,8 @@ export const createKoedServerManager = ({
   let desktopSupervisorNonce: string | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
   let retainedPersonalApiOrigin: string | null = null;
+  let personalMemoryStartup: { epoch: string; generation: number } | null =
+    null;
   let personalMemoryOriginLookup: Promise<string> | null = null;
   let retainedPersonalApiToken: string | null = null;
   let personalApiTokenProvisioning: Promise<
@@ -2228,6 +2232,7 @@ export const createKoedServerManager = ({
     let latest: unknown = null;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
       if (cancelled()) return stoppedStartResult();
+      const before = lifecycle.refresh();
       const result = await runDesktopStatus(true);
       if (cancelled()) return stoppedStartResult();
       latest = isRenderableKoedServerStartupStatus(result)
@@ -2235,8 +2240,26 @@ export const createKoedServerManager = ({
         : diagnosticStartupStatus("Koed startup status could not be read.");
       if (setupStartupReady(latest)) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
-        await provisionLocalAppCredential();
+        const credential = await provisionLocalAppCredential();
         if (cancelled()) return stoppedStartResult();
+        const current = lifecycle.refresh();
+        if (
+          credential.ok &&
+          retainedPersonalApiOrigin &&
+          current.state === "running" &&
+          current.epoch === before.epoch
+        ) {
+          const previous = personalMemoryStartup;
+          personalMemoryStartup = {
+            epoch: current.epoch,
+            generation: stopGeneration
+          };
+          if (
+            previous?.epoch !== current.epoch ||
+            previous.generation !== stopGeneration
+          )
+            onPersonalMemoryStartupReady?.();
+        }
         return latest;
       }
       await sleep(1_000);
@@ -6836,6 +6859,14 @@ export const createKoedServerManager = ({
         }
       },
       status: statusWithEnrollmentReconciliation,
+      personal_memory_startup_ready: () => {
+        const current = lifecycle.refresh();
+        return (
+          current.state === "running" &&
+          personalMemoryStartup?.epoch === current.epoch &&
+          personalMemoryStartup.generation === stopGeneration
+        );
+      },
       doctor: () =>
         requestDesktopStatusRpcWithStoppedAuthority("doctor", false, 45_000),
       stop,

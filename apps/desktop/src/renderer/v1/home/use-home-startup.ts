@@ -13,7 +13,11 @@ export const HOME_STARTUP_GRACE_MS = 30_000;
 export function useHomeStartup(
   status: KoedServerStatus | null,
   projects: readonly HomeProjectEntry[] | null,
-  { enabled, starting = false }: { enabled: boolean; starting?: boolean }
+  {
+    enabled,
+    starting = false,
+    earlyInventory = false
+  }: { enabled: boolean; starting?: boolean; earlyInventory?: boolean }
 ): { view: HomeView; startupPending: boolean } {
   const [expired, setExpired] = useState(false);
   const [hasBeenReady, setHasBeenReady] = useState(false);
@@ -36,6 +40,11 @@ export function useHomeStartup(
   }, [enabled, ready, hasBeenReady, expired]);
 
   const startupPending = enabled && !ready && !hasBeenReady && !expired;
+  if (startupPending && earlyInventory && projects?.length)
+    return {
+      view: { kind: "projects", warnings: [] },
+      startupPending
+    };
   if (startupPending || starting)
     return { view: { kind: "loading" }, startupPending };
   const selected = selectHomeView(status, projects);

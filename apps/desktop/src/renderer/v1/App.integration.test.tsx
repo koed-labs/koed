@@ -19,7 +19,9 @@ import type {
 const inventoryLoad = vi.hoisted(() => ({
   pending: null as Promise<unknown> | null,
   calls: 0,
-  load: null as null | ((options?: { silent?: boolean }) => unknown),
+  load: null as
+    | null
+    | ((options?: { silent?: boolean; onPreview?: () => void }) => unknown),
   durableRefresh: vi.fn(),
   backgroundLoad: null as null | (() => Promise<unknown>),
   conversationProps: null as null | Record<string, unknown>,
@@ -77,7 +79,10 @@ vi.mock("../state/personal-memory.js", () => ({
   PersonalMemoryStore: class {
     current = () => snapshot;
     subscribe = () => () => undefined;
-    loadProjects = async (options?: { silent?: boolean }) => {
+    loadProjects = async (options?: {
+      silent?: boolean;
+      onPreview?: () => void;
+    }) => {
       inventoryLoad.calls++;
       return inventoryLoad.load?.(options) ?? inventoryLoad.pending ?? snapshot;
     };
@@ -206,6 +211,84 @@ describe("V1App launch integration", () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  it("shows verified named Projects while diagnostics and the full inventory are pending", async () => {
+    let ready = false;
+    const listeners = new Set<() => void>();
+    const diagnostics = new Promise(() => {});
+    const inventory = new Promise(() => {});
+    const readIdentity = vi.fn(async () => ({
+      ownerId: uuid(3),
+      scopeKey: "a".repeat(64)
+    }));
+    inventoryLoad.load = (options) => {
+      options?.onPreview?.();
+      return inventory;
+    };
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        invoke: (command: string) =>
+          command === "personal_memory_startup_ready"
+            ? Promise.resolve(ready)
+            : diagnostics,
+        status: {
+          subscribe: (listener: () => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          }
+        },
+        v1State: {
+          readProfile: async () => ({
+            onboarding: { selections: {}, completed: true }
+          }),
+          readIdentity,
+          readProvenance: async () => ({
+            schemaVersion: 1,
+            projects: {},
+            conversations: {}
+          })
+        }
+      }
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <V1App
+          personalMemoryApi={{} as never}
+          managedConversations={null}
+          statusStore={new DesktopStatusStore()}
+        />
+      )
+    );
+    expect(inventoryLoad.calls).toBe(0);
+    expect(container.querySelector(".v1-home")?.getAttribute("data-mood")).toBe(
+      "loading"
+    );
+
+    ready = true;
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    expect(inventoryLoad.calls).toBe(1);
+    expect(readIdentity).toHaveBeenCalled();
+    expect(container.querySelector(".v1-home")?.getAttribute("data-mood")).toBe(
+      "projects"
+    );
+    expect(container.textContent).toContain("External captured Project");
+
+    ready = false;
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    expect(container.querySelector(".v1-home")?.getAttribute("data-mood")).toBe(
+      "loading"
+    );
+    expect(container.textContent).not.toContain("External captured Project");
+  });
+
   it("follows cold-start lifecycle events and service readiness without showing an empty inventory", async () => {
     vi.useFakeTimers();
     let status = {
