@@ -1,0 +1,3 @@
+This is a timing exercise. Do exactly the following, one tool call at a time, never in parallel, and think briefly between steps.
+For step N from 1 to 8: first run the Bash command `sleep 18`, then run the Bash command `date +%T`, then write one sentence saying what step N showed and what you will do next.
+After step 8, write a three-sentence summary of the whole exercise.
