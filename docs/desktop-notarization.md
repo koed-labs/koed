@@ -10,7 +10,7 @@ notarizer, isolated signing workflow, or manual asset recovery workflow for prod
 Release-only `mac.sign` delegates one signing pass to pinned `@electron/osx-sign`
 `1.3.3`. Signing changes native bytes, so its per-file callback refreshes native
 asset hashes then the Desktop runtime manifest after nested signing and before
-outer app sealing. electron-builder `26.15.3` still owns notarization/stapling.
+outer app sealing. electron-builder `26.16.1` handles notarization and stapling.
 This ordering is guarded by version and installed-loop tests, not a general
 builder lifecycle guarantee. Upgrades must revalidate order and signed startup.
 The adapter preserves signing options and has no automatic signing retries;
