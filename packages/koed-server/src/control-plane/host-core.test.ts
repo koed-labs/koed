@@ -337,4 +337,22 @@ describe("control-plane host core", () => {
     expect(f.core.status().state).toBe("needs_attention");
     expect(f.store.read().runtimeClean).toBe(false);
   });
+  it("does not persist a clean exit that also reported an error as clean", async () => {
+    const f = fixture();
+    f.core.start(true);
+    f.finish({ clean: true, error: "startup failed" });
+    await Promise.resolve();
+    expect(f.core.status()).toMatchObject({
+      state: "needs_attention",
+      error: "startup failed"
+    });
+    expect(f.store.read().runtimeClean).toBe(false);
+    expect(f.core.settled()).toBe(true);
+  });
+  it("is not settled while a session is running", () => {
+    const f = fixture();
+    expect(f.core.settled()).toBe(true);
+    f.core.start(true);
+    expect(f.core.settled()).toBe(false);
+  });
 });

@@ -8,6 +8,7 @@ import {
   type NativeLocalControl
 } from "./native-transport.js";
 import { startControlPlaneProcess } from "./host-process.js";
+import { createControlPlaneShutdown } from "./host-shutdown.js";
 
 /** The packaged CLI invokes this only after verifying the running installation. */
 export async function runInstalledControlPlaneHost(input: {
@@ -43,58 +44,30 @@ export async function runInstalledControlPlaneHost(input: {
   )
     throw new Error("Packaged local control addon is invalid");
   let fatal: Error | undefined;
-  let wake: (() => void) | undefined;
+  const wakeTarget: { wake?: () => void } = {};
   const host = await startControlPlaneProcess({
     ...input,
     transport: createNativeControlTransport(native),
     tryReclaimLock: (fd) => native.tryReclaimLock(fd),
     onFatal(error) {
       fatal = error;
-      wake?.();
+      wakeTarget.wake?.();
     }
   });
-  return new Promise<number>((resolve) => {
-    let stopping = false;
-    let warned = false;
-    const stop = () => {
-      if (stopping) return;
-      stopping = true;
-      try {
-        host.core.stop(false);
-      } catch (error) {
-        process.stderr.write(`Control-plane stop failed: ${String(error)}\n`);
-      }
-    };
-    wake = stop;
-    process.on("SIGINT", stop);
-    process.on("SIGTERM", stop);
-    if (fatal) stop();
-    const timer = setInterval(() => {
-      if (!stopping) return;
-      const state = host.core.status().state;
-      if (state === "needs_attention" && !warned) {
-        warned = true;
-        process.stderr.write(
-          "Control-plane cleanup is uncertain; retaining admission for Operator attention.\n"
-        );
-      }
-      if (state !== "stopped") return;
-      clearInterval(timer);
-      void host
-        .close()
-        .finally(() => {
-          process.off("SIGINT", stop);
-          process.off("SIGTERM", stop);
-        })
-        .then(
-          () => resolve(fatal ? 1 : 0),
-          (error: unknown) => {
-            process.stderr.write(
-              `Control-plane shutdown failed: ${String(error)}\n`
-            );
-            resolve(1);
-          }
-        );
-    }, 250);
+  const shutdown = createControlPlaneShutdown({
+    core: host.core,
+    close: () => host.close(),
+    fatal: () => fatal,
+    log: (message) => process.stderr.write(message)
   });
+  wakeTarget.wake = shutdown.request;
+  process.on("SIGINT", shutdown.request);
+  process.on("SIGTERM", shutdown.request);
+  if (fatal) shutdown.request();
+  try {
+    return await shutdown.done;
+  } finally {
+    process.off("SIGINT", shutdown.request);
+    process.off("SIGTERM", shutdown.request);
+  }
 }

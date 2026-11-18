@@ -23,6 +23,8 @@ export interface HostCore {
   attach(reason: AvailabilityReason): HostSnapshot;
   detach(reason: AvailabilityReason): HostSnapshot;
   openDesktopSession(identity?: string): { close(intentional: boolean): void };
+  /** True when no runtime session is running or starting, whatever the state. */
+  settled(): boolean;
 }
 
 export function createControlPlaneHostCore(input: {
@@ -84,7 +86,8 @@ export function createControlPlaneHostCore(input: {
       return;
     }
     try {
-      if (outcome.clean && !historicalUnclean)
+      // A clean exit that also reported an error is uncertain: never persist it as clean.
+      if (outcome.clean && !outcome.error && !historicalUnclean)
         update((current) => ({
           ...current,
           runtimeClean: true,
@@ -288,6 +291,7 @@ export function createControlPlaneHostCore(input: {
     stop,
     attach: (reason) => setAgentAvailability(reason, true),
     detach: (reason) => setAgentAvailability(reason, false),
-    openDesktopSession
+    openDesktopSession,
+    settled: () => session === undefined
   };
 }
