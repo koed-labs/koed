@@ -2,10 +2,73 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "yaml";
+import { desktopAccountBuildConfig } from "../apps/desktop/scripts/prepare-account-config.mjs";
 const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const jobs = workflow.jobs;
 const desktop = jobs["signed-desktop-release-assets"];
 const step = (name) => desktop.steps.find((s) => s.name === name);
+test("CI supplies disabled account configuration to release packaging without provider credentials", () => {
+  const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  assert.equal(ci.env.KOED_ACCOUNT_ENABLED, "false");
+  assert.deepEqual(
+    desktopAccountBuildConfig({ environment: ci.env, release: true }),
+    { enabled: false }
+  );
+});
+test("both Desktop release jobs generate public production config before packaging", () => {
+  for (const [name, buildName] of [
+    ["signed-desktop-release-assets", "Build signed Desktop artifacts"],
+    ["linux-desktop-release-assets", "Build Linux Desktop artifacts"]
+  ]) {
+    const job = jobs[name];
+    assert.equal(
+      job.env.KOED_ACCOUNT_ENABLED,
+      "${{ vars.DESKTOP_ACCOUNT_ENABLED || 'false' }}"
+    );
+    assert.equal(
+      job.env.KOED_ACCOUNT_CLIENT_ID,
+      "${{ vars.DESKTOP_ACCOUNT_CLIENT_ID }}"
+    );
+    assert.equal(job.env.KOED_ACCOUNT_ENVIRONMENT, "production");
+    assert.equal(
+      job.env.KOED_ACCOUNT_LOGIN_MODE,
+      "${{ vars.DESKTOP_ACCOUNT_LOGIN_MODE }}"
+    );
+    assert.equal(
+      job.env.KOED_ACCOUNT_FORWARDER_URL,
+      "${{ vars.DESKTOP_ACCOUNT_FORWARDER_URL }}"
+    );
+    const prepare = job.steps.findIndex(
+      (s) => s.name === "Prepare Desktop account configuration"
+    );
+    assert.ok(
+      prepare >= 0 && prepare < job.steps.findIndex((s) => s.name === buildName)
+    );
+    assert.match(
+      job.steps[prepare].run,
+      /prepare-account-config\.mjs --release/
+    );
+  }
+  const builder = parse(
+    readFileSync("apps/desktop/electron-builder.yml", "utf8")
+  );
+  assert.equal(builder.beforePack, "scripts/prepare-account-config.mjs");
+  assert.ok(
+    builder.files.some(
+      (value) =>
+        value.from === ".account-build" &&
+        value.to === "." &&
+        value.filter.includes("account-config.json")
+    )
+  );
+  assert.ok(!builder.files.includes("account-config.json"));
+  const pkg = JSON.parse(readFileSync("apps/desktop/package.json", "utf8"));
+  for (const command of ["package:release", "package:linux:release"])
+    assert.match(
+      pkg.scripts[command],
+      /KOED_ACCOUNT_RELEASE=true .*electron-builder/
+    );
+});
 test("all job dependencies exist; publication requires successful signer", () => {
   for (const job of Object.values(jobs))
     for (const need of [job.needs ?? []].flat())
@@ -18,8 +81,30 @@ test("all job dependencies exist; publication requires successful signer", () =>
     /needs\['signed-desktop-release-assets'\]\.result == 'success'/
   );
 });
+test("production release jobs use GitHub-hosted runners only", () => {
+  for (const [name, job] of Object.entries(jobs)) {
+    assert.equal(
+      job.uses,
+      undefined,
+      `${name} must not delegate runner selection`
+    );
+    if (job["runs-on"] === "${{ matrix.runner }}") {
+      assert.deepEqual(
+        job.strategy.matrix.include.map((entry) => entry.runner).sort(),
+        ["ubuntu-24.04", "xcode-27"]
+      );
+    } else {
+      assert.match(
+        job["runs-on"],
+        /^(ubuntu-22\.04|ubuntu-24\.04|xcode-27)$/,
+        `${name} must use a fixed hosted runner`
+      );
+    }
+  }
+});
 test("signer restricted to approved main SHA, inline production builder, scoped secrets", () => {
   assert.equal(desktop.environment, "desktop-release");
+  assert.equal(desktop["runs-on"], "xcode-27");
   assert.match(desktop.if, /github.ref == 'refs\/heads\/main'/);
   assert.equal(step("Checkout").with.ref, "${{ github.sha }}");
   assert.match(

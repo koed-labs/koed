@@ -2517,6 +2517,7 @@ describe("start supervisor", () => {
         "apps/embedding-service/.env.example",
         "apps/worker/.env.example",
         "apps/privacy-service/.env.example",
+        "apps/desktop/.env.example",
         "apps/api/package.json",
         "apps/worker/package.json",
         "apps/privacy-service/package.json",

@@ -2039,3 +2039,5 @@ export type {
 export { transferredSelectionSharingScopeSchema } from "./selection-sharing-journal.js";
 
 export * from "./recall-activity.js";
+
+export * from "./account-contract.js";

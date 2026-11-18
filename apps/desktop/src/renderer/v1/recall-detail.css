@@ -77,8 +77,7 @@
 .recall-facts dd {
   margin: 4px 0 0;
 }
-.recall-detail .recall-table-wrap,
-.recall-timeline-values {
+.recall-detail .recall-table-wrap {
   height: auto;
   overflow: hidden;
   max-height: 280px;
@@ -118,54 +117,41 @@
   width: 100%;
   overflow: visible;
 }
-.recall-chart-line {
-  fill: none;
-  stroke: var(--v1-accent);
-  stroke-width: 2;
-}
 .recall-chart circle {
   fill: var(--v1-accent);
-}
-.recall-chart-axis {
-  stroke: var(--v1-border);
-}
-.recall-chart-scale {
-  margin: 0 0 8px;
-  color: var(--v1-muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.recall-chart-labels {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--v1-muted);
-  font-size: 11px;
 }
 .recall-metrics-dialog .recall-dialog-content > p {
   margin-top: 14px;
   line-height: 1.65;
 }
-
-.v1-app.recall-answer-dialog {
-  width: 630px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100dvh - 64px);
+.v1-app.recall-metrics-dialog {
+  width: min(660px, calc(100vw - 48px));
+  max-width: 660px;
 }
-.recall-answer-dialog .recall-dialog-content {
-  padding: 24px 30px;
+.recall-detail .recall-outcome-guide {
+  margin-top: 20px;
 }
-.recall-detail-heading {
-  margin-bottom: 24px;
-  padding-right: 28px;
+.recall-detail .recall-outcome-guide th:first-child {
+  width: 104px;
+  padding-left: 0;
 }
-.recall-detail-heading [data-slot="dialog-title"] {
+.recall-detail .recall-outcome-guide th:last-child,
+.recall-detail .recall-outcome-guide td:last-child {
+  padding-right: 0;
+}
+.recall-detail .recall-outcome-guide td {
   font-size: 12px;
+  line-height: 1.6;
+  color: var(--v1-fg2);
 }
-.recall-detail-heading [data-slot="dialog-description"] {
+.recall-outcome-guide .recall-outcome {
+  font-size: 11px;
+}
+.recall-outcome-guide-note {
   font-size: 11px;
   color: var(--v1-muted);
 }
+
 .recall-detail-meta {
   display: flex;
   align-items: center;
@@ -182,21 +168,6 @@
   font-weight: 500;
   letter-spacing: -0.5px;
   white-space: pre-wrap;
-}
-.recall-detail-context {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 25px;
-  font-size: 11px;
-  color: var(--v1-muted);
-}
-.recall-detail-project {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .recall-answer-dialog [data-slot="tabs-tab"] {
   font-size: 12px;
@@ -278,22 +249,6 @@
 .recall-citations p {
   margin-top: 12px;
 }
-.recall-detail-foot {
-  display: flex;
-  gap: 8px;
-  margin-top: 28px;
-  padding-top: 16px;
-  border-top: 1px solid var(--v1-hairline);
-  color: var(--v1-muted);
-  font-size: 10px;
-  line-height: 1.7;
-}
-.recall-detail-foot > svg {
-  width: 13px;
-  height: 13px;
-  flex: none;
-  margin-top: 2px;
-}
 .recall-detail-facts {
   margin: 15px 0;
 }
@@ -344,11 +299,212 @@
   padding: 24px 0;
   color: var(--v1-muted);
 }
+
+/* Approved Recall activity Option A detail layout. */
+.v1-app.recall-answer-dialog {
+  width: 960px;
+  max-width: calc(100vw - 48px);
+  height: min(760px, calc(100dvh - 112px));
+  max-height: calc(100dvh - 112px);
+}
+.recall-answer-dialog .recall-dialog-content {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 28px 28px 0;
+  overflow: hidden;
+}
+.recall-detail-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 13px;
+  padding-right: 30px;
+  color: var(--v1-muted);
+  font-size: 10px;
+}
+.recall-detail-eyebrow time {
+  text-transform: uppercase;
+  letter-spacing: 1.3px;
+}
+.recall-detail .recall-question-title {
+  margin: 0;
+  flex: none;
+  height: 2lh;
+  min-height: 2lh;
+  max-height: 2lh;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  padding-right: 16px;
+  font-size: 22px;
+  line-height: 1.4;
+  font-weight: 550;
+}
+.recall-detail-meta {
+  justify-content: flex-start;
+  gap: 12px;
+  margin-top: 13px;
+  margin-bottom: 23px;
+  font-size: 11px;
+}
+.recall-detail-eyebrow,
+.recall-detail-meta {
+  flex: none;
+}
+.recall-detail-tabs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.recall-answer-dialog [data-slot="tabs-list"] {
+  flex: none;
+  gap: 18px;
+  margin-bottom: 0;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.recall-answer-dialog [data-slot="tabs-tab"] {
+  white-space: nowrap;
+}
+.recall-answer-dialog [data-slot="tabs-panel"] {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+}
+.recall-answer-dialog [data-slot="tabs-panel"][hidden] {
+  display: none;
+}
+.recall-detail-panel-scroll {
+  height: 100%;
+  min-height: 0;
+}
+.recall-detail-panel-content {
+  padding: 12px 10px 24px 0;
+}
+.recall-caller-details {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.recall-caller-facts {
+  margin: 0;
+}
+.recall-caller-facts > div {
+  gap: 32px;
+}
+.recall-caller-facts dt {
+  flex: 0 0 150px;
+}
+.recall-caller-facts dd {
+  text-align: left;
+}
+.recall-caller-facts code {
+  font: inherit;
+  color: var(--v1-fg2);
+}
+.recall-detail .recall-caller-question {
+  margin: 0;
+}
+.recall-caller-question-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.recall-detail .recall-caller-question-heading h3 {
+  font-size: 12px;
+  font-weight: 550;
+  margin: 0;
+}
+.recall-caller-question-heading svg {
+  width: 14px;
+  height: 14px;
+}
+.recall-caller-question-text {
+  white-space: pre-wrap;
+  line-height: 1.85;
+  font-size: 13px;
+  color: var(--v1-fg2);
+  margin: 0;
+  max-width: 78ch;
+  overflow-wrap: anywhere;
+}
+.recall-answer-heading {
+  margin-top: 0;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--v1-fg);
+}
+.recall-detail .recall-usage-detail {
+  margin-top: 0;
+}
+.recall-detail .recall-source {
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--v1-hairline);
+  border-radius: 0;
+  background: transparent;
+}
+.recall-source summary {
+  padding: 12px 0;
+  align-items: center;
+  font-size: 12px;
+}
+.recall-source summary small {
+  display: none;
+}
+.recall-source summary:after {
+  content: "⌄";
+  margin-left: auto;
+  color: var(--v1-muted);
+}
+.recall-source[open] summary:after {
+  content: "⌃";
+}
 @media (max-width: 680px) {
+  .v1-app.recall-answer-dialog {
+    max-width: calc(100vw - 24px);
+    height: calc(100dvh - 144px);
+    max-height: calc(100dvh - 144px);
+  }
   .recall-answer-dialog .recall-dialog-content {
-    padding: 24px;
+    padding: 24px 20px 0;
   }
   .recall-detail .recall-question-title {
     font-size: 20px;
   }
+  .recall-answer-dialog [data-slot="tabs-list"] {
+    gap: 12px;
+    overflow-x: auto;
+  }
+  .recall-caller-facts > div {
+    gap: 14px;
+  }
+  .recall-caller-facts dt {
+    flex-basis: 115px;
+  }
+}
+.recall-answer-text {
+  max-width: 700px;
+  line-height: 1.85;
+}
+.recall-detail-signal {
+  padding-left: 12px;
+  border-left: 1px solid var(--v1-border);
+}
+.recall-usage-number {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 15px 0;
+  font-size: 30px;
+}
+.recall-usage-number small {
+  font-size: 11px;
 }

@@ -6,6 +6,7 @@ copyright: Copyright © 2026 Koed
 asar: true
 npmRebuild: false
 afterPack: scripts/after-pack.mjs
+beforePack: scripts/prepare-account-config.mjs
 
 files:
   - dist-electron/**/*
@@ -15,6 +16,10 @@ files:
   - assets/koed-trayTemplate.png
   - assets/koed-trayTemplate@2x.png
   - package.json
+  - from: .account-build
+    to: .
+    filter:
+      - account-config.json
   - "node_modules/@koed-labs/server/package.json"
   - "node_modules/@koed-labs/server/dist/**/*"
   - "!node_modules/@koed-labs/server/src/**"
@@ -65,3 +70,8 @@ mac:
     - dmg
     - zip
   category: public.app-category.developer-tools
+
+protocols:
+  - name: Koed Personal Device pairing
+    schemes:
+      - koed-pair

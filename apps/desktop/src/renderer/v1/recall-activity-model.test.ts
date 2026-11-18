@@ -4,7 +4,8 @@ import {
   recallCallerPresentation,
   recallChartModel,
   recallDateRange,
-  recallPresetDates
+  recallPresetDates,
+  recallQuestionPreview
 } from "./recall-activity-model.js";
 
 describe("Recall calling AI Client", () => {
@@ -54,7 +55,6 @@ const overview = (
     recordedAttempts: 0,
     includesEstimates: false
   },
-  tokenTimeline: [],
   questions: starts.map((start) => ({
     start,
     count: 4,
@@ -131,5 +131,28 @@ describe("Recall chart range resolution", () => {
     expect(new Date(dates.to).getDate()).toBe(12);
     expect(() => recallDateRange("2026-02-30", "2026-03-01")).toThrow();
     expect(() => recallDateRange("", "2026-03-01")).toThrow();
+  });
+});
+
+describe("Recall question header", () => {
+  it("normalizes only the preview and leaves short questions intact", () => {
+    expect(
+      recallQuestionPreview("  First paragraph.\n\nSecond\tparagraph. ")
+    ).toBe("First paragraph. Second paragraph.");
+    expect(recallQuestionPreview("x".repeat(120))).toBe("x".repeat(120));
+    expect(recallQuestionPreview(null)).toBe("Question unavailable");
+    expect(recallQuestionPreview("   ")).toBe("Question unavailable");
+  });
+  it("caps long previews at 120 characters and ends at a word boundary", () => {
+    const prefix = "A ".repeat(55).trimEnd();
+    expect(recallQuestionPreview(prefix + " continuation goes here")).toBe(
+      prefix + "…"
+    );
+    expect(recallQuestionPreview("x".repeat(121))).toBe("x".repeat(119) + "…");
+  });
+  it("does not split surrogate pairs at the cap", () => {
+    const preview = recallQuestionPreview("🧠".repeat(121));
+    expect(preview).toBe("🧠".repeat(119) + "…");
+    expect([...preview]).toHaveLength(120);
   });
 });

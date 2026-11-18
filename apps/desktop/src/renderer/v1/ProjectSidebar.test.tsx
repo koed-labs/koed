@@ -25,6 +25,28 @@ const projects: SidebarProject[] = [
     ]
   }
 ];
+const projectWithConversations = (
+  id: string,
+  name: string,
+  count: number
+): SidebarProject => ({
+  id,
+  name,
+  latestAt: "2026-10-29T12:00:00Z",
+  conversations: Array.from({ length: count }, (_, index) => ({
+    key: `session:${id}-${index + 1}`,
+    aliases: [`session:${id}-${index + 1}`],
+    title: `${name} conversation ${index + 1}`,
+    client: "codex",
+    latestAt: "2026-10-29T12:00:00Z",
+    route: {
+      kind: "conversation",
+      projectId: id,
+      threadId: `${id}-${index + 1}`
+    },
+    projectName: name
+  }))
+});
 function Harness({
   scope = "owner-a",
   data = projects,
@@ -83,17 +105,121 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  delete window.koedDesktop;
 });
 
 describe("Project sidebar interactions", () => {
-  it("offers Recall activity and Settings as the rail footer actions", async () => {
+  it("reveals conversations five at a time per Project and resets on collapse and owner changes", async () => {
+    const data = [
+      projectWithConversations("a", "Alpha", 12),
+      projectWithConversations("b", "Beta", 7)
+    ];
+    const projectButton = (name: string) =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")
+      ].find((element) => element.querySelector("span")?.textContent === name)!;
+    const rows = (name: string) =>
+      projectButton(name)
+        .closest('[data-slot="sidebar-menu-item"]')!
+        .querySelectorAll(".v1-nav-conversation");
+    await act(async () => root.render(<Harness data={data} />));
+    expect(rows("Alpha")).toHaveLength(5);
+    expect(
+      button("Load more conversations in Alpha").querySelector(
+        '[data-slot="badge"]'
+      )?.textContent
+    ).toContain("Load More");
+    await act(async () => projectButton("Beta").click());
+    expect(rows("Beta")).toHaveLength(5);
+    await act(async () => button("Load more conversations in Alpha").click());
+    expect(rows("Alpha")).toHaveLength(10);
+    expect(rows("Beta")).toHaveLength(5);
+    await act(async () => button("Load more conversations in Alpha").click());
+    expect(rows("Alpha")).toHaveLength(12);
+    expect(button("Load more conversations in Alpha")).toBeNull();
+    await act(async () => projectButton("Alpha").click());
+    await act(async () => projectButton("Alpha").click());
+    expect(rows("Alpha")).toHaveLength(5);
+    await act(async () => button("Load more conversations in Alpha").click());
+    await act(async () => button("Collapse all Projects").click());
+    await act(async () => projectButton("Alpha").click());
+    expect(rows("Alpha")).toHaveLength(5);
+    await act(async () => button("Load more conversations in Alpha").click());
+    await act(async () => root.render(<Harness scope="owner-b" data={data} />));
+    expect(rows("Alpha")).toHaveLength(5);
+  });
+
+  it("searches older conversations and keeps the selected one visible without revealing all earlier rows", async () => {
+    const data = [projectWithConversations("a", "Alpha", 12)];
+    await act(async () => root.render(<Harness data={data} />));
+    const search = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Find a Conversation"]'
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(search, "conversation 12");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(
+      container.querySelectorAll(".v1-nav-children .v1-nav-conversation")
+    ).toHaveLength(1);
+    const older = container.querySelector<HTMLButtonElement>(
+      ".v1-nav-children .v1-nav-conversation"
+    )!;
+    expect(older.textContent).toContain("Alpha conversation 12");
+    await act(async () => older.click());
+    await act(async () => button("Clear search").click());
+    expect(
+      container.querySelectorAll(".v1-nav-children .v1-nav-conversation")
+    ).toHaveLength(6);
+    expect(
+      container.querySelector('[aria-current="page"]')?.textContent
+    ).toContain("Alpha conversation 12");
+    expect(button("Load more conversations in Alpha")).not.toBeNull();
+    await act(async () => button("Go back").click());
+    expect(
+      container.querySelectorAll(".v1-nav-children .v1-nav-conversation")
+    ).toHaveLength(5);
+  });
+
+  it("keeps Recall activity, Settings and Account in the persistent rail", async () => {
+    window.koedDesktop = {
+      account: {
+        getState: async () => ({
+          status: "signed_out",
+          profile: null,
+          busy: false,
+          stale: false,
+          message: null,
+          revision: 0
+        }),
+        onStateChanged: () => () => undefined
+      }
+    } as unknown as NonNullable<typeof window.koedDesktop>;
     await act(async () => root.render(<Harness />));
     const actions = container.querySelectorAll(
       '.v1-nav-rail [data-slot="sidebar-footer"] button'
     );
     expect(
       [...actions].map((button) => button.getAttribute("aria-label"))
-    ).toEqual(["Recall activity", "Settings"]);
+    ).toEqual(["Recall activity", "Settings", "Account menu: Account"]);
+    await act(async () => button("Toggle navigation").click());
+    expect(
+      button("Account menu: Account").closest(".v1-nav-rail")
+    ).not.toBeNull();
+    delete window.koedDesktop;
+  });
+
+  it("keeps navigation usable without an account bridge or empty account rail item", async () => {
+    await act(async () => root.render(<Harness />));
+    expect(button("Account menu: Account")).toBeNull();
+    expect(
+      container.querySelectorAll('.v1-nav-rail [data-slot="sidebar-footer"] li')
+    ).toHaveLength(2);
+    await act(async () => button("Toggle navigation").click());
+    expect(button("Settings")).not.toBeNull();
   });
 
   it("expands a Project Home reveals, so its open conversation shows", async () => {

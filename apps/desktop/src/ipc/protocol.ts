@@ -1,5 +1,6 @@
 export const desktopCommandNames = [
   "status",
+  "personal_memory_startup_ready",
   "doctor",
   "stop",
   "setup_core",

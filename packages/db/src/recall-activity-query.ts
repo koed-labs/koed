@@ -185,7 +185,8 @@ export const recallActivityFilter = (
     predicates.push(`q.search_domain = ${bind(input.searchDomain)}`);
   if (input.status) predicates.push(`q.status = ${bind(input.status)}`);
   if (input.projectId)
-    predicates.push(`q.project_id = ${bind(input.projectId)}`);
+    predicates.push(`(q.recall_scope @> ${bind(JSON.stringify({ projectIds: [input.projectId] }))}::jsonb
+      or (q.recall_scope is null and q.project_id = ${bind(input.projectId)}))`);
   if (input.sessionId)
     predicates.push(`q.session_id = ${bind(input.sessionId)}::uuid`);
   if (input.memoryStatus)

@@ -186,8 +186,24 @@ updated hooks if prompted before expecting new captures.
 
 ## Packaged First-Run
 
-Packaged Desktop uses the coloured Koed icon in the Dock and taskbar.
-The logos in navigation and Settings follow the selected theme. First run starts bundled-local
+Source builds disable optional WorkOS sign-in and hide the account badge.
+To enable it locally, set the five `DESKTOP_ACCOUNT_*` values in the root `.env`
+after running `pnpm env:setup`. Packaged apps read their bundled account
+configuration instead of checkout environment files. The forwarder URL comes
+from build configuration. The complete account configuration stays fixed in
+the installed app. See
+[Desktop accounts](../../docs/desktop-accounts.md) for developer setup and local
+package configuration.
+Local Personal Memory remains available without sign-in.
+
+Desktop uses the color Koed mark in the Dock and taskbar.
+Navigation, Settings, and setup use the positive mark in light mode and the
+negative mark in dark mode. The source artwork is in
+`assets/koed-mark-{positive,negative,color}.svg`.
+The app artwork in `assets/koed-app-icon.svg` supplies `koed-icon.png` and the
+macOS `icon.icns` sizes. The macOS menu-bar icon uses a monochrome template.
+
+First run starts bundled-local
 `koed-server`, allocates ports, and verifies runtime/model assets under
 `KOED_HOME` before the main window reports healthy. Production release signing
 uses electron-builder's built-in Developer ID Application and notarization flow

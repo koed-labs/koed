@@ -1,6 +1,7 @@
 /** Browser-only validation entry; never imported by the packaged application. */
 import { useMemo, useState } from "react";
 import { NavigationShell } from "./renderer/v1/NavigationShell.js";
+import type { AccountDesktopApi } from "@koed-labs/shared/account";
 import { buildProjectSidebar } from "./renderer/v1/project-sidebar-model.js";
 import { useNavigationHistory } from "./renderer/v1/use-navigation-history.js";
 import { V1ConversationSurface } from "./renderer/v1/runtime.js";
@@ -71,7 +72,11 @@ const fixtures = [
     threads: []
   }
 ] as DesktopProject[];
-export function SidebarValidation() {
+export function SidebarValidation({
+  accountApi
+}: {
+  accountApi?: AccountDesktopApi;
+}) {
   const [source, setSource] = useState(fixtures);
   const [scope, setScope] = useState("sidebar-validation-owner");
   const [light, setLight] = useState(false);
@@ -143,6 +148,7 @@ export function SidebarValidation() {
         {notice && <span role="status">{notice}</span>}
       </header>
       <NavigationShell
+        accountApi={accountApi}
         projects={groups}
         route={navigation.route}
         scopeKey={scope}

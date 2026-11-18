@@ -1,3 +1,5 @@
+import { recordRecallExecution } from "./recall-execution.js";
+import type { RecallDeliveryOperation } from "@koed-labs/shared";
 import { createClaudeTokenUsageAccumulator } from "./claude-token-usage.js";
 import { AiClientUsageError } from "./ai-client-usage-error.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -720,6 +722,9 @@ interface ToolExpansionRecord {
 }
 
 interface MemoryAnswerBudgetLedger {
+  workingSetTokens: number | null;
+  deliveryOperations: RecallDeliveryOperation[];
+  deliveryTruncated: boolean;
   startedAt: number;
   deadlineAt: number;
   searchAttempts: number;
@@ -779,6 +784,7 @@ const markBudgetExhaustionFromError = (
 };
 
 interface MemoryAnswerToolState {
+  operationSourceKeys?: string[];
   admissionOmissions?: EvidenceAdmissionOmission[];
   expansionSourceKeys?: string[];
   query: string;
@@ -816,6 +822,8 @@ interface ValidatedMemoryAnswerRun {
   markdown: string;
   structuredAnswer: StructuredMemoryAnswer;
   curatedEvidence: unknown[];
+  /** Token cost of `curatedEvidence`, measured once during validation. */
+  curatedEvidenceTokens: number;
 }
 
 const clampLimit = (limit: unknown, fallback: number): number => {
@@ -3003,6 +3011,18 @@ const createMemoryAnswerDynamicToolHandler = (
         state.ledger.searchAttempts +=
           searchPassesFromResult(searchResult) - plannedPasses;
         const hits = hitsFromSearch(searchResult);
+        // Key hits as the normalized candidates they become, so omission reasons match.
+        state.operationSourceKeys = [
+          ...new Set(
+            hits.map((hit, index) =>
+              JSON.stringify(
+                evidenceSourceSelector(
+                  normalizeCandidateIdentity(hit, index, stage)
+                )
+              )
+            )
+          )
+        ];
         const bounded = boundEvidence(
           combineMemoryAnswerCandidateLists(
             state.evidence,
@@ -3044,9 +3064,13 @@ const createMemoryAnswerDynamicToolHandler = (
           phase: "worker",
           durationMs: Date.now() - started
         });
-        const hitKeys = hits.map((hit, index) =>
-          sourceKey(normalizeCandidateIdentity(hit, index, stage))
-        );
+        const hitKeys = [
+          ...new Set(
+            hits.map((hit, index) =>
+              sourceKey(normalizeCandidateIdentity(hit, index, stage))
+            )
+          )
+        ];
         const admittedHits = state.evidence.filter((candidate) =>
           hitKeys.includes(sourceKey(candidate))
         );
@@ -3172,6 +3196,13 @@ const createMemoryAnswerDynamicToolHandler = (
               selectedKeys.has(JSON.stringify(evidenceSourceSelector(item)))
             )
           : authorizedEvidence;
+        state.operationSourceKeys = [
+          ...new Set(
+            expandedEvidence.map((item) =>
+              JSON.stringify(evidenceSourceSelector(item))
+            )
+          )
+        ];
         const bounded = boundEvidence(
           prioritizeExpandedEvidence(state.evidence, expandedEvidence),
           options.config,
@@ -4746,6 +4777,7 @@ const runDynamicToolMemoryAnswer = async (
   rawEvents?: CodexAppServerRawEvent[];
   appServerExecutions: MemoryAnswerAppServerExecution[];
   evidence: unknown[];
+  finalEvidenceBundle: { tokens: number; count: number };
   candidates: unknown[];
   citations: unknown[];
   searches: ToolSearchRecord[];
@@ -4756,6 +4788,9 @@ const runDynamicToolMemoryAnswer = async (
   budgetLedger: MemoryAnswerBudgetLedger;
 }> => {
   const ledger: MemoryAnswerBudgetLedger = {
+    workingSetTokens: null,
+    deliveryOperations: [],
+    deliveryTruncated: false,
     startedAt: Date.now(),
     deadlineAt: Date.now() + options.config.timeoutMs,
     searchAttempts: 0,
@@ -4793,6 +4828,18 @@ const runDynamicToolMemoryAnswer = async (
         errors: [],
         skippedQueries: []
       };
+  ledger.deliveryOperations = firstPass.searches
+    .slice(0, 100)
+    .map((search) => ({
+      kind: search.retrievalStage === "score_scan" ? "scan" : "search",
+      attempt: null,
+      delivered: null,
+      omitted: null,
+      reasons: [],
+      recovered: false,
+      failed: Boolean(search.errorClass)
+    }));
+  ledger.deliveryTruncated = firstPass.searches.length > 100;
   ledger.searchAttempts = firstPass.searches.reduce(
     (sum, search) => sum + (search.searchPasses ?? 1),
     0
@@ -4898,6 +4945,7 @@ const runDynamicToolMemoryAnswer = async (
       );
       prompt = built.prompt;
       promptTokens = built.promptTokens;
+      state.ledger.workingSetTokens = state.ledger.evidenceTokenEstimate;
       observeEvidence(state, state.evidence, options.config);
     } catch (error) {
       markBudgetExhausted(state.ledger, "prompt_tokens");
@@ -4910,6 +4958,12 @@ const runDynamicToolMemoryAnswer = async (
       options
     );
     const dynamicToolHandler: typeof handleDynamicTool = async (call) => {
+      const previousOmissions = new Set(
+        (state.admissionOmissions ?? []).map((entry) =>
+          JSON.stringify(entry.source)
+        )
+      );
+      state.operationSourceKeys = undefined;
       const previousEvidence = state.evidence;
       const previousEvidenceTokens = state.ledger.evidenceTokenEstimate;
       const previousObservedEvidence = state.observedEvidence;
@@ -4933,6 +4987,7 @@ const runDynamicToolMemoryAnswer = async (
             )
             .filter((item) => item !== undefined)
         : [];
+      const observedCount = items.length;
       if (
         Array.isArray(observedItems) &&
         (items.some(isCompleteEvidence) ||
@@ -5130,6 +5185,71 @@ const runDynamicToolMemoryAnswer = async (
             state.ledger.eventContextPromptAdmissionOnly = true;
         }
       }
+      // The final observation is the actual helper-visible delivery, after prompt
+      // admission. Freeze each operation now so later recovery cannot rewrite it.
+      const finalObservation = recordFromUnknown(JSON.parse(response.text));
+      const deliveredItems = Array.isArray(finalObservation[field])
+        ? items
+        : [];
+      const requested = state.operationSourceKeys as string[] | undefined;
+      if (["search", "expand", "scan"].includes(call.tool)) {
+        const kind: RecallDeliveryOperation["kind"] =
+          call.tool === "expand"
+            ? recordFromUnknown(call.arguments).sources === undefined
+              ? "expand"
+              : "targeted_expand"
+            : call.tool === "scan"
+              ? "scan"
+              : "search";
+        // Reuse the handler's own admission count (an expansion record is kept
+        // current through prompt admission) instead of comparing raw hit counts
+        // with merged, deduplicated delivery.
+        const admissionOmitted =
+          field === "expandedEvidence"
+            ? (state.expansionRecords.at(-1)?.omittedSourceCount ?? 0)
+            : Number(observation.omittedEvidenceCount ?? 0) +
+              Math.max(0, observedCount - items.length);
+        const operation: RecallDeliveryOperation = {
+          kind,
+          attempt: state.ledger.workerAttempts,
+          delivered: requested
+            ? deliveredItems.length
+            : response.success
+              ? 0
+              : null,
+          omitted:
+            requested && response.success
+              ? Math.max(0, admissionOmitted)
+              : requested
+                ? requested.length
+                : response.success
+                  ? 0
+                  : null,
+          reasons: [
+            ...new Set(
+              (state.admissionOmissions ?? [])
+                .filter((entry) =>
+                  requested?.includes(JSON.stringify(entry.source))
+                )
+                .map((entry) => entry.reason)
+            )
+          ],
+          // Only a targeted expansion is a recovery; another search or expand
+          // that happens to return an earlier omission is ordinary delivery.
+          recovered:
+            kind === "targeted_expand" &&
+            deliveredItems.some((item) =>
+              previousOmissions.has(
+                JSON.stringify(evidenceSourceSelector(item))
+              )
+            ),
+          failed: !response.success
+        };
+        if (state.ledger.deliveryOperations.length < 100)
+          state.ledger.deliveryOperations.push(operation);
+        else state.ledger.deliveryTruncated = true;
+      }
+      state.ledger.workingSetTokens = state.ledger.evidenceTokenEstimate;
       return response;
     };
     if (options.config.provider === "pi") {
@@ -5306,6 +5426,7 @@ const runDynamicToolMemoryAnswer = async (
         "Memory answer worker returned without using Koed RAG tools"
       );
     }
+    state.ledger.workingSetTokens = state.ledger.evidenceTokenEstimate;
     const selectedEvidence = evidenceSelectedByAnswer(
       state.observedEvidence,
       structuredAnswer
@@ -5383,7 +5504,19 @@ const runDynamicToolMemoryAnswer = async (
         "Memory answer worker returned found without resolvable supporting evidence"
       );
     }
-    return { markdown, structuredAnswer, curatedEvidence };
+    // Measure the final bundle here, where it was already bounded, rather than
+    // re-tokenizing the recorded evidence afterwards.
+    const curatedEvidenceTokens =
+      curatedEvidence.length === selectedEvidence.length
+        ? selectedEvidenceBudget.tokenEstimate
+        : boundEvidence(curatedEvidence, options.config, { allowEmpty: true })
+            .tokenEstimate;
+    return {
+      markdown,
+      structuredAnswer,
+      curatedEvidence,
+      curatedEvidenceTokens
+    };
   };
 
   const validate = (run: MemoryAnswerAttemptRun): ValidatedMemoryAnswerRun => {
@@ -5426,7 +5559,8 @@ const runDynamicToolMemoryAnswer = async (
   }
   const { run, validated } = retryResult;
   const { result } = run;
-  const { markdown, structuredAnswer, curatedEvidence } = validated;
+  const { markdown, structuredAnswer, curatedEvidence, curatedEvidenceTokens } =
+    validated;
   const primaryThreadId =
     normalizeExecutionPrimaryThreadIds(appServerExecutions) ??
     result.primaryThreadId ??
@@ -5445,6 +5579,10 @@ const runDynamicToolMemoryAnswer = async (
     rawEvents: result.rawEvents,
     appServerExecutions,
     evidence: curatedEvidence,
+    finalEvidenceBundle: {
+      tokens: curatedEvidenceTokens,
+      count: curatedEvidence.length
+    },
     candidates: state.evidence,
     citations: citationsFromHits(curatedEvidence),
     searches: state.searches,
@@ -5565,6 +5703,11 @@ export const answerWithMemoryWorker = async (
           query: queryFromPayload(payload),
           evidence: answer.evidence,
           retrieval: {
+            activityExecution: recordRecallExecution(
+              config,
+              answer.budgetLedger,
+              answer.finalEvidenceBundle
+            ),
             mode:
               evaluation.retrievalVariant !== "production"
                 ? `retrieval_arena_${evaluation.retrievalVariant}`
@@ -5762,6 +5905,11 @@ export const answerWithMemoryWorker = async (
           evidence: [],
           retrieval: failureState
             ? {
+                activityExecution: recordRecallExecution(
+                  config,
+                  failureState.ledger,
+                  null
+                ),
                 mode:
                   evaluation.retrievalVariant !== "production"
                     ? `retrieval_arena_${evaluation.retrievalVariant}_failed`

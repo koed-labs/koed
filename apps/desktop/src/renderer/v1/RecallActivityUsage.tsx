@@ -1,3 +1,4 @@
+import { Activity } from "lucide-react";
 import { ScrollArea } from "@koed-labs/ui";
 import type { RecallActivityDetail as Detail } from "@koed-labs/shared/personal-desktop";
 import {
@@ -13,51 +14,48 @@ export function RecallActivityUsage({ detail }: { detail: Detail }) {
       className="recall-usage-detail"
       aria-labelledby="recall-usage-title"
     >
-      <h3 id="recall-usage-title">Known synthesis usage</h3>
+      <div className="recall-execution-heading">
+        <h3 id="recall-usage-title">
+          <Activity />
+          Provider usage
+        </h3>
+        <span>
+          {usage.coverage === "unavailable"
+            ? "Unavailable"
+            : usage.includesEstimates
+              ? "Includes estimates"
+              : usage.coverage === "partial"
+                ? "Partial"
+                : "Recorded"}
+        </span>
+      </div>
       <div className="recall-usage-number">
         {recallTokenLabel(usage.totalTokens)}
-        <small>
-          {usage.totalTokens === null
-            ? "Usage not recorded"
-            : "Recorded tokens"}
-          {" · "}
-          {usage.recordedAttempts.toLocaleString()} recorded{" "}
-          {usage.recordedAttempts === 1 ? "attempt" : "attempts"}
-        </small>
+        <small>known synthesis tokens</small>
       </div>
       <dl className="recall-detail-facts">
         <div>
-          <dt>Accepted to completion</dt>
+          <dt>Input tokens</dt>
+          <dd>{recallTokenLabel(usage.inputTokens)}</dd>
+        </div>
+        <div>
+          <dt>Cached input (included above)</dt>
+          <dd>{recallTokenLabel(usage.cachedInputTokens)}</dd>
+        </div>
+        <div>
+          <dt>Output tokens</dt>
+          <dd>{recallTokenLabel(usage.outputTokens)}</dd>
+        </div>
+
+        <div>
+          <dt>Duration, including queueing and retries</dt>
           <dd>
             {recallDurationLabel(detail.question.metadata?.timing?.durationMs)}
           </dd>
         </div>
         <div>
-          <dt>Usage coverage</dt>
-          <dd>
-            {usage.coverage === "unavailable"
-              ? "Unknown"
-              : usage.coverage === "partial"
-                ? "Partial"
-                : "Recorded"}
-            {usage.includesEstimates && " · includes estimates"}
-          </dd>
-        </div>
-        <div>
-          <dt>Calling AI Client</dt>
-          <dd>
-            {
-              recallCallerPresentation(detail.question.metadata?.caller?.name)
-                .label
-            }
-          </dd>
-        </div>
-        <div>
-          <dt>Synthesis worker</dt>
-          <dd>
-            {detail.worker ?? "Unknown"}
-            <small>Model: {detail.model ?? "Unknown"}</small>
-          </dd>
+          <dt>Synthesis model</dt>
+          <dd>{detail.model ?? "Unknown"}</dd>
         </div>
       </dl>
       {usage.provenance === "historical_job" ? (
@@ -81,23 +79,42 @@ export function RecallActivityUsage({ detail }: { detail: Detail }) {
       )}
       {usage.ambiguous && <p>Conflicting usage associations were excluded.</p>}
       <details>
-        <summary>Token breakdown</summary>
+        <summary>Usage details</summary>
         <dl className="recall-detail-facts">
           <div>
-            <dt>Input</dt>
-            <dd>{recallTokenLabel(usage.inputTokens)}</dd>
+            <dt>Usage coverage</dt>
+            <dd>
+              {usage.coverage === "unavailable"
+                ? "Unknown"
+                : usage.coverage === "partial"
+                  ? "Partial"
+                  : "Recorded"}
+              {usage.includesEstimates && " · includes estimates"}
+            </dd>
           </div>
           <div>
-            <dt>Cached input, included in input</dt>
-            <dd>{recallTokenLabel(usage.cachedInputTokens)}</dd>
+            <dt>Calling AI Client</dt>
+            <dd>
+              {
+                recallCallerPresentation(detail.question.metadata?.caller?.name)
+                  .label
+              }
+            </dd>
           </div>
           <div>
-            <dt>Output</dt>
-            <dd>{recallTokenLabel(usage.outputTokens)}</dd>
+            <dt>Synthesis worker</dt>
+            <dd>
+              {detail.worker ?? "Unknown"}
+              <small>Model: {detail.model ?? "Unknown"}</small>
+            </dd>
           </div>
           <div>
             <dt>Reasoning, included in output</dt>
             <dd>{recallTokenLabel(usage.reasoningOutputTokens)}</dd>
+          </div>
+          <div>
+            <dt>Recorded attempts</dt>
+            <dd>{usage.recordedAttempts.toLocaleString()}</dd>
           </div>
         </dl>
       </details>

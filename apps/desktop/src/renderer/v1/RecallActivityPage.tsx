@@ -1,3 +1,4 @@
+import { RecallActivityQuickFilters } from "./RecallActivityQuickFilters.js";
 import { useEffect, useRef, useState } from "react";
 import { Button, Input } from "@koed-labs/ui";
 import { Filter, Info, RefreshCw, Search, X } from "lucide-react";
@@ -102,6 +103,17 @@ export function RecallActivityPage({
     ])
   ].sort();
   const rows = page?.questions ?? [];
+  const scopeStates = [page?.projectScopeStatus, overview?.projectScopeStatus];
+  const projectScopeStatus = scopeStates.includes("unavailable")
+    ? "unavailable"
+    : scopeStates.includes("updating")
+      ? "updating"
+      : "complete";
+  const incompleteProjectFilter =
+    Boolean(filters.projectId) && projectScopeStatus !== "complete";
+  const completeOverview = incompleteProjectFilter ? null : overview;
+  const updatingProjectFilter =
+    incompleteProjectFilter && projectScopeStatus === "updating";
   const matching = query.trim()
     ? rows.filter((row) =>
         row.query
@@ -186,6 +198,20 @@ export function RecallActivityPage({
             </Button>
           )}
         </div>
+        <RecallActivityQuickFilters
+          input={filters}
+          choices={
+            overview?.filterOptions?.projects ??
+            rows.flatMap(
+              (row) =>
+                row.scope?.projects ?? [
+                  { projectId: row.projectId, projectName: row.projectName }
+                ]
+            )
+          }
+          projects={projects}
+          onChange={apply}
+        />
         <Button
           variant="outline"
           size="icon"
@@ -238,17 +264,29 @@ export function RecallActivityPage({
           Overview statistics are unavailable. Refresh to retry.
         </p>
       )}
-      <RecallActivitySummary overview={overview} loading={loading} />
+      {projectScopeStatus !== "complete" && (
+        <p className="recall-notice" role="status">
+          {projectScopeStatus === "updating"
+            ? "Updating Project history. Project filters and totals are not ready yet."
+            : "Some Project history is unavailable. Project filters and totals are incomplete."}
+        </p>
+      )}
+      <RecallActivitySummary
+        overview={completeOverview}
+        loading={loading || updatingProjectFilter}
+      />
       <div className="recall-overview-body">
         <RecallActivityTable
           key={JSON.stringify(filters)}
           rows={matching}
-          total={overview?.recordedQuestions ?? null}
+          projects={projects}
+          total={completeOverview?.recordedQuestions ?? null}
+          incomplete={incompleteProjectFilter}
           loadedCount={rows.length}
           loading={loading}
           unavailable={accessLost || Boolean(error && !page)}
           pageNumber={cursors.length + 1}
-          hasOlder={Boolean(page?.nextCursor)}
+          hasOlder={!incompleteProjectFilter && Boolean(page?.nextCursor)}
           search={query.trim()}
           onSelect={(row, event) => {
             selectedButton.current = event.currentTarget;
@@ -267,10 +305,10 @@ export function RecallActivityPage({
           onReset={reset}
         />
         <RecallActivityChart
-          overview={overview}
+          overview={completeOverview}
           from={filters.from}
           to={filters.to}
-          loading={loading}
+          loading={loading || updatingProjectFilter}
         />
       </div>
       <footer className="recall-page-footer">
@@ -284,11 +322,10 @@ export function RecallActivityPage({
         </span>
         <Button variant="ghost" size="sm" onClick={() => setCoverageOpen(true)}>
           <Info />
-          About these metrics
+          About outcomes
         </Button>
       </footer>
       <RecallActivityCoverage
-        overview={overview}
         open={coverageOpen}
         onOpenChange={setCoverageOpen}
       />

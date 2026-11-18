@@ -1,4 +1,9 @@
 import {
+  createRecallScopeRepair,
+  recallScopeSql
+} from "./recall-activity-scope.js";
+import { projectRecallExecution } from "./recall-activity-execution.js";
+import {
   personalRecallPredicate,
   recallActivityFilter,
   recallActivityBuckets,
@@ -55,9 +60,21 @@ export interface RecallActivityRepository {
 export const createRecallActivityRepository = (
   pool: pg.Pool,
   options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider } = {}
+): RecallActivityRepository =>
+  recallActivityRepository(
+    pool,
+    options,
+    createRecallScopeRepair(pool, options.envelopeEncryptionProvider)
+  );
+
+const recallActivityRepository = (
+  pool: pg.Pool,
+  options: { envelopeEncryptionProvider?: EnvelopeEncryptionProvider },
+  repairScope: ReturnType<typeof createRecallScopeRepair>
 ): RecallActivityRepository => ({
   async getRecallActivityOverview(actor, rawInput) {
     const input = recallActivityOverviewInputSchema.parse(rawInput);
+    const projectScopeStatus = await repairScope(actor);
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     const days = (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000;
     const bucket =
@@ -110,12 +127,7 @@ export const createRecallActivityRepository = (
          from buckets b left join totals t using (bucket)`,
       values
     );
-    const tokenOverview = await loadRecallTokenOverview(
-      pool,
-      actor,
-      input,
-      bucket
-    );
+    const tokenOverview = await loadRecallTokenOverview(pool, actor, input);
     const { usageIncomplete, ...summary } = result.rows[0]!;
     if (usageIncomplete && tokenOverview.tokens.coverage === "recorded")
       tokenOverview.tokens.coverage = "partial";
@@ -128,14 +140,36 @@ export const createRecallActivityRepository = (
     const filterOptions = await pool.query<
       NonNullable<RecallActivityOverview["filterOptions"]>
     >(
+      // A named Project is labelled only by its current active name, so a deleted
+      // one stays unavailable. Other identities use their latest recorded name.
+      // Records still awaiting scope repair contribute their legacy Project.
       `with eligible as (
-         select q.project_id, q.project_name, (${recallMetadataSql.callerName}) as caller
+         select q.recall_scope, q.project_id, q.project_name, q.created_at,
+           (${recallMetadataSql.callerName}) as caller
          from memory_questions q where ${choices.predicates.join(" and ")}
+       ), recorded as (
+         select ids.id, e.recall_scope->>'kind' as kind,
+           case when e.recall_scope->>'kind' <> 'projects' then e.project_name end as legacy_name,
+           e.created_at
+         from eligible e cross join lateral jsonb_array_elements_text(e.recall_scope->'projectIds') ids(id)
+         union all
+         select e.project_id, 'unknown', e.project_name, e.created_at
+         from eligible e where e.recall_scope is null and e.project_id is not null
+       ), identities as (
+         select r.*, case when r.kind = 'projects'
+           and r.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+           then r.id::uuid end as named_id
+         from recorded r
        ) select
          coalesce((select jsonb_agg(jsonb_build_object('projectId', project_id,
            'projectName', project_name) order by project_id) from (
-             select project_id, max(project_name) as project_name from eligible
-             where project_id is not null group by project_id
+             select ids.id as project_id,
+               case when bool_or(ids.kind = 'projects') then max(p.name)
+                 else (array_agg(ids.legacy_name order by ids.created_at desc)
+                   filter (where ids.legacy_name is not null))[1] end as project_name
+             from identities ids left join personal_named_projects p
+               on p.owner_user_id=$1 and p.project_id=ids.named_id and p.deleted_at is null
+             group by ids.id
            ) p), '[]'::jsonb) as projects,
          coalesce((select jsonb_agg(caller order by caller) from (
            select distinct caller from eligible where caller is not null
@@ -145,6 +179,7 @@ export const createRecallActivityRepository = (
     return {
       ...summary,
       ...tokenOverview,
+      projectScopeStatus,
       filterOptions: filterOptions.rows[0]!,
       asOf: new Date().toISOString(),
       timezone: input.timezone,
@@ -152,8 +187,13 @@ export const createRecallActivityRepository = (
     };
   },
   async getRecallActivity(actor, questionId) {
-    const eligible = await pool.query<{ id: string } & RecallMetadataColumns>(
-      `select q.id, ${recallMetadataColumns} from memory_questions q where ${personalRecallPredicate} and q.id = $2`,
+    const eligible = await pool.query<
+      {
+        id: string;
+        scope: RecallActivityQuestion["scope"];
+      } & RecallMetadataColumns
+    >(
+      `select q.id, ${recallScopeSql} as scope, ${recallMetadataColumns} from memory_questions q where ${personalRecallPredicate} and q.id = $2`,
       [actor.userId, questionId]
     );
     if (!eligible.rows[0]) return null;
@@ -221,6 +261,7 @@ export const createRecallActivityRepository = (
     const result: RecallActivityDetail = {
       question: {
         metadata: recallMetadataFromRow(eligible.rows[0]),
+        scope: eligible.rows[0].scope,
         id: detail.id,
         recordedAt: detail.createdAt,
         updatedAt: detail.updatedAt,
@@ -250,6 +291,7 @@ export const createRecallActivityRepository = (
       searchCount: number(worker.searchCount),
       expandCount: number(worker.expandCount),
       candidateCount: number(worker.candidateCount),
+      execution: projectRecallExecution(detail.retrieval),
       failure:
         detail.status === "error"
           ? (safeFailure[String(worker.skippedReason)] ??
@@ -264,6 +306,7 @@ export const createRecallActivityRepository = (
   },
   async listRecallActivity(actor, rawInput) {
     const input = recallActivityListInputSchema.parse(rawInput);
+    const projectScopeStatus = await repairScope(actor);
     const { values, predicates, bind } = recallActivityFilter(actor, input);
     if (input.cursor)
       predicates.push(`(q.created_at, q.id) <
@@ -271,7 +314,7 @@ export const createRecallActivityRepository = (
     const result = await pool.query<
       Omit<RecallActivityQuestion, "metadata" | "usage"> & RecallMetadataColumns
     >(
-      `select q.id, q.query, ${recallMetadataColumns}, q.search_domain as "searchDomain", q.status,
+      `select q.id, q.query, ${recallScopeSql} as scope, ${recallMetadataColumns}, q.search_domain as "searchDomain", q.status,
          q.project_id as "projectId", q.project_name as "projectName", q.session_id as "sessionId",
          to_char(q.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "recordedAt",
          to_char(q.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "updatedAt"
@@ -300,7 +343,8 @@ export const createRecallActivityRepository = (
       status: row.status,
       projectId: row.projectId,
       projectName: row.projectName,
-      sessionId: row.sessionId
+      sessionId: row.sessionId,
+      scope: row.scope
     }));
     // Decrypt only selected question text, in one payload read for the page.
     // No answer, Evidence Bundle, or worker payload is hydrated for a history row.
@@ -340,6 +384,7 @@ export const createRecallActivityRepository = (
     const last = questions.at(-1);
     return {
       questions,
+      projectScopeStatus,
       nextCursor:
         result.rows.length > input.limit && last
           ? { recordedAt: last.recordedAt, id: last.id }

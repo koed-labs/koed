@@ -1,0 +1,92 @@
+.v1-navigation .v1-account-badge {
+  display: flex;
+  align-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 5px;
+  justify-content: center;
+  color: var(--v1-fg);
+  border-radius: 10px;
+  text-align: left;
+}
+.v1-account-badge:hover,
+.v1-account-badge[data-popup-open] {
+  background: var(--v1-surface-hover);
+}
+.v1-account-avatar[data-slot="avatar"] {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+.v1-account-avatar img {
+  position: absolute;
+  inset: 0;
+}
+.v1-app.v1-account-popup {
+  height: auto;
+  width: 264px;
+  max-width: calc(100vw - 24px);
+  padding: 5px;
+  background: var(--v1-card);
+  color: var(--v1-fg);
+  border: 1px solid var(--v1-border);
+  border-radius: 12px;
+  box-shadow: var(--v1-shadow);
+  font-size: 13px;
+}
+.v1-account-popup .v1-account-menu-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 9px;
+  color: var(--v1-fg);
+  overflow-wrap: anywhere;
+}
+.v1-account-menu-heading strong {
+  font-size: 13px;
+  font-weight: 550;
+}
+.v1-account-menu-heading span {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--v1-muted);
+}
+.v1-account-menu-heading .v1-account-invitation {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+.v1-account-popup [role="separator"] {
+  margin: 4px 0;
+  background: var(--v1-hairline);
+}
+.v1-account-popup [role="menuitem"] {
+  min-height: 36px;
+  border-radius: 7px;
+  padding: 8px 9px;
+}
+.v1-account-popup [role="menuitem"][data-highlighted] {
+  background: var(--v1-surface-hover);
+  color: var(--v1-fg);
+}
+.v1-account-popup [role="menuitem"] svg {
+  width: 16px;
+  height: 16px;
+  color: var(--v1-muted);
+}
+.v1-account-popup .v1-account-menu-note {
+  margin: 0;
+  padding: 8px 9px;
+  color: var(--v1-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

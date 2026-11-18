@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import {
+  Badge,
   Button,
   DropdownMenu,
   DropdownMenuTrigger,
@@ -46,6 +47,8 @@ import {
 import { useSidebarPins } from "./use-sidebar-pins.js";
 import { useConversationDrag } from "./project-management/use-conversation-drag.js";
 import "./project-management/project-management.css";
+
+const CONVERSATIONS_PER_PAGE = 5;
 
 export type SidebarManagement = {
   onCreateProject: () => void;
@@ -102,6 +105,7 @@ export function ProjectSidebar({
 }) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [visibleCounts, setVisibleCounts] = useState(new Map<string, number>());
   const initialized = useRef(false);
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [now, setNow] = useState(Date.now);
@@ -355,7 +359,10 @@ export function ProjectSidebar({
                 type="button"
                 aria-label="Collapse all Projects"
                 title="Collapse all Projects"
-                onClick={() => setExpanded(new Set())}
+                onClick={() => {
+                  setExpanded(new Set());
+                  setVisibleCounts(new Map());
+                }}
               >
                 <ChevronsDownUp />
               </button>
@@ -365,6 +372,16 @@ export function ProjectSidebar({
             <SidebarMenu>
               {visible.map((project) => {
                 const open = Boolean(query.trim()) || expanded.has(project.id);
+                const limit =
+                  visibleCounts.get(project.id) ?? CONVERSATIONS_PER_PAGE;
+                // Search covers the full inventory. Keep an older open conversation
+                // visible without expanding every conversation ahead of it.
+                const shown = query.trim()
+                  ? project.conversations
+                  : project.conversations.filter(
+                      (row, index) => index < limit || selected(row)
+                    );
+                const remaining = project.conversations.length - shown.length;
                 return (
                   <SidebarMenuItem
                     key={project.id}
@@ -375,14 +392,20 @@ export function ProjectSidebar({
                   >
                     <Collapsible.Root
                       open={open}
-                      onOpenChange={(next) =>
+                      onOpenChange={(next) => {
                         setExpanded((previous) => {
                           const changed = new Set(previous);
                           if (next) changed.add(project.id);
                           else changed.delete(project.id);
                           return changed;
-                        })
-                      }
+                        });
+                        if (!next)
+                          setVisibleCounts((previous) => {
+                            const changed = new Map(previous);
+                            changed.delete(project.id);
+                            return changed;
+                          });
+                      }}
                     >
                       <div
                         className={`v1-pm-project-row ${management && project.managed ? "v1-pm-has-menu" : ""}`}
@@ -415,8 +438,36 @@ export function ProjectSidebar({
                       </div>
                       <Collapsible.Panel>
                         <SidebarMenuSub className="v1-nav-children">
-                          {project.conversations.map((row) =>
-                            conversation(row, true)
+                          {shown.map((row) => conversation(row, true))}
+                          {remaining > 0 && (
+                            <SidebarMenuSubItem className="v1-nav-load-more-row">
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                className="v1-nav-load-more"
+                                aria-label={`Load more conversations in ${project.name}`}
+                                title={`${remaining} more conversations`}
+                                onClick={(event) => {
+                                  const list =
+                                    event.currentTarget.closest("ul");
+                                  setVisibleCounts((previous) =>
+                                    new Map(previous).set(
+                                      project.id,
+                                      limit + CONVERSATIONS_PER_PAGE
+                                    )
+                                  );
+                                  requestAnimationFrame(() => {
+                                    list
+                                      ?.querySelectorAll<HTMLButtonElement>(
+                                        ".v1-nav-conversation"
+                                      )
+                                      [limit]?.focus();
+                                  });
+                                }}
+                              >
+                                <Badge>Load More</Badge>
+                              </Button>
+                            </SidebarMenuSubItem>
                           )}
                           {!project.conversations.length && showEmptyStates && (
                             <li className="v1-nav-empty">

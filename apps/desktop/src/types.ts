@@ -1,3 +1,4 @@
+import type { AccountDesktopApi } from "@koed-labs/shared/account";
 import type { DesktopPerformanceApi } from "@koed-labs/server";
 import type {
   CollaborationCommandResult,
@@ -187,6 +188,7 @@ export interface DesktopLaunchAtStartupState {
 }
 
 export interface DesktopApi {
+  account?: AccountDesktopApi;
   featureFlags?: DesktopFeatureFlags;
   invoke: <T = unknown>(
     command: string,

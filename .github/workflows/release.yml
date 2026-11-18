@@ -185,7 +185,7 @@ jobs:
             runner: ubuntu-24.04
           - platform: macos
             arch: arm64
-            runner: macos-15
+            runner: xcode-27
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -339,7 +339,7 @@ jobs:
     name: Build and freeze macOS native runtime
     needs: release
     if: needs.release.outputs.desktop_assets_enabled == 'true'
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 150
     permissions:
       contents: read
@@ -399,7 +399,7 @@ jobs:
     name: Stage frozen macOS core and complete native catalog
     needs: [release, linux-native-packages, frozen-macos-native-runtime]
     if: needs.release.outputs.desktop_assets_enabled == 'true'
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 45
     permissions:
       contents: write
@@ -498,7 +498,7 @@ jobs:
             runner: ubuntu-24.04
           - platform: macos
             arch: arm64
-            runner: macos-15
+            runner: xcode-27
 
     steps:
       - name: Checkout
@@ -754,6 +754,11 @@ jobs:
     if: github.ref == 'refs/heads/main' && needs.release.outputs.desktop_assets_enabled == 'true'
     env:
       KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json
+      KOED_ACCOUNT_ENABLED: ${{ vars.DESKTOP_ACCOUNT_ENABLED || 'false' }}
+      KOED_ACCOUNT_CLIENT_ID: ${{ vars.DESKTOP_ACCOUNT_CLIENT_ID }}
+      KOED_ACCOUNT_ENVIRONMENT: production
+      KOED_ACCOUNT_LOGIN_MODE: ${{ vars.DESKTOP_ACCOUNT_LOGIN_MODE }}
+      KOED_ACCOUNT_FORWARDER_URL: ${{ vars.DESKTOP_ACCOUNT_FORWARDER_URL }}
 
     steps:
       - name: Checkout
@@ -772,6 +777,10 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Prepare Desktop account configuration
+        run: |
+          pnpm --filter @koed-labs/shared build
+          node apps/desktop/scripts/prepare-account-config.mjs --release
       - name: Download frozen catalog
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -890,7 +899,7 @@ jobs:
 
   signed-desktop-release-assets:
     name: Signed Desktop release assets
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 150
     needs:
       [
@@ -903,6 +912,11 @@ jobs:
     environment: desktop-release
     env:
       KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json
+      KOED_ACCOUNT_ENABLED: ${{ vars.DESKTOP_ACCOUNT_ENABLED || 'false' }}
+      KOED_ACCOUNT_CLIENT_ID: ${{ vars.DESKTOP_ACCOUNT_CLIENT_ID }}
+      KOED_ACCOUNT_ENVIRONMENT: production
+      KOED_ACCOUNT_LOGIN_MODE: ${{ vars.DESKTOP_ACCOUNT_LOGIN_MODE }}
+      KOED_ACCOUNT_FORWARDER_URL: ${{ vars.DESKTOP_ACCOUNT_FORWARDER_URL }}
 
     steps:
       - name: Checkout
@@ -924,6 +938,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Prepare Desktop account configuration
+        run: |
+          pnpm --filter @koed-labs/shared build
+          node apps/desktop/scripts/prepare-account-config.mjs --release
 
       - name: Download complete frozen catalog and assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093

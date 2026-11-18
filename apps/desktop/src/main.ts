@@ -1,4 +1,11 @@
 import {
+  desktopAccountEnvironment,
+  packagedAccountConfig
+} from "./account/config.js";
+import { createAccountController } from "./account/controller.js";
+import { createAccountRuntime } from "./account/runtime.js";
+import { registerAccountIpc } from "./ipc/account.js";
+import {
   readPresentationPreferences,
   writePresentationPreferences
 } from "./window/presentation-preferences.js";
@@ -152,6 +159,18 @@ let desktopMenuBar: DesktopMenuBar | null = null;
 let disposeDesktopUpdateIpc: (() => void) | null = null;
 let disposeDesktopUpdateDiscovery: (() => void) | null = null;
 let backgroundLaunchPending = false;
+let accountController: ReturnType<typeof createAccountController> | null = null;
+const accountCallbackInbox: string[] = [];
+const acceptAccountCallback = (url: string) => {
+  if (
+    !url.startsWith("ai.koed.desktop.auth://") &&
+    !url.startsWith("ai.koed.desktop.auth.dev://")
+  )
+    return false;
+  if (accountController) void accountController.callback(url);
+  else if (accountCallbackInbox.length < 4) accountCallbackInbox.push(url);
+  return true;
+};
 const pairingLinkInbox = createPersonalDevicePairingInbox();
 const managedPreviewController = createManagedPreviewController();
 
@@ -178,6 +197,13 @@ if (!isAgent && process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
     app.quit();
   } else {
     app.on("second-instance", (_event, argv) => {
+      const authLink = argv.find((argument) =>
+        argument.startsWith("ai.koed.desktop.auth")
+      );
+      if (authLink && acceptAccountCallback(authLink)) {
+        void showDesktopWindow();
+        return;
+      }
       const deepLink = argv.find((argument) =>
         argument.startsWith("koed-pair://")
       );
@@ -189,7 +215,7 @@ if (!isAgent && process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
 
 app.on("open-url", (event, url) => {
   event.preventDefault();
-  void showPairingDeepLink(url);
+  if (!acceptAccountCallback(url)) void showPairingDeepLink(url);
 });
 
 protocol.registerSchemesAsPrivileged([
@@ -221,6 +247,14 @@ const openExternal = createExternalUrlOpener({
       );
     })
 });
+
+const notifyDesktopStatusChanged = () => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send(desktopStatusChangedChannel);
+    }
+  }
+};
 
 const createServerManager = (
   managedConversationDraftStore?: ReturnType<
@@ -277,6 +311,7 @@ const createServerManager = (
     existsSync,
     execFile,
     spawn,
+    onPersonalMemoryStartupReady: notifyDesktopStatusChanged,
     openExternal,
     openPath: (path) => shell.openPath(path),
     revealPath: (path) => shell.showItemInFolder(path),
@@ -422,6 +457,45 @@ async function showPairingDeepLink(value: string): Promise<void> {
 
 const bootstrap = async () => {
   await app.whenReady();
+  const config = packagedAccountConfig(
+    resolve(app.getAppPath(), "account-config.json"),
+    desktopAccountEnvironment({
+      repoRoot,
+      packaged: app.isPackaged,
+      environment: process.env
+    }),
+    { packaged: app.isPackaged }
+  );
+  accountController = createAccountController({
+    config,
+    runtime: () => createAccountRuntime(config!, openExternal)
+  });
+  const disposeAccount = registerAccountIpc({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    allowedRendererOrigins,
+    controller: accountController
+  });
+  app.once("will-quit", disposeAccount);
+  if (config) {
+    const scheme = new URL(config.callbackUri).protocol.slice(0, -1);
+    if (process.defaultApp && process.argv[1])
+      app.setAsDefaultProtocolClient(scheme, process.execPath, [
+        resolve(process.argv[1])
+      ]);
+    else app.setAsDefaultProtocolClient(scheme);
+  }
+  const controller = accountController;
+  void controller.restore().then(() => {
+    for (const url of [
+      ...accountCallbackInbox,
+      ...process.argv.filter((value) =>
+        value.startsWith("ai.koed.desktop.auth")
+      )
+    ])
+      void controller.callback(url);
+    accountCallbackInbox.length = 0;
+  });
   const updateDiscovery = createUpdateDiscovery({
     eligible:
       app.isPackaged &&
@@ -747,11 +821,7 @@ const bootstrap = async () => {
   // external stop or start is reflected without waiting for full polling.
   server.lifecycle.subscribe(() => {
     void desktopMenuBar?.refresh();
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) {
-        window.webContents.send(desktopStatusChangedChannel);
-      }
-    }
+    notifyDesktopStatusChanged();
   });
   server.lifecycle.start();
   await startDesktopWindowAndRuntime({
@@ -845,11 +915,7 @@ const bootstrap = async () => {
         stop: () => server.shutdown(),
         quit: () => app.quit()
       });
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) {
-          window.webContents.send(desktopStatusChangedChannel);
-        }
-      }
+      notifyDesktopStatusChanged();
     }
   });
 };

@@ -114,6 +114,10 @@
     "./desktop-update-contract": {
       "types": "./dist/desktop-update-contract.d.ts",
       "import": "./dist/desktop-update-contract.js"
+    },
+    "./account": {
+      "types": "./dist/account-contract.d.ts",
+      "import": "./dist/account-contract.js"
     }
   },
   "files": [

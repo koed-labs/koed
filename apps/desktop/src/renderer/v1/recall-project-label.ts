@@ -15,13 +15,24 @@ const displayName = (value: string | null | undefined) => {
   return name && !/^(repository|folder|project):\s*\{/.test(name) ? name : null;
 };
 
-/** Resolve labels only. Recorded identity and retrieval scope remain unchanged. */
+/** Resolve labels only. Recorded identity and retrieval scope remain unchanged.
+ * A `projectName` of null is the activity API's verdict that a named Project is
+ * unavailable; pass undefined when no API label is known so the sidebar is used. */
 export function recallProjectLabel(
-  question: Pick<RecallActivityQuestion, "projectId" | "projectName">,
+  question: Pick<RecallActivityQuestion, "projectId"> & {
+    projectName?: RecallActivityQuestion["projectName"];
+  },
   projects: readonly DesktopProject[]
 ): string | null {
   const id = question.projectId;
   if (!id) return displayName(question.projectName);
+  // Named Project labels are resolved by the owner-authorized activity API.
+  // A stale sidebar must not resurrect a deleted Project's name.
+  if (
+    question.projectName !== undefined &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+  )
+    return displayName(question.projectName);
   const project =
     projects.find(
       (candidate) =>

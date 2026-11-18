@@ -42,6 +42,8 @@ test("keeps renderer-only packages out of Electron production dependencies", () 
     "@koed-labs/mcp-server",
     "@koed-labs/server",
     "@koed-labs/shared",
+    "@workos-inc/node",
+    "@workos/authkit-session",
     "ws",
     "zod"
   ]);
