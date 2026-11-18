@@ -81,8 +81,30 @@ test("all job dependencies exist; publication requires successful signer", () =>
     /needs\['signed-desktop-release-assets'\]\.result == 'success'/
   );
 });
+test("production release jobs use GitHub-hosted runners only", () => {
+  for (const [name, job] of Object.entries(jobs)) {
+    assert.equal(
+      job.uses,
+      undefined,
+      `${name} must not delegate runner selection`
+    );
+    if (job["runs-on"] === "${{ matrix.runner }}") {
+      assert.deepEqual(
+        job.strategy.matrix.include.map((entry) => entry.runner).sort(),
+        ["ubuntu-24.04", "xcode-27"]
+      );
+    } else {
+      assert.match(
+        job["runs-on"],
+        /^(ubuntu-22\.04|ubuntu-24\.04|xcode-27)$/,
+        `${name} must use a fixed hosted runner`
+      );
+    }
+  }
+});
 test("signer restricted to approved main SHA, inline production builder, scoped secrets", () => {
   assert.equal(desktop.environment, "desktop-release");
+  assert.equal(desktop["runs-on"], "xcode-27");
   assert.match(desktop.if, /github.ref == 'refs\/heads\/main'/);
   assert.equal(step("Checkout").with.ref, "${{ github.sha }}");
   assert.match(

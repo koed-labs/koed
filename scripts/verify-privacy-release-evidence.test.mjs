@@ -162,7 +162,7 @@ for (const [name, modify] of [
     assert.throws(() => verifyPrivacyReleaseReports(input));
   });
 
-test("publication and reviewed identity require hosted native Privacy qualification without a self-hosted GPU", () => {
+test("publication and reviewed identity require native Privacy qualification without a self-hosted GPU", () => {
   const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
   const jobs = workflow.jobs;
   assert.ok(
@@ -193,9 +193,8 @@ test("publication and reviewed identity require hosted native Privacy qualificat
     assert.match(smoke.run, /component-runtime-compatibility-smoke\.mjs/);
     assert.match(smoke.run, /--variant cuda/);
   }
-  for (const [name, job] of Object.entries(jobs))
-    assert.ok(
-      !JSON.stringify(job["runs-on"] ?? "").includes("self-hosted"),
-      `${name} must not require a self-hosted runner`
-    );
+  assert.equal(
+    jobs["privacy-release-qualification"]["runs-on"],
+    "ubuntu-24.04"
+  );
 });

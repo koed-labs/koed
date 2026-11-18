@@ -13,6 +13,8 @@ The post-merge `Release` workflow publishes signed/notarized Desktop assets,
 not these internal candidates. See [Desktop notarization](desktop-notarization.md)
 for protected-environment setup, publication gates, and clean-Mac acceptance.
 See `docs/ci-validation.md` for validation dispatch options and PR routing.
+A separate [signed candidate testing path](signed-candidate-artifacts.md) is available after its protected environment is explicitly configured; it is not a production release or promotion path.
+
 To create internal candidates locally, run `pnpm desktop:package:internal:mac`;
 artifacts appear under `apps/desktop/release`.
 
