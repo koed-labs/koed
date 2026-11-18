@@ -11,11 +11,11 @@ acceptance test remain separate qualification gates.
 ## Trust boundary
 
 The build job checks out and executes the requested PR **without Apple signing or
-notarization credentials**. A separate trusted-main inspector downloads the run's
+notarization credentials**. A fresh GitHub-hosted trusted-main inspector downloads the run's
 unsigned artifact, checks its archive and bundle, independently hashes it, and
 posts a tuple to the workflow summary. A protected environment requires an
 independent reviewer to inspect the exact tuple and candidate changes before
-approval. The signer checks the tuple, current PR head, protected main,
+approval. The fresh GitHub-hosted signer checks the tuple, current PR head, protected main,
 environment policy, artifact ID, and digest again before signing. It processes
 candidate files as hostile data and does not run candidate executables, scripts,
 hooks, entitlements, packaging configuration, or dependencies.
@@ -81,21 +81,15 @@ The macOS `security` tool receives the transient keychain password and `.p12`
 password as process arguments. Restrict runner and job diagnostics access. Cleanup
 failure fails the job and prevents artifact upload.
 
-Candidate and production signing jobs run on fresh GitHub-hosted runners, not on
-the persistent Macs. The build, inspection and smoke jobs can run on those Macs;
-malicious candidate code can persist there and tamper with later jobs and artifacts.
-The runners are also available to other eligible repository workflows, not just
-this manual workflow: a PR that changes a workflow may be able to target them,
-subject to GitHub's workflow approval policies. Routing alone does not restrict
-runner access. See GitHub's self-hosted runner security guidance.
+Candidate build, inspection, signing, and smoke jobs each run on a separate fresh
+GitHub-hosted `xcode-27` macOS runner. Production release and trusted cache jobs
+also use GitHub-hosted runners. This prevents state left by candidate execution
+from persisting into a later job; it does not make candidate artifacts trustworthy.
 
-Before each non-signing macOS job, a GitHub-hosted router polls for either idle
-`koed-shf-macos-arm64` or `koed-zom-macos-arm64` for up to two minutes, then
-selects GitHub-hosted `xcode-27` macOS 27 ARM64. Set the repository secret
-`KOED_RUNNER_STATUS_TOKEN` to a fine-grained token with repository Administration
-read access; missing credentials or API errors fall back to GitHub-hosted. Selection
-is not a reservation: concurrent routers can select the same runner, and a runner
-that goes offline after selection can leave a job queued.
+Self-hosted runners registered separately with the public repository remain
+available to other eligible workflows, including potentially modified PR workflows.
+Removing them from this workflow does not restrict their access. See GitHub's
+self-hosted runner security guidance.
 
 ## Dispatch and review
 

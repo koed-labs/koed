@@ -436,7 +436,13 @@ test("native runtime caches are restored by PRs and written only by trusted main
   assert.match(nativeRestoreStep, /uses: actions\/cache\/restore@/);
   assert.doesNotMatch(nativeRestoreStep, /uses: actions\/cache@/);
   assert.doesNotMatch(fullValidation, /native-runtime-payload-v3-/);
-  assert.doesNotMatch(cacheWorkflow, /pull_request:/);
+  assert.doesNotMatch(
+    cacheWorkflow,
+    /pull_request:|self-hosted|route-macos-runner/
+  );
+  assert.match(cacheWorkflow, /runs-on: xcode-27/);
+  assert.match(relevantSmoke, /runs-on: xcode-27/);
+  assert.match(fullValidation, /runs-on: xcode-27/);
   assert.match(cacheWorkflow, /branches:\n\s+- main/);
   assert.match(
     cacheWorkflow,

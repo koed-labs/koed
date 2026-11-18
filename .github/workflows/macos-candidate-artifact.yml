@@ -44,15 +44,9 @@ jobs:
           CANDIDATE_PR: ${{ inputs.pr }}
           CANDIDATE_SHA: ${{ inputs.sha }}
 
-  route-build:
-    needs: prepare
-    uses: ./.github/workflows/route-macos-runner.yml
-    secrets:
-      KOED_RUNNER_STATUS_TOKEN: ${{ secrets.KOED_RUNNER_STATUS_TOKEN }}
-
   build:
-    needs: [prepare, route-build]
-    runs-on: ${{ fromJSON(needs.route-build.outputs.runner) }}
+    needs: prepare
+    runs-on: xcode-27
     timeout-minutes: 60
     permissions:
       contents: read
@@ -88,15 +82,9 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-  route-inspect:
-    needs: [prepare, build]
-    uses: ./.github/workflows/route-macos-runner.yml
-    secrets:
-      KOED_RUNNER_STATUS_TOKEN: ${{ secrets.KOED_RUNNER_STATUS_TOKEN }}
-
   inspect:
-    needs: [prepare, build, route-inspect]
-    runs-on: ${{ fromJSON(needs.route-inspect.outputs.runner) }}
+    needs: [prepare, build]
+    runs-on: xcode-27
     timeout-minutes: 20
     outputs:
       tuple: ${{ steps.inspect.outputs.tuple }}
@@ -165,15 +153,9 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-  route-smoke:
-    needs: [prepare, inspect, sign]
-    uses: ./.github/workflows/route-macos-runner.yml
-    secrets:
-      KOED_RUNNER_STATUS_TOKEN: ${{ secrets.KOED_RUNNER_STATUS_TOKEN }}
-
   smoke:
-    needs: [prepare, inspect, sign, route-smoke]
-    runs-on: ${{ fromJSON(needs.route-smoke.outputs.runner) }}
+    needs: [prepare, inspect, sign]
+    runs-on: xcode-27
     timeout-minutes: 30
     permissions:
       contents: read

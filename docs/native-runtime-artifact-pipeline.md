@@ -124,11 +124,10 @@ dist/native-runtime/macos-arm64/
   provenance.json
 ```
 
-Non-signing release and trusted cache-maintenance macOS jobs prefer the persistent
-`koed-shf-macos-arm64` or `koed-zom-macos-arm64` runners after an idle check, with
-GitHub-hosted `xcode-27` fallback; see [candidate runner risks and setup](signed-candidate-artifacts.md).
-Signing runs on a GitHub-hosted runner. The cache key includes the Xcode version,
-so self-hosted and hosted runs with different Xcode versions use different entries.
+Release and trusted cache-maintenance macOS jobs run on GitHub-hosted `xcode-27`
+runners; see [candidate trust boundaries](signed-candidate-artifacts.md). The
+cache key includes the Xcode version, so different toolchain versions use
+separate entries.
 
 For the macOS release core, build the Desktop runtime once with a stable
 `--version` and validate it as below, then stage that exact tree (do not

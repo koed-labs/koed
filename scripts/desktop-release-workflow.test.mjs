@@ -18,33 +18,25 @@ test("all job dependencies exist; publication requires successful signer", () =>
     /needs\['signed-desktop-release-assets'\]\.result == 'success'/
   );
 });
-test("macOS release jobs route separately and Linux stays hosted", () => {
-  for (const [name, route] of [
-    ["frozen-component-release-assets", "route-frozen-components"],
-    ["frozen-macos-native-runtime", "route-frozen-macos-runtime"],
-    ["macos-native-packages", "route-macos-native-packages"],
-    ["standalone-koed-server-release-assets", "route-standalone-server"]
-  ]) {
-    assert.ok(jobs[name].needs.includes(route));
+test("production release jobs use GitHub-hosted runners only", () => {
+  for (const [name, job] of Object.entries(jobs)) {
     assert.equal(
-      jobs[route].uses,
-      "./.github/workflows/route-macos-runner.yml"
+      job.uses,
+      undefined,
+      `${name} must not delegate runner selection`
     );
-    assert.match(
-      jobs[name]["runs-on"],
-      new RegExp(`needs\\.${route}\\.outputs\\.runner`)
-    );
-  }
-  for (const name of [
-    "frozen-component-release-assets",
-    "standalone-koed-server-release-assets"
-  ]) {
-    const matrix = jobs[name].strategy.matrix.include;
-    assert.equal(
-      matrix.find((entry) => entry.platform === "linux").runner,
-      "ubuntu-24.04"
-    );
-    assert.match(jobs[name]["runs-on"], /matrix\.platform == 'macos'/);
+    if (job["runs-on"] === "${{ matrix.runner }}") {
+      assert.deepEqual(
+        job.strategy.matrix.include.map((entry) => entry.runner).sort(),
+        ["ubuntu-24.04", "xcode-27"]
+      );
+    } else {
+      assert.match(
+        job["runs-on"],
+        /^(ubuntu-22\.04|ubuntu-24\.04|xcode-27)$/,
+        `${name} must use a fixed hosted runner`
+      );
+    }
   }
 });
 test("signer restricted to approved main SHA, inline production builder, scoped secrets", () => {
