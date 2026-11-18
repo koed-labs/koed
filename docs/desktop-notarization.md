@@ -5,7 +5,7 @@
 The normal `.github/workflows/release.yml` path builds macOS arm64 DMG/ZIP
 with `pnpm desktop:package:release`. electron-builder performs Developer ID
 Application signing, built-in notarization, and app stapling. There is no custom
-notarizer, isolated signing workflow, or manual asset recovery workflow.
+notarizer, isolated signing workflow, or manual asset recovery workflow for production releases. The separate [signed candidate testing path](signed-candidate-artifacts.md) does not promote artifacts to releases.
 
 Release-only `mac.sign` delegates one signing pass to pinned `@electron/osx-sign`
 `1.3.3`. Signing changes native bytes, so its per-file callback refreshes native

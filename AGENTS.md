@@ -67,6 +67,7 @@ If you are making code changes, keep using the contributor guidance below.
 
 ## Pull Requests
 
+- When you open a pull request, use the Conventional Commits format for the title. For example, use `docs: update the README logo`. GitHub uses the title for the single commit it creates when it squash merges the pull request.
 - Use the repository pull request template at `.github/pull_request_template.md` when drafting PR descriptions.
 - Before creating a PR, validate that the change satisfies all acceptance criteria for the linked ticket. If any acceptance criterion is not met, state that explicitly in the PR description with the reason.
 - Prefer normal incremental commits and pushes during active review so reviewers can compare changes from the previously reviewed head. Do not rewrite branch history solely to make it cleaner; squash merging provides a clean final commit. Force-push only when a rebase, sensitive-content removal, or another necessary history rewrite requires it, and always use `--force-with-lease`. After any force-push, refresh approvals, comments, review threads, and CI because prior review state may have been invalidated.

@@ -124,6 +124,11 @@ dist/native-runtime/macos-arm64/
   provenance.json
 ```
 
+Release and trusted cache-maintenance macOS jobs run on GitHub-hosted `xcode-27`
+runners; see [candidate trust boundaries](signed-candidate-artifacts.md). The
+cache key includes the Xcode version, so different toolchain versions use
+separate entries.
+
 For the macOS release core, build the Desktop runtime once with a stable
 `--version` and validate it as below, then stage that exact tree (do not
 rebuild). Its inventory digest covers file bytes, paths, modes, symlink
