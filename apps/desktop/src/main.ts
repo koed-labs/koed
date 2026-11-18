@@ -277,6 +277,7 @@ const createServerManager = (
         environment: koedEnvironment,
         existsSync
       }),
+    persistentControlStatus: true,
     createControlCliInvocation:
       app.isPackaged && process.platform === "darwin"
         ? (args) => ({

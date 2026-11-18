@@ -34,6 +34,14 @@ const lifecycleReply = (
   owned
 });
 
+const hostSnapshot = (state: string, error?: string) => ({
+  instanceId: "host",
+  revision: 1,
+  stopIntent: false,
+  state,
+  ...(error ? { error } : {})
+});
+
 const homes: string[] = [];
 const verifiedHome = () => {
   const home = mkdtempSync(resolve(tmpdir(), "koed-lifecycle-"));
@@ -65,6 +73,7 @@ const harness = (
     sharedControl?: boolean;
     holdControlStart?: boolean;
     holdControlResume?: boolean;
+    freshInstall?: boolean;
   } = {}
 ) => {
   const spawned: EventEmitter[] = [];
@@ -202,7 +211,8 @@ const harness = (
       env: {}
     }),
     packagedResourcesPath: "/app/Contents/Resources",
-    existsSync: () => true,
+    existsSync: (path) =>
+      !options.freshInstall || !String(path).endsWith("last-verification.json"),
     execFile,
     spawn: spawn as never,
     openExternal: async () => undefined
@@ -221,6 +231,158 @@ const harness = (
 };
 
 describe("Desktop manager shared lifecycle", () => {
+  it("projects an external stop without reporting starting while the host lock lives", async () => {
+    vi.useFakeTimers();
+    const { manager, execFile } = harness(verifiedHome(), () => ({}), {
+      sharedControl: true
+    });
+    let state = "ready";
+    let revision = 1;
+    let stopIntent = false;
+    execFile.mockImplementation((_command, args, _options, callback) => {
+      expect(args).toEqual(["__control-plane-startup-status", "--json"]);
+      callback(
+        null,
+        JSON.stringify({
+          ok: true,
+          snapshot: { instanceId: "host", revision, state, stopIntent }
+        }),
+        ""
+      );
+    });
+    const states: string[] = [];
+    manager.lifecycle.subscribe((next) => states.push(next.state));
+    try {
+      observed.current = live(999);
+      manager.lifecycle.start();
+      await vi.advanceTimersByTimeAsync(0);
+      state = "stopped";
+      revision += 1;
+      stopIntent = true;
+      observed.current = { ...live(999), state: "starting" };
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(states).toEqual(["running", "stopped"]);
+      expect(await manager.handlers.status()).toMatchObject({
+        lifecycle: { state: "stopped" }
+      });
+      expect(execFile).toHaveBeenCalledTimes(3);
+    } finally {
+      manager.lifecycle.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports unavailable instead of stopped when detached status fails", async () => {
+    const { manager, execFile } = harness(verifiedHome(), () => ({}), {
+      sharedControl: true
+    });
+    execFile.mockImplementation((_command, args, _options, callback) => {
+      expect(args).toEqual(["__control-plane-startup-status", "--json"]);
+      callback(
+        new Error("Host status command timed out"),
+        JSON.stringify({ ok: true, snapshot: hostSnapshot("stopped") }),
+        ""
+      );
+    });
+    expect(await manager.lifecycle.refresh()).toMatchObject({
+      state: "unavailable"
+    });
+    expect(execFile).toHaveBeenCalledTimes(1);
+  });
+  it("uses one host read per routine running status and fences a same-host restart", async () => {
+    const { manager, execFile } = harness(verifiedHome(), () => ({}), {
+      sharedControl: true
+    });
+    let revision = 1;
+    execFile.mockImplementation((_command, args, _options, callback) => {
+      const result =
+        args[0] === "__control-plane-startup-status"
+          ? { ok: true, snapshot: { ...hostSnapshot("ready"), revision } }
+          : { ok: false };
+      callback(null, JSON.stringify(result), "");
+    });
+    await manager.lifecycle.refresh();
+    const hostReads = () =>
+      execFile.mock.calls.filter(
+        (call) => call[1][0] === "__control-plane-startup-status"
+      );
+    expect(await manager.handlers.status()).toMatchObject({
+      lifecycle: { state: "running", epoch: "host:1" }
+    });
+    expect(hostReads()).toHaveLength(2);
+    revision = 2;
+    expect(await manager.handlers.status()).toMatchObject({
+      lifecycle: { state: "running", epoch: "host:2" }
+    });
+    expect(hostReads()).toHaveLength(4);
+  });
+
+  it("keeps fresh setup diagnostics when no detached host is available", async () => {
+    const { manager, execFile, openControlSession } = harness(
+      verifiedHome(),
+      () => ({}),
+      {
+        sharedControl: true,
+        freshInstall: true
+      }
+    );
+    await expect(manager.resume()).resolves.toMatchObject({ skipped: true });
+    await expect(manager.handlers.status()).resolves.toMatchObject({
+      lifecycle: { state: "unavailable" }
+    });
+    expect(execFile.mock.calls.map((call) => call[1][0])).toContain("status");
+    expect(openControlSession).not.toHaveBeenCalled();
+  });
+
+  it("fences an in-flight detached start after an external stop", async () => {
+    const { manager, execFile } = harness(verifiedHome(), () => ({}), {
+      sharedControl: true
+    });
+    let snapshot = hostSnapshot("ready");
+    let finishStart: (() => void) | undefined;
+    execFile.mockImplementation((_command, args, _options, callback) => {
+      if (args[0] === "__control-plane-start-desktop") {
+        finishStart = () => callback(null, JSON.stringify({ ok: true }), "");
+      } else {
+        expect(args[0]).toBe("__control-plane-startup-status");
+        callback(null, JSON.stringify({ ok: true, snapshot }), "");
+      }
+    });
+    observed.current = live(999);
+    await manager.lifecycle.refresh();
+    const starting = manager.handlers.start_daemon();
+    await vi.waitFor(() => expect(finishStart).toBeDefined());
+    snapshot = { ...hostSnapshot("stopped"), revision: 2, stopIntent: true };
+    observed.current = { ...live(999), state: "starting" };
+    await manager.lifecycle.refresh();
+    finishStart?.();
+    await expect(starting).resolves.toMatchObject({
+      ok: false,
+      state: "stopped"
+    });
+  });
+
+  it("does not send Start if its preflight observes a new external Stop", async () => {
+    const { manager, execFile } = harness(verifiedHome(), () => ({}), {
+      sharedControl: true
+    });
+    let snapshot = hostSnapshot("ready");
+    execFile.mockImplementation((_command, args, _options, callback) => {
+      expect(args[0]).toBe("__control-plane-startup-status");
+      callback(null, JSON.stringify({ ok: true, snapshot }), "");
+    });
+    await manager.lifecycle.refresh();
+    snapshot = { ...hostSnapshot("stopped"), revision: 2, stopIntent: true };
+    await expect(manager.handlers.start_daemon()).resolves.toMatchObject({
+      ok: false,
+      state: "stopped"
+    });
+    expect(execFile.mock.calls.map((call) => call[1][0])).toEqual([
+      "__control-plane-startup-status",
+      "__control-plane-startup-status"
+    ]);
+  });
+
   it("surfaces a terminal control-plane startup error without waiting for health polling", async () => {
     vi.useFakeTimers();
     try {
@@ -234,10 +396,10 @@ describe("Desktop manager shared lifecycle", () => {
           args[0] === "__control-plane-startup-status"
             ? {
                 ok: true,
-                snapshot: {
-                  state: "needs_attention",
-                  error: "API startup sentinel"
-                }
+                snapshot: hostSnapshot(
+                  "needs_attention",
+                  "API startup sentinel"
+                )
               }
             : { ok: true, state: "starting" };
         callback(null, JSON.stringify(result), "");
@@ -252,11 +414,10 @@ describe("Desktop manager shared lifecycle", () => {
         state: "needs_attention",
         error: "API startup sentinel"
       });
-      expect(
-        execFile.mock.calls.some(
-          (call) => call[1]?.[0] === "__control-plane-startup-status"
-        )
-      ).toBe(true);
+      expect(execFile.mock.calls.map((call) => call[1][0])).toEqual([
+        "__control-plane-start-desktop",
+        "__control-plane-startup-status"
+      ]);
     } finally {
       vi.useRealTimers();
     }
@@ -281,12 +442,12 @@ describe("Desktop manager shared lifecycle", () => {
             args[0] === "__control-plane-startup-status" && ++probes > 1
               ? {
                   ok: true,
-                  snapshot: {
-                    state: "needs_attention",
-                    error: "API failed during health probe"
-                  }
+                  snapshot: hostSnapshot(
+                    "needs_attention",
+                    "API failed during health probe"
+                  )
                 }
-              : { ok: true, state: "starting" };
+              : { ok: true, snapshot: hostSnapshot("starting") };
           callback(null, JSON.stringify(result), "");
         }
       });
@@ -331,7 +492,7 @@ describe("Desktop manager shared lifecycle", () => {
                 localAiRuntime: component,
                 apiToken: { ...component, configured: false }
               }
-            : { ok: true, snapshot: { state: "starting" } };
+            : { ok: true, snapshot: hostSnapshot("starting") };
         callback(null, JSON.stringify(result), "");
       });
       const pending = Promise.resolve(manager.handlers.start());
@@ -390,10 +551,7 @@ describe("Desktop manager shared lifecycle", () => {
               ? { ok: true, snapshot: { state: "needs_attention" } }
               : {
                   ok: true,
-                  snapshot: {
-                    state: "needs_attention",
-                    error: "actual failure"
-                  }
+                  snapshot: hostSnapshot("needs_attention", "actual failure")
                 }
             : { ok: true, state: "starting" };
         callback(null, JSON.stringify(result), "");
@@ -412,20 +570,20 @@ describe("Desktop manager shared lifecycle", () => {
   });
   it("preserves control attachment failure when an observed lifecycle stops", async () => {
     const home = verifiedHome();
-    const { manager, openControlSession } = harness(
+    const { manager, openControlSession, execFile } = harness(
       home,
       () => lifecycleReply(stopped, true),
       { sharedControl: true }
     );
+    let snapshot = hostSnapshot("starting");
+    execFile.mockImplementation((_command, args, _options, callback) => {
+      expect(args[0]).toBe("__control-plane-startup-status");
+      callback(null, JSON.stringify({ ok: true, snapshot }), "");
+    });
     openControlSession.mockImplementationOnce(async () => {
-      observed.current = {
-        state: "starting",
-        epoch: "test-starting",
-        pid: 999
-      };
-      manager.lifecycle.refresh();
-      observed.current = { ...stopped };
-      manager.lifecycle.refresh();
+      await manager.lifecycle.refresh();
+      snapshot = { ...hostSnapshot("stopped"), revision: 2 };
+      await manager.lifecycle.refresh();
       throw new Error("control attachment sentinel");
     });
     await expect(manager.handlers.start_daemon()).resolves.toMatchObject({

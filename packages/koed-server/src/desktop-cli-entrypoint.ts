@@ -121,30 +121,36 @@ export async function runInstalledDesktopCli(
     );
     return 0;
   }
-  if (platform === "darwin" && args[0] === "__control-plane-desktop-session") {
+  if (
+    platform === "darwin" &&
+    (args[0] === "__control-plane-desktop-session" ||
+      args[0] === "__control-plane-desktop-status")
+  ) {
+    const statusOnly = args[0] === "__control-plane-desktop-status";
     const capability = dependencies.desktopRuntimeCapability;
     const invocation = dependencies.supervisorInvocation;
     if (
-      args.length !== 2 ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-        args[1]!
-      )
+      statusOnly
+        ? args.length !== 1
+        : args.length !== 2 ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            args[1]!
+          )
     )
       throw new Error("A valid Desktop session identity is required");
     if (!capability || !invocation || !process.connected || !process.send)
       throw new Error("A Desktop parent IPC connection is required");
     const { openInstalledControlPlane } =
       await import("./control-plane/installed-client.js");
-    const { serveDesktopSession } =
-      await import("./control-plane/desktop-session.js");
-    const client = await openInstalledControlPlane({
-      capability,
-      environment,
-      executable,
-      entrypoint: invocation.startCommand
-    });
-    const sessionResult = await serveDesktopSession(
-      client,
+    const openClient = () =>
+      openInstalledControlPlane({
+        capability,
+        environment,
+        executable,
+        entrypoint: invocation.startCommand,
+        launchIfMissing: !statusOnly
+      });
+    const channel: import("./control-plane/desktop-session.js").DesktopSessionChannel =
       {
         get connected() {
           return Boolean(process.connected && process.send);
@@ -164,11 +170,16 @@ export async function runInstalledDesktopCli(
           process.on("disconnect", listener);
           return () => process.off("disconnect", listener);
         }
-      },
-      args[1]
-    );
+      };
+    const result = statusOnly
+      ? await (
+          await import("./control-plane/desktop-status.js")
+        ).serveDesktopStatus(openClient, channel)
+      : await (
+          await import("./control-plane/desktop-session.js")
+        ).serveDesktopSession(await openClient(), channel, args[1]);
     if (process.connected) process.disconnect?.();
-    return sessionResult;
+    return result;
   }
   if (args.length === 1 && args[0] === "__control-plane-host") {
     const capability = dependencies.desktopRuntimeCapability;
@@ -185,6 +196,7 @@ export async function runInstalledDesktopCli(
     (args[0] === "start" ||
       args[0] === "stop" ||
       args[0] === "restart" ||
+      args[0] === "prepare-upgrade" ||
       args[0] === "__control-plane-stop-implicit" ||
       args[0] === "__control-plane-start-automatic" ||
       args[0] === "__control-plane-start-desktop" ||
@@ -246,7 +258,7 @@ export async function runInstalledDesktopCli(
             environment,
             executable,
             entrypoint: invocation.startCommand,
-            launchIfMissing: command !== "stop" && !startupStatus
+            launchIfMissing: command === "start" && !startupStatus
           })
       }
     );
@@ -259,8 +271,11 @@ if (process.argv[1]?.endsWith("desktop-cli-entrypoint.js")) {
   const args = process.argv.slice(2);
   void runInstalledDesktopCli(args).then(
     (exitCode) => {
-      // A foreground supervisor leaves no work behind once it returns.
-      if (args[0] === "start" && !args.includes("--daemon"))
+      // The status helper may still have an in-flight handshake on parent disconnect.
+      if (
+        args[0] === "__control-plane-desktop-status" ||
+        (args[0] === "start" && !args.includes("--daemon"))
+      )
         process.exit(exitCode);
       process.exitCode = exitCode;
     },

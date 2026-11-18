@@ -3,6 +3,7 @@ import {
   openDesktopControlSession,
   type DesktopControlSession
 } from "./control-session.js";
+import { createControlStatusClient } from "./control-status-client.js";
 import {
   createPerformanceManagement,
   type PerformanceSnapshot,
@@ -43,6 +44,8 @@ import {
   createLifecycleObserver,
   type LifecycleObserver
 } from "./lifecycle-observer.js";
+import { createDetachedLifecycle } from "./detached-lifecycle.js";
+import type { ControlSnapshot } from "@koed-labs/shared/local-control-protocol";
 import {
   connectSupervisor,
   desktopSupervisorManagementTimeoutMs,
@@ -255,6 +258,7 @@ export interface KoedServerManagerOptions {
   environment: NodeJS.ProcessEnv;
   createCliInvocation: (args: string[]) => NodeEntrypointInvocation;
   createControlCliInvocation?: (args: string[]) => NodeEntrypointInvocation;
+  persistentControlStatus?: boolean;
   openControlSession?: typeof openDesktopControlSession;
   createSupervisorInvocation?: () => NodeEntrypointInvocation;
   packagedResourcesPath?: string;
@@ -339,7 +343,7 @@ export interface KoedServerManager {
   stop: () => Promise<unknown>;
   /** Desktop quit: stops only what this Desktop started; adopted instances keep running. */
   shutdown: () => Promise<unknown>;
-  lifecycle: LifecycleObserver;
+  lifecycle: LifecycleObserver | ReturnType<typeof createDetachedLifecycle>;
   privacyInstall: PrivacyInstallBridge;
 }
 
@@ -1572,6 +1576,7 @@ export const createKoedServerManager = ({
   environment,
   createCliInvocation,
   createControlCliInvocation,
+  persistentControlStatus = false,
   openControlSession = openDesktopControlSession,
   createSupervisorInvocation,
   packagedResourcesPath,
@@ -1604,13 +1609,14 @@ export const createKoedServerManager = ({
       }
     }
   });
-  const lifecycle = createLifecycleObserver({
-    observe:
-      observeLifecycle ??
-      (() =>
-        observeRuntimeLifecycle(lifecyclePaths, {
-          resolveProcessIdentity: cachedPid
-        }))
+  const observeLocalLifecycle =
+    observeLifecycle ??
+    (() =>
+      observeRuntimeLifecycle(lifecyclePaths, {
+        resolveProcessIdentity: cachedPid
+      }));
+  const localLifecycle = createLifecycleObserver({
+    observe: observeLocalLifecycle
   });
   // Bumped when this Desktop or an external CLI stops the instance, so an
   // older in-flight start or resume cannot revive it afterwards.
@@ -1637,20 +1643,62 @@ export const createKoedServerManager = ({
     typeof result === "object" &&
     result !== null &&
     startupFailureResults.has(result);
-  lifecycle.subscribe((next) => {
+  let personalMemoryStartup: { epoch: string; generation: number } | null =
+    null;
+  let lastHostSnapshot: ControlSnapshot | undefined;
+  const controlStatus =
+    persistentControlStatus && createControlCliInvocation
+      ? createControlStatusClient(() => {
+          const { command, args, env } = createControlCliInvocation([
+            "__control-plane-desktop-status"
+          ]);
+          return spawn(command, args, {
+            cwd: repoRoot,
+            env,
+            stdio: ["ignore", "ignore", "ignore", "ipc"],
+            detached: false
+          });
+        })
+      : undefined;
+  const detachedLifecycle = createControlCliInvocation
+    ? createDetachedLifecycle({
+        readStatus: (timeout) =>
+          controlStatus
+            ? controlStatus.probe(timeout)
+            : runJson(["__control-plane-startup-status"], timeout),
+        onSnapshot: (snapshot) => {
+          if (snapshot.state !== "ready") personalMemoryStartup = null;
+          // A newly launched host initially reports stopped before the first
+          // start command. Only a stop transition or new stop intent fences it.
+          if (
+            (snapshot.state === "stopped" &&
+              lastHostSnapshot &&
+              lastHostSnapshot.state !== "stopped") ||
+            (snapshot.stopIntent && !lastHostSnapshot?.stopIntent)
+          )
+            stopGeneration += 1;
+          lastHostSnapshot = snapshot;
+        }
+      })
+    : null;
+  const lifecycle = detachedLifecycle ?? localLifecycle;
+  localLifecycle.subscribe((next) => {
     if (next.state === "stopped") stopGeneration += 1;
   });
-  const captureStartGeneration = () => {
-    lifecycle.refresh();
-    return stopGeneration;
+  const captureStartGeneration = async () => {
+    if (!detachedLifecycle) {
+      localLifecycle.refresh();
+      return stopGeneration;
+    }
+    const generation = stopGeneration;
+    if (detachedLifecycle.current()) await detachedLifecycle.refresh();
+    return generation;
   };
   let serverProcess: ChildProcess | null = null;
   let desktopSupervisorProcess: ChildProcess | null = null;
   let desktopSupervisorNonce: string | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
   let retainedPersonalApiOrigin: string | null = null;
-  let personalMemoryStartup: { epoch: string; generation: number } | null =
-    null;
   let personalMemoryOriginLookup: Promise<string> | null = null;
   let retainedPersonalApiToken: string | null = null;
   let personalApiTokenProvisioning: Promise<
@@ -1773,7 +1821,6 @@ export const createKoedServerManager = ({
           args[0] === "stop" ||
           args[0] === "__control-plane-stop-implicit" ||
           args[0] === "__control-plane-start-automatic" ||
-          args[0] === "__control-plane-agent-status" ||
           args[0] === "__control-plane-startup-status" ||
           args[0] === "__control-plane-start-desktop")
           ? createControlCliInvocation
@@ -1790,6 +1837,10 @@ export const createKoedServerManager = ({
         },
         (error, stdout, stderr) => {
           settled = true;
+          if (error && args[0] === "__control-plane-startup-status") {
+            resolvePromise({ ok: false, error: error.message });
+            return;
+          }
           try {
             resolvePromise(JSON.parse(stdout));
           } catch {
@@ -2204,17 +2255,25 @@ export const createKoedServerManager = ({
   const collectStatusWithEnrollmentReconciliation =
     async (): Promise<unknown> => {
       for (let attempt = 0; ; attempt += 1) {
-        const before = lifecycle.refresh();
+        const observed = detachedLifecycle?.current();
+        const before = detachedLifecycle
+          ? observed && observed.state !== "stopped"
+            ? observed
+            : await detachedLifecycle.refresh()
+          : localLifecycle.refresh();
         const stoppedBefore = stoppedStatusIfVerified(before);
         if (stoppedBefore) return stoppedBefore;
         const [statusResult, packageStatus] = await Promise.all([
           runDesktopStatus(),
           routinePackageStatusJson() as Promise<ServerPackageStatusPayload | null>
         ]);
-        const after = lifecycle.refresh();
-        // A different supervisor epoch invalidates a response collected earlier.
-        if (after.epoch !== before.epoch && attempt === 0) continue;
+        const after = detachedLifecycle
+          ? await detachedLifecycle.refresh()
+          : localLifecycle.refresh();
         const stoppedAfter = stoppedStatusIfVerified(after);
+        if (detachedLifecycle && stoppedAfter) return stoppedAfter;
+        // A different runtime epoch invalidates a response collected earlier.
+        if (after.epoch !== before.epoch && attempt === 0) continue;
         if (stoppedAfter) return stoppedAfter;
         const current = isRenderableKoedServerStatus(statusResult)
           ? statusResult
@@ -2252,36 +2311,24 @@ export const createKoedServerManager = ({
     const deadline = Date.now() + attemptLimit * 1_000;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
       if (cancelled()) return stoppedStartResult();
-      if (createControlCliInvocation && Date.now() >= deadline) break;
-      if (createControlCliInvocation) {
-        const control = await runJson(
-          ["__control-plane-startup-status"],
-          Math.min(5_000, deadline - Date.now())
-        );
-        if (cancelled()) return stoppedStartResult();
-        if (
-          control &&
-          typeof control === "object" &&
-          "ok" in control &&
-          control.ok === true &&
-          "snapshot" in control &&
-          control.snapshot &&
-          typeof control.snapshot === "object" &&
-          "state" in control.snapshot &&
-          control.snapshot.state === "needs_attention" &&
-          "error" in control.snapshot &&
-          typeof control.snapshot.error === "string" &&
-          control.snapshot.error.trim()
-        ) {
-          return {
-            ok: false,
-            state: "needs_attention",
-            error: control.snapshot.error
-          };
-        }
+      if (detachedLifecycle && Date.now() >= deadline) break;
+      const control = detachedLifecycle
+        ? await detachedLifecycle.probe(Math.min(5_000, deadline - Date.now()))
+        : null;
+      if (cancelled() || control?.snapshot?.state === "stopped")
+        return stoppedStartResult();
+      if (
+        control?.snapshot?.state === "needs_attention" &&
+        control.snapshot.error?.trim()
+      ) {
+        return {
+          ok: false,
+          state: "needs_attention",
+          error: control.snapshot.error
+        };
       }
-      if (createControlCliInvocation && Date.now() >= deadline) break;
-      const before = lifecycle.refresh();
+      if (detachedLifecycle && Date.now() >= deadline) break;
+      const before = control?.observation ?? localLifecycle.refresh();
       const result = await runDesktopStatus(
         true,
         createControlCliInvocation
@@ -2292,11 +2339,29 @@ export const createKoedServerManager = ({
       latest = isRenderableKoedServerStartupStatus(result)
         ? result
         : diagnosticStartupStatus("Koed startup status could not be read.");
-      if (setupStartupReady(latest)) {
+      if (
+        setupStartupReady(latest) &&
+        (!detachedLifecycle || before.state === "running")
+      ) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
         const credential = await provisionLocalAppCredential();
         if (cancelled()) return stoppedStartResult();
-        const current = lifecycle.refresh();
+        // Fence a successful readiness attempt after async service and
+        // credential checks. Ordinary startup polls use just one host read.
+        if (detachedLifecycle && Date.now() >= deadline) break;
+        const current = detachedLifecycle
+          ? (
+              await detachedLifecycle.probe(
+                Math.min(5_000, deadline - Date.now())
+              )
+            ).observation
+          : localLifecycle.refresh();
+        if (cancelled()) return stoppedStartResult();
+        if (
+          detachedLifecycle &&
+          (current.state !== "running" || current.epoch !== before.epoch)
+        )
+          continue;
         if (
           credential.ok &&
           retainedPersonalApiOrigin &&
@@ -5546,29 +5611,11 @@ export const createKoedServerManager = ({
             "Desktop control session resume was not confirmed:",
             result
           );
-          const status = await runJson(
-            ["__control-plane-agent-status"],
-            30_000
-          );
+          const status = await detachedLifecycle?.probe();
           if (controlSessionClosing || generation !== stopGeneration) return;
           if (
-            status &&
-            typeof status === "object" &&
-            "snapshot" in status &&
-            status.snapshot &&
-            typeof status.snapshot === "object" &&
-            "stopIntent" in status.snapshot &&
-            status.snapshot.stopIntent === true
-          )
-            return;
-          if (
-            status &&
-            typeof status === "object" &&
-            "snapshot" in status &&
-            status.snapshot &&
-            typeof status.snapshot === "object" &&
-            "state" in status.snapshot &&
-            status.snapshot.state === "needs_attention"
+            status?.snapshot?.stopIntent ||
+            status?.snapshot?.state === "needs_attention"
           )
             return;
           scheduleControlReconnect();
@@ -5623,8 +5670,12 @@ export const createKoedServerManager = ({
     explicitStopAtStart: number,
     automatic = false
   ) => {
+    if (
+      explicitStopAtStart !== explicitStopGeneration ||
+      generation !== stopGeneration
+    )
+      return stoppedStartResult();
     if (createControlCliInvocation) {
-      if (generation !== stopGeneration) return stoppedStartResult();
       const pending = (async () => {
         try {
           await ensureDesktopControlSession();
@@ -5769,24 +5820,29 @@ export const createKoedServerManager = ({
     const result = await runJson(["start", "--daemon"], 45_000);
     return generation === stopGeneration ? result : stoppedStartResult();
   };
-  const requestDaemonStart = (
-    generation = captureStartGeneration(),
+  const requestDaemonStart = async (
+    generation?: number,
     explicitStopAtStart = explicitStopGeneration,
     automatic = false
   ) => {
     if (acceleration.isRunning() || performance.isRunning())
-      return Promise.resolve({
+      return {
         ok: false,
         error: "Wait for the processing change to finish before starting Koed."
-      });
+      };
+    const expectedGeneration = generation ?? (await captureStartGeneration());
     return withLifecycleOperation(() =>
-      requestDaemonStartUnlocked(generation, explicitStopAtStart, automatic)
+      requestDaemonStartUnlocked(
+        expectedGeneration,
+        explicitStopAtStart,
+        automatic
+      )
     );
   };
 
   const start = async () => {
     const explicitStopAtStart = explicitStopGeneration;
-    const generation = captureStartGeneration();
+    const generation = await captureStartGeneration();
     const result = await requestDaemonStart(generation, explicitStopAtStart);
     if (generation !== stopGeneration) {
       return isSupervisorStartupFailureResult(result) &&
@@ -5823,7 +5879,7 @@ export const createKoedServerManager = ({
       };
     }
     const explicitStopAtStart = explicitStopGeneration;
-    const generation = captureStartGeneration();
+    const generation = await captureStartGeneration();
     try {
       const result = await requestDaemonStart(
         generation,
@@ -6360,6 +6416,7 @@ export const createKoedServerManager = ({
     stopGeneration += 1;
     explicitStopGeneration += 1;
     lifecycle.stop();
+    controlStatus?.close();
     accelerationSession?.child.kill("SIGTERM");
     accelerationSession = null;
     if (createControlCliInvocation) {
@@ -6586,10 +6643,11 @@ export const createKoedServerManager = ({
         );
     },
     start: async () => {
-      const generation = captureStartGeneration();
+      const explicitStopAtStart = explicitStopGeneration;
+      const generation = await captureStartGeneration();
       const result = await requestDaemonStartUnlocked(
         generation,
-        explicitStopGeneration
+        explicitStopAtStart
       );
       if (!resultOk(result))
         throw new Error(
@@ -6666,10 +6724,11 @@ export const createKoedServerManager = ({
         );
     },
     start: async () => {
-      const generation = captureStartGeneration();
+      const explicitStopAtStart = explicitStopGeneration;
+      const generation = await captureStartGeneration();
       const result = await requestDaemonStartUnlocked(
         generation,
-        explicitStopGeneration
+        explicitStopAtStart
       );
       if (!resultOk(result))
         throw new Error(
@@ -7098,8 +7157,10 @@ export const createKoedServerManager = ({
         }
       },
       status: statusWithEnrollmentReconciliation,
-      personal_memory_startup_ready: () => {
-        const current = lifecycle.refresh();
+      personal_memory_startup_ready: async () => {
+        const current = detachedLifecycle
+          ? await detachedLifecycle.refresh()
+          : localLifecycle.refresh();
         return (
           current.state === "running" &&
           personalMemoryStartup?.epoch === current.epoch &&
