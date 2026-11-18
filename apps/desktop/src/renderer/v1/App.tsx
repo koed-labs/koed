@@ -169,6 +169,53 @@ export function V1App({
     error: statusError,
     revision: statusRevision
   } = useDesktopStatus(statusStore);
+  const [startupReady, setStartupReady] = useState(false);
+  const startupReadyRef = useRef(false);
+  const [hasHealthyStatus, setHasHealthyStatus] = useState(false);
+  const apiHealthy = status?.api.state === "healthy";
+  const healthyStatus = apiHealthy && status?.database?.state === "healthy";
+  const earlyInventory = startupReady && !hasHealthyStatus;
+  const canReadInventory = apiHealthy || earlyInventory;
+  const onboardingFinished = Boolean(
+    onboardingComplete && profile?.onboarding.completed
+  );
+  useEffect(() => {
+    if (healthyStatus) setHasHealthyStatus(true);
+  }, [healthyStatus]);
+  useEffect(() => {
+    const desktop = window.koedDesktop;
+    if (
+      !desktop?.invoke ||
+      !onboardingFinished ||
+      healthyStatus ||
+      hasHealthyStatus ||
+      !personalMemoryApi
+    )
+      return;
+    let generation = 0;
+    const read = async () => {
+      const request = ++generation;
+      const ready = await desktop
+        .invoke<boolean>("personal_memory_startup_ready")
+        .catch(() => false);
+      if (request !== generation) return;
+      if (startupReadyRef.current && ready !== true) {
+        scopeKeyRef.current = null;
+        setScopeKey(null);
+        setOwnerId(null);
+        setInventoryScope(null);
+        setProvenanceScope(null);
+      }
+      startupReadyRef.current = ready === true;
+      setStartupReady(ready === true);
+    };
+    const unsubscribe = desktop.status?.subscribe(() => void read());
+    void read();
+    return () => {
+      generation++;
+      unsubscribe?.();
+    };
+  }, [hasHealthyStatus, healthyStatus, onboardingFinished, personalMemoryApi]);
   const inventoryReady = Boolean(scopeKey && inventoryScope === scopeKey);
   const store = useMemo(
     () =>
@@ -183,11 +230,7 @@ export function V1App({
   const inventoryLoading =
     snapshot?.loading ||
     Boolean(
-      store &&
-      status?.api.state === "healthy" &&
-      !inventoryReady &&
-      !snapshot?.error &&
-      !error
+      store && canReadInventory && !inventoryReady && !snapshot?.error && !error
     );
   const lifecycle = useManagedConversationLifecycle({
     api: null,
@@ -272,7 +315,15 @@ export function V1App({
       if (!store || !scopeKey) return;
       try {
         await publishInventoryScope(
-          await store.loadProjects(options),
+          await store.loadProjects({
+            ...options,
+            onPreview: () => {
+              if (inventoryScopeRef.current === null)
+                void publishInventoryScope({ error: null }, scopeKey).catch(
+                  () => undefined
+                );
+            }
+          }),
           scopeKey
         );
       } catch (cause) {
@@ -286,9 +337,8 @@ export function V1App({
   const inventoryScopeRef = useRef(inventoryScope);
   inventoryScopeRef.current = inventoryScope;
   useEffect(() => {
-    if (profile?.onboarding.completed && status?.api.state === "healthy")
-      void loadInventory();
-  }, [loadInventory, profile?.onboarding.completed, status?.api.state]);
+    if (profile?.onboarding.completed && canReadInventory) void loadInventory();
+  }, [loadInventory, profile?.onboarding.completed, canReadInventory]);
   // Projects appear while history is processed, so refresh them with status.
   useEffect(() => {
     if (!profile?.onboarding.completed || status?.api.state !== "healthy")
@@ -336,7 +386,7 @@ export function V1App({
     if (
       !personalMemoryApi ||
       !profile?.onboarding.completed ||
-      status?.api.state !== "healthy"
+      !canReadInventory
     )
       return;
     let active = true;
@@ -387,7 +437,7 @@ export function V1App({
     scopeKey,
     refreshProvenance,
     profile?.onboarding.completed,
-    status?.api.state
+    canReadInventory
   ]);
   useEffect(() => {
     if (!store || !ownerId || status?.api.state !== "healthy") return;
@@ -715,7 +765,9 @@ export function V1App({
     [visibleProjects]
   );
   const homeEntriesLoaded = Boolean(
-    snapshot && (snapshot.revision > 0 || snapshot.error)
+    snapshot &&
+    ((inventoryReady && (!snapshot.loading || homeEntries.length)) ||
+      snapshot.error)
   );
   // There is no Project page: a Project's Kin opens its latest conversation,
   // and the sidebar expands that Project so the open conversation shows.
@@ -729,12 +781,13 @@ export function V1App({
     status,
     homeEntriesLoaded ? homeEntries : null,
     {
-      enabled: Boolean(profile?.onboarding.completed && onboardingComplete),
-      starting: startingKoed
+      enabled: onboardingFinished,
+      starting: startingKoed,
+      earlyInventory
     }
   );
   const serviceError =
-    startupPending || startingKoed
+    startupPending || startingKoed || earlyInventory
       ? null
       : statusError && status?.api.state !== "healthy"
         ? "Service status is unavailable. Try again."
@@ -743,7 +796,7 @@ export function V1App({
           : status?.lifecycle?.state === "unavailable"
             ? "Services are unavailable. Check Settings."
             : null;
-  const servicesStarting = !serviceError && status?.api.state !== "healthy";
+  const servicesStarting = !serviceError && !canReadInventory;
   const homeConversations = useMemo(() => {
     const conversations = new Map<
       string,

@@ -86,8 +86,12 @@ caption. Without Projects to show, the Koed Kin stands alone; the stage grows,
 and the page scrolls, only when the caption needs more room than the window
 leaves.
 
-Home shows a spinner during startup. It gives services 30 seconds to start
-before it shows recovery actions. Home opens Projects as soon as they load.
+Home shows a spinner during startup. On a completed setup, Desktop can start
+loading Projects when its startup checks confirm that local services and the
+Desktop API Token are ready. Home and the sidebar can show the first named
+Projects after verifying the current User. Diagnostics and the full inventory
+continue loading in the background. Home gives services 30 seconds to start
+before it shows recovery actions.
 If services stay unavailable, Home shows a sad Kin and an outlined "Start Koed"
 button. This delay applies only at startup. Background connection errors do not
 appear above Home.
