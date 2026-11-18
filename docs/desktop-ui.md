@@ -21,6 +21,12 @@ Conversation pane. On narrow windows, the sidebar opens as a drawer. While
 services or inventory are loading, the sidebar shows that state rather than an
 empty Conversation list.
 
+Navigation, Settings, and setup use the positive mark in light mode and the
+negative mark in dark mode. The app and Dock use the color mark on an inset
+white rounded square. The [app artwork](../apps/desktop/assets/koed-app-icon.svg)
+supplies the native PNG and macOS ICNS assets. The macOS menu-bar icon uses a
+monochrome template, so the operating system controls its contrast.
+
 Following [ADR 0065](adr/0065-capture-and-recall-without-managed-conversation-execution.md),
 V1 Desktop does not start, continue, or control Conversations. Users do that in
 AI Clients. Pending managed Conversation intents and prompts remain stored but
@@ -615,3 +621,14 @@ Markdown, every tool category, grouped activity, multi-file and malformed
 patches, keyboard focus, light and dark themes, 200% zoom, reduced motion,
 forced colors, and the 10,000-event performance budgets. Desktop owns this
 rendering path and has no dependency on the retired browser app.
+
+## Optional account menu
+
+When accounts are enabled, the navigation rail shows a profile badge.
+Its menu offers sign-in, sign-out, and cancellation of a sign-in attempt.
+Source builds disable accounts and hide the badge by default.
+
+Electron main reports account availability and sends read-only profile data to
+the interface. Provider tokens and callback URLs stay in Electron main.
+Local startup and service health do not depend on account availability.
+See [Desktop accounts](desktop-accounts.md) for configuration and behavior.

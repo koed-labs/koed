@@ -105,6 +105,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  delete window.koedDesktop;
 });
 
 describe("Project sidebar interactions", () => {
@@ -183,14 +184,42 @@ describe("Project sidebar interactions", () => {
     ).toHaveLength(5);
   });
 
-  it("offers Recall activity and Settings as the rail footer actions", async () => {
+  it("keeps Recall activity, Settings and Account in the persistent rail", async () => {
+    window.koedDesktop = {
+      account: {
+        getState: async () => ({
+          status: "signed_out",
+          profile: null,
+          busy: false,
+          stale: false,
+          message: null,
+          revision: 0
+        }),
+        onStateChanged: () => () => undefined
+      }
+    } as unknown as NonNullable<typeof window.koedDesktop>;
     await act(async () => root.render(<Harness />));
     const actions = container.querySelectorAll(
       '.v1-nav-rail [data-slot="sidebar-footer"] button'
     );
     expect(
       [...actions].map((button) => button.getAttribute("aria-label"))
-    ).toEqual(["Recall activity", "Settings"]);
+    ).toEqual(["Recall activity", "Settings", "Account menu: Account"]);
+    await act(async () => button("Toggle navigation").click());
+    expect(
+      button("Account menu: Account").closest(".v1-nav-rail")
+    ).not.toBeNull();
+    delete window.koedDesktop;
+  });
+
+  it("keeps navigation usable without an account bridge or empty account rail item", async () => {
+    await act(async () => root.render(<Harness />));
+    expect(button("Account menu: Account")).toBeNull();
+    expect(
+      container.querySelectorAll('.v1-nav-rail [data-slot="sidebar-footer"] li')
+    ).toHaveLength(2);
+    await act(async () => button("Toggle navigation").click());
+    expect(button("Settings")).not.toBeNull();
   });
 
   it("expands a Project Home reveals, so its open conversation shows", async () => {

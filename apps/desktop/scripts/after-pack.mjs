@@ -13,6 +13,7 @@ import {
   removeClaudeAgentSdkPlatformRuntimes
 } from "../../../scripts/provider-runtime-package-policy.mjs";
 import { assertNoPrivacyPayload } from "./privacy-payload-inventory.mjs";
+import { verifyPackagedAccountConfig } from "./verify-packaged-account-config.mjs";
 
 /**
  * Electron's prebuilt macOS binary is ad-hoc signed without a sealed resource
@@ -88,6 +89,11 @@ export const packagedResourcesRoot = (context) =>
 
 export default async function afterPack(context) {
   const resourcesRoot = packagedResourcesRoot(context);
+  if (process.env.KOED_ACCOUNT_RELEASE === "true") {
+    verifyPackagedAccountConfig(join(resourcesRoot, "app.asar"), {
+      appDirectory: context.packager.projectDir
+    });
+  }
   const runtimeRoot = join(resourcesRoot, "koed-runtime");
   if (!existsSync(runtimeRoot)) {
     throw new Error(`Expected packaged Koed runtime at ${runtimeRoot}.`);

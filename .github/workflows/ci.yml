@@ -29,6 +29,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # CI exercises packaging without an external account provider.
+  KOED_ACCOUNT_ENABLED: "false"
   NODE_VERSION: 24.13.1
   PNPM_VERSION: 11.1.2
   KOED_REQUIRE_ELF_FIXTURE: "1"

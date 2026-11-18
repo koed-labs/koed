@@ -22,21 +22,20 @@ import type { PdsDesktopSecretStore } from "./pds-secure-provider.js";
 
 type SafeStorage = Pick<
   typeof safeStorage,
-  "decryptString" | "encryptString" | "isEncryptionAvailable"
-> & {
-  getSelectedStorageBackend?: () => string;
-  encryptStringAsync?: (value: string) => Promise<Buffer>;
-  decryptStringAsync?: (
-    value: Buffer
-  ) => Promise<{ result: string; shouldReEncrypt: boolean }>;
-};
+  | "isAsyncEncryptionAvailable"
+  | "encryptStringAsync"
+  | "decryptStringAsync"
+  | "getSelectedStorageBackend"
+>;
 
 const maximumValueBytes = 2_000_000;
 const maximumStoreBytes = 32 * 1_024 * 1_024;
 const referencePattern = /^[A-Za-z0-9._-]{1,240}$/;
 
-const isSecureStorageAvailable = (storage: SafeStorage): boolean => {
-  if (!storage.isEncryptionAvailable()) return false;
+const isSecureStorageAvailable = async (
+  storage: SafeStorage
+): Promise<boolean> => {
+  if (!(await storage.isAsyncEncryptionAvailable())) return false;
   const backend = storage.getSelectedStorageBackend?.();
   return backend !== "basic_text" && backend !== "unknown";
 };
@@ -131,18 +130,13 @@ const createLegacyDraftStore = (
           const encrypted = readLegacyValues(path)[reference];
           if (!encrypted) return null;
           const buffer = Buffer.from(encrypted, "base64url");
-          const decryptedResult = storage.decryptStringAsync
-            ? await storage.decryptStringAsync(buffer)
-            : null;
-          const value =
-            decryptedResult?.result ?? storage.decryptString(buffer);
+          const decryptedResult = await storage.decryptStringAsync(buffer);
+          const value = decryptedResult.result;
           if (Buffer.byteLength(value, "utf8") > maximumValueBytes) return null;
-          if (decryptedResult?.shouldReEncrypt) {
+          if (decryptedResult.shouldReEncrypt) {
             const values = readLegacyValues(path);
             values[reference] = (
-              storage.encryptStringAsync
-                ? await storage.encryptStringAsync(value)
-                : storage.encryptString(value)
+              await storage.encryptStringAsync(value)
             ).toString("base64url");
             writeLegacyValues(path, values);
           }
@@ -167,11 +161,9 @@ const createLegacyDraftStore = (
       }
       await serial(async () => {
         const values = readLegacyValues(path);
-        values[reference] = (
-          storage.encryptStringAsync
-            ? await storage.encryptStringAsync(value)
-            : storage.encryptString(value)
-        ).toString("base64url");
+        values[reference] = (await storage.encryptStringAsync(value)).toString(
+          "base64url"
+        );
         writeLegacyValues(path, values);
       });
     },
@@ -228,15 +220,15 @@ const asApplicationManagedStore = (rootPath: string): PdsDesktopSecretStore => {
  * through Electron storage. New installs without a usable backend use the
  * shared application-managed format instead.
  */
-const initializeManagedConversationDraftStore = (input: {
+const initializeManagedConversationDraftStore = async (input: {
   userDataPath: string;
-}): PdsDesktopSecretStore | null => {
+}): Promise<PdsDesktopSecretStore | null> => {
   const path = resolve(input.userDataPath, "managed-conversation-drafts.json");
-  const storage = safeStorage as SafeStorage;
+  const storage: SafeStorage = safeStorage;
   if (isApplicationManagedDraftState(path)) {
     return asApplicationManagedStore(input.userDataPath);
   }
-  if (isSecureStorageAvailable(storage)) {
+  if (await isSecureStorageAvailable(storage)) {
     return createLegacyDraftStore(path, storage);
   }
   if (existsSync(path)) return null;
@@ -247,14 +239,22 @@ const initializeManagedConversationDraftStore = (input: {
 export const createManagedConversationDraftStore = (input: {
   userDataPath: string;
 }): PdsDesktopSecretStore => {
-  let store: PdsDesktopSecretStore | null | undefined;
-  const resolveStore = (): PdsDesktopSecretStore => {
+  let store: Promise<PdsDesktopSecretStore | null> | undefined;
+  const resolveStore = async (): Promise<PdsDesktopSecretStore> => {
     if (store === undefined) {
       store = initializeManagedConversationDraftStore(input);
     }
-    if (!store)
+    const initializing = store;
+    let resolved: PdsDesktopSecretStore | null;
+    try {
+      resolved = await initializing;
+    } catch (error) {
+      if (store === initializing) store = undefined;
+      throw error;
+    }
+    if (!resolved)
       throw new Error("Managed conversation draft storage is unavailable.");
-    return store;
+    return resolved;
   };
   return {
     get: async (reference) => {
@@ -266,9 +266,10 @@ export const createManagedConversationDraftStore = (input: {
         )
       )
         return null;
-      return resolveStore().get(reference);
+      return (await resolveStore()).get(reference);
     },
-    put: async (reference, value) => resolveStore().put(reference, value),
+    put: async (reference, value) =>
+      (await resolveStore()).put(reference, value),
     delete: async (reference) => {
       if (!referencePattern.test(reference))
         throw new Error("Managed conversation draft reference is invalid.");
@@ -279,7 +280,7 @@ export const createManagedConversationDraftStore = (input: {
         )
       )
         return;
-      return resolveStore().delete(reference);
+      return (await resolveStore()).delete(reference);
     }
   };
 };
