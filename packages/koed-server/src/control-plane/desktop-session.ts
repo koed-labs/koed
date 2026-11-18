@@ -81,14 +81,24 @@ export function serveDesktopSession(
         const status = await client.request({ action: "status" }, 0);
         if (!status.ok)
           throw new Error(`Desktop status failed: ${status.code}`);
-        const result = await client.request(
-          {
-            action: "attach",
-            reason: "desktop-session",
-            ...(desktopSessionId ? { desktopSessionId } : {})
-          },
-          status.snapshot.revision
-        );
+        if (finished) return;
+        const command = {
+          action: "attach",
+          reason: "desktop-session",
+          ...(desktopSessionId ? { desktopSessionId } : {})
+        } as const;
+        let result = await client.request(command, status.snapshot.revision);
+        // Only a stale revision proves the attach was rejected before dispatch.
+        for (
+          let attempt = 0;
+          !finished &&
+          !result.ok &&
+          result.code === "stale_revision" &&
+          attempt < 3;
+          attempt++
+        ) {
+          result = await client.request(command, result.snapshot.revision);
+        }
         if (!result.ok)
           throw new Error(`Desktop attach failed: ${result.code}`);
         if (finished) return;

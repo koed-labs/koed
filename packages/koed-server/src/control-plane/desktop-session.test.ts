@@ -12,7 +12,7 @@ function fixture() {
     state: "ready" as const,
     stopIntent: false
   };
-  const request = vi.fn(async () => ({
+  const request = vi.fn<ControlClient["request"]>(async () => ({
     requestId: "r",
     ok: true as const,
     snapshot
@@ -41,6 +41,7 @@ function fixture() {
     client,
     channel,
     request,
+    snapshot,
     message: (value: unknown) => onMessage(value),
     disconnect: () => onDisconnect(),
     closeClient: () => onClientClose(new Error("lost host"))
@@ -67,6 +68,97 @@ describe("Desktop control session", () => {
     expect(f.client.close).toHaveBeenCalledOnce();
     expect(f.channel.send).toHaveBeenCalledWith({ type: "detached", ok: true });
   });
+  it("retries a stale attach with the returned revision and original session ID", async () => {
+    const f = fixture();
+    const desktopSessionId = "cb64b350-203a-4aa2-944e-e84d1d9aef39";
+    const attach = {
+      action: "attach",
+      reason: "desktop-session",
+      desktopSessionId
+    };
+    f.request
+      .mockResolvedValueOnce({
+        requestId: "status",
+        ok: true,
+        snapshot: f.snapshot
+      })
+      .mockResolvedValueOnce({
+        requestId: "stale",
+        ok: false,
+        code: "stale_revision",
+        snapshot: { ...f.snapshot, revision: 4 }
+      });
+
+    const done = serveDesktopSession(f.client, f.channel, desktopSessionId);
+    await vi.waitFor(() =>
+      expect(f.channel.send).toHaveBeenCalledExactlyOnceWith({ type: "ready" })
+    );
+    expect(f.request.mock.calls).toEqual([
+      [{ action: "status" }, 0],
+      [attach, 1],
+      [attach, 4]
+    ]);
+    expect(f.client.close).not.toHaveBeenCalled();
+    f.disconnect();
+    expect(await done).toBe(0);
+  });
+
+  it("fails after three stale attach retries", async () => {
+    const f = fixture();
+    f.request.mockImplementation(async (command, revision) =>
+      command.action === "status"
+        ? { requestId: "status", ok: true, snapshot: f.snapshot }
+        : {
+            requestId: "stale",
+            ok: false,
+            code: "stale_revision",
+            snapshot: { ...f.snapshot, revision: revision + 1 }
+          }
+    );
+
+    expect(await serveDesktopSession(f.client, f.channel)).toBe(1);
+    expect(f.request.mock.calls.map(([, revision]) => revision)).toEqual([
+      0, 1, 2, 3, 4
+    ]);
+    expect(f.channel.send).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      error: "Desktop attach failed: stale_revision"
+    });
+    expect(f.client.close).toHaveBeenCalledOnce();
+  });
+
+  it.each(["transport error", "blocked"] as const)(
+    "does not retry attach after %s",
+    async (failure) => {
+      const f = fixture();
+      f.request.mockResolvedValueOnce({
+        requestId: "status",
+        ok: true,
+        snapshot: f.snapshot
+      });
+      if (failure === "transport error") {
+        f.request.mockRejectedValueOnce(new Error("Control request timed out"));
+      } else {
+        f.request.mockResolvedValueOnce({
+          requestId: "blocked",
+          ok: false,
+          code: failure,
+          snapshot: { ...f.snapshot, revision: 2 }
+        });
+      }
+
+      expect(await serveDesktopSession(f.client, f.channel)).toBe(1);
+      expect(f.request).toHaveBeenCalledTimes(2);
+      expect(f.channel.send).toHaveBeenCalledExactlyOnceWith({
+        type: "error",
+        error:
+          failure === "transport error"
+            ? "Control request timed out"
+            : "Desktop attach failed: blocked"
+      });
+    }
+  );
+
   it("exits if its authenticated control connection closes", async () => {
     const f = fixture();
     const done = serveDesktopSession(f.client, f.channel);
