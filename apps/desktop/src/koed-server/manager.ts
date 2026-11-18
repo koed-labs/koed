@@ -8,6 +8,7 @@ import { modelProgressReader, type ModelProgress } from "./model-progress.js";
 import { createAccelerationController } from "./acceleration-controller.js";
 import { createOperationReceipt } from "./operation-receipt.js";
 import { selectDesktopRuntimeProvider } from "./runtime-provider.js";
+import { desktopTeamCollaborationValue } from "../ipc/desktop-feature-flags.js";
 import {
   accelerationChoiceSchema,
   accelerationInstallProgressSchema
@@ -1547,10 +1548,8 @@ export const createKoedEnvironment = (
       ? {
           KOED_RUNTIME_MODE: valueOr("KOED_RUNTIME_MODE", "local-personal"),
           KOED_DEPENDENCY_MODE: dependencyMode,
-          KOED_TEAM_COLLABORATION_ENABLED: valueOr(
-            "KOED_TEAM_COLLABORATION_ENABLED",
-            "false"
-          ),
+          KOED_TEAM_COLLABORATION_ENABLED:
+            desktopTeamCollaborationValue(environment),
           WORK_QUEUE_BACKEND: valueOr("WORK_QUEUE_BACKEND", "local"),
           ...(options.packagedDesktop
             ? { KOED_PACKAGED_DESKTOP: valueOr("KOED_PACKAGED_DESKTOP", "1") }

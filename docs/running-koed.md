@@ -1623,10 +1623,12 @@ Fresh installation evidence allows an AI Client to be selected before its first
 capability snapshot exists. Connection must still confirm current capabilities
 and authentication before that client can satisfy the completion requirement.
 
-Privacy Filter setup is available in Preferences → General → Optional tools.
-The legacy Team-enabled setup screen also exposes Privacy Filter setup before core setup,
-because local Team services require its runtime and model. Command-line setup
-stays in Preferences. **Download and install** authorizes
+When Desktop starts with `KOED_TEAM_COLLABORATION_ENABLED=true`, open
+Settings → General → Optional tools to set up Privacy Filter. See
+[Desktop Settings](desktop-settings.md#general) for the setup controls.
+The legacy Team-enabled setup screen also offers Privacy Filter before core
+setup because local Team services require its runtime and model. Command-line
+setup stays in Optional tools. **Download and install** authorizes
 installation of the runtime and the separately pinned model. Opening Preferences
 does not download either asset. The total download size is unknown until each
 transfer supplies its size.

@@ -76,7 +76,13 @@ export function V1Settings({
   update,
   version
 }: V1SettingsProps) {
-  const navigation = useSettingsNavigation(initialTab, initialPage);
+  const teamCollaborationEnabled =
+    window.koedDesktop?.featureFlags?.teamCollaborationEnabled === true;
+  const navigation = useSettingsNavigation(
+    initialTab,
+    initialPage,
+    teamCollaborationEnabled
+  );
   const { tab, page, setTab } = navigation;
   const [serviceBusy, setServiceBusy] = useState<ServiceAction | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
@@ -304,7 +310,11 @@ export function V1Settings({
                     onRestartOnboarding
                   }}
                 />
-                <SettingsTools api={cliInstall} onOpen={navigation.openPage} />
+                <SettingsTools
+                  api={cliInstall}
+                  onOpen={navigation.openPage}
+                  teamCollaborationEnabled={teamCollaborationEnabled}
+                />
               </>
             ) : (
               (page === "privacy" || page === "cli") && (
