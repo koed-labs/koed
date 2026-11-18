@@ -1,0 +1,248 @@
+name: Signed macOS candidate artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Same-repository PR number
+        required: true
+        type: string
+      sha:
+        description: Exact full PR head commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+cache-mode: none
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.prepare.outputs.sha }}
+      pr: ${{ steps.prepare.outputs.pr }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - id: prepare
+        run: node scripts/macos-candidate.mjs prepare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_PR: ${{ inputs.pr }}
+          CANDIDATE_SHA: ${{ inputs.sha }}
+
+  build:
+    needs: prepare
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+      - name: Build untrusted candidate without signing credentials
+        env:
+          DESKTOP_MACOS_APPLE_TEAM_ID: ${{ vars.DESKTOP_MACOS_APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          pnpm install --frozen-lockfile
+          pnpm native-runtime:build:macos-arm64 -- --json
+          export KOED_NATIVE_RUNTIME_SOURCE_DIR="$PWD/dist/native-runtime/macos-arm64/koed-runtime"
+          pnpm desktop:package:mac
+          mkdir -m 700 "$RUNNER_TEMP/candidate-upload"
+          ditto --norsrc --noextattr -c -k --keepParent apps/desktop/release/mac/Koed.app "$RUNNER_TEMP/candidate-upload/unsigned.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-candidate-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-upload/unsigned.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  inspect:
+    needs: [prepare, build]
+    runs-on: xcode-27
+    timeout-minutes: 20
+    outputs:
+      tuple: ${{ steps.inspect.outputs.tuple }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - id: inspect
+        run: node scripts/macos-candidate.mjs inspect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_PR: ${{ needs.prepare.outputs.pr }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+          DESKTOP_MACOS_APPLE_TEAM_ID: ${{ vars.DESKTOP_MACOS_APPLE_TEAM_ID }}
+
+  sign:
+    needs: [prepare, inspect]
+    environment: desktop-candidate-signing
+    runs-on: xcode-27
+    timeout-minutes: 90
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      zip_sha: ${{ steps.sign.outputs.zip_sha }}
+      dmg_sha: ${{ steps.sign.outputs.dmg_sha }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - id: sign
+        run: node scripts/macos-candidate.mjs sign
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_PR: ${{ needs.prepare.outputs.pr }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.sha }}
+          CANDIDATE_TUPLE: ${{ needs.inspect.outputs.tuple }}
+          DESKTOP_MACOS_APPLE_TEAM_ID: ${{ vars.DESKTOP_MACOS_APPLE_TEAM_ID }}
+          CANDIDATE_P12_BASE64: ${{ secrets.CANDIDATE_P12_BASE64 }}
+          CANDIDATE_P12_PASSWORD: ${{ secrets.CANDIDATE_P12_PASSWORD }}
+          CANDIDATE_APPLE_API_KEY_P8_BASE64: ${{ secrets.CANDIDATE_APPLE_API_KEY_P8_BASE64 }}
+          CANDIDATE_APPLE_API_KEY_ID: ${{ secrets.CANDIDATE_APPLE_API_KEY_ID }}
+          CANDIDATE_APPLE_API_ISSUER: ${{ secrets.CANDIDATE_APPLE_API_ISSUER }}
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: UNVERIFIED-koed-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.sign.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  smoke:
+    needs: [prepare, inspect, sign]
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+      - run: pnpm --dir trusted install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.sign.outputs.artifact_id }}
+          path: ${{ runner.temp }}/candidate-signed
+      - name: Verify trusted integrity and platform policy before candidate execution
+        env:
+          CANDIDATE_OUTPUT_DIR: ${{ runner.temp }}/candidate-signed
+          CANDIDATE_ZIP_SHA: ${{ needs.sign.outputs.zip_sha }}
+          CANDIDATE_DMG_SHA: ${{ needs.sign.outputs.dmg_sha }}
+          CANDIDATE_TUPLE: ${{ needs.inspect.outputs.tuple }}
+        run: |
+          set -euo pipefail
+          node trusted/scripts/macos-candidate.mjs verify-hashes
+          mkdir -m 700 "$RUNNER_TEMP/candidate-app"
+          ditto -x -k "$CANDIDATE_OUTPUT_DIR/Koed.zip" "$RUNNER_TEMP/candidate-app"
+          VERSION="$(node -e 'process.stdout.write(JSON.parse(process.env.CANDIDATE_TUPLE).version)')"
+          TEAM="$(node -e 'process.stdout.write(JSON.parse(process.env.CANDIDATE_TUPLE).expectedTeamId)')"
+          node trusted/apps/desktop/scripts/verify-macos-package.mjs --app "$RUNNER_TEMP/candidate-app/Koed.app" --dmg "$CANDIDATE_OUTPUT_DIR/Koed.dmg" --expected-version "$VERSION" --expected-team-id "$TEAM"
+          xcrun stapler validate "$CANDIDATE_OUTPUT_DIR/Koed.dmg"
+      - name: Run trusted CLI and Desktop smoke without signing credentials
+        env:
+          CANDIDATE_APP: ${{ runner.temp }}/candidate-app/Koed.app
+          CANDIDATE_HOME: ${{ runner.temp }}/candidate-smoke-home
+          CANDIDATE_TUPLE: ${{ needs.inspect.outputs.tuple }}
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$CANDIDATE_HOME"
+          export CANDIDATE_VERSION="$(node -e 'process.stdout.write(JSON.parse(process.env.CANDIDATE_TUPLE).version)')"
+          node trusted/apps/desktop/scripts/smoke-candidate-trusted.mjs
+
+  publish:
+    needs: [prepare, inspect, sign, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.sign.outputs.artifact_id }}
+          path: ${{ runner.temp }}/candidate-signed
+      - name: Verify the original signed bytes and write provenance
+        env:
+          CANDIDATE_OUTPUT_DIR: ${{ runner.temp }}/candidate-signed
+          CANDIDATE_ZIP_SHA: ${{ needs.sign.outputs.zip_sha }}
+          CANDIDATE_DMG_SHA: ${{ needs.sign.outputs.dmg_sha }}
+          CANDIDATE_TUPLE: ${{ needs.inspect.outputs.tuple }}
+        run: |
+          node scripts/macos-candidate.mjs verify-hashes
+          node scripts/macos-candidate.mjs write-provenance
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-macos-candidate-pr${{ needs.prepare.outputs.pr }}-${{ needs.prepare.outputs.sha }}
+          path: ${{ runner.temp }}/candidate-signed
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

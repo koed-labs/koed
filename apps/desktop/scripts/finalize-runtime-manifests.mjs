@@ -21,7 +21,10 @@ export const inventoryRuntime = (runtimeRoot, directory = runtimeRoot) => {
     const name = relative(runtimeRoot, path).replaceAll("\\", "/");
     if (name === "desktop-bundle-manifest.json") continue;
     if (entry.isSymbolicLink()) {
-      const target = relative(runtimeRoot, realpathSync(path));
+      const target = relative(
+        realpathSync.native(runtimeRoot),
+        realpathSync.native(path)
+      );
       if (target === ".." || target.startsWith("../") || isAbsolute(target)) {
         throw new Error(`Bundled runtime symlink escapes root: ${name}`);
       }

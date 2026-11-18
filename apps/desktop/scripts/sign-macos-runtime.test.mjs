@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -200,6 +201,13 @@ test("missing outer callback fails closed; signer errors are not retried", async
     /sign failure/
   );
   assert.equal(calls, 1);
+});
+
+test("finalizer rejects chained symlinks that escape under native filesystem resolution", (t) => {
+  const runtime = realpathSync.native(fixture(t).runtime);
+  symlinkSync(".", join(runtime, "first"));
+  symlinkSync("first/..", join(runtime, "second"));
+  assert.throws(() => finalizeRuntimeManifests(runtime), /symlink escapes/);
 });
 
 test("finalizer rejects escaping symlinks and inventories signing-generated files", (t) => {
