@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
+import { parseEnv, renderSetupEnv } from "./setup-env-lib.mjs";
 import {
   collectAppEnvEntries,
+  appEnvSources,
   parseAppEnvExample,
   renderGeneratedBlock,
   replaceGeneratedBlock,
@@ -14,7 +15,9 @@ import {
 const tempDirs = [];
 
 const tempRoot = () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-env-sync-"));
+  const scratch = path.resolve(import.meta.dirname, "../scratch");
+  fs.mkdirSync(scratch, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(scratch, "koed-env-sync-"));
   tempDirs.push(dir);
   return dir;
 };
@@ -164,14 +167,10 @@ test("preserves explicitly shared Team Memory encryption names", () => {
 
 test("sync output is deterministic", () => {
   const root = tempRoot();
-  fs.mkdirSync(path.join(root, "apps/api"), { recursive: true });
-  fs.mkdirSync(path.join(root, "apps/worker"), { recursive: true });
-  fs.mkdirSync(path.join(root, "apps/embedding-service"), { recursive: true });
-  fs.mkdirSync(path.join(root, "apps/privacy-service"), { recursive: true });
-
-  for (const app of ["api", "worker", "embedding-service", "privacy-service"]) {
+  for (const source of appEnvSources) {
+    fs.mkdirSync(path.join(root, source.dir), { recursive: true });
     fs.writeFileSync(
-      path.join(root, `apps/${app}/.env.example`),
+      path.join(root, source.dir, ".env.example"),
       "PORT=3300\n# @root omit\nLOCAL_ONLY=1\n"
     );
   }
@@ -186,6 +185,64 @@ test("sync output is deterministic", () => {
   const second = syncRootEnvExample(root).next;
 
   assert.equal(second, first);
+});
+
+test("Desktop examples sync public account defaults with DESKTOP_ACCOUNT root names", () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const entries = collectAppEnvEntries(root).filter(
+    (entry) => entry.source === "Desktop"
+  );
+  assert.deepEqual(
+    entries.map(({ appKey, rootKey, value }) => ({ appKey, rootKey, value })),
+    [
+      {
+        appKey: "KOED_ACCOUNT_ENABLED",
+        rootKey: "DESKTOP_ACCOUNT_ENABLED",
+        value: "false"
+      },
+      {
+        appKey: "KOED_ACCOUNT_CLIENT_ID",
+        rootKey: "DESKTOP_ACCOUNT_CLIENT_ID",
+        value: ""
+      },
+      {
+        appKey: "KOED_ACCOUNT_ENVIRONMENT",
+        rootKey: "DESKTOP_ACCOUNT_ENVIRONMENT",
+        value: "staging"
+      },
+      {
+        appKey: "KOED_ACCOUNT_LOGIN_MODE",
+        rootKey: "DESKTOP_ACCOUNT_LOGIN_MODE",
+        value: "forwarder"
+      },
+      {
+        appKey: "KOED_ACCOUNT_FORWARDER_URL",
+        rootKey: "DESKTOP_ACCOUNT_FORWARDER_URL",
+        value: ""
+      }
+    ]
+  );
+});
+
+test("env setup preserves Desktop opt-in and adds missing prefixed settings", () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const example = syncRootEnvExample(root).next;
+  const existing =
+    "DESKTOP_ACCOUNT_ENABLED=true\nDESKTOP_ACCOUNT_CLIENT_ID=client_developerfixture\nDESKTOP_ACCOUNT_FORWARDER_URL=https://login.example.test/desktop/callback\n";
+  const values = parseEnv(
+    renderSetupEnv({ example, existing, generatedValues: new Map() })
+  );
+  assert.equal(values.get("DESKTOP_ACCOUNT_ENABLED"), "true");
+  assert.equal(
+    values.get("DESKTOP_ACCOUNT_CLIENT_ID"),
+    "client_developerfixture"
+  );
+  assert.equal(values.get("DESKTOP_ACCOUNT_ENVIRONMENT"), "staging");
+  assert.equal(values.get("DESKTOP_ACCOUNT_LOGIN_MODE"), "forwarder");
+  assert.equal(
+    values.get("DESKTOP_ACCOUNT_FORWARDER_URL"),
+    "https://login.example.test/desktop/callback"
+  );
 });
 
 test("generated root defaults leave Desktop processing preferences editable", () => {

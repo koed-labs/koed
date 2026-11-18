@@ -3,5 +3,6 @@ dist-electron/
 dist-types/
 release/
 .koed-runtime/
+.account-build/
 tsconfig.tsbuildinfo
 tsconfig.electron.tsbuildinfo

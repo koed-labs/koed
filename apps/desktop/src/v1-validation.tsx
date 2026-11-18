@@ -1,3 +1,4 @@
+import { AccountValidation } from "./account-validation.js";
 import { SidebarValidation } from "./sidebar-validation.js";
 import {
   installProjectManagementValidation,
@@ -129,7 +130,9 @@ function Validation() {
 if (new URLSearchParams(location.search).get("sidebar") !== "1")
   document.documentElement.classList.add("light");
 createRoot(document.querySelector("#root")!).render(
-  new URLSearchParams(location.search).get("projects") === "1" ? (
+  new URLSearchParams(location.search).has("account") ? (
+    <AccountValidation />
+  ) : new URLSearchParams(location.search).get("projects") === "1" ? (
     <ProjectManagementValidation />
   ) : new URLSearchParams(location.search).get("sidebar") === "1" ? (
     <SidebarValidation />

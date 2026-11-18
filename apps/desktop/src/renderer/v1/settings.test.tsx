@@ -9,6 +9,10 @@ import type {
 import type { ThemeStore, ThemeSnapshot } from "../state/theme.js";
 import { memoryModelFixture } from "./onboarding/memory-model.fixture.js";
 import { V1Settings } from "./settings.js";
+import type {
+  AccountDesktopApi,
+  AccountState
+} from "@koed-labs/shared/account";
 
 describe("V1Settings", () => {
   const container = document.body;
@@ -68,6 +72,29 @@ describe("V1Settings", () => {
       )
     );
   };
+  it("keeps account access outside Settings when sign-in is available", async () => {
+    const state: AccountState = {
+      status: "signed_out",
+      profile: null,
+      busy: false,
+      stale: false,
+      message: null,
+      revision: 0
+    };
+    const accountApi = {
+      getState: vi.fn(async () => state),
+      onStateChanged: vi.fn(() => () => undefined)
+    } as unknown as AccountDesktopApi;
+    window.koedDesktop = { account: accountApi } as typeof window.koedDesktop;
+    await render("general");
+    expect(
+      container.querySelector('[data-settings-page="profile"]')
+    ).toBeNull();
+    expect(container.textContent).not.toContain("Your profile");
+    expect(container.querySelector('[aria-label="Theme"]')).not.toBeNull();
+    expect(accountApi.getState).not.toHaveBeenCalled();
+    expect(accountApi.onStateChanged).not.toHaveBeenCalled();
+  });
   it("writes theme through the existing ThemeStore", async () => {
     await render();
     await act(async () =>

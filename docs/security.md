@@ -412,3 +412,36 @@ understood by previous binaries and store the extended approval lifecycle in a
 separate field. An unclassified or Native-review record therefore remains
 readable as legacy `pending` state during rollback, while current binaries retain
 the exact lifecycle. No migration or weaker rollback format exists.
+
+## Desktop account identity
+
+Optional sign-in uses a WorkOS public client, which identifies Desktop without
+a server secret. Electron main exchanges the authorization code directly with
+WorkOS. Sign-in does not grant access to local Personal Memory or replace
+`koed-server` control of Team and device credentials.
+
+In forwarder mode, your forwarder receives the authorization code and sealed state.
+Its return page opens the fixed native Desktop callback. Electron main retains
+the PKCE verifier, the secret required to exchange the code. The forwarder does
+not authenticate the response or grant access. Build configuration supplies the
+HTTPS callback. Desktop requires the exact `/desktop/callback` path, the standard
+HTTPS port, and a URL without credentials, queries, fragments, or normalization.
+Installed apps use the complete bundled account configuration and ignore runtime account overrides.
+Browser parameters cannot change the destination or the native callback.
+
+The WorkOS integration uses the public exports of one pinned session-library version.
+It rejects an inherited `WORKOS_API_KEY` before client creation.
+The interface receives read-only profile data without provider tokens.
+Desktop accepts HTTPS picture URLs only from the allowed WorkOS, Google, and
+GitHub image hosts. Image requests use `no-referrer` and no WorkOS token.
+Missing or failed pictures show initials.
+
+Electron's asynchronous `safeStorage` APIs encrypt account credentials.
+Key rotation replaces the encrypted file without exposing a partial write.
+Both login modes share the same session file. A mode or forwarder URL change
+discards incompatible sign-in attempts. Local removal prevents unfinished storage operations from
+restoring credentials. The managed draft store also uses asynchronous encryption
+and initializes the operating system provider when a draft operation needs it.
+
+See [Desktop accounts](desktop-accounts.md) for callback rules, storage,
+sign-out, revocation, and the exact picture hosts.

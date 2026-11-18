@@ -754,6 +754,11 @@ jobs:
     if: github.ref == 'refs/heads/main' && needs.release.outputs.desktop_assets_enabled == 'true'
     env:
       KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json
+      KOED_ACCOUNT_ENABLED: ${{ vars.DESKTOP_ACCOUNT_ENABLED || 'false' }}
+      KOED_ACCOUNT_CLIENT_ID: ${{ vars.DESKTOP_ACCOUNT_CLIENT_ID }}
+      KOED_ACCOUNT_ENVIRONMENT: production
+      KOED_ACCOUNT_LOGIN_MODE: ${{ vars.DESKTOP_ACCOUNT_LOGIN_MODE }}
+      KOED_ACCOUNT_FORWARDER_URL: ${{ vars.DESKTOP_ACCOUNT_FORWARDER_URL }}
 
     steps:
       - name: Checkout
@@ -772,6 +777,10 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Prepare Desktop account configuration
+        run: |
+          pnpm --filter @koed-labs/shared build
+          node apps/desktop/scripts/prepare-account-config.mjs --release
       - name: Download frozen catalog
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -903,6 +912,11 @@ jobs:
     environment: desktop-release
     env:
       KOED_COMPONENT_MANIFEST_CATALOG: ${{ github.workspace }}/release-components/component-manifest-hashes.json
+      KOED_ACCOUNT_ENABLED: ${{ vars.DESKTOP_ACCOUNT_ENABLED || 'false' }}
+      KOED_ACCOUNT_CLIENT_ID: ${{ vars.DESKTOP_ACCOUNT_CLIENT_ID }}
+      KOED_ACCOUNT_ENVIRONMENT: production
+      KOED_ACCOUNT_LOGIN_MODE: ${{ vars.DESKTOP_ACCOUNT_LOGIN_MODE }}
+      KOED_ACCOUNT_FORWARDER_URL: ${{ vars.DESKTOP_ACCOUNT_FORWARDER_URL }}
 
     steps:
       - name: Checkout
@@ -924,6 +938,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Prepare Desktop account configuration
+        run: |
+          pnpm --filter @koed-labs/shared build
+          node apps/desktop/scripts/prepare-account-config.mjs --release
 
       - name: Download complete frozen catalog and assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093

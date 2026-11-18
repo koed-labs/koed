@@ -1,3 +1,4 @@
+import { createAccountPreloadApi } from "./ipc/account-preload.js";
 import { performanceChannel } from "./ipc/performance-channel.js";
 import {
   presentationPreferencesGetChannel,
@@ -48,6 +49,10 @@ const collaborationCommandChannel = "koed:collaboration:command";
 const collaborationEventChannel = "koed:collaboration:event";
 const allowedDesktopCommandNames = new Set<string>(desktopCommandNames);
 contextBridge.exposeInMainWorld("koedDesktop", {
+  account: createAccountPreloadApi(
+    (channel, value) => ipcRenderer.invoke(channel, value),
+    ipcRenderer
+  ),
   featureFlags: desktopFeatureFlagsFromEnvironment(process.env),
   invoke: (command: string, args?: Record<string, unknown>) => {
     if (!allowedDesktopCommandNames.has(command)) {

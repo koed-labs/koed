@@ -13,11 +13,14 @@ import { safeStorage } from "electron";
 
 vi.mock("electron", () => ({
   safeStorage: {
-    isEncryptionAvailable: vi.fn(() => true),
+    isAsyncEncryptionAvailable: vi.fn(async () => true),
     getSelectedStorageBackend: () => "libsecret",
-    encryptString: (value: string) => Buffer.from(`encrypted:${value}`),
-    decryptString: (value: Buffer) =>
-      value.toString("utf8").replace(/^encrypted:/, "")
+    encryptStringAsync: async (value: string) =>
+      Buffer.from(`encrypted:${value}`),
+    decryptStringAsync: async (value: Buffer) => ({
+      result: value.toString("utf8").replace(/^encrypted:/, ""),
+      shouldReEncrypt: false
+    })
   }
 }));
 
@@ -35,9 +38,9 @@ describe("managed conversation draft storage", () => {
   it("defers a blocked Keychain check until use and never falls back after failure", async () => {
     const directory = mkdtempSync(join(tmpdir(), "koed-drafts-"));
     directories.push(directory);
-    const check = vi.mocked(safeStorage.isEncryptionAvailable);
+    const check = vi.mocked(safeStorage.isAsyncEncryptionAvailable);
     const calls = check.mock.calls.length;
-    check.mockImplementationOnce(() => {
+    check.mockImplementationOnce(async () => {
       throw new Error("Keychain locked");
     });
 
@@ -55,6 +58,14 @@ describe("managed conversation draft storage", () => {
     expect(() =>
       readFileSync(join(directory, "managed-conversation-drafts.json"))
     ).toThrow();
+    expect(() =>
+      readFileSync(join(directory, "managed-conversation-drafts.key"))
+    ).toThrow();
+    await store.put("draft", "retry-value");
+    expect(check.mock.calls.length).toBe(calls + 2);
+    expect(
+      readFileSync(join(directory, "managed-conversation-drafts.json"), "utf8")
+    ).not.toContain("retry-value");
     expect(() =>
       readFileSync(join(directory, "managed-conversation-drafts.key"))
     ).toThrow();
