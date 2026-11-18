@@ -528,6 +528,43 @@ describe("V1Settings", () => {
       "Stop failed"
     );
   });
+  it.each([undefined, false])(
+    "hides Privacy Filter when the Team collaboration flag is %s",
+    async (teamCollaborationEnabled) => {
+      if (teamCollaborationEnabled !== undefined) {
+        window.koedDesktop = {
+          invoke: vi.fn(),
+          featureFlags: { teamCollaborationEnabled }
+        };
+      }
+      await render("general", { initialPage: "privacy" });
+      expect(container.textContent).not.toContain("Privacy Filter");
+      expect(container.querySelector(".page-heading h2")?.textContent).toBe(
+        "General"
+      );
+      expect(
+        container.querySelector('[data-settings-page="cli"]')
+      ).toBeTruthy();
+    }
+  );
+
+  it("opens Privacy Filter from Optional tools with Team collaboration enabled", async () => {
+    window.koedDesktop = {
+      invoke: vi.fn(),
+      featureFlags: { teamCollaborationEnabled: true }
+    };
+    await render();
+    const card = container.querySelector<HTMLButtonElement>(
+      '[data-settings-page="privacy"]'
+    );
+    expect(card?.textContent).toContain("Privacy Filter");
+    expect(container.querySelector('[data-settings-page="cli"]')).toBeTruthy();
+    await act(async () => card?.click());
+    expect(container.querySelector(".page-heading h2")?.textContent).toBe(
+      "Privacy Filter"
+    );
+  });
+
   it("opens command line as a nested page and returns to General on Escape", async () => {
     await render("general", { initialPage: "cli" });
     expect(container.querySelector(".page-heading .back")?.textContent).toBe(

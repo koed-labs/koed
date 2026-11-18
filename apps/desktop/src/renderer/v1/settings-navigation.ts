@@ -11,7 +11,8 @@ const currentSettingsTab = (tab: Section | "agent"): Section =>
 // History belongs to this settings instance; unrelated application entries are preserved.
 export function useSettingsNavigation(
   initialTab: Section | "agent",
-  initialPage?: V1SettingsPage
+  initialPage: V1SettingsPage | undefined,
+  teamCollaborationEnabled: boolean
 ) {
   const owner = useId();
   const [tab, updateTab] = useState(
@@ -19,9 +20,13 @@ export function useSettingsNavigation(
       ? settingsPageParent(initialPage)
       : currentSettingsTab(initialTab)
   );
-  const [page, updatePage] = useState<V1SettingsPage | null>(
+  const [requestedPage, updatePage] = useState<V1SettingsPage | null>(
     initialPage ?? null
   );
+  const page =
+    requestedPage === "privacy" && !teamCollaborationEnabled
+      ? null
+      : requestedPage;
   const bodyRef = useRef<HTMLDivElement>(null);
   const origin = useRef<{ page: V1SettingsPage | null; scroll: number }>({
     page: null,
