@@ -27,6 +27,29 @@ The decision record is **ADR 0070** (Proposed), PR #546 (draft, ADR only):
 `docs/adr/0070-floating-kin-recent-agent-work.md`. Read it first. Do not
 contradict it without surfacing the conflict.
 
+## Base branch and PR #537 (detached control plane)
+
+Start implementation from `main`, not stacked on #537
+(`feat/detached-control-plane`).
+
+- Most of the work does not touch #537: read routes, activity signal, summary
+  route, overlay window, chips. ADR 0070 treats the control plane as a
+  dependency for state reporting only, never for hosting the Kin.
+- #537 was a draft, macOS-packaged only, with signed-build validation pending,
+  and still changing. Stacking would couple an early-stage feature to a branch
+  that may be reworked.
+- #537 matters for the Kin's stopped/unavailable states: runtime status, a
+  durable Stop the Kin must not override, and Desktop attach/detach at quit.
+  Wire these last.
+- Put runtime state behind a small interface (stopped, starting, running,
+  unavailable). First version: read the existing `KOED_HOME/run/local-ai-runtime.json`
+  and runtime health. When #537 merges, switch the interface to the control
+  plane's status.
+- Expect possible conflicts in `apps/desktop/src/koed-server/manager.ts`, since
+  both touch Desktop lifecycle.
+- Re-read #537's current state (it was last assessed after the SIGTERM fix)
+  before deciding; if it has merged, branch from `main` to get it.
+
 ## Hard constraints
 
 - No backend LLM calls (ADR 0001). Synthesis goes through the AI Client path.
