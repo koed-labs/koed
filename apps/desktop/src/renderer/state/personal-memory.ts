@@ -194,9 +194,11 @@ export class PersonalMemoryStore {
   }
 
   async loadProjects({
-    silent = false
+    silent = false,
+    onPreview
   }: {
     silent?: boolean;
+    onPreview?: () => void;
   } = {}): Promise<PersonalMemorySnapshot> {
     const request = ++this.#projectRequest;
     if (!silent) {
@@ -269,6 +271,7 @@ export class PersonalMemoryStore {
             if (complete || request !== this.#projectRequest) return;
             preview = projects;
             publish(projects, true);
+            if (projects.length) onPreview?.();
           })
           .catch(() => undefined);
       }

@@ -238,6 +238,14 @@ const openExternal = createExternalUrlOpener({
     })
 });
 
+const notifyDesktopStatusChanged = () => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send(desktopStatusChangedChannel);
+    }
+  }
+};
+
 const createServerManager = (
   managedConversationDraftStore?: ReturnType<
     typeof createPdsDesktopSecretStore
@@ -279,6 +287,7 @@ const createServerManager = (
     existsSync,
     execFile,
     spawn,
+    onPersonalMemoryStartupReady: notifyDesktopStatusChanged,
     openExternal,
     openPath: (path) => shell.openPath(path),
     revealPath: (path) => shell.showItemInFolder(path),
@@ -750,11 +759,7 @@ const bootstrap = async () => {
   // external stop or start is reflected without waiting for full polling.
   server.lifecycle.subscribe(() => {
     void desktopMenuBar?.refresh();
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) {
-        window.webContents.send(desktopStatusChangedChannel);
-      }
-    }
+    notifyDesktopStatusChanged();
   });
   server.lifecycle.start();
   await startDesktopWindowAndRuntime({
@@ -848,11 +853,7 @@ const bootstrap = async () => {
         stop: () => server.shutdown(),
         quit: () => app.quit()
       });
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) {
-          window.webContents.send(desktopStatusChangedChannel);
-        }
-      }
+      notifyDesktopStatusChanged();
     }
   });
 };
