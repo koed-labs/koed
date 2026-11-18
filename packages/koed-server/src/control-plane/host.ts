@@ -33,7 +33,8 @@ export async function startControlPlaneHost(input: {
   installationId: string;
   productVersion: string;
   onFatal(error: Error): void;
-}): Promise<{ close(): Promise<void> }> {
+  retirement?: { isClean(): boolean; onRetired(): void };
+}): Promise<{ close(): Promise<void>; closeUncertain(): Promise<void> }> {
   const owner = assertControlPlaneAdmission(input.admission, input.paths);
   if (!owner.processIdentity)
     throw new Error("Control-plane process identity unavailable");
@@ -49,6 +50,25 @@ export async function startControlPlaneHost(input: {
     processIdentity: owner.processIdentity
   };
   let active = false;
+  let retiring = false;
+  const retirement = input.retirement;
+  const lifecycle = retirement && {
+    retiring: () => retiring,
+    onRetired: retirement.onRetired,
+    retire() {
+      const snapshot = input.core.status();
+      if (
+        snapshot.state !== "stopped" ||
+        !snapshot.stopIntent ||
+        snapshot.error ||
+        !input.core.settled() ||
+        !retirement.isClean()
+      )
+        throw new Error("Control-plane runtime is not cleanly stopped");
+      retiring = true;
+      return snapshot;
+    }
+  };
   const listener = await input.transport.listen(
     input.socketPath,
     (connection) => {
@@ -59,6 +79,7 @@ export async function startControlPlaneHost(input: {
       serveControlConnection({
         connection,
         core: input.core,
+        lifecycle,
         validateHello(value, peer) {
           const hello = controlHelloSchema.parse(value);
           const identity = resolveProcessIdentity(peer.pid);
@@ -117,14 +138,18 @@ export async function startControlPlaneHost(input: {
   }
   return {
     async close() {
-      if (input.core.status().state !== "stopped")
+      if (input.core.status().state !== "stopped" || !input.core.settled())
         throw new Error("Control-plane runtime is not stopped");
       active = false;
-      try {
-        removeControlDiscovery(input.paths, input.admission, record.instanceId);
-      } finally {
-        await listener.close();
-      }
+      await listener.close();
+      removeControlDiscovery(input.paths, input.admission, record.instanceId);
+    },
+    async closeUncertain() {
+      if (!input.core.settled())
+        throw new Error("Uncertain control-plane runtime is not settled");
+      active = false;
+      // Keep discovery and admission records as dead-owner recovery evidence.
+      await listener.close();
     }
   };
 }

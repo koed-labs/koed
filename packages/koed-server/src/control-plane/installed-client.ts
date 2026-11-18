@@ -9,12 +9,17 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   deriveDesktopRuntimeOwner,
   resolveDesktopControlAddon,
   type DesktopRuntimeCapability
 } from "../desktop-runtime-capability.js";
-import { ensureKoedHome, resolveKoedServerPaths } from "../paths.js";
+import {
+  ensureKoedHome,
+  resolveKoedServerPaths,
+  type KoedServerPaths
+} from "../paths.js";
 import {
   readSupervisorLock,
   resolveProcessIdentity
@@ -62,6 +67,49 @@ export function tryRecordOfflineStop(
   return recordOfflineStop(paths, { tryReclaimLock: native.tryReclaimLock });
 }
 
+function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function isPidAbsent(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+    throw error;
+  }
+}
+
+/** Check only the owner bound to the authenticated connection. Never signal it. */
+export async function waitForRetiredControlPlaneOwner(
+  paths: KoedServerPaths,
+  owner: ControlDiscovery,
+  timeoutMs = 10_000
+): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (!isPidAbsent(owner.pid)) {
+    if (performance.now() >= deadline)
+      throw new Error(
+        "Old control-plane owner exit could not be confirmed; do not replace the app"
+      );
+    await sleep(50);
+  }
+  if (
+    pathExists(resolve(paths.runDir, "koed-server.lock")) ||
+    readControlDiscovery(paths)
+  )
+    throw new Error(
+      "Control-plane ownership records remain; do not replace the app"
+    );
+}
+
 export async function openInstalledControlPlane(input: {
   capability: DesktopRuntimeCapability;
   environment: NodeJS.ProcessEnv;
@@ -83,15 +131,7 @@ export async function openInstalledControlPlane(input: {
   };
   const transport = createNativeControlTransport(addon.localControl);
   const lockPath = resolve(paths.runDir, "koed-server.lock");
-  const isLocked = () => {
-    try {
-      lstatSync(lockPath);
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-      throw error;
-    }
-  };
+  const isLocked = () => pathExists(lockPath);
   const assertOwner = (record: ControlDiscovery) => {
     const lock = readSupervisorLock(lockPath);
     if (
@@ -129,15 +169,7 @@ export async function openInstalledControlPlane(input: {
         lock.processIdentity === record.processIdentity
       );
     },
-    isDiscoveryDead: (record) => {
-      try {
-        process.kill(record.pid, 0);
-        return false;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
-        throw error;
-      }
-    },
+    isDiscoveryDead: (record) => isPidAbsent(record.pid),
     installationId: owner.installationId,
     productVersion: input.capability.productVersion,
     connect: async (record) => {
@@ -152,7 +184,10 @@ export async function openInstalledControlPlane(input: {
         client.close();
         throw error;
       }
-      return client;
+      return {
+        ...client,
+        waitForRetirement: () => waitForRetiredControlPlaneOwner(paths, record)
+      };
     },
     launch: () => {
       const fd = openSync(

@@ -19,7 +19,12 @@ export async function startControlPlaneService(input: {
   environment: NodeJS.ProcessEnv;
   transport: ControlTransport;
   onFatal(error: Error): void;
-}): Promise<{ core: HostCore; close(): Promise<void> }> {
+  onRetired?(): void;
+}): Promise<{
+  core: HostCore;
+  close(): Promise<void>;
+  closeUncertain(): Promise<void>;
+}> {
   const store = ensureControlState(input.paths, input.admission, {
     assumeStoppedIfNoEvidence: true
   });
@@ -58,7 +63,12 @@ export async function startControlPlaneService(input: {
     ),
     installationId: owner.installationId,
     productVersion: input.capability.productVersion,
-    onFatal: input.onFatal
+    onFatal: input.onFatal,
+    retirement: input.onRetired && {
+      onRetired: input.onRetired,
+      isClean: () =>
+        store.read().runtimeClean && !hasRuntimeEvidence(input.paths)
+    }
   });
-  return { core, close: () => host.close() };
+  return { core, ...host };
 }

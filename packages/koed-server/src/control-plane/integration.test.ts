@@ -1,5 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { controlReplySchema } from "@koed-labs/shared/local-control-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { resolveKoedServerPaths } from "../paths.js";
 import {
@@ -10,11 +11,16 @@ import { connectControlClient } from "./client.js";
 import { readControlDiscovery } from "./discovery.js";
 import { startControlPlaneHost } from "./host.js";
 import { createControlPlaneHostCore } from "./host-core.js";
+import { startControlPlaneService } from "./service.js";
+import { createControlStateStore } from "./state.js";
+import type { DesktopRuntimeCapability } from "../desktop-runtime-capability.js";
 import type { ControlIntent, ControlStateStore } from "./state.js";
 import type { ControlConnection, ControlTransport } from "./transport.js";
 
 /** In-memory transport only: this test does not exercise native peer authentication. */
-function memoryTransport(): ControlTransport {
+function memoryTransport(
+  beforeReply?: (message: string) => Promise<void> | undefined
+): ControlTransport {
   let accept: (connection: ControlConnection) => void = () => {};
   return {
     async listen(_path, onAccept) {
@@ -52,6 +58,7 @@ function memoryTransport(): ControlTransport {
       const right: ControlConnection = {
         peer,
         send: async (message) => {
+          await beforeReply?.(message);
           queueMicrotask(() => leftMessage(message));
         },
         onMessage: (fn) => {
@@ -77,6 +84,102 @@ function memoryTransport(): ControlTransport {
 }
 
 describe("control-plane client integration with simulated transport", () => {
+  it("rejects retirement with runtime evidence and fences other Starts before the retirement reply flushes", async () => {
+    const scratch = resolve(import.meta.dirname, "../../../../scratch");
+    mkdirSync(scratch, { recursive: true });
+    const root = mkdtempSync(resolve(scratch, "ci-"));
+    const paths = resolveKoedServerPaths({ KOED_HOME: root });
+    mkdirSync(paths.configDir, { mode: 0o700 });
+    const admission = acquireControlPlaneAdmission(paths)!;
+    const store = createControlStateStore(paths, admission);
+    let releaseReply!: () => void;
+    const replyReleased = new Promise<void>((resolve) => {
+      releaseReply = resolve;
+    });
+    let acceptRetirement!: () => void;
+    const accepted = new Promise<void>((resolve) => {
+      acceptRetirement = resolve;
+    });
+    const onRetired = vi.fn();
+    let holdRetirementReply = false;
+    const transport = memoryTransport((message) => {
+      const reply = controlReplySchema.safeParse(JSON.parse(message));
+      if (holdRetirementReply && reply.success && reply.data.ok) {
+        acceptRetirement();
+        return replyReleased;
+      }
+    });
+    try {
+      const service = await startControlPlaneService({
+        paths,
+        admission,
+        transport,
+        environment: { KOED_HOME: root },
+        capability: {
+          installationPath: "/install",
+          productVersion: "1"
+        } as DesktopRuntimeCapability,
+        onFatal: vi.fn(),
+        onRetired
+      });
+      const discovery = readControlDiscovery(paths)!;
+      const operator = await connectControlClient({ transport, discovery });
+      const concurrent = await connectControlClient({ transport, discovery });
+      try {
+        await expect(
+          operator.request({ action: "retire" }, 0)
+        ).resolves.toMatchObject({ ok: false, code: "blocked" });
+        const stopped = await operator.request(
+          { action: "stop", explicit: true },
+          0
+        );
+        expect(stopped).toMatchObject({
+          ok: true,
+          snapshot: { stopIntent: true }
+        });
+        if (!stopped.ok) throw new Error("Expected explicit Stop");
+        const revision = stopped.snapshot.revision;
+        writeFileSync(paths.runtimeStatePath, "{}", { mode: 0o600 });
+        await expect(
+          operator.request({ action: "retire" }, revision)
+        ).resolves.toMatchObject({ ok: false, code: "blocked" });
+        expect(onRetired).not.toHaveBeenCalled();
+        expect(store.read().stopIntent).toBe(true);
+        rmSync(paths.runtimeStatePath);
+
+        holdRetirementReply = true;
+        const retirement = operator.request({ action: "retire" }, revision);
+        // Observe acceptance, not transport delivery, before sending a competing Start.
+        await accepted;
+        expect(onRetired).not.toHaveBeenCalled();
+        expect(store.read()).toMatchObject({
+          runtimeClean: true,
+          stopIntent: true,
+          persistentCli: false
+        });
+        await expect(
+          concurrent.request(
+            { action: "start", explicit: true },
+            service.core.status().revision
+          )
+        ).resolves.toMatchObject({ ok: false, code: "blocked" });
+        releaseReply();
+        await expect(retirement).resolves.toMatchObject({
+          ok: true,
+          snapshot: { state: "stopped", stopIntent: true }
+        });
+        expect(onRetired).toHaveBeenCalledOnce();
+      } finally {
+        releaseReply();
+        concurrent.close();
+        operator.close();
+        await service.close();
+      }
+    } finally {
+      releaseControlPlaneAdmission(admission);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("shares one runtime, preserves CLI demand across Desktop detach and remembers Stop", async () => {
     const scratch = resolve(import.meta.dirname, "../../../../scratch");
     mkdirSync(scratch, { recursive: true });

@@ -17,6 +17,23 @@ describe("local control request validation", () => {
     expect(controlRequestSchema.parse(request)).toEqual(request);
   });
 
+  it("binds retirement to an instance and revision without accepting extra authority", () => {
+    const retirement = { ...request, command: { action: "retire" } };
+    expect(controlRequestSchema.parse(retirement)).toEqual(retirement);
+    expect(
+      controlRequestSchema.safeParse({
+        ...retirement,
+        command: { action: "retire", pid: 123 }
+      }).success
+    ).toBe(false);
+    expect(
+      controlRequestSchema.safeParse({
+        ...retirement,
+        expectedRevision: undefined
+      }).success
+    ).toBe(false);
+  });
+
   it("rejects unknown actions, fields, and invalid revisions", () => {
     for (const value of [
       { ...request, command: { action: "execute", executable: "/bin/sh" } },

@@ -64,6 +64,7 @@ describe("control-plane host", () => {
       listen: vi.fn(async () => ({ close, onError: () => () => {} }))
     };
     const core = {
+      settled: () => true,
       status: () => ({
         instanceId: admission.instanceId,
         revision: 0,

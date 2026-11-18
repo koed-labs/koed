@@ -4,7 +4,9 @@ import type { ControlDiscovery } from "./discovery.js";
 export class ControlOwnerGoneError extends Error {}
 
 /** Discovery is routing metadata, not an authentication decision. */
-export async function connectOrLaunchControlPlane(input: {
+export async function connectOrLaunchControlPlane<
+  Client extends ControlClient
+>(input: {
   read(): ControlDiscovery | undefined;
   isLocked(): boolean;
   hasLiveOwner?(): boolean;
@@ -14,13 +16,13 @@ export async function connectOrLaunchControlPlane(input: {
   launchIfMissing?: boolean;
   waitForOwner?: boolean;
   launchFailure?: () => Error | undefined;
-  connect(discovery: ControlDiscovery): Promise<ControlClient>;
+  connect(discovery: ControlDiscovery): Promise<Client>;
   installationId: string;
   productVersion: string;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   timeoutMs?: number;
-}): Promise<ControlClient> {
+}): Promise<Client> {
   const connect = (discovery: ControlDiscovery) => {
     if (
       discovery.installationId !== input.installationId ||

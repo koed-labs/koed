@@ -12,6 +12,7 @@ import type { HostCore } from "./host-core.js";
 export function createControlPlaneShutdown(input: {
   core: HostCore;
   close(): Promise<void>;
+  closeUncertain(): Promise<void>;
   fatal(): Error | undefined;
   log(message: string): void;
   pollMs?: number;
@@ -28,24 +29,33 @@ export function createControlPlaneShutdown(input: {
     resolveDone(code);
   };
   const poll = (): void => {
-    const { state } = input.core.status();
-    if (state === "needs_attention" && input.core.settled()) {
+    if (!input.core.settled()) return;
+    let uncertain: boolean;
+    try {
+      const { state } = input.core.status();
+      uncertain = state === "needs_attention";
+      if (state !== "stopped" && !uncertain) return;
+    } catch (error) {
+      uncertain = true;
+      input.log(
+        `Control-plane status could not be confirmed: ${String(error)}\n`
+      );
+    }
+    if (timer) clearInterval(timer);
+    timer = undefined;
+    if (uncertain)
       input.log(
         "Control-plane cleanup is uncertain; exiting without confirming Stop. Operator attention required.\n"
       );
-      finish(1);
-      return;
-    }
-    if (state !== "stopped") return;
-    if (timer) clearInterval(timer);
-    timer = undefined;
-    void input.close().then(
-      () => finish(input.fatal() ? 1 : 0),
-      (error: unknown) => {
-        input.log(`Control-plane shutdown failed: ${String(error)}\n`);
-        finish(1);
-      }
-    );
+    void Promise.resolve()
+      .then(() => (uncertain ? input.closeUncertain() : input.close()))
+      .then(
+        () => finish(uncertain || input.fatal() ? 1 : 0),
+        (error: unknown) => {
+          input.log(`Control-plane shutdown failed: ${String(error)}\n`);
+          finish(1);
+        }
+      );
   };
   return {
     done,

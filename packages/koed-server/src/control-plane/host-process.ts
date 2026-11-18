@@ -17,8 +17,13 @@ export async function startControlPlaneProcess(input: {
   capability: DesktopRuntimeCapability;
   transport: ControlTransport;
   onFatal(error: Error): void;
+  onRetired?(): void;
   tryReclaimLock?: (fd: number) => boolean;
-}): Promise<{ core: HostCore; close(): Promise<void> }> {
+}): Promise<{
+  core: HostCore;
+  close(): Promise<void>;
+  closeUncertain(): Promise<void>;
+}> {
   if (!validateDesktopRuntimeCapability(input.capability))
     throw new Error("Verified Desktop runtime capability required");
   const paths = resolveKoedServerPaths(input.environment);
@@ -37,7 +42,7 @@ export async function startControlPlaneProcess(input: {
     throw error;
   }
   return {
-    core: service.core,
+    ...service,
     async close() {
       await service.close();
       releaseControlPlaneAdmission(admission);

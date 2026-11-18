@@ -1,10 +1,41 @@
 import type { ControlClient } from "./client.js";
 class OfflineStopCompleted extends Error {}
+type UpgradeControlClient = ControlClient & {
+  waitForRetirement?(): Promise<void>;
+};
+
+async function prepareUpgrade(client: UpgradeControlClient) {
+  if (!client.waitForRetirement)
+    throw new Error("Upgrade preparation requires the installed Koed CLI");
+  const status = await client.request({ action: "status" }, 0);
+  if (!status.ok)
+    throw new Error(`Control-plane status failed: ${status.code}`);
+  if (status.snapshot.state !== "stopped" || status.snapshot.error)
+    throw new Error(
+      "Stop Koed and confirm runtime cleanup before preparing an upgrade"
+    );
+  const result = await client.request(
+    { action: "retire" },
+    status.snapshot.revision
+  );
+  if (!result.ok)
+    throw new Error(`Control-plane retirement failed: ${result.code}`);
+  if (
+    result.snapshot.state !== "stopped" ||
+    !result.snapshot.stopIntent ||
+    result.snapshot.error
+  )
+    throw new Error("Control-plane retirement did not confirm explicit Stop");
+  await client.waitForRetirement();
+  return result.snapshot;
+}
 
 export async function runControlPlaneCli(
   args: string[],
   dependencies: {
-    connect(command: "start" | "stop"): Promise<ControlClient>;
+    connect(
+      command: "start" | "stop" | "prepare-upgrade"
+    ): Promise<UpgradeControlClient>;
     stdout: Pick<NodeJS.WriteStream, "write">;
     stderr: Pick<NodeJS.WriteStream, "write">;
     sleep?: (ms: number) => Promise<void>;
@@ -51,8 +82,22 @@ export async function runControlPlaneCli(
       dependencies
     );
   }
-  let client: ControlClient | undefined;
+  let client: UpgradeControlClient | undefined;
   try {
+    if (command === "prepare-upgrade") {
+      if (args.slice(1).some((arg) => arg !== "--json"))
+        throw new Error("Unsupported control-plane command option");
+      client = await dependencies.connect(command);
+      const snapshot = await prepareUpgrade(client);
+      const message =
+        "Old Koed Server Control Plane exited. Replace the app before starting Koed again.";
+      dependencies.stdout.write(
+        json
+          ? `${JSON.stringify({ ok: true, snapshot, message })}\n`
+          : `${message}\n`
+      );
+      return 0;
+    }
     if (
       command === "agent-enable" ||
       command === "agent-disable" ||

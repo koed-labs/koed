@@ -541,6 +541,34 @@ For experimental macOS control-plane migration, first stop the old Desktop and B
 
 Standalone CLI `start --daemon --json` starts a detached `koed start` supervisor and returns machine-readable startup intent for scripts. The macOS packaged Desktop control-plane integration is under development: its Start and Stop commands are routed through an authenticated detached control plane; initialization and recovery are still under development. When no control-plane host or discovery record exists, an explicit Stop can record intent under exclusive admission without starting a host. A missing control-state record is initialized only after any legacy Agent state has been handled. After a confirmed-dead owner, restart may proceed with valid prior records, while historical uncertainty remains recorded and continues to block generation pruning. A later clean Stop reports the current session stopped but warns that previous cleanup was not confirmed. If SIGINT or SIGTERM reaches a control plane whose cleanup is uncertain (`needs_attention`), the process waits for any running runtime session to end and then exits nonzero without confirming Stop, so it cannot remain alive unreachable; the persisted unclean marker keeps the next owner in `needs_attention` until Operator review. Clients must treat `needs_attention` as unavailable, never as a confirmed Stop. Malformed records, uncertain ownership, or interrupted lock recovery require Operator attention. An attached Desktop session and an explicitly persistent CLI start are distinct availability reasons; Desktop detaches its session when quitting, while an unexpected disconnect receives a short reconnect grace period. Background Agent availability is recorded by the control plane without clearing an explicit Stop; changes are accepted only while the current runtime session is stopped; a warning remains if earlier cleanup was not confirmed. The Background Agent has experimental macOS menu and registration paths, but end-to-end application integration and signed-package qualification are not complete. Other packaged Desktop configurations continue to have Electron main spawn a private long-running supervisor child with inherited IPC and a fresh nonce handshake; the child verifies its Desktop runtime bundle and privately admits, activates, and pins the bundled base generation under the same lifecycle lock used by catalog-pinned generations. This lets packaged Personal startup work with a fresh `KOED_HOME`; public generation reads still accept only fully verified catalog-pinned store generations, and the bundle capability—not an environment path or persisted public record—authorizes execution. The child signals ready only after supervisor health checks complete, then receives manager-owned stop/restart signals. One live supervisor owns each `KOED_HOME`: startup acquires an atomic lock before allocating automatic ports or starting dependencies, and a concurrent start reuses the live supervisor instead of rewriting `config/local-ports.json`. Stale locks are reclaimed after their owning process exits. Bundled-local cleanup stops native Postgres only when the current startup actually started it, so a failed concurrent or recovery attempt cannot stop another live supervisor's database. If the native Postgres status check fails or returns an unrecognized result, startup treats its state as uncertain and does not start another instance.
 
+Packaged macOS Desktop and its tray read lifecycle state from an authenticated
+control-plane status connection rather than inferring it from the host lock.
+The read-only observer does not launch a host. A live host can report stopped;
+an unavailable or uncertain observation is not confirmation of Stop.
+
+**Before replacing Koed Desktop on macOS:** If a detached Koed Server Control
+Plane is running, use the packaged CLI from the **currently installed app** with
+its existing `KOED_HOME`. Run `koed stop --json` and confirm clean Stop; do not
+proceed if cleanup is uncertain. Quit Desktop and the Background Agent and keep
+other Start callers inactive. Then run `koed prepare-upgrade --json` from that
+same installation. This explicit Operator action authenticates to the same
+installation and version, retires only a clean, stopped host with no live runtime
+session, and preserves explicit Stop. Once retirement is accepted, the old host
+rejects new Starts. The command does not launch a missing host and only reports
+success after the authenticated old owner has exited and its ownership records
+are gone. Replace the app only after success; do not relaunch the old app. Start
+Koed explicitly from the new installation when ready.
+
+If the app has already been replaced and the old owner is still live, the new
+CLI cannot authenticate to that version. Quit the new app and Agent, restore the
+trusted old app at its original installation path, and run Stop and upgrade
+preparation from that app before retrying replacement. If the matching app is
+unavailable, the command is unsupported, or exit or cleanup cannot be confirmed,
+preserve the records and escalate for Operator recovery. Do not signal an
+unverified PID or delete locks, discovery, or runtime evidence. On uncertain
+SIGINT or SIGTERM shutdown, the old host closes its control transport and exits
+nonzero after the runtime session settles; it leaves those records for recovery.
+
 Startup and `status --json` also inspect clone-safe local identity without blocking local services. JSON includes redacted `deviceIdentity` with opaque deployment/device IDs, health, remote-operation gate, and platform-protection level; it never contains raw host proof, proof references, paths, fingerprints, API Tokens, or upstream credentials. First boot records durable bootstrap state under `KOED_HOME/config` before proof/state writes, so faults never silently regenerate identity from disposable `run` state. Missing, malformed, mismatched, or unsafe proof/state leaves local capture and Recall available but blocks upstream enrollment, Cross-Identity Sync, Team local-edge proxying, and other remote work. Copying identity to another same-host `KOED_HOME` path fails proof binding. Native Windows reports limited protection and remote work fails closed. A perfect full-machine clone or restored image at same canonical path remains locally indistinguishable; remote collision detection and explicit re-enrollment are required.
 
 Use `identity rotate --json` only for explicit repair/replacement: it preserves deployment ID, creates a new device ID/proof, preserves local Memory, disables local routes, and invalidates local enrollment references where possible. Koed does not self-revoke remote credentials without authorized upstream flow. If remote revocation remains pending, rotation stays `repair_required` with redacted `pendingRemoteRevocation` state and never reports healthy; revoke remotely, run `identity rotate` again as Operator acknowledgement, then re-enroll.

@@ -2,7 +2,12 @@ import {
   controlRequestSchema,
   type ControlReply
 } from "@koed-labs/shared/local-control-protocol";
-import type { HostCore } from "./host-core.js";
+import type { HostCore, HostSnapshot } from "./host-core.js";
+
+export interface ControlRetirement {
+  retire(): HostSnapshot;
+  retiring(): boolean;
+}
 
 /** Call only after native authentication and the connection hello have succeeded. */
 export function dispatchControlRequest(
@@ -11,7 +16,8 @@ export function dispatchControlRequest(
   desktop?: {
     attach(identity?: string): void;
     detach(intentional: boolean): void;
-  }
+  },
+  lifecycle?: ControlRetirement
 ): ControlReply {
   const request = controlRequestSchema.parse(value);
   const current = core.status();
@@ -32,8 +38,16 @@ export function dispatchControlRequest(
     return { requestId: request.requestId, ok: true, snapshot: current };
   if (request.expectedRevision !== current.revision)
     return fail("stale_revision");
+  if (lifecycle?.retiring()) return fail("blocked");
   try {
     switch (request.command.action) {
+      case "retire":
+        if (!lifecycle) return fail("unsupported_operation");
+        return {
+          requestId: request.requestId,
+          ok: true,
+          snapshot: lifecycle.retire()
+        };
       case "start":
         return {
           requestId: request.requestId,

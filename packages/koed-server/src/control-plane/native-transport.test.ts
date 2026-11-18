@@ -120,6 +120,37 @@ describe("native control transport", () => {
     await server.close();
   });
 
+  it("stops all polling and closes other handles even if connection cleanup throws", async () => {
+    vi.useFakeTimers();
+    const accepted = [{ fd: 1 }, { fd: 2 }];
+    const listener = { fd: 3 };
+    const close = vi.fn((handle: unknown) => {
+      if (handle === accepted[0]) throw new Error("close failed");
+    });
+    const native = {
+      listen: () => listener,
+      accept: vi
+        .fn()
+        .mockReturnValueOnce(accepted[0])
+        .mockReturnValueOnce(accepted[1])
+        .mockReturnValue(null),
+      finishConnect: () => ({ pid: 42, uid: 501 }),
+      read: () => ({ messages: [], more: false, eof: false }),
+      close
+    } as unknown as NativeLocalControl;
+    const server = await createNativeControlTransport(native).listen(
+      "/private/socket",
+      () => {}
+    );
+    await vi.advanceTimersByTimeAsync(40);
+    await expect(
+      Promise.resolve().then(() => server.close())
+    ).rejects.toThrow();
+    expect(close).toHaveBeenCalledWith(accepted[1]);
+    expect(close).toHaveBeenCalledWith(listener);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("closes a rejected peer without returning a connection", async () => {
     const handle = {};
     const native = {

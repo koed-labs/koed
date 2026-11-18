@@ -43,20 +43,30 @@ export async function runInstalledControlPlaneHost(input: {
     )
   )
     throw new Error("Packaged local control addon is invalid");
+  return runControlPlaneHost({ ...input, native });
+}
+
+export async function runControlPlaneHost(input: {
+  capability: DesktopRuntimeCapability;
+  environment: NodeJS.ProcessEnv;
+  native: NativeLocalControl & { tryReclaimLock(fd: number): boolean };
+}): Promise<number> {
   let fatal: Error | undefined;
   const wakeTarget: { wake?: () => void } = {};
   const host = await startControlPlaneProcess({
     ...input,
-    transport: createNativeControlTransport(native),
-    tryReclaimLock: (fd) => native.tryReclaimLock(fd),
+    transport: createNativeControlTransport(input.native),
+    tryReclaimLock: (fd) => input.native.tryReclaimLock(fd),
     onFatal(error) {
       fatal = error;
+      wakeTarget.wake?.();
+    },
+    onRetired() {
       wakeTarget.wake?.();
     }
   });
   const shutdown = createControlPlaneShutdown({
-    core: host.core,
-    close: () => host.close(),
+    ...host,
     fatal: () => fatal,
     log: (message) => process.stderr.write(message)
   });

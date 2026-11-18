@@ -134,12 +134,16 @@ it("reports Agent eligibility only after verifying the installed bundle", async 
   });
 });
 
-it("routes packaged macOS start and stop to the control plane", async () => {
+it("routes packaged macOS start, stop and upgrade preparation to the control plane", async () => {
   const { resources, entry, executable } = installation();
   const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
   const runControlPlaneCli = vi.fn(async () => 0);
   const runCli = vi.fn(async () => 0);
-  for (const args of [["start", "--daemon"], ["stop"]]) {
+  for (const args of [
+    ["start", "--daemon"],
+    ["stop"],
+    ["prepare-upgrade", "--json"]
+  ]) {
     await expect(
       runInstalledDesktopCli(args, {
         moduleUrl: pathToFileURL(entry).href,
@@ -153,34 +157,37 @@ it("routes packaged macOS start and stop to the control plane", async () => {
       })
     ).resolves.toBe(0);
   }
-  expect(runControlPlaneCli).toHaveBeenCalledTimes(2);
+  expect(runControlPlaneCli).toHaveBeenCalledTimes(3);
   expect(runCli).not.toHaveBeenCalled();
 });
 
-it("probes startup status without launching a missing control plane", async () => {
-  const { resources, entry, executable } = installation();
-  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
-  const installed = await import("./control-plane/installed-client.js");
-  const open = vi
-    .spyOn(installed, "openInstalledControlPlane")
-    .mockResolvedValue({} as never);
-  const runControlPlaneCli = vi.fn(
-    async (
-      args: string[],
-      deps: Parameters<
-        typeof import("./control-plane/cli.js").runControlPlaneCli
-      >[1]
-    ) => {
-      expect(args).toEqual(["agent-status", "--json"]);
-      await deps.connect("start");
-      return 0;
-    }
-  );
-  try {
-    expect(
-      await runInstalledDesktopCli(
-        ["__control-plane-startup-status", "--json"],
-        {
+it.each([
+  ["__control-plane-startup-status", "agent-status", "start"],
+  ["prepare-upgrade", "prepare-upgrade", "prepare-upgrade"]
+] as const)(
+  "routes %s without launching a missing control plane",
+  async (argument, routed, command) => {
+    const { resources, entry, executable } = installation();
+    const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+    const installed = await import("./control-plane/installed-client.js");
+    const open = vi
+      .spyOn(installed, "openInstalledControlPlane")
+      .mockResolvedValue({} as never);
+    const runControlPlaneCli = vi.fn(
+      async (
+        args: string[],
+        deps: Parameters<
+          typeof import("./control-plane/cli.js").runControlPlaneCli
+        >[1]
+      ) => {
+        expect(args).toEqual([routed, "--json"]);
+        await deps.connect(command);
+        return 0;
+      }
+    );
+    try {
+      expect(
+        await runInstalledDesktopCli([argument, "--json"], {
           moduleUrl: pathToFileURL(entry).href,
           executable,
           platform: "darwin",
@@ -188,16 +195,16 @@ it("probes startup status without launching a missing control plane", async () =
           environment: {},
           verifyBundle: () => capability,
           runControlPlaneCli
-        }
-      )
-    ).toBe(0);
-    expect(open).toHaveBeenCalledWith(
-      expect.objectContaining({ launchIfMissing: false })
-    );
-  } finally {
-    open.mockRestore();
+        })
+      ).toBe(0);
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({ launchIfMissing: false })
+      );
+    } finally {
+      open.mockRestore();
+    }
   }
-});
+);
 
 it("fails closed before running any command outside its installation", async () => {
   const { entry } = installation();

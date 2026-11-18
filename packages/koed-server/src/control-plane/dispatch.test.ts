@@ -12,6 +12,7 @@ const snapshot: HostSnapshot = {
 function fixture() {
   const core: HostCore = {
     status: vi.fn(() => snapshot),
+    settled: vi.fn(() => true),
     start: vi.fn(() => snapshot),
     stop: vi.fn(() => snapshot),
     attach: vi.fn(() => snapshot),
@@ -93,6 +94,45 @@ describe("control request dispatch", () => {
     ).toMatchObject({ ok: false, code: "unsupported_operation" });
     expect(core.start).not.toHaveBeenCalled();
     expect(core.stop).not.toHaveBeenCalled();
+  });
+  it("dispatches retirement only after instance and revision fences and gates later Starts", () => {
+    const core = fixture();
+    let retiring = false;
+    const retire = vi.fn(() => {
+      retiring = true;
+      return { ...snapshot, stopIntent: true };
+    });
+    const lifecycle = { retire, retiring: () => retiring };
+    const command = { action: "retire" };
+    expect(
+      dispatchControlRequest(
+        core,
+        request(command, { instanceId: "old" }),
+        undefined,
+        lifecycle
+      )
+    ).toMatchObject({ ok: false, code: "incompatible" });
+    expect(
+      dispatchControlRequest(
+        core,
+        request(command, { expectedRevision: 3 }),
+        undefined,
+        lifecycle
+      )
+    ).toMatchObject({ ok: false, code: "stale_revision" });
+    expect(retire).not.toHaveBeenCalled();
+    expect(
+      dispatchControlRequest(core, request(command), undefined, lifecycle)
+    ).toMatchObject({ ok: true, snapshot: { stopIntent: true } });
+    expect(
+      dispatchControlRequest(
+        core,
+        request({ action: "start", explicit: true }),
+        undefined,
+        lifecycle
+      )
+    ).toMatchObject({ ok: false, code: "blocked" });
+    expect(core.start).not.toHaveBeenCalled();
   });
   it("reports blocked operations without exposing internal errors", () => {
     const core = fixture();

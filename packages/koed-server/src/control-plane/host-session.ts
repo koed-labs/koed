@@ -1,4 +1,4 @@
-import { dispatchControlRequest } from "./dispatch.js";
+import { dispatchControlRequest, type ControlRetirement } from "./dispatch.js";
 import type { AuthenticatedControlPeer } from "./handshake.js";
 import type { HostCore } from "./host-core.js";
 import type { ControlConnection } from "./transport.js";
@@ -9,6 +9,7 @@ const maxPending = 64;
 export function serveControlConnection(options: {
   connection: ControlConnection;
   core: HostCore;
+  lifecycle?: ControlRetirement & { onRetired(): void };
   validateHello(
     value: unknown,
     peer: AuthenticatedControlPeer
@@ -68,9 +69,27 @@ export function serveControlConnection(options: {
           clearTimeout(helloDeadline);
           await connection.send(JSON.stringify(serverHello));
         } else {
-          await connection.send(
-            JSON.stringify(dispatchControlRequest(core, value, desktopActions))
-          );
+          const lifecycle = options.lifecycle;
+          let accepted = false;
+          try {
+            const reply = dispatchControlRequest(
+              core,
+              value,
+              desktopActions,
+              lifecycle && {
+                retiring: lifecycle.retiring,
+                retire() {
+                  const snapshot = lifecycle.retire();
+                  accepted = true;
+                  return snapshot;
+                }
+              }
+            );
+            await connection.send(JSON.stringify(reply));
+          } finally {
+            // Stop even if the peer disconnected after retirement was accepted.
+            if (accepted) lifecycle?.onRetired();
+          }
         }
       })
       .catch(close)

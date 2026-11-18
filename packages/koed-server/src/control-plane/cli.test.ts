@@ -10,6 +10,57 @@ const snapshot: ControlSnapshot = {
   stopIntent: false
 };
 describe("packaged control-plane CLI", () => {
+  it("prepares an upgrade only after retirement and verified owner exit", async () => {
+    const stopped = { ...snapshot, stopIntent: true };
+    const request = vi.fn().mockResolvedValue({ ok: true, snapshot: stopped });
+    const stdout = { write: vi.fn() };
+    const waitForRetirement = vi.fn(async () => {
+      expect(stdout.write).not.toHaveBeenCalled();
+    });
+    const close = vi.fn();
+    const connect = vi.fn(async () => ({ request, close, waitForRetirement }));
+    await expect(
+      runControlPlaneCli(["prepare-upgrade", "--json"], {
+        connect,
+        stdout,
+        stderr: { write: vi.fn() }
+      })
+    ).resolves.toBe(0);
+    expect(connect).toHaveBeenCalledExactlyOnceWith("prepare-upgrade");
+    expect(request).toHaveBeenNthCalledWith(1, { action: "status" }, 0);
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      { action: "retire" },
+      stopped.revision
+    );
+    expect(waitForRetirement).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(stdout.write.mock.calls[0]?.[0]))).toMatchObject({
+      ok: true,
+      snapshot: stopped
+    });
+    expect(close).toHaveBeenCalledOnce();
+  });
+  it("does not report upgrade readiness when retirement exit cannot be confirmed", async () => {
+    const request = vi.fn().mockResolvedValue({
+      ok: true,
+      snapshot: { ...snapshot, stopIntent: true }
+    });
+    const waitForRetirement = vi
+      .fn()
+      .mockRejectedValue(new Error("Old owner still live"));
+    const stdout = { write: vi.fn() };
+    await expect(
+      runControlPlaneCli(["prepare-upgrade", "--json"], {
+        connect: async () => ({ request, close: vi.fn(), waitForRetirement }),
+        stdout,
+        stderr: { write: vi.fn() }
+      })
+    ).resolves.toBe(1);
+    expect(JSON.parse(String(stdout.write.mock.calls[0]?.[0]))).toMatchObject({
+      ok: false,
+      error: "Old owner still live"
+    });
+  });
   it("routes daemon start through status and the authenticated host", async () => {
     const request = vi
       .fn()

@@ -165,6 +165,28 @@ function listen(
   const errorListeners = new Set<(error: Error) => void>();
   let closed = false;
   let terminalError: Error | undefined;
+  let cleanupError: Error | undefined;
+  const closeHandles = (unclaimed?: unknown) => {
+    closed = true;
+    clearInterval(timer);
+    const errors: unknown[] = [];
+    const attempt = (close: () => void) => {
+      try {
+        close();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    if (unclaimed) attempt(() => native.close(unclaimed));
+    for (const connection of connections) attempt(() => connection.close());
+    connections.clear();
+    attempt(() => native.close(handle));
+    if (errors.length)
+      cleanupError = new AggregateError(
+        errors,
+        "Local control listener cleanup failed"
+      );
+  };
   const timer = setInterval(() => {
     if (closed) return;
     let accepted: unknown | null = null;
@@ -190,12 +212,13 @@ function listen(
         connection.close();
       }
     } catch (error) {
-      if (accepted) native.close(accepted);
+      closeHandles(accepted);
       terminalError = error instanceof Error ? error : new Error(String(error));
-      closed = true;
-      clearInterval(timer);
-      for (const connection of connections) connection.close();
-      native.close(handle);
+      if (cleanupError)
+        terminalError = new AggregateError(
+          [terminalError, cleanupError],
+          "Local control listener failed"
+        );
       errorListeners.forEach((listener) => listener(terminalError!));
     }
   }, pollMs);
@@ -206,13 +229,8 @@ function listen(
       return () => errorListeners.delete(listener);
     },
     close() {
-      if (!closed) {
-        closed = true;
-        clearInterval(timer);
-        for (const connection of connections) connection.close();
-        native.close(handle);
-      }
-      return Promise.resolve();
+      if (!closed) closeHandles();
+      return cleanupError ? Promise.reject(cleanupError) : Promise.resolve();
     }
   });
 }

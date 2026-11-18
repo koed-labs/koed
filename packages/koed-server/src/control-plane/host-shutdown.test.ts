@@ -11,10 +11,12 @@ function fixture(initial: string, settled = true) {
     settled: () => isSettled
   } as unknown as HostCore;
   const close = vi.fn(async () => {});
+  const closeUncertain = vi.fn(async () => {});
   const log = vi.fn();
   const shutdown = createControlPlaneShutdown({
     core,
     close,
+    closeUncertain,
     fatal: () => undefined,
     log,
     pollMs: 5
@@ -23,6 +25,7 @@ function fixture(initial: string, settled = true) {
     shutdown,
     core,
     close,
+    closeUncertain,
     log,
     set: (next: string, nextSettled = true) => {
       state = next;
@@ -43,6 +46,7 @@ describe("control-plane shutdown", () => {
     f.shutdown.request();
     expect(await f.shutdown.done).toBe(1);
     expect(f.close).not.toHaveBeenCalled();
+    expect(f.closeUncertain).toHaveBeenCalledOnce();
     expect(f.log).toHaveBeenCalledWith(expect.stringMatching(/uncertain/));
   });
   it("waits for a still-running session before exiting from needs_attention", async () => {
@@ -61,6 +65,18 @@ describe("control-plane shutdown", () => {
     f.shutdown.request();
     f.set("needs_attention");
     expect(await f.shutdown.done).toBe(1);
+  });
+  it("closes uncertain transport once settled if status can no longer be read", async () => {
+    const f = fixture("stopping", false);
+    const status = vi.spyOn(f.core, "status").mockImplementation(() => {
+      throw new Error("state unreadable");
+    });
+    f.shutdown.request();
+    expect(status).not.toHaveBeenCalled();
+    f.set("needs_attention");
+    expect(await f.shutdown.done).toBe(1);
+    expect(f.closeUncertain).toHaveBeenCalledOnce();
+    expect(f.close).not.toHaveBeenCalled();
   });
   it("ignores repeated requests", () => {
     const f = fixture("stopped");

@@ -369,9 +369,9 @@ const dynamicRules = [
         if (!server) return false;
         const expected = {
           "dist/control-plane/host-entrypoint.js":
-            "7f4020d0c87f0475945836fea5f86eec10a84874aef15752818a8d40dbb8907f",
+            "c341faf3d41cb4b970cafa973d71d026053b432d0f8cf229f67e3f82acd84b56",
           "dist/control-plane/installed-client.js":
-            "905e95c28b484a05444191ceb3c6df67257776413ec30d90308e4402ee35233c",
+            "218818a4ba0ae07278e2fb47ee0a2712f0ae82f8c4cb2e4e0830b8f3ae58466f",
           "dist/desktop-runtime-capability.js":
             "f2d87d20609cfed3c778c88e0e270c718c744104291590f6dee24e4dd0097918"
         };

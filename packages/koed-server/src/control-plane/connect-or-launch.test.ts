@@ -194,20 +194,28 @@ describe("connect or launch", () => {
     ).rejects.toThrow("authentication failed");
     expect(launch).not.toHaveBeenCalled();
   });
-  it("refuses an incompatible installation without launching", async () => {
-    const launch = vi.fn();
-    await expect(
-      connectOrLaunchControlPlane({
-        read: () => discovery,
-        isLocked: () => true,
-        launch,
-        connect: vi.fn(),
-        installationId: "other",
-        productVersion: "1"
-      })
-    ).rejects.toThrow("incompatible");
-    expect(launch).not.toHaveBeenCalled();
-  });
+  it.each([
+    { installationId: "other", productVersion: "1" },
+    { installationId: "install", productVersion: "2" }
+  ])(
+    "refuses incompatible preparation clients (%o) before connecting",
+    async (identity) => {
+      const launch = vi.fn();
+      const connect = vi.fn();
+      await expect(
+        connectOrLaunchControlPlane({
+          read: () => discovery,
+          isLocked: () => true,
+          launch,
+          launchIfMissing: false,
+          connect,
+          ...identity
+        })
+      ).rejects.toThrow("incompatible");
+      expect(connect).not.toHaveBeenCalled();
+      expect(launch).not.toHaveBeenCalled();
+    }
+  );
   it("waits for a concurrent owner to publish before a launch-capable start", async () => {
     const client = {} as ControlClient;
     const launch = vi.fn();
