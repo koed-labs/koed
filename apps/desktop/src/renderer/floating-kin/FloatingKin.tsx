@@ -42,8 +42,7 @@ const states = {
   signed_out: [
     "Sign-in needed",
     "Sign in from Koed Desktop to see recent activity."
-  ],
-  quiet: ["No recent capture", "Nothing recent has been captured by Koed."]
+  ]
 } as const;
 
 function captureSeconds(iso: string, now: number) {
@@ -125,6 +124,39 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
   );
 }
 
+function QuietKin() {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const showTip = hovered || focused;
+  return (
+    <div className="fk-quiet">
+      {showTip && (
+        <div className="fk-state fk-quiet-tip" role="tooltip">
+          <div>
+            <strong>No recent capture</strong>
+            <div className="fk-note" id="floating-kin-quiet-note">
+              Nothing recent has been captured by Koed.
+            </div>
+          </div>
+        </div>
+      )}
+      <div
+        className="fk-state fk-quiet-avatar"
+        role="img"
+        aria-label="No recent capture"
+        aria-describedby={showTip ? "floating-kin-quiet-note" : undefined}
+        tabIndex={0}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+      >
+        <ChipKin projectId={null} animate={false} />
+      </div>
+    </div>
+  );
+}
+
 function useSelection(
   conversations: Conversation[],
   cancel: (dismiss: boolean) => Promise<void>,
@@ -186,7 +218,7 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
       aria-label="Floating Kin"
       tabIndex={-1}
       ref={surface}
-      onMouseMove={() => setInteractive(true)}
+      onMouseMove={() => setInteractive(conversations.length > 0)}
       onMouseLeave={() => setInteractive(false)}
       onKeyDown={onKeyDown}
     >
@@ -232,10 +264,10 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
             </span>
           ) : null}
         </div>
+      ) : activity.state === "running" ? (
+        <QuietKin />
       ) : (
-        <ActivityPill
-          state={activity.state === "running" ? "quiet" : activity.state}
-        />
+        <ActivityPill state={activity.state} />
       )}
     </main>
   );

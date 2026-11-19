@@ -157,6 +157,19 @@ body:has(.fk-surface) {
 .fk-state .v1-pixelkin {
   flex: none;
 }
+.fk-quiet {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.fk-quiet-avatar {
+  padding: 4px;
+  pointer-events: auto;
+}
+.fk-quiet-tip {
+  padding-inline: 12px;
+}
 .fk-panel {
   display: flex;
   flex-direction: column;

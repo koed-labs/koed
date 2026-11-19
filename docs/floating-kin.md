@@ -8,8 +8,9 @@ count as recent activity.
 
 Enable **Floating Kin** under **Settings → General**. Desktop shows the Kin over
 other windows without moving focus there. Use **Window → Focus Floating Kin**
-for keyboard access. Disable the preference to hide it. Quitting Desktop
-closes the Kin even if the Local AI Runtime stays up.
+for keyboard access. When there’s no recent capture, the Kin sleeps; hover
+or focus it to see the message. Disable the preference to hide it. Quitting
+Desktop closes the Kin even if the Local AI Runtime stays up.
 
 Choose **Summarize Conversation** for the latest captured work in a
 Conversation, or **Summarize Project** for context from its Project. The Project

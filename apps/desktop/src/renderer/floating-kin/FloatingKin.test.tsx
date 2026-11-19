@@ -186,21 +186,47 @@ describe("Floating Kin", () => {
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
   });
 
+  it("shows the quiet message only while hovering or focusing the sleeping Kin", async () => {
+    bridge.activity = vi.fn(async () => ({
+      state: "running" as const,
+      conversations: [],
+      overflowCount: 0
+    }));
+    await render();
+    expect(mount.textContent).not.toContain("No recent capture");
+    const sleepingKin = mount.querySelector<HTMLElement>(
+      '[aria-label="No recent capture"]'
+    );
+    expect(sleepingKin?.querySelector(".v1-pixelkin")).not.toBeNull();
+    if (!sleepingKin) throw new Error("Sleeping Kin is missing");
+    const move = (type: string) =>
+      act(async () => {
+        sleepingKin.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+      });
+    await move("mouseover");
+    await move("mousemove");
+    expect(mount.querySelector('[role="tooltip"]')?.textContent).toContain(
+      "No recent capture"
+    );
+    expect(bridge.setInteractive).not.toHaveBeenCalledWith(true);
+    await move("mouseout");
+    expect(mount.querySelector('[role="tooltip"]')).toBeNull();
+    await act(async () => sleepingKin.focus());
+    expect(mount.querySelector('[role="tooltip"]')?.textContent).toContain(
+      "Nothing recent has been captured by Koed."
+    );
+    await act(async () => sleepingKin.blur());
+    expect(mount.querySelector('[role="tooltip"]')).toBeNull();
+    expect(bridge.summarize).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ state: "stopped" }, "Local runtime stopped"],
     [{ state: "starting" }, "Local runtime starting"],
     [{ state: "signed_out" }, "Sign-in needed"],
-    [{ state: "unavailable" }, "Local runtime unavailable"],
-    [
-      { state: "running", conversations: [], overflowCount: 0 },
-      "No recent capture"
-    ]
+    [{ state: "unavailable" }, "Local runtime unavailable"]
   ] as const)("shows the current activity state", async (activity, label) => {
-    bridge.activity = vi.fn(async () =>
-      activity.state === "running"
-        ? { ...activity, conversations: [] }
-        : activity
-    );
+    bridge.activity = vi.fn(async () => activity);
     await render();
     expect(mount.textContent).toContain(label);
     expect(mount.querySelector("button")).toBeNull();
