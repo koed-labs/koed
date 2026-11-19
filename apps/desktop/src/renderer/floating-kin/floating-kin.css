@@ -1,0 +1,242 @@
+html:has(.fk-surface),
+body:has(.fk-surface) {
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.fk-surface {
+  --fk-bg: #fcfcfb;
+  --fk-text: #222225;
+  --fk-muted: #5f5f66;
+  --fk-line: #dedee2;
+  --fk-subtle: #eeeeef;
+  --fk-accent: #464bb3;
+  --fk-green: #228055;
+  position: fixed;
+  inset: auto 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  width: max-content;
+  padding: 10px 12px;
+  pointer-events: none;
+  box-sizing: border-box;
+  color: var(--fk-text);
+  font:
+    13px/1.45 -apple-system,
+    BlinkMacSystemFont,
+    system-ui,
+    sans-serif;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  .fk-surface {
+    --fk-bg: #212126;
+    --fk-text: #f2f2f4;
+    --fk-muted: #b1b1ba;
+    --fk-line: #414149;
+    --fk-subtle: #2f2f37;
+    --fk-accent: #b2b6ff;
+    --fk-green: #58ca93;
+  }
+}
+
+.fk-surface button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.fk-surface button:disabled {
+  cursor: default;
+  color: var(--fk-muted);
+}
+.fk-surface :is(button, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--fk-accent);
+  outline-offset: 2px;
+}
+.fk-dock {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 7px;
+}
+.fk-chip,
+.fk-overflow,
+.fk-state,
+.fk-panel {
+  box-sizing: border-box;
+  border: 1px solid var(--fk-line);
+  background: var(--fk-bg);
+  box-shadow: 0 3px 9px #0003;
+}
+.fk-chip,
+.fk-state,
+.fk-overflow {
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px 3px 4px;
+}
+.fk-chip {
+  min-height: 42px;
+  pointer-events: auto;
+  font-variant-numeric: tabular-nums;
+}
+.fk-chip:hover,
+.fk-chip[aria-expanded="true"] {
+  border-color: var(--fk-accent);
+  background: var(--fk-subtle);
+}
+.fk-avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--fk-subtle);
+}
+.fk-client {
+  display: inline-flex;
+  vertical-align: -2px;
+  width: 12px;
+  height: 12px;
+}
+.fk-client svg {
+  fill: currentColor;
+  width: 100%;
+  height: 100%;
+}
+.fk-avatar .fk-client {
+  position: absolute;
+  right: -2px;
+  bottom: -1px;
+  box-sizing: content-box;
+  padding: 2px;
+  border-radius: 50%;
+  color: var(--fk-bg);
+  background: var(--fk-text);
+  box-shadow: 0 0 0 2px var(--fk-bg);
+}
+.fk-dot {
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--fk-muted);
+}
+.fk-dot[data-recent="true"] {
+  background: var(--fk-green);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .fk-dot[data-recent="true"] {
+    animation: fk-pulse 1.8s infinite;
+  }
+}
+@keyframes fk-pulse {
+  from {
+    box-shadow: 0 0 0 0 var(--fk-green);
+  }
+  80%,
+  to {
+    box-shadow: 0 0 0 5px transparent;
+  }
+}
+.fk-overflow {
+  padding-inline: 9px;
+  color: var(--fk-muted);
+}
+.fk-state {
+  padding: 7px 13px 7px 7px;
+  max-width: 310px;
+}
+.fk-state .v1-pixelkin {
+  flex: none;
+}
+.fk-panel {
+  display: flex;
+  flex-direction: column;
+  width: 370px;
+  border-radius: 16px;
+  pointer-events: auto;
+  overflow-wrap: anywhere;
+}
+.fk-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--fk-line);
+}
+.fk-header h2 {
+  font-size: 14px;
+  margin: 0;
+}
+.fk-header small,
+.fk-note {
+  color: var(--fk-muted);
+  font-size: 12px;
+}
+.fk-header button {
+  border: 0;
+  border-radius: 6px;
+  background: var(--fk-subtle);
+  width: 26px;
+  height: 26px;
+}
+.fk-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 13px;
+  max-height: 300px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.fk-body:focus-visible {
+  outline-offset: -3px;
+}
+.fk-body p,
+.fk-body h3 {
+  margin: 0;
+}
+.fk-body [role="status"]:empty {
+  position: absolute;
+}
+.fk-copy h3 {
+  color: var(--fk-muted);
+  font-size: 12px;
+}
+.fk-copy p {
+  white-space: pre-wrap;
+  user-select: text;
+}
+.fk-sources summary {
+  cursor: pointer;
+  color: var(--fk-accent);
+}
+.fk-sources ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.fk-sources small {
+  display: block;
+  color: var(--fk-muted);
+  user-select: text;
+}
+.fk-actions {
+  display: flex;
+  gap: 8px;
+}
+.fk-body button {
+  border: 1px solid var(--fk-line);
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: var(--fk-subtle);
+}
+.fk-body button:not(:disabled):hover {
+  border-color: var(--fk-accent);
+}

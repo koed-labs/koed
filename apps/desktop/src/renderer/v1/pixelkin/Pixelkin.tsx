@@ -21,9 +21,11 @@ export function Pixelkin({
   expression = null,
   hopKey,
   spin = null,
-  presentation = "avatar"
+  presentation = "avatar",
+  motion = "focused"
 }: {
   presentation?: "avatar" | "stage";
+  motion?: "focused" | "unfocused" | "still";
   look?: AgentLook;
   size?: number;
   className?: string;
@@ -45,13 +47,16 @@ export function Pixelkin({
     if (!engine || !canvas) return;
     const actor = createPixelkinActor(canvas, look, size, presentation);
     actorRef.current = actor;
-    const remove = addPixelkin(actor);
+    const remove = addPixelkin(actor, {
+      animateUnfocused: motion === "unfocused",
+      still: motion === "still"
+    });
     return () => {
       actorRef.current = null;
       remove();
     };
     // Look and size changes update the live actor below.
-  }, [engine]);
+  }, [engine, motion]);
   useEffect(() => {
     const actor = actorRef.current;
     if (!actor) return;
@@ -68,11 +73,11 @@ export function Pixelkin({
   useEffect(() => {
     const actor = actorRef.current;
     if (actor) setPixelkinExpression(actor, expression);
-  }, [expression, engine]);
+  }, [expression, engine, motion]);
   useEffect(() => {
     const actor = actorRef.current;
     if (actor) actor.spin = spin;
-  }, [spin, engine]);
+  }, [spin, engine, motion]);
   const firstHop = useRef(hopKey);
   useEffect(() => {
     const actor = actorRef.current;

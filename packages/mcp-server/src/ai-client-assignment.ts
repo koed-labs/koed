@@ -166,10 +166,11 @@ const validateAssignment = (
   instances: AssignedInstance[],
   snapshots: AssignedSnapshot[],
   now = Date.now()
-): void => {
+): AssignedSnapshot => {
   validateInstance(setting, instances);
   const snapshot = validateSnapshot(setting, instances, snapshots, now);
   validateModel(setting, snapshot);
+  return snapshot;
 };
 
 export const resolveLocalMemoryAgentConfig = async <T>(input: {
@@ -179,7 +180,10 @@ export const resolveLocalMemoryAgentConfig = async <T>(input: {
   >;
   flowKey: LocalMemoryAgentFlowKey;
   fallback: () => T;
-  fromSetting: (setting: LocalMemoryAgentSettingRecord) => T;
+  fromSetting: (
+    setting: LocalMemoryAgentSettingRecord,
+    snapshot: AssignedSnapshot
+  ) => T;
 }): Promise<T> => {
   let settings: { settings: LocalMemoryAgentSettingRecord[] };
   try {
@@ -203,6 +207,10 @@ export const resolveLocalMemoryAgentConfig = async <T>(input: {
       { cause: error }
     );
   }
-  validateAssignment(setting, current.instances, current.capabilitySnapshots);
-  return input.fromSetting(setting);
+  const snapshot = validateAssignment(
+    setting,
+    current.instances,
+    current.capabilitySnapshots
+  );
+  return input.fromSetting(setting, snapshot);
 };

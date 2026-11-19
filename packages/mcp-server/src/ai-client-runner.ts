@@ -57,6 +57,7 @@ export interface AiClientRunConfig {
   systemPrompt: string;
   developerInstructions?: string;
   outputSchema?: Record<string, unknown>;
+  isolatedSummary?: boolean;
   validateOutput?: (value: unknown) => void;
   dynamicTools?: CodexAppServerDynamicToolSpec[];
   dynamicToolHandler?: (
@@ -733,28 +734,52 @@ export const claudeAgentSdkEffort = (
   throw new Error(`Unsupported Claude reasoning effort: ${value}`);
 };
 
+function isolateClaudeSummaryConfig(env: NodeJS.ProcessEnv, cwd: string): void {
+  const configHome =
+    env.CLAUDE_CONFIG_DIR ?? path.join(env.HOME ?? os.homedir(), ".claude");
+  const isolatedHome = path.join(path.dirname(cwd), "claude");
+  fs.mkdirSync(isolatedHome, { mode: 0o700 });
+  const credentials = ".credentials.json";
+  const source = path.join(configHome, credentials);
+  if (fs.existsSync(source)) {
+    const destination = path.join(isolatedHome, credentials);
+    fs.copyFileSync(source, destination);
+    fs.chmodSync(destination, 0o600);
+  }
+  env.CLAUDE_CONFIG_DIR = isolatedHome;
+}
+
 export const runClaudeAgentSdkTask = async (
   prompt: string,
   config: AiClientRunConfig,
   timeoutMs: number
 ): Promise<AiClientRunResult> => {
+  config.signal?.throwIfAborted();
   const abortController = new AbortController();
-  const timer = setTimeout(() => abortController.abort(), timeoutMs);
+  let stream: ReturnType<typeof query> | undefined;
+  const abort = () => {
+    abortController.abort();
+    stream?.close();
+  };
+  config.signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(abort, timeoutMs);
   const providerEvents: SDKMessage[] = [];
   let resultMessage: Extract<SDKMessage, { type: "result" }> | undefined;
   let sessionId: string | undefined;
   try {
     const effort = claudeAgentSdkEffort(config.reasoningEffort);
-    const stream = query({
+    const env = claudeAgentSdkProcessEnvironment(
+      config.executablePath,
+      config.env,
+      config.clientName
+    );
+    if (config.isolatedSummary) isolateClaudeSummaryConfig(env, config.cwd);
+    stream = query({
       prompt,
       options: {
         abortController,
         cwd: config.cwd,
-        env: claudeAgentSdkProcessEnvironment(
-          config.executablePath,
-          config.env,
-          config.clientName
-        ),
+        env,
         ...claudeAgentSdkExecutableOptions(config.executablePath),
         model: config.model,
         ...(effort ? { effort } : {}),
@@ -772,6 +797,7 @@ export const runClaudeAgentSdkTask = async (
         permissionMode: "dontAsk",
         strictMcpConfig: true,
         settingSources: [],
+        ...(config.isolatedSummary ? { skills: [] } : {}),
         persistSession: false,
         maxTurns: 1,
         includePartialMessages: Boolean(config.onProgress),
@@ -790,7 +816,9 @@ export const runClaudeAgentSdkTask = async (
         resultMessage = message;
       }
     }
+    abortController.signal.throwIfAborted();
   } catch (error) {
+    config.signal?.throwIfAborted();
     if (abortController.signal.aborted) {
       throw new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`, {
         cause: error
@@ -799,6 +827,7 @@ export const runClaudeAgentSdkTask = async (
     throw error;
   } finally {
     clearTimeout(timer);
+    config.signal?.removeEventListener("abort", abort);
   }
   if (!resultMessage) {
     throw new Error("Claude Agent SDK completed without a result message");
@@ -1349,16 +1378,38 @@ export { checkPiAvailability, listPiModels, resolvePiExecutable };
 export const aiClientTaskDriverFor = (driverId: string): AiClientTaskDriver =>
   aiClientDriverFor(driverId);
 
+async function runIsolatedSummary(
+  driver: AiClientTaskDriver,
+  prompt: string,
+  config: AiClientRunConfig,
+  timeoutMs: number
+): Promise<AiClientRunResult> {
+  if (config.provider !== "claude" && config.provider !== "pi") {
+    throw new Error("AI Client does not support isolated summaries");
+  }
+  if (config.dynamicTools?.length || config.dynamicToolHandler) {
+    throw new Error("Isolated summaries do not accept action tools");
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-isolated-summary-"));
+  try {
+    const cwd = path.join(root, "work");
+    fs.mkdirSync(cwd, { mode: 0o700 });
+    return await driver.runJsonTask(prompt, { ...config, cwd }, timeoutMs);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 export const runAiClientJsonTask = async (
   prompt: string,
   config: AiClientRunConfig,
   timeoutMs: number
 ): Promise<AiClientRunResult> => {
-  const result = await aiClientTaskDriverFor(config.provider).runJsonTask(
-    prompt,
-    config,
-    timeoutMs
-  );
+  const driver = aiClientTaskDriverFor(config.provider);
+  config.signal?.throwIfAborted();
+  const result = config.isolatedSummary
+    ? await runIsolatedSummary(driver, prompt, config, timeoutMs)
+    : await driver.runJsonTask(prompt, config, timeoutMs);
   return {
     ...result,
     ...aiClientExecutionIdentity(

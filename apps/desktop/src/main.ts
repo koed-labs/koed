@@ -16,6 +16,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  MenuItem,
   type MessageBoxOptions,
   nativeImage,
   nativeTheme,
@@ -28,7 +29,11 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registerDesktopCommandHandlers } from "./ipc/commands.js";
+import {
+  registerDesktopCommandHandlers,
+  scopeDesktopWindowIpc
+} from "./ipc/commands.js";
+import { registerFloatingKinIpc } from "./ipc/floating-kin.js";
 import { registerDesktopUpdateIpc } from "./ipc/update.js";
 import {
   createUpdateDiscovery,
@@ -73,6 +78,8 @@ import {
   type DesktopThemePreference
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
+import { createFloatingKinWindow } from "./window/floating-kin-window.js";
+import { createFloatingKinRuntime } from "./koed-server/floating-kin.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
 import { createDesktopCliInstallManager } from "./cli-install/manager.js";
 import {
@@ -145,6 +152,8 @@ if (!presentationPreferences.graphicsAcceleration)
 let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
+let floatingKin: ReturnType<typeof createFloatingKinWindow> | null = null;
+let quitting = false;
 let desktopMenuBar: DesktopMenuBar | null = null;
 let disposeDesktopUpdateIpc: (() => void) | null = null;
 let disposeDesktopUpdateDiscovery: (() => void) | null = null;
@@ -240,7 +249,7 @@ const openExternal = createExternalUrlOpener({
 
 const notifyDesktopStatusChanged = () => {
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) {
+    if (!window.isDestroyed() && window !== floatingKin?.getWindow()) {
       window.webContents.send(desktopStatusChangedChannel);
     }
   }
@@ -365,6 +374,7 @@ const registerAppProtocol = (): void => {
 };
 
 const createWindow = async () => {
+  if (quitting) return;
   const server = koedServer;
   if (!server) throw new Error("Koed server manager is unavailable.");
   const window = new BrowserWindow(
@@ -412,11 +422,12 @@ const createWindow = async () => {
 
 const showDesktopWindow = createDesktopWindowActivator({
   beforeOpen: async () => {
+    if (quitting) return;
     backgroundLaunchPending = false;
     if (process.platform === "darwin") await app.dock?.show();
   },
   createWindow,
-  getWindow: () => mainWindow,
+  getWindow: () => (quitting ? null : mainWindow),
   waitForBootstrap: async () => {
     await bootstrapPromise;
   }
@@ -431,8 +442,82 @@ async function showPairingDeepLink(value: string): Promise<void> {
   }
 }
 
+const addFloatingKinMenuItem = (focus: () => void): MenuItem => {
+  const item = new MenuItem({ label: "Focus Floating Kin", click: focus });
+  const menu =
+    Menu.getApplicationMenu() ??
+    Menu.buildFromTemplate([
+      { role: "appMenu" },
+      { role: "editMenu" },
+      { role: "viewMenu" },
+      { role: "windowMenu" }
+    ]);
+  const windowMenu = menu.items.find(
+    (entry) => entry.role?.toLowerCase() === "windowmenu"
+  );
+  if (windowMenu?.submenu) {
+    windowMenu.submenu.append(new MenuItem({ type: "separator" }));
+    windowMenu.submenu.append(item);
+  } else {
+    const submenu = new Menu();
+    submenu.append(item);
+    menu.append(new MenuItem({ label: "Floating Kin", submenu }));
+  }
+  Menu.setApplicationMenu(menu);
+  return item;
+};
+
+const configureFloatingKin = (
+  server: KoedServerManager,
+  account: ReturnType<typeof createAccountController>
+) => {
+  if (process.platform !== "darwin" || quitting) return () => {};
+  const target = new URL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`);
+  target.hash = "floating-kin";
+  const url = target.href;
+  const overlay = createFloatingKinWindow({
+    appDir,
+    url,
+    onDismiss: () => cancel()
+  });
+  const cancel = registerFloatingKinIpc({
+    ipcMain,
+    getWebContents: () => overlay.getWindow()?.webContents ?? null,
+    url,
+    runtime: createFloatingKinRuntime({
+      koedHome: resolveApplicationKoedHome(koedEnvironment),
+      // Cached observation only. Refresh notifies subscribers that may reconcile.
+      lifecycle: () => server.lifecycle.current()?.state ?? "starting",
+      accountStatus: () => account.current().status
+    }),
+    interactive: overlay.setInteractive,
+    resize: overlay.setSize
+  });
+  // A fresh window drops all rendered evidence when the runtime or User changes.
+  const unsubscribeLifecycle = server.lifecycle.subscribe(overlay.reset);
+  const initialAccount = account.current();
+  let accountKey = `${initialAccount.status}:${initialAccount.profile?.id ?? ""}`;
+  const unsubscribeAccount = account.subscribe((state) => {
+    const next = `${state.status}:${state.profile?.id ?? ""}`;
+    if (next === accountKey) return;
+    accountKey = next;
+    overlay.reset();
+  });
+  app.once("will-quit", () => {
+    unsubscribeLifecycle();
+    unsubscribeAccount();
+  });
+  floatingKin = overlay;
+  const menuItem = addFloatingKinMenuItem(overlay.focus);
+  return (enabled: boolean) => {
+    menuItem.enabled = enabled;
+    overlay.setEnabled(enabled);
+  };
+};
+
 const bootstrap = async () => {
   await app.whenReady();
+  if (quitting) return;
   const config = packagedAccountConfig(
     resolve(app.getAppPath(), "account-config.json"),
     desktopAccountEnvironment({
@@ -540,6 +625,10 @@ const bootstrap = async () => {
     app.dock?.setIcon(desktopIconPath);
   }
   registerAppProtocol();
+  const setFloatingKinEnabled = configureFloatingKin(server, controller);
+  const desktopWindowIpc = scopeDesktopWindowIpc(ipcMain, () =>
+    mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null
+  );
   const privacyInstallBridge = server.privacyInstall;
   const selectPrivacyOfflineSource = async () => {
     const files: string[] = [];
@@ -623,7 +712,7 @@ const bootstrap = async () => {
       })
   });
   registerCliInstallIpc({
-    ipcMain,
+    ipcMain: desktopWindowIpc,
     allowedRendererOrigins,
     manager: cliInstallManager,
     selectLauncherDestination: async (defaultPath) => {
@@ -653,7 +742,7 @@ const bootstrap = async () => {
       };
     }
   });
-  registerDesktopCommandHandlers(ipcMain, server.handlers, {
+  registerDesktopCommandHandlers(desktopWindowIpc, server.handlers, {
     v1State: v1State.request,
     allowedRendererOrigins,
     localAiClients: server.localAiClients,
@@ -673,7 +762,8 @@ const bootstrap = async () => {
         nativeTheme.shouldUseDarkColors
       );
       for (const window of BrowserWindow.getAllWindows()) {
-        window.setBackgroundColor(backgroundColor);
+        if (window !== floatingKin?.getWindow())
+          window.setBackgroundColor(backgroundColor);
       }
       return {
         preference,
@@ -682,10 +772,15 @@ const bootstrap = async () => {
     },
     getPresentationPreferences: () => ({ ...presentationPreferences }),
     setPresentationPreferences: (value) => {
-      writePresentationPreferences(presentationPreferencePath, value);
-      presentationPreferences = value;
+      const next = {
+        ...value,
+        floatingKin: value.floatingKin ?? presentationPreferences.floatingKin
+      };
+      writePresentationPreferences(presentationPreferencePath, next);
+      presentationPreferences = next;
+      setFloatingKinEnabled(next.floatingKin);
       configureMenuBar();
-      return { ...value };
+      return { ...next };
     },
     acceleration: server.acceleration,
     performance: server.performance,
@@ -762,6 +857,7 @@ const bootstrap = async () => {
     notifyDesktopStatusChanged();
   });
   server.lifecycle.start();
+  setFloatingKinEnabled(presentationPreferences.floatingKin);
   await startDesktopWindowAndRuntime({
     background: backgroundLaunchPending,
     createWindow,
@@ -874,29 +970,45 @@ app.on("window-all-closed", () => {
   }
 });
 app.on("activate", () => {
+  if (quitting) return;
   const activation = consumeDesktopActivation(backgroundLaunchPending);
   backgroundLaunchPending = activation.backgroundLaunchPending;
   if (!activation.openWindow) return;
-  if (BrowserWindow.getAllWindows().length === 0) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     void showDesktopWindow();
   }
 });
 let koedServerStoppedForQuit = false;
 app.on("before-quit", (event) => {
+  if (koedServerStoppedForQuit) return;
+  event.preventDefault();
+  if (quitting) return;
+  quitting = true;
+  floatingKin?.dispose();
   disposeDesktopUpdateDiscovery?.();
   disposeDesktopUpdateDiscovery = null;
   disposeDesktopUpdateIpc?.();
   disposeDesktopUpdateIpc = null;
-  if (koedServerStoppedForQuit) {
-    return;
-  }
-  event.preventDefault();
   void (async () => {
-    await managedPreviewController.close();
-    await koedServer?.shutdown();
-    desktopMenuBar?.dispose();
-    desktopMenuBar = null;
-    koedServerStoppedForQuit = true;
-    app.quit();
+    try {
+      await managedPreviewController.close();
+    } catch (error) {
+      console.warn("Desktop preview shutdown failed.", error);
+    }
+    try {
+      await koedServer?.shutdown();
+    } catch (error) {
+      console.warn("Desktop runtime shutdown failed.", error);
+    } finally {
+      try {
+        desktopMenuBar?.dispose();
+      } catch (error) {
+        console.warn("Desktop menu bar shutdown failed.", error);
+      } finally {
+        desktopMenuBar = null;
+        koedServerStoppedForQuit = true;
+        app.quit();
+      }
+    }
   })();
 });

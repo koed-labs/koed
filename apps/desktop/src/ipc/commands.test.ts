@@ -12,7 +12,12 @@ import type {
   PersonalMemoryDesktopHandler
 } from "../koed-server/manager.js";
 import { describe, expect, it, vi } from "vitest";
-import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
+import {
+  invokeChannel,
+  registerDesktopCommandHandlers,
+  scopeDesktopWindowIpc
+} from "./commands.js";
+import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { accelerationChannel } from "./acceleration-protocol.js";
 import {
   presentationPreferencesGetChannel,
@@ -52,6 +57,28 @@ const renderer = (url = "koed://app/") => {
   sender.send = vi.fn();
   return { sender, senderFrame: sender.mainFrame };
 };
+
+it("scopes privileged commands to the main window even on the same origin", () => {
+  const main = renderer() as unknown as IpcMainInvokeEvent;
+  const overlay = renderer(
+    "koed://app/#floating-kin"
+  ) as unknown as IpcMainInvokeEvent;
+  let invoke!: (event: IpcMainInvokeEvent) => unknown;
+  let current: WebContents | null = main.sender;
+  const scoped = scopeDesktopWindowIpc(
+    {
+      handle: (_channel, callback) => {
+        invoke = callback;
+      }
+    },
+    () => current
+  );
+  scoped.handle("example", () => "accepted");
+  expect(() => invoke(overlay)).toThrow("Untrusted");
+  expect(invoke(main)).toBe("accepted");
+  current = null;
+  expect(() => invoke(main)).toThrow("Untrusted");
+});
 
 describe("desktop IPC command registry", () => {
   const register = () => {
@@ -288,6 +315,24 @@ describe("desktop IPC command registry", () => {
     expect(
       await set(renderer(), { graphicsAcceleration: false, showMenuBar: false })
     ).toEqual({ graphicsAcceleration: false, showMenuBar: false });
+    expect(
+      await set(renderer(), {
+        graphicsAcceleration: false,
+        showMenuBar: true,
+        floatingKin: true
+      })
+    ).toEqual({
+      graphicsAcceleration: false,
+      showMenuBar: true,
+      floatingKin: true
+    });
+    expect(() =>
+      set(renderer(), {
+        graphicsAcceleration: false,
+        showMenuBar: true,
+        floatingKin: "true"
+      })
+    ).toThrow("Invalid");
     expect(setHardwareAcceleration).not.toHaveBeenCalled();
     expect(() =>
       set(renderer("https://example.com"), {

@@ -8,6 +8,7 @@ import type {
   AiClientModelCapability
 } from "@koed-labs/shared";
 import { MemoryApiClient } from "../src/index.js";
+import { localAiClientInstanceConfigIdentity } from "../src/ai-client-instance-registry.js";
 import {
   aiClientDriverRegistry,
   type AiClientDriver
@@ -304,21 +305,19 @@ describe("AI Client capability publisher", () => {
   it("publishes only explicitly configured instances", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-publisher-"));
     roots.push(root);
-    const configuredExecutable = executable(root, "codex-work");
+    const configuredExecutable = fs.realpathSync(executable(root, "pi-work"));
+    const configHome = fs.realpathSync(root);
+    const instance = {
+      instanceId: "pi.default",
+      driverId: "pi",
+      displayName: "Work Pi",
+      executablePath: configuredExecutable,
+      configHome
+    };
     const registryPath = path.join(root, "instances.json");
     fs.writeFileSync(
       registryPath,
-      JSON.stringify({
-        version: 1,
-        instances: [
-          {
-            instanceId: "codex.default",
-            driverId: "codex",
-            displayName: "Work Codex",
-            executablePath: configuredExecutable
-          }
-        ]
-      })
+      JSON.stringify({ version: 1, instances: [instance] })
     );
     const seen: Array<{ instanceId: string; executablePath?: string }> = [];
     const originals = new Map(aiClientDriverRegistry);
@@ -344,7 +343,7 @@ describe("AI Client capability publisher", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(upserts).toEqual(["codex.default"]);
+      expect(upserts).toEqual(["pi.default"]);
       expect(snapshots).toEqual(upserts);
       const upsertMock = apiClient.upsertAiClientInstance as unknown as {
         mock: { calls: unknown[][] };
@@ -352,7 +351,7 @@ describe("AI Client capability publisher", () => {
       const upsertCall = upsertMock.mock.calls[0] as
         | [string, { config_identity_hash?: unknown }]
         | undefined;
-      expect(upsertCall?.[0]).toBe("codex.default");
+      expect(upsertCall?.[0]).toBe("pi.default");
       expect(upsertCall?.[1].config_identity_hash).toEqual(
         expect.stringMatching(/^[0-9a-f]{64}$/)
       );
@@ -369,14 +368,78 @@ describe("AI Client capability publisher", () => {
       expect(snapshotCall?.[1].installation_identity_hash).not.toBe(
         "a".repeat(64)
       );
+      expect(snapshotCall?.[1]).toMatchObject({
+        capabilities: {
+          diagnostics: [
+            {
+              code: "local_config_identity",
+              severity: "info",
+              details: {
+                localConfigIdentityHash:
+                  localAiClientInstanceConfigIdentity(instance)
+              }
+            }
+          ]
+        }
+      });
       expect(seen).toContainEqual({
-        instanceId: "codex.default",
+        instanceId: "pi.default",
         executablePath: configuredExecutable
       });
     } finally {
       for (const [id, original] of originals) {
         aiClientDriverRegistry.set(id, original);
       }
+    }
+  });
+
+  it("does not publish if executable contents change during discovery", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-publisher-replaced-")
+    );
+    roots.push(root);
+    const executablePath = executable(root, "pi");
+    const registryPath = path.join(root, "instances.json");
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "pi.default",
+            driverId: "pi",
+            displayName: "Pi",
+            executablePath,
+            configHome: root
+          }
+        ]
+      })
+    );
+    const original = aiClientDriverRegistry.get("pi")!;
+    const base = driver("pi", []);
+    aiClientDriverRegistry.set("pi", {
+      ...base,
+      discover: async (input) => {
+        const result = await base.discover(input);
+        fs.writeFileSync(executablePath, "#!/bin/sh\nexit 1\n");
+        return result;
+      }
+    });
+    const apiClient = {
+      upsertAiClientInstance: vi.fn(),
+      recordAiClientCapabilitySnapshot: vi.fn()
+    } as unknown as MemoryApiClient;
+    try {
+      await expect(
+        publishAiClientCapabilities(apiClient, {
+          KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath
+        })
+      ).resolves.toEqual([
+        expect.objectContaining({ instanceId: "pi.default", published: false })
+      ]);
+      expect(apiClient.recordAiClientCapabilitySnapshot).not.toHaveBeenCalled();
+    } finally {
+      aiClientDriverRegistry.set("pi", original);
     }
   });
 

@@ -20,6 +20,8 @@ export type PixelkinActor = {
   size: number;
   presentation: "avatar" | "stage";
   visible: boolean;
+  animateUnfocused?: boolean;
+  still?: boolean;
   hopAt: number | null;
   gaze: [number, number];
   kin: Kin;
@@ -124,10 +126,10 @@ function aim(actor: PixelkinActor): [number, number] {
   return [dx / distance, Math.max(-1, Math.min(1, -dy / distance))];
 }
 
-function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
+function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
   const context = actor.canvas.getContext("2d");
   if (!context) return;
-  const motion = !reduced();
+  const motion = canMove && !reduced();
   const t = motion ? clock : 0;
   if (motion) {
     const next = actor.personality.update(clock - actor.painted);
@@ -137,7 +139,7 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
   // The spin settles in real time, so it finishes even with reduced motion.
   const now = performance.now();
   const spin = actor.spin;
-  if (spin) {
+  if (spin && canMove) {
     spin.step(actor.spunAt ? (now - actor.spunAt) / 1000 : 0, !motion);
     actor.spunAt = spin.active || spin.startled > 0 ? now : 0;
   }
@@ -148,7 +150,7 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
   if (hop >= 1) actor.hopAt = null;
   const air = hop < 0 || hop >= 1 ? 0 : hop;
   const jump = 4 * air * (1 - air);
-  const [gx, gy] = aim(actor);
+  const [gx, gy] = canMove ? aim(actor) : actor.gaze;
   actor.gaze[0] += (gx - actor.gaze[0]) * 0.25;
   actor.gaze[1] += (gy - actor.gaze[1]) * 0.25;
   const [lookX, lookY] = actor.gaze;
@@ -223,50 +225,47 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
   context.drawImage(gl.canvas, 0, 0, pixels, pixels, 0, 0, size, size);
 }
 
-// The companion only idles for whoever is looking at Koed. While another app
-// has focus, stop rendering; the focus listener wakes the loop again.
+// Regular Desktop Kin idle only while Koed has focus. A visible overlay Kin
+// can opt in without changing focus tracking for other actors.
 const windowInactive = () =>
   typeof document.hasFocus === "function" && !document.hasFocus();
 
 function tick(now: number) {
   frame = 0;
   const inactive = windowInactive();
-  // An unfocused window still paints once, so a Kin added in the background
-  // shows a still image instead of an empty canvas.
-  if (document.hidden || (inactive && lastPaint)) {
+  if (document.hidden) {
     previous = 0;
     return;
   }
   if (previous && !reduced()) clock += Math.min((now - previous) / 1000, 0.05);
   previous = now;
-  const turning = [...actors].some(
-    ({ visible, spin }) => visible && spin?.active
-  );
-  // 30 fps is plenty for small companions, but a spin needs every frame.
+  const visible = [...actors].filter((actor) => actor.visible);
+  const canMove = (actor: PixelkinActor) =>
+    !actor.still && (!inactive || actor.animateUnfocused === true);
+  const moving = visible.filter(canMove);
+  const turning = moving.some(({ spin }) => spin?.active);
+  // Paint a still on wake, then redraw only actors allowed to move.
   if (!lastPaint || turning || now - lastPaint >= 32) {
+    const paintable = lastPaint ? moving : visible;
     lastPaint = now;
-    const gl = engine();
+    const gl = paintable.length ? engine() : null;
     if (gl)
-      // Grouping by size avoids resizing the shared canvas between every Kin.
-      [...actors]
-        .filter((actor) => actor.visible)
+      paintable
         .sort((a, b) => a.size - b.size)
-        .forEach((actor) => paint(actor, gl));
+        .forEach((actor) => paint(actor, gl, canMove(actor)));
   }
-  const spinning = [...actors].some(
-    ({ visible, spin }) => visible && spin && (spin.active || spin.startled > 0)
+  const spinning = moving.some(
+    ({ spin }) => spin && (spin.active || spin.startled > 0)
   );
-  // With no Kin on screen there is nothing to draw. Scheduling frames anyway
-  // keeps the compositor producing frames; the IntersectionObserver wakes the
-  // loop when a Kin scrolls back into view.
-  const anyVisible = [...actors].some(({ visible }) => visible);
-  if (!inactive && (!reduced() || spinning) && (anyVisible || spinning))
+  if (moving.length && (!reduced() || spinning))
     frame = requestAnimationFrame(tick);
+  else previous = 0;
 }
 
 export function wakePixelkins() {
-  if (frame || !actors.size) return;
+  if (!actors.size) return;
   lastPaint = 0;
+  if (frame) return;
   frame = requestAnimationFrame(tick);
 }
 
@@ -280,6 +279,12 @@ const onVisibility = () => {
   if (!document.hidden) wakePixelkins();
 };
 const onWindowBlur = () => {
+  if (
+    [...actors].some(
+      (actor) => actor.visible && actor.animateUnfocused && !actor.still
+    )
+  )
+    return;
   cancelAnimationFrame(frame);
   frame = 0;
   previous = 0;
@@ -318,8 +323,13 @@ function stop() {
   document.removeEventListener("visibilitychange", onVisibility);
 }
 
-export function addPixelkin(actor: PixelkinActor) {
+export function addPixelkin(
+  actor: PixelkinActor,
+  { animateUnfocused = false, still = false } = {}
+) {
   if (!actors.size) start();
+  actor.animateUnfocused = animateUnfocused;
+  actor.still = still;
   actors.add(actor);
   observer?.observe(actor.canvas);
   wakePixelkins();

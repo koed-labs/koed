@@ -294,6 +294,14 @@ other clients. No backend synthesis or parallel queue is added.
    process state but skips client/setup diagnostics and model digests. Normal
    status retains its full response and deep Privacy Filter model verification.
 
+## Floating Kin
+
+[The Floating Kin](floating-kin.md) follows a separate, read-only path:
+Desktop → existing Local AI Runtime → local API for Personal capture and
+sealed Memory evidence → assigned AI Client for bounded synthesis. Neither
+polling nor summarizing can start Koed or control a Conversation. The backend
+has no synthesis step in this flow.
+
 ## Managed Conversation execution
 
 Desktop uses explicit AI Client ownership for Managed Conversation lifecycle:

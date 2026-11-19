@@ -12,7 +12,7 @@
     "prebuild": "pnpm --filter @koed-labs/shared build && pnpm --filter @koed-labs/ui build",
     "build": "pnpm build:package",
     "build:package": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json && pnpm build:preload && vite build",
-    "build:preload": "esbuild src/preload.cts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs && node scripts/verify-preload-bundle.mjs",
+    "build:preload": "esbuild src/preload.cts src/floating-kin-preload.cts --bundle --platform=node --format=cjs --external:electron --outdir=dist-electron --out-extension:.js=.cjs && node scripts/verify-preload-bundle.mjs",
     "dev": "vite --host 127.0.0.1",
     "prestart": "pnpm -w source-runtime:prepare",
     "package": "pnpm package:mac",

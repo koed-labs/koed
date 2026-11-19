@@ -186,6 +186,49 @@ describe("V1Settings", () => {
     );
     expect(restart).toHaveBeenCalledOnce();
   });
+  it.each([
+    ["MacIntel", true],
+    ["Linux x86_64", false]
+  ] as const)(
+    "only offers opt-in Floating Kin on macOS (%s)",
+    async (platform, supported) => {
+      const platformGetter = vi
+        .spyOn(navigator, "platform", "get")
+        .mockReturnValue(platform);
+      const defaults = { graphicsAcceleration: true, showMenuBar: false };
+      const presentation = {
+        get: vi.fn(async () => defaults),
+        set: vi.fn(
+          async (value: typeof defaults & { floatingKin?: boolean }) => value
+        )
+      };
+      try {
+        await render("general", { presentationPreferences: presentation });
+        const toggle = container.querySelector<HTMLButtonElement>(
+          '[role="switch"][aria-label="Floating Kin"]'
+        );
+        if (!supported) {
+          expect(toggle).toBeNull();
+          return;
+        }
+        expect(toggle?.getAttribute("aria-checked")).toBe("false");
+        await act(async () => toggle?.click());
+        expect(presentation.set).toHaveBeenCalledWith({
+          ...defaults,
+          floatingKin: true
+        });
+        expect(toggle?.getAttribute("aria-checked")).toBe("true");
+        await act(async () => toggle?.click());
+        expect(presentation.set).toHaveBeenLastCalledWith({
+          ...defaults,
+          floatingKin: false
+        });
+      } finally {
+        platformGetter.mockRestore();
+      }
+    }
+  );
+
   it("keeps the displayed window preference when saving fails", async () => {
     const presentation = {
       get: vi.fn(async () => ({

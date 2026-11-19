@@ -20,7 +20,13 @@ import {
   type CompleteMemoryAnswerTaskInput,
   type FailMemoryAnswerTaskInput,
   type HeartbeatMemoryAnswerTaskInput,
-  type MemoryAnswerTask
+  type MemoryAnswerTask,
+  isLoopbackHostname,
+  floatingKinActivitySchema,
+  floatingKinEvidenceSchema,
+  type FloatingKinActivity,
+  type FloatingKinEvidence,
+  type FloatingKinSummaryRequest
 } from "@koed-labs/shared";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { BackgroundApiRequestScheduler } from "./background-api-requests.js";
@@ -1044,13 +1050,45 @@ export class MemoryApiClient {
     );
   }
 
-  async listLocalMemoryAgentSettings(): Promise<{
-    settings: LocalMemoryAgentSettingRecord[];
-  }> {
-    return this.request("GET", "/v1/memory/local-agent-settings");
+  async readFloatingKinActivity(
+    signal: AbortSignal
+  ): Promise<FloatingKinActivity> {
+    return floatingKinActivitySchema.parse(
+      await this.request("GET", "/v1/memory/floating-kin/activity", undefined, {
+        signal
+      })
+    );
   }
 
-  async listAiClientInstances(): Promise<{
+  async readFloatingKinEvidence(
+    input: FloatingKinSummaryRequest,
+    runtimeAuthorization: string,
+    signal: AbortSignal
+  ): Promise<FloatingKinEvidence> {
+    const url = new URL(this.config.apiUrl);
+    if (
+      !isLoopbackHostname(url.hostname) ||
+      !["http:", "https:"].includes(url.protocol)
+    ) {
+      throw new Error("Floating Kin evidence requires a loopback Memory API");
+    }
+    return floatingKinEvidenceSchema.parse(
+      await this.request("POST", "/v1/memory/floating-kin/evidence", input, {
+        signal,
+        runtimeAuthorization
+      })
+    );
+  }
+
+  async listLocalMemoryAgentSettings(signal?: AbortSignal): Promise<{
+    settings: LocalMemoryAgentSettingRecord[];
+  }> {
+    return this.request("GET", "/v1/memory/local-agent-settings", undefined, {
+      signal
+    });
+  }
+
+  async listAiClientInstances(signal?: AbortSignal): Promise<{
     instances: Array<{
       instanceId: string;
       driverId: string;
@@ -1068,7 +1106,9 @@ export class MemoryApiClient {
       stale: boolean;
     }>;
   }> {
-    return this.request("GET", "/v1/memory/ai-client-instances");
+    return this.request("GET", "/v1/memory/ai-client-instances", undefined, {
+      signal
+    });
   }
 
   async upsertAiClientInstance(
@@ -1354,7 +1394,11 @@ export class MemoryApiClient {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     path: string,
     body?: unknown,
-    options: { authorization?: string; signal?: AbortSignal } = {}
+    options: {
+      authorization?: string;
+      signal?: AbortSignal;
+      runtimeAuthorization?: string;
+    } = {}
   ): Promise<T> {
     if (this.backgroundRequests) {
       // Let the owning service retry its work. Do not replay writes here.
@@ -1397,7 +1441,11 @@ export class MemoryApiClient {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     path: string,
     body?: unknown,
-    options: { authorization?: string; signal?: AbortSignal } = {}
+    options: {
+      authorization?: string;
+      signal?: AbortSignal;
+      runtimeAuthorization?: string;
+    } = {}
   ): Promise<T> {
     let authorization = options.authorization;
     if (authorization === undefined && this.config.authorizationProvider) {
@@ -1433,8 +1481,15 @@ export class MemoryApiClient {
       response = await fetch(`${this.config.apiUrl}${path}`, {
         method,
         signal,
+        ...(options.runtimeAuthorization ? { redirect: "error" } : {}),
         headers: {
           authorization,
+          ...(options.runtimeAuthorization
+            ? {
+                "x-koed-local-runtime-authorization":
+                  options.runtimeAuthorization
+              }
+            : {}),
           ...(this.config.requestClass
             ? { "x-koed-request-class": this.config.requestClass }
             : {}),

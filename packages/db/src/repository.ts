@@ -58,6 +58,16 @@ import { createPersonalProjectExclusionRepository } from "./personal-project-exc
 import { createPersonalProjectBatchRepository } from "./personal-project-batch-repository.js";
 import { createPersonalProjectRuleRepository } from "./personal-project-rule-repository.js";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
+import {
+  floatingKinEvidenceLimit,
+  getFloatingKinActivity,
+  readFloatingKinRawRows,
+  readFloatingKinSealedRows
+} from "./floating-kin-repository.js";
+import type {
+  FloatingKinEvidence,
+  FloatingKinSummaryRequest
+} from "@koed-labs/shared";
 import { checkDatabase, createDb } from "./connection.js";
 import {
   conversationSemanticChunkPolicyContent,
@@ -179,6 +189,7 @@ import {
 } from "@koed-labs/shared";
 
 import type {
+  ActorContext,
   CaptureMethod,
   ConversationItemInput,
   ConversationProjectionResult,
@@ -2400,6 +2411,114 @@ const redactMemoryEventPayloadForPlaintextStorage = (
   return redacted;
 };
 
+const floatingKinTranscriptText = (
+  row: ConversationProjectionRawRow,
+  actor: MemoryActor | null
+): string => {
+  const role =
+    actor === "user"
+      ? "user"
+      : actor === "agent" || actor === "assistant"
+        ? "assistant"
+        : null;
+  const raw = row.raw_json;
+  if (!role || !isRecord(raw)) return "";
+  if (row.source_kind === "claude-code") {
+    if (
+      raw.type !== "claude_session_message" ||
+      (raw.messageType && raw.messageType !== role) ||
+      raw.parentAgentId ||
+      raw.parentToolUseId
+    )
+      return "";
+    const block = raw.contentBlock;
+    return typeof block === "string"
+      ? block.trim()
+      : isRecord(block) &&
+          block.type === "text" &&
+          typeof block.text === "string"
+        ? block.text.trim()
+        : "";
+  }
+  if (row.source_kind !== "codex" || !isRecord(raw.payload)) return "";
+  const payload = raw.payload;
+  if (raw.type === "event_msg") {
+    const matchesRole =
+      role === "user"
+        ? payload.type === "user_message"
+        : payload.type === "agent_message" ||
+          payload.type === "assistant_message";
+    return matchesRole && typeof payload.message === "string"
+      ? payload.message.trim()
+      : "";
+  }
+  if (
+    raw.type !== "response_item" ||
+    payload.type !== "message" ||
+    payload.role !== role ||
+    !Array.isArray(payload.content)
+  )
+    return "";
+  return payload.content
+    .flatMap((block) =>
+      isRecord(block) &&
+      block.type === (role === "user" ? "input_text" : "output_text") &&
+      typeof block.text === "string"
+        ? [block.text]
+        : []
+    )
+    .join("\n")
+    .trim();
+};
+
+const floatingKinSealedMessageText = (
+  payload: MemoryEventPayload | null,
+  sourceEventTime: Date
+): { text: string; occurredAt: string } | null => {
+  if (
+    !payload ||
+    typeof payload.content !== "string" ||
+    classifyApprovalActivity({ metadata: payload.metadata })
+  )
+    return null;
+  const manifest = payload.metadata?.semanticItemManifest;
+  if (!Array.isArray(manifest)) return null;
+  let latestTime = sourceEventTime.getTime();
+  const text = manifest
+    .flatMap((item) => {
+      if (
+        !isRecord(item) ||
+        item.includeInLcm !== true ||
+        !(
+          (item.actor === "user" && item.kind === "user_message") ||
+          ((item.actor === "agent" || item.actor === "assistant") &&
+            (item.kind === "agent_message" || item.kind === "final_message"))
+        )
+      )
+        return [];
+      const { offsetStart, offsetEnd } = item;
+      if (
+        typeof offsetStart !== "number" ||
+        !Number.isSafeInteger(offsetStart) ||
+        offsetStart < 0 ||
+        typeof offsetEnd !== "number" ||
+        !Number.isSafeInteger(offsetEnd) ||
+        offsetEnd <= offsetStart ||
+        offsetEnd > payload.content!.length
+      )
+        return [];
+      const text = payload.content!.slice(offsetStart, offsetEnd).trim();
+      if (!text) return [];
+      if (typeof item.sourceEventTime === "string") {
+        const time = Date.parse(item.sourceEventTime);
+        if (time > latestTime && time <= Date.now()) latestTime = time;
+      }
+      return [text];
+    })
+    .join("\n\n");
+  return text ? { text, occurredAt: new Date(latestTime).toISOString() } : null;
+};
+
 const memoryEventEmbeddingContent = (
   payload: MemoryEventPayload | null | undefined
 ): string | null => {
@@ -4114,6 +4233,123 @@ export const createMemorySourceRepository = (
         : options.envelopeEncryptionProvider,
       row
     );
+  const readFloatingKinRawEvidence = async (
+    actor: ActorContext,
+    sessionId: string
+  ): Promise<FloatingKinEvidence | null> => {
+    const result = await readFloatingKinRawRows<
+      ConversationProjectionRawRow & { turn_closed: boolean }
+    >(pool, actor, sessionId);
+    if (!result.rows.length || result.rows[0]?.turn_closed) return null;
+    const [projectionPolicy, presentationPolicy] = await Promise.all([
+      loadConversationProjectionPolicyRules(pool),
+      loadConversationPresentationPolicySnapshot(pool)
+    ]);
+    const items: FloatingKinEvidence["items"] = [];
+    const gap = { items: [], truncated: true };
+    const turn = result.rows[0]?.external_turn_id;
+    let sequence = Infinity;
+    let truncated = false;
+    if (!turn || result.rows[0]?.source_kind === "pi") return gap;
+    for (const candidate of result.rows.slice(0, floatingKinEvidenceLimit)) {
+      if (
+        candidate.external_turn_id !== turn ||
+        !candidate.event_time ||
+        candidate.source_sequence === null ||
+        candidate.source_sequence >= sequence
+      )
+        return gap;
+      sequence = candidate.source_sequence;
+      let row;
+      try {
+        row = await hydrateConversationProjectionRow(
+          pool,
+          options.envelopeEncryptionProvider,
+          candidate
+        );
+      } catch {
+        return gap;
+      }
+      if (classifyApprovalActivity({ metadata: row.metadata })) continue;
+      const actorType = actorFromConversationItem(row);
+      const content = floatingKinTranscriptText(row, actorType);
+      const decision = classifyConversationItemProjection(row, {
+        projectionRules: projectionPolicy.rules,
+        presentationPolicy,
+        content,
+        actorType
+      });
+      if (
+        !content ||
+        !decision.createMessage ||
+        !decision.includeInLcm ||
+        decision.presentation.renderer !== "message"
+      )
+        continue;
+      truncated ||= content.length > 8192;
+      items.push({
+        id: row.id,
+        sessionId,
+        kind: "conversation_item",
+        occurredAt: candidate.event_time.toISOString(),
+        text: content.slice(0, 8192)
+      });
+      if (actorType === "user") return { items: items.reverse(), truncated };
+    }
+    return gap;
+  };
+  const readFloatingKinSealedEvidence = async (
+    actor: ActorContext,
+    input: FloatingKinSummaryRequest
+  ): Promise<FloatingKinEvidence> => {
+    const result = await readFloatingKinSealedRows<{
+      id: string;
+      session_id: string;
+      source_event_time: Date;
+      payload: MemoryEventPayload;
+    }>(pool, actor, input);
+    const evidence: FloatingKinEvidence = {
+      items: [],
+      truncated: result.rows.length > floatingKinEvidenceLimit
+    };
+    for (const row of result.rows
+      .slice(0, floatingKinEvidenceLimit)
+      .reverse()) {
+      try {
+        const payload =
+          row.payload.contentEncrypted === true
+            ? await decryptAuthorizedMemoryEventPayload(
+                pool,
+                await resolveMemoryEventEncryptionProvider(row.id),
+                {
+                  ownerUserId: actor.userId,
+                  memoryEventId: row.id
+                }
+              )
+            : row.payload;
+        const source = floatingKinSealedMessageText(
+          payload,
+          row.source_event_time
+        );
+        if (!source) {
+          evidence.truncated = true;
+          continue;
+        }
+        evidence.truncated ||= source.text.length > 8192;
+        evidence.items.push({
+          id: row.id,
+          sessionId: row.session_id,
+          kind: "memory_event",
+          occurredAt: source.occurredAt,
+          text: source.text.slice(0, 8192)
+        });
+      } catch {
+        evidence.truncated = true;
+      }
+    }
+    return evidence;
+  };
+
   const hydrateRepositoryMemoryNodeRows = async <
     T extends HydratableMemoryNodeRow
   >(
@@ -4151,6 +4387,18 @@ export const createMemorySourceRepository = (
         options.ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
     ...createCapturedSessionRepository(pool),
+    getFloatingKinActivity: (actor) => getFloatingKinActivity(pool, actor),
+    async getFloatingKinEvidence(actor, input) {
+      if (input.action === "project")
+        return readFloatingKinSealedEvidence(actor, input);
+      const raw = await readFloatingKinRawEvidence(actor, input.sessionId);
+      if (raw?.items.length) return raw;
+      const sealed = await readFloatingKinSealedEvidence(actor, input);
+      return {
+        ...sealed,
+        truncated: sealed.truncated || Boolean(raw?.truncated)
+      };
+    },
     ...createPersonalMembershipRepository(pool),
     ...createPersonalProjectDefaultRepository(pool),
     ...createPersonalMembershipReviewRepository(pool),
