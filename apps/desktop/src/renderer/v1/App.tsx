@@ -829,8 +829,9 @@ export function V1App({
       (
         sidebarProjects.find((project) => project.id === "no-project")
           ?.conversations ?? []
-      ).map(({ key, title, latestAt, client }) => ({
+      ).map(({ key, title, latestAt, client, aliases }) => ({
         key,
+        aliases,
         title,
         latestAt,
         client

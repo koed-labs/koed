@@ -320,6 +320,83 @@ describe("Home", () => {
     expect(coin.style.getPropertyValue("--coin-x")).not.toBe("calc(50% + 0px)");
   });
 
+  it("keeps a flick's speed with 1,000 Hz pointer samples", async () => {
+    await render({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      looseConversations: [
+        {
+          key: "loose",
+          title: "Loose chat",
+          latestAt: "2026-11-03T00:00:00Z",
+          client: null
+        }
+      ],
+      onOpenConversation: () => undefined
+    });
+    const coin = container.querySelector<HTMLElement>(".v1-home-floor-coin")!;
+    const left = () =>
+      parseFloat(
+        coin.style.getPropertyValue("--coin-x").replace(/[^-\d.]/g, "") || "0"
+      );
+    await act(async () => {
+      pointer(coin, "pointerdown", 0, 0);
+      // A steady 1ms cadence, 3px per sample: 3,000px/s for 20ms.
+      for (let step = 1; step <= 20; step += 1) {
+        vi.advanceTimersByTime(1);
+        pointer(coin, "pointermove", step * 3, 0);
+      }
+      pointer(coin, "pointerup", 60, 0);
+    });
+    const released = left();
+    await act(async () => vi.advanceTimersByTime(100));
+    // Carried on in the flick's direction instead of dropping straight down.
+    expect(left()).toBeGreaterThan(released + 20);
+  });
+
+  describe("loose coin arrivals", () => {
+    const looseProps = (loose: HomeLooseConversationInput[]) => ({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      conversations: [],
+      looseConversations: loose,
+      onOpenConversation: () => undefined
+    });
+    type HomeLooseConversationInput = {
+      key: string;
+      aliases?: string[];
+      title: string;
+      latestAt: string;
+      client: "codex" | null;
+    };
+    const item = (key: string, aliases: string[] = []) => ({
+      key,
+      aliases,
+      title: key,
+      latestAt: "2026-11-03T00:00:00Z",
+      client: null
+    });
+    const coinFor = (key: string) =>
+      container.querySelector<HTMLElement>(
+        `[data-coin-conversation="${key}"]`
+      )!;
+
+    it("throws the first Conversation to arrive on a loaded, empty floor", async () => {
+      await render(looseProps([]));
+      await render(looseProps([item("first")]));
+      expect(coinFor("first").dataset.motion).toBe("flying");
+    });
+
+    it("does not throw a Conversation again when it gets its permanent key", async () => {
+      await render(looseProps([item("draft")]));
+      await render(looseProps([item("real", ["draft"])]));
+      expect(coinFor("real").dataset.motion).toBe("rest");
+    });
+
+    it("leaves coins already on the floor at load at rest", async () => {
+      await render(looseProps([item("old")]));
+      expect(coinFor("old").dataset.motion).toBe("rest");
+    });
+  });
+
   it("spins a Kin by dragging without opening its Project", async () => {
     const onOpenProject = vi.fn();
     await render({
@@ -1350,6 +1427,24 @@ describe("Home", () => {
       expect(coin.dataset.motion).toBe("rest");
       expect(target.hasAttribute("data-drop")).toBe(false);
     });
+
+    it.each(["pointercancel", "lostpointercapture"])(
+      "does not add the conversation when the drag ends with %s",
+      async (type) => {
+        const onDrop = vi
+          .fn<(key: string, projectId: string) => Promise<boolean>>()
+          .mockResolvedValue(true);
+        const { coin, target } = await setup(onDrop);
+        under = [target];
+        await act(async () => press(coin, "pointermove", 70));
+        await act(async () => vi.advanceTimersByTime(500));
+        expect(target.getAttribute("data-drop")).toBe("ready");
+        await act(async () => press(coin, type, 70));
+        expect(onDrop).not.toHaveBeenCalled();
+        expect(coin.dataset.motion).toBe("rest");
+        expect(target.hasAttribute("data-drop")).toBe(false);
+      }
+    );
 
     it("restarts the wait when the coin leaves the Kin and returns", async () => {
       const onDrop = vi

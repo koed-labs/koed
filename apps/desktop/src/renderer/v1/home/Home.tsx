@@ -1072,6 +1072,9 @@ function CoinArtwork({
 
 export type HomeLooseConversation = {
   key: string;
+  // Earlier keys this Conversation went by, so a draft that gets its
+  // permanent key isn't mistaken for a new arrival.
+  aliases?: readonly string[];
   title: string;
   latestAt: string;
   client: "codex" | "claude" | "pi" | null;
@@ -1086,6 +1089,8 @@ type CoinDrop = {
 };
 type FloorCoinsInput = {
   conversations: readonly HomeLooseConversation[];
+  // Keys of Conversations that arrived after load, to be thrown in.
+  thrown: ReadonlySet<string>;
   onOpen: (key: string) => void;
 };
 // Every hardware sample behind a pointer move, falling back to the event.
@@ -1112,7 +1117,7 @@ const hashUnit = (key: string, salt: number) => {
   hash = Math.imul(hash ^ (hash >>> 15), 2246822507);
   return ((hash >>> 0) % 10_000) / 10_000;
 };
-const clashes = (spot: CoinSpot, others: Iterable<CoinSpot>) => {
+const clashes = (spot: CoinSpot, others: readonly CoinSpot[]) => {
   for (const other of others)
     if (
       Math.abs(other.x - spot.x) < COIN_SPACING_X &&
@@ -1123,7 +1128,11 @@ const clashes = (spot: CoinSpot, others: Iterable<CoinSpot>) => {
 };
 // A stable pseudo-random spot, trying a few more times to keep clear of the
 // coins already placed so they don't pile into one clump.
-const restingSpot = (key: string, half: number, placed: Iterable<CoinSpot>) => {
+const restingSpot = (
+  key: string,
+  half: number,
+  placed: readonly CoinSpot[]
+) => {
   let spot: CoinSpot = { x: 0, lane: 0 };
   for (let attempt = 0; attempt < 10; attempt += 1) {
     spot = {
@@ -1151,25 +1160,25 @@ function FloorCoins({
   coins: FloorCoinsInput;
   drop?: CoinDrop | undefined;
 }) {
-  // Keys present when the coins first appeared; anything later is thrown in.
-  const initial = useRef<Set<string> | null>(null);
   // Where each coin is lying, so a coin that lands can keep clear of the rest.
   const resting = useRef(new Map<string, CoinSpot>());
   const conversations = [...coins.conversations].sort((left, right) =>
     right.latestAt.localeCompare(left.latestAt)
   );
-  if (!initial.current && conversations.length)
-    initial.current = new Set(conversations.map(({ key }) => key));
   if (!conversations.length) return null;
   const half = (width ?? 900) / 2 - 40;
   // Coins already lying there are spread in a fixed order, so a new arrival
   // never shifts them.
   const spots = new Map<string, CoinSpot>();
+  const placed: CoinSpot[] = [];
   for (const { key } of [...conversations].sort((a, b) =>
     a.key.localeCompare(b.key)
   ))
-    if (initial.current?.has(key))
-      spots.set(key, restingSpot(key, half, spots.values()));
+    if (!coins.thrown.has(key)) {
+      const spot = restingSpot(key, half, placed);
+      spots.set(key, spot);
+      placed.push(spot);
+    }
   return (
     <div className="v1-home-floor" aria-label="Conversations in no Project">
       {conversations.map((conversation) => (
@@ -1181,7 +1190,7 @@ function FloorCoins({
             restingSpot(conversation.key, half, [])
           }
           resting={resting.current}
-          thrown={!initial.current?.has(conversation.key)}
+          thrown={coins.thrown.has(conversation.key)}
           floor={floor}
           half={half}
           onOpen={coins.onOpen}
@@ -1200,6 +1209,7 @@ const COIN_WALL_BOUNCE = 0.55;
 const COIN_FLOOR_FRICTION = 5;
 const COIN_MAX_SPEED = 3200;
 const COIN_DRAG_THRESHOLD = 4;
+const COIN_SAMPLE_WINDOW_MS = 250;
 const COIN_SIZE = 20;
 
 type CoinMotion = {
@@ -1409,15 +1419,16 @@ function FloorCoin({
   }, []);
   // Anything that ends a drag (button up, the browser cancelling it, or the
   // pointer capture being taken away by a re-render) is a release: the coin
-  // carries on with the velocity it was dragged at.
-  const release = (time: number) => {
+  // carries on with the velocity it was dragged at. Only a real button up
+  // (`committed`) over a ready Kin adds the Conversation to its Project.
+  const release = (time: number, committed: boolean) => {
     if (!start.current) return;
     start.current = null;
     stopWindow.current?.();
     if (!dragged.current) return resumeCaught();
     const target = over.current;
     hover(null);
-    if (drop && target?.armed) {
+    if (committed && drop && target?.armed) {
       // Let go over a Kin that has waited its turn: add it at once.
       setAbsorbed(true);
       void drop
@@ -1446,10 +1457,11 @@ function FloorCoin({
     let fx = 0;
     let fy = 0;
     recent.forEach((to, index) => {
-      const from = recent
-        .slice(0, index)
-        .reverse()
-        .find((sample) => to.t - sample.t >= 24);
+      const before = recent.slice(0, index);
+      // Prefer a baseline 24ms back; a short flick uses what span it has.
+      const from =
+        [...before].reverse().find((sample) => to.t - sample.t >= 24) ??
+        before.find((sample) => to.t - sample.t >= 6);
       if (!from) return;
       const seconds = (to.t - from.t) / 1000;
       const vx = (to.x - from.x) / seconds;
@@ -1516,7 +1528,10 @@ function FloorCoin({
         const pointerId = event.pointerId;
         const onWindowEnd = (windowEvent: PointerEvent) => {
           if (windowEvent.pointerId === pointerId)
-            releaseRef.current(windowEvent.timeStamp);
+            releaseRef.current(
+              windowEvent.timeStamp,
+              windowEvent.type === "pointerup"
+            );
         };
         window.addEventListener("pointerup", onWindowEnd);
         window.addEventListener("pointercancel", onWindowEnd);
@@ -1546,7 +1561,13 @@ function FloorCoin({
             x: sample.clientX,
             y: sample.clientY
           }))
-        ].slice(-24);
+        ];
+        // Keep by elapsed time, not count: a 1,000 Hz mouse delivers a
+        // quarter second of movement in hundreds of samples.
+        const newest = samples.current.at(-1)!.t;
+        samples.current = samples.current.filter(
+          (sample) => newest - sample.t <= COIN_SAMPLE_WINDOW_MS
+        );
         const coin = body.current;
         coin.x = Math.max(-half, Math.min(half, point.x));
         coin.y = Math.max(0, Math.min(ceiling.current, point.y));
@@ -1562,9 +1583,9 @@ function FloorCoin({
               .find(Boolean)?.dataset.dropProject ?? null
           );
       }}
-      onPointerUp={(event) => release(event.timeStamp)}
-      onPointerCancel={(event) => release(event.timeStamp)}
-      onLostPointerCapture={(event) => release(event.timeStamp)}
+      onPointerUp={(event) => release(event.timeStamp, true)}
+      onPointerCancel={(event) => release(event.timeStamp, false)}
+      onLostPointerCapture={(event) => release(event.timeStamp, false)}
       onClick={(event) => {
         // A drag ends with a click; only a plain click opens.
         if (dragged.current) {
@@ -1590,6 +1611,39 @@ function FloorCoin({
     </button>
   );
 }
+
+// Tells which loose Conversations arrived after Home loaded, once each. Like
+// the Project coins it keeps a baseline even while the floor is empty, and
+// counts a Conversation by all of its keys so a draft getting its permanent
+// key stays where it was.
+function useLooseArrivals(
+  loose: readonly HomeLooseConversation[],
+  loaded: boolean,
+  scope: string | null
+): ReadonlySet<string> {
+  const state = useRef<{
+    scope: string;
+    seen: Set<string>;
+    thrown: Set<string>;
+  } | null>(null);
+  if (!loaded || !scope) {
+    state.current = null;
+    return NO_KEYS;
+  }
+  const baseline = state.current?.scope !== scope;
+  const current = baseline
+    ? { scope, seen: new Set<string>(), thrown: new Set<string>() }
+    : state.current!;
+  state.current = current;
+  for (const conversation of loose) {
+    const keys = [conversation.key, ...(conversation.aliases ?? [])];
+    if (!baseline && !keys.some((key) => current.seen.has(key)))
+      current.thrown.add(conversation.key);
+    for (const key of keys) current.seen.add(key);
+  }
+  return current.thrown;
+}
+const NO_KEYS: ReadonlySet<string> = new Set();
 
 function useConversationCoins(
   conversations: readonly HomeConversation[] | undefined,
@@ -1895,9 +1949,18 @@ export function Home({
   // Adds a floor coin's conversation to a Project; true once it is added.
   onDropConversation?: (key: string, projectId: string) => Promise<boolean>;
 }) {
+  const thrown = useLooseArrivals(
+    looseConversations,
+    conversations !== undefined,
+    conversationScope
+  );
   const floorCoins =
     onOpenConversation && looseConversations.length
-      ? { conversations: looseConversations, onOpen: onOpenConversation }
+      ? {
+          conversations: looseConversations,
+          thrown,
+          onOpen: onOpenConversation
+        }
       : undefined;
   useEffect(() => {
     const refreshVisible = () => {
