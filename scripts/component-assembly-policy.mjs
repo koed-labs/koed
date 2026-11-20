@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const hasClosureOwnedOptionalNativePackage = (closure) => {
@@ -349,6 +350,51 @@ const dynamicRules = [
   {
     match: (packageName, file, edge) =>
       packageName === "@koed-labs/server" &&
+      edge.loader === "require" &&
+      ((file === "dist/control-plane/host-entrypoint.js" &&
+        edge.argumentText === "resolveDesktopControlAddon(input.capability)") ||
+        (file === "dist/control-plane/installed-client.js" &&
+          [
+            "resolveDesktopControlAddon(capability)",
+            "resolveDesktopControlAddon(input.capability)"
+          ].includes(edge.argumentText))),
+    policy: {
+      owner: "verified-desktop-control-addon",
+      requiresClosure: (closure, packageRoot) => {
+        const server = closure.find(
+          (entry) =>
+            entry.manifest.name === "@koed-labs/server" &&
+            entry.packageRoot === packageRoot
+        );
+        if (!server) return false;
+        const expected = {
+          "dist/control-plane/host-entrypoint.js":
+            "c341faf3d41cb4b970cafa973d71d026053b432d0f8cf229f67e3f82acd84b56",
+          "dist/control-plane/installed-client.js":
+            "218818a4ba0ae07278e2fb47ee0a2712f0ae82f8c4cb2e4e0830b8f3ae58466f",
+          "dist/desktop-runtime-capability.js":
+            "f2d87d20609cfed3c778c88e0e270c718c744104291590f6dee24e4dd0097918"
+        };
+        return Object.entries(expected).every(([file, digest]) => {
+          const path = resolve(server.packageRoot, file);
+          return (
+            existsSync(path) &&
+            createHash("sha256").update(readFileSync(path)).digest("hex") ===
+              digest
+          );
+        });
+      },
+      missingClosure:
+        "Desktop control addon loader or capability resolver differs from the reviewed source; review and update pinned hashes.",
+      rationale:
+        "The Desktop control addon is staged outside component packages in the verified runtime bundle and loaded only through the capability-checked fixed-path resolver.",
+      limits:
+        "Only these exact require expressions are allowed; the resolver verifies the bundle manifest and hash before returning the addon path."
+    }
+  },
+  {
+    match: (packageName, file, edge) =>
+      packageName === "@koed-labs/server" &&
       file === "dist/privacy-inference-probe.js" &&
       edge.loader === "import" &&
       /^moduleUrl\("(?:config|runtime-factory|runtime-manager)\.js"\)$/.test(
@@ -632,13 +678,19 @@ const unresolvedRules = [
     policy: policies["optional-build-only-libvips-package"]
   }
 ];
-export function classifyRuntimeException(packageName, file, edge, closure) {
+export function classifyRuntimeException(
+  packageName,
+  file,
+  edge,
+  closure,
+  packageRoot
+) {
   const rule = (!edge.specifier ? dynamicRules : unresolvedRules).find((rule) =>
     rule.match(packageName, file, edge)
   );
   if (!rule) return null;
   const { requiresClosure, missingClosure, ...metadata } = rule.policy;
-  if (requiresClosure && !requiresClosure(closure))
+  if (requiresClosure && !requiresClosure(closure, packageRoot))
     return { error: missingClosure };
   if (!edge.specifier && !["dynamic", "asset"].includes(edge.kind)) return null;
   return metadata;

@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   resolveDesktopInstallationResources,
+  resolveDesktopControlAddon,
   validateDesktopRuntimeCapability,
   verifyDesktopRuntimeBundle
 } from "./desktop-runtime-capability.js";
@@ -111,6 +112,34 @@ describe("private Desktop runtime bundle capability", () => {
     expect(capability.bundleDigest).not.toBe(
       "56b688782aa7bc4524456e87469e3ec194ad63d203393d7b1bb7d5b1224752ae"
     );
+  });
+
+  it("only resolves the fixed native control addon from an issued verified capability", () => {
+    const resourcesPath = temp();
+    bundle(resourcesPath);
+    const runtime = resolve(resourcesPath, "koed-runtime");
+    mkdirSync(resolve(runtime, "control"));
+    const addon = resolve(runtime, "control/koed_background_xpc.node");
+    writeFileSync(addon, "native");
+    const manifestPath = resolve(runtime, "desktop-bundle-manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      target: { platform: string };
+      files: { path: string; kind: string; sha256: string }[];
+    };
+    manifest.target.platform = "macos";
+    manifest.files.push({
+      path: "control/koed_background_xpc.node",
+      kind: "file",
+      sha256: hash("native")
+    });
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const capability = verifyDesktopRuntimeBundle(resourcesPath);
+    expect(resolveDesktopControlAddon(capability)).toBe(realpathSync(addon));
+    expect(() => resolveDesktopControlAddon({ ...capability })).toThrow(
+      "capability"
+    );
+    writeFileSync(addon, "changed");
+    expect(() => resolveDesktopControlAddon(capability)).toThrow("digest");
   });
 
   it("rejects a bundle whose actual asset bytes differ from its manifest", () => {

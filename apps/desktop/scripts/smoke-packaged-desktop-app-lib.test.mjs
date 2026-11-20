@@ -32,10 +32,208 @@ import {
   assertNoSourceCheckoutResolution,
   assertFailClosedPrivacy,
   assertFailClosedTeamStart,
+  assertControlPolicyUnavailable,
+  assertDetachedControlStart,
+  assertDetachedControlStop,
+  verifyControlSmokeHost,
+  cleanupSmokeControlHost,
+  smokeProcessMayBeRunning,
+  cleanupSmokeHomeAfterStop,
   parseArgs,
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
 import * as smokeApp from "./smoke-packaged-desktop-app.mjs";
+
+test("detached control smoke requires the same host and durable stop", () => {
+  const start = {
+    ok: true,
+    state: "starting",
+    snapshot: { state: "starting", instanceId: "instance-1", stopIntent: false }
+  };
+  assert.equal(assertDetachedControlStart(start), "instance-1");
+  assert.equal(
+    assertDetachedControlStart(
+      { ...start, snapshot: { ...start.snapshot, state: "ready" } },
+      "instance-1"
+    ),
+    "instance-1"
+  );
+  assert.throws(() =>
+    assertDetachedControlStart({ ...start, snapshot: undefined })
+  );
+  assert.throws(() => assertDetachedControlStart(start, "other"));
+  assert.throws(() =>
+    assertDetachedControlStart({
+      ...start,
+      snapshot: { ...start.snapshot, stopIntent: true }
+    })
+  );
+  const stop = {
+    ok: true,
+    state: "stopped",
+    snapshot: { state: "stopped", instanceId: "instance-1", stopIntent: true }
+  };
+  assert.doesNotThrow(() => assertDetachedControlStop(stop, "instance-1"));
+  assert.throws(() =>
+    assertDetachedControlStop(
+      { ...stop, snapshot: { ...stop.snapshot, stopIntent: false } },
+      "instance-1"
+    )
+  );
+  assert.throws(() => assertDetachedControlStop(stop, "other"));
+});
+
+test("detached smoke verifies discovery against the live control-plane lock", () => {
+  const discovery = {
+    pid: 123,
+    instanceId: "instance-1",
+    processIdentity: "identity-1"
+  };
+  const lock = { pid: 123, processIdentity: "identity-1" };
+  assert.equal(
+    verifyControlSmokeHost(discovery, lock, "identity-1", "instance-1"),
+    123
+  );
+  assert.throws(() =>
+    verifyControlSmokeHost(discovery, lock, "other", "instance-1")
+  );
+  assert.throws(() =>
+    verifyControlSmokeHost(
+      discovery,
+      { ...lock, pid: 456 },
+      "identity-1",
+      "instance-1"
+    )
+  );
+  assert.throws(() =>
+    verifyControlSmokeHost(discovery, lock, "identity-1", "other")
+  );
+});
+
+test("smoke host cleanup verifies the same owner before each signal", async () => {
+  const signals = [];
+  let live = true;
+  const result = await cleanupSmokeControlHost({
+    owner: { pid: 123, identity: "owner" },
+    resolveIdentity: () => (live ? "owner" : null),
+    isRunning: () => live,
+    signal: (pid, signal) => {
+      signals.push([pid, signal]);
+      if (signal === "SIGKILL") live = false;
+    },
+    sleep: async () => {},
+    attempts: 2
+  });
+  assert.equal(result, true);
+  assert.deepEqual(signals, [
+    [123, "SIGTERM"],
+    [123, "SIGKILL"]
+  ]);
+  signals.length = 0;
+  assert.equal(
+    await cleanupSmokeControlHost({
+      owner: { pid: 123, identity: "owner" },
+      resolveIdentity: () => "replacement",
+      isRunning: () => true,
+      signal: (pid, signal) => signals.push([pid, signal]),
+      sleep: async () => {},
+      attempts: 1
+    }),
+    false
+  );
+  assert.deepEqual(signals, []);
+});
+
+test("smoke cleanup attempts host termination even when runtime stop was not confirmed", async () => {
+  let calls = 0;
+  assert.equal(
+    await cleanupSmokeHomeAfterStop(false, async () => {
+      calls++;
+      return true;
+    }),
+    false
+  );
+  assert.equal(calls, 1);
+  assert.equal(await cleanupSmokeHomeAfterStop(true, async () => false), false);
+  assert.equal(await cleanupSmokeHomeAfterStop(true, async () => true), true);
+  assert.equal(
+    await cleanupSmokeHomeAfterStop(
+      false,
+      async () => true,
+      async () => true
+    ),
+    true
+  );
+  assert.equal(
+    await cleanupSmokeHomeAfterStop(
+      false,
+      async () => true,
+      async () => false
+    ),
+    false
+  );
+  let offlineCalls = 0;
+  assert.equal(
+    await cleanupSmokeHomeAfterStop(
+      false,
+      async () => false,
+      async () => {
+        offlineCalls++;
+        return true;
+      }
+    ),
+    false
+  );
+  assert.equal(offlineCalls, 0);
+});
+
+test("smoke process liveness only treats ESRCH as absent", () => {
+  const fail = (code) => () => {
+    throw Object.assign(new Error(code), { code });
+  };
+  assert.equal(smokeProcessMayBeRunning(1, fail("ESRCH")), false);
+  assert.equal(smokeProcessMayBeRunning(1, fail("EPERM")), true);
+  assert.equal(smokeProcessMayBeRunning(1, fail("EIO")), true);
+});
+
+test("negative control smoke only accepts the precise policy failure", () => {
+  assert.equal(
+    parseArgs(["--expect-control-policy-unavailable"])
+      .expectControlPolicyUnavailable,
+    true
+  );
+  assert.throws(
+    () =>
+      parseArgs(["--expect-control-policy-unavailable", "--missing-assets"]),
+    /conflicts/
+  );
+  assert.doesNotThrow(() =>
+    assertControlPolicyUnavailable({
+      status: 1,
+      signal: null,
+      stderr: "Error: Local control signing policy unavailable"
+    })
+  );
+  for (const result of [
+    {
+      status: 0,
+      signal: null,
+      stderr: "Local control signing policy unavailable"
+    },
+    { status: 1, signal: null, stderr: "other failure" },
+    {
+      status: null,
+      signal: "SIGKILL",
+      stderr: "Local control signing policy unavailable"
+    },
+    {
+      status: null,
+      error: new Error("spawn failed"),
+      stderr: "Local control signing policy unavailable"
+    }
+  ])
+    assert.throws(() => assertControlPolicyUnavailable(result));
+});
 
 test("failure diagnostics read failing home before cleanup and retain original cause", async () => {
   const home = createSmokeHome("koed-team-diagnostics-test-");

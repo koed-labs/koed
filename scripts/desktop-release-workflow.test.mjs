@@ -115,6 +115,10 @@ test("signer restricted to approved main SHA, inline production builder, scoped 
     step("Build signed Desktop artifacts").env.APPLE_API_KEY,
     "${{ steps.signing.outputs.apple-api-key-path }}"
   );
+  assert.equal(
+    step("Build signed Desktop artifacts").env.DESKTOP_MACOS_APPLE_TEAM_ID,
+    "${{ vars.DESKTOP_MACOS_APPLE_TEAM_ID }}"
+  );
   assert.equal(step("Remove temporary signing key").if, "always()");
   assert.equal(desktop.uses, undefined);
   for (const s of desktop.steps)

@@ -1,6 +1,6 @@
 /* global AbortSignal, clearTimeout, console, fetch, setTimeout, WebSocket */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { loadRendererValidation } from "./renderer-validation-assets.mjs";
@@ -42,6 +42,43 @@ export const terminateChild = async (child, graceMs = 2_000) => {
   if (!(await waitForChildExit(child, graceMs))) {
     throw new Error("Packaged Electron did not exit after SIGKILL.");
   }
+};
+
+export const waitForDevtoolsPort = async ({
+  userDataDir,
+  readChildExit,
+  startupTimeoutMs = 30_000,
+  now = Date.now,
+  delayImpl = delay
+}) => {
+  const deadline = now() + startupTimeoutMs;
+  while (now() < deadline && !readChildExit()) {
+    let contents;
+    try {
+      contents = readFileSync(
+        resolve(userDataDir, "DevToolsActivePort"),
+        "utf8"
+      );
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (contents?.includes("\n")) {
+      const [raw, endpoint] = contents.split("\n");
+      const port = Number(raw);
+      if (
+        !/^\d+$/u.test(raw) ||
+        !Number.isInteger(port) ||
+        port < 1 ||
+        port > 65535 ||
+        !endpoint?.startsWith("/devtools/browser/")
+      ) {
+        throw new Error("Chromium wrote an invalid DevToolsActivePort file.");
+      }
+      return port;
+    }
+    await delayImpl(Math.min(50, Math.max(0, deadline - now())));
+  }
+  return undefined;
 };
 
 export const waitForRendererTarget = async ({
@@ -226,12 +263,6 @@ export const smokePackagedRendererFaults = async ({
   koedHome
 }) => {
   const userDataDir = mkdtempSync(resolve(tmpdir(), "koed-renderer-faults-"));
-  const debuggingPort =
-    45_000 +
-    [...userDataDir].reduce(
-      (hash, character) => (hash * 33 + character.codePointAt(0)) % 10_000,
-      0
-    );
   const launchEnvironment = { ...env, KOED_HOME: koedHome };
   delete launchEnvironment.ELECTRON_RUN_AS_NODE;
   let stdoutTail = "";
@@ -241,7 +272,7 @@ export const smokePackagedRendererFaults = async ({
     executable,
     [
       "--use-mock-keychain",
-      `--remote-debugging-port=${debuggingPort}`,
+      "--remote-debugging-port=0",
       `--user-data-dir=${userDataDir}`,
       "--no-first-run"
     ],
@@ -262,10 +293,18 @@ export const smokePackagedRendererFaults = async ({
   let cdp;
   let validationAssets;
   try {
-    const target = await waitForRendererTarget({
-      debuggingPort,
+    const startupDeadline = Date.now() + 30_000;
+    const debuggingPort = await waitForDevtoolsPort({
+      userDataDir,
       readChildExit: () => childExit
     });
+    const target = debuggingPort
+      ? await waitForRendererTarget({
+          debuggingPort,
+          readChildExit: () => childExit,
+          startupTimeoutMs: Math.max(0, startupDeadline - Date.now())
+        })
+      : undefined;
     if (!target) {
       const exitDetail = childExit
         ? ` Electron exited with code ${String(childExit.code)} and signal ${String(childExit.signal)}.`

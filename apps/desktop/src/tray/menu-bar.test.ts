@@ -125,6 +125,36 @@ describe("Desktop menu-bar status", () => {
     );
   });
 
+  it("offers Background Agent settings when available", () => {
+    const configure = vi.fn();
+    const template = createMenuBarMenuTemplate(
+      createMenuBarStatusSnapshot(healthyStatus()),
+      {
+        openDesktop: vi.fn(),
+        refresh: vi.fn(),
+        configureBackgroundAgent: configure,
+        quit: vi.fn()
+      }
+    );
+    template.find((item) => item.label === "Background Agent…")?.click?.();
+    expect(configure).toHaveBeenCalledOnce();
+  });
+  it("offers Stop for a running Agent without offering Start", () => {
+    const stop = vi.fn();
+    const template = createMenuBarMenuTemplate(
+      createMenuBarStatusSnapshot(healthyStatus()),
+      {
+        openDesktop: vi.fn(),
+        refresh: vi.fn(),
+        startKoed: vi.fn(),
+        stopKoed: stop,
+        quit: vi.fn()
+      }
+    );
+    template.find((item) => item.label === "Stop Koed")?.click?.();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(template.some((item) => item.label === "Start Koed")).toBe(false);
+  });
   it("shows an externally stopped instance as Stopped with a Start action, not service faults", () => {
     const snapshot = createMenuBarStatusSnapshot({
       ...healthyStatus(),

@@ -5,6 +5,7 @@ import lockfile from "proper-lockfile";
 import { describe, expect, it, vi } from "vitest";
 import {
   isRuntimeGenerationState,
+  assertPriorRuntimeRecordDead,
   removeOwnedRuntimeState,
   writeRuntimeState
 } from "./runtime-state.js";
@@ -35,6 +36,30 @@ describe("runtime generation state", () => {
   ])("rejects malformed or unbound pin state %#", (state) => {
     expect(isRuntimeGenerationState(state)).toBe(false);
   });
+});
+
+it("accepts only valid runtime records whose recorded supervisor is definitively dead", () => {
+  const state = {
+    pid: 99999999,
+    startedAt: "2026-11-05T14:00:00.000Z",
+    repoRoot: "/tmp",
+    apiUrl: "http://localhost:3300",
+    services: []
+  };
+  const read = () => JSON.stringify(state);
+  expect(() =>
+    assertPriorRuntimeRecordDead("record", read, () => false)
+  ).not.toThrow();
+  expect(() =>
+    assertPriorRuntimeRecordDead("record", read, () => true)
+  ).toThrow(/running/i);
+  expect(() =>
+    assertPriorRuntimeRecordDead(
+      "record",
+      () => "{}",
+      () => false
+    )
+  ).toThrow(/invalid/i);
 });
 
 it("locks the same runtime record for publication, final ownership check and removal", () => {

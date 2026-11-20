@@ -61,6 +61,151 @@ it("runs shared CLI commands with a verified capability and supervisor command",
   expect(environment.KOED_PACKAGED_DESKTOP).toBe("1");
 });
 
+it("starts the detached host only after verifying the packaged installation", async () => {
+  const { resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const host = vi.fn(async () => 0);
+  const runCli = vi.fn(async () => 0);
+  const environment: NodeJS.ProcessEnv = {};
+  await expect(
+    runInstalledDesktopCli(["__control-plane-host"], {
+      moduleUrl: pathToFileURL(entry).href,
+      executable,
+      platform: "darwin",
+      electronVersion: "39.8.10",
+      environment,
+      verifyBundle: () => capability,
+      runControlPlaneHost: host,
+      runCli
+    })
+  ).resolves.toBe(0);
+  expect(host).toHaveBeenCalledWith({ capability, environment });
+  expect(runCli).not.toHaveBeenCalled();
+});
+
+it("runs migration only after explicit confirmation and installation verification", async () => {
+  const { root, resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const migrate = vi.fn();
+  const stderr = { write: vi.fn() };
+  const options = {
+    moduleUrl: pathToFileURL(entry).href,
+    executable,
+    platform: "darwin" as const,
+    electronVersion: "39.8.10",
+    environment: { KOED_HOME: resolve(root, "home") },
+    verifyBundle: () => capability,
+    migrateStoppedLegacyAgent: migrate,
+    stderr,
+    stdout: { write: vi.fn() }
+  };
+  expect(await runInstalledDesktopCli(["migrate"], options)).toBe(1);
+  expect(migrate).not.toHaveBeenCalled();
+  expect(
+    await runInstalledDesktopCli(
+      ["migrate", "--confirm-legacy-stopped"],
+      options
+    )
+  ).toBe(0);
+  expect(migrate).toHaveBeenCalledOnce();
+});
+
+it("reports Agent eligibility only after verifying the installed bundle", async () => {
+  const { resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const stdout = { write: vi.fn() };
+  const team = vi.fn(() => "ABCDE12345");
+  await expect(
+    runInstalledDesktopCli(["__control-plane-agent-eligibility"], {
+      moduleUrl: pathToFileURL(entry).href,
+      executable,
+      platform: "darwin",
+      electronVersion: "39.8.10",
+      environment: {},
+      verifyBundle: () => capability,
+      agentTeamId: team,
+      stdout
+    })
+  ).resolves.toBe(0);
+  expect(team).toHaveBeenCalledWith(capability);
+  expect(JSON.parse(String(stdout.write.mock.calls[0]![0]))).toMatchObject({
+    ok: true,
+    teamId: "ABCDE12345"
+  });
+});
+
+it("routes packaged macOS start, stop and upgrade preparation to the control plane", async () => {
+  const { resources, entry, executable } = installation();
+  const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+  const runControlPlaneCli = vi.fn(async () => 0);
+  const runCli = vi.fn(async () => 0);
+  for (const args of [
+    ["start", "--daemon"],
+    ["stop"],
+    ["prepare-upgrade", "--json"]
+  ]) {
+    await expect(
+      runInstalledDesktopCli(args, {
+        moduleUrl: pathToFileURL(entry).href,
+        executable,
+        platform: "darwin",
+        electronVersion: "39.8.10",
+        environment: {},
+        verifyBundle: () => capability,
+        runControlPlaneCli,
+        runCli
+      })
+    ).resolves.toBe(0);
+  }
+  expect(runControlPlaneCli).toHaveBeenCalledTimes(3);
+  expect(runCli).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["__control-plane-startup-status", "agent-status", "start"],
+  ["prepare-upgrade", "prepare-upgrade", "prepare-upgrade"]
+] as const)(
+  "routes %s without launching a missing control plane",
+  async (argument, routed, command) => {
+    const { resources, entry, executable } = installation();
+    const capability = { resourcesPath: resources } as DesktopRuntimeCapability;
+    const installed = await import("./control-plane/installed-client.js");
+    const open = vi
+      .spyOn(installed, "openInstalledControlPlane")
+      .mockResolvedValue({} as never);
+    const runControlPlaneCli = vi.fn(
+      async (
+        args: string[],
+        deps: Parameters<
+          typeof import("./control-plane/cli.js").runControlPlaneCli
+        >[1]
+      ) => {
+        expect(args).toEqual([routed, "--json"]);
+        await deps.connect(command);
+        return 0;
+      }
+    );
+    try {
+      expect(
+        await runInstalledDesktopCli([argument, "--json"], {
+          moduleUrl: pathToFileURL(entry).href,
+          executable,
+          platform: "darwin",
+          electronVersion: "39.8.10",
+          environment: {},
+          verifyBundle: () => capability,
+          runControlPlaneCli
+        })
+      ).toBe(0);
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({ launchIfMissing: false })
+      );
+    } finally {
+      open.mockRestore();
+    }
+  }
+);
+
 it("fails closed before running any command outside its installation", async () => {
   const { entry } = installation();
   const runCli = vi.fn(async () => 0);

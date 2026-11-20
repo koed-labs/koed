@@ -254,6 +254,23 @@ export function validateDesktopRuntimeCapability(
   );
 }
 
+export function resolveDesktopControlAddon(capability: unknown): string {
+  if (!validateDesktopRuntimeCapability(capability))
+    throw new Error("validated private Desktop runtime capability is required");
+  if (capability.target.platform !== "macos")
+    throw new Error("Desktop local control is unavailable on this platform");
+  const relativePath = "control/koed_background_xpc.node";
+  const entry = capability.manifest.files.find(
+    (file) => file.path === relativePath
+  );
+  if (!entry || entry.kind !== "file")
+    throw new Error("Desktop control addon is not in the verified bundle");
+  const path = resolve(capability.resourcesPath, "koed-runtime", relativePath);
+  if (hash(regularFile(path)) !== entry.sha256)
+    throw new Error("Desktop control addon digest mismatch");
+  return path;
+}
+
 export function deriveDesktopRuntimeOwner(
   koedHome: string,
   stableInstallationIdentity: string

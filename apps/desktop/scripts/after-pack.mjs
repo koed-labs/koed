@@ -13,6 +13,7 @@ import {
   removeClaudeAgentSdkPlatformRuntimes
 } from "../../../scripts/provider-runtime-package-policy.mjs";
 import { assertNoPrivacyPayload } from "./privacy-payload-inventory.mjs";
+import { writeBackgroundAgentLaunchAgentPlist } from "./background-agent-package.mjs";
 import { verifyPackagedAccountConfig } from "./verify-packaged-account-config.mjs";
 
 /**
@@ -134,6 +135,12 @@ export default async function afterPack(context) {
   if (!existsSync(appPath)) {
     throw new Error(`Expected packaged macOS app at ${appPath}.`);
   }
+
+  writeBackgroundAgentLaunchAgentPlist({
+    appPath,
+    productFilename: context.packager.appInfo.productFilename,
+    environment: process.env
+  });
 
   const removed = normalizePackagedSymlinks(appPath);
   if (removed > 0) {

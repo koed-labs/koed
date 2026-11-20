@@ -58,6 +58,8 @@ interface DesktopMenuBarOptions<TMenu> {
   getStatus: () => unknown | Promise<unknown>;
   openDesktop: () => void | Promise<void>;
   startKoed?: () => void;
+  stopKoed?: () => void;
+  configureBackgroundAgent?: () => void;
   quit: () => void;
   pollIntervalMs?: number;
   now?: () => Date;
@@ -180,6 +182,8 @@ export const createMenuBarMenuTemplate = (
     openDesktop: () => void;
     refresh: () => void;
     startKoed?: () => void;
+    stopKoed?: () => void;
+    configureBackgroundAgent?: () => void;
     quit: () => void;
   }
 ): MenuBarMenuItem[] => {
@@ -208,8 +212,18 @@ export const createMenuBarMenuTemplate = (
     { type: "separator" },
     ...(snapshot.stopped && actions.startKoed
       ? [{ label: "Start Koed", click: actions.startKoed }]
-      : []),
+      : !snapshot.stopped && actions.stopKoed
+        ? [{ label: "Stop Koed", click: actions.stopKoed }]
+        : []),
     { label: "Open Koed", click: actions.openDesktop },
+    ...(actions.configureBackgroundAgent
+      ? [
+          {
+            label: "Background Agent…",
+            click: actions.configureBackgroundAgent
+          }
+        ]
+      : []),
     { label: "Refresh Status", click: actions.refresh },
     { type: "separator" },
     { label: "Quit Koed", click: actions.quit }
@@ -233,6 +247,8 @@ export const createDesktopMenuBar = <TMenu>({
   getStatus,
   openDesktop,
   startKoed,
+  stopKoed,
+  configureBackgroundAgent,
   quit,
   pollIntervalMs = 30_000,
   now = () => new Date()
@@ -280,6 +296,8 @@ export const createDesktopMenuBar = <TMenu>({
         openDesktop: showDesktop,
         refresh: refreshStatus,
         ...(startKoed ? { startKoed } : {}),
+        ...(stopKoed ? { stopKoed } : {}),
+        ...(configureBackgroundAgent ? { configureBackgroundAgent } : {}),
         quit
       })
     );

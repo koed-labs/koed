@@ -81,6 +81,37 @@ const validRuntimeState = (value: unknown): value is KoedServerRuntimeState => {
   );
 };
 
+export function assertPriorRuntimeRecordDead(
+  path: string,
+  read: (path: string) => string = (file) => nodeReadFileSync(file, "utf8"),
+  isLive: (pid: number) => boolean = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  }
+): void {
+  let raw: string;
+  try {
+    raw = read(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error("Prior runtime record is invalid", { cause: error });
+  }
+  if (!validRuntimeState(parsed))
+    throw new Error("Prior runtime record is invalid");
+  if (isLive(parsed.pid))
+    throw new Error("Prior runtime supervisor is still running");
+}
+
 export const isRuntimeGenerationState = (
   value: unknown
 ): value is RuntimeGenerationState =>

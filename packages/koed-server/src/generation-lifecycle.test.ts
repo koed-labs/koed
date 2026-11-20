@@ -37,6 +37,23 @@ const fixtureRuntime = vi.hoisted(() => ({
 const pointerFailure = vi.hoisted(() => ({
   path: undefined as string | undefined
 }));
+const lockReleaseFailure = vi.hoisted(() => ({
+  path: undefined as string | undefined
+}));
+vi.mock("./directory-lock.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./directory-lock.js")>();
+  return {
+    ...actual,
+    acquireDirectoryLock(path: string) {
+      const release = actual.acquireDirectoryLock(path);
+      return () => {
+        if (path === lockReleaseFailure.path)
+          throw new Error("simulated store-lock release failure");
+        release();
+      };
+    }
+  };
+});
 vi.mock("./component-runtime-identity.js", () => ({
   discoverActualRuntimeIdentity: () => {
     if (!fixtureRuntime.value) throw new Error("fixture runtime missing");
@@ -78,6 +95,7 @@ import { resolveKoedServerPaths } from "./paths.js";
 import {
   pinGenerationForStart,
   pinDesktopBundleGenerationForStart,
+  RuntimePinPublicationError,
   activateGeneration,
   cleanupGenerations,
   readCurrentGeneration,
@@ -176,6 +194,7 @@ afterEach(() => {
     rmSync(path, { recursive: true, force: true });
   for (const path of temporaryMetadata.splice(0)) rmSync(path, { force: true });
   pointerFailure.path = undefined;
+  lockReleaseFailure.path = undefined;
   resetFixtureManifestPinCatalog();
   vi.restoreAllMocks();
 });
@@ -994,6 +1013,46 @@ describe("generation lifecycle", () => {
     );
   });
 
+  it.each(["standalone", "desktop"])(
+    "retains lifecycle exclusion when %s store-lock release fails after pin publication",
+    async (kind) => {
+      const paths = pathsForTest();
+      let start: () => Promise<unknown>;
+      if (kind === "standalone") {
+        const generation = await stage(paths, "0.9.0");
+        await activateGeneration(paths, generation.id, owner);
+        start = () => pinGenerationForStart(paths, owner);
+      } else {
+        const resources = resolve(paths.koedHome, "resources");
+        const runtime = resolve(resources, "koed-runtime");
+        mkdirSync(runtime, { recursive: true });
+        writeFileSync(
+          resolve(runtime, "desktop-bundle-manifest.json"),
+          JSON.stringify({
+            schemaVersion: 1,
+            component: "base",
+            productVersion: "0.9.0",
+            target: { platform: "linux", architecture: "x64" },
+            files: []
+          })
+        );
+        const capability = verifyDesktopRuntimeBundle(resources);
+        start = () => pinDesktopBundleGenerationForStart(paths, capability);
+      }
+      lockReleaseFailure.path = `${paths.componentsDir}.lock`;
+      const failure = await start().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(RuntimePinPublicationError);
+      expect((failure as Error).cause).toHaveProperty(
+        "message",
+        "simulated store-lock release failure"
+      );
+      expect(existsSync(paths.generationStatePath!)).toBe(true);
+      expect(
+        existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))
+      ).toBe(true);
+    }
+  );
+
   it("pins selected generation for process lifetime and blocks activation/cleanup", async () => {
     const paths = pathsForTest();
     const current = await stage(paths, "0.9.0");
@@ -1219,6 +1278,24 @@ describe("generation lifecycle", () => {
     expect(removeStaleGenerationPin(paths)).toBe(false);
     expect(existsSync(pinPath)).toBe(true);
     pin(2147483647, "dead-process-identity");
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    const controlPath = resolve(paths.configDir, "control-plane-state.json");
+    writeFileSync(
+      controlPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        revision: 1,
+        stopIntent: false,
+        backgroundEnabled: false,
+        persistentCli: false,
+        runtimeClean: false,
+        protectedGenerationId: null
+      }),
+      { mode: 0o600 }
+    );
+    expect(removeStaleGenerationPin(paths)).toBe(false);
+    expect(existsSync(pinPath)).toBe(true);
+    rmSync(controlPath);
     expect(removeStaleGenerationPin(paths)).toBe(true);
     expect(existsSync(pinPath)).toBe(false);
   });
@@ -1266,8 +1343,89 @@ describe("generation lifecycle", () => {
     >;
     state.pinToken = "c".repeat(64);
     writeFileSync(pinPath, JSON.stringify(state));
-    await pin.release();
+    await expect(pin.release()).rejects.toThrow(/pin/i);
     expect(existsSync(pinPath)).toBe(true);
+    expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
+      true
+    );
+  });
+
+  it("retains lifecycle authority when pin state cannot be read and permits retry", async () => {
+    const paths = pathsForTest();
+    const generation = await stage(paths, "0.9.0");
+    await activateGeneration(paths, generation.id, owner);
+    const pin = await pinGenerationForStart(paths, owner);
+    const pinPath = paths.generationStatePath!;
+    const state = readFileSync(pinPath, "utf8");
+    const lockPath = resolve(paths.runDir, "generation-lifecycle.lock");
+    writeFileSync(pinPath, "invalid");
+    await expect(pin.release()).rejects.toThrow();
+    expect(existsSync(lockPath)).toBe(true);
+    writeFileSync(pinPath, state);
+    await pin.release();
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("does not remove a pin if lifecycle ownership cannot be verified", async () => {
+    const paths = pathsForTest();
+    const generation = await stage(paths, "0.9.0");
+    await activateGeneration(paths, generation.id, owner);
+    const pin = await pinGenerationForStart(paths, owner);
+    const lockPath = resolve(paths.runDir, "generation-lifecycle.lock");
+    const ownerPath = resolve(lockPath, "owner.json");
+    const original = readFileSync(ownerPath, "utf8");
+    writeFileSync(ownerPath, "invalid");
+    await expect(pin.release()).rejects.toThrow(/lock/i);
+    expect(existsSync(paths.generationStatePath!)).toBe(true);
+    writeFileSync(ownerPath, original);
+    await pin.release();
+  });
+
+  it.each(["pid", "generationId", "owner"])(
+    "refuses release if pin %s changes",
+    async (field) => {
+      const paths = pathsForTest();
+      const generation = await stage(paths, "0.9.0");
+      await activateGeneration(paths, generation.id, owner);
+      const pin = await pinGenerationForStart(paths, owner);
+      const path = paths.generationStatePath!;
+      const original = readFileSync(path, "utf8");
+      const state = JSON.parse(original) as Record<string, unknown>;
+      if (field === "pid") state.pid = process.pid + 1;
+      else if (field === "generationId") state.generationId = "a".repeat(64);
+      else state.owner = { kind: "standalone", installationId: "other" };
+      writeFileSync(path, JSON.stringify(state));
+      await expect(pin.release()).rejects.toThrow(/pin/i);
+      expect(
+        existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))
+      ).toBe(true);
+      writeFileSync(path, original);
+      await pin.release();
+    }
+  );
+
+  it("blocks generation pruning when control-plane state is unclean even before a generation is recorded", async () => {
+    const paths = pathsForTest();
+    const generation = await stage(paths, "0.9.0");
+    await activateGeneration(paths, generation.id, owner);
+    mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      resolve(paths.configDir, "control-plane-state.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        revision: 1,
+        stopIntent: false,
+        backgroundEnabled: false,
+        persistentCli: false,
+        runtimeClean: false,
+        protectedGenerationId: null
+      }),
+      { mode: 0o600 }
+    );
+    await expect(cleanupGenerations(paths, 1, owner)).rejects.toThrow(
+      /unclean/i
+    );
+    expect(existsSync(resolve(paths.generationsDir, generation.id))).toBe(true);
   });
 
   it("rejects Desktop activation for a standalone-owned generation", async () => {

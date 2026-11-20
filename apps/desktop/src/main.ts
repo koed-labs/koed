@@ -76,6 +76,15 @@ import { createMainWindowOptions } from "./window/window-manager.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
 import { createDesktopCliInstallManager } from "./cli-install/manager.js";
 import {
+  createBackgroundAgentLaunchService,
+  isBackgroundAgentLaunch,
+  BACKGROUND_AGENT_SERVICE_NAME
+} from "./background-agent/launch-service.js";
+import { createBackgroundAgentControl } from "./background-agent/control-client.js";
+import { createInstalledAgentCommand } from "./background-agent/installed-client.js";
+import { startBackgroundAgent } from "./background-agent/runtime.js";
+import { agentSettingsChoices } from "./background-agent/settings.js";
+import {
   loadCliInstallSettingsForDesktop,
   writeCliInstallSettings
 } from "./cli-install/settings.js";
@@ -116,6 +125,7 @@ const {
 // command manages Desktop's own instance with Desktop's runtime authority.
 const koedServerCli = desktopCliPath ?? genericKoedServerCli;
 const appName = "Koed";
+const isAgent = isBackgroundAgentLaunch(process.argv);
 const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   desktopManagedLocal: true,
   packagedDesktop: app.isPackaged
@@ -171,16 +181,16 @@ const acceptPairingDeepLink = (value: string): string | null => {
   return pairingLink;
 };
 
-if (process.defaultApp && process.argv[1]) {
+if (!isAgent && process.defaultApp && process.argv[1]) {
   app.setAsDefaultProtocolClient("koed-pair", process.execPath, [
     resolve(process.argv[1])
   ]);
-} else {
+} else if (!isAgent) {
   app.setAsDefaultProtocolClient("koed-pair");
 }
 
-let ownsDesktopInstance = true;
-if (process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
+let ownsDesktopInstance = !isAgent;
+if (!isAgent && process.env.KOED_ALLOW_MULTIPLE_INSTANCES !== "1") {
   const hasLock = app.requestSingleInstanceLock();
   if (!hasLock) {
     ownsDesktopInstance = false;
@@ -267,6 +277,21 @@ const createServerManager = (
         environment: koedEnvironment,
         existsSync
       }),
+    persistentControlStatus: true,
+    createControlCliInvocation:
+      app.isPackaged && process.platform === "darwin"
+        ? (args) => ({
+            command: process.execPath,
+            args: [
+              resolve(
+                process.resourcesPath,
+                "app.asar/node_modules/@koed-labs/server/dist/desktop-cli-entrypoint.js"
+              ),
+              ...args
+            ],
+            env: { ...koedEnvironment, ELECTRON_RUN_AS_NODE: "1" }
+          })
+        : undefined,
     createSupervisorInvocation: app.isPackaged
       ? () =>
           createNodeEntrypointInvocation(
@@ -750,6 +775,44 @@ const bootstrap = async () => {
         startKoed: () => {
           void Promise.resolve(server.handlers.start()).catch(() => undefined);
         },
+        ...(app.isPackaged && process.platform === "darwin"
+          ? {
+              configureBackgroundAgent: () => {
+                void (async () => {
+                  try {
+                    const { registration, control } =
+                      await createAgentServices();
+                    const state = await registration.get();
+                    if (!state.supported || state.status === "unsupported")
+                      throw new Error(
+                        "Background Agent is not available for this installation"
+                      );
+                    const buttons = agentSettingsChoices(state.status);
+                    const choice = await dialog.showMessageBox({
+                      type: "question",
+                      message: "Background Agent settings",
+                      detail:
+                        "Koed must be stopped to enable or reconcile the Agent. Disabling stops Koed first.",
+                      buttons,
+                      defaultId: buttons.length - 1,
+                      cancelId: buttons.length - 1
+                    });
+                    const action = buttons[choice.response];
+                    if (action === "Disable") await control.disable();
+                    else if (action === "Enable" || action === "Reconcile")
+                      await control.enable();
+                  } catch (error) {
+                    await dialog.showMessageBox({
+                      type: "error",
+                      message: "Background Agent could not be changed",
+                      detail:
+                        error instanceof Error ? error.message : String(error)
+                    });
+                  }
+                })();
+              }
+            }
+          : {}),
         quit: () => app.quit()
       });
     }
@@ -858,6 +921,138 @@ const bootstrap = async () => {
   });
 };
 
+const createAgentServices = async () => {
+  if (!app.isPackaged || process.platform !== "darwin")
+    throw new Error("Background Agent requires packaged macOS Koed");
+  const entrypoint = resolve(
+    process.resourcesPath,
+    "app.asar/node_modules/@koed-labs/server/dist/desktop-cli-entrypoint.js"
+  );
+  const run = (executable: string, args: string[], env: NodeJS.ProcessEnv) =>
+    new Promise<string>((resolvePromise, rejectPromise) => {
+      execFile(
+        executable,
+        args,
+        { cwd: repoRoot, env, timeout: 120_000 },
+        (error, stdout, stderr) => {
+          if (stdout.trim()) resolvePromise(stdout);
+          else
+            rejectPromise(
+              new Error(
+                stderr.trim() ||
+                  error?.message ||
+                  "Agent control returned no output"
+              )
+            );
+        }
+      );
+    });
+  const eligibility: unknown = JSON.parse(
+    await run(
+      process.execPath,
+      [entrypoint, "__control-plane-agent-eligibility"],
+      { ...koedEnvironment, ELECTRON_RUN_AS_NODE: "1" }
+    )
+  );
+  if (
+    !eligibility ||
+    typeof eligibility !== "object" ||
+    !("teamId" in eligibility) ||
+    typeof eligibility.teamId !== "string"
+  )
+    throw new Error("Background Agent eligibility could not be verified");
+  const registration = createBackgroundAgentLaunchService({
+    appIsPackaged: app.isPackaged,
+    platform: process.platform,
+    nativeBridgeAvailable: true,
+    teamId: eligibility.teamId,
+    agentPlistPresent: existsSync(
+      resolve(
+        process.resourcesPath,
+        "..",
+        "Library",
+        "LaunchAgents",
+        BACKGROUND_AGENT_SERVICE_NAME
+      )
+    ),
+    getLoginItemSettings: (options) => app.getLoginItemSettings(options),
+    setLoginItemSettings: (settings) => app.setLoginItemSettings(settings)
+  });
+  const command = createInstalledAgentCommand({
+    executable: process.execPath,
+    entrypoint,
+    environment: koedEnvironment,
+    run
+  });
+  const control = createBackgroundAgentControl({
+    registration,
+    ensureStopped: async () => {
+      const status = await command("agent-status");
+      if (!status.ok || status.snapshot?.state !== "stopped")
+        throw new Error("Stop Koed before enabling the Background Agent");
+    },
+    command
+  });
+  return { registration, command, control };
+};
+
+const bootstrapBackgroundAgent = async (): Promise<void> => {
+  await app.whenReady();
+  app.dock?.hide();
+  const { control, command } = await createAgentServices();
+  const reportError = (error: Error): void => {
+    console.error("Background Agent:", error.message);
+    void dialog.showMessageBox({
+      type: "error",
+      message: "Background Agent needs attention",
+      detail: error.message
+    });
+  };
+  const agent = startBackgroundAgent({
+    control,
+    command,
+    onError: reportError,
+    quit: () => app.quit()
+  });
+  const icon = getMenuBarIcon();
+  if (!icon) throw new Error("Background Agent menu icon is unavailable");
+  const tray = new Tray(icon);
+  desktopMenuBar = createDesktopMenuBar<Menu>({
+    tray: {
+      destroy: () => tray.destroy(),
+      onClick: (listener) => tray.on("click", listener),
+      onRightClick: (listener) => tray.on("right-click", listener),
+      popUpContextMenu: (menu) => tray.popUpContextMenu(menu),
+      setToolTip: (tooltip) => tray.setToolTip(tooltip)
+    },
+    buildMenu: (template) => Menu.buildFromTemplate(template),
+    getStatus: async () => {
+      const status = await command("agent-status");
+      if (!status.ok || !status.snapshot)
+        throw new Error(status.error ?? "Agent status unavailable");
+      return { lifecycle: { state: status.snapshot.state } };
+    },
+    openDesktop: async () => {
+      await new Promise<void>((resolvePromise, rejectPromise) => {
+        execFile(
+          "/usr/bin/open",
+          ["-n", resolve(process.resourcesPath, "..", "..")],
+          (error) => (error ? rejectPromise(error) : resolvePromise())
+        );
+      });
+    },
+    startKoed: () => {
+      void agent.then((value) => value.start());
+    },
+    stopKoed: () => {
+      void agent.then((value) => value.stop());
+    },
+    quit: () => {
+      void agent.then((value) => value.quit());
+    }
+  });
+};
+
 if (ownsDesktopInstance) {
   for (const argument of process.argv) {
     if (argument.startsWith("koed-pair://")) {
@@ -866,7 +1061,16 @@ if (ownsDesktopInstance) {
     }
   }
 }
-const bootstrapPromise = ownsDesktopInstance ? bootstrap() : Promise.resolve();
+const bootstrapPromise = isAgent
+  ? bootstrapBackgroundAgent().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Background Agent failed to start:", message);
+      dialog.showErrorBox("Background Agent failed to start", message);
+      app.exit(1);
+    })
+  : ownsDesktopInstance
+    ? bootstrap()
+    : Promise.resolve();
 
 app.on("window-all-closed", () => {
   if (shouldQuitAfterAllWindowsClosed(process.platform)) {
@@ -874,6 +1078,7 @@ app.on("window-all-closed", () => {
   }
 });
 app.on("activate", () => {
+  if (isAgent) return;
   const activation = consumeDesktopActivation(backgroundLaunchPending);
   backgroundLaunchPending = activation.backgroundLaunchPending;
   if (!activation.openWindow) return;
@@ -883,6 +1088,7 @@ app.on("activate", () => {
 });
 let koedServerStoppedForQuit = false;
 app.on("before-quit", (event) => {
+  if (isAgent) return;
   disposeDesktopUpdateDiscovery?.();
   disposeDesktopUpdateDiscovery = null;
   disposeDesktopUpdateIpc?.();
