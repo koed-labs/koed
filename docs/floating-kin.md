@@ -15,8 +15,8 @@ sleeps when capture activity is quiet, wakes for a minute on hover, and stays
 awake while the main Koed window is focused. Drag the Kin to move the overlay
 for the current Desktop session. The Kin and its controls receive clicks;
 clicks in the surrounding transparent space pass through. Disable the preference
-to hide it. Quitting Desktop closes the Kin even if the Local AI Runtime stays
-up.
+to hide it. The overlay has its own zoom, independent of the main Desktop
+window. Quitting Desktop closes the Kin even if the Local AI Runtime stays up.
 
 Choose **Summarize Conversation** for the latest captured work in a
 Conversation, or **Summarize Project** for context from its Project. The Project
@@ -40,19 +40,26 @@ model, and reasoning effort when available.
    those reads. Desktop polls a bounded feed of captured messages from the last
    30 minutes, ordered by captured activity time. Replay and imports do not
    create a fresh activity signal. Displayed information is limited to
-   Conversation, Project, AI Client, and time metadata. There is no Team path.
+   Conversation, Project, AI Client, and time metadata. Local reads do not
+   require [optional Desktop sign-in](desktop-accounts.md); synthesis still
+   requires the assigned AI Client to be ready. There is no Team path.
 3. For a Conversation summary, the API can supply eligible captured items from
    the latest unfinished Claude Code or Codex turn before its Memory Events
    seal. Pi uses sealed Personal Memory only: its raw turn boundary is not yet
    verified here. A matching Claude Code completion signal closes the raw turn.
    If a safe turn boundary or complete initiating Claude Code message cannot be
    established, the read uses applicable sealed Personal Memory or returns no
-   evidence. Older capture without enough information to establish completeness
-   also uses the sealed path. A Project summary uses sealed Personal Memory for the selected
-   Project and only if it still matches the Conversation's resolved Project. A
-   Project change hides any previous Project result and cancels pending work.
-   Evidence is bounded and filtered for owner access, deletion, exclusion, and
-   capture eligibility. Approval Activity, hidden reasoning, and generic raw
+   evidence. Kin uses the main Claude Code transcript rather than mixing its
+   turn sequence with child-agent transcripts. Older capture without enough
+   information to establish completeness and initiating messages above the raw
+   evidence limit use the sealed path. A Project summary uses sealed Personal
+   Memory for the selected Project and only if it still matches the
+   Conversation's resolved Project. A Project change hides any previous Project
+   result and cancels pending work.
+   Sealed discovery scans at most 128 candidates for 32 eligible messages;
+   tool-only rows do not consume message slots. Evidence is bounded and
+   filtered for owner access, deletion, exclusion, and capture eligibility.
+   Approval Activity, hidden reasoning, and generic raw
    records are not passed to the synthesis AI Client. The API does not do LLM
    synthesis.
 4. The runtime passes the evidence as data to a short, separate synthesis task
@@ -66,12 +73,15 @@ model, and reasoning effort when available.
    credentials or requiring a second profile. It runs in an empty working
    directory in a fresh, ephemeral App Server thread with the same read-only,
    no-approval sandbox as Memory Answer and no Koed retrieval tools. The runner
-   requests that Codex disable configured MCP servers and user hooks for the
-   summary. Codex must confirm the no-capture settings and ephemeral thread
-   before receiving evidence. Read-only is not a guarantee that no commands
-   can run. Kin checks sign-in in the assigned profile, but the existing
-   Memory Answer assignment screen may still report a Keychain-only profile as
-   signed out. Kin does not change how that assignment is saved.
+   requests that Codex disable configured MCP servers, user hooks, prompt
+   logging, and OpenTelemetry exporters for the summary. Kin checks the
+   effective prompt logging and exporter settings before sending evidence. If
+   they are enabled or cannot be verified, the summary is unavailable. These
+   checks do not change Memory Answer or the assigned profile. Read-only is not
+   a guarantee that no commands can run. Kin checks sign-in in the assigned
+   profile, but the existing Memory Answer assignment screen may still report
+   a Keychain-only profile as signed out when saving a new assignment. An
+   existing working assignment needs no additional setup.
 
    Claude Code Conversations still appear in Floating Kin, but Claude Code is
    unavailable for Kin synthesis. The supported Claude Agent SDK cannot prove
