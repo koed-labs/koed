@@ -13,10 +13,10 @@ and blue-to-yellow gradient to distinguish it from Project Kins in Conversation
 chips. It stays visible below the chips even while a summary is open. The Kin
 sleeps when capture activity is quiet, wakes for a minute on hover, and stays
 awake while the main Koed window is focused. Drag the Kin to move the overlay
-for the current Desktop session. The Kin and its controls
-receive clicks; clicks in the surrounding transparent space pass through. Disable
-the preference to hide it. Quitting Desktop closes the Kin even if the Local AI
-Runtime stays up.
+for the current Desktop session. The Kin and its controls receive clicks;
+clicks in the surrounding transparent space pass through. Disable the preference
+to hide it. Quitting Desktop closes the Kin even if the Local AI Runtime stays
+up.
 
 Choose **Summarize Conversation** for the latest captured work in a
 Conversation, or **Summarize Project** for context from its Project. The Project
@@ -34,29 +34,33 @@ model, and reasoning effort when available.
    for the existing Local AI Runtime. The Kin never starts or resumes a runtime,
    including after **Stop Koed**. If Koed is stopped, start it explicitly from
    Desktop to use the Kin again.
-2. The runtime asks the local API for recent Personal activity. The API derives
-   User identity from the Personal API Token. Desktop polls a bounded feed of
-   captured messages from the last 30 minutes, ordered by captured activity
-   time. Replay and imports do not create a fresh activity signal. Displayed
-   information is limited to Conversation, Project, AI Client, and time metadata.
-   There is no Team path.
+2. The runtime asks the local API for recent Personal activity. Activity and
+   evidence reads require a Personal API Token and the Local AI Runtime’s
+   same-user registration proof over loopback. Hosted deployments cannot serve
+   those reads. Desktop polls a bounded feed of captured messages from the last
+   30 minutes, ordered by captured activity time. Replay and imports do not
+   create a fresh activity signal. Displayed information is limited to
+   Conversation, Project, AI Client, and time metadata. There is no Team path.
 3. For a Conversation summary, the API can supply eligible captured items from
    the latest unfinished Claude Code or Codex turn before its Memory Events
    seal. Pi uses sealed Personal Memory only: its raw turn boundary is not yet
-   verified here. If a safe turn boundary or eligible items cannot be established,
-   the read uses applicable sealed Personal Memory or returns no evidence. A
-   Project summary uses sealed Personal Memory for the selected Project and only
-   if it still matches the Conversation's resolved Project. Evidence requires the
-   local runtime registration proof as well as the Personal API Token. Evidence
-   is bounded and filtered for owner access, deletion, exclusion, and capture
-   eligibility. Approval Activity, hidden reasoning, and generic raw records
-   are not passed to the synthesis AI Client. The API does not do LLM synthesis.
+   verified here. A matching Claude Code completion signal closes the raw turn.
+   If a safe turn boundary or complete initiating Claude Code message cannot be
+   established, the read uses applicable sealed Personal Memory or returns no
+   evidence. Older capture without enough information to establish completeness
+   also uses the sealed path. A Project summary uses sealed Personal Memory for the selected
+   Project and only if it still matches the Conversation's resolved Project. A
+   Project change hides any previous Project result and cancels pending work.
+   Evidence is bounded and filtered for owner access, deletion, exclusion, and
+   capture eligibility. Approval Activity, hidden reasoning, and generic raw
+   records are not passed to the synthesis AI Client. The API does not do LLM
+   synthesis.
 4. The runtime passes the evidence as data to a short, separate synthesis task
    using the explicit Memory Answer assignment. The selected AI Client can
-   differ from the AI Client shown in the captured activity. Codex, Claude Code,
-   and Pi can synthesize; there is no fallback. The assignment needs a current
-   capability snapshot for the configured executable and profile. Review it
-   under **Settings → AI models**.
+   differ from the AI Client shown in the captured activity. Codex and Pi can
+   synthesize; there is no fallback. The assignment needs a current capability
+   snapshot for the configured executable and profile. Review it under
+   **Settings → AI models**.
 
    Codex uses the assigned profile's existing native sign-in, without copying
    credentials or requiring a second profile. It runs in an empty working
@@ -69,22 +73,23 @@ model, and reasoning effort when available.
    Memory Answer assignment screen may still report a Keychain-only profile as
    signed out. Kin does not change how that assignment is saved.
 
-   Claude Code uses the signed-in
-   profile without copying credentials and requires an executable that supports
-   `--safe-mode`. The task runs in an empty working directory without user
-   hooks, skills, or MCP. Safe mode does not override organization-managed
-   policy, which can still run managed hooks. Do not use this preview with a
-   Claude Code profile that has managed hooks. If Claude Code requests sign-in,
-   sign in to the assigned profile and retry. If it does not recognize safe mode,
-   update the assigned executable.
+   Claude Code Conversations still appear in Floating Kin, but Claude Code is
+   unavailable for Kin synthesis. The supported Claude Agent SDK cannot prove
+   before launch that organization-managed hooks will not run. The runtime
+   refuses the task rather than sending captured evidence to an unverified
+   process. This does not change Claude Code capture or Memory Answer execution.
    The Local AI Runtime logs a reason code without logging the provider's raw
    output. Synthesis uses the assigned AI Client subscription and may incur usage.
 
-5. The runtime validates cited sources against eligible evidence, rechecks its
-   inputs, computes the freshness timestamp, and returns a transient result.
-   The runtime requests cancellation after 30 seconds; the AI Client may need
-   additional time to shut down. Cancelling or closing the Kin discards the
-   result. This path creates neither a Conversation nor a durable Memory Answer.
+5. The runtime validates citations and rechecks every admitted evidence item by
+   ID, including uncited items. Newer capture does not displace items from this
+   check. An item that seals during synthesis must still match its eligible
+   sealed source; ambiguous lineage, changed content, or revoked access causes
+   the result to be discarded. The runtime computes the freshness timestamp and
+   returns a transient result. It requests cancellation after 30 seconds; the
+   AI Client may need additional time to shut down. Cancelling or closing the
+   Kin discards the result. This path creates neither a Conversation nor a
+   durable Memory Answer.
    It does not start, continue, interrupt, or hand off any captured work.
 
 See [Desktop settings](desktop-settings.md#general),
