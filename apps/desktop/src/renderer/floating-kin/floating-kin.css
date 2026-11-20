@@ -59,7 +59,7 @@ body:has(.fk-surface) {
   outline-offset: 2px;
 }
 .fk-dock,
-.fk-kin,
+.fk-kin-avatar,
 .fk-header {
   flex-shrink: 0;
 }
@@ -165,12 +165,6 @@ body:has(.fk-surface) {
 .fk-state .v1-pixelkin {
   flex: none;
 }
-.fk-kin {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-}
 .fk-surface .fk-kin-avatar {
   position: relative;
   display: grid;
@@ -213,12 +207,6 @@ body:has(.fk-surface) {
   color: var(--fk-text);
   text-shadow: 0 0 4px var(--fk-bg);
   font-weight: 700;
-}
-.fk-quiet-tip {
-  padding-inline: 12px;
-}
-.fk-quiet-tip[aria-hidden="true"] {
-  visibility: hidden;
 }
 .fk-panel {
   display: flex;

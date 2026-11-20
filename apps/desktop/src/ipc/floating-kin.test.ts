@@ -35,6 +35,7 @@ function setup() {
   const interactive = vi.fn();
   const resize = vi.fn();
   const drag = vi.fn();
+  const mainWindowFocused = vi.fn(() => false);
   const dismiss = registerFloatingKinIpc({
     ipcMain: {
       handle: (channel, handler) => {
@@ -48,6 +49,7 @@ function setup() {
     getWebContents: () => contents,
     url,
     runtime: { activity, summarize },
+    mainWindowFocused,
     interactive,
     resize,
     drag
@@ -59,6 +61,7 @@ function setup() {
     sends,
     activity,
     summarize,
+    mainWindowFocused,
     interactive,
     resize,
     drag,
@@ -106,6 +109,15 @@ it("rejects all overlay channels from another window, a subframe, or a different
   expect(summarize).not.toHaveBeenCalled();
   expect(interactive).not.toHaveBeenCalled();
   expect(resize).not.toHaveBeenCalled();
+});
+
+it("reads the main Desktop focus snapshot only from the trusted overlay", () => {
+  const { event, invokes, mainWindowFocused } = setup();
+  const read = invokes.get(channels.mainWindowFocused);
+  expect(read).toBeTypeOf("function");
+  expect(read?.(event)).toBe(false);
+  mainWindowFocused.mockReturnValue(true);
+  expect(read?.(event)).toBe(true);
 });
 
 it("allows only fixed summary inputs and cancels in-flight work on request or dismissal", async () => {

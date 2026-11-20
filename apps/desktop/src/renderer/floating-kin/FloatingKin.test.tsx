@@ -55,7 +55,8 @@ beforeEach(() => {
     cancel: vi.fn(async () => undefined),
     setInteractive: vi.fn(),
     setSize: vi.fn(),
-    drag: vi.fn()
+    drag: vi.fn(),
+    onMainWindowFocus: vi.fn(() => () => {})
   };
 });
 afterEach(async () => {
@@ -122,7 +123,14 @@ async function renderQuiet() {
     overflowCount: 0
   }));
   await render();
-  return mount.querySelector<HTMLElement>('[aria-label="No recent capture"]')!;
+  return mount.querySelector<HTMLElement>(".fk-kin-avatar")!;
+}
+
+function expectKinAwake(kin: HTMLElement, awake: boolean) {
+  expect(kin.querySelector(".fk-sleep-mark") !== null).toBe(!awake);
+  expect(
+    kin.querySelector(".v1-pixelkin")?.getAttribute("data-expression")
+  ).toBe(awake ? "happy" : "sleepy");
 }
 
 describe("Floating Kin", () => {
@@ -422,32 +430,54 @@ describe("Floating Kin", () => {
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
   });
 
-  it("shows the quiet message only while hovering or focusing the sleeping Kin", async () => {
-    const sleepingKin = await renderQuiet();
-    expect(mount.textContent).not.toContain("No recent capture");
-    expect(
-      sleepingKin.querySelector(".v1-pixelkin")?.getAttribute("data-expression")
-    ).toBe("sleepy");
-    const move = (type: string) =>
-      act(async () => {
-        sleepingKin.dispatchEvent(new MouseEvent(type, { bubbles: true }));
-      });
-    await move("mouseover");
-    await move("mousemove");
-    expect(mount.querySelector('[role="tooltip"]')?.textContent).toContain(
-      "No recent capture"
-    );
+  it("wakes for one minute after hover without showing a quiet message", async () => {
+    const kin = await renderQuiet();
+    expectKinAwake(kin, false);
+    await mouseOver(kin);
+    expectKinAwake(kin, true);
+    expect(kin.getAttribute("aria-description")).toBe("Awake");
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(true);
-    await mouseOver(mount.querySelector('[role="tooltip"]')!, sleepingKin);
+    await mouseOver(mount.querySelector("main")!, kin);
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
+    await act(async () => kin.focus());
     expect(mount.querySelector('[role="tooltip"]')).toBeNull();
-    await act(async () => sleepingKin.focus());
-    expect(mount.querySelector('[role="tooltip"]')?.textContent).toContain(
-      "Nothing recent has been captured by Koed."
-    );
-    await act(async () => sleepingKin.blur());
-    expect(mount.querySelector('[role="tooltip"]')).toBeNull();
-    expect(bridge.summarize).not.toHaveBeenCalled();
+    expect(mount.textContent).not.toContain("No recent capture");
+    await act(async () => vi.advanceTimersByTimeAsync(59_999));
+    expectKinAwake(kin, true);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expectKinAwake(kin, false);
+    expect(kin.getAttribute("aria-description")).toBe("Sleeping");
+  });
+
+  it("matches the sleep mark to capture freshness even with older Conversation chips", async () => {
+    await render();
+    const kin = mount.querySelector<HTMLElement>(".fk-kin-avatar")!;
+    expectKinAwake(kin, true);
+    const pending =
+      deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+    vi.mocked(bridge.activity).mockReturnValueOnce(pending.promise);
+    await act(async () => vi.advanceTimersByTimeAsync(47_999));
+    expectKinAwake(kin, true);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(mount.querySelector(".fk-chip")).not.toBeNull();
+    expectKinAwake(kin, false);
+  });
+
+  it("stays awake while the main Desktop window is focused, independently of the hover timer", async () => {
+    const unsubscribe = vi.fn();
+    vi.mocked(bridge.onMainWindowFocus).mockReturnValue(unsubscribe);
+    const kin = await renderQuiet();
+    const notify = vi.mocked(bridge.onMainWindowFocus).mock.calls[0]![0];
+    expectKinAwake(kin, false);
+    await act(async () => notify(true));
+    expectKinAwake(kin, true);
+    await mouseOver(kin);
+    await act(async () => vi.advanceTimersByTimeAsync(60_001));
+    expectKinAwake(kin, true);
+    await act(async () => notify(false));
+    expectKinAwake(kin, false);
+    await act(async () => root.render(null));
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
   it("hands keyboard focus from the sleeping Kin to the first chip when capture arrives", async () => {

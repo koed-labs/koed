@@ -20,6 +20,7 @@ export type FloatingKinBridge = {
   setInteractive: (interactive: boolean) => void;
   setSize: (size: FloatingKinSize) => void;
   drag: (input: FloatingKinDrag) => void;
+  onMainWindowFocus: (listener: (focused: boolean) => void) => () => void;
 };
 
 export const floatingKinChannels = {
@@ -28,5 +29,7 @@ export const floatingKinChannels = {
   cancel: "koed:floating-kin:cancel",
   setInteractive: "koed:floating-kin:set-interactive",
   setSize: "koed:floating-kin:set-size",
-  drag: "koed:floating-kin:drag"
+  drag: "koed:floating-kin:drag",
+  mainWindowFocused: "koed:floating-kin:main-window-focused",
+  mainWindowFocusChanged: "koed:floating-kin:main-window-focus-changed"
 } as const;

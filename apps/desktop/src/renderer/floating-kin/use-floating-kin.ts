@@ -65,6 +65,25 @@ export function useActivity(bridge?: FloatingKinBridge) {
   return sample;
 }
 
+export function useCaptureWake(deadline: number, sampledAt: number) {
+  const [expiredDeadline, setExpiredDeadline] = useState(0);
+  useEffect(() => {
+    if (!deadline) return;
+    const timer = window.setTimeout(
+      () => setExpiredDeadline(deadline),
+      Math.max(0, deadline - Date.now())
+    );
+    return () => window.clearTimeout(timer);
+  }, [deadline]);
+  return sampledAt < deadline && expiredDeadline !== deadline;
+}
+
+export function useMainWindowFocus(bridge?: FloatingKinBridge) {
+  const [focused, setFocused] = useState(false);
+  useEffect(() => bridge?.onMainWindowFocus(setFocused), [bridge]);
+  return focused;
+}
+
 type SummaryView = {
   request: FloatingKinSummaryRequest;
   result: FloatingKinSummary | null;

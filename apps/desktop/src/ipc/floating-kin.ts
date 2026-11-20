@@ -111,6 +111,7 @@ export const registerFloatingKinIpc = ({
   getWebContents,
   url,
   runtime,
+  mainWindowFocused,
   interactive,
   resize,
   drag
@@ -119,6 +120,7 @@ export const registerFloatingKinIpc = ({
   getWebContents: () => WebContents | null;
   url: string;
   runtime: FloatingKinRuntime;
+  mainWindowFocused: () => boolean;
   interactive: (value: boolean) => void;
   resize: (size: FloatingKinSize) => void;
   drag: (input: FloatingKinDrag) => void;
@@ -133,6 +135,10 @@ export const registerFloatingKinIpc = ({
 
   const summaries = summaryRequests(runtime);
   const activity = activityRequests(runtime);
+  ipcMain.handle(channels.mainWindowFocused, (event) => {
+    assertTrusted(event);
+    return mainWindowFocused();
+  });
   ipcMain.handle(channels.activity, (event) => {
     assertTrusted(event);
     return activity.run();

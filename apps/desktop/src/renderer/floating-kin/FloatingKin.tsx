@@ -21,6 +21,8 @@ import {
 } from "./FloatingKinPanel.js";
 import {
   useActivity,
+  useCaptureWake,
+  useMainWindowFocus,
   useOverlayWindow,
   useSummary
 } from "./use-floating-kin.js";
@@ -142,71 +144,54 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
 }
 
 function StandaloneKin({
-  quiet,
-  animate,
-  dragging
+  hasChips,
+  active
 }: {
-  quiet: boolean;
-  animate: boolean;
-  dragging: boolean;
+  hasChips: boolean;
+  active: boolean;
 }) {
   const avatar = useRef<HTMLDivElement>(null);
-  const [hovered, setHovered] = useState(false);
-  const [focused, setFocused] = useState(false);
-  const showTip = quiet && (hovered || focused);
+  const wakeTimer = useRef<number | undefined>(undefined);
+  const [recentHover, setRecentHover] = useState(false);
+  const awake = active || recentHover;
+  const wake = () => {
+    window.clearTimeout(wakeTimer.current);
+    setRecentHover(true);
+    wakeTimer.current = window.setTimeout(() => setRecentHover(false), 60_000);
+  };
+  useEffect(() => () => window.clearTimeout(wakeTimer.current), []);
   useEffect(() => {
     const element = avatar.current;
-    if (quiet || !element || document.activeElement !== element) return;
+    if (!hasChips || !element || document.activeElement !== element) return;
     element
       .closest("main")
       ?.querySelector<HTMLButtonElement>(".fk-chip")
       ?.focus();
-  }, [quiet]);
+  }, [hasChips]);
   return (
-    <div className="fk-kin">
-      {showTip && (
-        <div
-          className="fk-state fk-quiet-tip"
-          role="tooltip"
-          aria-hidden={dragging}
-        >
-          <div>
-            <strong>No recent capture</strong>
-            <div className="fk-note" id="floating-kin-quiet-note">
-              Nothing recent has been captured by Koed.
-            </div>
-          </div>
-        </div>
+    <div
+      className="fk-kin-avatar"
+      ref={avatar}
+      data-fk-hit
+      data-fk-handle
+      role="img"
+      aria-label="Floating Kin avatar"
+      aria-description={awake ? "Awake" : "Sleeping"}
+      tabIndex={hasChips ? -1 : 0}
+      onMouseEnter={wake}
+    >
+      <Pixelkin
+        look={floatingKinLook}
+        gradientTop={floatingKinGradientTop}
+        size={88}
+        motion={awake ? "unfocused" : "still"}
+        expression={awake ? "happy" : "sleepy"}
+      />
+      {!awake && (
+        <span className="fk-sleep-mark" aria-hidden="true">
+          z
+        </span>
       )}
-      <div
-        className="fk-kin-avatar"
-        ref={avatar}
-        data-fk-hit
-        data-fk-handle
-        role="img"
-        aria-label={quiet ? "No recent capture" : "Floating Kin avatar"}
-        aria-describedby={
-          showTip && !dragging ? "floating-kin-quiet-note" : undefined
-        }
-        tabIndex={quiet ? 0 : -1}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-      >
-        <Pixelkin
-          look={floatingKinLook}
-          gradientTop={floatingKinGradientTop}
-          size={88}
-          motion={animate ? "unfocused" : "still"}
-          expression={quiet ? "sleepy" : null}
-        />
-        {quiet ? (
-          <span className="fk-sleep-mark" aria-hidden="true">
-            z
-          </span>
-        ) : null}
-      </div>
     </div>
   );
 }
@@ -251,6 +236,7 @@ function useSelection(
 
 export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
   const { activity, at } = useActivity(bridge);
+  const mainWindowFocused = useMainWindowFocus(bridge);
   const { view, summarize, cancel, isCancelling } = useSummary(bridge);
   const { surface, setInteractive } = useOverlayWindow(bridge);
   const { dragging, handlers } = useKinInteraction(
@@ -259,6 +245,14 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
     setInteractive
   );
   const recent = activity.state === "running" ? activity.conversations : [];
+  const latest = Math.max(
+    0,
+    ...recent.map(({ lastActivityAt }) => Date.parse(lastActivityAt))
+  );
+  const recentCapture = useCaptureWake(
+    latest ? Math.min(latest, at) + recentSeconds * 1000 : 0,
+    at
+  );
   const conversations = recent.slice(0, chipLimit);
   const overflow =
     (activity.state === "running" ? activity.overflowCount : 0) +
@@ -326,12 +320,8 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
       ) : null}
       {activity.state === "running" ? (
         <StandaloneKin
-          quiet={recent.length === 0 && overflow === 0}
-          animate={recent.some(
-            ({ lastActivityAt }) =>
-              captureSeconds(lastActivityAt, at) < recentSeconds
-          )}
-          dragging={dragging}
+          hasChips={conversations.length > 0}
+          active={mainWindowFocused || recentCapture}
         />
       ) : (
         <ActivityPill state={activity.state} />

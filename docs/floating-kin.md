@@ -10,9 +10,10 @@ Enable **Floating Kin** under **Settings → General**. Desktop shows the Kin ov
 other windows without moving focus there. Use **Window → Focus Floating Kin**
 for keyboard access. The Floating Kin uses the Koed mark’s rounded-square shape
 and blue-to-yellow gradient to distinguish it from Project Kins in Conversation
-chips. It stays visible below the chips even while a summary is open. When there’s
-no recent capture, the Kin sleeps; hover or focus it to see the message. Drag the
-Kin to move the overlay for the current Desktop session. The Kin and its controls
+chips. It stays visible below the chips even while a summary is open. The Kin
+sleeps when capture activity is quiet, wakes for a minute on hover, and stays
+awake while the main Koed window is focused. Drag the Kin to move the overlay
+for the current Desktop session. The Kin and its controls
 receive clicks; clicks in the surrounding transparent space pass through. Disable
 the preference to hide it. Quitting Desktop closes the Kin even if the Local AI
 Runtime stays up.

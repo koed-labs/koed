@@ -34,6 +34,7 @@ import {
   scopeDesktopWindowIpc
 } from "./ipc/commands.js";
 import { registerFloatingKinIpc } from "./ipc/floating-kin.js";
+import { floatingKinChannels } from "./ipc/floating-kin-protocol.js";
 import { registerDesktopUpdateIpc } from "./ipc/update.js";
 import {
   createUpdateDiscovery,
@@ -480,10 +481,12 @@ const configureFloatingKin = (
     url,
     onDismiss: () => cancel()
   });
+  const getWebContents = () => overlay.getWindow()?.webContents ?? null;
   const cancel = registerFloatingKinIpc({
     ipcMain,
-    getWebContents: () => overlay.getWindow()?.webContents ?? null,
+    getWebContents,
     url,
+    mainWindowFocused: () => mainWindow?.isFocused() ?? false,
     runtime: createFloatingKinRuntime({
       koedHome: resolveApplicationKoedHome(koedEnvironment),
       // Cached observation only. Refresh notifies subscribers that may reconcile.
@@ -504,7 +507,21 @@ const configureFloatingKin = (
     accountKey = next;
     overlay.reset();
   });
+  const publishFocus = (focused: boolean, window: BrowserWindow) => {
+    if (window !== mainWindow) return;
+    const contents = getWebContents();
+    if (contents && !contents.isDestroyed() && contents.getURL() === url)
+      contents.send(floatingKinChannels.mainWindowFocusChanged, focused);
+  };
+  const onMainFocus = (_event: unknown, window: BrowserWindow) =>
+    publishFocus(true, window);
+  const onMainBlur = (_event: unknown, window: BrowserWindow) =>
+    publishFocus(false, window);
+  app.on("browser-window-focus", onMainFocus);
+  app.on("browser-window-blur", onMainBlur);
   app.once("will-quit", () => {
+    app.off("browser-window-focus", onMainFocus);
+    app.off("browser-window-blur", onMainBlur);
     unsubscribeLifecycle();
     unsubscribeAccount();
   });

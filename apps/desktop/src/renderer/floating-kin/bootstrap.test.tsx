@@ -15,7 +15,8 @@ it("boots the Floating Kin hash route without initializing Desktop services", as
     cancel: vi.fn(),
     setSize: vi.fn(),
     setInteractive: vi.fn(),
-    drag: vi.fn()
+    drag: vi.fn(),
+    onMainWindowFocus: vi.fn(() => () => {})
   };
   window.location.hash = "floating-kin";
   vi.stubGlobal("floatingKin", bridge);
