@@ -36,7 +36,11 @@ export interface FolderHintInput {
   }> | null;
   readonly recordedRemoteFingerprint: string | null;
   readonly currentRemoteFingerprint: string | null;
-  /** A match confirms the current directory marker. */
+  /**
+   * The caller verifies a match for the relevant User, deployment, and local
+   * profile, including the current directory marker. The scorer checks the
+   * normalized path and current device; it does not perform a registry lookup.
+   */
   readonly registry: RegistryLookup;
   /** The caller verifies existence and strict containment on disk. */
   readonly hasContainedTranscriptFile: boolean;

@@ -363,11 +363,13 @@ Complete enumeration uses the separate bounded selection APIs.
 
 The Folder-hint scorer evaluates an existing registry candidate only when a
 Conversation's effective Folder is unresolved and its original Folder reason is
-`historical_unresolved` or `missing`. The candidate must match the exact
-normalized recorded directory on the current device, with a confirmed directory
-marker. Historical candidates can match the registry but do not earn the live
-registry vote. The scorer reads supplied evidence only; capture, import, and
-Desktop do not call it.
+`historical_unresolved` or `missing`. The caller must verify a registry match
+for the relevant User, deployment, and local profile, including the current
+directory marker. The scorer checks the exact normalized recorded directory and
+current device against that match; it does not perform a registry lookup.
+Historical candidates can match the registry but do not earn the live registry
+vote. The scorer reads supplied evidence only; capture, import, and Desktop do
+not call it.
 
 Same-device birthtime strictly before the Conversation, matching Git remote
 fingerprints, and a live registry match each add two points. Birthtime and the

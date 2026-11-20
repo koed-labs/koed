@@ -387,6 +387,12 @@ describe("scoreFolderHint", () => {
       clock: -1,
       birthtime: directoryStat.birthtimeMs,
       first: firstConversationAtMs
+    },
+    {
+      name: "NaN first Conversation timestamp",
+      clock: evaluatedAtMs,
+      birthtime: directoryStat.birthtimeMs,
+      first: Number.NaN
     }
   ])(
     "does not award birthtime points with $name",
