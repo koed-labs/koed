@@ -699,15 +699,20 @@ button.v1-home-pill[data-repair]:hover {
   bottom: var(--coin-y);
   width: 20px;
   height: 20px;
-  transform: translateX(-50%) scaleY(0.6);
+  /* Coins further back in the band lie slightly smaller and dimmer. */
+  transform: translateX(-50%) scale(calc(1 - 0.14 * var(--coin-depth, 0)))
+    scaleY(0.6);
+  opacity: calc(1 - 0.25 * var(--coin-depth, 0));
   transform-origin: 50% 100%;
   cursor: grab;
   pointer-events: auto;
   touch-action: none;
   filter: drop-shadow(0 2px 0 rgb(0 0 0 / 0.25));
-  transition: transform 160ms ease;
+  transition:
+    transform 160ms ease,
+    left 220ms ease;
 }
-.v1-home-floor-coin svg {
+.v1-home-floor-coin > svg {
   display: block;
   width: 100%;
   height: 100%;
@@ -720,10 +725,11 @@ button.v1-home-pill[data-repair]:hover {
 .v1-home-floor-coin:not([data-motion="rest"]) {
   transform: translateX(-50%);
   transform-origin: 50% 50%;
+  opacity: 1;
   cursor: grabbing;
   transition: none;
 }
-.v1-home-floor-coin[data-motion="flying"] svg {
+.v1-home-floor-coin[data-motion="flying"] > svg {
   transform: rotate(calc(var(--coin-angle, 0deg) * 0.25))
     scaleY(cos(var(--coin-angle, 0deg)));
 }

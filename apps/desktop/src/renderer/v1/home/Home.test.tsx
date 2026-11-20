@@ -696,6 +696,18 @@ describe("Home", () => {
     delete (HTMLElement.prototype as { animate?: unknown }).animate;
   });
 
+  // A Project Kin for coins to fly to, added to the stage.
+  const addProjectKin = async () => {
+    const project = document.createElement("div");
+    project.dataset.coinProject = "project";
+    const kin = document.createElement("div");
+    kin.className = "v1-pixelkin";
+    project.append(kin);
+    await act(async () => {
+      container.querySelector(".v1-home-coins")!.parentElement!.append(project);
+    });
+  };
+
   it("flies a coin for a newly appearing sidebar Conversation, not ingestion progress", async () => {
     const animations: { onfinish: (() => void) | null; cancel: () => void }[] =
       [];
@@ -710,13 +722,13 @@ describe("Home", () => {
       key: "old",
       aliases: ["old"],
       client: "codex" as const,
-      projectIds: []
+      projectIds: ["project"]
     };
     const added = {
       key: "new",
       aliases: ["new"],
       client: "codex" as const,
-      projectIds: []
+      projectIds: ["project"]
     };
     await render({
       entries: [entry("existing", "2026-11-03T11:00:00Z")],
@@ -724,6 +736,7 @@ describe("Home", () => {
       clients: [codexClient],
       conversations: [existing]
     });
+    await addProjectKin();
     await render({
       entries: [entry("existing", "2026-11-03T11:00:00Z")],
       view: projectReading(9),
@@ -760,11 +773,12 @@ describe("Home", () => {
       conversationScope: "one"
     };
     await render({ ...props, conversations: [] });
+    await addProjectKin();
     const conversations = Array.from({ length: 12 }, (_, i) => ({
       key: `new-${i}`,
       aliases: [],
       client: "codex" as const,
-      projectIds: []
+      projectIds: ["project"]
     }));
     await render({ ...props, conversations });
     expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(4);
@@ -785,11 +799,22 @@ describe("Home", () => {
       conversationScope: "one"
     };
     await render({ ...props, conversations: [] });
+    await addProjectKin();
     await render({
       ...props,
       conversations: [
-        { key: "first", aliases: ["shared"], client: "codex", projectIds: [] },
-        { key: "second", aliases: ["shared"], client: "codex", projectIds: [] }
+        {
+          key: "first",
+          aliases: ["shared"],
+          client: "codex",
+          projectIds: ["project"]
+        },
+        {
+          key: "second",
+          aliases: ["shared"],
+          client: "codex",
+          projectIds: ["project"]
+        }
       ]
     });
     expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(1);
@@ -855,7 +880,7 @@ describe("Home", () => {
     }
   );
 
-  it("lands a loose Conversation at its rendered floor coin", async () => {
+  it("throws a new loose Conversation as a floor coin, not a flying coin", async () => {
     const frames: Keyframe[][] = [];
     Object.assign(HTMLElement.prototype, {
       animate: (keyframes: Keyframe[]) => {
@@ -863,24 +888,6 @@ describe("Home", () => {
         return { onfinish: null, cancel: () => undefined };
       }
     });
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        const left = this.classList.contains("v1-home-floor-coin") ? 210 : 0;
-        const top = this.classList.contains("v1-home-floor-coin") ? 310 : 0;
-        const width = this.classList.contains("v1-home-stage") ? 900 : 20;
-        return {
-          left,
-          top,
-          right: left + width,
-          bottom: top + 20,
-          width,
-          height: 20,
-          x: left,
-          y: top,
-          toJSON: () => ({})
-        };
-      }
-    );
     const props = {
       entries: [],
       view: { kind: "empty" as const, warnings: [] },
@@ -888,19 +895,33 @@ describe("Home", () => {
       conversationScope: "one",
       onOpenConversation: () => undefined
     };
-    await render({ ...props, conversations: [], looseConversations: [] });
+    const loose = (key: string) => ({
+      key,
+      title: key,
+      latestAt: "2026-11-03",
+      client: "codex" as const
+    });
     await render({
       ...props,
       conversations: [
-        { key: "new", aliases: [], client: "codex", projectIds: [] }
+        { key: "old", aliases: [], client: "codex", projectIds: [] }
       ],
-      looseConversations: [
-        { key: "new", title: "New", latestAt: "2026-11-03", client: "codex" }
-      ]
+      looseConversations: [loose("old")]
     });
-    expect(frames[0]?.[2]?.transform).toBe(
-      "translate(220px, 320px) scale(0.9)"
-    );
+    const many = Array.from({ length: 30 }, (_, i) => loose(`c${i}`));
+    await render({
+      ...props,
+      conversations: many.map(({ key }) => ({
+        key,
+        aliases: [],
+        client: "codex" as const,
+        projectIds: []
+      })),
+      looseConversations: [loose("old"), ...many]
+    });
+    // No cap on floor coins, and none fly along an arc to a landing spot.
+    expect(container.querySelectorAll(".v1-home-floor-coin")).toHaveLength(31);
+    expect(frames).toHaveLength(0);
     delete (HTMLElement.prototype as { animate?: unknown }).animate;
   });
 
