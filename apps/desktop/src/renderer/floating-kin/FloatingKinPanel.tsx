@@ -126,6 +126,7 @@ export function FloatingKinPanel({
   return (
     <section
       className="fk-panel"
+      data-fk-hit
       id="floating-kin-summary"
       role="dialog"
       aria-labelledby="fk-panel-title"

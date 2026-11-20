@@ -34,6 +34,7 @@ function setup() {
   );
   const interactive = vi.fn();
   const resize = vi.fn();
+  const drag = vi.fn();
   const dismiss = registerFloatingKinIpc({
     ipcMain: {
       handle: (channel, handler) => {
@@ -48,7 +49,8 @@ function setup() {
     url,
     runtime: { activity, summarize },
     interactive,
-    resize
+    resize,
+    drag
   });
   return {
     event,
@@ -59,6 +61,7 @@ function setup() {
     summarize,
     interactive,
     resize,
+    drag,
     dismiss
   };
 }
@@ -72,7 +75,8 @@ it("rejects all overlay channels from another window, a subframe, or a different
     activity,
     summarize,
     interactive,
-    resize
+    resize,
+    drag
   } = setup();
   const foreign = {
     ...event,
@@ -91,7 +95,13 @@ it("rejects all overlay channels from another window, a subframe, or a different
       width: 440,
       height: 200
     });
+    sends.get(channels.drag)!(untrusted as IpcMainEvent, {
+      phase: "start",
+      x: 30,
+      y: 20
+    });
   }
+  expect(drag).not.toHaveBeenCalled();
   expect(activity).not.toHaveBeenCalled();
   expect(summarize).not.toHaveBeenCalled();
   expect(interactive).not.toHaveBeenCalled();
@@ -148,4 +158,22 @@ it("ignores malformed geometry and non-boolean interactivity", () => {
   sends.get(channels.setInteractive)!(send, "true");
   sends.get(channels.setInteractive)!(send, true);
   expect(interactive.mock.calls).toEqual([[true]]);
+});
+
+it("forwards only bounded, well-formed drag events from the overlay", () => {
+  const { event, sends, drag } = setup();
+  const send = (value: unknown) =>
+    sends.get(channels.drag)!(event as IpcMainEvent, value);
+  send({ phase: "start", x: Infinity, y: 0 });
+  send({ phase: "move", x: 1_000_000, y: 2 });
+  send({ phase: "move", x: 12, y: 30, extra: true });
+  send({ phase: "end", x: 12, y: 30 });
+  send({ phase: "start", x: -100, y: 30 });
+  send({ phase: "move", x: -120, y: 60 });
+  send({ phase: "end" });
+  expect(drag.mock.calls).toEqual([
+    [{ phase: "start", x: -100, y: 30 }],
+    [{ phase: "move", x: -120, y: 60 }],
+    [{ phase: "end" }]
+  ]);
 });

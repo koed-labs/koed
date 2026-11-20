@@ -23,6 +23,7 @@ import {
   useOverlayWindow,
   useSummary
 } from "./use-floating-kin.js";
+import { useKinInteraction } from "./use-kin-interaction.js";
 import "./floating-kin.css";
 
 export type { FloatingKinBridge } from "../../ipc/floating-kin-protocol.js";
@@ -91,12 +92,13 @@ function CaptureChip({
     <button
       type="button"
       className="fk-chip"
+      data-fk-hit
       aria-expanded={expanded}
       aria-controls={expanded ? "floating-kin-summary" : undefined}
       aria-label={`${clientNames[conversation.client]} Conversation ${index + 1}. Captured ${age} ago.`}
       onClick={(event) => toggle(event.currentTarget)}
     >
-      <span className="fk-avatar">
+      <span className="fk-avatar" data-fk-handle>
         <ChipKin
           projectId={conversation.projectId}
           animate={recent && index === 0}
@@ -124,14 +126,18 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
   );
 }
 
-function QuietKin() {
+function QuietKin({ dragging }: { dragging: boolean }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const showTip = hovered || focused;
   return (
     <div className="fk-quiet">
       {showTip && (
-        <div className="fk-state fk-quiet-tip" role="tooltip">
+        <div
+          className="fk-state fk-quiet-tip"
+          role="tooltip"
+          aria-hidden={dragging}
+        >
           <div>
             <strong>No recent capture</strong>
             <div className="fk-note" id="floating-kin-quiet-note">
@@ -141,17 +147,24 @@ function QuietKin() {
         </div>
       )}
       <div
-        className="fk-state fk-quiet-avatar"
+        className="fk-quiet-avatar"
+        data-fk-hit
+        data-fk-handle
         role="img"
         aria-label="No recent capture"
-        aria-describedby={showTip ? "floating-kin-quiet-note" : undefined}
+        aria-describedby={
+          showTip && !dragging ? "floating-kin-quiet-note" : undefined
+        }
         tabIndex={0}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
       >
-        <ChipKin projectId={null} animate={false} />
+        <Pixelkin size={88} motion="still" />
+        <span className="fk-sleep-mark" aria-hidden="true">
+          z
+        </span>
       </div>
     </div>
   );
@@ -199,6 +212,11 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
   const { activity, at } = useActivity(bridge);
   const { view, summarize, cancel, isCancelling } = useSummary(bridge);
   const { surface, setInteractive } = useOverlayWindow(bridge);
+  const { dragging, handlers } = useKinInteraction(
+    bridge,
+    surface,
+    setInteractive
+  );
   const recent = activity.state === "running" ? activity.conversations : [];
   const conversations = recent.slice(0, chipLimit);
   const overflow =
@@ -218,8 +236,8 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
       aria-label="Floating Kin"
       tabIndex={-1}
       ref={surface}
-      onMouseMove={() => setInteractive(conversations.length > 0)}
-      onMouseLeave={() => setInteractive(false)}
+      {...handlers}
+      data-dragging={dragging}
       onKeyDown={onKeyDown}
     >
       {selected ? (
@@ -265,7 +283,7 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           ) : null}
         </div>
       ) : activity.state === "running" ? (
-        <QuietKin />
+        <QuietKin dragging={dragging} />
       ) : (
         <ActivityPill state={activity.state} />
       )}

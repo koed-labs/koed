@@ -491,7 +491,8 @@ const configureFloatingKin = (
       accountStatus: () => account.current().status
     }),
     interactive: overlay.setInteractive,
-    resize: overlay.setSize
+    resize: overlay.setSize,
+    drag: overlay.drag
   });
   // A fresh window drops all rendered evidence when the runtime or User changes.
   const unsubscribeLifecycle = server.lifecycle.subscribe(overlay.reset);

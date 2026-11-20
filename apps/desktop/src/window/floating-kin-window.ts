@@ -1,13 +1,16 @@
-import { BrowserWindow, screen } from "electron";
+import { BrowserWindow, screen, type Point, type Rectangle } from "electron";
 import { resolve } from "node:path";
-import type { FloatingKinSize } from "../ipc/floating-kin-protocol.js";
+import type {
+  FloatingKinDrag,
+  FloatingKinSize
+} from "../ipc/floating-kin-protocol.js";
 import { floatingKinBounds } from "./floating-kin-bounds.js";
 
 const initialSize = { width: 440, height: 800 };
 
-const createWindow = (appDir: string, size: FloatingKinSize) => {
+const createWindow = (appDir: string, bounds: Rectangle) => {
   const window = new BrowserWindow({
-    ...floatingKinBounds(size, screen.getPrimaryDisplay().workArea),
+    ...bounds,
     title: "Floating Kin",
     type: "panel",
     show: false,
@@ -64,11 +67,27 @@ export const createFloatingKinWindow = ({
   let disposed = false;
   let focusRequested = false;
   let ready = false;
+  let anchor: Point | undefined;
+  let anchorDisplay: number | undefined;
+  let dragOrigin: { pointer: Point; anchor: Point } | null = null;
+  let interactive = false;
   const getWindow = () => (window && !window.isDestroyed() ? window : null);
+  const targetBounds = () => {
+    const display = anchor
+      ? (screen.getAllDisplays().find(({ id }) => id === anchorDisplay) ??
+        screen.getDisplayNearestPoint({ x: anchor.x - 1, y: anchor.y - 1 }))
+      : screen.getPrimaryDisplay();
+    return floatingKinBounds(
+      size,
+      display.workArea,
+      anchor,
+      dragOrigin !== null
+    );
+  };
   const position = () => {
     const active = getWindow();
     if (!active) return;
-    const bounds = floatingKinBounds(size, screen.getPrimaryDisplay().workArea);
+    const bounds = targetBounds();
     const current = active.getBounds();
     if (
       bounds.x !== current.x ||
@@ -78,6 +97,53 @@ export const createFloatingKinWindow = ({
     ) {
       active.setBounds(bounds);
     }
+  };
+  const updateInput = () => {
+    const active = getWindow();
+    if (dragOrigin || interactive) active?.setIgnoreMouseEvents(false);
+    else active?.setIgnoreMouseEvents(true, { forward: true });
+  };
+  const clearInput = () => {
+    dragOrigin = null;
+    interactive = false;
+    updateInput();
+    onDismiss();
+  };
+  const drag = (input: FloatingKinDrag) => {
+    const active = getWindow();
+    if (!active?.isVisible()) return;
+    if (input.phase === "end") {
+      if (!dragOrigin) return;
+      dragOrigin = null;
+      const { x, y, width, height } = targetBounds();
+      anchor = { x: x + width, y: y + height };
+      position();
+      updateInput();
+      return;
+    }
+    const pointer = { x: Math.round(input.x), y: Math.round(input.y) };
+    if (input.phase === "start") {
+      if (!interactive || dragOrigin) return;
+      const { x, y, width, height } = active.getContentBounds();
+      const right = x + width;
+      const bottom = y + height;
+      if (
+        pointer.x < x ||
+        pointer.x >= right ||
+        pointer.y < y ||
+        pointer.y >= bottom
+      )
+        return;
+      dragOrigin = { pointer, anchor: { x: right, y: bottom } };
+      return;
+    }
+    if (!dragOrigin) return;
+    anchor = {
+      x: dragOrigin.anchor.x + pointer.x - dragOrigin.pointer.x,
+      y: dragOrigin.anchor.y + pointer.y - dragOrigin.pointer.y
+    };
+    anchorDisplay = screen.getDisplayNearestPoint(pointer).id;
+    position();
   };
   const focus = (active: BrowserWindow) => {
     active.setFocusable(true);
@@ -99,22 +165,20 @@ export const createFloatingKinWindow = ({
     ready = false;
     focusRequested = requestFocus;
     size = initialSize;
-    const next = createWindow(appDir, size);
+    const next = createWindow(appDir, targetBounds());
     window = next;
     screen.on("display-metrics-changed", position);
     screen.on("display-removed", position);
     next.on("blur", () => next.setFocusable(false));
-    next.on("hide", onDismiss);
+    next.on("hide", clearInput);
     next.webContents.on("did-start-navigation", (details) => {
-      if (!details.isMainFrame || details.isSameDocument) return;
-      onDismiss();
-      next.setIgnoreMouseEvents(true, { forward: true });
+      if (details.isMainFrame && !details.isSameDocument) clearInput();
     });
     next.once("closed", () => {
       screen.off("display-metrics-changed", position);
       screen.off("display-removed", position);
-      onDismiss();
       if (window === next) window = null;
+      clearInput();
     });
     next.once("ready-to-show", () => {
       if (getWindow() !== next) return;
@@ -145,10 +209,11 @@ export const createFloatingKinWindow = ({
       active.destroy();
       open();
     },
-    setInteractive(interactive: boolean) {
-      const active = getWindow();
-      if (interactive) active?.setIgnoreMouseEvents(false);
-      else active?.setIgnoreMouseEvents(true, { forward: true });
+    drag,
+    setInteractive(value: boolean) {
+      if (interactive === value) return;
+      interactive = value;
+      updateInput();
     },
     setSize(value: FloatingKinSize) {
       size = value;

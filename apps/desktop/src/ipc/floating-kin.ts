@@ -7,6 +7,7 @@ import {
 import {
   floatingKinChannels as channels,
   type FloatingKinActivityState,
+  type FloatingKinDrag,
   type FloatingKinSize
 } from "./floating-kin-protocol.js";
 
@@ -34,6 +35,26 @@ const sizeFrom = (value: unknown): FloatingKinSize | null => {
   )
     return null;
   return { width: value.width, height: value.height };
+};
+
+const dragFrom = (value: unknown): FloatingKinDrag | null => {
+  if (!value || typeof value !== "object" || !("phase" in value)) return null;
+  if (value.phase === "end" && Object.keys(value).length === 1)
+    return { phase: "end" };
+  if (
+    (value.phase !== "start" && value.phase !== "move") ||
+    Object.keys(value).length !== 3 ||
+    !("x" in value) ||
+    !("y" in value) ||
+    typeof value.x !== "number" ||
+    typeof value.y !== "number" ||
+    !Number.isFinite(value.x) ||
+    !Number.isFinite(value.y) ||
+    Math.abs(value.x) > 32768 ||
+    Math.abs(value.y) > 32768
+  )
+    return null;
+  return { phase: value.phase, x: value.x, y: value.y };
 };
 
 const summaryRequests = (runtime: FloatingKinRuntime) => {
@@ -91,7 +112,8 @@ export const registerFloatingKinIpc = ({
   url,
   runtime,
   interactive,
-  resize
+  resize,
+  drag
 }: {
   ipcMain: Pick<IpcMain, "handle" | "on">;
   getWebContents: () => WebContents | null;
@@ -99,6 +121,7 @@ export const registerFloatingKinIpc = ({
   runtime: FloatingKinRuntime;
   interactive: (value: boolean) => void;
   resize: (size: FloatingKinSize) => void;
+  drag: (input: FloatingKinDrag) => void;
 }): (() => void) => {
   const trusted = (event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">) =>
     event.sender === getWebContents() &&
@@ -129,6 +152,11 @@ export const registerFloatingKinIpc = ({
     if (!trusted(event)) return;
     const size = sizeFrom(value);
     if (size) resize(size);
+  });
+  ipcMain.on(channels.drag, (event, value: unknown) => {
+    if (!trusted(event)) return;
+    const input = dragFrom(value);
+    if (input) drag(input);
   });
   return () => {
     activity.cancel();

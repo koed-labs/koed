@@ -81,9 +81,11 @@ body:has(.fk-surface) {
   gap: 8px;
   padding: 3px 10px 3px 4px;
 }
+.fk-surface [data-fk-hit] {
+  pointer-events: auto;
+}
 .fk-chip {
   min-height: 42px;
-  pointer-events: auto;
   font-variant-numeric: tabular-nums;
 }
 .fk-chip:hover,
@@ -163,19 +165,54 @@ body:has(.fk-surface) {
   align-items: flex-end;
   gap: 6px;
 }
-.fk-quiet-avatar {
-  padding: 4px;
+.fk-surface .fk-quiet-avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+/* Target Kin's body, not the transparent canvas margins or sleep mark. */
+.fk-quiet-avatar::after {
+  content: "";
+  position: absolute;
+  inset: 29% 15% 28%;
+  border-radius: 7px;
   pointer-events: auto;
+}
+.fk-quiet-avatar:has(.v1-pixelkin-fallback)::after {
+  inset: 14% 10% 10%;
+  border-radius: 26%;
+}
+.fk-surface [data-fk-handle] {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.fk-surface[data-dragging="true"] [data-fk-handle] {
+  cursor: grabbing;
+}
+.fk-surface [data-fk-handle] > *,
+.fk-chip > :not([data-fk-handle]) {
+  pointer-events: none;
+}
+.fk-sleep-mark {
+  position: absolute;
+  inset: 4px 8px auto auto;
+  color: var(--fk-text);
+  text-shadow: 0 0 4px var(--fk-bg);
+  font-weight: 700;
 }
 .fk-quiet-tip {
   padding-inline: 12px;
+}
+.fk-quiet-tip[aria-hidden="true"] {
+  visibility: hidden;
 }
 .fk-panel {
   display: flex;
   flex-direction: column;
   width: 370px;
   border-radius: 16px;
-  pointer-events: auto;
   overflow-wrap: anywhere;
 }
 .fk-header {

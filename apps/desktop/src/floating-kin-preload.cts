@@ -10,7 +10,8 @@ const bridge: FloatingKinBridge = {
   cancel: () => ipcRenderer.invoke(channels.cancel),
   setInteractive: (interactive) =>
     ipcRenderer.send(channels.setInteractive, interactive),
-  setSize: (size) => ipcRenderer.send(channels.setSize, size)
+  setSize: (size) => ipcRenderer.send(channels.setSize, size),
+  drag: (input) => ipcRenderer.send(channels.drag, input)
 };
 
 contextBridge.exposeInMainWorld("floatingKin", Object.freeze(bridge));

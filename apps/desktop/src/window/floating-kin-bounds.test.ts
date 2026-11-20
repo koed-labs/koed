@@ -25,3 +25,38 @@ it("keeps the lower-right anchor stable across resizes", () => {
     height: 128
   });
 });
+
+it("keeps the grab offset across a display seam and fits to one display on drop", () => {
+  const area = { x: 0, y: 0, width: 1000, height: 800 };
+  const size = { width: 110, height: 110 };
+  const anchor = { x: 45, y: 400 };
+  expect(floatingKinBounds(size, area, anchor, true)).toEqual({
+    x: -65,
+    y: 290,
+    width: 110,
+    height: 110
+  });
+  expect(floatingKinBounds(size, area, anchor)).toEqual({
+    x: 0,
+    y: 290,
+    width: 110,
+    height: 110
+  });
+});
+
+it("keeps a moved lower-right anchor across resizes and fits the work area", () => {
+  const area = { x: -400, y: 0, width: 400, height: 600 };
+  const anchor = { x: -120, y: 420 };
+  expect(floatingKinBounds({ width: 110, height: 110 }, area, anchor)).toEqual({
+    x: -230,
+    y: 310,
+    width: 110,
+    height: 110
+  });
+  expect(floatingKinBounds({ width: 310, height: 180 }, area, anchor)).toEqual({
+    x: -400,
+    y: 240,
+    width: 310,
+    height: 180
+  });
+});

@@ -9,6 +9,9 @@ export type FloatingKinActivityState =
   | ({ state: "running" } & FloatingKinActivity);
 
 export type FloatingKinSize = { width: number; height: number };
+export type FloatingKinDrag =
+  | { phase: "start" | "move"; x: number; y: number }
+  | { phase: "end" };
 
 export type FloatingKinBridge = {
   activity: () => Promise<FloatingKinActivityState>;
@@ -16,6 +19,7 @@ export type FloatingKinBridge = {
   cancel: () => Promise<void>;
   setInteractive: (interactive: boolean) => void;
   setSize: (size: FloatingKinSize) => void;
+  drag: (input: FloatingKinDrag) => void;
 };
 
 export const floatingKinChannels = {
@@ -23,5 +27,6 @@ export const floatingKinChannels = {
   summarize: "koed:floating-kin:summarize",
   cancel: "koed:floating-kin:cancel",
   setInteractive: "koed:floating-kin:set-interactive",
-  setSize: "koed:floating-kin:set-size"
+  setSize: "koed:floating-kin:set-size",
+  drag: "koed:floating-kin:drag"
 } as const;

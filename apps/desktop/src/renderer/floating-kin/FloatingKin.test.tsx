@@ -53,7 +53,8 @@ beforeEach(() => {
     summarize: vi.fn(async () => answered),
     cancel: vi.fn(async () => undefined),
     setInteractive: vi.fn(),
-    setSize: vi.fn()
+    setSize: vi.fn(),
+    drag: vi.fn()
   };
 });
 afterEach(async () => {
@@ -76,7 +77,193 @@ const click = (name: string) =>
     button?.click();
   });
 
+const mouseOver = (target: Element, from?: Element) =>
+  act(async () => {
+    from?.dispatchEvent(
+      new MouseEvent("mouseout", { bubbles: true, relatedTarget: target })
+    );
+    target.dispatchEvent(
+      new MouseEvent("mouseover", { bubbles: true, relatedTarget: from })
+    );
+  });
+const pointer = (
+  target: Element,
+  type: string,
+  x: number,
+  y = 100,
+  buttons = 1
+) =>
+  act(async () => {
+    target.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        pointerType: "mouse",
+        buttons,
+        isPrimary: true,
+        clientX: x - 80,
+        clientY: y - 80,
+        screenX: x,
+        screenY: y
+      })
+    );
+  });
+const capturedClick = (target: Element) =>
+  act(async () => {
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+  });
+
+async function renderQuiet() {
+  bridge.activity = vi.fn(async () => ({
+    state: "running" as const,
+    conversations: [],
+    overflowCount: 0
+  }));
+  await render();
+  return mount.querySelector<HTMLElement>('[aria-label="No recent capture"]')!;
+}
+
 describe("Floating Kin", () => {
+  it("switches interaction only across chips, summary panel, and click-through regions", async () => {
+    bridge.activity = vi.fn(async () => ({
+      state: "running" as const,
+      conversations: [conversation],
+      overflowCount: 1
+    }));
+    await render();
+    await click("Captured 12s ago");
+    const chip = mount.querySelector(".fk-chip")!;
+    const gap = mount.querySelector("main")!;
+    const panelControl = mount.querySelector('[aria-label="Close summary"]')!;
+    const overflow = mount.querySelector(".fk-overflow")!;
+    await mouseOver(chip);
+    await mouseOver(panelControl, chip);
+    expect(vi.mocked(bridge.setInteractive).mock.calls).toEqual([[true]]);
+    await mouseOver(gap, panelControl);
+    await mouseOver(overflow, gap);
+    expect(vi.mocked(bridge.setInteractive).mock.calls).toEqual([
+      [true],
+      [false]
+    ]);
+    await mouseOver(panelControl, overflow);
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(true);
+    await pointer(panelControl, "pointerdown", 100);
+    await pointer(panelControl, "pointermove", 120);
+    await pointer(panelControl, "pointerup", 120);
+    expect(bridge.drag).not.toHaveBeenCalled();
+  });
+
+  it("drags the sleeping Kin using absolute coordinates and stays interactive across gaps", async () => {
+    const kin = await renderQuiet();
+    const capture = vi.spyOn(kin, "setPointerCapture");
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(
+      mount.querySelector("main")
+    );
+    await mouseOver(kin);
+    await pointer(kin, "pointerdown", 100);
+    expect(capture).toHaveBeenCalledWith(1);
+    expect(document.activeElement).not.toBe(kin);
+    await pointer(kin, "pointermove", 103);
+    expect(bridge.drag).not.toHaveBeenCalled();
+    await pointer(kin, "pointermove", 104);
+    expect(kin.getAttribute("aria-describedby")).toBeNull();
+    await mouseOver(mount.querySelector("main")!, kin);
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(true);
+    await pointer(kin, "pointermove", 139, 95);
+    await pointer(kin, "pointerup", 139, 95);
+    expect(vi.mocked(bridge.drag).mock.calls).toEqual([
+      [{ phase: "start", x: 100, y: 100 }],
+      [{ phase: "move", x: 104, y: 100 }],
+      [{ phase: "move", x: 139, y: 95 }],
+      [{ phase: "end" }]
+    ]);
+    expect(document.elementFromPoint).toHaveBeenLastCalledWith(59, 15);
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
+  });
+
+  it("keeps ordinary chip clicks and suppresses the click following an avatar drag", async () => {
+    await render();
+    const chip = mount.querySelector(".fk-chip")!;
+    const avatar = chip.querySelector(".fk-avatar")!;
+    await pointer(chip, "pointerdown", 100);
+    await pointer(chip, "pointermove", 120);
+    await pointer(chip, "pointerup", 120);
+    expect(bridge.drag).not.toHaveBeenCalled();
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(avatar);
+    await pointer(avatar, "pointerdown", 100);
+    await pointer(avatar, "pointermove", 103);
+    await pointer(avatar, "pointerup", 103);
+    await capturedClick(avatar);
+    expect(chip.getAttribute("aria-expanded")).toBe("true");
+    await click("Close summary");
+    await pointer(avatar, "pointerdown", 100);
+    await pointer(avatar, "pointermove", 110);
+    await pointer(avatar, "pointerup", 110);
+    expect(bridge.drag).toHaveBeenLastCalledWith({ phase: "end" });
+    await capturedClick(avatar);
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+    await click("Captured 12s ago");
+    expect(chip.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("does not activate a chip when the captured pointer releases just outside it", async () => {
+    await render();
+    const chip = mount.querySelector(".fk-chip")!;
+    const avatar = chip.querySelector(".fk-avatar")!;
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(
+      mount.querySelector("main")
+    );
+    await pointer(avatar, "pointerdown", 100);
+    await pointer(avatar, "pointerup", 103);
+    await capturedClick(avatar);
+    expect(bridge.drag).not.toHaveBeenCalled();
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("ends a drag if the mouse moves again after a missed button release", async () => {
+    const kin = await renderQuiet();
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(null);
+    await pointer(kin, "pointerdown", 100);
+    await pointer(kin, "pointermove", 110);
+    await pointer(kin, "pointermove", 120, 100, 0);
+    await pointer(kin, "pointermove", 130, 100, 0);
+    expect(vi.mocked(bridge.drag).mock.calls).toEqual([
+      [{ phase: "start", x: 100, y: 100 }],
+      [{ phase: "move", x: 110, y: 100 }],
+      [{ phase: "end" }]
+    ]);
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
+  });
+
+  it("keeps the overlay interactive when capture is lost over a hit target", async () => {
+    const kin = await renderQuiet();
+    const hit = vi.spyOn(document, "elementFromPoint").mockReturnValue(kin);
+    await pointer(kin, "pointerdown", 100);
+    await pointer(kin, "pointermove", 110, 108);
+    await pointer(kin, "lostpointercapture", 0, 0);
+    expect(bridge.drag).toHaveBeenLastCalledWith({ phase: "end" });
+    expect(hit).toHaveBeenLastCalledWith(30, 28);
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(true);
+  });
+
+  it.each(["pointercancel", "lostpointercapture"])(
+    "ends a drag once on %s",
+    async (event) => {
+      const kin = await renderQuiet();
+      await pointer(kin, "pointerdown", 100);
+      await pointer(kin, "pointermove", 110);
+      await pointer(kin, event, 110);
+      await pointer(kin, "lostpointercapture", 110);
+      await pointer(kin, "pointermove", 130);
+      expect(vi.mocked(bridge.drag).mock.calls).toEqual([
+        [{ phase: "start", x: 100, y: 100 }],
+        [{ phase: "move", x: 110, y: 100 }],
+        [{ phase: "end" }]
+      ]);
+      expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
+    }
+  );
   it("caps recent capture chips and includes local and remote overflow", async () => {
     bridge.activity = vi.fn(async () => ({
       state: "running" as const,
@@ -187,18 +374,11 @@ describe("Floating Kin", () => {
   });
 
   it("shows the quiet message only while hovering or focusing the sleeping Kin", async () => {
-    bridge.activity = vi.fn(async () => ({
-      state: "running" as const,
-      conversations: [],
-      overflowCount: 0
-    }));
-    await render();
+    const sleepingKin = await renderQuiet();
     expect(mount.textContent).not.toContain("No recent capture");
-    const sleepingKin = mount.querySelector<HTMLElement>(
-      '[aria-label="No recent capture"]'
-    );
-    expect(sleepingKin?.querySelector(".v1-pixelkin")).not.toBeNull();
-    if (!sleepingKin) throw new Error("Sleeping Kin is missing");
+    expect(
+      sleepingKin.querySelector<HTMLElement>(".v1-pixelkin")?.style.width
+    ).toBe("88px");
     const move = (type: string) =>
       act(async () => {
         sleepingKin.dispatchEvent(new MouseEvent(type, { bubbles: true }));
@@ -208,8 +388,9 @@ describe("Floating Kin", () => {
     expect(mount.querySelector('[role="tooltip"]')?.textContent).toContain(
       "No recent capture"
     );
-    expect(bridge.setInteractive).not.toHaveBeenCalledWith(true);
-    await move("mouseout");
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(true);
+    await mouseOver(mount.querySelector('[role="tooltip"]')!, sleepingKin);
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
     expect(mount.querySelector('[role="tooltip"]')).toBeNull();
     await act(async () => sleepingKin.focus());
     expect(mount.querySelector('[role="tooltip"]')?.textContent).toContain(
