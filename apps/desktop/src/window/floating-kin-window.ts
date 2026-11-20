@@ -52,6 +52,8 @@ const createWindow = (appDir: string, bounds: Rectangle, url: string) => {
     webPreferences: {
       preload: resolve(appDir, "floating-kin-preload.cjs"),
       session: floatingKinSession(url),
+      // Keep CSS dimensions and native DIPs aligned even when Kin is focused.
+      zoomMode: "disabled",
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,

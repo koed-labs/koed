@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
 import { fileURLToPath, URL } from "node:url";
-import { app, BrowserWindow, protocol } from "electron";
+import { app, BrowserWindow, Menu, protocol } from "electron";
 import { createFloatingKinWindow } from "../dist-electron/window/floating-kin-window.js";
 
 const scratch = fileURLToPath(new URL("../../../scratch/", import.meta.url));
@@ -17,6 +17,38 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true }
   }
 ]);
+
+async function assertPanelFits(window) {
+  const layout = await window.webContents.executeJavaScript(`(() => {
+    const button = document.querySelector('button');
+    const { left, top, right, bottom } = button.getBoundingClientRect();
+    return { width: innerWidth, height: innerHeight, left, top, right, bottom, label: button.textContent };
+  })()`);
+  assert.equal(layout.label, "Close", "packaged path loads relative assets");
+  assert.ok(
+    layout.left >= 0 &&
+      layout.top >= 0 &&
+      layout.right <= layout.width &&
+      layout.bottom <= layout.height,
+    `preferred size clips overlay: ${JSON.stringify(layout)}`
+  );
+}
+
+async function zoomFocusedOverlay(overlay, window) {
+  const menu = Menu.buildFromTemplate([
+    { role: "viewMenu", submenu: [{ id: "zoom-in", role: "zoomIn" }] }
+  ]);
+  Menu.setApplicationMenu(menu);
+  const zoomIn = menu.getMenuItemById("zoom-in");
+  assert.ok(zoomIn);
+  const focused = once(window, "focus");
+  app.focus({ steal: true });
+  overlay.focus();
+  await focused;
+  // Invoke the menu role against Kin without injecting OS-wide keyboard input.
+  zoomIn.click({}, window, window.webContents);
+  zoomIn.click({}, window, window.webContents);
+}
 
 async function testZoomSizing() {
   await app.whenReady();
@@ -48,24 +80,17 @@ async function testZoomSizing() {
   overlay.setSize({ width: 394, height: 180 });
   await loaded;
 
-  const assertPanelFits = async () => {
-    const layout = await window.webContents.executeJavaScript(`(() => {
-      const button = document.querySelector('button');
-      const { right, bottom } = button.getBoundingClientRect();
-      return { width: innerWidth, height: innerHeight, right, bottom, label: button.textContent };
-    })()`);
-    assert.equal(layout.label, "Close", "packaged path loads relative assets");
-    assert.ok(
-      layout.right <= layout.width && layout.bottom <= layout.height,
-      `preferred size clips overlay: ${JSON.stringify(layout)}`
-    );
-  };
   assert.equal(window.webContents.getURL(), url);
   assert.deepEqual(window.getContentSize(), [394, 180]);
-  await assertPanelFits();
+  await assertPanelFits(window);
   assert.equal(main.webContents.getZoomFactor(), 1.5);
   main.webContents.setZoomFactor(2);
-  await assertPanelFits();
+  await assertPanelFits(window);
+  assert.equal(main.webContents.getZoomFactor(), 2);
+
+  await zoomFocusedOverlay(overlay, window);
+  await assertPanelFits(window);
+  assert.equal(window.webContents.getZoomFactor(), 1);
   assert.equal(main.webContents.getZoomFactor(), 2);
   overlay.dispose();
   main.destroy();

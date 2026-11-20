@@ -15,8 +15,9 @@ sleeps when capture activity is quiet, wakes for a minute on hover, and stays
 awake while the main Koed window is focused. Drag the Kin to move the overlay
 for the current Desktop session. The Kin and its controls receive clicks;
 clicks in the surrounding transparent space pass through. Disable the preference
-to hide it. The overlay has its own zoom, independent of the main Desktop
-window. Quitting Desktop closes the Kin even if the Local AI Runtime stays up.
+to hide it. The overlay stays at 100% page zoom; the main Desktop window can
+still zoom independently. Quitting Desktop closes the Kin even if the Local AI
+Runtime stays up.
 
 Choose **Summarize Conversation** for the latest captured work in a
 Conversation, or **Summarize Project** for context from its Project. The Project
