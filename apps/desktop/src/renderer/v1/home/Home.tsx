@@ -1149,15 +1149,27 @@ const restingSpot = (
   return spot;
 };
 
+const insertByX = (byX: CoinSpot[], spot: CoinSpot) => {
+  let low = 0;
+  let high = byX.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    // Insert after ties to match a stable sort of placement order.
+    if (byX[mid]!.x <= spot.x) low = mid + 1;
+    else high = mid;
+  }
+  byX.splice(low, 0, spot);
+};
+
 // If the scattered samples all clash, scan from the left at each lane where
 // an occupied band ends. A crowded floor may have no open spot left.
 const openRestingSpot = (
   half: number,
   placed: readonly CoinSpot[],
+  byX: readonly CoinSpot[],
   firstUnchecked: number,
   onScanLane?: (lane: number) => void
 ) => {
-  const byX = [...placed].sort((a, b) => a.x - b.x);
   // Leave room for floating-point rounding at the minimum spacing.
   const gap = 0.000001;
   for (const lane of [
@@ -1198,15 +1210,18 @@ export const fitRestingSpots = (
     }
   }
   let firstUnchecked = 0;
+  let byX: CoinSpot[] | undefined;
   if (half !== undefined)
     for (const [key, prior] of displaced) {
       let spot = { ...prior, x: Math.sign(prior.x) * half };
       if (clashes(spot, placed)) {
         spot = restingSpot(key, half, placed);
         if (clashes(spot, placed)) {
+          byX ??= [...placed].sort((a, b) => a.x - b.x);
           const openSpot = openRestingSpot(
             half,
             placed,
+            byX,
             firstUnchecked,
             onScanLane
           );
@@ -1217,6 +1232,7 @@ export const fitRestingSpots = (
       }
       spots.set(key, spot);
       placed.push(spot);
+      if (byX) insertByX(byX, spot);
       corrected.push({ key, prior, spot });
     }
   return { spots, placed, corrected };

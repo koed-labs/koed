@@ -42,6 +42,44 @@ it("stops exhaustive resize searches after the first miss in each pass", () => {
   expect(fullScans()).toHaveLength(2);
 });
 
+it.each([
+  { half: 0, fullSorts: 1 },
+  { half: 20, fullSorts: 0 }
+])(
+  "sorts $fullSorts times when fitting to half-width $half",
+  ({ half, fullSorts }) => {
+    const resting = new Map([
+      ["anchor-a", { x: 0, lane: 6.5 }],
+      ["anchor-b", { x: 0, lane: 19.5 }],
+      ["displaced-a", { x: 21, lane: 6.5 }],
+      ["displaced-b", { x: 22, lane: 19.5 }]
+    ]);
+    const sort = vi.spyOn(Array.prototype, "sort");
+    let calls: number;
+    try {
+      fitRestingSpots(resting, half);
+      calls = sort.mock.calls.length;
+    } finally {
+      sort.mockRestore();
+    }
+    expect(calls).toBe(fullSorts);
+  }
+);
+
+it("does not reuse a gap filled by an earlier fallback", () => {
+  const resting = new Map([
+    ["anchor-a", { x: 0, lane: 7 }],
+    ["anchor-b", { x: 0, lane: 20 }],
+    ["displaced-a", { x: 1, lane: 7 }],
+    ["displaced-b", { x: 2, lane: 20 }]
+  ]);
+
+  const { spots } = fitRestingSpots(resting, 0);
+
+  expect(spots.get("displaced-a")?.lane).toBe(0);
+  expect(spots.get("displaced-b")?.lane).toBeCloseTo(15.1918, 4);
+});
+
 it("preserves a narrow gap found on a newly introduced lane after a miss", () => {
   const resting = new Map([
     ["anchor-a", { x: 0, lane: 5 }],
