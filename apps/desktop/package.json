@@ -36,7 +36,8 @@
     "build:validation": "vite build --mode validation",
     "pixelkin:sync": "node scripts/sync-pixelkin.mjs",
     "test:browser:v1": "vite build --mode v1-validation && electron scripts/validate-v1-ui.mjs && electron scripts/validate-onboarding.mjs && electron scripts/validate-acceleration-lifecycle.mjs",
-    "test:browser:account": "vite build --mode v1-validation && electron scripts/validate-account-menu.mjs"
+    "test:browser:account": "vite build --mode v1-validation && electron scripts/validate-account-menu.mjs",
+    "test:browser:floating-kin": "pnpm build:package && electron scripts/validate-floating-kin-zoom.mjs"
   },
   "dependencies": {
     "@koed-labs/mcp-server": "workspace:*",

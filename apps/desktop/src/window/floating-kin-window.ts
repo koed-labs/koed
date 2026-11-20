@@ -1,14 +1,36 @@
-import { BrowserWindow, screen, type Point, type Rectangle } from "electron";
+import {
+  BrowserWindow,
+  screen,
+  session,
+  type Point,
+  type Rectangle
+} from "electron";
 import { resolve } from "node:path";
 import type {
   FloatingKinDrag,
   FloatingKinSize
 } from "../ipc/floating-kin-protocol.js";
+import { KOED_APP_SCHEME } from "./app-protocol.js";
 import { floatingKinBounds } from "./floating-kin-bounds.js";
 
 const initialSize = { width: 440, height: 800 };
 
-const createWindow = (appDir: string, bounds: Rectangle) => {
+const floatingKinSession = (url: string) => {
+  // Chromium shares page zoom by host within a session. Keep Kin at 1×
+  // so renderer dimensions and drag coordinates match native DIPs.
+  const isolated = session.fromPartition("koed-floating-kin");
+  if (
+    new URL(url).protocol === `${KOED_APP_SCHEME}:` &&
+    !isolated.protocol.isProtocolHandled(KOED_APP_SCHEME)
+  ) {
+    isolated.protocol.handle(KOED_APP_SCHEME, (request) =>
+      session.defaultSession.fetch(request, { redirect: "manual" })
+    );
+  }
+  return isolated;
+};
+
+const createWindow = (appDir: string, bounds: Rectangle, url: string) => {
   const window = new BrowserWindow({
     ...bounds,
     title: "Floating Kin",
@@ -29,6 +51,7 @@ const createWindow = (appDir: string, bounds: Rectangle) => {
     skipTaskbar: true,
     webPreferences: {
       preload: resolve(appDir, "floating-kin-preload.cjs"),
+      session: floatingKinSession(url),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -165,7 +188,7 @@ export const createFloatingKinWindow = ({
     ready = false;
     focusRequested = requestFocus;
     size = initialSize;
-    const next = createWindow(appDir, targetBounds());
+    const next = createWindow(appDir, targetBounds(), url);
     window = next;
     screen.on("display-metrics-changed", position);
     screen.on("display-removed", position);
