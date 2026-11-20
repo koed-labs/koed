@@ -162,9 +162,6 @@ body:has(.fk-surface) {
   padding: 7px 13px 7px 7px;
   max-width: 310px;
 }
-.fk-state .v1-pixelkin {
-  flex: none;
-}
 .fk-surface .fk-kin-avatar {
   position: relative;
   display: grid;
