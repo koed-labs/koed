@@ -45,6 +45,7 @@ export type PersonalMemorySnapshot = {
     classification: ReturnType<typeof classifyPersonalInventory>;
   };
   error: string | null;
+  inventoryPhase: "empty" | "preview" | "full";
   loading: boolean;
   projectOrder: string[];
   projectsById: ReadonlyMap<string, DesktopProject>;
@@ -67,6 +68,7 @@ const emptySnapshot = (): PersonalMemorySnapshot => ({
     classification: classifyPersonalInventory([])
   },
   error: null,
+  inventoryPhase: "empty",
   loading: false,
   projectOrder: [],
   projectsById: new Map(),
@@ -95,6 +97,7 @@ export class PersonalMemoryStore {
   readonly #retryBaseMs: number;
   #snapshot = emptySnapshot();
   #projectRequest = 0;
+  #subscriptionGeneration = 0;
   #prewarmActive = 0;
   #prewarmQueue: PersonalDesktopProjectThread[] = [];
   #liveRefreshAgain = false;
@@ -104,11 +107,18 @@ export class PersonalMemoryStore {
 
   constructor(
     api: PersonalDesktopApi,
-    retryBaseMs = personalMemoryRefreshRetryBaseMs
+    retryBaseMs = personalMemoryRefreshRetryBaseMs,
+    { subscribeToChanges = true } = {}
   ) {
     this.#api = api;
     this.#retryBaseMs = Math.max(0, retryBaseMs);
-    api.subscribe((change) => {
+    if (subscribeToChanges) this.subscribeToChanges();
+  }
+
+  subscribeToChanges = (): (() => void) => {
+    const generation = ++this.#subscriptionGeneration;
+    const unsubscribe = this.#api.subscribe((change) => {
+      if (generation !== this.#subscriptionGeneration) return;
       if (change.type === "conversation_events_changed") {
         this.#projectRefreshPending = true;
         for (const { id, projectId, threadId } of change.eventRefs) {
@@ -137,7 +147,19 @@ export class PersonalMemoryStore {
       }
       this.#scheduleLiveRefresh();
     });
-  }
+    return () => {
+      unsubscribe();
+      if (generation !== this.#subscriptionGeneration) return;
+      this.#subscriptionGeneration++;
+      this.#projectRequest++;
+      this.#projectRefreshPending = false;
+      this.#detailRefreshEventIds.clear();
+      for (const timer of this.#detailRefreshRetryTimers.values())
+        clearTimeout(timer);
+      this.#detailRefreshRetryTimers.clear();
+      this.#detailRefreshRetryAttempts.clear();
+    };
+  };
 
   current = (): PersonalMemorySnapshot => this.#snapshot;
 
@@ -193,13 +215,7 @@ export class PersonalMemoryStore {
     return entry;
   }
 
-  async loadProjects({
-    silent = false,
-    onPreview
-  }: {
-    silent?: boolean;
-    onPreview?: () => void;
-  } = {}): Promise<PersonalMemorySnapshot> {
+  async loadProjects({ silent = false } = {}): Promise<PersonalMemorySnapshot> {
     const request = ++this.#projectRequest;
     if (!silent) {
       this.#replace({ ...this.#snapshot, loading: true, error: null });
@@ -213,7 +229,7 @@ export class PersonalMemoryStore {
     } = { metadataProjects: [], localFolders: [], status: null };
     const publish = (
       graphProjects: PersonalDesktopProject[],
-      loading: boolean
+      phase: "preview" | "full"
     ) => {
       if (request !== this.#projectRequest) return;
       const { metadataProjects, localFolders, status } = details;
@@ -251,7 +267,9 @@ export class PersonalMemoryStore {
           classification: classifyPersonalInventory(graphProjects)
         },
         error: null,
-        loading,
+        inventoryPhase:
+          phase === "preview" && !graphProjects.length ? "empty" : phase,
+        loading: phase === "preview",
         projectOrder: projects.map(({ id }) => id),
         projectsById,
         revision: this.#snapshot.revision + 1,
@@ -264,14 +282,16 @@ export class PersonalMemoryStore {
       const graphProjects = this.#api.listProjects();
       // The initial named inventory must not wait for complete source enumeration.
       // Refreshes retain their existing, complete inventory until replacement.
-      if (!this.#snapshot.projectOrder.length) {
+      if (
+        this.#snapshot.inventoryPhase !== "full" &&
+        !this.#snapshot.projectOrder.length
+      ) {
         firstProjects = this.#api
           .listNamedProjects?.()
           .then((projects) => {
             if (complete || request !== this.#projectRequest) return;
             preview = projects;
-            publish(projects, true);
-            if (projects.length) onPreview?.();
+            publish(projects, "preview");
           })
           .catch(() => undefined);
       }
@@ -287,12 +307,12 @@ export class PersonalMemoryStore {
         (this.#api.projectStatus?.() ?? Promise.resolve(null)).catch(() => null)
       ]).then(([metadataProjects, localFolders, status]) => {
         details = { metadataProjects, localFolders, status };
-        if (preview && !complete) publish(preview, true);
+        if (preview && !complete) publish(preview, "preview");
         return details;
       });
       const [projects] = await Promise.all([graphProjects, enrichment]);
       complete = true;
-      publish(projects, false);
+      publish(projects, "full");
       // Publish the catalog before optional first-launch preparation. Only
       // registered native checkouts selected by a current Git rule qualify.
       if (this.#api.prepareLocalFolder && request === this.#projectRequest) {
@@ -339,7 +359,7 @@ export class PersonalMemoryStore {
             ).catch(() => details.localFolders)
           ]);
           details = { ...details, metadataProjects, localFolders };
-          publish(projects, false);
+          publish(projects, "full");
         }
       }
       return this.#snapshot;
@@ -500,6 +520,7 @@ export class PersonalMemoryStore {
   }
 
   async #refreshChangedDetails(): Promise<void> {
+    const generation = this.#subscriptionGeneration;
     for (const [key, changedEventIds] of [...this.#detailRefreshEventIds]) {
       const entry = this.#cache.get(key);
       if (!entry) {
@@ -541,6 +562,7 @@ export class PersonalMemoryStore {
           limit: PERSONAL_DESKTOP_OLDER_EVENT_LIMIT,
           eventIds: [...changedEventIds]
         });
+        if (generation !== this.#subscriptionGeneration) return;
         if (this.#cache.get(key) !== entry) continue;
         entry.events = mergeConversationEvents(
           entry.events.filter(({ id }) => !changedEventIds.has(id)),
@@ -552,6 +574,7 @@ export class PersonalMemoryStore {
         entry.error = null;
         this.#detailRefreshRetryAttempts.delete(key);
       } catch (cause) {
+        if (generation !== this.#subscriptionGeneration) return;
         if (this.#cache.get(key) !== entry) continue;
         this.#restoreDetailRefreshEventIds(key, changedEventIds);
         this.#scheduleDetailRefreshRetry(key);

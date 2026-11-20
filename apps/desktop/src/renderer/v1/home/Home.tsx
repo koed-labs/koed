@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -58,7 +59,15 @@ function useKinSpins() {
   const spins = useRef(new Map<string, KinSpin>());
   const pointer = useRef<number | null>(null);
   const frame = useRef(0);
-  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+  const captured = useRef<HTMLElement | null>(null);
+  const stopWindow = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(frame.current);
+      stopWindow.current?.();
+    },
+    []
+  );
   return (id: string) => {
     let spin = spins.current.get(id);
     if (!spin) {
@@ -66,13 +75,19 @@ function useKinSpins() {
       spins.current.set(id, spin);
     }
     const current = spin;
-    const end = (event: ReactPointerEvent<HTMLElement>, cancelled: boolean) => {
-      if (pointer.current !== event.pointerId) return;
+    // Anything that ends a drag (button up, the browser cancelling it, or the
+    // pointer capture being taken away by a re-render) is a release: the Kin
+    // keeps the momentum it was given rather than snapping back to the front.
+    const finish = (pointerId: number, timeStamp: number) => {
+      if (pointer.current !== pointerId) return;
       pointer.current = null;
+      stopWindow.current?.();
       cancelAnimationFrame(frame.current);
-      current.end(event.timeStamp, reducedMotion(), cancelled);
-      if (event.currentTarget.hasPointerCapture?.(event.pointerId))
-        event.currentTarget.releasePointerCapture(event.pointerId);
+      current.end(timeStamp, reducedMotion());
+      const control = captured.current;
+      captured.current = null;
+      if (control?.hasPointerCapture?.(pointerId))
+        control.releasePointerCapture(pointerId);
       wakePixelkins();
     };
     const handlers = {
@@ -83,14 +98,30 @@ function useKinSpins() {
         const width = event.currentTarget.getBoundingClientRect().width;
         current.begin(event.clientX, event.timeStamp, width, current.angle);
         const control = event.currentTarget;
+        captured.current = control;
         const pointerId = event.pointerId;
         control.setPointerCapture?.(pointerId);
+        // A release anywhere in the window counts, even if the element lost
+        // the pointer (re-render, re-rank) mid-drag.
+        stopWindow.current?.();
+        const onWindowEnd = (windowEvent: PointerEvent) => {
+          if (windowEvent.pointerId === pointerId)
+            finish(pointerId, windowEvent.timeStamp);
+        };
+        window.addEventListener("pointerup", onWindowEnd);
+        window.addEventListener("pointercancel", onWindowEnd);
+        stopWindow.current = () => {
+          window.removeEventListener("pointerup", onWindowEnd);
+          window.removeEventListener("pointercancel", onWindowEnd);
+          stopWindow.current = null;
+        };
         const checkDrag = () => {
           if (pointer.current !== pointerId) return;
           if (current.dragging) {
             frame.current = requestAnimationFrame(checkDrag);
           } else {
             pointer.current = null;
+            stopWindow.current?.();
             if (control.hasPointerCapture?.(pointerId))
               control.releasePointerCapture(pointerId);
           }
@@ -100,14 +131,17 @@ function useKinSpins() {
       },
       onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
         if (pointer.current !== event.pointerId) return;
-        current.move(event.clientX, event.timeStamp);
+        // Every hardware sample since the last frame, for a truer velocity.
+        for (const sample of coalesced(event.nativeEvent))
+          current.move(sample.clientX, sample.timeStamp);
         wakePixelkins();
       },
-      onPointerUp: (event: ReactPointerEvent<HTMLElement>) => end(event, false),
+      onPointerUp: (event: ReactPointerEvent<HTMLElement>) =>
+        finish(event.pointerId, event.timeStamp),
       onPointerCancel: (event: ReactPointerEvent<HTMLElement>) =>
-        end(event, true),
+        finish(event.pointerId, event.timeStamp),
       onLostPointerCapture: (event: ReactPointerEvent<HTMLElement>) =>
-        end(event, true),
+        finish(event.pointerId, event.timeStamp),
       onClickCapture: (event: ReactMouseEvent<HTMLElement>) => {
         if (!current.moved) return;
         current.moved = false;
@@ -689,7 +723,7 @@ function ProjectsStage({
   const onStage = shown.slice(0, HOME_STAGE_LIMIT);
   const layout = layoutStage(
     box,
-    box?.reserve ?? CAPTION_FALLBACK,
+    (box?.reserve ?? CAPTION_FALLBACK) + coinBand(floorCoins),
     onStage.length === 2 ? pairSlots : slots.slice(0, onStage.length || 1)
   );
   // Kin render in a fixed order so a re-rank moves them instead of remounting.
@@ -784,9 +818,8 @@ function ProjectsStage({
       })}
       {floorCoins && (
         <FloorCoins
-          layout={layout}
           width={box?.width}
-          floor={(box?.reserve ?? CAPTION_FALLBACK) - 10}
+          floor={box?.reserve ?? CAPTION_FALLBACK}
           coins={floorCoins}
           drop={coinDrop}
         />
@@ -856,7 +889,11 @@ function SoloStage({
   const captionRef = useRef<HTMLDivElement>(null);
   const topRowRef = useRef<HTMLDivElement>(null);
   const [box, settled] = useStageBox(stageRef, captionRef, topRowRef);
-  const layout = layoutStage(box, box?.reserve ?? CAPTION_FALLBACK, soloSlots);
+  const layout = layoutStage(
+    box,
+    (box?.reserve ?? CAPTION_FALLBACK) + coinBand(floorCoins),
+    soloSlots
+  );
   const hostSpin = useKinSpins()("host");
   return (
     <section
@@ -891,9 +928,8 @@ function SoloStage({
       </div>
       {floorCoins && (
         <FloorCoins
-          layout={layout}
           width={box?.width}
-          floor={(box?.reserve ?? CAPTION_FALLBACK) - 10}
+          floor={box?.reserve ?? CAPTION_FALLBACK}
           coins={floorCoins}
         />
       )}
@@ -978,7 +1014,11 @@ function FlyingCoin({ coin, onDone }: { coin: Coin; onDone: () => void }) {
 }
 
 // Vector edges retain detail while the coins scale, flatten and tumble.
-function CoinArtwork() {
+function CoinArtwork({
+  client = null
+}: {
+  client?: HomeLooseConversation["client"];
+}) {
   return (
     <svg
       viewBox="0 0 32 32"
@@ -1011,19 +1051,31 @@ function CoinArtwork() {
         strokeWidth="1.5"
         strokeLinecap="round"
       />
-      <rect x="12.5" y="11.5" width="7" height="7" rx="1" fill="#7a4a12" />
-      <path
-        d="M13 18.5h5.5a1 1 0 0 0 1-1V12"
-        fill="none"
-        stroke="#fff4c2"
-        strokeWidth="0.75"
-      />
+      {client ? (
+        // The originating AI Client's mark, struck into the coin.
+        <svg x="9.25" y="8" width="13.5" height="13.5" fill="#7a4a12">
+          <AiClientLogo id={client} />
+        </svg>
+      ) : (
+        <>
+          <rect x="12.5" y="11.5" width="7" height="7" rx="1" fill="#7a4a12" />
+          <path
+            d="M13 18.5h5.5a1 1 0 0 0 1-1V12"
+            fill="none"
+            stroke="#fff4c2"
+            strokeWidth="0.75"
+          />
+        </>
+      )}
     </svg>
   );
 }
 
 export type HomeLooseConversation = {
   key: string;
+  // Earlier keys this Conversation went by, so a draft that gets its
+  // permanent key isn't mistaken for a new arrival.
+  aliases?: readonly string[];
   title: string;
   latestAt: string;
   client: "codex" | "claude" | "pi" | null;
@@ -1038,61 +1090,220 @@ type CoinDrop = {
 };
 type FloorCoinsInput = {
   conversations: readonly HomeLooseConversation[];
+  // Keys of Conversations that arrived after load and are still to be thrown
+  // in; a coin reports its launch and is then left alone.
+  thrown: ReadonlySet<string>;
+  launched: (key: string) => void;
+  // Where each coin lies, kept across remounts of the floor.
+  resting: Map<string, CoinSpot>;
   onOpen: (key: string) => void;
 };
-// The most coins left lying on the floor; the sidebar lists the rest.
-const FLOOR_COIN_LIMIT = 16;
-const FLOOR_COIN_GAP = 34;
+// Every hardware sample behind a pointer move, falling back to the event.
+const coalesced = (event: PointerEvent) => {
+  const events = event.getCoalescedEvents?.() ?? [];
+  return events.length ? events : [event];
+};
 
-// Conversations in no Project lie as coins on the stage floor, just above the
-// caption, in the gaps between the front Kin. Hover or focus names one;
-// clicking opens it.
+// Loose coins rest in a shallow band above the caption: a lane is how far up
+// the band (towards the back) a coin lies. The band is kept clear of the Kin's
+// label above it and the heading below it.
+const COIN_LANE_DEPTH = 26;
+const COIN_BAND = 56;
+const COIN_SPACING_X = 14;
+const COIN_SPACING_LANE = 7;
+const coinBand = (coins: FloorCoinsInput | undefined) =>
+  coins?.conversations.length ? COIN_BAND : 0;
+
+type CoinSpot = { x: number; lane: number };
+const hashUnit = (key: string, salt: number) => {
+  let hash = 2166136261 ^ salt;
+  for (let i = 0; i < key.length; i += 1)
+    hash = Math.imul(hash ^ key.charCodeAt(i), 16777619);
+  hash = Math.imul(hash ^ (hash >>> 15), 2246822507);
+  return ((hash >>> 0) % 10_000) / 10_000;
+};
+const clashes = (spot: CoinSpot, others: readonly CoinSpot[]) => {
+  for (const other of others)
+    if (
+      Math.abs(other.x - spot.x) < COIN_SPACING_X &&
+      Math.abs(other.lane - spot.lane) < COIN_SPACING_LANE
+    )
+      return true;
+  return false;
+};
+// A stable pseudo-random spot, trying a few more times to keep clear of the
+// coins already placed so they don't pile into one clump.
+const restingSpot = (
+  key: string,
+  half: number,
+  placed: readonly CoinSpot[]
+) => {
+  let spot: CoinSpot = { x: 0, lane: 0 };
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    spot = {
+      x: (hashUnit(key, attempt * 2) - 0.5) * 2 * half,
+      lane: hashUnit(key, attempt * 2 + 1) * COIN_LANE_DEPTH
+    };
+    if (!clashes(spot, placed)) break;
+  }
+  return spot;
+};
+
+const insertByX = (byX: CoinSpot[], spot: CoinSpot) => {
+  let low = 0;
+  let high = byX.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    // Insert after ties to match a stable sort of placement order.
+    if (byX[mid]!.x <= spot.x) low = mid + 1;
+    else high = mid;
+  }
+  byX.splice(low, 0, spot);
+};
+
+// If the scattered samples all clash, scan from the left at each lane where
+// an occupied band ends. A crowded floor may have no open spot left.
+const openRestingSpot = (
+  half: number,
+  placed: readonly CoinSpot[],
+  byX: readonly CoinSpot[],
+  firstUnchecked: number,
+  onScanLane?: (lane: number) => void
+) => {
+  // Leave room for floating-point rounding at the minimum spacing.
+  const gap = 0.000001;
+  for (const lane of [
+    ...(firstUnchecked === 0 ? [0] : []),
+    ...placed
+      .slice(firstUnchecked)
+      .map((spot) => spot.lane + COIN_SPACING_LANE + gap)
+  ]) {
+    if (lane > COIN_LANE_DEPTH) continue;
+    onScanLane?.(lane);
+    let x = -half;
+    for (const other of byX) {
+      if (Math.abs(other.lane - lane) >= COIN_SPACING_LANE) continue;
+      if (x <= other.x - COIN_SPACING_X - gap) break;
+      x = Math.max(x, other.x + COIN_SPACING_X + gap);
+    }
+    if (x <= half) return { x, lane };
+  }
+  return undefined;
+};
+
+export const fitRestingSpots = (
+  resting: ReadonlyMap<string, CoinSpot>,
+  half?: number,
+  onScanLane?: (lane: number) => void
+) => {
+  const spots = new Map<string, CoinSpot>();
+  const placed: CoinSpot[] = [];
+  const displaced: [string, CoinSpot][] = [];
+  const corrected: { key: string; prior: CoinSpot; spot: CoinSpot }[] = [];
+  // Give every in-bounds coin its spot before fitting coins displaced by resize.
+  for (const [key, spot] of resting) {
+    if (half !== undefined && Math.abs(spot.x) > half) {
+      displaced.push([key, spot]);
+    } else {
+      spots.set(key, spot);
+      placed.push(spot);
+    }
+  }
+  let firstUnchecked = 0;
+  let byX: CoinSpot[] | undefined;
+  if (half !== undefined)
+    for (const [key, prior] of displaced) {
+      let spot = { ...prior, x: Math.sign(prior.x) * half };
+      if (clashes(spot, placed)) {
+        spot = restingSpot(key, half, placed);
+        if (clashes(spot, placed)) {
+          byX ??= [...placed].sort((a, b) => a.x - b.x);
+          const openSpot = openRestingSpot(
+            half,
+            placed,
+            byX,
+            firstUnchecked,
+            onScanLane
+          );
+          if (openSpot) spot = openSpot;
+          // Adding coins cannot reopen checked lanes, but can introduce new ones.
+          else firstUnchecked = placed.length;
+        }
+      }
+      spots.set(key, spot);
+      placed.push(spot);
+      if (byX) insertByX(byX, spot);
+      corrected.push({ key, prior, spot });
+    }
+  return { spots, placed, corrected };
+};
+
+// Conversations in no Project are coins on the stage floor, just above the
+// caption. Ones already there at load rest at scattered spots; a Conversation
+// that appears later is thrown out of its AI Client's key in a random direction
+// and bounces to rest wherever it lands. Hover or focus names one; clicking
+// opens it.
 function FloorCoins({
-  layout,
   width,
   floor,
   coins,
   drop
 }: {
-  layout: StageLayout;
   width: number | undefined;
   floor: number;
   coins: FloorCoinsInput;
   drop?: CoinDrop | undefined;
 }) {
-  const conversations = [...coins.conversations]
-    .sort((left, right) => right.latestAt.localeCompare(left.latestAt))
-    .slice(0, FLOOR_COIN_LIMIT);
+  const reduced = useReducedMotion();
+  const { resting } = coins;
+  const [, refreshSpots] = useState(0);
+  const onSettle = (key: string, spot: CoinSpot) => {
+    resting.set(key, spot);
+    refreshSpots((version) => version + 1);
+  };
+  const conversations = [...coins.conversations].sort((left, right) =>
+    right.latestAt.localeCompare(left.latestAt)
+  );
+  const half = Math.max(0, (width ?? 900) / 2 - 40);
+  // Coins already lying keep their spots; the rest are spread in a fixed
+  // order, so a new arrival never shifts them. With reduced motion arrivals
+  // aren't thrown, so they are placed the same way.
+  const keys = new Set(conversations.map(({ key }) => key));
+  for (const key of [...resting.keys()])
+    if (!keys.has(key)) resting.delete(key);
+  const { spots, placed, corrected } = fitRestingSpots(
+    resting,
+    width === undefined ? undefined : half
+  );
+  useLayoutEffect(() => {
+    for (const { key, prior, spot } of corrected) {
+      // A flight may have settled since render; keep its newer position.
+      if (resting.get(key) === prior) resting.set(key, spot);
+    }
+  });
   if (!conversations.length) return null;
-  const half = (width ?? 900) / 2 - 40;
-  // Kin standing near the floor keep their feet and labels clear.
-  const taken = layout.placements
-    .filter((placement) => placement.bottom < floor + 60)
-    .map((placement) => ({
-      x: placement.x,
-      reach: Math.max(placement.size / 2, 80) + 12
-    }));
-  const free: number[] = [];
-  for (
-    let step = 0;
-    free.length < conversations.length && step * FLOOR_COIN_GAP <= half;
-    step += 1
-  )
-    for (const x of step === 0
-      ? [0]
-      : [step * FLOOR_COIN_GAP, -step * FLOOR_COIN_GAP])
-      if (
-        free.length < conversations.length &&
-        !taken.some((kin) => Math.abs(kin.x - x) < kin.reach)
-      )
-        free.push(x);
+  for (const { key } of [...conversations].sort((a, b) =>
+    a.key.localeCompare(b.key)
+  ))
+    if (!spots.has(key) && (reduced || !coins.thrown.has(key))) {
+      const spot = restingSpot(key, half, placed);
+      spots.set(key, spot);
+      placed.push(spot);
+    }
   return (
     <div className="v1-home-floor" aria-label="Conversations in no Project">
-      {conversations.slice(0, free.length).map((conversation, index) => (
+      {conversations.map((conversation) => (
         <FloorCoin
           key={conversation.key}
           conversation={conversation}
-          home={free[index]!}
+          home={
+            spots.get(conversation.key) ??
+            restingSpot(conversation.key, half, [])
+          }
+          resting={resting}
+          onSettle={onSettle}
+          thrown={coins.thrown.has(conversation.key)}
+          launched={coins.launched}
           floor={floor}
           half={half}
           onOpen={coins.onOpen}
@@ -1111,6 +1322,7 @@ const COIN_WALL_BOUNCE = 0.55;
 const COIN_FLOOR_FRICTION = 5;
 const COIN_MAX_SPEED = 3200;
 const COIN_DRAG_THRESHOLD = 4;
+const COIN_SAMPLE_WINDOW_MS = 250;
 const COIN_SIZE = 20;
 
 type CoinMotion = {
@@ -1127,13 +1339,22 @@ type CoinMotion = {
 function FloorCoin({
   conversation,
   home,
+  resting,
+  onSettle,
+  thrown,
+  launched,
   floor,
   half,
   onOpen,
   drop
 }: {
   conversation: HomeLooseConversation;
-  home: number;
+  home: CoinSpot;
+  resting: Map<string, CoinSpot>;
+  onSettle: (key: string, spot: CoinSpot) => void;
+  launched: (key: string) => void;
+  // Appeared after load: thrown out of its AI Client's key.
+  thrown: boolean;
   floor: number;
   half: number;
   onOpen: (key: string) => void;
@@ -1153,19 +1374,26 @@ function FloorCoin({
         label.style.setProperty("--marquee", `-${overflow + 4}px`);
       else label.style.removeProperty("--marquee");
     });
-  // Where it rests once thrown; until then it keeps its place in the row.
-  const [thrownTo, setThrownTo] = useState<number | null>(null);
   const [flight, setFlight] = useState<CoinMotion | null>(null);
+  // How far up the resting band this coin lies; it lands on this lane.
+  const lane = home.lane;
+  // A running flight uses the latest bounds without restarting its frame loop.
+  const bounds = useRef({ half, lane });
+  useLayoutEffect(() => {
+    bounds.current = { half, lane };
+  }, [half, lane]);
   const motion: CoinMotion = flight ?? {
     mode: "rest",
-    x: thrownTo ?? home,
-    y: 0,
+    x: home.x,
+    y: lane,
     angle: 0
   };
   const body = useRef({ x: 0, y: 0, angle: 0, vx: 0, vy: 0, spin: 0 });
   const samples = useRef<{ t: number; x: number; y: number }[]>([]);
   const start = useRef<{ x: number; y: number } | null>(null);
   const dragged = useRef(false);
+  // Grabbed while still moving: letting go without a drag must resume it.
+  const caught = useRef(false);
   const frame = useRef(0);
   const ceiling = useRef(400);
   // Taken into a Project: it shrinks away until the list catches up.
@@ -1190,6 +1418,8 @@ function FloorCoin({
   };
   useEffect(() => {
     alive.current = true;
+    if (!thrown && !resting.has(conversation.key))
+      resting.set(conversation.key, { x: home.x, lane });
     return () => {
       alive.current = false;
       cancelAnimationFrame(frame.current);
@@ -1208,7 +1438,23 @@ function FloorCoin({
     };
   };
   const settle = () => {
-    setThrownTo(body.current.x);
+    const { half, lane } = bounds.current;
+    // Come to rest in the nearest gap, nudging sideways off a neighbour.
+    const others = [...resting].filter(([key]) => key !== conversation.key);
+    let x = Math.max(-half, Math.min(half, body.current.x));
+    for (const nudge of [0, 10, -10, 20, -20, 30, -30, 45, -45]) {
+      const next = Math.max(-half, Math.min(half, body.current.x + nudge));
+      if (
+        !clashes(
+          { x: next, lane },
+          others.map(([, spot]) => spot)
+        )
+      ) {
+        x = next;
+        break;
+      }
+    }
+    onSettle(conversation.key, { x, lane });
     setFlight(null);
   };
   const fly = () => {
@@ -1216,6 +1462,7 @@ function FloorCoin({
     const step = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.032);
       last = now;
+      const { half, lane } = bounds.current;
       const coin = body.current;
       coin.vy -= COIN_GRAVITY * dt;
       coin.x += coin.vx * dt;
@@ -1229,8 +1476,8 @@ function FloorCoin({
         coin.y = ceiling.current;
         coin.vy = -Math.abs(coin.vy) * COIN_WALL_BOUNCE;
       }
-      if (coin.y <= 0) {
-        coin.y = 0;
+      if (coin.y <= lane) {
+        coin.y = lane;
         if (coin.vy < -90) {
           // Each bounce keeps less energy and slows the spin.
           coin.vy = -coin.vy * COIN_BOUNCE;
@@ -1254,6 +1501,116 @@ function FloorCoin({
     frame.current = requestAnimationFrame(step);
   };
 
+  // A coin caught mid-air and let go without a drag falls on again.
+  const resumeCaught = () => {
+    if (!caught.current) return;
+    caught.current = false;
+    body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
+    if (reduced) settle();
+    else fly();
+  };
+  // A new coin is thrown from its AI Client's key at the top in a random
+  // direction; it bounces and rests wherever it lands.
+  useLayoutEffect(() => {
+    if (!thrown) return;
+    launched(conversation.key);
+    if (reduced) {
+      resting.set(conversation.key, { x: home.x, lane });
+      return;
+    }
+    const key = document
+      .querySelector(
+        `.v1-home-keycap[data-client="${conversation.client ?? ""}"]`
+      )
+      ?.getBoundingClientRect();
+    const stage = ref.current?.parentElement?.getBoundingClientRect();
+    if (!stage) return;
+    const origin = key
+      ? toStage(key.left + key.width / 2, key.bottom)
+      : { x: 0, y: ceiling.current };
+    if (!origin) return;
+    const heading = Math.random() * Math.PI * 2;
+    const speed = 600 + Math.random() * 800;
+    body.current = {
+      x: Math.max(-half, Math.min(half, origin.x)),
+      y: Math.max(0, Math.min(ceiling.current, origin.y)),
+      angle: 0,
+      vx: Math.cos(heading) * speed,
+      vy: Math.sin(heading) * speed,
+      spin: (Math.random() < 0.5 ? -1 : 1) * (600 + Math.random() * 900)
+    };
+    setFlight({ mode: "flying", ...body.current });
+    fly();
+    // Thrown once, when the coin first appears.
+  }, []);
+  // Anything that ends a drag (button up, the browser cancelling it, or the
+  // pointer capture being taken away by a re-render) is a release: the coin
+  // carries on with the velocity it was dragged at. Only a real button up
+  // (`committed`) over a ready Kin adds the Conversation to its Project.
+  const release = (time: number, committed: boolean) => {
+    if (!start.current) return;
+    start.current = null;
+    stopWindow.current?.();
+    if (!dragged.current) return resumeCaught();
+    const target = over.current;
+    hover(null);
+    if (committed && drop && target?.armed) {
+      // Let go over a Kin that has waited its turn: add it at once.
+      setAbsorbed(true);
+      void drop
+        .onDrop(conversation.key, target.id)
+        .catch(() => false)
+        .then((added) => {
+          if (added || !alive.current) return;
+          // Not added: the coin drops back onto the floor.
+          setAbsorbed(false);
+          body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
+          if (reduced) settle();
+          else fly();
+        });
+      return;
+    }
+    if (reduced) {
+      settle();
+      return;
+    }
+    // A hand slows before letting go, so throw with the fastest recent
+    // movement, not the last (slowest) samples. Samples carry the hardware
+    // event times, so a busy main thread doesn't distort the speed.
+    const recent = samples.current.filter((sample) => time - sample.t < 200);
+    const clamp = (value: number) =>
+      Math.max(-COIN_MAX_SPEED, Math.min(COIN_MAX_SPEED, value));
+    let fx = 0;
+    let fy = 0;
+    recent.forEach((to, index) => {
+      const before = recent.slice(0, index);
+      // Prefer a baseline 24ms back; a short flick uses what span it has.
+      const from =
+        [...before].reverse().find((sample) => to.t - sample.t >= 24) ??
+        before.find((sample) => to.t - sample.t >= 6);
+      if (!from) return;
+      const seconds = (to.t - from.t) / 1000;
+      const vx = (to.x - from.x) / seconds;
+      const vy = -(to.y - from.y) / seconds;
+      if (Math.hypot(vx, vy) > Math.hypot(fx, fy)) {
+        fx = vx;
+        fy = vy;
+      }
+    });
+    // Held still before letting go: no throw.
+    const still = !recent.length || time - recent.at(-1)!.t > 120;
+    const coin = body.current;
+    coin.vx = still ? 0 : clamp(fx);
+    coin.vy = still ? 0 : clamp(fy);
+    coin.spin = coin.vx * 1.4;
+    fly();
+  };
+  // Window-level listeners call the latest release, not a stale render's.
+  const releaseRef = useRef(release);
+  releaseRef.current = release;
+  const stopWindow = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopWindow.current?.(), []);
+
   return (
     <button
       ref={ref}
@@ -1265,7 +1622,10 @@ function FloorCoin({
         {
           "--coin-x": `calc(50% + ${motion.x}px)`,
           "--coin-y": `${floor + motion.y}px`,
-          "--coin-angle": `${motion.angle}deg`
+          "--coin-angle": `${motion.angle}deg`,
+          "--coin-depth": lane / COIN_LANE_DEPTH,
+          // Coins nearer the front lie over those behind.
+          zIndex: 100 - Math.round(lane)
         } as CSSProperties
       }
       aria-label={`Open ${conversation.title}`}
@@ -1274,6 +1634,7 @@ function FloorCoin({
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         cancelAnimationFrame(frame.current);
+        caught.current = motion.mode !== "rest";
         // Catching a coin mid-air holds it where it is.
         body.current = {
           x: motion.x,
@@ -1286,9 +1647,25 @@ function FloorCoin({
         start.current = { x: event.clientX, y: event.clientY };
         dragged.current = false;
         samples.current = [
-          { t: performance.now(), x: event.clientX, y: event.clientY }
+          { t: event.timeStamp, x: event.clientX, y: event.clientY }
         ];
         event.currentTarget.setPointerCapture?.(event.pointerId);
+        stopWindow.current?.();
+        const pointerId = event.pointerId;
+        const onWindowEnd = (windowEvent: PointerEvent) => {
+          if (windowEvent.pointerId === pointerId)
+            releaseRef.current(
+              windowEvent.timeStamp,
+              windowEvent.type === "pointerup"
+            );
+        };
+        window.addEventListener("pointerup", onWindowEnd);
+        window.addEventListener("pointercancel", onWindowEnd);
+        stopWindow.current = () => {
+          window.removeEventListener("pointerup", onWindowEnd);
+          window.removeEventListener("pointercancel", onWindowEnd);
+          stopWindow.current = null;
+        };
       }}
       onPointerMove={(event) => {
         if (!start.current) return;
@@ -1304,9 +1681,19 @@ function FloorCoin({
         const point = toStage(event.clientX, event.clientY);
         if (!point) return;
         samples.current = [
-          ...samples.current.slice(-5),
-          { t: performance.now(), x: event.clientX, y: event.clientY }
+          ...samples.current,
+          ...coalesced(event.nativeEvent).map((sample) => ({
+            t: sample.timeStamp,
+            x: sample.clientX,
+            y: sample.clientY
+          }))
         ];
+        // Keep by elapsed time, not count: a 1,000 Hz mouse delivers a
+        // quarter second of movement in hundreds of samples.
+        const newest = samples.current.at(-1)!.t;
+        samples.current = samples.current.filter(
+          (sample) => newest - sample.t <= COIN_SAMPLE_WINDOW_MS
+        );
         const coin = body.current;
         coin.x = Math.max(-half, Math.min(half, point.x));
         coin.y = Math.max(0, Math.min(ceiling.current, point.y));
@@ -1322,57 +1709,9 @@ function FloorCoin({
               .find(Boolean)?.dataset.dropProject ?? null
           );
       }}
-      onPointerUp={() => {
-        if (!start.current) return;
-        start.current = null;
-        if (!dragged.current) return;
-        const target = over.current;
-        hover(null);
-        if (drop && target?.armed) {
-          // Let go over a Kin that has waited its turn: add it at once.
-          setAbsorbed(true);
-          void drop
-            .onDrop(conversation.key, target.id)
-            .catch(() => false)
-            .then((added) => {
-              if (added || !alive.current) return;
-              // Not added: the coin drops back onto the floor.
-              setAbsorbed(false);
-              body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
-              if (reduced) settle();
-              else fly();
-            });
-          return;
-        }
-        if (reduced) {
-          settle();
-          return;
-        }
-        // The flick's speed over the last few pointer samples.
-        const recent = samples.current;
-        const first = recent[0]!;
-        const last = recent.at(-1)!;
-        const seconds = Math.max((last.t - first.t) / 1000, 0.016);
-        const clamp = (value: number) =>
-          Math.max(-COIN_MAX_SPEED, Math.min(COIN_MAX_SPEED, value));
-        // A stale sample means the coin was held still, then let go.
-        const still = performance.now() - last.t > 100;
-        const coin = body.current;
-        coin.vx = still ? 0 : clamp((last.x - first.x) / seconds);
-        coin.vy = still ? 0 : clamp(-(last.y - first.y) / seconds);
-        coin.spin = coin.vx * 1.4;
-        fly();
-      }}
-      onPointerCancel={() => {
-        if (!start.current) return;
-        start.current = null;
-        hover(null);
-        // A lost drag lets the coin fall where it was.
-        if (!dragged.current) return;
-        body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
-        if (reduced) settle();
-        else fly();
-      }}
+      onPointerUp={(event) => release(event.timeStamp, true)}
+      onPointerCancel={(event) => release(event.timeStamp, false)}
+      onLostPointerCapture={(event) => release(event.timeStamp, false)}
       onClick={(event) => {
         // A drag ends with a click; only a plain click opens.
         if (dragged.current) {
@@ -1383,8 +1722,8 @@ function FloorCoin({
         onOpen(conversation.key);
       }}
     >
-      <CoinArtwork />
-      {/* The coin is too small for a legible logo; the tooltip carries it. */}
+      <CoinArtwork client={conversation.client} />
+      {/* The coin carries the client's mark; the tooltip carries the title. */}
       <span className="v1-home-floor-tip" role="tooltip">
         {conversation.client && (
           <span className="v1-home-floor-client" aria-hidden="true">
@@ -1398,6 +1737,48 @@ function FloorCoin({
     </button>
   );
 }
+
+// Tells which loose Conversations arrived after Home loaded, once each. Like
+// the Project coins it keeps a baseline even while the floor is empty, and
+// counts a Conversation by all of its keys so a draft getting its permanent
+// key stays where it was.
+function useLooseArrivals(
+  loose: readonly HomeLooseConversation[],
+  loaded: boolean,
+  scope: string | null
+): Pick<FloorCoinsInput, "thrown" | "launched" | "resting"> {
+  // Where coins lie lives here, not in the floor, so a coin that has landed
+  // stays put when the stage changes under it and the floor remounts.
+  const resting = useRef(new Map<string, CoinSpot>());
+  const state = useRef<{
+    scope: string;
+    seen: Set<string>;
+    thrown: Set<string>;
+  } | null>(null);
+  const launched = useCallback(
+    (key: string) => state.current?.thrown.delete(key),
+    []
+  );
+  if (!loaded || !scope) {
+    state.current = null;
+    resting.current.clear();
+    return { thrown: NO_KEYS, launched, resting: resting.current };
+  }
+  const baseline = state.current?.scope !== scope;
+  const current = baseline
+    ? { scope, seen: new Set<string>(), thrown: new Set<string>() }
+    : state.current!;
+  if (baseline) resting.current.clear();
+  state.current = current;
+  for (const conversation of loose) {
+    const keys = [conversation.key, ...(conversation.aliases ?? [])];
+    if (!baseline && !keys.some((key) => current.seen.has(key)))
+      current.thrown.add(conversation.key);
+    for (const key of keys) current.seen.add(key);
+  }
+  return { thrown: current.thrown, launched, resting: resting.current };
+}
+const NO_KEYS: ReadonlySet<string> = new Set();
 
 function useConversationCoins(
   conversations: readonly HomeConversation[] | undefined,
@@ -1487,17 +1868,12 @@ function useConversationCoins(
         ?.querySelector(".v1-pixelkin")
         ?.getBoundingClientRect();
       if (conversation.projectIds.length && !target) continue;
-      const floorCoin = !target
-        ? [...root.querySelectorAll<HTMLElement>("[data-coin-conversation]")]
-            .find(
-              (element) => element.dataset.coinConversation === conversation.key
-            )
-            ?.getBoundingClientRect()
-        : undefined;
-      const stage = root
-        .querySelector(".v1-home-stage")
-        ?.getBoundingClientRect();
-      if (!target && !stage) continue;
+      // Loose Conversations are thrown as floor coins, not flown to a Kin.
+      if (!target) {
+        for (const key of [conversation.key, ...conversation.aliases])
+          seen.add(key);
+        continue;
+      }
       for (const key of [conversation.key, ...conversation.aliases])
         seen.add(key);
       launched.push({
@@ -1506,23 +1882,10 @@ function useConversationCoins(
           x: source.left + source.width / 2 - origin.left,
           y: source.bottom - origin.top
         },
-        to: target
-          ? {
-              x: target.left + target.width / 2 - origin.left,
-              y: target.top + target.height * 0.35 - origin.top
-            }
-          : floorCoin
-            ? {
-                x: floorCoin.left + floorCoin.width / 2 - origin.left,
-                y: floorCoin.top + floorCoin.height / 2 - origin.top
-              }
-            : {
-                x:
-                  stage!.left +
-                  stage!.width * (0.2 + Math.random() * 0.6) -
-                  origin.left,
-                y: stage!.bottom - 80 - origin.top
-              },
+        to: {
+          x: target.left + target.width / 2 - origin.left,
+          y: target.top + target.height * 0.35 - origin.top
+        },
         delay: 0
       });
     }
@@ -1721,9 +2084,18 @@ export function Home({
   // Adds a floor coin's conversation to a Project; true once it is added.
   onDropConversation?: (key: string, projectId: string) => Promise<boolean>;
 }) {
+  const arrivals = useLooseArrivals(
+    looseConversations,
+    conversations !== undefined,
+    conversationScope
+  );
   const floorCoins =
     onOpenConversation && looseConversations.length
-      ? { conversations: looseConversations, onOpen: onOpenConversation }
+      ? {
+          conversations: looseConversations,
+          ...arrivals,
+          onOpen: onOpenConversation
+        }
       : undefined;
   useEffect(() => {
     const refreshVisible = () => {

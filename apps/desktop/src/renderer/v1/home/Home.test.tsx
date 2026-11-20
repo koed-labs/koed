@@ -9,7 +9,7 @@ import {
   projectKinLook
 } from "../pixelkin/agent-kin.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
-import { Home, HOME_RERANK_MS } from "./Home.js";
+import { fitRestingSpots, Home, HOME_RERANK_MS } from "./Home.js";
 import type { HomeProjectEntry, HomeView } from "./home-model.js";
 
 const agent = { name: "Koed", look: DEFAULT_AGENT_LOOK };
@@ -19,6 +19,81 @@ const entry = (
   latestAt: string,
   eventCount = 10
 ): HomeProjectEntry => ({ id, name: id, eventCount, latestAt });
+
+it("stops exhaustive resize searches after the first miss in each pass", () => {
+  // At zero half-width, these two anchors cover the entire floor band.
+  const resting = new Map([
+    ["anchor-a", { x: 0, lane: 6.5 }],
+    ["anchor-b", { x: 0, lane: 19.5 }],
+    ["displaced-a", { x: 1, lane: 6.5 }],
+    ["displaced-b", { x: 2, lane: 19.5 }]
+  ]);
+  const onScanLane = vi.fn<(lane: number) => void>();
+
+  const { spots } = fitRestingSpots(resting, 0, onScanLane);
+
+  // Only a full scan starts at lane zero.
+  const fullScans = () => onScanLane.mock.calls.filter(([lane]) => lane === 0);
+  expect(fullScans()).toHaveLength(1);
+  expect(spots.get("displaced-a")?.lane).toBeCloseTo(8.4448, 4);
+  expect(spots.get("displaced-b")?.lane).toBeCloseTo(15.1918, 4);
+
+  fitRestingSpots(resting, 0, onScanLane);
+  expect(fullScans()).toHaveLength(2);
+});
+
+it.each([
+  { half: 0, fullSorts: 1 },
+  { half: 20, fullSorts: 0 }
+])(
+  "sorts $fullSorts times when fitting to half-width $half",
+  ({ half, fullSorts }) => {
+    const resting = new Map([
+      ["anchor-a", { x: 0, lane: 6.5 }],
+      ["anchor-b", { x: 0, lane: 19.5 }],
+      ["displaced-a", { x: 21, lane: 6.5 }],
+      ["displaced-b", { x: 22, lane: 19.5 }]
+    ]);
+    const sort = vi.spyOn(Array.prototype, "sort");
+    let calls: number;
+    try {
+      fitRestingSpots(resting, half);
+      calls = sort.mock.calls.length;
+    } finally {
+      sort.mockRestore();
+    }
+    expect(calls).toBe(fullSorts);
+  }
+);
+
+it("does not reuse a gap filled by an earlier fallback", () => {
+  const resting = new Map([
+    ["anchor-a", { x: 0, lane: 7 }],
+    ["anchor-b", { x: 0, lane: 20 }],
+    ["displaced-a", { x: 1, lane: 7 }],
+    ["displaced-b", { x: 2, lane: 20 }]
+  ]);
+
+  const { spots } = fitRestingSpots(resting, 0);
+
+  expect(spots.get("displaced-a")?.lane).toBe(0);
+  expect(spots.get("displaced-b")?.lane).toBeCloseTo(15.1918, 4);
+});
+
+it("preserves a narrow gap found on a newly introduced lane after a miss", () => {
+  const resting = new Map([
+    ["anchor-a", { x: 0, lane: 5 }],
+    ["anchor-b", { x: 0, lane: 8.44480075 }],
+    ["anchor-c", { x: 0, lane: 22.44480125 }],
+    ["displaced-a", { x: 1, lane: 5 }],
+    ["displaced-b", { x: 2, lane: 5 }]
+  ]);
+
+  const { spots } = fitRestingSpots(resting, 0);
+
+  expect(spots.get("displaced-a")?.lane).toBeCloseTo(8.4448, 7);
+  expect(spots.get("displaced-b")?.lane).toBeCloseTo(15.444801, 7);
+});
 
 describe("Home", () => {
   let container: HTMLDivElement;
@@ -226,16 +301,24 @@ describe("Home", () => {
     clientX: number,
     clientY = 0,
     pointerId = 1
-  ) =>
-    target.dispatchEvent(
-      new PointerEvent(type, {
-        bubbles: true,
-        button: 0,
-        isPrimary: true,
-        pointerId,
-        clientX,
-        clientY
-      })
+  ) => {
+    const event = new PointerEvent(type, {
+      bubbles: true,
+      button: 0,
+      isPrimary: true,
+      pointerId,
+      clientX,
+      clientY
+    });
+    // Pointer samples carry hardware timestamps; follow the fake clock.
+    Object.defineProperty(event, "timeStamp", { value: performance.now() });
+    return target.dispatchEvent(event);
+  };
+
+  // A coin's offset from the stage centre, from `calc(50% + Npx)`.
+  const offsetOf = (coin: HTMLElement) =>
+    parseFloat(
+      /([-\d.]+)px/.exec(coin.style.getPropertyValue("--coin-x"))?.[1] ?? "0"
     );
 
   it("throws a floor coin without opening its conversation", async () => {
@@ -316,6 +399,260 @@ describe("Home", () => {
     expect(heights.slice(landed).some((value) => value > resting)).toBe(true);
     // Carried right by the throw.
     expect(coin.style.getPropertyValue("--coin-x")).not.toBe("calc(50% + 0px)");
+  });
+
+  it("keeps a flick's speed with 1,000 Hz pointer samples", async () => {
+    await render({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      looseConversations: [
+        {
+          key: "loose",
+          title: "Loose chat",
+          latestAt: "2026-11-03T00:00:00Z",
+          client: null
+        }
+      ],
+      onOpenConversation: () => undefined
+    });
+    const coin = container.querySelector<HTMLElement>(".v1-home-floor-coin")!;
+    const left = () => offsetOf(coin);
+    await act(async () => {
+      pointer(coin, "pointerdown", 0, 0);
+      // A steady 1ms cadence, 3px per sample: 3,000px/s for 20ms.
+      for (let step = 1; step <= 20; step += 1) {
+        vi.advanceTimersByTime(1);
+        pointer(coin, "pointermove", step * 3, 0);
+      }
+      pointer(coin, "pointerup", 60, 0);
+    });
+    const released = left();
+    await act(async () => vi.advanceTimersByTime(100));
+    // Carried on in the flick's direction instead of dropping straight down.
+    expect(left()).toBeGreaterThan(released + 20);
+  });
+
+  describe("loose coin arrivals", () => {
+    const looseProps = (loose: HomeLooseConversationInput[]) => ({
+      entries: [entry("koed", "2026-11-03T11:59:00Z")],
+      conversations: [],
+      looseConversations: loose,
+      onOpenConversation: () => undefined
+    });
+    type HomeLooseConversationInput = {
+      key: string;
+      aliases?: string[];
+      title: string;
+      latestAt: string;
+      client: "codex" | null;
+    };
+    const item = (key: string, aliases: string[] = []) => ({
+      key,
+      aliases,
+      title: key,
+      latestAt: "2026-11-03T00:00:00Z",
+      client: null
+    });
+    const coinFor = (key: string) =>
+      container.querySelector<HTMLElement>(
+        `[data-coin-conversation="${key}"]`
+      )!;
+
+    it("throws the first Conversation to arrive on a loaded, empty floor", async () => {
+      await render(looseProps([]));
+      await render(looseProps([item("first")]));
+      expect(coinFor("first").dataset.motion).toBe("flying");
+    });
+
+    it("does not throw a Conversation again when it gets its permanent key", async () => {
+      await render(looseProps([item("draft")]));
+      await render(looseProps([item("real", ["draft"])]));
+      expect(coinFor("real").dataset.motion).toBe("rest");
+    });
+
+    it("waits for the complete inventory before treating coins as new", async () => {
+      // A named-Project preview shows the floor before the old Conversations
+      // are all there; none of them are arrivals when the full list lands.
+      await render({ ...looseProps([item("old-a")]), conversationScope: null });
+      await render({
+        ...looseProps([item("old-a"), item("old-b"), item("old-c")]),
+        conversationScope: "home"
+      });
+      for (const key of ["old-a", "old-b", "old-c"])
+        expect(coinFor(key).dataset.motion).toBe("rest");
+      // A genuinely new one after that is still thrown.
+      await render(
+        looseProps([item("old-a"), item("old-b"), item("old-c"), item("new")])
+      );
+      expect(coinFor("new").dataset.motion).toBe("flying");
+    });
+
+    it("places reduced-motion arrivals in free spots", async () => {
+      reducedMotion = true;
+      await render(looseProps([]));
+      const arrivals = Array.from({ length: 12 }, (_, i) => item(`conv-${i}`));
+      await render(looseProps(arrivals));
+      const spots = arrivals.map(({ key }) => {
+        const coin = coinFor(key);
+        expect(coin.dataset.motion).toBe("rest");
+        return {
+          x: offsetOf(coin),
+          depth: parseFloat(coin.style.getPropertyValue("--coin-depth")) * 26
+        };
+      });
+      for (const [i, a] of spots.entries())
+        for (const b of spots.slice(i + 1))
+          expect(
+            Math.abs(a.x - b.x) >= 14 || Math.abs(a.depth - b.depth) >= 7
+          ).toBe(true);
+    });
+
+    const measureStage = (initialWidth: number) => {
+      let width = initialWidth;
+      let measure: () => void;
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(callback: () => void) {
+            measure = callback;
+          }
+          observe() {}
+          disconnect() {}
+        }
+      );
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect"
+      ).mockImplementation(function (this: HTMLElement) {
+        if (this.matches(".v1-home-stage, .v1-home-floor"))
+          return new DOMRect(0, 0, width, width ? 500 : 0);
+        return new DOMRect();
+      });
+      return async (nextWidth: number) => {
+        width = nextWidth;
+        await act(async () => measure());
+      };
+    };
+
+    const spotOf = (key: string) => {
+      const coin = coinFor(key);
+      expect(coin.dataset.motion).toBe("rest");
+      return {
+        x: offsetOf(coin),
+        lane: parseFloat(coin.style.getPropertyValue("--coin-depth")) * 26
+      };
+    };
+
+    it.each([900, 0])(
+      "separates clamped floor coins on measuring 600px after width %i",
+      async (initialWidth) => {
+        const resize = measureStage(initialWidth);
+        await render(
+          looseProps([item("conv-10"), item("conv-13"), item("loose")])
+        );
+        const first = spotOf("conv-10");
+        const second = spotOf("conv-13");
+        const inBounds = spotOf("loose");
+        expect(first.x).toBeGreaterThan(260);
+        expect(second.x).toBeGreaterThan(260);
+
+        await resize(600);
+        const clamped = spotOf("conv-10");
+        const moved = spotOf("conv-13");
+        expect(spotOf("loose")).toEqual(inBounds);
+        expect(clamped).toEqual({ x: 260, lane: first.lane });
+        expect(Math.abs(moved.x)).toBeLessThanOrEqual(260);
+        expect(
+          Math.abs(clamped.x - moved.x) >= 14 ||
+            Math.abs(clamped.lane - moved.lane) >= 7
+        ).toBe(true);
+
+        await resize(900);
+        expect(spotOf("conv-10")).toEqual(clamped);
+        expect(spotOf("conv-13")).toEqual(moved);
+      }
+    );
+
+    it("reserves in-bounds spots before clamping earlier cached coins", async () => {
+      const resize = measureStage(900);
+      await render(looseProps([item("conv-10"), item("conv-81")]));
+      const inBounds = spotOf("conv-81");
+      await resize(600);
+      expect(spotOf("conv-81")).toEqual(inBounds);
+      const moved = spotOf("conv-10");
+      expect(
+        Math.abs(inBounds.x - moved.x) >= 14 ||
+          Math.abs(inBounds.lane - moved.lane) >= 7
+      ).toBe(true);
+    });
+
+    it("finds a free spot when resize placement samples all clash", async () => {
+      const resize = measureStage(900);
+      const keys = Array.from(
+        { length: 25 },
+        (_, i) => `seed-483-conv-${i}`
+      ).sort();
+      await render(looseProps(keys.map((key) => item(key))));
+      await resize(600);
+      const spots = keys.map(spotOf);
+      for (const [i, a] of spots.entries())
+        for (const b of spots.slice(i + 1))
+          expect(
+            Math.abs(a.x - b.x) >= 14 || Math.abs(a.lane - b.lane) >= 7
+          ).toBe(true);
+    });
+
+    it.each([false, true])(
+      "uses measured bounds for a thrown coin (resize during flight: %s)",
+      async (duringFlight) => {
+        const resize = measureStage(900);
+        await render(looseProps([item("loose")]));
+        const coin = coinFor("loose");
+        await act(async () => {
+          pointer(coin, "pointerdown", 450, 100);
+          pointer(coin, "pointermove", 810, 100);
+          pointer(coin, "pointerup", 810, 100);
+          vi.advanceTimersByTime(16);
+        });
+        expect(coin.dataset.motion).toBe("flying");
+        if (duringFlight) {
+          await resize(600);
+          expect(coinFor("loose")).toBe(coin);
+          expect(coin.dataset.motion).toBe("flying");
+        }
+        await act(async () => vi.advanceTimersByTime(2000));
+        if (!duringFlight) {
+          expect(spotOf("loose").x).toBe(360);
+          await resize(600);
+        }
+        const corrected = spotOf("loose");
+        expect(corrected.x).toBe(260);
+        await resize(900);
+        expect(spotOf("loose")).toEqual(corrected);
+      }
+    );
+
+    it("leaves a landed coin at rest when the stage changes under it", async () => {
+      await render(looseProps([]));
+      await render(looseProps([item("landed")]));
+      expect(coinFor("landed").dataset.motion).toBe("flying");
+      for (let frame = 0; frame < 600; frame += 1)
+        await act(async () => vi.advanceTimersByTime(16));
+      const rest = coinFor("landed").style.getPropertyValue("--coin-x");
+      expect(coinFor("landed").dataset.motion).toBe("rest");
+      // Projects appear: the solo stage becomes the Projects stage.
+      await render({
+        ...looseProps([item("landed")]),
+        entries: [entry("koed", "2026-11-03T11:59:00Z")],
+        view: projectsView
+      });
+      expect(coinFor("landed").dataset.motion).toBe("rest");
+      expect(coinFor("landed").style.getPropertyValue("--coin-x")).toBe(rest);
+    });
+
+    it("leaves coins already on the floor at load at rest", async () => {
+      await render(looseProps([item("old")]));
+      expect(coinFor("old").dataset.motion).toBe("rest");
+    });
   });
 
   it("spins a Kin by dragging without opening its Project", async () => {
@@ -696,6 +1033,18 @@ describe("Home", () => {
     delete (HTMLElement.prototype as { animate?: unknown }).animate;
   });
 
+  // A Project Kin for coins to fly to, added to the stage.
+  const addProjectKin = async () => {
+    const project = document.createElement("div");
+    project.dataset.coinProject = "project";
+    const kin = document.createElement("div");
+    kin.className = "v1-pixelkin";
+    project.append(kin);
+    await act(async () => {
+      container.querySelector(".v1-home-coins")!.parentElement!.append(project);
+    });
+  };
+
   it("flies a coin for a newly appearing sidebar Conversation, not ingestion progress", async () => {
     const animations: { onfinish: (() => void) | null; cancel: () => void }[] =
       [];
@@ -710,13 +1059,13 @@ describe("Home", () => {
       key: "old",
       aliases: ["old"],
       client: "codex" as const,
-      projectIds: []
+      projectIds: ["project"]
     };
     const added = {
       key: "new",
       aliases: ["new"],
       client: "codex" as const,
-      projectIds: []
+      projectIds: ["project"]
     };
     await render({
       entries: [entry("existing", "2026-11-03T11:00:00Z")],
@@ -724,6 +1073,7 @@ describe("Home", () => {
       clients: [codexClient],
       conversations: [existing]
     });
+    await addProjectKin();
     await render({
       entries: [entry("existing", "2026-11-03T11:00:00Z")],
       view: projectReading(9),
@@ -760,11 +1110,12 @@ describe("Home", () => {
       conversationScope: "one"
     };
     await render({ ...props, conversations: [] });
+    await addProjectKin();
     const conversations = Array.from({ length: 12 }, (_, i) => ({
       key: `new-${i}`,
       aliases: [],
       client: "codex" as const,
-      projectIds: []
+      projectIds: ["project"]
     }));
     await render({ ...props, conversations });
     expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(4);
@@ -785,11 +1136,22 @@ describe("Home", () => {
       conversationScope: "one"
     };
     await render({ ...props, conversations: [] });
+    await addProjectKin();
     await render({
       ...props,
       conversations: [
-        { key: "first", aliases: ["shared"], client: "codex", projectIds: [] },
-        { key: "second", aliases: ["shared"], client: "codex", projectIds: [] }
+        {
+          key: "first",
+          aliases: ["shared"],
+          client: "codex",
+          projectIds: ["project"]
+        },
+        {
+          key: "second",
+          aliases: ["shared"],
+          client: "codex",
+          projectIds: ["project"]
+        }
       ]
     });
     expect(container.querySelectorAll(".v1-home-coin")).toHaveLength(1);
@@ -855,7 +1217,7 @@ describe("Home", () => {
     }
   );
 
-  it("lands a loose Conversation at its rendered floor coin", async () => {
+  it("throws a new loose Conversation as a floor coin, not a flying coin", async () => {
     const frames: Keyframe[][] = [];
     Object.assign(HTMLElement.prototype, {
       animate: (keyframes: Keyframe[]) => {
@@ -863,24 +1225,6 @@ describe("Home", () => {
         return { onfinish: null, cancel: () => undefined };
       }
     });
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
-        const left = this.classList.contains("v1-home-floor-coin") ? 210 : 0;
-        const top = this.classList.contains("v1-home-floor-coin") ? 310 : 0;
-        const width = this.classList.contains("v1-home-stage") ? 900 : 20;
-        return {
-          left,
-          top,
-          right: left + width,
-          bottom: top + 20,
-          width,
-          height: 20,
-          x: left,
-          y: top,
-          toJSON: () => ({})
-        };
-      }
-    );
     const props = {
       entries: [],
       view: { kind: "empty" as const, warnings: [] },
@@ -888,19 +1232,33 @@ describe("Home", () => {
       conversationScope: "one",
       onOpenConversation: () => undefined
     };
-    await render({ ...props, conversations: [], looseConversations: [] });
+    const loose = (key: string) => ({
+      key,
+      title: key,
+      latestAt: "2026-11-03",
+      client: "codex" as const
+    });
     await render({
       ...props,
       conversations: [
-        { key: "new", aliases: [], client: "codex", projectIds: [] }
+        { key: "old", aliases: [], client: "codex", projectIds: [] }
       ],
-      looseConversations: [
-        { key: "new", title: "New", latestAt: "2026-11-03", client: "codex" }
-      ]
+      looseConversations: [loose("old")]
     });
-    expect(frames[0]?.[2]?.transform).toBe(
-      "translate(220px, 320px) scale(0.9)"
-    );
+    const many = Array.from({ length: 30 }, (_, i) => loose(`c${i}`));
+    await render({
+      ...props,
+      conversations: many.map(({ key }) => ({
+        key,
+        aliases: [],
+        client: "codex" as const,
+        projectIds: []
+      })),
+      looseConversations: [loose("old"), ...many]
+    });
+    // No cap on floor coins, and none fly along an arc to a landing spot.
+    expect(container.querySelectorAll(".v1-home-floor-coin")).toHaveLength(31);
+    expect(frames).toHaveLength(0);
     delete (HTMLElement.prototype as { animate?: unknown }).animate;
   });
 
@@ -1327,6 +1685,24 @@ describe("Home", () => {
       expect(coin.dataset.motion).toBe("rest");
       expect(target.hasAttribute("data-drop")).toBe(false);
     });
+
+    it.each(["pointercancel", "lostpointercapture"])(
+      "does not add the conversation when the drag ends with %s",
+      async (type) => {
+        const onDrop = vi
+          .fn<(key: string, projectId: string) => Promise<boolean>>()
+          .mockResolvedValue(true);
+        const { coin, target } = await setup(onDrop);
+        under = [target];
+        await act(async () => press(coin, "pointermove", 70));
+        await act(async () => vi.advanceTimersByTime(500));
+        expect(target.getAttribute("data-drop")).toBe("ready");
+        await act(async () => press(coin, type, 70));
+        expect(onDrop).not.toHaveBeenCalled();
+        expect(coin.dataset.motion).toBe("rest");
+        expect(target.hasAttribute("data-drop")).toBe(false);
+      }
+    );
 
     it("restarts the wait when the coin leaves the Kin and returns", async () => {
       const onDrop = vi

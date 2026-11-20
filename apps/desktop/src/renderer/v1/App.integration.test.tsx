@@ -3,6 +3,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { homeStatus } from "./home/home-status.fixture.js";
+import {
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
+  type PersonalDesktopApi,
+  type PersonalDesktopChange,
+  type PersonalDesktopProject
+} from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import type { KoedServerStatus } from "../../types.js";
 import { DesktopStatusStore } from "../services/desktop-commands.js";
@@ -18,10 +24,9 @@ import type {
 
 const inventoryLoad = vi.hoisted(() => ({
   pending: null as Promise<unknown> | null,
+  realApi: null as PersonalDesktopApi | null,
   calls: 0,
-  load: null as
-    | null
-    | ((options?: { silent?: boolean; onPreview?: () => void }) => unknown),
+  load: null as null | ((options?: { silent?: boolean }) => unknown),
   durableRefresh: vi.fn(),
   backgroundLoad: null as null | (() => Promise<unknown>),
   conversationProps: null as null | Record<string, unknown>,
@@ -64,6 +69,7 @@ const snapshot = {
     [externalProject.id, externalProject]
   ]),
   loading: false,
+  inventoryPhase: "full",
   projectOrder: [localProject.id, externalProject.id],
   revision: 1,
   inventory: {
@@ -75,21 +81,42 @@ const snapshot = {
     unresolved: []
   }
 };
-vi.mock("../state/personal-memory.js", () => ({
-  PersonalMemoryStore: class {
-    current = () => snapshot;
-    subscribe = () => () => undefined;
-    loadProjects = async (options?: {
-      silent?: boolean;
-      onPreview?: () => void;
-    }) => {
-      inventoryLoad.calls++;
-      return inventoryLoad.load?.(options) ?? inventoryLoad.pending ?? snapshot;
+vi.mock("../state/personal-memory.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../state/personal-memory.js")>();
+  class InventoryStub {
+    #snapshot: unknown = { ...snapshot, inventoryPhase: "empty" };
+    #listeners = new Set<() => void>();
+    current = () => this.#snapshot;
+    subscribe = (listener: () => void) => {
+      this.#listeners.add(listener);
+      return () => this.#listeners.delete(listener);
     };
-    refreshFromDurableEvent = () => inventoryLoad.durableRefresh();
+    subscribeToChanges = () => () => undefined;
+    loadProjects = async (options?: { silent?: boolean }) => {
+      inventoryLoad.calls++;
+      this.#snapshot = await Promise.resolve(
+        inventoryLoad.load?.(options) ?? inventoryLoad.pending ?? snapshot
+      );
+      for (const listener of this.#listeners) listener();
+      return this.#snapshot;
+    };
+    refreshFromDurableEvent = () => {
+      inventoryLoad.durableRefresh();
+      void this.loadProjects({ silent: true });
+    };
     upsertThread = () => undefined;
   }
-}));
+  return {
+    PersonalMemoryStore: function (
+      ...args: ConstructorParameters<typeof actual.PersonalMemoryStore>
+    ) {
+      return args[0] === inventoryLoad.realApi
+        ? new actual.PersonalMemoryStore(...args)
+        : new InventoryStub();
+    }
+  };
+});
 vi.mock("../services/platform.js", () => ({
   createRendererPlatform: () => ({
     ensureIndependentProject: async () => ({
@@ -190,6 +217,16 @@ const options: ManagedConversationLaunchOptions = {
   ]
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("V1App launch integration", () => {
   let root: Root | undefined;
   let container: HTMLDivElement | undefined;
@@ -197,6 +234,7 @@ describe("V1App launch integration", () => {
     if (root) await act(async () => root!.unmount());
     container?.remove();
     inventoryLoad.pending = null;
+    inventoryLoad.realApi = null;
     inventoryLoad.calls = 0;
     desktopStatus.status = {
       state: "healthy",
@@ -212,19 +250,106 @@ describe("V1App launch integration", () => {
     vi.useRealTimers();
   });
 
-  it("shows verified named Projects while diagnostics and the full inventory are pending", async () => {
+  const previewCases = [
+    "success",
+    "failure before enrichment",
+    "failure after enrichment",
+    "phase change"
+  ] as const;
+  it.each(previewCases)(
+    "verifies the named preview with %s",
+    checkNamedPreview
+  );
+
+  async function checkNamedPreview(outcome: (typeof previewCases)[number]) {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     let ready = false;
     const listeners = new Set<() => void>();
     const diagnostics = new Promise(() => {});
-    const inventory = new Promise(() => {});
-    const readIdentity = vi.fn(async () => ({
-      ownerId: uuid(3),
-      scopeKey: "a".repeat(64)
-    }));
-    inventoryLoad.load = (options) => {
-      options?.onPreview?.();
-      return inventory;
+    let finishFirst!: (projects: PersonalDesktopProject[]) => void;
+    let finishBackground!: (projects: PersonalDesktopProject[]) => void;
+    const first = new Promise<PersonalDesktopProject[]>((resolve) => {
+      finishFirst = resolve;
+    });
+    const background = new Promise<PersonalDesktopProject[]>((resolve) => {
+      finishBackground = resolve;
+    });
+    const loose: PersonalDesktopProject = {
+      id: "unassigned",
+      name: "Unresolved history",
+      path: null,
+      eventCount: 1,
+      threads: [
+        {
+          id: uuid(98),
+          sessionId: uuid(98),
+          name: "Older loose Conversation",
+          sourceAiClient: "codex",
+          projectId: "unassigned",
+          projectName: "Unresolved history",
+          projectPath: null,
+          projectAssignmentSource: null,
+          eventCount: 1,
+          invalidatedCount: 0,
+          latestAt: "2026-07-23T00:00:00.000Z",
+          sample: "Earlier message",
+          presentation: null
+        }
+      ]
     };
+    const named: PersonalDesktopProject = {
+      id: uuid(99),
+      name: "External captured Project",
+      namedProject: {
+        projectId: uuid(99),
+        name: "External captured Project",
+        version: 1,
+        headRevisionId: uuid(95),
+        deletedAt: null,
+        createdAt: "2026-07-23T00:00:00.000Z",
+        updatedAt: "2026-07-23T00:00:00.000Z"
+      },
+      path: null,
+      eventCount: 1,
+      threads: [
+        {
+          ...loose.threads[0]!,
+          id: uuid(96),
+          sessionId: uuid(96),
+          name: "Project Conversation",
+          projectId: uuid(99),
+          projectName: "External captured Project"
+        }
+      ]
+    };
+    const initialScope = "a".repeat(64);
+    let scopeKey = initialScope;
+    let changed!: (change: PersonalDesktopChange) => void;
+    const unsubscribeMemory = vi.fn();
+    const namedPreview = deferred<PersonalDesktopProject[]>();
+    const metadata = deferred<[]>();
+    const listProjects = vi
+      .fn(() => Promise.resolve([named, loose]))
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(background);
+    const api: PersonalDesktopApi = {
+      listProjects,
+      listNamedProjects: () =>
+        scopeKey === initialScope ? namedPreview.promise : Promise.resolve([]),
+      listProjectMetadata: () => metadata.promise,
+      loadEventPage: async () => [],
+      updateSessionTitle: async ({ title }) => ({ title }),
+      updateSessionPresentation: async () => {
+        throw new Error("not used");
+      },
+      subscribe: (listener) => {
+        changed = listener;
+        return unsubscribeMemory;
+      }
+    };
+    inventoryLoad.realApi = api;
+    const readIdentity = vi.fn(async () => ({ ownerId: uuid(3), scopeKey }));
     Object.defineProperty(window, "koedDesktop", {
       configurable: true,
       value: {
@@ -257,13 +382,13 @@ describe("V1App launch integration", () => {
     await act(async () =>
       root!.render(
         <V1App
-          personalMemoryApi={{} as never}
+          personalMemoryApi={api}
           managedConversations={null}
           statusStore={new DesktopStatusStore()}
         />
       )
     );
-    expect(inventoryLoad.calls).toBe(0);
+    expect(listProjects).not.toHaveBeenCalled();
     expect(container.querySelector(".v1-home")?.getAttribute("data-mood")).toBe(
       "loading"
     );
@@ -272,22 +397,138 @@ describe("V1App launch integration", () => {
     await act(async () => {
       for (const listener of listeners) listener();
     });
-    expect(inventoryLoad.calls).toBe(1);
-    expect(readIdentity).toHaveBeenCalled();
+    expect(listProjects).toHaveBeenCalledTimes(1);
+    const identity = { ownerId: uuid(3), scopeKey };
+    const firstCheck = deferred<typeof identity>();
+    const nextCheck = deferred<typeof identity>();
+    readIdentity.mockClear().mockReturnValueOnce(firstCheck.promise);
+    readIdentity.mockReturnValue(nextCheck.promise);
+    const sidebarText = () =>
+      container!.querySelector(".v1-navigation-sidebar")!.textContent;
+    await act(async () => namedPreview.resolve([named]));
+    expect(readIdentity).toHaveBeenCalledTimes(1);
+    expect(sidebarText()).not.toContain("External captured Project");
+    const rejectFirst = () =>
+      act(async () => firstCheck.reject(new Error("Identity unavailable")));
+    if (outcome === "failure before enrichment") {
+      await rejectFirst();
+      expect(readIdentity).toHaveBeenCalledTimes(1);
+    }
+    await act(async () => metadata.resolve([]));
+
+    if (outcome === "phase change") {
+      await act(async () => finishFirst([named, loose]));
+      expect(readIdentity).toHaveBeenCalledTimes(2);
+      await act(async () => firstCheck.resolve(identity));
+      expect(sidebarText()).not.toContain("External captured Project");
+      await act(async () => nextCheck.resolve(identity));
+      expect(sidebarText()).toContain("External captured Project");
+      return;
+    }
+    if (outcome === "success") {
+      await act(async () => firstCheck.resolve(identity));
+      expect(sidebarText()).toContain("External captured Project");
+      expect(readIdentity).toHaveBeenCalledTimes(1);
+    } else {
+      if (outcome === "failure after enrichment") {
+        expect(readIdentity).toHaveBeenCalledTimes(1);
+        await rejectFirst();
+      }
+      expect(readIdentity).toHaveBeenCalledTimes(2);
+      expect(sidebarText()).not.toContain("External captured Project");
+      await act(async () => nextCheck.resolve(identity));
+    }
+    readIdentity.mockImplementation(async () => ({
+      ownerId: uuid(3),
+      scopeKey
+    }));
     expect(container.querySelector(".v1-home")?.getAttribute("data-mood")).toBe(
       "projects"
     );
     expect(container.textContent).toContain("External captured Project");
 
-    ready = false;
+    const change = {
+      type: "conversation_events_changed",
+      eventRefs: [],
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION
+    } satisfies PersonalDesktopChange;
+    await act(async () => changed(change));
+    expect(listProjects).toHaveBeenCalledTimes(2);
+    await act(async () => finishFirst([]));
+    expect(container.querySelector("[data-coin-conversation]")).toBeNull();
+    await act(async () => finishBackground([named, loose]));
+    const coin = () =>
+      container!.querySelector<HTMLElement>("[data-coin-conversation]");
+    expect(coin()?.dataset.motion).toBe("rest");
+
+    const newer = {
+      ...loose,
+      eventCount: 2,
+      threads: [
+        ...loose.threads,
+        {
+          ...loose.threads[0]!,
+          id: uuid(97),
+          sessionId: uuid(97),
+          name: "New loose Conversation",
+          latestAt: "2026-07-24T00:00:00.000Z"
+        }
+      ]
+    };
+    listProjects.mockResolvedValueOnce([named, newer]);
+    await act(async () => changed(change));
+    expect(
+      container.querySelectorAll(
+        '[data-coin-conversation][data-motion="flying"]'
+      )
+    ).toHaveLength(1);
+
+    // A late full publication from the old scope cannot open the new gate.
+    let finishPrevious!: (projects: PersonalDesktopProject[]) => void;
+    listProjects.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishPrevious = resolve;
+      })
+    );
+    await act(async () => changed(change));
+    scopeKey = "b".repeat(64);
+    let finishCurrent!: (projects: PersonalDesktopProject[]) => void;
+    listProjects.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishCurrent = resolve;
+      })
+    );
     await act(async () => {
       for (const listener of listeners) listener();
     });
+    expect(listProjects).toHaveBeenCalledTimes(5);
+    await act(async () => finishPrevious([named, newer]));
+    expect(container.textContent).not.toContain("External captured Project");
+    expect(coin()).toBeNull();
+    await act(async () => finishCurrent([named]));
+    expect(container.textContent).toContain("External captured Project");
+
+    let finishIdentity!: (identity: {
+      ownerId: string;
+      scopeKey: string;
+    }) => void;
+    readIdentity.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishIdentity = resolve;
+      })
+    );
+    ready = false;
+    await act(async () => {
+      for (const listener of listeners) listener();
+      await Promise.resolve();
+      finishIdentity({ ownerId: uuid(3), scopeKey });
+    });
+    expect(unsubscribeMemory).toHaveBeenCalledTimes(2);
     expect(container.querySelector(".v1-home")?.getAttribute("data-mood")).toBe(
       "loading"
     );
     expect(container.textContent).not.toContain("External captured Project");
-  });
+  }
 
   it("follows cold-start lifecycle events and service readiness without showing an empty inventory", async () => {
     vi.useFakeTimers();
@@ -509,7 +750,11 @@ describe("V1App launch integration", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  const failedInventory = { ...snapshot, error: "Inventory is unavailable" };
+  const failedInventory = {
+    ...snapshot,
+    error: "Inventory is unavailable",
+    inventoryPhase: "empty"
+  };
   it("shows the inventory once a background load recovers from a failed initial load", async () => {
     inventoryLoad.load = (options) =>
       options?.silent ? snapshot : failedInventory;
@@ -533,7 +778,7 @@ describe("V1App launch integration", () => {
       )
     );
     expect(container!.textContent).toContain("External captured Conversation");
-    expect(inventoryLoad.durableRefresh).not.toHaveBeenCalled();
+    expect(inventoryLoad.durableRefresh).toHaveBeenCalledTimes(1);
     await act(async () =>
       inventoryLoad.collaborationListener?.(
         {},
@@ -543,7 +788,7 @@ describe("V1App launch integration", () => {
         }
       )
     );
-    expect(inventoryLoad.durableRefresh).toHaveBeenCalledTimes(1);
+    expect(inventoryLoad.durableRefresh).toHaveBeenCalledTimes(2);
   });
   it("hides the previous owner's inventory while the new owner's inventory loads", async () => {
     let scopeKey = "a".repeat(64);
@@ -595,7 +840,10 @@ describe("V1App launch integration", () => {
       "External captured Conversation"
     );
     await act(async () =>
-      finish({ ...snapshot, error: "New owner's inventory is unavailable" })
+      finish({
+        ...failedInventory,
+        error: "New owner's inventory is unavailable"
+      })
     );
     expect(container.textContent).not.toContain(
       "External captured Conversation"
