@@ -16,8 +16,19 @@ export interface ApiEnvConfig {
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export const loadApiEnv = (): void => {
-  loadDotenv({ path: resolve(appDir, ".env"), override: false, quiet: true });
+export const loadApiEnv = (
+  environment: NodeJS.ProcessEnv = process.env
+): void => {
+  const explicitPath = environment.KOED_ENV_PATH?.trim();
+  const result = loadDotenv({
+    path: explicitPath ? resolve(explicitPath) : resolve(appDir, ".env"),
+    processEnv: environment,
+    override: false,
+    quiet: true
+  });
+  if (explicitPath && result.error) {
+    throw new Error("Explicit KOED_ENV_PATH could not be read");
+  }
 };
 
 const intEnv = (
