@@ -24,7 +24,12 @@ describe.each(loaders)("%s explicit environment isolation", (_name, load) => {
     const path = resolve(directory, "fixture.env");
     writeFileSync(
       path,
-      "DATABASE_URL=fixture-file\nEMBEDDING_SERVICE_TOKEN=fixture-token\n",
+      [
+        "DATABASE_URL=fixture-file",
+        "EMBEDDING_SERVICE_TOKEN=fixture-token",
+        "PRIVACY_RUNTIME_CONTROL_TOKEN=fixture-privacy-control-token",
+        ""
+      ].join("\n"),
       { mode: 0o600 }
     );
     const environment: NodeJS.ProcessEnv = {

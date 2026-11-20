@@ -14,7 +14,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { cpus, tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import {
   readDesktopLocalCredentialAuthorization,
   storeDesktopLocalCredential
@@ -1493,7 +1493,7 @@ describe("start supervisor", () => {
     }
   );
 
-  it("loads runtime and path settings from the selected env before startup", async () => {
+  it("loads runtime settings and forwards the resolved environment file to services", async () => {
     const root = tempDir();
     const resources = createNativeResources(root);
     createSourceDesktopDbRuntime(root, "77777777-7777-4777-8777-777777777777");
@@ -1542,7 +1542,7 @@ describe("start supervisor", () => {
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        KOED_ENV_PATH: envPath,
+        KOED_ENV_PATH: relative(process.cwd(), envPath),
         KOED_LOCAL_PORT_LEASES_PATH: resolve(root, "port-leases.json"),
         KOED_AUTO_PORTS: "1",
         API_TOKEN_PEPPER: "test-api-token-pepper"
@@ -1588,9 +1588,15 @@ describe("start supervisor", () => {
     );
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_PORT).toBe("23800");
     expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("28080");
+    expect(spawned[0]?.env?.KOED_ENV_PATH).toBe(envPath);
 
     expect(spawned[0]?.env?.KOED_EMBEDDING_ACCELERATION).toBe("metal");
     expect(spawned.at(-1)?.env?.API_PORT).toBe("23300");
+    expect(
+      spawned.find((entry) =>
+        entry.args.some((arg) => arg.endsWith("apps/api/dist/index.js"))
+      )?.env?.KOED_ENV_PATH
+    ).toBe(envPath);
     const provisionedTokenFile: unknown = JSON.parse(
       readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
     );
@@ -1610,6 +1616,7 @@ describe("start supervisor", () => {
     expect(worker?.env?.MEMORY_API_TOKEN).toBe(provisionedToken);
     expect(worker?.env?.MEMORY_API_URL).toBe("http://localhost:23300");
     expect(worker?.env?.KOED_EMBEDDING_POOL_KEY).toBe("local-metal-pool");
+    expect(worker?.env?.KOED_ENV_PATH).toBe(envPath);
     const localPorts = JSON.parse(
       readFileSync(resolve(root, "config/local-ports.json"), "utf8")
     ) as Record<string, unknown>;

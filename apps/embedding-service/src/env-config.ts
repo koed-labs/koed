@@ -106,7 +106,11 @@ export const loadEmbeddingServiceEnv = (
   }
   for (const line of readFileSync(selectedPath, "utf8").split(/\r?\n/)) {
     const parsed = parseEnvLine(line);
-    if (parsed && environment[parsed[0]] === undefined) {
+    if (
+      parsed &&
+      parsed[0] !== "PRIVACY_RUNTIME_CONTROL_TOKEN" &&
+      environment[parsed[0]] === undefined
+    ) {
       environment[parsed[0]] = parsed[1];
     }
   }

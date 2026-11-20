@@ -1,6 +1,6 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config as loadDotenv } from "dotenv";
+import { config as loadDotenv, populate } from "dotenv";
 import {
   requireEnv,
   validateEnvelopeEncryptionProviderEnvironment
@@ -20,14 +20,18 @@ export const loadApiEnv = (
   environment: NodeJS.ProcessEnv = process.env
 ): void => {
   const explicitPath = environment.KOED_ENV_PATH?.trim();
-  const result = loadDotenv({
+  const { parsed, error } = loadDotenv({
     path: explicitPath ? resolve(explicitPath) : resolve(appDir, ".env"),
-    processEnv: environment,
+    processEnv: { ...environment },
     override: false,
     quiet: true
   });
-  if (explicitPath && result.error) {
+  if (explicitPath && error) {
     throw new Error("Explicit KOED_ENV_PATH could not be read");
+  }
+  if (parsed) {
+    delete parsed.PRIVACY_RUNTIME_CONTROL_TOKEN;
+    populate(environment, parsed);
   }
 };
 
