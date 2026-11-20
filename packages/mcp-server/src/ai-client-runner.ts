@@ -41,6 +41,7 @@ import {
   type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
+import { runCodexSummary } from "./codex-summary-runner.js";
 
 export type AiClientProvider = "codex" | "claude" | "pi";
 
@@ -1439,9 +1440,6 @@ async function runIsolatedSummary(
   config: AiClientRunConfig,
   timeoutMs: number
 ): Promise<AiClientRunResult> {
-  if (config.provider !== "claude" && config.provider !== "pi") {
-    throw new Error("AI Client does not support isolated summaries");
-  }
   if (config.dynamicTools?.length || config.dynamicToolHandler) {
     throw new Error("Isolated summaries do not accept action tools");
   }
@@ -1449,6 +1447,22 @@ async function runIsolatedSummary(
   try {
     const cwd = path.join(root, "work");
     fs.mkdirSync(cwd, { mode: 0o700 });
+    if (config.provider === "codex") {
+      if (!config.outputSchema)
+        throw new Error("Codex summary requires an output schema");
+      return await runCodexSummary(
+        prompt,
+        {
+          ...config,
+          appServerBinary: config.executablePath,
+          baseInstructions: config.systemPrompt,
+          outputSchema: config.outputSchema,
+          onProviderActivity: config.onProgress,
+          cwd
+        },
+        timeoutMs
+      );
+    }
     return await driver.runJsonTask(prompt, { ...config, cwd }, timeoutMs);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

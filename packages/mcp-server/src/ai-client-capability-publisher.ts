@@ -20,6 +20,7 @@ import {
   localAiClientInstanceConfigIdentity,
   type LocalAiClientInstanceConfiguration
 } from "./ai-client-instance-registry.js";
+import { resolveCodexHome } from "./codex-app-server-runner.js";
 import type { MemoryApiClient } from "./index.js";
 
 const positiveInteger = (
@@ -70,6 +71,18 @@ export const localAiClientLaunchBinding = (
     driverId: instance.driverId,
     env: environment
   });
+  if (instance.driverId === "codex") {
+    const profile = resolveCodexHome(env);
+    const configHome = existsSync(profile) ? realpathSync(profile) : profile;
+    return {
+      executablePath: instance.executablePath,
+      env: { ...env, CODEX_HOME: configHome },
+      localConfigIdentityHash: localAiClientInstanceConfigIdentity({
+        ...instance,
+        configHome
+      })
+    };
+  }
   const home = env.HOME || env.USERPROFILE || homedir();
   const claude = instance.driverId === "claude";
   const executablePath = claude
@@ -208,12 +221,9 @@ const discoverInstance = async (
   try {
     if (instance.configurationError)
       throw new Error(instance.configurationError);
-    const binding =
-      instance.driverId === "claude" || instance.driverId === "pi"
-        ? localAiClientLaunchBinding(instance, environment)
-        : undefined;
+    const binding = localAiClientLaunchBinding(instance, environment);
     const discovery = await driver.discover(
-      binding
+      instance.driverId !== "codex"
         ? {
             ...input,
             environment: binding.env,

@@ -15,8 +15,10 @@ import { resolveConfiguredLocalAiClientInstance } from "./ai-client-instance-reg
 import {
   ClaudeSummaryClientError,
   runAiClientJsonTask,
+  type AiClientProvider,
   type AiClientRunConfig
 } from "./ai-client-runner.js";
+import { CodexSummaryClientError } from "./codex-summary-runner.js";
 import { MemoryApiError, type MemoryApiClient } from "./index.js";
 import { logger } from "./logger.js";
 
@@ -90,6 +92,7 @@ async function resolveAssignment(
       listAiClientInstances: () => client.listAiClientInstances(signal)
     },
     flowKey: "mcp_memory_answer",
+    verifyNativeCodexAuth: true,
     fallback: () => null,
     fromSetting: (setting, snapshot) => {
       const {
@@ -99,8 +102,8 @@ async function resolveAssignment(
         reasoningEffort,
         timeoutMs
       } = setting;
-      // Codex cannot guarantee pre-execution denial of action tools across versions.
-      if (provider !== "claude" && provider !== "pi") return null;
+      if (provider !== "codex" && provider !== "claude" && provider !== "pi")
+        return null;
       const instance = resolveConfiguredLocalAiClientInstance({
         instanceId: aiClientInstanceId,
         driverId: provider,
@@ -216,7 +219,7 @@ export async function summarizeFloatingKin(
     client.readFloatingKinEvidence(request, runtimeAuthorization, signal);
   let release: (() => void) | undefined;
   let stage: "admission" | "evidence" | "assignment" | "summary" = "admission";
-  let provider: "claude" | "pi" | undefined;
+  let provider: AiClientProvider | undefined;
   try {
     release = await admission.acquire(signal);
     stage = "evidence";
@@ -251,7 +254,9 @@ export async function summarizeFloatingKin(
       (error instanceof MemoryApiError && error.status === 429)
     )
       return { status: "busy" };
-    const clientError = error instanceof ClaudeSummaryClientError;
+    const clientError =
+      error instanceof ClaudeSummaryClientError ||
+      error instanceof CodexSummaryClientError;
     // Provider errors can contain prompts, paths, or credentials. Log only known reasons.
     logger.warn(
       {

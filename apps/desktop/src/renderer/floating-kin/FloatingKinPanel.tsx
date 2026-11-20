@@ -28,7 +28,7 @@ function CaptureTime({ iso }: { iso: string }) {
 const failures = {
   no_evidence: "No captured evidence for this summary.",
   client_unavailable:
-    "Summaries require an available Claude Code or Pi assignment. Check Settings → AI models.",
+    "Check that your assigned AI Client is available under Settings → AI models.",
   unavailable: "Summary unavailable. Try again from Floating Kin.",
   cancelled: "Summary cancelled.",
   busy: "A summary is already in progress.",

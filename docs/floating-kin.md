@@ -52,12 +52,23 @@ model, and reasoning effort when available.
    are not passed to the synthesis AI Client. The API does not do LLM synthesis.
 4. The runtime passes the evidence as data to a short, separate synthesis task
    using the explicit Memory Answer assignment. The selected AI Client can
-   differ from the AI Client shown in the captured activity. This preview can
-   synthesize with Claude Code or Pi without action tools. Codex capture can
-   appear in the Kin, but a Codex synthesis assignment is unavailable until its
-   action-tool restrictions are verified. There is no fallback. The assignment
-   needs a current capability snapshot for the configured executable and profile.
-   Review it under **Settings → AI models**. Claude Code uses the signed-in
+   differ from the AI Client shown in the captured activity. Codex, Claude Code,
+   and Pi can synthesize; there is no fallback. The assignment needs a current
+   capability snapshot for the configured executable and profile. Review it
+   under **Settings → AI models**.
+
+   Codex uses the assigned profile's existing native sign-in, without copying
+   credentials or requiring a second profile. It runs in an empty working
+   directory in a fresh, ephemeral App Server thread with the same read-only,
+   no-approval sandbox as Memory Answer and no Koed retrieval tools. The runner
+   requests that Codex disable configured MCP servers and user hooks for the
+   summary. Codex must confirm the no-capture settings and ephemeral thread
+   before receiving evidence. Read-only is not a guarantee that no commands
+   can run. Kin checks sign-in in the assigned profile, but the existing
+   Memory Answer assignment screen may still report a Keychain-only profile as
+   signed out. Kin does not change how that assignment is saved.
+
+   Claude Code uses the signed-in
    profile without copying credentials and requires an executable that supports
    `--safe-mode`. The task runs in an empty working directory without user
    hooks, skills, or MCP. Safe mode does not override organization-managed
@@ -67,6 +78,7 @@ model, and reasoning effort when available.
    update the assigned executable.
    The Local AI Runtime logs a reason code without logging the provider's raw
    output. Synthesis uses the assigned AI Client subscription and may incur usage.
+
 5. The runtime validates cited sources against eligible evidence, rechecks its
    inputs, computes the freshness timestamp, and returns a transient result.
    The runtime requests cancellation after 30 seconds; the AI Client may need

@@ -52,7 +52,8 @@ const setting = {
 function capabilitiesFor(
   instanceId: string,
   provider: string,
-  localConfigIdentityHash: string | undefined
+  localConfigIdentityHash: string | undefined,
+  legacyAuthUnavailable: boolean
 ) {
   return {
     instances: [
@@ -68,13 +69,18 @@ function capabilitiesFor(
         instanceId,
         installationIdentityHash: "identity",
         healthState: "healthy",
-        authenticationState: "authenticated",
+        authenticationState: legacyAuthUnavailable
+          ? "unauthenticated"
+          : "authenticated",
         stale: false,
         expiresAt: "2099-01-01T00:00:00Z",
         models: [{ id: "assigned-model", supportedReasoningEfforts: ["low"] }],
         capabilities: {
           descriptors: {
-            local_synthesis: { support: "supported", readiness: "ready" }
+            local_synthesis: {
+              support: "supported",
+              readiness: legacyAuthUnavailable ? "not_ready" : "ready"
+            }
           },
           diagnostics: localConfigIdentityHash
             ? [
@@ -106,7 +112,8 @@ async function fixture({
   items = [item],
   action = "conversation",
   provider = "pi",
-  localChange = "none"
+  localChange = "none",
+  legacyAuthUnavailable = false
 } = {}) {
   const home = realpathSync(
     mkdtempSync(join(tmpdir(), "koed-floating-kin-test-"))
@@ -142,7 +149,8 @@ async function fixture({
     provider,
     localChange === "legacy snapshot"
       ? undefined
-      : localAiClientInstanceConfigIdentity(instance)
+      : localAiClientInstanceConfigIdentity(instance),
+    legacyAuthUnavailable
   );
   const registryPath = join(home, "registry.json");
   if (localChange === "executable replaced") {
@@ -287,7 +295,8 @@ it("rejects malformed or free-text actions before retrieval", async () => {
 
 it.each([
   ["pi", "pi", "PI_CODING_AGENT_DIR"],
-  ["claude", "claude-code", "CLAUDE_CONFIG_DIR"]
+  ["claude", "claude-code", "CLAUDE_CONFIG_DIR"],
+  ["codex", "codex", "CODEX_HOME"]
 ])(
   "uses the validated %s launch binding and returns captured provenance",
   async (provider, client, configKey) => {
@@ -319,9 +328,33 @@ it.each([
   }
 );
 
+it("can recheck native Codex sign-in when the isolated discovery probe could not see it", async () => {
+  const { request, run } = await fixture({
+    provider: "codex",
+    legacyAuthUnavailable: true
+  });
+  expect(await (await request("summary", input)).json()).toMatchObject({
+    status: "answered",
+    client: "codex"
+  });
+  expect(run.mock.calls[0]?.[1]).toMatchObject({
+    provider: "codex",
+    isolatedSummary: true
+  });
+});
+
 it.each([
   [{ assigned: false }, "client_unavailable", 0],
-  [{ provider: "codex" }, "client_unavailable", 0],
+  [
+    { provider: "claude", legacyAuthUnavailable: true },
+    "client_unavailable",
+    0
+  ],
+  [
+    { provider: "codex", localChange: "profile changed" },
+    "client_unavailable",
+    0
+  ],
   [{ localChange: "removed" }, "client_unavailable", 0],
   [{ localChange: "profile changed" }, "client_unavailable", 0],
   [{ localChange: "executable replaced" }, "client_unavailable", 0],
