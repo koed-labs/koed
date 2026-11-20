@@ -482,6 +482,8 @@ const configureFloatingKin = (
     onDismiss: () => cancel()
   });
   const getWebContents = () => overlay.getWindow()?.webContents ?? null;
+  const initialAccount = account.current();
+  let accountKey = `${initialAccount.status}:${initialAccount.profile?.id ?? ""}`;
   const cancel = registerFloatingKinIpc({
     ipcMain,
     getWebContents,
@@ -491,7 +493,7 @@ const configureFloatingKin = (
       koedHome: resolveApplicationKoedHome(koedEnvironment),
       // Cached observation only. Refresh notifies subscribers that may reconcile.
       lifecycle: () => server.lifecycle.current()?.state ?? "starting",
-      accountStatus: () => account.current().status
+      accountKey: () => accountKey
     }),
     interactive: overlay.setInteractive,
     resize: overlay.setSize,
@@ -499,12 +501,11 @@ const configureFloatingKin = (
   });
   // A fresh window drops all rendered evidence when the runtime or User changes.
   const unsubscribeLifecycle = server.lifecycle.subscribe(overlay.reset);
-  const initialAccount = account.current();
-  let accountKey = `${initialAccount.status}:${initialAccount.profile?.id ?? ""}`;
   const unsubscribeAccount = account.subscribe((state) => {
     const next = `${state.status}:${state.profile?.id ?? ""}`;
     if (next === accountKey) return;
     accountKey = next;
+    cancel();
     overlay.reset();
   });
   const publishFocus = (focused: boolean, window: BrowserWindow) => {

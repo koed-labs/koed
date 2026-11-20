@@ -4,7 +4,6 @@ import {
   floatingKinActivitySchema,
   floatingKinSummarySchema,
   RemoteRequestTimeoutError,
-  type AccountState,
   type FloatingKinSummary,
   type FloatingKinSummaryRequest
 } from "@koed-labs/shared";
@@ -19,23 +18,13 @@ const maxResponseBytes = 256 * 1024;
 export const createFloatingKinRuntime = ({
   koedHome,
   lifecycle,
-  accountStatus
+  accountKey
 }: {
   koedHome: string;
   lifecycle: () => RuntimeLifecycleObservation["state"];
-  accountStatus: () => AccountState["status"];
+  // Used only to discard stale responses, never to authorize local reads.
+  accountKey: () => string;
 }) => {
-  const state = (): FloatingKinActivityState["state"] => {
-    const status = accountStatus();
-    if (status === "signed_out" || status === "reauthentication_required")
-      return "signed_out";
-    const runtime = lifecycle();
-    if (runtime !== "running") return runtime;
-    if (status === "restoring" || status === "signing_in") return "unavailable";
-    // An unconfigured account controller can still have local Personal Memory.
-    return "running";
-  };
-
   const request = (
     route: "activity" | "summary",
     body?: FloatingKinSummaryRequest,
@@ -73,15 +62,17 @@ export const createFloatingKinRuntime = ({
   return {
     async activity(signal?: AbortSignal): Promise<FloatingKinActivityState> {
       try {
-        const before = state();
+        const before = lifecycle();
         if (before !== "running") return { state: before };
+        const key = accountKey();
         const { response, payload } = await request(
           "activity",
           undefined,
           signal
         );
         signal?.throwIfAborted();
-        const after = state();
+        if (accountKey() !== key) return { state: "unavailable" };
+        const after = lifecycle();
         if (after !== "running") return { state: after };
         if (response.ok)
           return {
@@ -99,10 +90,11 @@ export const createFloatingKinRuntime = ({
     ): Promise<FloatingKinSummary> {
       try {
         signal.throwIfAborted();
-        if (state() !== "running") return { status: "unavailable" };
+        if (lifecycle() !== "running") return { status: "unavailable" };
+        const key = accountKey();
         const { response, payload } = await request("summary", input, signal);
         signal.throwIfAborted();
-        if (response.ok && state() === "running")
+        if (response.ok && lifecycle() === "running" && accountKey() === key)
           return floatingKinSummarySchema.parse(payload);
       } catch (error) {
         if (signal.aborted) return { status: "cancelled" };
