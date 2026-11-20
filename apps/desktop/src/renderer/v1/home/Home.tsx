@@ -58,7 +58,15 @@ function useKinSpins() {
   const spins = useRef(new Map<string, KinSpin>());
   const pointer = useRef<number | null>(null);
   const frame = useRef(0);
-  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+  const captured = useRef<HTMLElement | null>(null);
+  const stopWindow = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(frame.current);
+      stopWindow.current?.();
+    },
+    []
+  );
   return (id: string) => {
     let spin = spins.current.get(id);
     if (!spin) {
@@ -66,13 +74,19 @@ function useKinSpins() {
       spins.current.set(id, spin);
     }
     const current = spin;
-    const end = (event: ReactPointerEvent<HTMLElement>, cancelled: boolean) => {
-      if (pointer.current !== event.pointerId) return;
+    // Anything that ends a drag (button up, the browser cancelling it, or the
+    // pointer capture being taken away by a re-render) is a release: the Kin
+    // keeps the momentum it was given rather than snapping back to the front.
+    const finish = (pointerId: number, timeStamp: number) => {
+      if (pointer.current !== pointerId) return;
       pointer.current = null;
+      stopWindow.current?.();
       cancelAnimationFrame(frame.current);
-      current.end(event.timeStamp, reducedMotion(), cancelled);
-      if (event.currentTarget.hasPointerCapture?.(event.pointerId))
-        event.currentTarget.releasePointerCapture(event.pointerId);
+      current.end(timeStamp, reducedMotion());
+      const control = captured.current;
+      captured.current = null;
+      if (control?.hasPointerCapture?.(pointerId))
+        control.releasePointerCapture(pointerId);
       wakePixelkins();
     };
     const handlers = {
@@ -83,14 +97,30 @@ function useKinSpins() {
         const width = event.currentTarget.getBoundingClientRect().width;
         current.begin(event.clientX, event.timeStamp, width, current.angle);
         const control = event.currentTarget;
+        captured.current = control;
         const pointerId = event.pointerId;
         control.setPointerCapture?.(pointerId);
+        // A release anywhere in the window counts, even if the element lost
+        // the pointer (re-render, re-rank) mid-drag.
+        stopWindow.current?.();
+        const onWindowEnd = (windowEvent: PointerEvent) => {
+          if (windowEvent.pointerId === pointerId)
+            finish(pointerId, windowEvent.timeStamp);
+        };
+        window.addEventListener("pointerup", onWindowEnd);
+        window.addEventListener("pointercancel", onWindowEnd);
+        stopWindow.current = () => {
+          window.removeEventListener("pointerup", onWindowEnd);
+          window.removeEventListener("pointercancel", onWindowEnd);
+          stopWindow.current = null;
+        };
         const checkDrag = () => {
           if (pointer.current !== pointerId) return;
           if (current.dragging) {
             frame.current = requestAnimationFrame(checkDrag);
           } else {
             pointer.current = null;
+            stopWindow.current?.();
             if (control.hasPointerCapture?.(pointerId))
               control.releasePointerCapture(pointerId);
           }
@@ -100,14 +130,17 @@ function useKinSpins() {
       },
       onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
         if (pointer.current !== event.pointerId) return;
-        current.move(event.clientX, event.timeStamp);
+        // Every hardware sample since the last frame, for a truer velocity.
+        for (const sample of coalesced(event.nativeEvent))
+          current.move(sample.clientX, sample.timeStamp);
         wakePixelkins();
       },
-      onPointerUp: (event: ReactPointerEvent<HTMLElement>) => end(event, false),
+      onPointerUp: (event: ReactPointerEvent<HTMLElement>) =>
+        finish(event.pointerId, event.timeStamp),
       onPointerCancel: (event: ReactPointerEvent<HTMLElement>) =>
-        end(event, true),
+        finish(event.pointerId, event.timeStamp),
       onLostPointerCapture: (event: ReactPointerEvent<HTMLElement>) =>
-        end(event, true),
+        finish(event.pointerId, event.timeStamp),
       onClickCapture: (event: ReactMouseEvent<HTMLElement>) => {
         if (!current.moved) return;
         current.moved = false;
@@ -1055,6 +1088,12 @@ type FloorCoinsInput = {
   conversations: readonly HomeLooseConversation[];
   onOpen: (key: string) => void;
 };
+// Every hardware sample behind a pointer move, falling back to the event.
+const coalesced = (event: PointerEvent) => {
+  const events = event.getCoalescedEvents?.() ?? [];
+  return events.length ? events : [event];
+};
+
 // Loose coins rest in a shallow band above the caption: a lane is how far up
 // the band (towards the back) a coin lies. The band is kept clear of the Kin's
 // label above it and the heading below it.
@@ -1368,17 +1407,71 @@ function FloorCoin({
     fly();
     // Thrown once, when the coin first appears.
   }, []);
-  // A lost drag (cancelled, or the pointer capture was taken away) lets the
-  // coin fall where it was instead of hanging in the air.
-  const lose = () => {
+  // Anything that ends a drag (button up, the browser cancelling it, or the
+  // pointer capture being taken away by a re-render) is a release: the coin
+  // carries on with the velocity it was dragged at.
+  const release = (time: number) => {
     if (!start.current) return;
     start.current = null;
-    hover(null);
+    stopWindow.current?.();
     if (!dragged.current) return resumeCaught();
-    body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
-    if (reduced) settle();
-    else fly();
+    const target = over.current;
+    hover(null);
+    if (drop && target?.armed) {
+      // Let go over a Kin that has waited its turn: add it at once.
+      setAbsorbed(true);
+      void drop
+        .onDrop(conversation.key, target.id)
+        .catch(() => false)
+        .then((added) => {
+          if (added || !alive.current) return;
+          // Not added: the coin drops back onto the floor.
+          setAbsorbed(false);
+          body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
+          if (reduced) settle();
+          else fly();
+        });
+      return;
+    }
+    if (reduced) {
+      settle();
+      return;
+    }
+    // A hand slows before letting go, so throw with the fastest recent
+    // movement, not the last (slowest) samples. Samples carry the hardware
+    // event times, so a busy main thread doesn't distort the speed.
+    const recent = samples.current.filter((sample) => time - sample.t < 200);
+    const clamp = (value: number) =>
+      Math.max(-COIN_MAX_SPEED, Math.min(COIN_MAX_SPEED, value));
+    let fx = 0;
+    let fy = 0;
+    recent.forEach((to, index) => {
+      const from = recent
+        .slice(0, index)
+        .reverse()
+        .find((sample) => to.t - sample.t >= 24);
+      if (!from) return;
+      const seconds = (to.t - from.t) / 1000;
+      const vx = (to.x - from.x) / seconds;
+      const vy = -(to.y - from.y) / seconds;
+      if (Math.hypot(vx, vy) > Math.hypot(fx, fy)) {
+        fx = vx;
+        fy = vy;
+      }
+    });
+    // Held still before letting go: no throw.
+    const still = !recent.length || time - recent.at(-1)!.t > 120;
+    const coin = body.current;
+    coin.vx = still ? 0 : clamp(fx);
+    coin.vy = still ? 0 : clamp(fy);
+    coin.spin = coin.vx * 1.4;
+    fly();
   };
+  // Window-level listeners call the latest release, not a stale render's.
+  const releaseRef = useRef(release);
+  releaseRef.current = release;
+  const stopWindow = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopWindow.current?.(), []);
 
   return (
     <button
@@ -1416,9 +1509,22 @@ function FloorCoin({
         start.current = { x: event.clientX, y: event.clientY };
         dragged.current = false;
         samples.current = [
-          { t: performance.now(), x: event.clientX, y: event.clientY }
+          { t: event.timeStamp, x: event.clientX, y: event.clientY }
         ];
         event.currentTarget.setPointerCapture?.(event.pointerId);
+        stopWindow.current?.();
+        const pointerId = event.pointerId;
+        const onWindowEnd = (windowEvent: PointerEvent) => {
+          if (windowEvent.pointerId === pointerId)
+            releaseRef.current(windowEvent.timeStamp);
+        };
+        window.addEventListener("pointerup", onWindowEnd);
+        window.addEventListener("pointercancel", onWindowEnd);
+        stopWindow.current = () => {
+          window.removeEventListener("pointerup", onWindowEnd);
+          window.removeEventListener("pointercancel", onWindowEnd);
+          stopWindow.current = null;
+        };
       }}
       onPointerMove={(event) => {
         if (!start.current) return;
@@ -1434,9 +1540,13 @@ function FloorCoin({
         const point = toStage(event.clientX, event.clientY);
         if (!point) return;
         samples.current = [
-          ...samples.current.slice(-12),
-          { t: performance.now(), x: event.clientX, y: event.clientY }
-        ];
+          ...samples.current,
+          ...coalesced(event.nativeEvent).map((sample) => ({
+            t: sample.timeStamp,
+            x: sample.clientX,
+            y: sample.clientY
+          }))
+        ].slice(-24);
         const coin = body.current;
         coin.x = Math.max(-half, Math.min(half, point.x));
         coin.y = Math.max(0, Math.min(ceiling.current, point.y));
@@ -1452,64 +1562,9 @@ function FloorCoin({
               .find(Boolean)?.dataset.dropProject ?? null
           );
       }}
-      onPointerUp={() => {
-        if (!start.current) return;
-        start.current = null;
-        if (!dragged.current) return resumeCaught();
-        const target = over.current;
-        hover(null);
-        if (drop && target?.armed) {
-          // Let go over a Kin that has waited its turn: add it at once.
-          setAbsorbed(true);
-          void drop
-            .onDrop(conversation.key, target.id)
-            .catch(() => false)
-            .then((added) => {
-              if (added || !alive.current) return;
-              // Not added: the coin drops back onto the floor.
-              setAbsorbed(false);
-              body.current = { ...body.current, vx: 0, vy: 0, spin: 0 };
-              if (reduced) settle();
-              else fly();
-            });
-          return;
-        }
-        if (reduced) {
-          settle();
-          return;
-        }
-        // A hand slows before letting go, so throw with the fastest recent
-        // movement, not the last (slowest) samples.
-        const now = performance.now();
-        const recent = samples.current.filter((sample) => now - sample.t < 200);
-        const clamp = (value: number) =>
-          Math.max(-COIN_MAX_SPEED, Math.min(COIN_MAX_SPEED, value));
-        let fx = 0;
-        let fy = 0;
-        recent.forEach((to, index) => {
-          const from = recent
-            .slice(0, index)
-            .reverse()
-            .find((sample) => to.t - sample.t >= 24);
-          if (!from) return;
-          const seconds = (to.t - from.t) / 1000;
-          const vx = (to.x - from.x) / seconds;
-          const vy = -(to.y - from.y) / seconds;
-          if (Math.hypot(vx, vy) > Math.hypot(fx, fy)) {
-            fx = vx;
-            fy = vy;
-          }
-        });
-        // Held still before letting go: no throw.
-        const still = !recent.length || now - recent.at(-1)!.t > 120;
-        const coin = body.current;
-        coin.vx = still ? 0 : clamp(fx);
-        coin.vy = still ? 0 : clamp(fy);
-        coin.spin = coin.vx * 1.4;
-        fly();
-      }}
-      onPointerCancel={lose}
-      onLostPointerCapture={lose}
+      onPointerUp={(event) => release(event.timeStamp)}
+      onPointerCancel={(event) => release(event.timeStamp)}
+      onLostPointerCapture={(event) => release(event.timeStamp)}
       onClick={(event) => {
         // A drag ends with a click; only a plain click opens.
         if (dragged.current) {

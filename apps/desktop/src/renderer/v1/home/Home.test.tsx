@@ -226,17 +226,19 @@ describe("Home", () => {
     clientX: number,
     clientY = 0,
     pointerId = 1
-  ) =>
-    target.dispatchEvent(
-      new PointerEvent(type, {
-        bubbles: true,
-        button: 0,
-        isPrimary: true,
-        pointerId,
-        clientX,
-        clientY
-      })
-    );
+  ) => {
+    const event = new PointerEvent(type, {
+      bubbles: true,
+      button: 0,
+      isPrimary: true,
+      pointerId,
+      clientX,
+      clientY
+    });
+    // Pointer samples carry hardware timestamps; follow the fake clock.
+    Object.defineProperty(event, "timeStamp", { value: performance.now() });
+    return target.dispatchEvent(event);
+  };
 
   it("throws a floor coin without opening its conversation", async () => {
     reducedMotion = true;

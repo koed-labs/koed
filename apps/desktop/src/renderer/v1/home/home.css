@@ -233,6 +233,11 @@
 }
 .v1-home-kin {
   all: unset;
+  /* A drag spins the Kin: stop the browser taking it over as a scroll, a
+     text selection or a native drag, which would cancel the gesture. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
   position: absolute;
   left: var(--kin-x);
   bottom: var(--kin-y);
@@ -421,6 +426,9 @@
   --spot-light: var(--v1-heat-4);
 }
 .v1-home-host {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
   position: absolute;
   left: var(--kin-x);
   bottom: var(--kin-y);
@@ -694,6 +702,8 @@ button.v1-home-pill[data-repair]:hover {
 }
 .v1-home-floor-coin {
   all: unset;
+  user-select: none;
+  -webkit-user-select: none;
   position: absolute;
   left: var(--coin-x);
   bottom: var(--coin-y);
