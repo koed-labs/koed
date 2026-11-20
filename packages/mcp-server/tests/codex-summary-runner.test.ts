@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -9,7 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { runCodexSummary } from "../src/codex-summary-runner.js";
+import {
+  CodexSummaryClientError,
+  runCodexSummary
+} from "../src/codex-summary-runner.js";
 
 const outputSchema = {
   type: "object",
@@ -21,7 +25,14 @@ afterEach(() => {
     rmSync(path, { recursive: true, force: true });
 });
 
-function fixture(mode = "answer") {
+const disabledOtel = {
+  log_user_prompt: false,
+  exporter: "none",
+  trace_exporter: "none",
+  metrics_exporter: "none"
+};
+
+function fixture(mode = "answer", effectiveOtel: unknown = disabledOtel) {
   const root = realpathSync(
     mkdtempSync(join(tmpdir(), "koed-codex-summary-test-"))
   );
@@ -31,14 +42,25 @@ function fixture(mode = "answer") {
   mkdirSync(home);
   mkdirSync(cwd);
   const appServerBinary = join(root, "fixture.mjs");
+  const configRead = join(root, "config-read");
+  const threadStarted = join(root, "thread-started");
+  const turnStarted = join(root, "turn-started");
   writeFileSync(
     appServerBinary,
     `
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
 import readline from 'node:readline';
 const mode = ${JSON.stringify(mode)};
 assert.equal(process.env.CODEX_HOME, ${JSON.stringify(home)});
 assert.equal(process.cwd(), ${JSON.stringify(cwd)});
+const assertTelemetryOverrides = () => {
+  for (const option of ['otel.log_user_prompt=false','otel.exporter="none"','otel.trace_exporter="none"','otel.metrics_exporter="none"']) {
+    const index = process.argv.indexOf(option);
+    assert.ok(index > 0, 'missing launch override: ' + option);
+    assert.equal(process.argv[index - 1], '--config');
+  }
+};
 for (const option of ['features.hooks=false','features.plugins=false','notify=[]','history.persistence="none"']) {
   assert.ok(process.argv.includes(option), 'missing launch override: ' + option);
 }
@@ -54,12 +76,20 @@ requests.on('line', (line) => {
     reply({ requiresOpenaiAuth: true, account: mode === 'no-account' ? null : {type:'chatgpt'} });
   } else if (method === 'config/read') {
     assert.equal(params.cwd, process.cwd());
+    writeFileSync(${JSON.stringify(configRead)}, '');
+    if (mode === 'stalled-config') return;
+    if (mode === 'config-error') {
+      send({ id, error: { code: -32602, message: 'Cannot resolve config' } });
+      return;
+    }
     reply({ config: {
       features: { hooks: mode === 'capture-enabled', plugin_hooks: false, plugins: false },
       history: { persistence: 'none' }, notify: [],
-      mcp_servers: { koed: { command: 'fixture' } }
+      mcp_servers: { koed: { command: 'fixture' } },
+      ...${JSON.stringify(mode === "missing-otel" ? {} : { otel: effectiveOtel })}
     } });
   } else if (method === 'thread/start') {
+    writeFileSync(${JSON.stringify(threadStarted)}, '');
     assert.notEqual(mode, 'no-account');
     assert.equal(params.ephemeral, true);
     assert.equal(params.sandbox, 'read-only');
@@ -69,6 +99,8 @@ requests.on('line', (line) => {
     assert.notEqual(mode, 'capture-enabled');
     reply({ thread: { id: 'summary', ephemeral: mode !== 'persistent-thread' }, sandbox: { type: 'readOnly', networkAccess: false }, approvalPolicy: 'never' });
   } else if (method === 'turn/start') {
+    writeFileSync(${JSON.stringify(turnStarted)}, '');
+    if (mode === 'require-otel-overrides') assertTelemetryOverrides();
     assert.notEqual(mode, 'persistent-thread');
     assert.equal(params.model, 'assigned-model');
     assert.equal(params.effort, 'low');
@@ -78,13 +110,16 @@ requests.on('line', (line) => {
     reply({ turn: { id: 'turn' } });
     const ids = { threadId: 'summary', turnId: 'turn' };
     send({ method: 'item/agentMessage/delta', params: { ...ids, itemId: 'msg', delta: '{"captured":"ok"}' } });
-    if (mode === 'answer') send({ method: 'turn/completed', params: { ...ids, turn: { id: 'turn', status: 'completed' } } });
+    if (mode !== 'pending') send({ method: 'turn/completed', params: { ...ids, turn: { id: 'turn', status: 'completed' } } });
   }
 });
 `
   );
   return {
     home,
+    configRead,
+    threadStarted,
+    turnStarted,
     config: {
       appServerBinary,
       cwd,
@@ -99,7 +134,7 @@ requests.on('line', (line) => {
 }
 
 it("runs a structured read-only turn in the same native profile without copying it", async () => {
-  const { home, config } = fixture();
+  const { home, config } = fixture("require-otel-overrides");
   await expect(
     runCodexSummary("synthetic evidence", config, 5000)
   ).resolves.toMatchObject({
@@ -128,6 +163,45 @@ it.each(["capture-enabled", "persistent-thread"])(
   }
 );
 
+it.each([
+  ["managed prompt logging", { ...disabledOtel, log_user_prompt: true }],
+  [
+    "managed log exporter",
+    {
+      ...disabledOtel,
+      exporter: { "otlp-grpc": { endpoint: "http://127.0.0.1:1" } }
+    }
+  ],
+  [
+    "managed trace exporter",
+    {
+      ...disabledOtel,
+      trace_exporter: {
+        "otlp-http": { endpoint: "http://127.0.0.1:1", protocol: "binary" }
+      }
+    }
+  ],
+  [
+    "managed metrics exporter",
+    { ...disabledOtel, metrics_exporter: "statsig" }
+  ],
+  ["unreported exporter", { ...disabledOtel, trace_exporter: undefined }],
+  ["malformed prompt setting", { ...disabledOtel, log_user_prompt: "false" }],
+  ["missing-otel", null],
+  ["config-error", null]
+] as const)("does not send evidence with %s", async (mode, otel) => {
+  const fixtureMode =
+    mode === "missing-otel" || mode === "config-error" ? mode : "answer";
+  const { config, threadStarted, turnStarted } = fixture(fixtureMode, otel);
+  const result = runCodexSummary("synthetic evidence", config, 5000);
+  await expect(result).rejects.toBeInstanceOf(CodexSummaryClientError);
+  await expect(result).rejects.toMatchObject({
+    reason: "telemetry_unverified"
+  });
+  expect(existsSync(threadStarted)).toBe(false);
+  expect(existsSync(turnStarted)).toBe(false);
+});
+
 it("cancels a pending turn and closes the worker", async () => {
   const { config } = fixture("pending");
   const abort = new AbortController();
@@ -142,6 +216,17 @@ it("cancels a pending turn and closes the worker", async () => {
       5000
     )
   ).rejects.toMatchObject({ name: "AbortError" });
+});
+
+it("times out without sending evidence if config read stalls", async () => {
+  const { config, configRead, threadStarted, turnStarted } =
+    fixture("stalled-config");
+  await expect(
+    runCodexSummary("synthetic evidence", config, 1000)
+  ).rejects.toMatchObject({ name: "TimeoutError" });
+  expect(existsSync(configRead)).toBe(true);
+  expect(existsSync(threadStarted)).toBe(false);
+  expect(existsSync(turnStarted)).toBe(false);
 });
 
 it("times out a stalled worker initialization", async () => {

@@ -19,7 +19,12 @@ type CodexSummaryConfig = Pick<
 > & { outputSchema: Record<string, unknown>; signal?: AbortSignal };
 
 export class CodexSummaryClientError extends Error {
-  constructor(readonly reason: "authentication_required" | "profile_mismatch") {
+  constructor(
+    readonly reason:
+      | "authentication_required"
+      | "profile_mismatch"
+      | "telemetry_unverified"
+  ) {
     super(reason);
   }
 }
@@ -31,8 +36,21 @@ const summaryConfigOverrides = [
   "features.plugins=false",
   "features.apps=false",
   "notify=[]",
-  'history.persistence="none"'
+  'history.persistence="none"',
+  "otel.log_user_prompt=false",
+  'otel.exporter="none"',
+  'otel.trace_exporter="none"',
+  'otel.metrics_exporter="none"'
 ];
+
+const disabledTelemetryConfigSchema = z.object({
+  otel: z.object({
+    log_user_prompt: z.literal(false),
+    exporter: z.literal("none"),
+    trace_exporter: z.literal("none"),
+    metrics_exporter: z.literal("none")
+  })
+});
 
 const effectiveConfigSchema = z.object({
   features: z.object({
@@ -56,9 +74,15 @@ async function startSummaryThread(
   const account = await client.readAccount();
   if (!account.account && account.requiresOpenaiAuth !== false)
     throw new CodexSummaryClientError("authentication_required");
-  const effective = effectiveConfigSchema.safeParse(
-    await client.readEffectiveConfig(config.cwd)
-  );
+  const reportedConfig = await client
+    .readEffectiveConfig(config.cwd)
+    .catch(() => {
+      throw new CodexSummaryClientError("telemetry_unverified");
+    });
+  // Managed policy can override launch flags. Require explicit effective values.
+  if (!disabledTelemetryConfigSchema.safeParse(reportedConfig).success)
+    throw new CodexSummaryClientError("telemetry_unverified");
+  const effective = effectiveConfigSchema.safeParse(reportedConfig);
   if (!effective.success)
     throw new Error("Codex did not apply the requested non-capture settings");
   const servers = Object.keys(effective.data.mcp_servers ?? {});
