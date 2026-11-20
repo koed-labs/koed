@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 
 import {
   sanitizeAiClientDiagnostics,
@@ -7,6 +10,8 @@ import {
 import {
   aiClientDiscoveryError,
   aiClientDriverFor,
+  resolveClaudeCodeExecutable,
+  resolvePiExecutable,
   type AiClientDriverDiscovery
 } from "./ai-client-runner.js";
 import {
@@ -15,6 +20,7 @@ import {
   localAiClientInstanceConfigIdentity,
   type LocalAiClientInstanceConfiguration
 } from "./ai-client-instance-registry.js";
+import { resolveCodexHome } from "./codex-app-server-runner.js";
 import type { MemoryApiClient } from "./index.js";
 
 const positiveInteger = (
@@ -54,9 +60,71 @@ const capabilitiesRecord = (
     capabilities.map((descriptor) => [descriptor.id, descriptor])
   );
 
+export const localConfigIdentityDiagnosticCode = "local_config_identity";
+
+export const localAiClientLaunchBinding = (
+  instance: LocalAiClientInstanceConfiguration,
+  environment: NodeJS.ProcessEnv
+) => {
+  const env = environmentForLocalAiClientInstance({
+    instance,
+    driverId: instance.driverId,
+    env: environment
+  });
+  if (instance.driverId === "codex") {
+    const profile = resolveCodexHome(env);
+    const configHome = existsSync(profile) ? realpathSync(profile) : profile;
+    return {
+      executablePath: instance.executablePath,
+      env: { ...env, CODEX_HOME: configHome },
+      localConfigIdentityHash: localAiClientInstanceConfigIdentity({
+        ...instance,
+        configHome
+      })
+    };
+  }
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const claude = instance.driverId === "claude";
+  const executablePath = claude
+    ? resolveClaudeCodeExecutable(env)
+    : resolvePiExecutable(env);
+  env[claude ? "KOED_CLAUDE_CODE_EXECUTABLE" : "KOED_PI_EXECUTABLE"] =
+    executablePath;
+  const configKey = claude ? "CLAUDE_CONFIG_DIR" : "PI_CODING_AGENT_DIR";
+  const configuredHome = path.resolve(
+    env[configKey] ||
+      path.join(home, ...(claude ? [".claude"] : [".pi", "agent"]))
+  );
+  const configHome = existsSync(configuredHome)
+    ? realpathSync(configuredHome)
+    : configuredHome;
+  if (claude) {
+    // An implicit default profile can use a different Keychain namespace than an explicit path.
+    env.CLAUDE_SECURESTORAGE_CONFIG_DIR ??= env.CLAUDE_CONFIG_DIR ?? "";
+  }
+  if (!claude || env[configKey]) env[configKey] = configHome;
+  const identity = localAiClientInstanceConfigIdentity({
+    ...instance,
+    executablePath,
+    configHome
+  });
+  const namespace = claude ? env.CLAUDE_SECURESTORAGE_CONFIG_DIR : undefined;
+  return {
+    executablePath,
+    env,
+    localConfigIdentityHash:
+      namespace !== undefined && namespace !== configHome
+        ? createHash("sha256")
+            .update(JSON.stringify([identity, namespace]))
+            .digest("hex")
+        : identity
+  };
+};
+
 const sameRegistryIdentity = (
   left: LocalAiClientInstanceConfiguration,
-  right: LocalAiClientInstanceConfiguration
+  right: LocalAiClientInstanceConfiguration,
+  originalConfigIdentity: string | null
 ): boolean => {
   if (left.configurationError || right.configurationError) {
     return (
@@ -67,10 +135,7 @@ const sameRegistryIdentity = (
       left.configHome === right.configHome
     );
   }
-  return (
-    localAiClientInstanceConfigIdentity(left) ===
-    localAiClientInstanceConfigIdentity(right)
-  );
+  return originalConfigIdentity === localAiClientInstanceConfigIdentity(right);
 };
 
 const combinedIdentityHash = (input: {
@@ -90,6 +155,8 @@ const publishDiscovery = async (
   apiClient: MemoryApiClient,
   instance: LocalAiClientInstanceConfiguration,
   discovery: AiClientDriverDiscovery,
+  configIdentityHash: string | null,
+  localConfigIdentityHash: string | undefined,
   now: Date,
   ttlMs: number
 ): Promise<void> => {
@@ -100,9 +167,15 @@ const publishDiscovery = async (
     ...descriptor,
     diagnostics: sanitizeAiClientDiagnostics(descriptor.diagnostics)
   }));
-  const configIdentityHash = instance.configurationError
-    ? null
-    : localAiClientInstanceConfigIdentity(instance);
+  if (localConfigIdentityHash) {
+    // The capability wire schema is strict; diagnostics support bounded details.
+    sanitizedDiagnostics.unshift({
+      code: localConfigIdentityDiagnosticCode,
+      message: "Validated local AI Client configuration identity.",
+      severity: "info",
+      details: { localConfigIdentityHash }
+    });
+  }
   const identityHash = combinedIdentityHash({
     installationIdentityHash: discovery.installationIdentityHash,
     configIdentityHash
@@ -120,7 +193,7 @@ const publishDiscovery = async (
     models: discovery.models,
     capabilities: {
       descriptors: capabilitiesRecord(sanitizedCapabilities),
-      diagnostics: sanitizedDiagnostics
+      diagnostics: sanitizedDiagnostics.slice(0, 100)
     },
     observed_at: now.toISOString(),
     expires_at: new Date(now.getTime() + ttlMs).toISOString()
@@ -130,40 +203,37 @@ const publishDiscovery = async (
 const discoverInstance = async (
   instance: LocalAiClientInstanceConfiguration,
   environment: NodeJS.ProcessEnv
-): Promise<AiClientDriverDiscovery> => {
+): Promise<{
+  discovery: AiClientDriverDiscovery;
+  binding?: ReturnType<typeof localAiClientLaunchBinding>;
+}> => {
   const driver = aiClientDriverFor(instance.driverId);
   const instanceEnvironment = environmentForLocalAiClientInstance({
     instance: instance.configurationError ? null : instance,
     driverId: instance.driverId,
     env: environment
   });
-  if (instance.configurationError) {
-    return aiClientDiscoveryError(
-      {
-        instanceId: instance.instanceId,
-        environment: instanceEnvironment,
-        executablePath: instance.executablePath || instance.instanceId
-      },
-      driver.id,
-      new Error(instance.configurationError)
-    );
-  }
+  const input = {
+    instanceId: instance.instanceId,
+    environment: instanceEnvironment,
+    executablePath: instance.executablePath || instance.instanceId
+  };
   try {
-    return await driver.discover({
-      instanceId: instance.instanceId,
-      environment: instanceEnvironment,
-      executablePath: instance.executablePath
-    });
-  } catch (error) {
-    return aiClientDiscoveryError(
-      {
-        instanceId: instance.instanceId,
-        environment: instanceEnvironment,
-        executablePath: instance.executablePath
-      },
-      driver.id,
-      error
+    if (instance.configurationError)
+      throw new Error(instance.configurationError);
+    const binding = localAiClientLaunchBinding(instance, environment);
+    const discovery = await driver.discover(
+      instance.driverId !== "codex"
+        ? {
+            ...input,
+            environment: binding.env,
+            executablePath: binding.executablePath
+          }
+        : input
     );
+    return { discovery, binding };
+  } catch (error) {
+    return { discovery: aiClientDiscoveryError(input, driver.id, error) };
   }
 };
 
@@ -184,17 +254,37 @@ export const publishAiClientCapabilities = async (
   ): Promise<AiClientCapabilityPublication | null> => {
     if (options.isActive && !options.isActive()) return null;
     try {
-      const discovery = await discoverInstance(instance, environment);
+      const configIdentityHash = instance.configurationError
+        ? null
+        : localAiClientInstanceConfigIdentity(instance);
+      const { discovery, binding } = await discoverInstance(
+        instance,
+        environment
+      );
       if (options.isActive && !options.isActive()) return null;
       const current = instancesFor(environment).find(
         (candidate) => candidate.instanceId === instance.instanceId
       );
-      if (!current || !sameRegistryIdentity(instance, current)) {
+      if (
+        !current ||
+        !sameRegistryIdentity(instance, current, configIdentityHash) ||
+        (binding &&
+          localAiClientLaunchBinding(current, environment)
+            .localConfigIdentityHash !== binding.localConfigIdentityHash)
+      ) {
         throw new Error(
           `AI Client instance "${instance.instanceId}" changed during capability discovery`
         );
       }
-      await publishDiscovery(apiClient, instance, discovery, now, ttlMs);
+      await publishDiscovery(
+        apiClient,
+        instance,
+        discovery,
+        configIdentityHash,
+        binding?.localConfigIdentityHash,
+        now,
+        ttlMs
+      );
       return {
         instanceId: instance.instanceId,
         driverId: instance.driverId,

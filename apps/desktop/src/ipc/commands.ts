@@ -92,6 +92,19 @@ const setupRunOptionsSchema = z
 
 export const invokeChannel = "koed:invoke";
 
+export const scopeDesktopWindowIpc = (
+  ipc: Pick<IpcMain, "handle">,
+  getWebContents: () => WebContents | null
+): Pick<IpcMain, "handle"> => ({
+  handle(channel, handler) {
+    ipc.handle(channel, (event, ...args) => {
+      if (event.sender !== getWebContents())
+        throw new Error("Untrusted Desktop IPC sender.");
+      return handler(event, ...args);
+    });
+  }
+});
+
 const trustedSender = (
   event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">,
   allowedRendererOrigins: ReadonlySet<string>
@@ -332,19 +345,26 @@ export const registerDesktopCommandHandlers = (
       !value ||
       typeof value !== "object" ||
       Object.keys(value).some(
-        (key) => key !== "graphicsAcceleration" && key !== "showMenuBar"
+        (key) =>
+          key !== "graphicsAcceleration" &&
+          key !== "showMenuBar" &&
+          key !== "floatingKin"
       ) ||
       !("graphicsAcceleration" in value) ||
       typeof value.graphicsAcceleration !== "boolean" ||
       !("showMenuBar" in value) ||
-      typeof value.showMenuBar !== "boolean"
+      typeof value.showMenuBar !== "boolean" ||
+      ("floatingKin" in value && typeof value.floatingKin !== "boolean")
     )
       throw new Error("Invalid presentation preferences.");
     if (!options.setPresentationPreferences)
       throw new Error("Presentation settings are unavailable.");
     return options.setPresentationPreferences({
       graphicsAcceleration: value.graphicsAcceleration,
-      showMenuBar: value.showMenuBar
+      showMenuBar: value.showMenuBar,
+      ...("floatingKin" in value && typeof value.floatingKin === "boolean"
+        ? { floatingKin: value.floatingKin }
+        : {})
     });
   });
   ipcMain.handle(themePreferenceSetChannel, async (event, value: unknown) => {

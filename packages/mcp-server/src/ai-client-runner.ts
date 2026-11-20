@@ -41,6 +41,7 @@ import {
   type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
+import { runCodexSummary } from "./codex-summary-runner.js";
 
 export type AiClientProvider = "codex" | "claude" | "pi";
 
@@ -57,6 +58,7 @@ export interface AiClientRunConfig {
   systemPrompt: string;
   developerInstructions?: string;
   outputSchema?: Record<string, unknown>;
+  isolatedSummary?: boolean;
   validateOutput?: (value: unknown) => void;
   dynamicTools?: CodexAppServerDynamicToolSpec[];
   dynamicToolHandler?: (
@@ -733,28 +735,55 @@ export const claudeAgentSdkEffort = (
   throw new Error(`Unsupported Claude reasoning effort: ${value}`);
 };
 
+type ClaudeSummaryFailure = "sdk_debug_enabled" | "hook_policy_unverified";
+
+export class ClaudeSummaryClientError extends Error {
+  constructor(readonly reason: ClaudeSummaryFailure) {
+    super(reason);
+    this.name = "ClaudeSummaryClientError";
+  }
+}
+
+function rejectUnverifiedClaudeSummary(): never {
+  if (process.env.DEBUG_CLAUDE_AGENT_SDK) {
+    throw new ClaudeSummaryClientError("sdk_debug_enabled");
+  }
+  // SDK 0.3.226 cannot verify effective hooks before CLI startup hooks can run.
+  // Safe mode still allows managed hooks; don't start a CLI to probe them.
+  throw new ClaudeSummaryClientError("hook_policy_unverified");
+}
+
 export const runClaudeAgentSdkTask = async (
   prompt: string,
   config: AiClientRunConfig,
   timeoutMs: number
 ): Promise<AiClientRunResult> => {
+  config.signal?.throwIfAborted();
+  if (config.isolatedSummary) rejectUnverifiedClaudeSummary();
   const abortController = new AbortController();
-  const timer = setTimeout(() => abortController.abort(), timeoutMs);
+  let stream: ReturnType<typeof query> | undefined;
+  const abort = () => {
+    abortController.abort();
+    stream?.close();
+  };
+  config.signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(abort, timeoutMs);
   const providerEvents: SDKMessage[] = [];
   let resultMessage: Extract<SDKMessage, { type: "result" }> | undefined;
   let sessionId: string | undefined;
   try {
     const effort = claudeAgentSdkEffort(config.reasoningEffort);
-    const stream = query({
+    const env = claudeAgentSdkProcessEnvironment(
+      config.executablePath,
+      config.env,
+      config.clientName
+    );
+    stream = query({
       prompt,
       options: {
         abortController,
         cwd: config.cwd,
-        env: claudeAgentSdkProcessEnvironment(
-          config.executablePath,
-          config.env,
-          config.clientName
-        ),
+        env,
         ...claudeAgentSdkExecutableOptions(config.executablePath),
         model: config.model,
         ...(effort ? { effort } : {}),
@@ -790,7 +819,9 @@ export const runClaudeAgentSdkTask = async (
         resultMessage = message;
       }
     }
+    abortController.signal.throwIfAborted();
   } catch (error) {
+    config.signal?.throwIfAborted();
     if (abortController.signal.aborted) {
       throw new Error(`Claude Agent SDK timed out after ${timeoutMs}ms`, {
         cause: error
@@ -799,6 +830,7 @@ export const runClaudeAgentSdkTask = async (
     throw error;
   } finally {
     clearTimeout(timer);
+    config.signal?.removeEventListener("abort", abort);
   }
   if (!resultMessage) {
     throw new Error("Claude Agent SDK completed without a result message");
@@ -1349,16 +1381,52 @@ export { checkPiAvailability, listPiModels, resolvePiExecutable };
 export const aiClientTaskDriverFor = (driverId: string): AiClientTaskDriver =>
   aiClientDriverFor(driverId);
 
+async function runIsolatedSummary(
+  driver: AiClientTaskDriver,
+  prompt: string,
+  config: AiClientRunConfig,
+  timeoutMs: number
+): Promise<AiClientRunResult> {
+  if (config.dynamicTools?.length || config.dynamicToolHandler) {
+    throw new Error("Isolated summaries do not accept action tools");
+  }
+  if (config.provider === "claude") rejectUnverifiedClaudeSummary();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-isolated-summary-"));
+  try {
+    const cwd = path.join(root, "work");
+    fs.mkdirSync(cwd, { mode: 0o700 });
+    if (config.provider === "codex") {
+      if (!config.outputSchema)
+        throw new Error("Codex summary requires an output schema");
+      return await runCodexSummary(
+        prompt,
+        {
+          ...config,
+          appServerBinary: config.executablePath,
+          baseInstructions: config.systemPrompt,
+          outputSchema: config.outputSchema,
+          onProviderActivity: config.onProgress,
+          cwd
+        },
+        timeoutMs
+      );
+    }
+    return await driver.runJsonTask(prompt, { ...config, cwd }, timeoutMs);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 export const runAiClientJsonTask = async (
   prompt: string,
   config: AiClientRunConfig,
   timeoutMs: number
 ): Promise<AiClientRunResult> => {
-  const result = await aiClientTaskDriverFor(config.provider).runJsonTask(
-    prompt,
-    config,
-    timeoutMs
-  );
+  const driver = aiClientTaskDriverFor(config.provider);
+  config.signal?.throwIfAborted();
+  const result = config.isolatedSummary
+    ? await runIsolatedSummary(driver, prompt, config, timeoutMs)
+    : await driver.runJsonTask(prompt, config, timeoutMs);
   return {
     ...result,
     ...aiClientExecutionIdentity(

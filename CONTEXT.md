@@ -117,6 +117,12 @@ The selected repository identity used to associate Conversations across matching
 clones and worktrees. It grants no Team or Workspace Access.
 _Avoid_: Project membership, all remote aliases, sharing permission
 
+**Kin**:
+A Koed companion that represents a Project or helps a User make sense of recent
+captured work. It reflects what Koed has captured, not what an AI Client is
+currently doing, and does not control a Conversation.
+_Avoid_: Live agent monitor, Conversation owner
+
 **Koed**:
 The Apache-2.0-licensed Koed distribution for operator-managed memory
 infrastructure.

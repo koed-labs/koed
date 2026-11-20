@@ -65,6 +65,8 @@ export interface CodexAppServerThreadStartOptions {
   persistExtendedHistory?: boolean;
   threadSource?: string;
   minimalContext?: boolean;
+  additionalConfig?: Record<string, unknown>;
+  verifyEphemeralReadOnly?: boolean;
 }
 
 export interface CodexAppServerReasoningEffortOption {
@@ -126,6 +128,7 @@ export interface CodexAppServerRunConfig {
   clientName: string;
   baseInstructions: string;
   developerInstructions?: string;
+  outputSchema?: Record<string, unknown>;
   approvalPolicy?: "never" | "on-request" | "untrusted";
   sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
   approvalsReviewer?: "user" | "auto_review";
@@ -815,6 +818,11 @@ export class CodexAppServerClient {
     return response.result;
   }
 
+  async readEffectiveConfig(cwd: string): Promise<unknown> {
+    const { result } = await this.request("config/read", { cwd });
+    return asRecord(result).config;
+  }
+
   async readAccount(): Promise<Record<string, unknown>> {
     const response = await this.request("account/read", {
       refreshToken: false
@@ -901,9 +909,16 @@ export class CodexAppServerClient {
       options.persistExtendedHistory === undefined
         ? { persistExtendedHistory: false }
         : {}),
-      ...(options.minimalContext === false
+      ...(options.minimalContext === false && !options.additionalConfig
         ? {}
-        : { config: koedAppServerMinimalContextConfig }),
+        : {
+            config: {
+              ...(options.minimalContext === false
+                ? {}
+                : koedAppServerMinimalContextConfig),
+              ...options.additionalConfig
+            }
+          }),
       baseInstructions: config.baseInstructions,
       developerInstructions: config.developerInstructions ?? "",
       personality: "none",
@@ -913,6 +928,20 @@ export class CodexAppServerClient {
         : {})
     };
     const response = await this.request("thread/start", params);
+    if (options.verifyEphemeralReadOnly) {
+      const effective = asRecord(response.result);
+      const sandbox = asRecord(effective.sandbox);
+      if (
+        asRecord(effective.thread).ephemeral !== true ||
+        effective.approvalPolicy !== "never" ||
+        sandbox.type !== "readOnly" ||
+        sandbox.networkAccess !== false
+      ) {
+        throw new Error(
+          "Codex did not apply the requested ephemeral read-only policy"
+        );
+      }
+    }
     this.recordRawEvent("thread/start", params, response.result);
     return threadInfoFromResponse("thread/start", response.result);
   }
@@ -1002,7 +1031,8 @@ export class CodexAppServerClient {
               }
             : { type: "readOnly", networkAccess: false },
       model: config.model,
-      ...(config.reasoningEffort ? { effort: config.reasoningEffort } : {})
+      ...(config.reasoningEffort ? { effort: config.reasoningEffort } : {}),
+      ...(config.outputSchema ? { outputSchema: config.outputSchema } : {})
     };
     const response = await this.request("turn/start", params);
     const turn = asRecord(asRecord(response.result).turn);

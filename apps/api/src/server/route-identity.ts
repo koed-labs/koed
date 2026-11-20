@@ -852,6 +852,23 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/memory/floating-kin/activity",
+    "api_token",
+    "personal_memory",
+    "Read recent captured Conversation metadata for the Personal API Token owner."
+  ),
+  route(
+    "POST",
+    "/v1/memory/floating-kin/evidence",
+    "api_token",
+    "personal_memory",
+    "Read bounded Personal Memory evidence with additional Local AI Runtime proof.",
+    "none",
+    "implemented",
+    ["local_personal"]
+  ),
+  route(
+    "GET",
     "/v1/memory/nodes/{nodeId}/expand",
     "api_token",
     "personal_memory",

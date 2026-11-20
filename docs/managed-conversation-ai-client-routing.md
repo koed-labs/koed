@@ -1,5 +1,9 @@
 # Managed Conversation AI Client Routing
 
+This documents the Managed Conversation path. [Floating Kin](floating-kin.md)
+uses a separate read-only synthesis path and does not manage AI Client
+Conversations.
+
 Managed Conversation start requires an explicit AI Client driver and instance.
 Desktop preserves the selected launch configuration across Project navigation.
 Local authority and local-edge admission require an enabled instance with a

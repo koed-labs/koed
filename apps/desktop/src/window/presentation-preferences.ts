@@ -4,14 +4,17 @@ import { dirname } from "node:path";
 export type PresentationPreferences = {
   graphicsAcceleration: boolean;
   showMenuBar: boolean;
+  floatingKin?: boolean;
 };
-export const defaultPresentationPreferences: PresentationPreferences = {
-  graphicsAcceleration: true,
-  showMenuBar: true
-};
+export const defaultPresentationPreferences: Required<PresentationPreferences> =
+  {
+    graphicsAcceleration: true,
+    showMenuBar: true,
+    floatingKin: false
+  };
 export function readPresentationPreferences(
   path: string
-): PresentationPreferences {
+): Required<PresentationPreferences> {
   try {
     const value = JSON.parse(
       readFileSync(path, "utf8")
@@ -22,7 +25,8 @@ export function readPresentationPreferences(
           ? value.graphicsAcceleration
           : true,
       showMenuBar:
-        typeof value.showMenuBar === "boolean" ? value.showMenuBar : true
+        typeof value.showMenuBar === "boolean" ? value.showMenuBar : true,
+      floatingKin: value.floatingKin === true
     };
   } catch {
     return { ...defaultPresentationPreferences };

@@ -131,10 +131,12 @@ function PresentationSettings({
 }: {
   api?: DesktopApi["presentationPreferences"];
 }) {
-  const [state, setState] = useState<{
-    graphicsAcceleration: boolean;
-    showMenuBar: boolean;
-  } | null>(null);
+  const [state, setState] = useState<
+    | (Awaited<
+        ReturnType<NonNullable<DesktopApi["presentationPreferences"]>["get"]>
+      > & { floatingKin?: boolean })
+    | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -154,7 +156,7 @@ function PresentationSettings({
   }, [api]);
   if (!api) return null;
   const change = async (
-    key: "graphicsAcceleration" | "showMenuBar",
+    key: "graphicsAcceleration" | "showMenuBar" | "floatingKin",
     enabled: boolean
   ) => {
     if (!state) return;
@@ -194,6 +196,19 @@ function PresentationSettings({
           }
         />
       </Row>
+      {navigator.platform.startsWith("Mac") && (
+        <Row
+          title="Floating Kin"
+          description="Show recent captured Conversation activity above other windows."
+        >
+          <Switch
+            aria-label="Floating Kin"
+            checked={state?.floatingKin ?? false}
+            disabled={!state || busy}
+            onCheckedChange={(value) => void change("floatingKin", value)}
+          />
+        </Row>
+      )}
       {error && <p role="alert">{error}</p>}
     </>
   );

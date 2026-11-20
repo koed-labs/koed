@@ -1,3 +1,8 @@
+import type {
+  FloatingKinActivity,
+  FloatingKinEvidence,
+  FloatingKinEvidenceRequest
+} from "@koed-labs/shared";
 import type { RecallActivityRepository } from "./recall-activity-repository.js";
 import type { MemoryModelFlowKey } from "@koed-labs/shared/ai-client-flow-defaults";
 import type {
@@ -2029,6 +2034,11 @@ export interface MemorySourceRepository
     SharedMemoryRepository,
     TeamConversationSourceRepository,
     WorkflowTokenUsageRepository {
+  getFloatingKinActivity(actor: ActorContext): Promise<FloatingKinActivity>;
+  getFloatingKinEvidence(
+    actor: ActorContext,
+    input: FloatingKinEvidenceRequest
+  ): Promise<FloatingKinEvidence>;
   health(): Promise<boolean>;
   personalProjectSelections: PersonalProjectSelectionRepository;
   personalInventorySelections?: PersonalInventorySelectionRepository;
