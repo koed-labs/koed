@@ -134,7 +134,7 @@ function ShellContent(props: Props) {
           <SidebarMenu>
             {railButton(
               "Koed, home",
-              <KoedLogo className="v1-logo" />,
+              <KoedLogo color className="v1-logo" />,
               props.onHome,
               props.route.kind === "home"
             )}

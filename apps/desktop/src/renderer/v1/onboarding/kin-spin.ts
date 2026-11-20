@@ -7,12 +7,17 @@ const limit = (value: number, max: number) =>
 const MAX_VELOCITY = 36;
 // Release velocity is averaged over this window so one late event can't kill it.
 const VELOCITY_WINDOW_MS = 80;
-// Seconds of release velocity a thrown Kin coasts through before it stops.
-const COAST = 0.75;
-// The coast eases out as (1 - t)^GLIDE_POWER, so it starts at release velocity.
-const GLIDE_POWER = 3;
-// Longer glides feel stuck; let the spring handle slow releases instead.
-const MAX_GLIDE_SECONDS = 3;
+// A hand slows and pauses before the button comes up, so the throw uses the
+// fastest recent movement rather than the last, slowest event.
+const RELEASE_LOOKBACK_MS = 160;
+// Held still this long before release means no throw.
+const STALE_MS = 160;
+// A thrown Kin loses this fraction of its speed per second (exp decay).
+const FRICTION = 1.4;
+// Releases at least this fast coast; slower ones spring to the front.
+const COAST_MIN = 5;
+// The coast hands over to the spring once it slows below this.
+const COAST_HANDOFF = 3.5;
 
 /** Direct pointer tracking, then an interruptible inertial coast to the front. */
 export class KinSpin {
@@ -33,7 +38,8 @@ export class KinSpin {
   #shake = 0;
   #shouldShake = false;
   #samples: { x: number; time: number }[] = [];
-  #glide: { distance: number; duration: number; elapsed: number } | null = null;
+  #coasting = false;
+  #peaks: { time: number; v: number }[] = [];
 
   begin(x: number, time: number, width: number, displayedAngle: number) {
     this.angle = displayedAngle;
@@ -42,7 +48,8 @@ export class KinSpin {
     this.moved = false;
     this.#idle = this.#shake = 0;
     this.#shouldShake = false;
-    this.#glide = null;
+    this.#coasting = false;
+    this.#peaks = [];
     this.#samples = [{ x, time }];
     this.#x = this.#startX = this.#activityX = x;
     this.#time = this.#activityTime = time;
@@ -71,6 +78,9 @@ export class KinSpin {
       ((x - oldest.x) * this.#scale) / (Math.max(8, time - oldest.time) / 1000),
       MAX_VELOCITY
     );
+    this.#peaks.push({ time, v: this.velocity });
+    while (this.#peaks[0] && time - this.#peaks[0].time > RELEASE_LOOKBACK_MS)
+      this.#peaks.shift();
     this.#x = x;
     this.#time = time;
   }
@@ -78,7 +88,19 @@ export class KinSpin {
   end(time: number, reduced: boolean, cancelled = false) {
     if (!this.dragging) return;
     this.dragging = false;
-    if (time - this.#time > 100 || cancelled) this.velocity = 0;
+    if (time - this.#time > STALE_MS || cancelled) this.velocity = 0;
+    else {
+      const sign = Math.sign(this.velocity);
+      let best = this.velocity;
+      for (const { time: at, v } of this.#peaks)
+        if (
+          time - at <= RELEASE_LOOKBACK_MS &&
+          Math.sign(v) === sign &&
+          Math.abs(v) > Math.abs(best)
+        )
+          best = v;
+      this.velocity = best;
+    }
     if (!this.moved || reduced || cancelled) {
       this.active = false;
       this.velocity = 0;
@@ -89,24 +111,10 @@ export class KinSpin {
     const nearestFront = Math.round((this.angle - FRONT) / TAU) * TAU + FRONT;
     this.#shouldShake =
       Math.abs(this.angle - nearestFront) > Math.PI / 2 + 1e-9;
-    // A throw coasts on its own momentum, easing to rest on a front-facing
-    // turn. Starting the ease at the release velocity keeps the hand-off smooth.
-    const coast =
-      Math.round((this.angle + this.velocity * COAST - FRONT) / TAU) * TAU +
-      FRONT;
-    const distance = coast - this.angle;
-    const duration = (GLIDE_POWER * distance) / this.velocity;
-    if (
-      distance * this.velocity > 0 &&
-      Math.abs(distance) >= 1 &&
-      duration <= MAX_GLIDE_SECONDS
-    ) {
-      this.#target = coast;
-      this.#glide = {
-        distance,
-        duration,
-        elapsed: 0
-      };
+    // A throw coasts on its own momentum, slowing with friction, then the
+    // spring takes over from that speed to land on a front-facing turn.
+    if (Math.abs(this.velocity) >= COAST_MIN) {
+      this.#coasting = true;
       return;
     }
     // Too slow to carry a turn: spring to the front the release leans toward.
@@ -118,7 +126,7 @@ export class KinSpin {
   #settle() {
     this.angle = FRONT;
     this.velocity = 0;
-    this.#glide = null;
+    this.#coasting = false;
     if (this.#shouldShake) {
       this.#shouldShake = false;
       this.#shake = 0.5;
@@ -151,15 +159,17 @@ export class KinSpin {
       if (!this.#shake) this.active = false;
       return;
     }
-    const glide = this.#glide;
-    if (glide) {
-      glide.elapsed += Math.min(Math.max(0, dt), 0.05);
-      const left = Math.max(0, 1 - glide.elapsed / glide.duration);
-      this.angle = this.#target - glide.distance * left ** GLIDE_POWER;
-      this.velocity =
-        ((GLIDE_POWER * glide.distance) / glide.duration) *
-        left ** (GLIDE_POWER - 1);
-      if (!left) this.#settle();
+    if (this.#coasting) {
+      const frame = Math.min(Math.max(0, dt), 0.05);
+      this.angle += this.velocity * frame;
+      this.velocity *= Math.exp(-FRICTION * frame);
+      if (Math.abs(this.velocity) > COAST_HANDOFF) return;
+      // Spring to the front-facing turn nearest where friction would stop it.
+      this.#target =
+        Math.round((this.angle + this.velocity / FRICTION - FRONT) / TAU) *
+          TAU +
+        FRONT;
+      this.#coasting = false;
       return;
     }
     // Small substeps keep the spring stable after a dropped frame.
