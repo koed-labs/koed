@@ -431,6 +431,131 @@ describe("Home", () => {
           ).toBe(true);
     });
 
+    const measureStage = (initialWidth: number) => {
+      let width = initialWidth;
+      let measure: () => void;
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(callback: () => void) {
+            measure = callback;
+          }
+          observe() {}
+          disconnect() {}
+        }
+      );
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect"
+      ).mockImplementation(function (this: HTMLElement) {
+        if (this.matches(".v1-home-stage, .v1-home-floor"))
+          return new DOMRect(0, 0, width, width ? 500 : 0);
+        return new DOMRect();
+      });
+      return async (nextWidth: number) => {
+        width = nextWidth;
+        await act(async () => measure());
+      };
+    };
+
+    const spotOf = (key: string) => {
+      const coin = coinFor(key);
+      expect(coin.dataset.motion).toBe("rest");
+      return {
+        x: offsetOf(coin),
+        lane: parseFloat(coin.style.getPropertyValue("--coin-depth")) * 26
+      };
+    };
+
+    it.each([900, 0])(
+      "separates clamped floor coins on measuring 600px after width %i",
+      async (initialWidth) => {
+        const resize = measureStage(initialWidth);
+        await render(
+          looseProps([item("conv-10"), item("conv-13"), item("loose")])
+        );
+        const first = spotOf("conv-10");
+        const second = spotOf("conv-13");
+        const inBounds = spotOf("loose");
+        expect(first.x).toBeGreaterThan(260);
+        expect(second.x).toBeGreaterThan(260);
+
+        await resize(600);
+        const clamped = spotOf("conv-10");
+        const moved = spotOf("conv-13");
+        expect(spotOf("loose")).toEqual(inBounds);
+        expect(clamped).toEqual({ x: 260, lane: first.lane });
+        expect(Math.abs(moved.x)).toBeLessThanOrEqual(260);
+        expect(
+          Math.abs(clamped.x - moved.x) >= 14 ||
+            Math.abs(clamped.lane - moved.lane) >= 7
+        ).toBe(true);
+
+        await resize(900);
+        expect(spotOf("conv-10")).toEqual(clamped);
+        expect(spotOf("conv-13")).toEqual(moved);
+      }
+    );
+
+    it("reserves in-bounds spots before clamping earlier cached coins", async () => {
+      const resize = measureStage(900);
+      await render(looseProps([item("conv-10"), item("conv-81")]));
+      const inBounds = spotOf("conv-81");
+      await resize(600);
+      expect(spotOf("conv-81")).toEqual(inBounds);
+      const moved = spotOf("conv-10");
+      expect(
+        Math.abs(inBounds.x - moved.x) >= 14 ||
+          Math.abs(inBounds.lane - moved.lane) >= 7
+      ).toBe(true);
+    });
+
+    it("finds a free spot when resize placement samples all clash", async () => {
+      const resize = measureStage(900);
+      const keys = Array.from(
+        { length: 25 },
+        (_, i) => `seed-483-conv-${i}`
+      ).sort();
+      await render(looseProps(keys.map((key) => item(key))));
+      await resize(600);
+      const spots = keys.map(spotOf);
+      for (const [i, a] of spots.entries())
+        for (const b of spots.slice(i + 1))
+          expect(
+            Math.abs(a.x - b.x) >= 14 || Math.abs(a.lane - b.lane) >= 7
+          ).toBe(true);
+    });
+
+    it.each([false, true])(
+      "uses measured bounds for a thrown coin (resize during flight: %s)",
+      async (duringFlight) => {
+        const resize = measureStage(900);
+        await render(looseProps([item("loose")]));
+        const coin = coinFor("loose");
+        await act(async () => {
+          pointer(coin, "pointerdown", 450, 100);
+          pointer(coin, "pointermove", 810, 100);
+          pointer(coin, "pointerup", 810, 100);
+          vi.advanceTimersByTime(16);
+        });
+        expect(coin.dataset.motion).toBe("flying");
+        if (duringFlight) {
+          await resize(600);
+          expect(coinFor("loose")).toBe(coin);
+          expect(coin.dataset.motion).toBe("flying");
+        }
+        await act(async () => vi.advanceTimersByTime(2000));
+        if (!duringFlight) {
+          expect(spotOf("loose").x).toBe(360);
+          await resize(600);
+        }
+        const corrected = spotOf("loose");
+        expect(corrected.x).toBe(260);
+        await resize(900);
+        expect(spotOf("loose")).toEqual(corrected);
+      }
+    );
+
     it("leaves a landed coin at rest when the stage changes under it", async () => {
       await render(looseProps([]));
       await render(looseProps([item("landed")]));

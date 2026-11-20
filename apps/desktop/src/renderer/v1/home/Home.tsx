@@ -1149,6 +1149,59 @@ const restingSpot = (
   return spot;
 };
 
+// If the scattered samples all clash, scan from the left at each lane where
+// an occupied band ends. A crowded floor may have no open spot left.
+const openRestingSpot = (half: number, placed: readonly CoinSpot[]) => {
+  const byX = [...placed].sort((a, b) => a.x - b.x);
+  // Leave room for floating-point rounding at the minimum spacing.
+  const gap = 0.000001;
+  for (const lane of [
+    0,
+    ...placed.map((spot) => spot.lane + COIN_SPACING_LANE + gap)
+  ]) {
+    if (lane > COIN_LANE_DEPTH) continue;
+    let x = -half;
+    for (const other of byX) {
+      if (Math.abs(other.lane - lane) >= COIN_SPACING_LANE) continue;
+      if (x <= other.x - COIN_SPACING_X - gap) break;
+      x = Math.max(x, other.x + COIN_SPACING_X + gap);
+    }
+    if (x <= half) return { x, lane };
+  }
+  return undefined;
+};
+
+const fitRestingSpots = (
+  resting: ReadonlyMap<string, CoinSpot>,
+  half?: number
+) => {
+  const spots = new Map<string, CoinSpot>();
+  const placed: CoinSpot[] = [];
+  const displaced: [string, CoinSpot][] = [];
+  const corrected: { key: string; prior: CoinSpot; spot: CoinSpot }[] = [];
+  // Give every in-bounds coin its spot before fitting coins displaced by resize.
+  for (const [key, spot] of resting) {
+    if (half !== undefined && Math.abs(spot.x) > half) {
+      displaced.push([key, spot]);
+    } else {
+      spots.set(key, spot);
+      placed.push(spot);
+    }
+  }
+  if (half !== undefined)
+    for (const [key, prior] of displaced) {
+      let spot = { ...prior, x: Math.sign(prior.x) * half };
+      if (clashes(spot, placed)) {
+        spot = restingSpot(key, half, placed);
+        if (clashes(spot, placed)) spot = openRestingSpot(half, placed) ?? spot;
+      }
+      spots.set(key, spot);
+      placed.push(spot);
+      corrected.push({ key, prior, spot });
+    }
+  return { spots, placed, corrected };
+};
+
 // Conversations in no Project are coins on the stage floor, just above the
 // caption. Ones already there at load rest at scattered spots; a Conversation
 // that appears later is thrown out of its AI Client's key in a random direction
@@ -1167,24 +1220,32 @@ function FloorCoins({
 }) {
   const reduced = useReducedMotion();
   const { resting } = coins;
+  const [, refreshSpots] = useState(0);
+  const onSettle = (key: string, spot: CoinSpot) => {
+    resting.set(key, spot);
+    refreshSpots((version) => version + 1);
+  };
   const conversations = [...coins.conversations].sort((left, right) =>
     right.latestAt.localeCompare(left.latestAt)
   );
-  if (!conversations.length) return null;
-  const half = (width ?? 900) / 2 - 40;
+  const half = Math.max(0, (width ?? 900) / 2 - 40);
   // Coins already lying keep their spots; the rest are spread in a fixed
   // order, so a new arrival never shifts them. With reduced motion arrivals
   // aren't thrown, so they are placed the same way.
   const keys = new Set(conversations.map(({ key }) => key));
   for (const key of [...resting.keys()])
     if (!keys.has(key)) resting.delete(key);
-  const spots = new Map<string, CoinSpot>();
-  const placed: CoinSpot[] = [];
-  for (const [key, spot] of resting) {
-    const kept = { ...spot, x: Math.max(-half, Math.min(half, spot.x)) };
-    spots.set(key, kept);
-    placed.push(kept);
-  }
+  const { spots, placed, corrected } = fitRestingSpots(
+    resting,
+    width === undefined ? undefined : half
+  );
+  useLayoutEffect(() => {
+    for (const { key, prior, spot } of corrected) {
+      // A flight may have settled since render; keep its newer position.
+      if (resting.get(key) === prior) resting.set(key, spot);
+    }
+  });
+  if (!conversations.length) return null;
   for (const { key } of [...conversations].sort((a, b) =>
     a.key.localeCompare(b.key)
   ))
@@ -1204,6 +1265,7 @@ function FloorCoins({
             restingSpot(conversation.key, half, [])
           }
           resting={resting}
+          onSettle={onSettle}
           thrown={coins.thrown.has(conversation.key)}
           launched={coins.launched}
           floor={floor}
@@ -1242,6 +1304,7 @@ function FloorCoin({
   conversation,
   home,
   resting,
+  onSettle,
   thrown,
   launched,
   floor,
@@ -1252,6 +1315,7 @@ function FloorCoin({
   conversation: HomeLooseConversation;
   home: CoinSpot;
   resting: Map<string, CoinSpot>;
+  onSettle: (key: string, spot: CoinSpot) => void;
   launched: (key: string) => void;
   // Appeared after load: thrown out of its AI Client's key.
   thrown: boolean;
@@ -1274,14 +1338,17 @@ function FloorCoin({
         label.style.setProperty("--marquee", `-${overflow + 4}px`);
       else label.style.removeProperty("--marquee");
     });
-  // Where it rests once thrown; until then it keeps its place in the row.
-  const [thrownTo, setThrownTo] = useState<number | null>(null);
   const [flight, setFlight] = useState<CoinMotion | null>(null);
   // How far up the resting band this coin lies; it lands on this lane.
   const lane = home.lane;
+  // A running flight uses the latest bounds without restarting its frame loop.
+  const bounds = useRef({ half, lane });
+  useLayoutEffect(() => {
+    bounds.current = { half, lane };
+  }, [half, lane]);
   const motion: CoinMotion = flight ?? {
     mode: "rest",
-    x: thrownTo ?? home.x,
+    x: home.x,
     y: lane,
     angle: 0
   };
@@ -1335,6 +1402,7 @@ function FloorCoin({
     };
   };
   const settle = () => {
+    const { half, lane } = bounds.current;
     // Come to rest in the nearest gap, nudging sideways off a neighbour.
     const others = [...resting].filter(([key]) => key !== conversation.key);
     let x = Math.max(-half, Math.min(half, body.current.x));
@@ -1350,8 +1418,7 @@ function FloorCoin({
         break;
       }
     }
-    resting.set(conversation.key, { x, lane });
-    setThrownTo(x);
+    onSettle(conversation.key, { x, lane });
     setFlight(null);
   };
   const fly = () => {
@@ -1359,6 +1426,7 @@ function FloorCoin({
     const step = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.032);
       last = now;
+      const { half, lane } = bounds.current;
       const coin = body.current;
       coin.vy -= COIN_GRAVITY * dt;
       coin.x += coin.vx * dt;
