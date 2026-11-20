@@ -1151,15 +1151,23 @@ const restingSpot = (
 
 // If the scattered samples all clash, scan from the left at each lane where
 // an occupied band ends. A crowded floor may have no open spot left.
-const openRestingSpot = (half: number, placed: readonly CoinSpot[]) => {
+const openRestingSpot = (
+  half: number,
+  placed: readonly CoinSpot[],
+  firstUnchecked: number,
+  onScanLane?: (lane: number) => void
+) => {
   const byX = [...placed].sort((a, b) => a.x - b.x);
   // Leave room for floating-point rounding at the minimum spacing.
   const gap = 0.000001;
   for (const lane of [
-    0,
-    ...placed.map((spot) => spot.lane + COIN_SPACING_LANE + gap)
+    ...(firstUnchecked === 0 ? [0] : []),
+    ...placed
+      .slice(firstUnchecked)
+      .map((spot) => spot.lane + COIN_SPACING_LANE + gap)
   ]) {
     if (lane > COIN_LANE_DEPTH) continue;
+    onScanLane?.(lane);
     let x = -half;
     for (const other of byX) {
       if (Math.abs(other.lane - lane) >= COIN_SPACING_LANE) continue;
@@ -1171,9 +1179,10 @@ const openRestingSpot = (half: number, placed: readonly CoinSpot[]) => {
   return undefined;
 };
 
-const fitRestingSpots = (
+export const fitRestingSpots = (
   resting: ReadonlyMap<string, CoinSpot>,
-  half?: number
+  half?: number,
+  onScanLane?: (lane: number) => void
 ) => {
   const spots = new Map<string, CoinSpot>();
   const placed: CoinSpot[] = [];
@@ -1188,12 +1197,23 @@ const fitRestingSpots = (
       placed.push(spot);
     }
   }
+  let firstUnchecked = 0;
   if (half !== undefined)
     for (const [key, prior] of displaced) {
       let spot = { ...prior, x: Math.sign(prior.x) * half };
       if (clashes(spot, placed)) {
         spot = restingSpot(key, half, placed);
-        if (clashes(spot, placed)) spot = openRestingSpot(half, placed) ?? spot;
+        if (clashes(spot, placed)) {
+          const openSpot = openRestingSpot(
+            half,
+            placed,
+            firstUnchecked,
+            onScanLane
+          );
+          if (openSpot) spot = openSpot;
+          // Adding coins cannot reopen checked lanes, but can introduce new ones.
+          else firstUnchecked = placed.length;
+        }
       }
       spots.set(key, spot);
       placed.push(spot);

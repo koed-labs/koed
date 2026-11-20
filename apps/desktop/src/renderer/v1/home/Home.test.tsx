@@ -9,7 +9,7 @@ import {
   projectKinLook
 } from "../pixelkin/agent-kin.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
-import { Home, HOME_RERANK_MS } from "./Home.js";
+import { fitRestingSpots, Home, HOME_RERANK_MS } from "./Home.js";
 import type { HomeProjectEntry, HomeView } from "./home-model.js";
 
 const agent = { name: "Koed", look: DEFAULT_AGENT_LOOK };
@@ -19,6 +19,43 @@ const entry = (
   latestAt: string,
   eventCount = 10
 ): HomeProjectEntry => ({ id, name: id, eventCount, latestAt });
+
+it("stops exhaustive resize searches after the first miss in each pass", () => {
+  // At zero half-width, these two anchors cover the entire floor band.
+  const resting = new Map([
+    ["anchor-a", { x: 0, lane: 6.5 }],
+    ["anchor-b", { x: 0, lane: 19.5 }],
+    ["displaced-a", { x: 1, lane: 6.5 }],
+    ["displaced-b", { x: 2, lane: 19.5 }]
+  ]);
+  const onScanLane = vi.fn<(lane: number) => void>();
+
+  const { spots } = fitRestingSpots(resting, 0, onScanLane);
+
+  // Only a full scan starts at lane zero.
+  const fullScans = () => onScanLane.mock.calls.filter(([lane]) => lane === 0);
+  expect(fullScans()).toHaveLength(1);
+  expect(spots.get("displaced-a")?.lane).toBeCloseTo(8.4448, 4);
+  expect(spots.get("displaced-b")?.lane).toBeCloseTo(15.1918, 4);
+
+  fitRestingSpots(resting, 0, onScanLane);
+  expect(fullScans()).toHaveLength(2);
+});
+
+it("preserves a narrow gap found on a newly introduced lane after a miss", () => {
+  const resting = new Map([
+    ["anchor-a", { x: 0, lane: 5 }],
+    ["anchor-b", { x: 0, lane: 8.44480075 }],
+    ["anchor-c", { x: 0, lane: 22.44480125 }],
+    ["displaced-a", { x: 1, lane: 5 }],
+    ["displaced-b", { x: 2, lane: 5 }]
+  ]);
+
+  const { spots } = fitRestingSpots(resting, 0);
+
+  expect(spots.get("displaced-a")?.lane).toBeCloseTo(8.4448, 7);
+  expect(spots.get("displaced-b")?.lane).toBeCloseTo(15.444801, 7);
+});
 
 describe("Home", () => {
   let container: HTMLDivElement;
