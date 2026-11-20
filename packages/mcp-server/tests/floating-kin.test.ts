@@ -12,6 +12,7 @@ import * as runner from "../src/ai-client-runner.js";
 import { localAiClientInstanceConfigIdentity } from "../src/ai-client-instance-registry.js";
 import { readLocalRuntimeRegistration } from "../src/local-runtime-protocol.js";
 import { startLocalAiRuntime } from "../src/local-runtime-server.js";
+import { logger } from "../src/logger.js";
 
 const sessionId = "a01acd69-24e2-4b2c-8cf7-b4f2a4ec780c";
 const input = { sessionId, action: "conversation" };
@@ -336,6 +337,23 @@ it.each([
   const { request, run } = await fixture(options);
   expect(await (await request("summary", input)).json()).toEqual({ status });
   expect(run).toHaveBeenCalledTimes(attempts);
+});
+
+it("logs an actionable authentication reason without logging provider data", async () => {
+  const { request, run } = await fixture({ provider: "claude" });
+  const warn = vi.spyOn(logger, "warn");
+  const error = new runner.ClaudeSummaryClientError("authentication_required");
+  error.cause = new Error("private provider output");
+  run.mockRejectedValueOnce(error);
+
+  expect(await (await request("summary", input)).json()).toEqual({
+    status: "client_unavailable"
+  });
+  expect(warn).toHaveBeenCalledWith(
+    { stage: "summary", provider: "claude", reason: "authentication_required" },
+    "Floating Kin summary failed"
+  );
+  expect(run).toHaveBeenCalledOnce();
 });
 
 it("never forwards the runtime registration bearer to a remote backend", async () => {

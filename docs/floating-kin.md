@@ -55,8 +55,16 @@ model, and reasoning effort when available.
    appear in the Kin, but a Codex synthesis assignment is unavailable until its
    action-tool restrictions are verified. There is no fallback. The assignment
    needs a current capability snapshot for the configured executable and profile.
-   Review it under **Settings → AI models**. Synthesis uses the assigned AI
-   Client subscription and may incur usage.
+   Review it under **Settings → AI models**. Claude Code uses the signed-in
+   profile without copying credentials and requires an executable that supports
+   `--safe-mode`. The task runs in an empty working directory without user
+   hooks, skills, or MCP. Safe mode does not override organization-managed
+   policy, which can still run managed hooks. Do not use this preview with a
+   Claude Code profile that has managed hooks. If Claude Code requests sign-in,
+   sign in to the assigned profile and retry. If it does not recognize safe mode,
+   update the assigned executable.
+   The Local AI Runtime logs a reason code without logging the provider's raw
+   output. Synthesis uses the assigned AI Client subscription and may incur usage.
 5. The runtime validates cited sources against eligible evidence, rechecks its
    inputs, computes the freshness timestamp, and returns a transient result.
    The runtime requests cancellation after 30 seconds; the AI Client may need

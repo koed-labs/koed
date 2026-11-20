@@ -14,6 +14,7 @@ import {
   type AiClientDriver
 } from "../src/ai-client-runner.js";
 import {
+  localAiClientLaunchBinding,
   publishAiClientCapabilities,
   startAiClientCapabilityPublisher
 } from "../src/ai-client-capability-publisher.js";
@@ -74,6 +75,22 @@ const driver = (
 };
 
 describe("AI Client capability publisher", () => {
+  it("keeps the default Claude profile implicit for Keychain lookup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-claude-binding-"));
+    roots.push(root);
+    const binding = localAiClientLaunchBinding(
+      {
+        instanceId: "claude.default",
+        driverId: "claude",
+        displayName: "Claude fixture",
+        executablePath: executable(root, "claude")
+      },
+      { HOME: root }
+    );
+    expect(binding.env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(binding.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe("");
+  });
+
   it("publishes no instances for an empty explicit registry", async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-publisher-empty-")

@@ -13,10 +13,12 @@ import {
 } from "./ai-client-capability-publisher.js";
 import { resolveConfiguredLocalAiClientInstance } from "./ai-client-instance-registry.js";
 import {
+  ClaudeSummaryClientError,
   runAiClientJsonTask,
   type AiClientRunConfig
 } from "./ai-client-runner.js";
 import { MemoryApiError, type MemoryApiClient } from "./index.js";
+import { logger } from "./logger.js";
 
 const summaryDeadlineMs = 30_000;
 const evidenceBudgetBytes = 48_000;
@@ -213,17 +215,20 @@ export async function summarizeFloatingKin(
   const readEvidence = () =>
     client.readFloatingKinEvidence(request, runtimeAuthorization, signal);
   let release: (() => void) | undefined;
-  let failure: "unavailable" | "client_unavailable" = "unavailable";
+  let stage: "admission" | "evidence" | "assignment" | "summary" = "admission";
+  let provider: "claude" | "pi" | undefined;
   try {
     release = await admission.acquire(signal);
+    stage = "evidence";
     const evidence = admitEvidence(await readEvidence(), request);
     signal.throwIfAborted();
     if (!evidence.items.length) return { status: "no_evidence" };
-    failure = "client_unavailable";
+    stage = "assignment";
     const config = await resolveAssignment(client, environment, signal);
     signal.throwIfAborted();
     if (!config) return { status: "client_unavailable" };
-    failure = "unavailable";
+    stage = "summary";
+    provider = config.provider;
     signal = AbortSignal.any([
       signal,
       AbortSignal.timeout(Math.min(config.timeoutMs, summaryDeadlineMs))
@@ -246,7 +251,22 @@ export async function summarizeFloatingKin(
       (error instanceof MemoryApiError && error.status === 429)
     )
       return { status: "busy" };
-    return { status: failure };
+    const clientError = error instanceof ClaudeSummaryClientError;
+    // Provider errors can contain prompts, paths, or credentials. Log only known reasons.
+    logger.warn(
+      {
+        stage,
+        provider,
+        reason: clientError ? error.reason : "unexpected_error"
+      },
+      "Floating Kin summary failed"
+    );
+    return {
+      status:
+        clientError || stage === "assignment"
+          ? "client_unavailable"
+          : "unavailable"
+    };
   } finally {
     release?.();
   }

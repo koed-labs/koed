@@ -734,19 +734,42 @@ export const claudeAgentSdkEffort = (
   throw new Error(`Unsupported Claude reasoning effort: ${value}`);
 };
 
-function isolateClaudeSummaryConfig(env: NodeJS.ProcessEnv, cwd: string): void {
-  const configHome =
-    env.CLAUDE_CONFIG_DIR ?? path.join(env.HOME ?? os.homedir(), ".claude");
-  const isolatedHome = path.join(path.dirname(cwd), "claude");
-  fs.mkdirSync(isolatedHome, { mode: 0o700 });
-  const credentials = ".credentials.json";
-  const source = path.join(configHome, credentials);
-  if (fs.existsSync(source)) {
-    const destination = path.join(isolatedHome, credentials);
-    fs.copyFileSync(source, destination);
-    fs.chmodSync(destination, 0o600);
+type ClaudeSummaryFailure =
+  | "authentication_required"
+  | "safe_mode_unsupported"
+  | "sdk_debug_enabled";
+
+export class ClaudeSummaryClientError extends Error {
+  constructor(readonly reason: ClaudeSummaryFailure) {
+    super(reason);
+    this.name = "ClaudeSummaryClientError";
   }
-  env.CLAUDE_CONFIG_DIR = isolatedHome;
+}
+
+function claudeSummaryFailure(
+  detail: string
+): ClaudeSummaryFailure | undefined {
+  if (
+    /(unknown|unrecognized) (option|argument) [^\n]*--safe-mode/i.test(detail)
+  ) {
+    return "safe_mode_unsupported";
+  }
+  if (/not logged in|please run \/login/i.test(detail)) {
+    return "authentication_required";
+  }
+}
+
+function checkClaudeSummaryResult(
+  message: Extract<SDKMessage, { type: "result" }> | undefined,
+  diagnosis: ClaudeSummaryFailure | undefined
+): void {
+  if (message?.subtype === "success" && !message.is_error) return;
+  const detail =
+    message?.subtype === "success"
+      ? claudeSummaryFailure(message.result)
+      : message?.errors.map(claudeSummaryFailure).find(Boolean);
+  const reason = diagnosis ?? detail;
+  if (reason) throw new ClaudeSummaryClientError(reason);
 }
 
 export const runClaudeAgentSdkTask = async (
@@ -755,6 +778,9 @@ export const runClaudeAgentSdkTask = async (
   timeoutMs: number
 ): Promise<AiClientRunResult> => {
   config.signal?.throwIfAborted();
+  if (config.isolatedSummary && process.env.DEBUG_CLAUDE_AGENT_SDK) {
+    throw new ClaudeSummaryClientError("sdk_debug_enabled");
+  }
   const abortController = new AbortController();
   let stream: ReturnType<typeof query> | undefined;
   const abort = () => {
@@ -766,6 +792,7 @@ export const runClaudeAgentSdkTask = async (
   const providerEvents: SDKMessage[] = [];
   let resultMessage: Extract<SDKMessage, { type: "result" }> | undefined;
   let sessionId: string | undefined;
+  let diagnosis: ClaudeSummaryFailure | undefined;
   try {
     const effort = claudeAgentSdkEffort(config.reasoningEffort);
     const env = claudeAgentSdkProcessEnvironment(
@@ -773,7 +800,7 @@ export const runClaudeAgentSdkTask = async (
       config.env,
       config.clientName
     );
-    if (config.isolatedSummary) isolateClaudeSummaryConfig(env, config.cwd);
+    // Isolate behavior, not the configured profile used for Keychain sign-in.
     stream = query({
       prompt,
       options: {
@@ -797,7 +824,18 @@ export const runClaudeAgentSdkTask = async (
         permissionMode: "dontAsk",
         strictMcpConfig: true,
         settingSources: [],
-        ...(config.isolatedSummary ? { skills: [] } : {}),
+        ...(config.isolatedSummary
+          ? {
+              extraArgs: { "safe-mode": null },
+              mcpServers: {},
+              skills: [],
+              settings: { disableAllHooks: true, autoMemoryEnabled: false },
+              managedSettings: { disableAllHooks: true },
+              stderr: (chunk: string) => {
+                diagnosis ??= claudeSummaryFailure(chunk);
+              }
+            }
+          : {}),
         persistSession: false,
         maxTurns: 1,
         includePartialMessages: Boolean(config.onProgress),
@@ -805,6 +843,13 @@ export const runClaudeAgentSdkTask = async (
       }
     });
     for await (const message of stream) {
+      if (
+        config.isolatedSummary &&
+        message.type === "assistant" &&
+        message.error === "authentication_failed"
+      ) {
+        diagnosis ??= "authentication_required";
+      }
       providerEvents.push(message);
       if (message.type !== "system") {
         config.onProgress?.("Claude provider activity");
@@ -824,11 +869,21 @@ export const runClaudeAgentSdkTask = async (
         cause: error
       });
     }
+    if (config.isolatedSummary) {
+      const reason =
+        diagnosis ??
+        (error instanceof Error
+          ? claudeSummaryFailure(error.message)
+          : undefined);
+      if (reason) throw new ClaudeSummaryClientError(reason);
+    }
     throw error;
   } finally {
     clearTimeout(timer);
     config.signal?.removeEventListener("abort", abort);
   }
+  if (config.isolatedSummary)
+    checkClaudeSummaryResult(resultMessage, diagnosis);
   if (!resultMessage) {
     throw new Error("Claude Agent SDK completed without a result message");
   }

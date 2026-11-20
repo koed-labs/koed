@@ -86,10 +86,10 @@ export const localAiClientLaunchBinding = (
     ? realpathSync(configuredHome)
     : configuredHome;
   if (claude) {
-    // Keep the same secure-storage namespace when the isolated runner relocates config.
+    // An implicit default profile can use a different Keychain namespace than an explicit path.
     env.CLAUDE_SECURESTORAGE_CONFIG_DIR ??= env.CLAUDE_CONFIG_DIR ?? "";
   }
-  env[configKey] = configHome;
+  if (!claude || env[configKey]) env[configKey] = configHome;
   const identity = localAiClientInstanceConfigIdentity({
     ...instance,
     executablePath,
