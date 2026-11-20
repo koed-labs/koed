@@ -84,6 +84,7 @@ const validTimestamp = (value: number | null): value is number =>
 const assessBirthtime = (
   birthtimeMs: number | null,
   firstConversationAtMs: number,
+  evaluatedAtMs: number,
   sameDevice: boolean
 ): Outcome => {
   if (
@@ -93,6 +94,8 @@ const assessBirthtime = (
   )
     return "unavailable";
   if (birthtimeMs > firstConversationAtMs) return "rejects";
+  if (!validTimestamp(evaluatedAtMs) || firstConversationAtMs > evaluatedAtMs)
+    return "unavailable";
   return sameDevice && birthtimeMs < firstConversationAtMs
     ? "agrees"
     : "does-not-agree";
@@ -178,6 +181,7 @@ const assessEvidence = (input: FolderHintInput) => {
   const birthtime = assessBirthtime(
     directory?.birthtimeMs ?? null,
     input.firstConversationAtMs,
+    input.evaluatedAtMs,
     origin === "agrees"
   );
   const remote = compareEvidence(

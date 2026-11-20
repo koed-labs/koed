@@ -358,6 +358,84 @@ describe("scoreFolderHint", () => {
   );
 
   it.each([
+    {
+      name: "birthtime and Conversation in the future",
+      clock: evaluatedAtMs,
+      birthtime: evaluatedAtMs + 1,
+      first: evaluatedAtMs + 2
+    },
+    {
+      name: "only the Conversation in the future",
+      clock: evaluatedAtMs,
+      birthtime: evaluatedAtMs,
+      first: evaluatedAtMs + 1
+    },
+    {
+      name: "NaN evaluation time",
+      clock: Number.NaN,
+      birthtime: directoryStat.birthtimeMs,
+      first: firstConversationAtMs
+    },
+    {
+      name: "infinite evaluation time",
+      clock: Number.POSITIVE_INFINITY,
+      birthtime: directoryStat.birthtimeMs,
+      first: firstConversationAtMs
+    },
+    {
+      name: "negative evaluation time",
+      clock: -1,
+      birthtime: directoryStat.birthtimeMs,
+      first: firstConversationAtMs
+    }
+  ])(
+    "does not award birthtime points with $name",
+    ({ clock, birthtime, first }) => {
+      const result = scoreFolderHint({
+        ...historical,
+        evaluatedAtMs: clock,
+        firstConversationAtMs: first,
+        directoryStat: { ...noActivity, birthtimeMs: birthtime }
+      });
+      expect(result).toMatchObject({ tier: "medium", score: 3 });
+      expect(result.reasons).toContainEqual({
+        code: "directory-birthtime",
+        outcome: "unavailable"
+      });
+    }
+  );
+
+  it("awards birthtime points when the Conversation starts at evaluation time", () => {
+    const result = scoreFolderHint({
+      ...historical,
+      firstConversationAtMs: evaluatedAtMs,
+      directoryStat: noActivity
+    });
+    expect(result).toMatchObject({ tier: "strong", score: 5 });
+  });
+
+  it.each([evaluatedAtMs, Number.NaN])(
+    "vetoes birthtime later than the Conversation with evaluation time %s",
+    (clock) => {
+      const result = scoreFolderHint({
+        ...historical,
+        evaluatedAtMs: clock,
+        firstConversationAtMs: evaluatedAtMs + 1,
+        directoryStat: { ...noActivity, birthtimeMs: evaluatedAtMs + 2 }
+      });
+      expect(result).toEqual({
+        tier: "none",
+        score: 3,
+        reasons: result.reasons
+      });
+      expect(result.reasons).toContainEqual({
+        code: "directory-birthtime",
+        outcome: "rejects"
+      });
+    }
+  );
+
+  it.each([
     { currentRemoteFingerprint: "remote-1", score: 6, tier: "medium" },
     { currentRemoteFingerprint: null, score: 4, tier: "none" }
   ])(

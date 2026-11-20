@@ -370,9 +370,13 @@ registry vote. The scorer reads supplied evidence only; capture, import, and
 Desktop do not call it.
 
 Same-device birthtime strictly before the Conversation, matching Git remote
-fingerprints, and a live registry match each add two points. Directory activity
-in the last 30 days (inclusive, not future) and a verified existing transcript
-file strictly inside the directory each add one. Strong requires at least five
+fingerprints, and a live registry match each add two points. Birthtime and the
+Conversation's first timestamp must both be valid and no later than a valid
+injected evaluation time to earn birthtime points. A reliable birthtime after
+the Conversation began still vetoes the hint even if the evaluation time is
+invalid or earlier than both timestamps. Directory activity in the last 30 days
+(inclusive, not future) and a verified existing transcript file strictly inside
+the directory each add one. Strong requires at least five
 points and both birthtime and remote agreement; medium requires at least three
 and a two-point clue. Unknown origin requires remote agreement for medium.
 Conflicting metadata, an unusable directory, a known different origin device,
