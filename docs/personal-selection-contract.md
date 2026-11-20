@@ -359,6 +359,34 @@ reuse previous answer text as current evidence or discover an ambient repository
 Like named Project inventory, this view reports an error above 5,000 Conversations.
 Complete enumeration uses the separate bounded selection APIs.
 
+### Advisory Folder hints
+
+The Folder-hint scorer evaluates an existing registry candidate only when a
+Conversation's effective Folder is unresolved and its original Folder reason is
+`historical_unresolved` or `missing`. The candidate must match the exact
+normalized recorded directory on the current device, with a confirmed directory
+marker. Historical candidates can match the registry but do not earn the live
+registry vote. The scorer reads supplied evidence only; capture, import, and
+Desktop do not call it.
+
+Same-device birthtime strictly before the Conversation, matching Git remote
+fingerprints, and a live registry match each add two points. Directory activity
+in the last 30 days (inclusive, not future) and a verified existing transcript
+file strictly inside the directory each add one. Strong requires at least five
+points and both birthtime and remote agreement; medium requires at least three
+and a two-point clue. Unknown origin requires remote agreement for medium.
+Conflicting metadata, an unusable directory, a known different origin device,
+a later birthtime, mismatched Git remotes, an ambiguous marker, or no verified
+candidate prevents a hint regardless of score. The raw score (0–8) measures
+supporting evidence, not probability or permission.
+
+Every hint is `suggestion-only`, including for shared or Workspace-linked
+Projects. It is not a Folder observation, selection, or repair. It does not
+create a Folder, change original or effective Folder context, assign a
+Conversation, or grant sharing or Workspace Access. Optional Project context
+must come from a caller-established Folder rule and belong to the same User as
+the Folder. Neither the path nor a Git Anchor implies Project membership.
+
 ## Git Anchor inclusion rules
 
 A Git Anchor rule independently retains one selected Git Anchor.
