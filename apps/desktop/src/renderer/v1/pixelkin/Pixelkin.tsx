@@ -15,6 +15,7 @@ import "./pixelkin.css";
 
 export function Pixelkin({
   look = DEFAULT_AGENT_LOOK,
+  gradientTop,
   size = 28,
   className = "",
   hopOnChange = false,
@@ -27,11 +28,13 @@ export function Pixelkin({
   presentation?: "avatar" | "stage";
   motion?: "focused" | "unfocused" | "still";
   look?: AgentLook;
+  // Optional second stop for a gradient-enabled look, not part of saved Kin settings.
+  gradientTop?: string;
   size?: number;
   className?: string;
   hopOnChange?: boolean;
   // Holds one expression instead of the personality's changing moods.
-  expression?: "neutral" | "surprised" | "happy" | "sad" | null;
+  expression?: "neutral" | "surprised" | "happy" | "sad" | "sleepy" | null;
   // Each change makes the Kin hop once.
   hopKey?: number;
   // Turned by dragging; the caller feeds it pointer events.
@@ -72,6 +75,12 @@ export function Pixelkin({
   }, [lookKey, size, hopOnChange, presentation]);
   useEffect(() => {
     const actor = actorRef.current;
+    if (!actor) return;
+    actor.gradientTop = gradientTop;
+    wakePixelkins();
+  }, [gradientTop, engine, motion]);
+  useEffect(() => {
+    const actor = actorRef.current;
     if (actor) setPixelkinExpression(actor, expression);
   }, [expression, engine, motion]);
   useEffect(() => {
@@ -90,12 +99,16 @@ export function Pixelkin({
         className={`v1-pixelkin v1-pixelkin-fallback ${className}`}
         data-kin-shape={look.body.shape}
         data-kin-colour={look.palette.base}
+        data-kin-gradient={
+          look.palette.gradient && gradientTop ? true : undefined
+        }
         data-expression={expression ?? "neutral"}
         style={
           {
             width: size,
             height: size,
-            "--v1-kin": look.palette.base
+            "--v1-kin": look.palette.base,
+            "--v1-kin-gradient-top": gradientTop
           } as CSSProperties
         }
         aria-hidden="true"

@@ -125,6 +125,44 @@ async function renderQuiet() {
 }
 
 describe("Floating Kin", () => {
+  it("keeps the large draggable Kin below the chips when a summary opens", async () => {
+    await render();
+    const chip = mount.querySelector(".fk-chip")!;
+    const avatar = mount.querySelector('[aria-label="Floating Kin avatar"]')!;
+    expect(avatar).not.toBeNull();
+    expect(avatar.closest(".fk-chip")).toBeNull();
+    expect(
+      chip.compareDocumentPosition(avatar) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(avatar.querySelector("img")).toBeNull();
+    const floatingPixelkin = avatar.querySelector<HTMLElement>(".v1-pixelkin")!;
+    expect(floatingPixelkin.style.width).toBe("88px");
+    expect(floatingPixelkin.dataset.kinShape).toBe("roundedBox");
+    expect(floatingPixelkin.dataset.kinColour).toBe("#3083ff");
+    expect(
+      floatingPixelkin.style.getPropertyValue("--v1-kin-gradient-top")
+    ).toBe("#e8d31a");
+    const projectPixelkin = chip.querySelector<HTMLElement>(".v1-pixelkin")!;
+    expect(projectPixelkin.style.width).toBe("32px");
+    expect(
+      projectPixelkin.style.getPropertyValue("--v1-kin-gradient-top")
+    ).toBe("");
+
+    await click("Captured 12s ago");
+    expect(mount.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(mount.querySelector('[aria-label="Floating Kin avatar"]')).toBe(
+      avatar
+    );
+    await mouseOver(avatar);
+    expect(mount.querySelector('[role="tooltip"]')).toBeNull();
+    await pointer(avatar, "pointerdown", 100);
+    await pointer(avatar, "pointermove", 120);
+    await pointer(avatar, "pointerup", 120);
+    expect(
+      vi.mocked(bridge.drag).mock.calls.map(([input]) => input.phase)
+    ).toEqual(["start", "move", "end"]);
+  });
+
   it("switches interaction only across chips, summary panel, and click-through regions", async () => {
     bridge.activity = vi.fn(async () => ({
       state: "running" as const,
@@ -377,8 +415,8 @@ describe("Floating Kin", () => {
     const sleepingKin = await renderQuiet();
     expect(mount.textContent).not.toContain("No recent capture");
     expect(
-      sleepingKin.querySelector<HTMLElement>(".v1-pixelkin")?.style.width
-    ).toBe("88px");
+      sleepingKin.querySelector(".v1-pixelkin")?.getAttribute("data-expression")
+    ).toBe("sleepy");
     const move = (type: string) =>
       act(async () => {
         sleepingKin.dispatchEvent(new MouseEvent(type, { bubbles: true }));
@@ -399,6 +437,20 @@ describe("Floating Kin", () => {
     await act(async () => sleepingKin.blur());
     expect(mount.querySelector('[role="tooltip"]')).toBeNull();
     expect(bridge.summarize).not.toHaveBeenCalled();
+  });
+
+  it("hands keyboard focus from the sleeping Kin to the first chip when capture arrives", async () => {
+    const sleepingKin = await renderQuiet();
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [conversation],
+      overflowCount: 0
+    });
+    await act(async () => sleepingKin.focus());
+    expect(document.activeElement).toBe(sleepingKin);
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(document.activeElement).toBe(mount.querySelector(".fk-chip"));
+    expect(mount.querySelector('[role="tooltip"]')).toBeNull();
   });
 
   it.each([

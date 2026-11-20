@@ -10,7 +10,8 @@ import type { FloatingKinBridge } from "../../ipc/floating-kin-protocol.js";
 import { Pixelkin } from "../v1/pixelkin/Pixelkin.js";
 import {
   DEFAULT_AGENT_LOOK,
-  projectKinLook
+  projectKinLook,
+  type AgentLook
 } from "../v1/pixelkin/agent-kin.js";
 import {
   ClientMark,
@@ -30,6 +31,19 @@ export type { FloatingKinBridge } from "../../ipc/floating-kin-protocol.js";
 
 const chipLimit = 3;
 const recentSeconds = 60;
+const floatingKinLook: AgentLook = {
+  ...DEFAULT_AGENT_LOOK,
+  body: {
+    ...DEFAULT_AGENT_LOOK.body,
+    shape: "roundedBox",
+    width: 2,
+    height: 2,
+    depth: 0.9
+  },
+  face: { ...DEFAULT_AGENT_LOOK.face, personality: "joyful" },
+  palette: { base: "#3083ff", grayscale: false, gradient: true }
+};
+const floatingKinGradientTop = "#e8d31a";
 const states = {
   stopped: [
     "Local runtime stopped",
@@ -126,12 +140,29 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
   );
 }
 
-function QuietKin({ dragging }: { dragging: boolean }) {
+function StandaloneKin({
+  quiet,
+  animate,
+  dragging
+}: {
+  quiet: boolean;
+  animate: boolean;
+  dragging: boolean;
+}) {
+  const avatar = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
-  const showTip = hovered || focused;
+  const showTip = quiet && (hovered || focused);
+  useEffect(() => {
+    const element = avatar.current;
+    if (quiet || !element || document.activeElement !== element) return;
+    element
+      .closest("main")
+      ?.querySelector<HTMLButtonElement>(".fk-chip")
+      ?.focus();
+  }, [quiet]);
   return (
-    <div className="fk-quiet">
+    <div className="fk-kin">
       {showTip && (
         <div
           className="fk-state fk-quiet-tip"
@@ -147,24 +178,33 @@ function QuietKin({ dragging }: { dragging: boolean }) {
         </div>
       )}
       <div
-        className="fk-quiet-avatar"
+        className="fk-kin-avatar"
+        ref={avatar}
         data-fk-hit
         data-fk-handle
         role="img"
-        aria-label="No recent capture"
+        aria-label={quiet ? "No recent capture" : "Floating Kin avatar"}
         aria-describedby={
           showTip && !dragging ? "floating-kin-quiet-note" : undefined
         }
-        tabIndex={0}
+        tabIndex={quiet ? 0 : -1}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
       >
-        <Pixelkin size={88} motion="still" />
-        <span className="fk-sleep-mark" aria-hidden="true">
-          z
-        </span>
+        <Pixelkin
+          look={floatingKinLook}
+          gradientTop={floatingKinGradientTop}
+          size={88}
+          motion={animate ? "unfocused" : "still"}
+          expression={quiet ? "sleepy" : null}
+        />
+        {quiet ? (
+          <span className="fk-sleep-mark" aria-hidden="true">
+            z
+          </span>
+        ) : null}
       </div>
     </div>
   );
@@ -257,7 +297,7 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           cancel={() => void cancel()}
         />
       ) : null}
-      {conversations.length || overflow ? (
+      {conversations.length > 0 || overflow > 0 ? (
         <div
           className="fk-dock"
           role="group"
@@ -282,8 +322,16 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
             </span>
           ) : null}
         </div>
-      ) : activity.state === "running" ? (
-        <QuietKin dragging={dragging} />
+      ) : null}
+      {activity.state === "running" ? (
+        <StandaloneKin
+          quiet={recent.length === 0 && overflow === 0}
+          animate={recent.some(
+            ({ lastActivityAt }) =>
+              captureSeconds(lastActivityAt, at) < recentSeconds
+          )}
+          dragging={dragging}
+        />
       ) : (
         <ActivityPill state={activity.state} />
       )}

@@ -135,6 +135,41 @@ export function useSummary(bridge?: FloatingKinBridge) {
   return { view, summarize, cancel, isCancelling };
 }
 
+const pixels = (value: string) => Number.parseFloat(value) || 0;
+const elementHeight = (element: Element) =>
+  element.getBoundingClientRect().height;
+
+// Measure the layout's preferred height independently of the native viewport.
+function preferredOverlayHeight(
+  node: HTMLElement,
+  summary: HTMLDivElement | null
+) {
+  const style = getComputedStyle(node);
+  const children = Array.from(node.children);
+  const body = summary?.parentElement;
+  const panel = body?.parentElement;
+  const header = body?.previousElementSibling;
+  const contentHeight = children.reduce((height, child) => {
+    if (child !== panel || !header || !body || !summary)
+      return height + elementHeight(child);
+    const panelStyle = getComputedStyle(panel);
+    const limit = pixels(getComputedStyle(body).maxHeight) || Infinity;
+    return (
+      height +
+      elementHeight(header) +
+      Math.min(limit, elementHeight(summary)) +
+      pixels(panelStyle.borderTopWidth) +
+      pixels(panelStyle.borderBottomWidth)
+    );
+  }, 0);
+  return (
+    contentHeight +
+    pixels(style.paddingTop) +
+    pixels(style.paddingBottom) +
+    pixels(style.rowGap) * Math.max(0, children.length - 1)
+  );
+}
+
 export function useOverlayWindow(bridge?: FloatingKinBridge) {
   const surface = useRef<HTMLElement>(null);
   const interactive = useRef(false);
@@ -147,19 +182,29 @@ export function useOverlayWindow(bridge?: FloatingKinBridge) {
     const node = surface.current;
     if (!bridge || !node) return;
     let size = "";
+    let summary: HTMLDivElement | null = null;
     const resize = () => {
-      const rect = node.getBoundingClientRect();
-      const width = Math.ceil(rect.width);
-      const height = Math.ceil(rect.height);
+      const width = Math.ceil(node.getBoundingClientRect().width);
+      const height = Math.ceil(preferredOverlayHeight(node, summary));
       if (!width || !height || size === `${width}:${height}`) return;
       size = `${width}:${height}`;
       bridge.setSize({ width, height });
     };
-    resize();
     const observer = new ResizeObserver(resize);
-    observer.observe(node);
+    const watchContent = () => {
+      observer.disconnect();
+      observer.observe(node);
+      for (const child of node.children) observer.observe(child);
+      summary = node.querySelector<HTMLDivElement>(".fk-body-content");
+      if (summary) observer.observe(summary);
+      resize();
+    };
+    const mutations = new MutationObserver(watchContent);
+    mutations.observe(node, { childList: true });
+    watchContent();
     return () => {
       observer.disconnect();
+      mutations.disconnect();
       interactive.current = false;
       bridge.setInteractive(false);
     };

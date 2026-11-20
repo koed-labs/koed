@@ -149,50 +149,52 @@ export function FloatingKinPanel({
         </button>
       </header>
       <div className="fk-body" tabIndex={0} aria-label="Summary content">
-        <p role="status" className="fk-note">
-          {status}
-        </p>
-        {result?.status === "answered" ? <Answer result={result} /> : null}
-        {working ? (
-          <button
-            type="button"
-            onClick={() => {
-              closeButton.current?.focus();
-              cancel();
-            }}
-          >
-            Cancel
-          </button>
-        ) : (
-          <div className="fk-actions">
-            <button
-              type="button"
-              disabled={isCancelling}
-              onClick={() => {
-                closeButton.current?.focus();
-                summarize("conversation");
-              }}
-            >
-              Summarize Conversation
-            </button>
-            <button
-              type="button"
-              disabled={isCancelling || !conversation.projectId}
-              onClick={() => {
-                closeButton.current?.focus();
-                summarize("project");
-              }}
-            >
-              Summarize Project
-            </button>
-          </div>
-        )}
-        {!view ? (
-          <p className="fk-note">
-            Uses your assigned AI Client and its subscription. Shows captured
-            work, not live activity.
+        <div className="fk-body-content">
+          <p role="status" className="fk-note">
+            {status}
           </p>
-        ) : null}
+          {result?.status === "answered" ? <Answer result={result} /> : null}
+          {working ? (
+            <button
+              type="button"
+              onClick={() => {
+                closeButton.current?.focus();
+                cancel();
+              }}
+            >
+              Cancel
+            </button>
+          ) : (
+            <div className="fk-actions">
+              <button
+                type="button"
+                disabled={isCancelling}
+                onClick={() => {
+                  closeButton.current?.focus();
+                  summarize("conversation");
+                }}
+              >
+                Summarize Conversation
+              </button>
+              <button
+                type="button"
+                disabled={isCancelling || !conversation.projectId}
+                onClick={() => {
+                  closeButton.current?.focus();
+                  summarize("project");
+                }}
+              >
+                Summarize Project
+              </button>
+            </div>
+          )}
+          {!view ? (
+            <p className="fk-note">
+              Uses your assigned AI Client and its subscription. Shows captured
+              work, not live activity.
+            </p>
+          ) : null}
+        </div>
       </div>
     </section>
   );

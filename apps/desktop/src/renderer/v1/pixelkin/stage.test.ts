@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KIN_DEFAULTS } from "./vendor/index.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
-import { addPixelkin, createPixelkinActor } from "./stage.js";
+import { addPixelkin, createPixelkinActor, setPixelkinKin } from "./stage.js";
 import { kinStageSurface } from "./presentation.js";
 
 const engine = vi.hoisted(() => ({ render: vi.fn() }));
@@ -199,6 +199,34 @@ describe("Kin stage rendering", () => {
       const remove = addPixelkin(actor, { animateUnfocused });
       return { frames, hasFocus, actor, remove };
     };
+
+    it("passes a custom gradient endpoint with the existing canvas palette", () => {
+      const { frames, actor, remove } = setup(false);
+      setPixelkinKin(actor, {
+        ...KIN_DEFAULTS,
+        palette: { base: "#3083ff", grayscale: false, gradient: true }
+      });
+      actor.gradientTop = "#e8d31a";
+      try {
+        frames[0]!(100);
+        expect(engine.render).toHaveBeenCalledWith(
+          expect.objectContaining({
+            paletteMode: "canvas",
+            objects: [
+              expect.objectContaining({
+                member: expect.objectContaining({
+                  palette: "#3083ff",
+                  gradient: true,
+                  gradientComplement: "#e8d31a"
+                })
+              })
+            ]
+          })
+        );
+      } finally {
+        remove();
+      }
+    });
 
     it("paints once and stops while another app has focus", () => {
       const { frames, remove } = setup(false);

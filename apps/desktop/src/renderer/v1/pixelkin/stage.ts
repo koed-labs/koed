@@ -22,6 +22,7 @@ export type PixelkinActor = {
   visible: boolean;
   animateUnfocused?: boolean;
   still?: boolean;
+  gradientTop?: string;
   hopAt: number | null;
   gaze: [number, number];
   kin: Kin;
@@ -158,6 +159,7 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
   const phase = t * 2.05 + actor.member.phase;
   const breathing = motion ? Math.sin(phase) * 0.025 * IDLE : 0;
   const scale = actor.rest.visualScale;
+  actor.member.gradientComplement = actor.gradientTop;
   setKinPose(actor.member, {
     expression:
       air > 0

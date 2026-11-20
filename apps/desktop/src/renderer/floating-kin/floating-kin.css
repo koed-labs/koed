@@ -20,6 +20,7 @@ body:has(.fk-surface) {
   align-items: flex-end;
   gap: 8px;
   width: max-content;
+  max-height: 100vh;
   padding: 10px 12px;
   pointer-events: none;
   box-sizing: border-box;
@@ -56,6 +57,11 @@ body:has(.fk-surface) {
 .fk-surface :is(button, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--fk-accent);
   outline-offset: 2px;
+}
+.fk-dock,
+.fk-kin,
+.fk-header {
+  flex-shrink: 0;
 }
 .fk-dock {
   display: flex;
@@ -159,29 +165,35 @@ body:has(.fk-surface) {
 .fk-state .v1-pixelkin {
   flex: none;
 }
-.fk-quiet {
+.fk-kin {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 6px;
 }
-.fk-surface .fk-quiet-avatar {
+.fk-surface .fk-kin-avatar {
   position: relative;
   display: grid;
   place-items: center;
+  width: 88px;
+  height: 88px;
   pointer-events: none;
 }
-/* Target Kin's body, not the transparent canvas margins or sleep mark. */
-.fk-quiet-avatar::after {
+.fk-kin-avatar .v1-pixelkin,
+.fk-kin-avatar::after {
+  transform: rotate(-10deg);
+}
+/* Target the character, not the transparent canvas or sleep mark. */
+.fk-kin-avatar::after {
   content: "";
   position: absolute;
-  inset: 29% 15% 28%;
-  border-radius: 7px;
+  inset: 16%;
+  border-radius: 20%;
   pointer-events: auto;
 }
-.fk-quiet-avatar:has(.v1-pixelkin-fallback)::after {
-  inset: 14% 10% 10%;
-  border-radius: 26%;
+.fk-kin-avatar .v1-pixelkin-fallback::before {
+  inset: 16%;
+  border-radius: 20%;
 }
 .fk-surface [data-fk-handle] {
   cursor: grab;
@@ -212,6 +224,7 @@ body:has(.fk-surface) {
   display: flex;
   flex-direction: column;
   width: 370px;
+  min-height: 0;
   border-radius: 16px;
   overflow-wrap: anywhere;
 }
@@ -239,12 +252,14 @@ body:has(.fk-surface) {
   height: 26px;
 }
 .fk-body {
+  max-height: 324px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.fk-body-content {
   display: grid;
   gap: 10px;
   padding: 12px 13px;
-  max-height: 300px;
-  overflow: auto;
-  overscroll-behavior: contain;
 }
 .fk-body:focus-visible {
   outline-offset: -3px;
