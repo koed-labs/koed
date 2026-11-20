@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -1089,8 +1090,12 @@ type CoinDrop = {
 };
 type FloorCoinsInput = {
   conversations: readonly HomeLooseConversation[];
-  // Keys of Conversations that arrived after load, to be thrown in.
+  // Keys of Conversations that arrived after load and are still to be thrown
+  // in; a coin reports its launch and is then left alone.
   thrown: ReadonlySet<string>;
+  launched: (key: string) => void;
+  // Where each coin lies, kept across remounts of the floor.
+  resting: Map<string, CoinSpot>;
   onOpen: (key: string) => void;
 };
 // Every hardware sample behind a pointer move, falling back to the event.
@@ -1160,21 +1165,30 @@ function FloorCoins({
   coins: FloorCoinsInput;
   drop?: CoinDrop | undefined;
 }) {
-  // Where each coin is lying, so a coin that lands can keep clear of the rest.
-  const resting = useRef(new Map<string, CoinSpot>());
+  const reduced = useReducedMotion();
+  const { resting } = coins;
   const conversations = [...coins.conversations].sort((left, right) =>
     right.latestAt.localeCompare(left.latestAt)
   );
   if (!conversations.length) return null;
   const half = (width ?? 900) / 2 - 40;
-  // Coins already lying there are spread in a fixed order, so a new arrival
-  // never shifts them.
+  // Coins already lying keep their spots; the rest are spread in a fixed
+  // order, so a new arrival never shifts them. With reduced motion arrivals
+  // aren't thrown, so they are placed the same way.
+  const keys = new Set(conversations.map(({ key }) => key));
+  for (const key of [...resting.keys()])
+    if (!keys.has(key)) resting.delete(key);
   const spots = new Map<string, CoinSpot>();
   const placed: CoinSpot[] = [];
+  for (const [key, spot] of resting) {
+    const kept = { ...spot, x: Math.max(-half, Math.min(half, spot.x)) };
+    spots.set(key, kept);
+    placed.push(kept);
+  }
   for (const { key } of [...conversations].sort((a, b) =>
     a.key.localeCompare(b.key)
   ))
-    if (!coins.thrown.has(key)) {
+    if (!spots.has(key) && (reduced || !coins.thrown.has(key))) {
       const spot = restingSpot(key, half, placed);
       spots.set(key, spot);
       placed.push(spot);
@@ -1189,8 +1203,9 @@ function FloorCoins({
             spots.get(conversation.key) ??
             restingSpot(conversation.key, half, [])
           }
-          resting={resting.current}
+          resting={resting}
           thrown={coins.thrown.has(conversation.key)}
+          launched={coins.launched}
           floor={floor}
           half={half}
           onOpen={coins.onOpen}
@@ -1228,6 +1243,7 @@ function FloorCoin({
   home,
   resting,
   thrown,
+  launched,
   floor,
   half,
   onOpen,
@@ -1236,6 +1252,7 @@ function FloorCoin({
   conversation: HomeLooseConversation;
   home: CoinSpot;
   resting: Map<string, CoinSpot>;
+  launched: (key: string) => void;
   // Appeared after load: thrown out of its AI Client's key.
   thrown: boolean;
   floor: number;
@@ -1298,9 +1315,9 @@ function FloorCoin({
   };
   useEffect(() => {
     alive.current = true;
-    if (!thrown) resting.set(conversation.key, { x: home.x, lane });
+    if (!thrown && !resting.has(conversation.key))
+      resting.set(conversation.key, { x: home.x, lane });
     return () => {
-      resting.delete(conversation.key);
       alive.current = false;
       cancelAnimationFrame(frame.current);
       window.clearTimeout(arming.current);
@@ -1391,7 +1408,12 @@ function FloorCoin({
   // A new coin is thrown from its AI Client's key at the top in a random
   // direction; it bounces and rests wherever it lands.
   useLayoutEffect(() => {
-    if (!thrown || reduced) return;
+    if (!thrown) return;
+    launched(conversation.key);
+    if (reduced) {
+      resting.set(conversation.key, { x: home.x, lane });
+      return;
+    }
     const key = document
       .querySelector(
         `.v1-home-keycap[data-client="${conversation.client ?? ""}"]`
@@ -1620,20 +1642,29 @@ function useLooseArrivals(
   loose: readonly HomeLooseConversation[],
   loaded: boolean,
   scope: string | null
-): ReadonlySet<string> {
+): Pick<FloorCoinsInput, "thrown" | "launched" | "resting"> {
+  // Where coins lie lives here, not in the floor, so a coin that has landed
+  // stays put when the stage changes under it and the floor remounts.
+  const resting = useRef(new Map<string, CoinSpot>());
   const state = useRef<{
     scope: string;
     seen: Set<string>;
     thrown: Set<string>;
   } | null>(null);
+  const launched = useCallback(
+    (key: string) => state.current?.thrown.delete(key),
+    []
+  );
   if (!loaded || !scope) {
     state.current = null;
-    return NO_KEYS;
+    resting.current.clear();
+    return { thrown: NO_KEYS, launched, resting: resting.current };
   }
   const baseline = state.current?.scope !== scope;
   const current = baseline
     ? { scope, seen: new Set<string>(), thrown: new Set<string>() }
     : state.current!;
+  if (baseline) resting.current.clear();
   state.current = current;
   for (const conversation of loose) {
     const keys = [conversation.key, ...(conversation.aliases ?? [])];
@@ -1641,7 +1672,7 @@ function useLooseArrivals(
       current.thrown.add(conversation.key);
     for (const key of keys) current.seen.add(key);
   }
-  return current.thrown;
+  return { thrown: current.thrown, launched, resting: resting.current };
 }
 const NO_KEYS: ReadonlySet<string> = new Set();
 
@@ -1949,7 +1980,7 @@ export function Home({
   // Adds a floor coin's conversation to a Project; true once it is added.
   onDropConversation?: (key: string, projectId: string) => Promise<boolean>;
 }) {
-  const thrown = useLooseArrivals(
+  const arrivals = useLooseArrivals(
     looseConversations,
     conversations !== undefined,
     conversationScope
@@ -1958,7 +1989,7 @@ export function Home({
     onOpenConversation && looseConversations.length
       ? {
           conversations: looseConversations,
-          thrown,
+          ...arrivals,
           onOpen: onOpenConversation
         }
       : undefined;

@@ -240,6 +240,12 @@ describe("Home", () => {
     return target.dispatchEvent(event);
   };
 
+  // A coin's offset from the stage centre, from `calc(50% + Npx)`.
+  const offsetOf = (coin: HTMLElement) =>
+    parseFloat(
+      /([-\d.]+)px/.exec(coin.style.getPropertyValue("--coin-x"))?.[1] ?? "0"
+    );
+
   it("throws a floor coin without opening its conversation", async () => {
     reducedMotion = true;
     const onOpenConversation = vi.fn();
@@ -334,10 +340,7 @@ describe("Home", () => {
       onOpenConversation: () => undefined
     });
     const coin = container.querySelector<HTMLElement>(".v1-home-floor-coin")!;
-    const left = () =>
-      parseFloat(
-        coin.style.getPropertyValue("--coin-x").replace(/[^-\d.]/g, "") || "0"
-      );
+    const left = () => offsetOf(coin);
     await act(async () => {
       pointer(coin, "pointerdown", 0, 0);
       // A steady 1ms cadence, 3px per sample: 3,000px/s for 20ms.
@@ -389,6 +392,61 @@ describe("Home", () => {
       await render(looseProps([item("draft")]));
       await render(looseProps([item("real", ["draft"])]));
       expect(coinFor("real").dataset.motion).toBe("rest");
+    });
+
+    it("waits for the complete inventory before treating coins as new", async () => {
+      // A named-Project preview shows the floor before the old Conversations
+      // are all there; none of them are arrivals when the full list lands.
+      await render({ ...looseProps([item("old-a")]), conversationScope: null });
+      await render({
+        ...looseProps([item("old-a"), item("old-b"), item("old-c")]),
+        conversationScope: "home"
+      });
+      for (const key of ["old-a", "old-b", "old-c"])
+        expect(coinFor(key).dataset.motion).toBe("rest");
+      // A genuinely new one after that is still thrown.
+      await render(
+        looseProps([item("old-a"), item("old-b"), item("old-c"), item("new")])
+      );
+      expect(coinFor("new").dataset.motion).toBe("flying");
+    });
+
+    it("places reduced-motion arrivals in free spots", async () => {
+      reducedMotion = true;
+      await render(looseProps([]));
+      const arrivals = Array.from({ length: 12 }, (_, i) => item(`conv-${i}`));
+      await render(looseProps(arrivals));
+      const spots = arrivals.map(({ key }) => {
+        const coin = coinFor(key);
+        expect(coin.dataset.motion).toBe("rest");
+        return {
+          x: offsetOf(coin),
+          depth: parseFloat(coin.style.getPropertyValue("--coin-depth")) * 26
+        };
+      });
+      for (const [i, a] of spots.entries())
+        for (const b of spots.slice(i + 1))
+          expect(
+            Math.abs(a.x - b.x) >= 14 || Math.abs(a.depth - b.depth) >= 7
+          ).toBe(true);
+    });
+
+    it("leaves a landed coin at rest when the stage changes under it", async () => {
+      await render(looseProps([]));
+      await render(looseProps([item("landed")]));
+      expect(coinFor("landed").dataset.motion).toBe("flying");
+      for (let frame = 0; frame < 600; frame += 1)
+        await act(async () => vi.advanceTimersByTime(16));
+      const rest = coinFor("landed").style.getPropertyValue("--coin-x");
+      expect(coinFor("landed").dataset.motion).toBe("rest");
+      // Projects appear: the solo stage becomes the Projects stage.
+      await render({
+        ...looseProps([item("landed")]),
+        entries: [entry("koed", "2026-11-03T11:59:00Z")],
+        view: projectsView
+      });
+      expect(coinFor("landed").dataset.motion).toBe("rest");
+      expect(coinFor("landed").style.getPropertyValue("--coin-x")).toBe(rest);
     });
 
     it("leaves coins already on the floor at load at rest", async () => {

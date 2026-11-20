@@ -140,6 +140,8 @@ export function V1App({
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const [scopeKey, setScopeKey] = useState<string | null>(null);
   const [inventoryScope, setInventoryScope] = useState<string | null>(null);
+  // Set only by a full inventory load, not by the named-Project preview.
+  const [completeScope, setCompleteScope] = useState<string | null>(null);
   const scopeKeyRef = useRef<string | null>(null);
   scopeKeyRef.current = scopeKey;
   const [provenance, setProvenance] = useState<V1Provenance>(emptyProvenance);
@@ -204,6 +206,7 @@ export function V1App({
         setScopeKey(null);
         setOwnerId(null);
         setInventoryScope(null);
+        setCompleteScope(null);
         setProvenanceScope(null);
       }
       startupReadyRef.current = ready === true;
@@ -299,14 +302,20 @@ export function V1App({
   // successful load the shell awaits opens that gate, so a later recovery is
   // not left behind an empty sidebar once the store clears its error.
   const publishInventoryScope = useCallback(
-    async (result: { error: string | null }, expectedScope: string) => {
+    async (
+      result: { error: string | null },
+      expectedScope: string,
+      complete = true
+    ) => {
       if (result.error) return;
       const identity = await readV1Identity();
       if (
         identity.scopeKey === expectedScope &&
         scopeKeyRef.current === expectedScope
-      )
+      ) {
         setInventoryScope(expectedScope);
+        if (complete) setCompleteScope(expectedScope);
+      }
     },
     []
   );
@@ -319,9 +328,11 @@ export function V1App({
             ...options,
             onPreview: () => {
               if (inventoryScopeRef.current === null)
-                void publishInventoryScope({ error: null }, scopeKey).catch(
-                  () => undefined
-                );
+                void publishInventoryScope(
+                  { error: null },
+                  scopeKey,
+                  false
+                ).catch(() => undefined);
             }
           }),
           scopeKey
@@ -1167,7 +1178,11 @@ export function V1App({
               looseConversations={looseConversations}
               conversations={homeConversations}
               conversationScope={
-                inventoryReady && provenanceScope === scopeKey ? scopeKey : null
+                inventoryReady &&
+                completeScope === scopeKey &&
+                provenanceScope === scopeKey
+                  ? scopeKey
+                  : null
               }
               onOpenConversation={openLooseConversation}
               {...(projectManagement.management
