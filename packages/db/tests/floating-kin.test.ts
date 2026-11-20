@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed-labs/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  floatingKinEvidenceLimit
+} from "@koed-labs/shared";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createDbPool,
   createMemorySourceRepository,
@@ -157,7 +160,25 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
       turn = "prompt",
       content = [{ type: "text", text: "first" }],
       withProof = true,
-      watcherBlockCount = 0
+      watcherBlockCount = 0,
+      component = "main",
+      role = "user",
+      message = turn,
+      sequence = 1000 + index,
+      age = completion ? 1000 : 2000
+    }: {
+      index?: number;
+      completion?: boolean;
+      thread?: string;
+      turn?: string;
+      content?: { type: string; text: string }[];
+      withProof?: boolean;
+      watcherBlockCount?: number;
+      component?: string;
+      role?: "user" | "assistant";
+      message?: string;
+      sequence?: number;
+      age?: number;
     } = {}) => {
       return repo.createConversationItems(actor, {
         items: [
@@ -168,7 +189,7 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
             externalTurnId: turn,
             externalItemId: completion
               ? `turn:${turn}:completed`
-              : `main:${turn}:${index}`,
+              : `${component}:${message}:${index}`,
             sourceKind: "claude-code",
             sourceAdapterVersion: completion
               ? "claude-code-hook-signal-v1"
@@ -179,9 +200,11 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
               ? "turn_completed"
               : content[index]?.type === "tool_result"
                 ? "tool_result"
-                : "user_message",
-            sourceSequence: completion ? 2999 : 1000 + index,
-            eventTime: new Date(now - (completion ? 1000 : 2000)).toISOString(),
+                : role === "user"
+                  ? "user_message"
+                  : "agent_message",
+            sourceSequence: completion ? 2999 : sequence,
+            eventTime: new Date(now - age).toISOString(),
             rawJson: completion
               ? { type: "hook_signal", payload: { type: "turn_completed" } }
               : {
@@ -191,19 +214,19 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
                     ? index === 0
                       ? {
                           sourceRecord: {
-                            uuid: turn,
-                            type: "user",
-                            message: { role: "user", content }
+                            uuid: message,
+                            type: role,
+                            message: { role, content }
                           }
                         }
-                      : { sourceRecordReference: turn }
-                    : { messageType: "user", messageUuid: turn })
+                      : { sourceRecordReference: message }
+                    : { messageType: role, messageUuid: message })
                 },
             rawText: completion ? undefined : content[index]?.text,
             sourceHash: randomUUID(),
             idempotencyKey: randomUUID(),
             metadata: {
-              sourceComponentId: "main",
+              sourceComponentId: component,
               ...(watcherBlockCount
                 ? { sourceMessageBlockCount: watcherBlockCount }
                 : {})
@@ -285,10 +308,160 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect(await read()).toEqual({ items: [], truncated: true });
   });
 
+  it("falls back instead of clipping a single oversized initiating Claude block", async () => {
+    const { add, read } = await claudeTurn();
+    const [prompt] = await add({
+      content: [{ type: "text", text: `${"x".repeat(9000)} Final constraint.` }]
+    });
+    const [update] = await add({
+      role: "assistant",
+      message: "main-update",
+      sequence: 2000,
+      age: 1000,
+      content: [{ type: "text", text: "Main update" }]
+    });
+    expect(await read()).toEqual({ items: [], truncated: true });
+    expect((await read([prompt!.id, update!.id])).items).toEqual([]);
+  });
+
+  it("selects the main Claude component before checking turn continuity", async () => {
+    const { add, read } = await claudeTurn();
+    const [prompt] = await add();
+    const [child] = await add({
+      component: "subagent.fixture",
+      turn: "child-turn",
+      age: 1500,
+      content: [{ type: "text", text: "child prompt" }]
+    });
+    const [update] = await add({
+      role: "assistant",
+      message: "main-update",
+      sequence: 2000,
+      age: 1000,
+      content: [{ type: "text", text: "main update" }]
+    });
+    const { items } = await read();
+    expect(items.map(({ id, text }) => [id, text])).toEqual([
+      [prompt!.id, "first"],
+      [update!.id, "main update"]
+    ]);
+    expect((await read([prompt!.id, child!.id, update!.id])).items).toEqual(
+      items
+    );
+  });
+
   it("falls back when Claude rows do not prove the initiating message is complete", async () => {
     const { add, read } = await claudeTurn();
     await add({ withProof: false });
     expect((await read()).items).toEqual([]);
+  });
+
+  it("finds older sealed Project evidence behind encrypted tool-only turns", async () => {
+    const encryption = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 87).toString("base64")
+    );
+    const repo = createMemorySourceRepository(pool!, {
+      envelopeEncryptionProvider: encryption
+    });
+    const withoutEncryption = createMemorySourceRepository(pool!);
+    const owner = await repo.createUser({
+      email: `kin-${randomUUID()}@example.test`
+    });
+    const actor = { userId: owner.id };
+    const externalSessionId = randomUUID();
+    const session = await repo.createCapturedSession(actor, {
+      externalSessionId,
+      sourceRuntime: "codex-cli",
+      captureMethod: "api"
+    });
+    const project = await repo.createNamedPersonalProject(actor, {
+      name: "Synthetic sealed evidence"
+    });
+    await repo.addPersonalProjectSession(actor, project.projectId, {
+      sessionId: session.id,
+      expectedVersion: project.version
+    });
+    const now = Date.now() - 60_000;
+    const item = (
+      turn: number,
+      type: string,
+      payload: Record<string, unknown>,
+      rawText?: string
+    ) => {
+      const sourceSequence = turn * 2 + Number(type === "task_complete");
+      const recordType =
+        type === "function_call" ? "response_item" : "event_msg";
+      return {
+        sessionId: session.id,
+        externalSessionId,
+        externalTurnId: `turn-${turn}`,
+        sourceKind: "codex" as const,
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceTransport: "transcript" as const,
+        sourceRecordType: recordType,
+        sourceEventType: type,
+        sourceSequence,
+        eventTime: new Date(now + sourceSequence * 100).toISOString(),
+        rawJson: { type: recordType, payload: { type, ...payload } },
+        rawText,
+        sourceHash: randomUUID(),
+        idempotencyKey: randomUUID()
+      };
+    };
+    const prompt = "Older synthetic prompt";
+    const toolTurns = floatingKinEvidenceLimit + 1;
+    await repo.createConversationItems(actor, {
+      items: [
+        item(0, "user_message", { message: prompt }, prompt),
+        item(0, "task_complete", {}),
+        ...Array.from({ length: toolTurns }, (_, i) => [
+          item(
+            i + 1,
+            "function_call",
+            {
+              name: "fixture_tool",
+              call_id: `fixture-${i}`,
+              arguments: '{"fixture":true}'
+            },
+            '{"fixture":true}'
+          ),
+          item(i + 1, "task_complete", {})
+        ]).flat()
+      ]
+    });
+    vi.stubEnv("KOED_DEPLOYMENT_PROFILE", "koed_managed_cloud");
+    try {
+      await repo.projectPendingConversationItems(actor, { limit: 100 });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const { rows } = await pool!.query<{ id: string; encrypted: boolean }>(
+      `select id, payload->'contentEncrypted' = 'true'::jsonb as encrypted
+       from memory_events where session_id=$1 order by source_event_time desc`,
+      [session.id]
+    );
+    expect(rows).toHaveLength(toolTurns + 1);
+    expect(rows.every(({ encrypted }) => encrypted)).toBe(true);
+    const input = {
+      action: "project" as const,
+      sessionId: session.id,
+      projectId: project.projectId
+    };
+    const { items } = await repo.getFloatingKinEvidence(actor, input);
+    expect(items.map(({ id, kind, text }) => [id, kind, text])).toEqual([
+      [rows.at(-1)!.id, "memory_event", prompt]
+    ]);
+    expect(
+      (await withoutEncryption.getFloatingKinEvidence(actor, input)).items
+    ).toEqual([]);
+    expect(
+      (
+        await repo.getFloatingKinEvidence(actor, {
+          ...input,
+          evidenceIds: [rows[0]!.id, rows.at(-1)!.id]
+        })
+      ).items
+    ).toEqual(items);
   });
 
   it("uses a verified raw turn, omits hidden and foreign content, and falls back to sealed text after completion", async () => {

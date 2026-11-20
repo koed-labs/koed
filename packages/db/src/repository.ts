@@ -2486,6 +2486,18 @@ type FloatingKinSealedRow = {
   payload: MemoryEventPayload;
   matching_raw_count: number;
 };
+const floatingKinEvidenceTextLimit = 8192;
+const isOversizedClaudeInitiatingBlock = (
+  row: FloatingKinRawRow,
+  actor: MemoryActor | null,
+  content: string
+) =>
+  row.source_kind === "claude-code" &&
+  actor === "user" &&
+  row.external_turn_id &&
+  row.external_item_id?.startsWith(`main:${row.external_turn_id}:`) &&
+  content.length > floatingKinEvidenceTextLimit;
+
 const sameFloatingKinTurn = (a: FloatingKinRawRow, b: FloatingKinRawRow) =>
   a.evidence_turn === b.evidence_turn &&
   a.evidence_project === b.evidence_project &&
@@ -4408,7 +4420,7 @@ export const createMemorySourceRepository = (
     sessionId: row.session_id!,
     kind: "conversation_item",
     occurredAt: row.event_time!.toISOString(),
-    text: text.slice(0, 8192)
+    text: text.slice(0, floatingKinEvidenceTextLimit)
   });
   const readFloatingKinRawEvidence = async (
     actor: ActorContext,
@@ -4450,7 +4462,9 @@ export const createMemorySourceRepository = (
         const { row, actorType, content } = await readRaw(candidate);
         hydrated.push(row);
         if (!content) continue;
-        truncated ||= content.length > 8192;
+        if (isOversizedClaudeInitiatingBlock(row, actorType, content))
+          return gap;
+        truncated ||= content.length > floatingKinEvidenceTextLimit;
         items.push(rawEvidenceItem(row, content));
         if (actorType === "user") {
           if (row.source_kind !== "claude-code")
@@ -4522,6 +4536,9 @@ export const createMemorySourceRepository = (
             blocks.some(
               (block) => block.actorType === "user" && block.content
             ) &&
+            !blocks.some(({ row, actorType, content }) =>
+              isOversizedClaudeInitiatingBlock(row, actorType, content)
+            ) &&
             completeClaudeInitiatingMessage(
               blocks.map((block) => block.row),
               first
@@ -4546,7 +4563,11 @@ export const createMemorySourceRepository = (
         continue;
       try {
         const { row, content, actorType } = await readRaw(candidate);
-        if (!content) continue;
+        if (
+          !content ||
+          isOversizedClaudeInitiatingBlock(row, actorType, content)
+        )
+          continue;
         if (needsSeal(row)) {
           const { rows: matches } =
             await readFloatingKinSealedRows<FloatingKinSealedRow>(
@@ -4602,13 +4623,12 @@ export const createMemorySourceRepository = (
       actor,
       input
     );
-    const evidence: FloatingKinEvidence = {
-      items: [],
-      truncated: result.rows.length > floatingKinEvidenceLimit
-    };
-    for (const row of result.rows
-      .slice(0, floatingKinEvidenceLimit)
-      .reverse()) {
+    const evidence: FloatingKinEvidence = { items: [], truncated: false };
+    for (const row of result.rows) {
+      if (evidence.items.length === floatingKinEvidenceLimit) {
+        evidence.truncated = true;
+        break;
+      }
       try {
         const payload = await floatingKinSealedPayload(actor, row);
         const source = floatingKinSealedMessageText(
@@ -4619,18 +4639,20 @@ export const createMemorySourceRepository = (
           evidence.truncated = true;
           continue;
         }
-        evidence.truncated ||= source.text.length > 8192;
+        evidence.truncated ||=
+          source.text.length > floatingKinEvidenceTextLimit;
         evidence.items.push({
           id: row.id,
           sessionId: row.session_id,
           kind: "memory_event",
           occurredAt: source.occurredAt,
-          text: source.text.slice(0, 8192)
+          text: source.text.slice(0, floatingKinEvidenceTextLimit)
         });
       } catch {
         evidence.truncated = true;
       }
     }
+    evidence.items.reverse();
     return evidence;
   };
 

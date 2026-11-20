@@ -18,6 +18,8 @@ import {
 import type { ActorContext } from "./types.js";
 
 const displayLimit = 5;
+// Leave room for sealed rows that yield no message without unbounded hydration.
+const sealedCandidateScanLimit = 4 * floatingKinEvidenceLimit;
 const adapters = JSON.stringify(aiClientSourceAdapterRegistry);
 const conversationMessageSql = `(
   ci.source_event_type in ('user_message','agent_message','assistant_message')
@@ -176,6 +178,10 @@ export const readFloatingKinRawRows = <Row extends pg.QueryResultRow>(
     and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
     and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
     and (${conversationMessageSql} or (ci.source_kind='claude-code' and ci.source_record_type='session_message'))
+    and (ci.source_kind <> 'claude-code' or (
+      starts_with(ci.external_item_id, 'main:')
+      and coalesce(ci.metadata->>'sourceComponentId', 'main')='main'
+    ))
     and (case when $7::uuid is not null then exists (
       select 1 from conversation_items target where target.id=$7
         and target.owner_user_id=ci.owner_user_id and target.session_id=ci.session_id
@@ -259,7 +265,11 @@ export const readFloatingKinSealedRows = <Row extends pg.QueryResultRow>(
       floatingKinOwnerSelection(actor),
       input.sessionId,
       input.action,
-      rawId ? 2 : floatingKinEvidenceLimit + 1,
+      rawId
+        ? 2
+        : input.evidenceIds
+          ? floatingKinEvidenceLimit + 1
+          : sealedCandidateScanLimit,
       input.action === "project" ? input.projectId : null,
       input.evidenceIds ?? null,
       rawId ?? null
