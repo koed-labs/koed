@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FloatingKinSummary } from "@koed-labs/shared";
+import * as pixelkin from "../v1/pixelkin/Pixelkin.js";
 import { FloatingKin, type FloatingKinBridge } from "./FloatingKin.js";
 
 const sessionId = "00000000-0000-4000-8000-000000000001";
@@ -125,6 +126,16 @@ async function renderQuiet() {
 }
 
 describe("Floating Kin", () => {
+  it("enables the engine's arms on the standalone Kin, not the Project Kin chip", async () => {
+    const renderPixelkin = vi.spyOn(pixelkin, "Pixelkin");
+    await render();
+    const lookAtSize = (size: number) =>
+      renderPixelkin.mock.calls.find(([props]) => props.size === size)?.[0]
+        .look;
+    expect(lookAtSize(88)?.body.arms).toBe(true);
+    expect(lookAtSize(32)?.body.arms).toBe(false);
+  });
+
   it("keeps the large draggable Kin below the chips when a summary opens", async () => {
     await render();
     const chip = mount.querySelector(".fk-chip")!;

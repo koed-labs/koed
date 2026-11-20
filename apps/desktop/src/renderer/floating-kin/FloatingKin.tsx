@@ -38,7 +38,8 @@ const floatingKinLook: AgentLook = {
     shape: "roundedBox",
     width: 2,
     height: 2,
-    depth: 0.9
+    depth: 0.9,
+    arms: true
   },
   face: { ...DEFAULT_AGENT_LOOK.face, personality: "joyful" },
   palette: { base: "#3083ff", grayscale: false, gradient: true }
