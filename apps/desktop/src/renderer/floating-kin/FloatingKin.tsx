@@ -1,6 +1,7 @@
 import {
   memo,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -259,6 +260,14 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
     recent.length -
     conversations.length;
   const { selected, close, toggle } = useSelection(recent, cancel, surface);
+  const selectedView =
+    view?.request.sessionId === selected?.sessionId ? view : null;
+  const staleProjectView =
+    selectedView?.request.action === "project" &&
+    selectedView.request.projectId !== selected?.projectId;
+  useLayoutEffect(() => {
+    if (staleProjectView) void cancel(true);
+  }, [cancel, staleProjectView]);
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === "Escape" && selected) {
       event.preventDefault();
@@ -279,7 +288,7 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
         <FloatingKinPanel
           conversation={selected}
           isCancelling={isCancelling}
-          view={view?.request.sessionId === selected.sessionId ? view : null}
+          view={staleProjectView ? null : selectedView}
           age={captureAge(captureSeconds(selected.lastActivityAt, at))}
           close={close}
           summarize={(action) => {

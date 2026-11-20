@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from "react";
+import { act, Profiler } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FloatingKinSummary } from "@koed-labs/shared";
@@ -357,6 +357,83 @@ describe("Floating Kin", () => {
     expect(mount.textContent).toContain("Conversation item");
     expect(mount.textContent).toContain("Evidence was truncated");
   });
+
+  it.each([
+    ["another Project", "other"],
+    ["no Project", null]
+  ])(
+    "invalidates only Project summaries on change to %s",
+    async (_, nextProjectId) => {
+      let projectId: string | null = conversation.projectId;
+      bridge.activity = vi.fn(async () => ({
+        state: "running" as const,
+        conversations: [{ ...conversation, projectId }],
+        overflowCount: 0
+      }));
+      const titles: (string | null | undefined)[] = [];
+      await act(async () =>
+        root.render(
+          <Profiler
+            id="kin"
+            onRender={() => titles.push(mount.querySelector("h2")?.textContent)}
+          >
+            <FloatingKin bridge={bridge} />
+          </Profiler>
+        )
+      );
+      await click("Captured 12s ago");
+      const body = mount.querySelector<HTMLElement>(".fk-body")!;
+      const updateProject = async (next: string | null) => {
+        titles.length = 0;
+        projectId = next;
+        await act(async () => vi.advanceTimersByTimeAsync(3_000));
+        expect(titles.length).toBeGreaterThan(0);
+        expect(titles).not.toContain("Project summary");
+        expect(document.activeElement).toBe(body);
+      };
+
+      await click("Summarize Project");
+      expect(mount.textContent).toContain("Read local tests.");
+      body.focus();
+      await updateProject(nextProjectId);
+      expect(mount.textContent).not.toContain("Read local tests.");
+      expect(bridge.cancel).not.toHaveBeenCalled();
+      expect(
+        mount.querySelector<HTMLButtonElement>(".fk-actions button:last-child")
+          ?.disabled
+      ).toBe(nextProjectId === null);
+      await updateProject(conversation.projectId);
+      expect(mount.textContent).not.toContain("Read local tests.");
+
+      const pending = deferred<FloatingKinSummary>();
+      vi.mocked(bridge.summarize).mockReturnValueOnce(pending.promise);
+      await click("Summarize Project");
+      expect(mount.textContent).toContain("Summarizing captured work");
+      body.focus();
+      await updateProject(nextProjectId);
+      expect(mount.textContent).not.toContain("Summarizing captured work");
+      expect(bridge.cancel).toHaveBeenCalledOnce();
+      await updateProject(conversation.projectId);
+      await act(async () => pending.resolve(answered));
+      expect(mount.textContent).not.toContain("Read local tests.");
+      expect(mount.textContent).toContain("Recent Conversation");
+
+      const pendingConversation = deferred<FloatingKinSummary>();
+      vi.mocked(bridge.summarize).mockReturnValueOnce(
+        pendingConversation.promise
+      );
+      await click("Summarize Conversation");
+      body.focus();
+      await updateProject(nextProjectId);
+      expect(mount.textContent).toContain("Conversation summary");
+      expect(mount.textContent).toContain("Summarizing captured work");
+      await act(async () => pendingConversation.resolve(answered));
+      await updateProject(conversation.projectId);
+      expect(mount.textContent).toContain("Conversation summary");
+      expect(mount.textContent).toContain("Read local tests.");
+      expect(bridge.cancel).toHaveBeenCalledOnce();
+    }
+  );
 
   it("cancels a pending Conversation summary and ignores its late answer", async () => {
     const summary = deferred<FloatingKinSummary>();
