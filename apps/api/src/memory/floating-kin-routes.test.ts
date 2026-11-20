@@ -7,7 +7,7 @@ import { expect, it, vi } from "vitest";
 import type { ApiRouteContext } from "../server/context.js";
 import { registerFloatingKinRoutes } from "./floating-kin-routes.js";
 
-it("requires a Personal API Token and gates evidence on the local runtime credential", async () => {
+it("requires a Personal API Token and the local runtime credential for activity and evidence", async () => {
   const scratch = fileURLToPath(
     new URL("../../../../scratch/", import.meta.url)
   );
@@ -45,7 +45,19 @@ it("requires a Personal API Token and gates evidence on the local runtime creden
       },
       rateLimit: { memoryRead: async () => {} }
     } as unknown as ApiRouteContext);
-    const get = () => app.inject({ url: "/v1/memory/floating-kin/activity" });
+    const get = (
+      token?: string,
+      remoteAddress = "127.0.0.1",
+      host = "127.0.0.1"
+    ) =>
+      app.inject({
+        url: "/v1/memory/floating-kin/activity",
+        remoteAddress,
+        headers: {
+          host,
+          ...(token ? { "x-koed-local-runtime-authorization": token } : {})
+        }
+      });
     const post = (token?: string, remoteAddress = "127.0.0.1") =>
       app.inject({
         method: "POST",
@@ -57,21 +69,32 @@ it("requires a Personal API Token and gates evidence on the local runtime creden
           ...(token ? { "x-koed-local-runtime-authorization": token } : {})
         }
       });
-    expect((await get()).statusCode).toBe(403);
+    expect((await get(runtimeAuthorization)).statusCode).toBe(403);
     expect((await post(runtimeAuthorization)).statusCode).toBe(403);
     expect(activity).not.toHaveBeenCalled();
     kind = "api_token";
-    expect((await get()).headers["cache-control"]).toBe("no-store");
-    expect(activity).toHaveBeenCalledWith({ userId });
+    expect((await get()).statusCode).toBe(403);
+    expect((await get("Bearer bad")).statusCode).toBe(403);
+    expect((await get(runtimeAuthorization, "192.0.2.1")).statusCode).toBe(403);
+    expect(
+      (await get(runtimeAuthorization, "127.0.0.1", "example.invalid"))
+        .statusCode
+    ).toBe(403);
     expect((await post()).statusCode).toBe(403);
     expect((await post("Bearer bad")).statusCode).toBe(403);
     expect((await post(runtimeAuthorization, "192.0.2.1")).statusCode).toBe(
       403
     );
     config.deploymentProfile = "hosted_team";
+    expect((await get(runtimeAuthorization)).statusCode).toBe(403);
     expect((await post(runtimeAuthorization)).statusCode).toBe(403);
+    expect(activity).not.toHaveBeenCalled();
     expect(evidence).not.toHaveBeenCalled();
     config.deploymentProfile = "local_personal";
+    const activityResult = await get(runtimeAuthorization, "::1");
+    expect(activityResult.statusCode).toBe(200);
+    expect(activityResult.headers["cache-control"]).toBe("no-store");
+    expect(activity).toHaveBeenCalledWith({ userId });
     expect((await post(runtimeAuthorization)).headers["cache-control"]).toBe(
       "no-store"
     );

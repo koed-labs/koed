@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   floatingKinActivitySchema,
+  floatingKinEvidenceRequestSchema,
   floatingKinEvidenceSchema,
   floatingKinSummaryRequestSchema,
   floatingKinSummarySchema
@@ -45,6 +46,29 @@ describe("Floating Kin contracts", () => {
         action: "resume"
       }).success
     ).toBe(false);
+  });
+
+  it("only accepts bounded exact evidence IDs on the internal request", () => {
+    const request = {
+      sessionId,
+      action: "conversation",
+      evidenceIds: [source.id]
+    };
+    expect(floatingKinEvidenceRequestSchema.parse(request)).toEqual(request);
+    expect(floatingKinSummaryRequestSchema.safeParse(request).success).toBe(
+      false
+    );
+    for (const evidenceIds of [
+      [],
+      ["not-an-id"],
+      [source.id, source.id.toUpperCase()],
+      Array(33).fill(source.id)
+    ]) {
+      expect(
+        floatingKinEvidenceRequestSchema.safeParse({ ...request, evidenceIds })
+          .success
+      ).toBe(false);
+    }
   });
 
   it("rejects extra activity metadata and non-timestamps", () => {

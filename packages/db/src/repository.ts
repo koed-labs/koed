@@ -43,6 +43,7 @@ import {
 } from "./global-repository-context.js";
 import { createRepositoryReviewRepository } from "./repository-review-repository.js";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import pg from "pg";
 import {
   createAuditRepository,
@@ -59,14 +60,15 @@ import { createPersonalProjectBatchRepository } from "./personal-project-batch-r
 import { createPersonalProjectRuleRepository } from "./personal-project-rule-repository.js";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import {
-  floatingKinEvidenceLimit,
   getFloatingKinActivity,
   readFloatingKinRawRows,
   readFloatingKinSealedRows
 } from "./floating-kin-repository.js";
-import type {
-  FloatingKinEvidence,
-  FloatingKinSummaryRequest
+import {
+  floatingKinEvidenceBudgetBytes,
+  floatingKinEvidenceLimit,
+  type FloatingKinEvidence,
+  type FloatingKinEvidenceRequest
 } from "@koed-labs/shared";
 import { checkDatabase, createDb } from "./connection.js";
 import {
@@ -2471,9 +2473,118 @@ const floatingKinTranscriptText = (
     .trim();
 };
 
+type FloatingKinRawRow = ConversationProjectionRawRow & {
+  turn_closed: boolean;
+  has_sealed_projection: boolean;
+  evidence_turn: string;
+  evidence_project: string;
+};
+type FloatingKinSealedRow = {
+  id: string;
+  session_id: string;
+  source_event_time: Date;
+  payload: MemoryEventPayload;
+  matching_raw_count: number;
+};
+const sameFloatingKinTurn = (a: FloatingKinRawRow, b: FloatingKinRawRow) =>
+  a.evidence_turn === b.evidence_turn &&
+  a.evidence_project === b.evidence_project &&
+  a.external_thread_id === b.external_thread_id &&
+  a.source_kind === b.source_kind &&
+  a.source_adapter_version === b.source_adapter_version;
+
+const completeClaudeWatcherMessage = (
+  blocks: FloatingKinRawRow[],
+  first: FloatingKinRawRow,
+  uuid: string
+): boolean => {
+  const sequence = first.source_sequence;
+  if (sequence == null || sequence % 1000 !== 0) return false;
+  return (
+    blocks.every((block) => {
+      const index = (block.source_sequence ?? -1) - sequence;
+      const raw = block.raw_json;
+      return (
+        index >= 0 &&
+        index < blocks.length &&
+        block.external_item_id === `main:${uuid}:${index}` &&
+        sameFloatingKinTurn(block, first) &&
+        !block.turn_closed &&
+        block.event_time?.getTime() === first.event_time?.getTime() &&
+        block.metadata?.sourceComponentId === "main" &&
+        block.metadata?.sourceMessageBlockCount === blocks.length &&
+        isRecord(raw) &&
+        raw.type === "claude_session_message" &&
+        raw.messageType === "user" &&
+        raw.messageUuid === uuid &&
+        !raw.parentAgentId &&
+        !raw.parentToolUseId
+      );
+    }) &&
+    new Set(blocks.map((block) => block.external_item_id)).size ===
+      blocks.length
+  );
+};
+
+const completeClaudeInitiatingMessage = (
+  rows: FloatingKinRawRow[],
+  initiating: FloatingKinRawRow
+): boolean => {
+  const uuid = initiating.external_turn_id;
+  const time = initiating.event_time?.getTime();
+  if (!uuid || !time) return false;
+  const prefix = `main:${uuid}:`;
+  if (!initiating.external_item_id?.startsWith(prefix)) return false;
+  const blocks = rows.filter((row) => row.external_item_id?.startsWith(prefix));
+  const first = blocks.find((row) => row.external_item_id === `${prefix}0`);
+  const raw = first?.raw_json;
+  if (!first || first.source_sequence == null || !isRecord(raw)) return false;
+  if (!isRecord(raw.sourceRecord))
+    return completeClaudeWatcherMessage(blocks, first, uuid);
+  const record = raw.sourceRecord;
+  if (
+    record.uuid !== uuid ||
+    record.type !== "user" ||
+    !isRecord(record.message) ||
+    record.message.role !== "user"
+  )
+    return false;
+  if (
+    record.isSidechain ||
+    record.agentId ||
+    record.parentAgentId ||
+    (isRecord(record.origin) && record.origin.kind === "task-notification")
+  )
+    return false;
+  const content = Array.isArray(record.message.content)
+    ? record.message.content
+    : [record.message.content];
+  return (
+    content.length === blocks.length &&
+    content.every((value, index) => {
+      const block = blocks.find(
+        (row) => row.external_item_id === `${prefix}${index}`
+      );
+      const item = block?.raw_json;
+      return (
+        block &&
+        sameFloatingKinTurn(block, initiating) &&
+        !block.turn_closed &&
+        block.event_time?.getTime() === time &&
+        block.source_sequence === first.source_sequence! + index &&
+        isRecord(item) &&
+        item.type === "claude_session_message" &&
+        (index === 0 || item.sourceRecordReference === uuid) &&
+        isDeepStrictEqual(item.contentBlock, value)
+      );
+    })
+  );
+};
+
 const floatingKinSealedMessageText = (
   payload: MemoryEventPayload | null,
-  sourceEventTime: Date
+  sourceEventTime: Date,
+  raw?: FloatingKinRawRow
 ): { text: string; occurredAt: string } | null => {
   if (
     !payload ||
@@ -2483,8 +2594,32 @@ const floatingKinSealedMessageText = (
     return null;
   const manifest = payload.metadata?.semanticItemManifest;
   if (!Array.isArray(manifest)) return null;
+  const rawTime = raw?.event_time?.toISOString();
+  const entries = raw
+    ? manifest.filter(
+        (item) =>
+          isRecord(item) &&
+          Array.isArray(item.sourceIds) &&
+          item.sourceIds.includes(raw.id)
+      )
+    : manifest;
+  if (raw) {
+    const item: unknown = entries[0];
+    if (
+      entries.length !== 1 ||
+      !isRecord(item) ||
+      !Array.isArray(item.sourceIds) ||
+      item.sourceIds.length !== 1 ||
+      item.itemSplitCount !== undefined ||
+      item.sourceSequence !== raw.source_sequence ||
+      !rawTime ||
+      item.sourceEventTime !== rawTime ||
+      item.actor !== actorFromConversationItem(raw)
+    )
+      return null;
+  }
   let latestTime = sourceEventTime.getTime();
-  const text = manifest
+  const text = entries
     .flatMap((item) => {
       if (
         !isRecord(item) ||
@@ -2516,7 +2651,9 @@ const floatingKinSealedMessageText = (
       return [text];
     })
     .join("\n\n");
-  return text ? { text, occurredAt: new Date(latestTime).toISOString() } : null;
+  return text
+    ? { text, occurredAt: rawTime ?? new Date(latestTime).toISOString() }
+    : null;
 };
 
 const memoryEventEmbeddingContent = (
@@ -4233,44 +4370,20 @@ export const createMemorySourceRepository = (
         : options.envelopeEncryptionProvider,
       row
     );
-  const readFloatingKinRawEvidence = async (
-    actor: ActorContext,
-    sessionId: string
-  ): Promise<FloatingKinEvidence | null> => {
-    const result = await readFloatingKinRawRows<
-      ConversationProjectionRawRow & { turn_closed: boolean }
-    >(pool, actor, sessionId);
-    if (!result.rows.length || result.rows[0]?.turn_closed) return null;
+  const floatingKinRawReader = async () => {
     const [projectionPolicy, presentationPolicy] = await Promise.all([
       loadConversationProjectionPolicyRules(pool),
       loadConversationPresentationPolicySnapshot(pool)
     ]);
-    const items: FloatingKinEvidence["items"] = [];
-    const gap = { items: [], truncated: true };
-    const turn = result.rows[0]?.external_turn_id;
-    let sequence = Infinity;
-    let truncated = false;
-    if (!turn || result.rows[0]?.source_kind === "pi") return gap;
-    for (const candidate of result.rows.slice(0, floatingKinEvidenceLimit)) {
-      if (
-        candidate.external_turn_id !== turn ||
-        !candidate.event_time ||
-        candidate.source_sequence === null ||
-        candidate.source_sequence >= sequence
-      )
-        return gap;
-      sequence = candidate.source_sequence;
-      let row;
-      try {
-        row = await hydrateConversationProjectionRow(
+    return async (candidate: FloatingKinRawRow) => {
+      const row = {
+        ...candidate,
+        ...(await hydrateConversationProjectionRow(
           pool,
           options.envelopeEncryptionProvider,
           candidate
-        );
-      } catch {
-        return gap;
-      }
-      if (classifyApprovalActivity({ metadata: row.metadata })) continue;
+        ))
+      };
       const actorType = actorFromConversationItem(row);
       const content = floatingKinTranscriptText(row, actorType);
       const decision = classifyConversationItemProjection(row, {
@@ -4279,35 +4392,216 @@ export const createMemorySourceRepository = (
         content,
         actorType
       });
+      const eligible =
+        !classifyApprovalActivity({ metadata: row.metadata }) &&
+        decision.createMessage &&
+        decision.includeInLcm &&
+        decision.presentation.renderer === "message";
+      return { row, actorType, content: eligible ? content : "" };
+    };
+  };
+  const rawEvidenceItem = (
+    row: FloatingKinRawRow,
+    text: string
+  ): FloatingKinEvidence["items"][number] => ({
+    id: row.id,
+    sessionId: row.session_id!,
+    kind: "conversation_item",
+    occurredAt: row.event_time!.toISOString(),
+    text: text.slice(0, 8192)
+  });
+  const readFloatingKinRawEvidence = async (
+    actor: ActorContext,
+    sessionId: string
+  ): Promise<FloatingKinEvidence | null> => {
+    const { rows } = await readFloatingKinRawRows<FloatingKinRawRow>(
+      pool,
+      actor,
+      sessionId
+    );
+    const head = rows[0];
+    if (!head || head.turn_closed) return null;
+    const gap = { items: [], truncated: true };
+    if (head.evidence_turn === "turnless") return gap;
+    const readRaw = await floatingKinRawReader();
+    const items: FloatingKinEvidence["items"] = [];
+    const hydrated: FloatingKinRawRow[] = [];
+    let sequence = Infinity;
+    let truncated = false;
+    let initiating: FloatingKinRawRow | undefined;
+    try {
+      for (const candidate of rows.slice(0, floatingKinEvidenceLimit)) {
+        if (
+          initiating &&
+          !candidate.external_item_id?.startsWith(
+            `main:${initiating.external_turn_id}:`
+          )
+        )
+          break;
+        if (
+          !sameFloatingKinTurn(head, candidate) ||
+          candidate.turn_closed ||
+          !candidate.event_time ||
+          candidate.source_sequence === null ||
+          candidate.source_sequence >= sequence
+        )
+          return gap;
+        sequence = candidate.source_sequence;
+        const { row, actorType, content } = await readRaw(candidate);
+        hydrated.push(row);
+        if (!content) continue;
+        truncated ||= content.length > 8192;
+        items.push(rawEvidenceItem(row, content));
+        if (actorType === "user") {
+          if (row.source_kind !== "claude-code")
+            return { items: items.reverse(), truncated };
+          initiating ??= row;
+        }
+      }
+    } catch {
+      return gap;
+    }
+    return initiating && completeClaudeInitiatingMessage(hydrated, initiating)
+      ? { items: items.reverse(), truncated }
+      : gap;
+  };
+  const floatingKinSealedPayload = async (
+    actor: ActorContext,
+    row: FloatingKinSealedRow
+  ) =>
+    row.payload.contentEncrypted === true
+      ? decryptAuthorizedMemoryEventPayload(
+          pool,
+          await resolveMemoryEventEncryptionProvider(row.id),
+          {
+            ownerUserId: actor.userId,
+            memoryEventId: row.id
+          }
+        )
+      : row.payload;
+
+  const revalidateFloatingKinRawEvidence = async (
+    actor: ActorContext,
+    input: FloatingKinEvidenceRequest,
+    ids: string[]
+  ): Promise<FloatingKinEvidence["items"]> => {
+    const { rows } = await readFloatingKinRawRows<FloatingKinRawRow>(
+      pool,
+      actor,
+      input.sessionId,
+      ids
+    );
+    if (!rows.length) return [];
+    const needsSeal = (row: FloatingKinRawRow) =>
+      row.turn_closed || row.has_sealed_projection;
+    const readRaw = await floatingKinRawReader();
+    const claudeInitiations = new Map<string, number | null>();
+    const proveClaudeInitiation = async (row: FloatingKinRawRow) => {
+      const key = JSON.stringify([
+        row.evidence_project,
+        row.external_thread_id,
+        row.evidence_turn,
+        row.external_turn_id,
+        row.source_adapter_version
+      ]);
+      if (!claudeInitiations.has(key)) {
+        const { rows: candidates } =
+          await readFloatingKinRawRows<FloatingKinRawRow>(
+            pool,
+            actor,
+            input.sessionId,
+            undefined,
+            row.id
+          );
+        const blocks = await Promise.all(candidates.map(readRaw));
+        const first = blocks.at(-1)?.row;
+        claudeInitiations.set(
+          key,
+          first &&
+            blocks.length <= floatingKinEvidenceLimit &&
+            blocks.some(
+              (block) => block.actorType === "user" && block.content
+            ) &&
+            completeClaudeInitiatingMessage(
+              blocks.map((block) => block.row),
+              first
+            )
+            ? first.source_sequence
+            : null
+        );
+      }
+      const sequence = claudeInitiations.get(key);
+      return (
+        sequence != null &&
+        row.source_sequence != null &&
+        row.source_sequence >= sequence
+      );
+    };
+    const items: FloatingKinEvidence["items"] = [];
+    for (const candidate of rows) {
       if (
-        !content ||
-        !decision.createMessage ||
-        !decision.includeInLcm ||
-        decision.presentation.renderer !== "message"
+        candidate.evidence_turn === "turnless" ||
+        candidate.source_sequence === null
       )
         continue;
-      truncated ||= content.length > 8192;
-      items.push({
-        id: row.id,
-        sessionId,
-        kind: "conversation_item",
-        occurredAt: candidate.event_time.toISOString(),
-        text: content.slice(0, 8192)
-      });
-      if (actorType === "user") return { items: items.reverse(), truncated };
+      try {
+        const { row, content, actorType } = await readRaw(candidate);
+        if (!content) continue;
+        if (needsSeal(row)) {
+          const { rows: matches } =
+            await readFloatingKinSealedRows<FloatingKinSealedRow>(
+              pool,
+              actor,
+              input,
+              row.id
+            );
+          const event = matches[0];
+          if (matches.length !== 1 || event?.matching_raw_count !== 1) continue;
+          const payload = await floatingKinSealedPayload(actor, event);
+          const source = floatingKinSealedMessageText(
+            payload,
+            event.source_event_time,
+            row
+          );
+          if (source?.text !== content) continue;
+        } else if (row.source_kind === "claude-code") {
+          if (!(await proveClaudeInitiation(row))) continue;
+        } else if (actorType !== "user") {
+          const { rows: candidates } =
+            await readFloatingKinRawRows<FloatingKinRawRow>(
+              pool,
+              actor,
+              input.sessionId,
+              undefined,
+              row.id
+            );
+          const users = await Promise.all(candidates.map(readRaw));
+          if (
+            !users.some(
+              (user) =>
+                !user.row.turn_closed &&
+                user.actorType === "user" &&
+                user.content
+            )
+          )
+            continue;
+        }
+        items.push(rawEvidenceItem(row, content));
+      } catch {
+        // Unreadable evidence cannot be revalidated.
+      }
     }
-    return gap;
+    return items;
   };
   const readFloatingKinSealedEvidence = async (
     actor: ActorContext,
-    input: FloatingKinSummaryRequest
+    input: FloatingKinEvidenceRequest
   ): Promise<FloatingKinEvidence> => {
-    const result = await readFloatingKinSealedRows<{
-      id: string;
-      session_id: string;
-      source_event_time: Date;
-      payload: MemoryEventPayload;
-    }>(pool, actor, input);
+    const result = await readFloatingKinSealedRows<FloatingKinSealedRow>(
+      pool,
+      actor,
+      input
+    );
     const evidence: FloatingKinEvidence = {
       items: [],
       truncated: result.rows.length > floatingKinEvidenceLimit
@@ -4316,17 +4610,7 @@ export const createMemorySourceRepository = (
       .slice(0, floatingKinEvidenceLimit)
       .reverse()) {
       try {
-        const payload =
-          row.payload.contentEncrypted === true
-            ? await decryptAuthorizedMemoryEventPayload(
-                pool,
-                await resolveMemoryEventEncryptionProvider(row.id),
-                {
-                  ownerUserId: actor.userId,
-                  memoryEventId: row.id
-                }
-              )
-            : row.payload;
+        const payload = await floatingKinSealedPayload(actor, row);
         const source = floatingKinSealedMessageText(
           payload,
           row.source_event_time
@@ -4389,14 +4673,38 @@ export const createMemorySourceRepository = (
     ...createCapturedSessionRepository(pool),
     getFloatingKinActivity: (actor) => getFloatingKinActivity(pool, actor),
     async getFloatingKinEvidence(actor, input) {
+      if (input.evidenceIds && input.action === "conversation") {
+        const [raw, sealed] = await Promise.all([
+          revalidateFloatingKinRawEvidence(actor, input, input.evidenceIds),
+          readFloatingKinSealedEvidence(actor, input)
+        ]);
+        const byId = new Map(
+          [...raw, ...sealed.items].map((item) => [item.id, item])
+        );
+        return {
+          items: input.evidenceIds.flatMap(
+            (id) => byId.get(id.toLowerCase()) ?? []
+          ),
+          truncated: sealed.truncated
+        };
+      }
       if (input.action === "project")
         return readFloatingKinSealedEvidence(actor, input);
       const raw = await readFloatingKinRawEvidence(actor, input.sessionId);
-      if (raw?.items.length) return raw;
+      const rawBytes =
+        raw?.items.reduce(
+          (bytes, item) => bytes + Buffer.byteLength(JSON.stringify(item)) + 1,
+          0
+        ) ?? 0;
+      if (raw?.items.length && rawBytes <= floatingKinEvidenceBudgetBytes)
+        return raw;
       const sealed = await readFloatingKinSealedEvidence(actor, input);
       return {
         ...sealed,
-        truncated: sealed.truncated || Boolean(raw?.truncated)
+        truncated:
+          sealed.truncated ||
+          Boolean(raw?.truncated) ||
+          rawBytes > floatingKinEvidenceBudgetBytes
       };
     },
     ...createPersonalMembershipRepository(pool),

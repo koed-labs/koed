@@ -21,10 +21,37 @@ export const floatingKinActivitySchema = z
   })
   .strict();
 
+const conversationSummary = z.strictObject({
+  sessionId,
+  action: z.literal("conversation")
+});
+const projectSummary = z.strictObject({
+  sessionId,
+  action: z.literal("project"),
+  projectId
+});
 export const floatingKinSummaryRequestSchema = z.discriminatedUnion("action", [
-  z.strictObject({ sessionId, action: z.literal("conversation") }),
-  z.strictObject({ sessionId, action: z.literal("project"), projectId })
+  conversationSummary,
+  projectSummary
 ]);
+
+export const floatingKinEvidenceLimit = 32;
+export const floatingKinEvidenceBudgetBytes = 48_000;
+const evidenceIds = z
+  .array(z.string().uuid())
+  .min(1)
+  .max(floatingKinEvidenceLimit)
+  .refine(
+    (ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length
+  )
+  .optional();
+export const floatingKinEvidenceRequestSchema = z.discriminatedUnion("action", [
+  conversationSummary.extend({ evidenceIds }),
+  projectSummary.extend({ evidenceIds })
+]);
+export type FloatingKinEvidenceRequest = z.infer<
+  typeof floatingKinEvidenceRequestSchema
+>;
 
 const source = z
   .object({

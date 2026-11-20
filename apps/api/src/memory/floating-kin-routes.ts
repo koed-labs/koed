@@ -4,8 +4,8 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import {
   floatingKinActivitySchema,
+  floatingKinEvidenceRequestSchema,
   floatingKinEvidenceSchema,
-  floatingKinSummaryRequestSchema,
   isLoopbackHostname
 } from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -94,8 +94,13 @@ export const registerFloatingKinRoutes = (
     options,
     async (request, reply) => {
       const user = await context.auth.authenticateApiToken(request);
-      if (context.auth.authenticatedCredentialKind(request) !== "api_token")
-        return reply.code(403).send({ error: "Personal API Token required" });
+      if (
+        context.auth.authenticatedCredentialKind(request) !== "api_token" ||
+        !(await isLocalRuntimeRequest(request, context))
+      )
+        return reply
+          .code(403)
+          .send({ error: "Local AI Runtime and Personal API Token required" });
       reply.header("cache-control", "no-store");
       return floatingKinActivitySchema.parse(
         await context
@@ -116,7 +121,7 @@ export const registerFloatingKinRoutes = (
         return reply
           .code(403)
           .send({ error: "Local AI Runtime and Personal API Token required" });
-      const input = floatingKinSummaryRequestSchema.parse(request.body);
+      const input = floatingKinEvidenceRequestSchema.parse(request.body);
       reply.header("cache-control", "no-store");
       return floatingKinEvidenceSchema.parse(
         await context

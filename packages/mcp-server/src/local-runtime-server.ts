@@ -845,7 +845,10 @@ export const startLocalAiRuntime = async ({
             AbortSignal.timeout(5_000)
           ]);
           try {
-            const activity = await apiClient.readFloatingKinActivity(signal);
+            const activity = await apiClient.readFloatingKinActivity(
+              authorization,
+              signal
+            );
             signal.throwIfAborted();
             json(response, 200, activity);
           } catch {

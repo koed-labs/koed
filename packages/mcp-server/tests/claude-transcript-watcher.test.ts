@@ -939,7 +939,12 @@ describe("Claude transcript watcher", () => {
     const userMessage = {
       type: "user",
       uuid: userId,
-      message: { content: [{ type: "text", text: "Question" }] }
+      message: {
+        content: [
+          { type: "text", text: "Question" },
+          { type: "text", text: "More context" }
+        ]
+      }
     };
     const assistantMessage = {
       type: "assistant",
@@ -1034,12 +1039,20 @@ describe("Claude transcript watcher", () => {
 
     expect(createdItems.map((item) => item.externalTurnId)).toEqual([
       userId,
+      userId,
       userId
     ]);
     expect(createdItems.map((item) => item.sourceEventType)).toEqual([
       "user_message",
+      "user_message",
       "agent_message"
     ]);
+    expect(
+      createdItems.map(
+        (item) =>
+          (item.metadata as Record<string, unknown>).sourceMessageBlockCount
+      )
+    ).toEqual([2, 2, undefined]);
   });
 
   it("does not advance the durable message cursor until projection succeeds", async () => {

@@ -26,7 +26,7 @@ import {
   floatingKinEvidenceSchema,
   type FloatingKinActivity,
   type FloatingKinEvidence,
-  type FloatingKinSummaryRequest
+  type FloatingKinEvidenceRequest
 } from "@koed-labs/shared";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { BackgroundApiRequestScheduler } from "./background-api-requests.js";
@@ -1051,17 +1051,26 @@ export class MemoryApiClient {
   }
 
   async readFloatingKinActivity(
+    runtimeAuthorization: string,
     signal: AbortSignal
   ): Promise<FloatingKinActivity> {
+    const url = new URL(this.config.apiUrl);
+    if (
+      !isLoopbackHostname(url.hostname) ||
+      !["http:", "https:"].includes(url.protocol)
+    ) {
+      throw new Error("Floating Kin activity requires a loopback Memory API");
+    }
     return floatingKinActivitySchema.parse(
       await this.request("GET", "/v1/memory/floating-kin/activity", undefined, {
-        signal
+        signal,
+        runtimeAuthorization
       })
     );
   }
 
   async readFloatingKinEvidence(
-    input: FloatingKinSummaryRequest,
+    input: FloatingKinEvidenceRequest,
     runtimeAuthorization: string,
     signal: AbortSignal
   ): Promise<FloatingKinEvidence> {

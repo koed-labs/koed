@@ -58,7 +58,8 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
               sessionId: session.id,
               externalSessionId,
               externalTurnId: "current",
-              sourceSequence: 1,
+              sourceSequence: claude ? 1000 : 1,
+              externalItemId: claude ? "main:current:0" : undefined,
               sourceKind: claude ? "claude-code" : "codex",
               sourceAdapterVersion: claude
                 ? "claude-code-transcript-v1"
@@ -70,7 +71,14 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
               rawJson: claude
                 ? {
                     type: "claude_session_message",
-                    messageType: "user",
+                    sourceRecord: {
+                      uuid: "current",
+                      type: "user",
+                      message: {
+                        role: "user",
+                        content: [{ type: "text", text: "secret" }]
+                      }
+                    },
                     contentBlock: { type: "text", text: "secret" }
                   }
                 : {
@@ -126,6 +134,161 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect(raw.items.map(({ kind, text }) => [kind, text])).toEqual([
       ["conversation_item", "secret"]
     ]);
+  });
+
+  const claudeTurn = async () => {
+    const repo = createMemorySourceRepository(pool!);
+    const owner = await repo.createUser({
+      email: `kin-${randomUUID()}@example.test`
+    });
+    const actor = { userId: owner.id };
+    const externalSessionId = randomUUID();
+    const session = await repo.createCapturedSession(actor, {
+      externalSessionId,
+      sourceRuntime: "claude-code",
+      captureMethod: "api"
+    });
+    const input = { sessionId: session.id, action: "conversation" as const };
+    const now = Date.now();
+    const add = async ({
+      index = 0,
+      completion = false,
+      thread = externalSessionId,
+      turn = "prompt",
+      content = [{ type: "text", text: "first" }],
+      withProof = true,
+      watcherBlockCount = 0
+    } = {}) => {
+      return repo.createConversationItems(actor, {
+        items: [
+          {
+            sessionId: session.id,
+            externalSessionId,
+            externalThreadId: thread,
+            externalTurnId: turn,
+            externalItemId: completion
+              ? `turn:${turn}:completed`
+              : `main:${turn}:${index}`,
+            sourceKind: "claude-code",
+            sourceAdapterVersion: completion
+              ? "claude-code-hook-signal-v1"
+              : "claude-code-transcript-v1",
+            sourceTransport: completion ? "hook_signal" : "transcript",
+            sourceRecordType: completion ? "hook_signal" : "session_message",
+            sourceEventType: completion
+              ? "turn_completed"
+              : content[index]?.type === "tool_result"
+                ? "tool_result"
+                : "user_message",
+            sourceSequence: completion ? 2999 : 1000 + index,
+            eventTime: new Date(now - (completion ? 1000 : 2000)).toISOString(),
+            rawJson: completion
+              ? { type: "hook_signal", payload: { type: "turn_completed" } }
+              : {
+                  type: "claude_session_message",
+                  contentBlock: content[index],
+                  ...(withProof
+                    ? index === 0
+                      ? {
+                          sourceRecord: {
+                            uuid: turn,
+                            type: "user",
+                            message: { role: "user", content }
+                          }
+                        }
+                      : { sourceRecordReference: turn }
+                    : { messageType: "user", messageUuid: turn })
+                },
+            rawText: completion ? undefined : content[index]?.text,
+            sourceHash: randomUUID(),
+            idempotencyKey: randomUUID(),
+            metadata: {
+              sourceComponentId: "main",
+              ...(watcherBlockCount
+                ? { sourceMessageBlockCount: watcherBlockCount }
+                : {})
+            }
+          }
+        ]
+      });
+    };
+    return {
+      add,
+      read: (evidenceIds?: string[]) =>
+        repo.getFloatingKinEvidence(actor, { ...input, evidenceIds })
+    };
+  };
+
+  it("closes Claude raw evidence only for a completion in its Projection scope", async () => {
+    const { add, read } = await claudeTurn();
+    await add();
+    const [foreign] = await add({ completion: true, turn: "foreign" });
+    await pool!.query(
+      "update conversation_items set external_thread_id=$1, external_turn_id='prompt' where id=$2",
+      [randomUUID(), foreign!.id]
+    );
+    await add({ completion: true, turn: "previous" });
+    const [otherProject] = await add({
+      completion: true,
+      turn: "other-project"
+    });
+    await pool!.query(
+      `update conversation_items set external_turn_id='prompt',
+      metadata=metadata || '{"projectId":"foreign-project"}'::jsonb where id=$1`,
+      [otherProject!.id]
+    );
+    expect((await read()).items.map(({ text }) => text)).toEqual(["first"]);
+    await add({ completion: true });
+    expect((await read()).items).toEqual([]);
+  });
+
+  it("does not admit a partial initiating Claude message and preserves all eligible blocks once complete", async () => {
+    const { add, read } = await claudeTurn();
+    const content = [
+      { type: "text", text: "first" },
+      { type: "tool_result", text: "internal tool output" },
+      { type: "text", text: "second" }
+    ];
+    const [first] = await add({ content });
+    await add({ content, index: 2 });
+    expect((await read()).items).toEqual([]);
+    expect((await read([first!.id])).items).toEqual([]);
+    await add({ content, index: 1 });
+    const { items } = await read();
+    expect(items.map(({ text }) => text)).toEqual(["first", "second"]);
+    expect((await read(items.map(({ id }) => id))).items).toEqual(items);
+  });
+
+  it("uses new live watcher blocks only once the initiating message is complete", async () => {
+    const { add, read } = await claudeTurn();
+    const content = [
+      { type: "text", text: "first" },
+      { type: "text", text: "second" }
+    ];
+    const options = { content, withProof: false, watcherBlockCount: 2 };
+    await add({ ...options, index: 1 });
+    expect((await read()).items).toEqual([]);
+    await add(options);
+    const { items } = await read();
+    expect(items.map(({ text }) => text)).toEqual(["first", "second"]);
+    expect((await read(items.map(({ id }) => id))).items).toEqual(items);
+  });
+
+  it("does not cut off initiating Claude blocks at the synthesis byte budget", async () => {
+    const { add, read } = await claudeTurn();
+    const content = Array.from({ length: 6 }, (_, index) => ({
+      type: "text",
+      text: String(index).repeat(8100)
+    }));
+    for (let index = 0; index < content.length; index++)
+      await add({ content, index });
+    expect(await read()).toEqual({ items: [], truncated: true });
+  });
+
+  it("falls back when Claude rows do not prove the initiating message is complete", async () => {
+    const { add, read } = await claudeTurn();
+    await add({ withProof: false });
+    expect((await read()).items).toEqual([]);
   });
 
   it("uses a verified raw turn, omits hidden and foreign content, and falls back to sealed text after completion", async () => {
@@ -226,8 +389,28 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         })
       ).items
     ).toEqual([]);
-    await add("task_complete", "control", 6);
+    const revalidate = () =>
+      repo.getFloatingKinEvidence(actor, {
+        ...input,
+        evidenceIds: raw.items.map(({ id }) => id)
+      });
+    await add("user_message", "newer turn", 6, {}, "newer");
+    for (let sequence = 10; sequence < 43; sequence++) {
+      await add(
+        "agent_message",
+        `newer update ${sequence}`,
+        sequence,
+        {},
+        "newer"
+      );
+    }
+    expect((await revalidate()).items).toEqual(raw.items);
+    await add("task_complete", "control", 7);
+    expect((await revalidate()).items).toEqual([]);
     await repo.projectPendingConversationItems(actor, { limit: 20 });
+    expect((await revalidate()).items).toEqual(raw.items);
+    await add("task_complete", "control", 8, {}, "newer");
+    await repo.projectPendingConversationItems(actor, { limit: 100 });
     const sealed = await repo.getFloatingKinEvidence(actor, input);
     expect(sealed.items.map(({ kind, text }) => [kind, text])).toEqual(
       expect.arrayContaining([
@@ -252,6 +435,34 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         projectId: project.projectId
       })
     ).toEqual(sealed);
+    const sealedIds = sealed.items.map(({ id }) => id);
+    expect(
+      (
+        await repo.getFloatingKinEvidence(actor, {
+          ...input,
+          action: "project",
+          projectId: project.projectId,
+          evidenceIds: sealedIds
+        })
+      ).items
+    ).toEqual(sealed.items);
+    expect(
+      (
+        await repo.getFloatingKinEvidence(actor, {
+          ...input,
+          action: "project",
+          projectId: randomUUID(),
+          evidenceIds: sealedIds
+        })
+      ).items
+    ).toEqual([]);
+    await pool!.query(
+      "update conversation_items set memory_excluded_at=now() where id=$1",
+      [update!.id]
+    );
+    expect((await revalidate()).items.map(({ text }) => text)).toEqual([
+      "current prompt"
+    ]);
     expect(
       await repo.getFloatingKinEvidence(actor, {
         ...input,

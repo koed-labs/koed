@@ -1,4 +1,5 @@
 import {
+  floatingKinEvidenceBudgetBytes,
   floatingKinSummarySchema,
   type FloatingKinEvidence,
   type FloatingKinSummary,
@@ -23,7 +24,6 @@ import { MemoryApiError, type MemoryApiClient } from "./index.js";
 import { logger } from "./logger.js";
 
 const summaryDeadlineMs = 30_000;
-const evidenceBudgetBytes = 48_000;
 const generatedSummary = z.strictObject({
   captured: z.string().trim().min(1).max(8192),
   inferred: z.string().trim().min(1).max(8192).nullable(),
@@ -53,7 +53,11 @@ function admitEvidence(
   const admitted = [];
   for (const item of items) {
     bytes += Buffer.byteLength(JSON.stringify(item)) + 1;
-    if (bytes > evidenceBudgetBytes) break;
+    if (bytes > floatingKinEvidenceBudgetBytes) {
+      if (items.some(({ kind }) => kind === "conversation_item"))
+        throw new Error("Floating Kin raw evidence exceeds its atomic budget");
+      break;
+    }
     admitted.push(item);
   }
   return {
@@ -147,7 +151,7 @@ async function resolveAssignment(
 }
 
 async function synthesize(
-  readEvidence: () => Promise<FloatingKinEvidence>,
+  revalidate: (ids: string[]) => Promise<FloatingKinEvidence>,
   request: FloatingKinSummaryRequest,
   evidence: FloatingKinEvidence,
   config: NonNullable<Awaited<ReturnType<typeof resolveAssignment>>>,
@@ -177,13 +181,21 @@ async function synthesize(
     const { text: _, ...source } = item;
     return source;
   });
-  const refreshed = admitEvidence(await readEvidence(), request);
-  // Even uncited evidence may have influenced the answer. Verify every admitted item.
-  const current = new Map(
-    refreshed.items.map((item) => [item.id, JSON.stringify(item)])
-  );
+  // Uncited evidence may also have influenced the answer.
+  const refreshed = await revalidate([...admitted.keys()]);
+  const current = new Map(refreshed.items.map((item) => [item.id, item]));
   if (
-    evidence.items.some((item) => current.get(item.id) !== JSON.stringify(item))
+    refreshed.items.length !== admitted.size ||
+    evidence.items.some((item) => {
+      const match = current.get(item.id);
+      return (
+        !match ||
+        match.sessionId !== item.sessionId ||
+        match.kind !== item.kind ||
+        match.occurredAt !== item.occurredAt ||
+        match.text !== item.text
+      );
+    })
   )
     return { status: "unavailable" };
   return floatingKinSummarySchema.parse({
@@ -215,8 +227,12 @@ export async function summarizeFloatingKin(
 ): Promise<FloatingKinSummary> {
   const deadline = AbortSignal.timeout(summaryDeadlineMs);
   let signal = AbortSignal.any([callerSignal, deadline]);
-  const readEvidence = () =>
-    client.readFloatingKinEvidence(request, runtimeAuthorization, signal);
+  const readEvidence = (evidenceIds?: string[]) =>
+    client.readFloatingKinEvidence(
+      evidenceIds ? { ...request, evidenceIds } : request,
+      runtimeAuthorization,
+      signal
+    );
   let release: (() => void) | undefined;
   let stage: "admission" | "evidence" | "assignment" | "summary" = "admission";
   let provider: AiClientProvider | undefined;

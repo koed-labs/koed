@@ -107,6 +107,7 @@ afterEach(async () => {
 async function fixture({
   assigned = true,
   revoke = false,
+  revisedItems = null as (typeof item)[] | null,
   empty = false,
   remote = false,
   items = [item],
@@ -188,8 +189,13 @@ async function fixture({
       if (
         pathname === "/v1/memory/floating-kin/activity" &&
         options?.method === "GET"
-      )
+      ) {
+        expect(
+          new Headers(options.headers).get("x-koed-local-runtime-authorization")
+        ).toBe(readLocalRuntimeRegistration({ KOED_HOME: home }).authorization);
+        expect(options.redirect).toBe("error");
         return Response.json(activity);
+      }
       if (pathname === "/v1/memory/local-agent-settings")
         return Response.json({
           settings: assigned
@@ -206,13 +212,29 @@ async function fixture({
           new Headers(options.headers).get("x-koed-local-runtime-authorization")
         ).toBe(readLocalRuntimeRegistration({ KOED_HOME: home }).authorization);
         expect(options.redirect).toBe("error");
+        const revalidating = ++evidenceReads > 1;
         expect(JSON.parse(String(options.body))).toEqual({
           sessionId,
           action,
-          ...(action === "project" ? { projectId } : {})
+          ...(action === "project" ? { projectId } : {}),
+          ...(revalidating
+            ? {
+                evidenceIds: [...items]
+                  .sort(
+                    (a, b) =>
+                      Date.parse(b.occurredAt) - Date.parse(a.occurredAt)
+                  )
+                  .map(({ id }) => id)
+              }
+            : {})
         });
         return Response.json({
-          items: empty || (++evidenceReads > 1 && revoke) ? [] : items,
+          items:
+            empty || (revalidating && revoke)
+              ? []
+              : revalidating
+                ? (revisedItems ?? items)
+                : items,
           truncated: false
         });
       }
@@ -279,6 +301,12 @@ it("protects activity and forwards it with the runtime owner's API Token", async
   const result = await request("activity");
   expect(result.status).toBe(200);
   expect(await result.json()).toEqual(activity);
+});
+
+it("does not read activity or forward its credential to a remote API", async () => {
+  const { request, upstream } = await fixture({ remote: true });
+  expect((await request("activity")).status).toBe(503);
+  expect(upstream).not.toHaveBeenCalled();
 });
 
 it("rejects malformed or free-text actions before retrieval", async () => {
@@ -372,10 +400,10 @@ it.each([
   expect(run).toHaveBeenCalledTimes(attempts);
 });
 
-it("logs an actionable authentication reason without logging provider data", async () => {
+it("logs the Claude policy rejection without logging provider data", async () => {
   const { request, run } = await fixture({ provider: "claude" });
   const warn = vi.spyOn(logger, "warn");
-  const error = new runner.ClaudeSummaryClientError("authentication_required");
+  const error = new runner.ClaudeSummaryClientError("hook_policy_unverified");
   error.cause = new Error("private provider output");
   run.mockRejectedValueOnce(error);
 
@@ -383,7 +411,7 @@ it("logs an actionable authentication reason without logging provider data", asy
     status: "client_unavailable"
   });
   expect(warn).toHaveBeenCalledWith(
-    { stage: "summary", provider: "claude", reason: "authentication_required" },
+    { stage: "summary", provider: "claude", reason: "hook_policy_unverified" },
     "Floating Kin summary failed"
   );
   expect(run).toHaveBeenCalledOnce();
@@ -408,6 +436,18 @@ it("uses the newest cited item for freshness", async () => {
     status: "answered",
     asOf: source.occurredAt
   });
+});
+
+it("rejects a summary when uncited evidence changes before revalidation", async () => {
+  const uncited = { ...item, id: sessionId, text: "before correction" };
+  const { request, run } = await fixture({
+    items: [item, uncited],
+    revisedItems: [item, { ...uncited, text: "corrected" }]
+  });
+  expect(await (await request("summary", input)).json()).toEqual({
+    status: "unavailable"
+  });
+  expect(run).toHaveBeenCalledOnce();
 });
 
 it("rejects an unsealed Project evidence row before synthesis", async () => {
