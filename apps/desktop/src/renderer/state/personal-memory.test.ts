@@ -918,6 +918,58 @@ describe("PersonalMemoryStore", () => {
     );
   });
 
+  it("does not retry live detail requests after unsubscribing", async () => {
+    let onChange!: (change: PersonalDesktopChange) => void;
+    let failRefresh!: (error: Error) => void;
+    const selected = thread(1);
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce([event(1)])
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            failRefresh = reject;
+          })
+      )
+      .mockResolvedValue([event(2)]);
+    const bridge = api({
+      listProjects: async () => [project([selected])],
+      loadEventPage,
+      subscribe: (listener) => {
+        onChange = listener;
+        return () => undefined;
+      }
+    });
+    const store = new PersonalMemoryStore(bridge, 0, {
+      subscribeToChanges: false
+    });
+    const unsubscribe = store.subscribeToChanges();
+    await store.loadProjects();
+    await store.loadInitial(selected);
+    onChange({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000100",
+          projectId: selected.projectId,
+          sourceTable: "messages",
+          threadId: selected.id
+        }
+      ]
+    });
+    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(2));
+    vi.useFakeTimers();
+    try {
+      unsubscribe();
+      failRefresh(new Error("temporary refresh failure"));
+      await vi.runAllTimersAsync();
+      expect(loadEventPage).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refreshes again when a live change arrives during a detail request", async () => {
     let onChange: ((change: PersonalDesktopChange) => void) | undefined;
     const deferred: {

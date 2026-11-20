@@ -14,3 +14,15 @@
     background-image: url("../../assets/koed-mark-negative.svg");
   }
 }
+
+/* The two-tone mark reads on light and dark alike, so it ignores the theme. */
+.koed-logo.koed-logo-color,
+:root.dark .koed-logo.koed-logo-color {
+  background-image: url("../../assets/koed-mark-color.svg");
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) .koed-logo.koed-logo-color {
+    background-image: url("../../assets/koed-mark-color.svg");
+  }
+}

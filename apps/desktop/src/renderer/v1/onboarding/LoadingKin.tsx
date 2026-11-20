@@ -327,22 +327,31 @@ export function LoadingKin({
         burstAt = null;
         changeOnLanding = false;
         control.setPointerCapture(event.pointerId);
+        // A release anywhere counts, even if the element loses the pointer.
+        window.addEventListener("pointerup", onEnd);
+        window.addEventListener("pointercancel", onEnd);
         control.dataset.dragging = "true";
         requestFrame();
       };
       const onMove = (event: PointerEvent) => {
         if (pointer !== event.pointerId) return;
-        dragSpin.move(event.clientX, event.timeStamp);
+        // Every hardware sample since the last frame, for a truer velocity.
+        const samples = event.getCoalescedEvents?.() ?? [];
+        for (const sample of samples.length ? samples : [event])
+          dragSpin.move(sample.clientX, sample.timeStamp);
         if (dragSpin.moved) suppressClick.current = true;
         requestFrame();
       };
       const onEnd = (event: PointerEvent) => {
         if (pointer !== event.pointerId) return;
-        const cancelled = event.type !== "pointerup";
-        dragSpin.end(event.timeStamp, reduced, cancelled);
+        // A cancelled drag or lost capture (a re-render can strip it) is still
+        // a release: the Kin keeps the momentum it was thrown with.
+        dragSpin.end(event.timeStamp, reduced);
         pointer = null;
+        window.removeEventListener("pointerup", onEnd);
+        window.removeEventListener("pointercancel", onEnd);
         control.dataset.dragging = "false";
-        if (cancelled) suppressClick.current = true;
+        if (event.type === "pointercancel") suppressClick.current = true;
         if (control.hasPointerCapture(event.pointerId))
           control.releasePointerCapture(event.pointerId);
         requestFrame();
@@ -351,6 +360,8 @@ export function LoadingKin({
         if (pointer === null) return;
         const id = pointer;
         pointer = null;
+        window.removeEventListener("pointerup", onEnd);
+        window.removeEventListener("pointercancel", onEnd);
         dragSpin.end(performance.now(), reduced, true);
         control.dataset.dragging = "false";
         suppressClick.current = true;
@@ -398,6 +409,8 @@ export function LoadingKin({
         control.removeEventListener("pointerup", onEnd);
         control.removeEventListener("pointercancel", onEnd);
         control.removeEventListener("lostpointercapture", onEnd);
+        window.removeEventListener("pointerup", onEnd);
+        window.removeEventListener("pointercancel", onEnd);
         canvas.removeEventListener("webglcontextlost", onContextLost);
         cancelAnimationFrame(frame);
         resize.disconnect();

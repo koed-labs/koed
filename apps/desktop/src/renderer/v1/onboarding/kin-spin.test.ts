@@ -30,7 +30,8 @@ describe("Kin drag spin", () => {
     expect(spin.velocity).toBeGreaterThan(thrown * 0.9);
     let previous = spin.velocity;
     let frames = 1;
-    while (spin.velocity > 0 && frames < 600) {
+    // Friction only slows it; the final settle spring may speed up again.
+    while (spin.velocity > 3.5 && frames < 600) {
       spin.step(1 / 60, false);
       expect(spin.velocity).toBeLessThanOrEqual(previous);
       previous = spin.velocity;
@@ -38,7 +39,7 @@ describe("Kin drag spin", () => {
       if (spin.velocity > 0) expect(spin.angle - released).toBeGreaterThan(0);
     }
     expect(frames / 60).toBeGreaterThan(1.5);
-    for (let i = 0; i < 60; i++) spin.step(1 / 60, false);
+    for (let i = 0; i < 300; i++) spin.step(1 / 60, false);
     expect(spin.active).toBe(false);
     expect(spin.angle).toBeCloseTo(-0.14);
   });
@@ -56,6 +57,26 @@ describe("Kin drag spin", () => {
       expect(spin.angle).toBeCloseTo(-0.14);
     }
   );
+
+  it("throws with the fastest recent speed when the hand slows before release", () => {
+    const spin = new KinSpin();
+    spin.begin(0, 0, 200, -0.14);
+    for (let i = 1; i <= 5; i++) spin.move(i * 30, i * 16);
+    spin.move(155, 112);
+    spin.move(156, 128);
+    spin.end(190, false);
+    expect(spin.velocity).toBeGreaterThan(25);
+    for (let i = 0; i < 40; i++) spin.step(1 / 60, false);
+    expect(spin.active).toBe(true);
+  });
+
+  it("throws nothing when held still before release", () => {
+    const spin = new KinSpin();
+    spin.begin(0, 0, 200, -0.14);
+    for (let i = 1; i <= 5; i++) spin.move(i * 30, i * 16);
+    spin.end(500, false);
+    expect(spin.velocity).toBe(0);
+  });
 
   it("keeps a flick's momentum when the last event before release is slow", () => {
     const spin = new KinSpin();
