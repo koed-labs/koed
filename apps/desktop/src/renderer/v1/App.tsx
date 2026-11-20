@@ -139,11 +139,12 @@ export function V1App({
   const profileRef = useRef<V1Profile>(emptyProfile);
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const [scopeKey, setScopeKey] = useState<string | null>(null);
-  const [inventoryScope, setInventoryScope] = useState<string | null>(null);
-  // Set only by a full inventory load, not by the named-Project preview.
-  const [completeScope, setCompleteScope] = useState<string | null>(null);
+  const [verifiedInventory, setVerifiedInventory] = useState<{
+    store: PersonalMemoryStore;
+    phase: "preview" | "full";
+  } | null>(null);
   const scopeKeyRef = useRef<string | null>(null);
-  scopeKeyRef.current = scopeKey;
+  const startupScopeEpoch = useRef(0);
   const [provenance, setProvenance] = useState<V1Provenance>(emptyProvenance);
   const [provenanceScope, setProvenanceScope] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -202,11 +203,11 @@ export function V1App({
         .catch(() => false);
       if (request !== generation) return;
       if (startupReadyRef.current && ready !== true) {
+        startupScopeEpoch.current++;
         scopeKeyRef.current = null;
         setScopeKey(null);
         setOwnerId(null);
-        setInventoryScope(null);
-        setCompleteScope(null);
+        setVerifiedInventory(null);
         setProvenanceScope(null);
       }
       startupReadyRef.current = ready === true;
@@ -219,12 +220,20 @@ export function V1App({
       unsubscribe?.();
     };
   }, [hasHealthyStatus, healthyStatus, onboardingFinished, personalMemoryApi]);
-  const inventoryReady = Boolean(scopeKey && inventoryScope === scopeKey);
   const store = useMemo(
     () =>
-      personalMemoryApi ? new PersonalMemoryStore(personalMemoryApi) : null,
-    [personalMemoryApi]
+      personalMemoryApi && scopeKey
+        ? new PersonalMemoryStore(personalMemoryApi, undefined, {
+            subscribeToChanges: false
+          })
+        : null,
+    [personalMemoryApi, scopeKey]
   );
+  useEffect(() => store?.subscribeToChanges(), [store]);
+  const verifiedPhase =
+    verifiedInventory?.store === store ? verifiedInventory.phase : null;
+  const inventoryScope = verifiedPhase ? scopeKey : null;
+  const inventoryReady = Boolean(inventoryScope);
   const snapshot = useSyncExternalStore(
     store?.subscribe ?? (() => () => undefined),
     store?.current ?? (() => null),
@@ -298,55 +307,52 @@ export function V1App({
       active = false;
     };
   }, [profileReadRevision]);
-  // Projects stay hidden until a load succeeds for the current owner. Every
-  // successful load the shell awaits opens that gate, so a later recovery is
-  // not left behind an empty sidebar once the store clears its error.
-  const publishInventoryScope = useCallback(
-    async (
-      result: { error: string | null },
-      expectedScope: string,
-      complete = true
-    ) => {
-      if (result.error) return;
-      const identity = await readV1Identity();
-      if (
-        identity.scopeKey === expectedScope &&
-        scopeKeyRef.current === expectedScope
-      ) {
-        setInventoryScope(expectedScope);
-        if (complete) setCompleteScope(expectedScope);
-      }
-    },
-    []
-  );
+  const inventoryPhase = snapshot?.inventoryPhase;
+  const inventoryRevision = snapshot?.revision;
+  // Verify what the scoped store actually published, including silent refreshes.
+  // A superseded load can return a named-Project preview without publishing.
+  useEffect(() => {
+    if (
+      !store ||
+      !scopeKey ||
+      !inventoryPhase ||
+      inventoryPhase === "empty" ||
+      inventoryPhase === verifiedPhase
+    )
+      return;
+    let active = true;
+    void readV1Identity()
+      .then((identity) => {
+        if (
+          active &&
+          identity.scopeKey === scopeKey &&
+          scopeKeyRef.current === scopeKey
+        )
+          setVerifiedInventory({ store, phase: inventoryPhase });
+      })
+      .catch((cause) => {
+        if (
+          active &&
+          inventoryPhase === "full" &&
+          scopeKeyRef.current === scopeKey
+        )
+          setError(String(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, [store, scopeKey, inventoryPhase, inventoryRevision, verifiedPhase]);
   const loadInventory = useCallback(
     async (options?: { silent?: boolean }) => {
-      if (!store || !scopeKey) return;
+      if (!store || scopeKeyRef.current !== scopeKey) return;
       try {
-        await publishInventoryScope(
-          await store.loadProjects({
-            ...options,
-            onPreview: () => {
-              if (inventoryScopeRef.current === null)
-                void publishInventoryScope(
-                  { error: null },
-                  scopeKey,
-                  false
-                ).catch(() => undefined);
-            }
-          }),
-          scopeKey
-        );
+        await store.loadProjects(options);
       } catch (cause) {
         if (scopeKeyRef.current === scopeKey) setError(String(cause));
       }
     },
-    [store, scopeKey, publishInventoryScope]
+    [store, scopeKey]
   );
-  const loadInventoryRef = useRef(loadInventory);
-  loadInventoryRef.current = loadInventory;
-  const inventoryScopeRef = useRef(inventoryScope);
-  inventoryScopeRef.current = inventoryScope;
   useEffect(() => {
     if (profile?.onboarding.completed && canReadInventory) void loadInventory();
   }, [loadInventory, profile?.onboarding.completed, canReadInventory]);
@@ -404,14 +410,21 @@ export function V1App({
     let generation = 0;
     const load = async () => {
       const currentGeneration = ++generation;
+      const epoch = startupScopeEpoch.current;
+      const current = () =>
+        active &&
+        currentGeneration === generation &&
+        epoch === startupScopeEpoch.current;
       try {
         const identity = await readV1Identity();
-        if (!active || currentGeneration !== generation) return;
-        if (scopeKey !== identity.scopeKey) {
+        if (!current()) return;
+        if (scopeKeyRef.current !== identity.scopeKey) {
           attemptedReconcile.current.clear();
           attemptedCaptures.current.clear();
+          scopeKeyRef.current = identity.scopeKey;
           setOwnerId(identity.ownerId);
           setScopeKey(identity.scopeKey);
+          setVerifiedInventory(null);
           setProvenance(emptyProvenance);
           setProvenanceScope(null);
           setRealtime(null);
@@ -421,16 +434,11 @@ export function V1App({
         }
         const value = await v1State().readProvenance();
         const verified = await readV1Identity();
-        if (
-          !active ||
-          currentGeneration !== generation ||
-          verified.scopeKey !== identity.scopeKey
-        )
-          return;
+        if (!current() || verified.scopeKey !== identity.scopeKey) return;
         setProvenance(value);
         setProvenanceScope(identity.scopeKey);
       } catch (cause) {
-        if (active && currentGeneration === generation)
+        if (current())
           setError(cause instanceof Error ? cause.message : String(cause));
       }
     };
@@ -451,22 +459,24 @@ export function V1App({
     canReadInventory
   ]);
   useEffect(() => {
-    if (!store || !ownerId || status?.api.state !== "healthy") return;
+    if (!store || !scopeKey || !ownerId || status?.api.state !== "healthy")
+      return;
     let active = true;
+    const current = () => active && scopeKeyRef.current === scopeKey;
     const resolve = async () => {
       try {
         const metadata = await platform.ensureIndependentProject();
-        const expectedScope = scopeKeyRef.current;
+        if (!current()) return;
         const refreshed = await store.loadProjects({ silent: true });
-        if (expectedScope)
-          await publishInventoryScope(refreshed, expectedScope);
-        const found = projectForLocalProject(
-          refreshed.projectsById.values(),
-          metadata.localProjectId
+        if (!current()) return;
+        setIndependentProject(
+          projectForLocalProject(
+            refreshed.projectsById.values(),
+            metadata.localProjectId
+          )
         );
-        if (active) setIndependentProject(found);
       } catch (cause) {
-        if (active) {
+        if (current()) {
           setIndependentProject(null);
           setError(
             `Chat Folder is unavailable: ${cause instanceof Error ? cause.message : String(cause)}`
@@ -478,7 +488,7 @@ export function V1App({
     return () => {
       active = false;
     };
-  }, [store, ownerId, platform, status?.api.state, publishInventoryScope]);
+  }, [store, scopeKey, ownerId, platform, status?.api.state]);
 
   useEffect(() => {
     if (!profile?.onboarding.completed || status?.api.state !== "healthy")
@@ -503,14 +513,7 @@ export function V1App({
           appendManagedConversationUpdate(current, realtimeUpdate)
         );
       } else if (update.realtimeUpdate?.type === "personal_memory_upserted") {
-        // The store's own refresh cannot open the owner gate, so recover
-        // through the gated load until one has succeeded for this owner.
-        if (
-          scopeKeyRef.current &&
-          inventoryScopeRef.current !== scopeKeyRef.current
-        )
-          void loadInventoryRef.current({ silent: true });
-        else store?.refreshFromDurableEvent();
+        if (scopeKeyRef.current === scopeKey) store?.refreshFromDurableEvent();
       }
     });
     // This connection supplies background updates, not an action the User
@@ -1179,7 +1182,7 @@ export function V1App({
               conversations={homeConversations}
               conversationScope={
                 inventoryReady &&
-                completeScope === scopeKey &&
+                verifiedPhase === "full" &&
                 provenanceScope === scopeKey
                   ? scopeKey
                   : null
