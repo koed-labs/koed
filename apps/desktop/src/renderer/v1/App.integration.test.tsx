@@ -217,6 +217,16 @@ const options: ManagedConversationLaunchOptions = {
   ]
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("V1App launch integration", () => {
   let root: Root | undefined;
   let container: HTMLDivElement | undefined;
@@ -240,7 +250,18 @@ describe("V1App launch integration", () => {
     vi.useRealTimers();
   });
 
-  it("shows the named preview without throwing older Conversations when an internal refresh wins", async () => {
+  const previewCases = [
+    "success",
+    "failure before enrichment",
+    "failure after enrichment",
+    "phase change"
+  ] as const;
+  it.each(previewCases)(
+    "verifies the named preview with %s",
+    checkNamedPreview
+  );
+
+  async function checkNamedPreview(outcome: (typeof previewCases)[number]) {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     let ready = false;
@@ -306,13 +327,17 @@ describe("V1App launch integration", () => {
     let scopeKey = initialScope;
     let changed!: (change: PersonalDesktopChange) => void;
     const unsubscribeMemory = vi.fn();
+    const namedPreview = deferred<PersonalDesktopProject[]>();
+    const metadata = deferred<[]>();
     const listProjects = vi
       .fn(() => Promise.resolve([named, loose]))
       .mockReturnValueOnce(first)
       .mockReturnValueOnce(background);
     const api: PersonalDesktopApi = {
       listProjects,
-      listNamedProjects: async () => (scopeKey === initialScope ? [named] : []),
+      listNamedProjects: () =>
+        scopeKey === initialScope ? namedPreview.promise : Promise.resolve([]),
+      listProjectMetadata: () => metadata.promise,
       loadEventPage: async () => [],
       updateSessionTitle: async ({ title }) => ({ title }),
       updateSessionPresentation: async () => {
@@ -373,7 +398,50 @@ describe("V1App launch integration", () => {
       for (const listener of listeners) listener();
     });
     expect(listProjects).toHaveBeenCalledTimes(1);
-    expect(readIdentity).toHaveBeenCalled();
+    const identity = { ownerId: uuid(3), scopeKey };
+    const firstCheck = deferred<typeof identity>();
+    const nextCheck = deferred<typeof identity>();
+    readIdentity.mockClear().mockReturnValueOnce(firstCheck.promise);
+    readIdentity.mockReturnValue(nextCheck.promise);
+    const sidebarText = () =>
+      container!.querySelector(".v1-navigation-sidebar")!.textContent;
+    await act(async () => namedPreview.resolve([named]));
+    expect(readIdentity).toHaveBeenCalledTimes(1);
+    expect(sidebarText()).not.toContain("External captured Project");
+    const rejectFirst = () =>
+      act(async () => firstCheck.reject(new Error("Identity unavailable")));
+    if (outcome === "failure before enrichment") {
+      await rejectFirst();
+      expect(readIdentity).toHaveBeenCalledTimes(1);
+    }
+    await act(async () => metadata.resolve([]));
+
+    if (outcome === "phase change") {
+      await act(async () => finishFirst([named, loose]));
+      expect(readIdentity).toHaveBeenCalledTimes(2);
+      await act(async () => firstCheck.resolve(identity));
+      expect(sidebarText()).not.toContain("External captured Project");
+      await act(async () => nextCheck.resolve(identity));
+      expect(sidebarText()).toContain("External captured Project");
+      return;
+    }
+    if (outcome === "success") {
+      await act(async () => firstCheck.resolve(identity));
+      expect(sidebarText()).toContain("External captured Project");
+      expect(readIdentity).toHaveBeenCalledTimes(1);
+    } else {
+      if (outcome === "failure after enrichment") {
+        expect(readIdentity).toHaveBeenCalledTimes(1);
+        await rejectFirst();
+      }
+      expect(readIdentity).toHaveBeenCalledTimes(2);
+      expect(sidebarText()).not.toContain("External captured Project");
+      await act(async () => nextCheck.resolve(identity));
+    }
+    readIdentity.mockImplementation(async () => ({
+      ownerId: uuid(3),
+      scopeKey
+    }));
     expect(container.querySelector(".v1-home")?.getAttribute("data-mood")).toBe(
       "projects"
     );
@@ -460,7 +528,7 @@ describe("V1App launch integration", () => {
       "loading"
     );
     expect(container.textContent).not.toContain("External captured Project");
-  });
+  }
 
   it("follows cold-start lifecycle events and service readiness without showing an empty inventory", async () => {
     vi.useFakeTimers();

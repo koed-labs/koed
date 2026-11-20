@@ -144,6 +144,7 @@ export function V1App({
     phase: "preview" | "full";
   } | null>(null);
   const scopeKeyRef = useRef<string | null>(null);
+  const inventoryScopeEpoch = useRef(0);
   const startupScopeEpoch = useRef(0);
   const [provenance, setProvenance] = useState<V1Provenance>(emptyProvenance);
   const [provenanceScope, setProvenanceScope] = useState<string | null>(null);
@@ -204,6 +205,7 @@ export function V1App({
       if (request !== generation) return;
       if (startupReadyRef.current && ready !== true) {
         startupScopeEpoch.current++;
+        inventoryScopeEpoch.current++;
         scopeKeyRef.current = null;
         setScopeKey(null);
         setOwnerId(null);
@@ -308,9 +310,7 @@ export function V1App({
     };
   }, [profileReadRevision]);
   const inventoryPhase = snapshot?.inventoryPhase;
-  const inventoryRevision = snapshot?.revision;
-  // Verify what the scoped store actually published, including silent refreshes.
-  // A superseded load can return a named-Project preview without publishing.
+  // Verify published snapshots, reusing a pending check across same-phase revisions.
   useEffect(() => {
     if (
       !store ||
@@ -320,28 +320,44 @@ export function V1App({
       inventoryPhase === verifiedPhase
     )
       return;
+    const epoch = inventoryScopeEpoch.current;
     let active = true;
-    void readV1Identity()
-      .then((identity) => {
-        if (
-          active &&
-          identity.scopeKey === scopeKey &&
-          scopeKeyRef.current === scopeKey
-        )
+    let checking = false;
+    let attemptedRevision: number | undefined;
+    const current = () =>
+      active &&
+      inventoryScopeEpoch.current === epoch &&
+      scopeKeyRef.current === scopeKey &&
+      store.current().inventoryPhase === inventoryPhase;
+    const verify = async () => {
+      const { revision } = store.current();
+      if (checking || revision === attemptedRevision || !current()) return;
+      checking = true;
+      attemptedRevision = revision;
+      let failure: string | null = null;
+      try {
+        const identity = await readV1Identity();
+        if (!current()) return;
+        if (identity.scopeKey === scopeKey) {
           setVerifiedInventory({ store, phase: inventoryPhase });
-      })
-      .catch((cause) => {
-        if (
-          active &&
-          inventoryPhase === "full" &&
-          scopeKeyRef.current === scopeKey
-        )
-          setError(String(cause));
-      });
+          return;
+        }
+      } catch (cause) {
+        if (!current()) return;
+        failure = String(cause);
+      }
+      checking = false;
+      // A publication during the failed check may be the last one for this phase.
+      if (store.current().revision !== revision) void verify();
+      else if (inventoryPhase === "full" && failure !== null) setError(failure);
+    };
+    const unsubscribe = store.subscribe(() => void verify());
+    void verify();
     return () => {
       active = false;
+      unsubscribe();
     };
-  }, [store, scopeKey, inventoryPhase, inventoryRevision, verifiedPhase]);
+  }, [store, scopeKey, inventoryPhase, verifiedPhase]);
   const loadInventory = useCallback(
     async (options?: { silent?: boolean }) => {
       if (!store || scopeKeyRef.current !== scopeKey) return;
@@ -421,6 +437,7 @@ export function V1App({
         if (scopeKeyRef.current !== identity.scopeKey) {
           attemptedReconcile.current.clear();
           attemptedCaptures.current.clear();
+          inventoryScopeEpoch.current++;
           scopeKeyRef.current = identity.scopeKey;
           setOwnerId(identity.ownerId);
           setScopeKey(identity.scopeKey);
