@@ -190,7 +190,7 @@ describe("V1Settings", () => {
     ["MacIntel", true],
     ["Linux x86_64", false]
   ] as const)(
-    "only offers opt-in Floating Kin on macOS (%s)",
+    "only offers the Chief of Staff switch on macOS (%s)",
     async (platform, supported) => {
       const platformGetter = vi
         .spyOn(navigator, "platform", "get")
@@ -205,7 +205,7 @@ describe("V1Settings", () => {
       try {
         await render("general", { presentationPreferences: presentation });
         const toggle = container.querySelector<HTMLButtonElement>(
-          '[role="switch"][aria-label="Floating Kin"]'
+          '[role="switch"][aria-label="Chief of Staff"]'
         );
         if (!supported) {
           expect(toggle).toBeNull();
