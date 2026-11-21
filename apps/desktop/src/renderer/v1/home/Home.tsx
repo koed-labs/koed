@@ -1416,10 +1416,13 @@ function FloorCoin({
       dropRef.current?.onTarget(over.current);
     }, COIN_DROP_ARM_MS);
   };
+  useLayoutEffect(() => {
+    // Full inventory can reset the map while preview coins remain mounted.
+    if (!thrown && !flight && !resting.has(conversation.key))
+      resting.set(conversation.key, home);
+  });
   useEffect(() => {
     alive.current = true;
-    if (!thrown && !resting.has(conversation.key))
-      resting.set(conversation.key, { x: home.x, lane });
     return () => {
       alive.current = false;
       cancelAnimationFrame(frame.current);

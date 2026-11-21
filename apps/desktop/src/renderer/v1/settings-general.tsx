@@ -197,12 +197,9 @@ function PresentationSettings({
         />
       </Row>
       {navigator.platform.startsWith("Mac") && (
-        <Row
-          title="Floating Kin"
-          description="Show recent captured Conversation activity above other windows."
-        >
+        <Row title="Chief of Staff" description="Turn Floating Kin on or off.">
           <Switch
-            aria-label="Floating Kin"
+            aria-label="Chief of Staff"
             checked={state?.floatingKin ?? false}
             disabled={!state || busy}
             onCheckedChange={(value) => void change("floatingKin", value)}

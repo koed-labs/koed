@@ -542,6 +542,27 @@ describe("Home", () => {
       };
     };
 
+    it("keeps a preview coin still when a new coin lands beside it", async () => {
+      measureStage(900);
+      // This key starts near the center and shares a lane with the new coin.
+      const old = item("old-636");
+      await render({ ...looseProps([old]), conversationScope: null });
+      const preview = coinFor(old.key);
+      const before = spotOf(old.key);
+      await render(looseProps([old]));
+      expect(coinFor(old.key)).toBe(preview);
+      expect(spotOf(old.key)).toEqual(before);
+
+      // Throw straight up so the new coin comes down beside the preview coin.
+      vi.spyOn(Math, "random").mockReturnValue(0.25);
+      await render(looseProps([old, item("new")]));
+      expect(coinFor("new").dataset.motion).toBe("flying");
+      expect(spotOf(old.key)).toEqual(before);
+      await act(async () => vi.advanceTimersByTime(2000));
+      expect(coinFor("new").dataset.motion).toBe("rest");
+      expect(spotOf(old.key)).toEqual(before);
+    });
+
     it.each([900, 0])(
       "separates clamped floor coins on measuring 600px after width %i",
       async (initialWidth) => {

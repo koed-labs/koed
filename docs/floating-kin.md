@@ -6,7 +6,7 @@ AI Client is running, waiting, or finished. A quiet Kin does not mean the AI
 Client is idle. Capture can lag or miss activity, and imported history does not
 count as recent activity.
 
-Enable **Floating Kin** under **Settings → General**. Desktop shows the Kin over
+Enable **Chief of Staff** under **Settings → General**. Desktop shows the Kin over
 other windows without moving focus there. Use **Window → Focus Floating Kin**
 for keyboard access. The Floating Kin uses the Koed mark’s rounded-square shape
 and blue-to-yellow gradient to distinguish it from Project Kins in Conversation

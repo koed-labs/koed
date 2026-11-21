@@ -571,6 +571,33 @@ describe("Floating Kin", () => {
     expect(mount.querySelector('[role="tooltip"]')).toBeNull();
   });
 
+  it("keeps the same Floating Kin visible before the runtime is ready", async () => {
+    const activity =
+      deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+    bridge.activity = vi.fn(() => activity.promise);
+    await render();
+
+    const status = mount.querySelector('[role="status"]');
+    expect(status?.textContent).toContain("Local runtime starting");
+    const avatar = mount.querySelector('[aria-label="Floating Kin avatar"]');
+    expect(
+      avatar?.querySelector<HTMLElement>(".v1-pixelkin")?.style.width
+    ).toBe("88px");
+    expect(status?.querySelector(".v1-pixelkin")).toBeNull();
+
+    await act(async () =>
+      activity.resolve({
+        state: "running",
+        conversations: [],
+        overflowCount: 0
+      })
+    );
+    expect(mount.querySelector('[role="status"]')).toBeNull();
+    expect(mount.querySelector('[aria-label="Floating Kin avatar"]')).toBe(
+      avatar
+    );
+  });
+
   it.each([
     [{ state: "stopped" }, "Local runtime stopped"],
     [{ state: "starting" }, "Local runtime starting"],

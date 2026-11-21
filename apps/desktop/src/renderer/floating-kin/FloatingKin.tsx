@@ -135,7 +135,6 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
   const [label, detail] = states[state];
   return (
     <div className="fk-state" role="status">
-      <ChipKin projectId={null} animate={false} />
       <div>
         <strong>{label}</strong>
         <div className="fk-note">{detail}</div>
@@ -327,14 +326,11 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           ) : null}
         </div>
       ) : null}
-      {activity.state === "running" ? (
-        <StandaloneKin
-          hasChips={conversations.length > 0}
-          active={mainWindowFocused || recentCapture}
-        />
-      ) : (
-        <ActivityPill state={activity.state} />
-      )}
+      {activity.state !== "running" && <ActivityPill state={activity.state} />}
+      <StandaloneKin
+        hasChips={conversations.length > 0}
+        active={mainWindowFocused || recentCapture}
+      />
     </main>
   );
 }
