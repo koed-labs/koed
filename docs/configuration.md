@@ -94,9 +94,10 @@ from `KOED_TEAM_COLLABORATION_ENABLED` (including explicit env-file values),
 not a `server.json` field.
 
 If you set `KOED_ENV_PATH`, the API, Worker, and Embedding Service read that
-file in place of their app-local `.env` files. Koed Server resolves a relative
-path from the directory where you start it. Values from the process environment
-take precedence over values in the selected file.
+file in place of their app-local `.env` files, with the same strict syntax as
+Koed Server. Koed Server resolves a relative path from the directory where you
+run `koed start`, `koed start --daemon`, or `koed restart`. Values from the
+process environment take precedence over values in the selected file.
 
 Effective requirements default queue to `local` for `bundled-local` and
 `bullmq` for `external`. An explicit process-environment

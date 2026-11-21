@@ -1,3 +1,4 @@
+import type { SpawnOptions } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -40,5 +41,35 @@ describe("standalone daemon entrypoint", () => {
     } finally {
       process.argv[1] = originalArgv1;
     }
+  });
+
+  it("forwards the caller's absolute environment file to the detached supervisor", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-daemon-start-"));
+    roots.push(root);
+    const checkout = resolve(root, "checkout");
+    const spawns: Array<{ cwd: unknown; env: NodeJS.ProcessEnv | undefined }> =
+      [];
+    const result = startKoedServerDaemon({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: checkout,
+        KOED_ENV_PATH: "operator.env"
+      },
+      startCommand: "/opt/koed/bin/koed",
+      spawn: ((
+        _command: string,
+        _args: readonly string[],
+        options: SpawnOptions
+      ) => {
+        spawns.push({ cwd: options.cwd, env: options.env });
+        return { pid: 225, unref: () => undefined };
+      }) as never
+    });
+    expect(result.ok).toBe(true);
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0]?.cwd).toBe(checkout);
+    expect(spawns[0]?.env?.KOED_ENV_PATH).toBe(
+      resolve(process.cwd(), "operator.env")
+    );
   });
 });

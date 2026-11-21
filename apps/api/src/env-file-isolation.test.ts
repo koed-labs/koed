@@ -1,7 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { parseEnvFile } from "@koed-labs/shared/env-file";
 import { loadApiEnv } from "./env-config.js";
 import { loadWorkerEnv } from "../../worker/src/env-config.js";
 import { loadEmbeddingServiceEnv } from "../../embedding-service/src/env-config.js";
@@ -43,6 +50,51 @@ describe.each(loaders)("%s explicit environment isolation", (_name, load) => {
         DATABASE_URL: "fixture-process",
         EMBEDDING_SERVICE_TOKEN: "fixture-token"
       });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the selected file with the Koed Server grammar", () => {
+    mkdirSync(scratch, { recursive: true });
+    const directory = mkdtempSync(resolve(scratch, "env-grammar-"));
+    const path = resolve(directory, "fixture.env");
+    writeFileSync(
+      path,
+      [
+        'KOED_EMBEDDING_ACCELERATION="cpu" # select CPU',
+        "EMBEDDING_SERVICE_TOKEN=fixture#tail",
+        ""
+      ].join("\n"),
+      { mode: 0o600 }
+    );
+    const environment: NodeJS.ProcessEnv = { KOED_ENV_PATH: path };
+    try {
+      load(environment);
+      const supervisorView = parseEnvFile(readFileSync(path, "utf8"), {
+        strict: true
+      });
+      expect(environment).toEqual({ KOED_ENV_PATH: path, ...supervisorView });
+      expect(supervisorView).toEqual({
+        KOED_EMBEDDING_ACCELERATION: "cpu",
+        EMBEDDING_SERVICE_TOKEN: "fixture#tail"
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects malformed syntax in the selected file", () => {
+    mkdirSync(scratch, { recursive: true });
+    const directory = mkdtempSync(resolve(scratch, "env-grammar-"));
+    const path = resolve(directory, "fixture.env");
+    writeFileSync(path, "DATABASE_URL='unterminated\n", { mode: 0o600 });
+    const environment: NodeJS.ProcessEnv = { KOED_ENV_PATH: path };
+    try {
+      expect(() => load(environment)).toThrow(
+        "unterminated quoted value for DATABASE_URL"
+      );
+      expect(Object.keys(environment)).toEqual(["KOED_ENV_PATH"]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

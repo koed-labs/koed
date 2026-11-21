@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv, populate } from "dotenv";
+import { loadExplicitServiceEnvFile } from "@koed-labs/shared/env-file";
 import {
   derivePrivacyFingerprintKey,
   requireEnv,
@@ -73,16 +74,15 @@ const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const loadWorkerEnv = (
   environment: NodeJS.ProcessEnv = process.env
 ): void => {
-  const explicitPath = environment.KOED_ENV_PATH?.trim();
-  const { parsed, error } = loadDotenv({
-    path: explicitPath ? resolve(explicitPath) : resolve(appDir, ".env"),
+  if (loadExplicitServiceEnvFile(environment)) {
+    return;
+  }
+  const { parsed } = loadDotenv({
+    path: resolve(appDir, ".env"),
     processEnv: { ...environment },
     override: false,
     quiet: true
   });
-  if (explicitPath && error) {
-    throw new Error("Explicit KOED_ENV_PATH could not be read");
-  }
   if (parsed) {
     delete parsed.PRIVACY_RUNTIME_CONTROL_TOKEN;
     populate(environment, parsed);

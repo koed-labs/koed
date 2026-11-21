@@ -2,8 +2,8 @@ import { cpus } from "node:os";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
 import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
+import { loadExplicitServiceEnvFile } from "@koed-labs/shared/env-file";
 import type { AccelerationPolicy } from "./acceleration.js";
 import { resourceProfileValues } from "@koed-labs/shared/resource-profiles";
 
@@ -95,13 +95,11 @@ export const loadEmbeddingServiceEnv = (
   path: string | undefined = undefined,
   environment: NodeJS.ProcessEnv = process.env
 ): void => {
-  const explicitPath = environment.KOED_ENV_PATH?.trim();
-  const selectedPath =
-    path ?? (explicitPath ? resolve(explicitPath) : appEnvPath);
+  if (path === undefined && loadExplicitServiceEnvFile(environment)) {
+    return;
+  }
+  const selectedPath = path ?? appEnvPath;
   if (!existsSync(selectedPath)) {
-    if (path === undefined && explicitPath) {
-      throw new Error("Explicit KOED_ENV_PATH could not be read");
-    }
     return;
   }
   for (const line of readFileSync(selectedPath, "utf8").split(/\r?\n/)) {

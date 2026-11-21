@@ -77,6 +77,36 @@ describe("restartKoedServer", () => {
     ]);
   });
 
+  it("forwards the caller's absolute environment file to the detached restart", async () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome);
+    const checkout = resolve(koedHome, "checkout");
+    const spawns: Array<{ cwd: unknown; env: NodeJS.ProcessEnv | undefined }> =
+      [];
+
+    const result = await restartKoedServer({
+      environment: {
+        KOED_HOME: koedHome,
+        KOED_REPO_ROOT: checkout,
+        KOED_ENV_PATH: "operator.env"
+      },
+      kill: () => undefined,
+      checkPid: () => false,
+      startCommand: "/opt/koed/bin/koed",
+      spawn: (_command, _args, options) => {
+        spawns.push({ cwd: options?.cwd, env: options?.env });
+        return { pid: 226, unref: () => undefined } as never;
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0]?.cwd).toBe(checkout);
+    expect(spawns[0]?.env?.KOED_ENV_PATH).toBe(
+      resolve(process.cwd(), "operator.env")
+    );
+  });
+
   it("preserves external process.argv entrypoint for standalone restarts", async () => {
     const koedHome = makeHome();
     writeRuntime(koedHome);
