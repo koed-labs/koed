@@ -26,13 +26,19 @@ export const loadRepoEnv = (
   repoRoot: string,
   environment: NodeJS.ProcessEnv = process.env
 ): Record<string, string> => {
-  const envPath = environment.KOED_ENV_PATH?.trim()
-    ? resolve(environment.KOED_ENV_PATH)
+  const explicitPath = environment.KOED_ENV_PATH?.trim();
+  const envPath = explicitPath
+    ? resolve(explicitPath)
     : resolve(repoRoot, ".env");
   if (!existsSync(envPath)) {
     return {};
   }
-  return parseEnvFile(readFileSync(envPath, "utf8"));
+  // An explicitly selected profile uses the strict grammar everywhere, so
+  // rereads match what the supervisor and services parsed at startup.
+  return parseEnvFile(
+    readFileSync(envPath, "utf8"),
+    explicitPath ? { strict: true, source: envPath } : {}
+  );
 };
 
 export const environmentWithRepoEnv = (
