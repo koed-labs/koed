@@ -1,5 +1,13 @@
 # Koed
 
+## 1.3.0
+
+### Minor Changes
+
+- c41200c: Home now uses the two-tone colour logo. Conversation coins outside a Project carry their AI Client's mark, have no cap, and new ones are thrown from the client to bounce and rest in a tidy band. Kin spin coasts further after a flick, and drags keep their momentum on release, and a coin caught mid-air falls again when released.
+
+- 1329d7d: Add Floating Kin, an opt-in macOS Desktop overlay for recent captured Personal Conversations. Open a Conversation chip to summarize its captured work or Project context through your assigned Codex or Pi client. Floating Kin shows captured activity, not live AI Client status, and never starts Koed or controls a Conversation.
+
 ## 1.2.0
 
 ### Minor Changes
