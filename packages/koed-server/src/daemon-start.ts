@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { resolve } from "node:path";
+import { withAbsoluteEnvPath } from "./env-file.js";
 import { capSupervisorLog } from "./supervisor-log.js";
 import { resolveKoedServerPaths } from "./paths.js";
 
@@ -90,7 +91,10 @@ export const startKoedServerDaemon = ({
     const child = spawn(command, args, {
       cwd: cwd ?? environment.KOED_REPO_ROOT ?? process.cwd(),
       detached: true,
-      env: { ...environment, KOED_SERVER_SUPERVISOR_LOG_PATH: logPath },
+      env: {
+        ...withAbsoluteEnvPath(environment),
+        KOED_SERVER_SUPERVISOR_LOG_PATH: logPath
+      },
       stdio: ["ignore", stdoutFd, stderrFd]
     }) as ChildProcess;
     if (!child.pid) {
