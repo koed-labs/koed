@@ -8,7 +8,8 @@ import {
   floatingKinChannels as channels,
   type FloatingKinActivityState,
   type FloatingKinDrag,
-  type FloatingKinSize
+  type FloatingKinSize,
+  type KinPresentation
 } from "./floating-kin-protocol.js";
 
 type FloatingKinRuntime = {
@@ -112,19 +113,30 @@ export const registerFloatingKinIpc = ({
   url,
   runtime,
   mainWindowFocused,
+  presentation,
+  completeExit,
   interactive,
   resize,
-  drag
+  drag,
+  desktop
 }: {
   ipcMain: Pick<IpcMain, "handle" | "on">;
   getWebContents: () => WebContents | null;
   url: string;
   runtime: FloatingKinRuntime;
   mainWindowFocused: () => boolean;
+  presentation: () => KinPresentation;
+  completeExit: (revision: number) => void;
   interactive: (value: boolean) => void;
   resize: (size: FloatingKinSize) => void;
   drag: (input: FloatingKinDrag) => void;
-}): (() => void) => {
+  desktop?: {
+    getWebContents: () => WebContents | null;
+    url: string;
+    setHomeVisible: (home: boolean) => void;
+    confirmPresentation: (revision: number) => void;
+  };
+}): ((surface?: "overlay" | "desktop" | "all") => void) => {
   const trusted = (event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">) =>
     event.sender === getWebContents() &&
     event.senderFrame === event.sender.mainFrame &&
@@ -133,23 +145,68 @@ export const registerFloatingKinIpc = ({
     if (!trusted(event)) throw new Error("Untrusted Floating Kin IPC sender.");
   };
 
-  const summaries = summaryRequests(runtime);
-  const activity = activityRequests(runtime);
+  const desktopTrusted = (
+    event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">
+  ) =>
+    !!desktop &&
+    event.sender === desktop.getWebContents() &&
+    event.senderFrame === event.sender.mainFrame &&
+    event.senderFrame?.url === desktop.url;
+  const overlayRequests = {
+    activity: activityRequests(runtime),
+    summaries: summaryRequests(runtime)
+  };
+  const desktopRequests = {
+    activity: activityRequests(runtime),
+    summaries: summaryRequests(runtime)
+  };
+  const requestsFor = (event: IpcMainInvokeEvent, revision: unknown) => {
+    const inApp = desktopTrusted(event);
+    if (!inApp) assertTrusted(event);
+    const state = presentation();
+    if (
+      state.revision !== revision ||
+      inApp === (state.placement === "desktop")
+    )
+      return null;
+    return inApp ? desktopRequests : overlayRequests;
+  };
   ipcMain.handle(channels.mainWindowFocused, (event) => {
     assertTrusted(event);
     return mainWindowFocused();
   });
-  ipcMain.handle(channels.activity, (event) => {
-    assertTrusted(event);
-    return activity.run();
+  ipcMain.handle(
+    channels.activity,
+    (event, revision: unknown) =>
+      requestsFor(event, revision)?.activity.run() ?? { state: "unavailable" }
+  );
+  ipcMain.handle(
+    channels.summarize,
+    (event, value: unknown, revision: unknown) =>
+      requestsFor(event, revision)?.summaries.run(value) ?? {
+        status: "unavailable"
+      }
+  );
+  ipcMain.handle(channels.cancel, (event, revision: unknown) =>
+    requestsFor(event, revision)?.summaries.cancel()
+  );
+  ipcMain.handle(channels.presentation, (event) => {
+    if (!desktopTrusted(event)) assertTrusted(event);
+    return presentation();
   });
-  ipcMain.handle(channels.summarize, (event, value: unknown) => {
-    assertTrusted(event);
-    return summaries.run(value);
+  ipcMain.on(channels.setHomeVisible, (event, value: unknown) => {
+    if (desktopTrusted(event) && typeof value === "boolean")
+      desktop?.setHomeVisible(value);
   });
-  ipcMain.handle(channels.cancel, (event) => {
-    assertTrusted(event);
-    summaries.cancel();
+  ipcMain.on(channels.confirmPresentation, (event, value: unknown) => {
+    if (desktopTrusted(event) && value === presentation().revision)
+      desktop?.confirmPresentation(value);
+  });
+  ipcMain.on(channels.completeExit, (event, value: unknown) => {
+    if (!trusted(event)) return;
+    const { placement, homePending, revision } = presentation();
+    if (placement === "home" && homePending && value === revision)
+      completeExit(revision);
   });
   ipcMain.on(channels.setInteractive, (event, value: unknown) => {
     if (trusted(event) && typeof value === "boolean") interactive(value);
@@ -164,8 +221,14 @@ export const registerFloatingKinIpc = ({
     const input = dragFrom(value);
     if (input) drag(input);
   });
-  return () => {
-    activity.cancel();
-    summaries.cancel();
+  return (surface = "overlay") => {
+    if (surface !== "desktop") {
+      overlayRequests.activity.cancel();
+      overlayRequests.summaries.cancel();
+    }
+    if (surface !== "overlay") {
+      desktopRequests.activity.cancel();
+      desktopRequests.summaries.cancel();
+    }
   };
 };

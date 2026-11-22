@@ -3,6 +3,7 @@ import { act, Profiler } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FloatingKinSummary } from "@koed-labs/shared";
+import type { KinPresentation } from "../../ipc/floating-kin-protocol.js";
 import * as pixelkin from "../v1/pixelkin/Pixelkin.js";
 import { FloatingKin, type FloatingKinBridge } from "./FloatingKin.js";
 
@@ -53,6 +54,7 @@ beforeEach(() => {
     })),
     summarize: vi.fn(async () => answered),
     cancel: vi.fn(async () => undefined),
+    completeExit: vi.fn(),
     setInteractive: vi.fn(),
     setSize: vi.fn(),
     drag: vi.fn(),
@@ -78,6 +80,50 @@ const click = (name: string) =>
     expect(button).toBeDefined();
     button?.click();
   });
+
+it("drops captured chips and summary state even when a handoff reverses in one render", async () => {
+  let publish: (state: KinPresentation) => void = () => {};
+  bridge.onPresentation = (listener) => {
+    publish = listener;
+    return () => {};
+  };
+  await render();
+  await act(async () => publish({ placement: "desktop", revision: 1 }));
+  await click("Conversation 1");
+  expect(mount.querySelector(".fk-panel")).not.toBeNull();
+  const fresh = deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+  vi.mocked(bridge.activity).mockReturnValueOnce(fresh.promise);
+  await act(async () => {
+    publish({ placement: "home", revision: 2 });
+    publish({ placement: "desktop", revision: 3 });
+  });
+  expect(mount.querySelector(".fk-panel, .fk-chip")).toBeNull();
+  expect(bridge.activity).toHaveBeenLastCalledWith(3);
+  await act(async () => fresh.resolve({ state: "stopped" }));
+});
+
+it("completes a pending Home handoff only after the native renderer finishes sliding", async () => {
+  let publish: (state: KinPresentation) => void = () => {};
+  bridge.onPresentation = (listener) => {
+    publish = listener;
+    return () => {};
+  };
+  await render();
+  await act(async () => publish({ placement: "desktop", revision: 1 }));
+  const finished = deferred<void>();
+  const surface = mount.querySelector("main")!;
+  Object.defineProperty(surface, "getAnimations", {
+    value: () => [{ transitionProperty: "opacity", finished: finished.promise }]
+  });
+  await act(async () =>
+    publish({ placement: "home", revision: 2, homePending: true })
+  );
+  expect(surface.inert).toBe(true);
+  expect(mount.querySelector(".fk-chip")).toBeNull();
+  expect(bridge.completeExit).not.toHaveBeenCalled();
+  await act(async () => finished.resolve());
+  expect(bridge.completeExit).toHaveBeenCalledExactlyOnceWith(2);
+});
 
 const mouseOver = (target: Element, from?: Element) =>
   act(async () => {

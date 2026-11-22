@@ -1,5 +1,5 @@
 import { KoedLogo } from "../KoedLogo.js";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import {
   Sidebar,
   SidebarProvider,
@@ -57,6 +57,7 @@ type Props = {
   management?: SidebarManagement;
   update?: DesktopUpdateController;
   accountApi?: AccountDesktopApi;
+  kinDock?: (focusFallback: RefObject<HTMLInputElement | null>) => ReactNode;
 };
 export function NavigationShell(props: Props) {
   return (
@@ -184,6 +185,7 @@ function ShellContent(props: Props) {
           management={props.management}
         />
         {props.update ? <DesktopUpdateNotice update={props.update} /> : null}
+        {props.kinDock?.(searchRef)}
       </Sidebar>
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>
         <header className="v1-navigation-bar">

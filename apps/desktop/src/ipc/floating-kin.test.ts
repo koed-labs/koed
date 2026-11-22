@@ -3,17 +3,20 @@ import { expect, it, vi } from "vitest";
 import { registerFloatingKinIpc } from "./floating-kin.js";
 import {
   floatingKinChannels as channels,
+  type KinPlacement,
+  type KinPresentation,
   type FloatingKinActivityState
 } from "./floating-kin-protocol.js";
 
-function setup() {
+function setup(placement: KinPlacement = "desktop") {
+  const presentation: KinPresentation = { placement, revision: 0 };
   const url = "koed://app/#floating-kin";
   const frame = { url };
   const contents = { mainFrame: frame } as WebContents;
   const event = { sender: contents, senderFrame: frame } as IpcMainInvokeEvent;
   const invokes = new Map<
     string,
-    (event: IpcMainInvokeEvent, value?: unknown) => unknown
+    (event: IpcMainInvokeEvent, value?: unknown, revision?: unknown) => unknown
   >();
   const sends = new Map<
     string,
@@ -36,6 +39,15 @@ function setup() {
   const resize = vi.fn();
   const drag = vi.fn();
   const mainWindowFocused = vi.fn(() => false);
+  const desktopFrame = { url: "koed://app/" };
+  const desktopContents = { mainFrame: desktopFrame } as WebContents;
+  const desktopEvent = {
+    sender: desktopContents,
+    senderFrame: desktopFrame
+  } as IpcMainInvokeEvent;
+  const setHomeVisible = vi.fn();
+  const confirmPresentation = vi.fn();
+  const completeExit = vi.fn();
   const dismiss = registerFloatingKinIpc({
     ipcMain: {
       handle: (channel, handler) => {
@@ -50,11 +62,24 @@ function setup() {
     url,
     runtime: { activity, summarize },
     mainWindowFocused,
+    presentation: () => presentation,
+    completeExit,
     interactive,
     resize,
-    drag
+    drag,
+    desktop: {
+      getWebContents: () => desktopContents,
+      url: desktopFrame.url,
+      setHomeVisible,
+      confirmPresentation
+    }
   });
   return {
+    desktopEvent,
+    presentation,
+    completeExit,
+    setHomeVisible,
+    confirmPresentation,
     event,
     frame,
     invokes,
@@ -111,6 +136,56 @@ it("rejects all overlay channels from another window, a subframe, or a different
   expect(resize).not.toHaveBeenCalled();
 });
 
+it("lets the main renderer see the activity and report Home, but not control the panel", async () => {
+  const { desktopEvent, event, invokes, sends, resize, setHomeVisible } =
+    setup("home");
+  expect(await invokes.get(channels.activity)?.(desktopEvent, 0)).toEqual({
+    state: "stopped"
+  });
+  expect(invokes.get(channels.presentation)?.(desktopEvent)).toMatchObject({
+    placement: "home"
+  });
+  expect(await invokes.get(channels.activity)?.(event, 0)).toEqual({
+    state: "unavailable"
+  });
+  sends.get(channels.setHomeVisible)?.(event as IpcMainEvent, true);
+  sends.get(channels.setHomeVisible)?.(desktopEvent as IpcMainEvent, "yes");
+  sends.get(channels.setHomeVisible)?.(desktopEvent as IpcMainEvent, true);
+  sends.get(channels.setSize)?.(desktopEvent as IpcMainEvent, {
+    width: 440,
+    height: 200
+  });
+  expect(setHomeVisible).toHaveBeenCalledExactlyOnceWith(true);
+  expect(resize).not.toHaveBeenCalled();
+});
+
+it("accepts a presentation confirmation only for the current revision from Desktop", () => {
+  const { event, desktopEvent, sends, presentation, confirmPresentation } =
+    setup();
+  const send = sends.get(channels.confirmPresentation)!;
+  presentation.revision = 3;
+  send(event as IpcMainEvent, 3);
+  send(desktopEvent as IpcMainEvent, 2);
+  send(desktopEvent as IpcMainEvent, 3);
+  expect(confirmPresentation).toHaveBeenCalledExactlyOnceWith(3);
+});
+
+it("accepts exit completion only from the overlay for the pending Home revision", () => {
+  const { event, desktopEvent, sends, presentation, completeExit } = setup();
+  const send = sends.get(channels.completeExit)!;
+  Object.assign(presentation, {
+    placement: "home",
+    revision: 3,
+    homePending: true
+  });
+  send(desktopEvent as IpcMainEvent, 3);
+  send(event as IpcMainEvent, 2);
+  send(event as IpcMainEvent, 3);
+  presentation.homePending = false;
+  send(event as IpcMainEvent, 3);
+  expect(completeExit).toHaveBeenCalledExactlyOnceWith(3);
+});
+
 it("reads the main Desktop focus snapshot only from the trusted overlay", () => {
   const { event, invokes, mainWindowFocused } = setup();
   const read = invokes.get(channels.mainWindowFocused);
@@ -127,15 +202,15 @@ it("allows only fixed summary inputs and cancels in-flight work on request or di
     action: "conversation"
   };
   const run = invokes.get(channels.summarize)!;
-  expect(run(event, { ...input, prompt: "free text" })).toEqual({
+  expect(run(event, { ...input, prompt: "free text" }, 0)).toEqual({
     status: "unavailable"
   });
   expect(summarize).not.toHaveBeenCalled();
-  const pending = run(event, input);
-  expect(run(event, input)).toEqual({ status: "busy" });
-  await invokes.get(channels.cancel)!(event);
+  const pending = run(event, input, 0);
+  expect(run(event, input, 0)).toEqual({ status: "busy" });
+  await invokes.get(channels.cancel)!(event, 0);
   expect(await pending).toEqual({ status: "cancelled" });
-  const next = run(event, input);
+  const next = run(event, input, 0);
   dismiss();
   expect(await next).toEqual({ status: "cancelled" });
 });
@@ -150,14 +225,43 @@ it("invalidates a coalesced activity read on dismissal or authority change", asy
       })
   );
   const read = invokes.get(channels.activity)!;
-  const first = read(event);
-  expect(read(event)).toBe(first);
+  const first = read(event, 0);
+  expect(read(event, 0)).toBe(first);
   dismiss();
-  const latest = read(event);
+  const latest = read(event, 0);
   expect(latest).not.toBe(first);
   expect(await latest).toEqual({ state: "stopped" });
   finish({ state: "running", conversations: [], overflowCount: 0 });
   expect(await first).toEqual({ state: "unavailable" });
+});
+
+it("rejects delayed activity, summary and cancellation from a previous handoff", async () => {
+  const {
+    event,
+    desktopEvent,
+    invokes,
+    presentation,
+    activity,
+    summarize,
+    dismiss
+  } = setup();
+  const input = {
+    sessionId: "803c2792-c18b-4484-a699-b33c7d8a7576",
+    action: "conversation"
+  };
+  const run = invokes.get(channels.summarize)!;
+  const read = invokes.get(channels.activity)!;
+  dismiss("all");
+  Object.assign(presentation, { placement: "home", revision: 1 });
+  expect(run(event, input, 0)).toEqual({ status: "unavailable" });
+  expect(read(event, 0)).toEqual({ state: "unavailable" });
+  expect(activity).not.toHaveBeenCalled();
+  expect(summarize).not.toHaveBeenCalled();
+  const pending = run(desktopEvent, input, 1);
+  await invokes.get(channels.cancel)!(desktopEvent, 0);
+  expect(run(desktopEvent, input, 1)).toEqual({ status: "busy" });
+  await invokes.get(channels.cancel)!(desktopEvent, 1);
+  expect(await pending).toEqual({ status: "cancelled" });
 });
 
 it("ignores malformed geometry and non-boolean interactivity", () => {

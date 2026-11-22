@@ -9,7 +9,7 @@ import type {
 import type { MarkdownPlatformAdapters } from "../markdown/SecureMarkdown.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import { Pixelkin } from "./pixelkin/Pixelkin.js";
-import type { AgentLook } from "./pixelkin/agent-kin.js";
+import { chiefOfStaffBrand, type AgentLook } from "./pixelkin/agent-kin.js";
 import { useRecallActivity } from "./use-recall-activity.js";
 import { useRecallDateRollover } from "./use-recall-date-rollover.js";
 import { RecallActivityDetail } from "./RecallActivityDetail.js";
@@ -44,7 +44,7 @@ export function RecallActivityPage({
 }: {
   api: PersonalDesktopApi | null;
   adapters: MarkdownPlatformAdapters;
-  agent?: { name: string; look: AgentLook };
+  agent?: { name: string; look: AgentLook; gradientTop?: string };
   projects?: readonly DesktopProject[];
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -135,7 +135,7 @@ export function RecallActivityPage({
         <div className="recall-heading-identity">
           <div className="recall-heading-kin" aria-hidden="true">
             <Pixelkin
-              look={agent?.look}
+              {...(agent ?? chiefOfStaffBrand)}
               size={64}
               presentation="stage"
               expression="neutral"

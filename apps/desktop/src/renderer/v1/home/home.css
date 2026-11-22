@@ -472,6 +472,22 @@
   gap: 8px;
   margin-top: 18px;
 }
+.v1-home-chief-of-staff {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0 16px;
+  width: 100%;
+  min-width: 0;
+}
+.v1-home-chief-of-staff > .v1-home-progress {
+  flex: 1 1 13rem;
+  min-width: 0;
+  margin-top: 0;
+}
 .v1-home-progress-label {
   font-size: 12px;
   color: var(--v1-muted);

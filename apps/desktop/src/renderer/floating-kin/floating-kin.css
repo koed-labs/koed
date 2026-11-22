@@ -1,5 +1,5 @@
-html:has(.fk-surface),
-body:has(.fk-surface) {
+html:has(.fk-surface[data-fk-placement="desktop"]),
+body:has(.fk-surface[data-fk-placement="desktop"]) {
   margin: 0;
   background: transparent;
   overflow: hidden;
@@ -13,6 +13,10 @@ body:has(.fk-surface) {
   --fk-subtle: #eeeeef;
   --fk-accent: #464bb3;
   --fk-green: #228055;
+  color: var(--fk-text);
+}
+
+.fk-surface[data-fk-placement="desktop"] {
   position: fixed;
   inset: auto 0 0 auto;
   display: flex;
@@ -24,13 +28,68 @@ body:has(.fk-surface) {
   padding: 10px 12px;
   pointer-events: none;
   box-sizing: border-box;
-  color: var(--fk-text);
   font:
     13px/1.45 -apple-system,
     BlinkMacSystemFont,
     system-ui,
     sans-serif;
   color-scheme: light dark;
+}
+
+.fk-surface[data-fk-placement="desktop"][data-visible="false"] {
+  transform: translate(48px, 42px);
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .fk-surface[data-fk-placement="desktop"] {
+    transition:
+      transform 220ms ease,
+      opacity 220ms ease;
+  }
+  [data-fk-placement="home"] {
+    animation: fk-home-entry 220ms ease-out;
+  }
+}
+
+@keyframes fk-home-entry {
+  from {
+    opacity: 0;
+    translate: 24px 24px;
+  }
+}
+
+.fk-surface[data-fk-placement="sidebar"] {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 8px;
+  border-top: 1px solid var(--fk-line);
+  font-size: 11px;
+  z-index: 2;
+}
+.fk-surface[data-fk-placement="sidebar"] .fk-dock {
+  flex: 0 1 auto;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.fk-surface[data-fk-placement="sidebar"] .fk-chip {
+  gap: 4px;
+  min-height: 36px;
+  padding-right: 6px;
+}
+.fk-surface[data-fk-placement="sidebar"] .fk-panel {
+  position: absolute;
+  inset: auto 8px calc(100% + 4px) 8px;
+  width: auto;
+  font-size: 13px;
+}
+.fk-surface[data-fk-placement="sidebar"] .fk-body {
+  max-height: min(324px, 40vh);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -170,6 +229,10 @@ body:has(.fk-surface) {
   height: 88px;
   pointer-events: none;
 }
+.fk-surface[data-fk-placement="sidebar"] .fk-kin-avatar {
+  width: 54px;
+  height: 54px;
+}
 .fk-kin-avatar .v1-pixelkin,
 .fk-kin-avatar::after {
   transform: rotate(-10deg);
@@ -186,7 +249,7 @@ body:has(.fk-surface) {
   inset: 16%;
   border-radius: 20%;
 }
-.fk-surface [data-fk-handle] {
+.fk-surface[data-fk-placement="desktop"] [data-fk-handle] {
   cursor: grab;
   touch-action: none;
   user-select: none;

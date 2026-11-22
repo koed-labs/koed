@@ -1,4 +1,5 @@
 import { createAccountPreloadApi } from "./ipc/account-preload.js";
+import { createDesktopKinPreloadApi } from "./ipc/desktop-kin-preload.js";
 import { performanceChannel } from "./ipc/performance-channel.js";
 import {
   presentationPreferencesGetChannel,
@@ -54,6 +55,7 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     ipcRenderer
   ),
   featureFlags: desktopFeatureFlagsFromEnvironment(process.env),
+  kin: createDesktopKinPreloadApi(ipcRenderer),
   invoke: (command: string, args?: Record<string, unknown>) => {
     if (!allowedDesktopCommandNames.has(command)) {
       throw new Error("Unsupported Desktop command.");

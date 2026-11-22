@@ -13,6 +13,7 @@ it("boots the Floating Kin hash route without initializing Desktop services", as
     activity,
     summarize: vi.fn(),
     cancel: vi.fn(),
+    completeExit: vi.fn(),
     setSize: vi.fn(),
     setInteractive: vi.fn(),
     drag: vi.fn(),

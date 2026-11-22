@@ -9,16 +9,16 @@ import {
   selectionForInstance
 } from "../views/personal/ConversationSettings.js";
 import type { ConversationInput } from "../views/personal/ConversationInput.js";
-import {
-  ModelPicker,
-  V1Composer,
-  DEFAULT_AGENT_LOOK,
-  type AgentLook
-} from "./visual.js";
+import { ModelPicker, V1Composer } from "./visual.js";
+import { chiefOfStaffBrand, type AgentLook } from "./pixelkin/agent-kin.js";
 
-export const V1AgentContext = createContext({
+export const V1AgentContext = createContext<{
+  name: string;
+  look: AgentLook;
+  gradientTop?: string;
+}>({
   name: "Koed",
-  look: DEFAULT_AGENT_LOOK as AgentLook
+  ...chiefOfStaffBrand
 });
 
 export function V1ManagedInput(
@@ -138,6 +138,7 @@ export function V1ManagedInput(
           <ModelPicker
             onOpen={settings.onOpen}
             look={agent.look}
+            gradientTop={agent.gradientTop}
             disabled={Boolean(settings.disabledReason)}
             lockedProviderId={
               settings.clientLocked ? settings.selection.instanceId : undefined

@@ -1,17 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   FloatingKinSummary,
   FloatingKinSummaryRequest
 } from "@koed-labs/shared";
 import type {
   FloatingKinActivityState,
-  FloatingKinBridge
+  FloatingKinBridge,
+  KinActivityBridge,
+  KinSurfaceBridge
 } from "../../ipc/floating-kin-protocol.js";
+
+export function useKinSurfaceActivity(
+  bridge?: KinSurfaceBridge,
+  revision?: number
+) {
+  return useMemo<KinActivityBridge | undefined>(() => {
+    if (!bridge || (bridge.onPresentation && revision === undefined)) return;
+    if (revision === undefined) return bridge;
+    return {
+      activity: () => bridge.activity(revision),
+      summarize: (input) => bridge.summarize(input, revision),
+      cancel: () => bridge.cancel(revision)
+    };
+  }, [bridge, revision]);
+}
 
 const activePollMs = 3_000;
 const quietPollMs = 10_000;
 
-export function useActivity(bridge?: FloatingKinBridge) {
+export function useActivity(bridge?: KinActivityBridge, visible = true) {
   const [sample, setSample] = useState<{
     activity: FloatingKinActivityState;
     at: number;
@@ -21,7 +38,7 @@ export function useActivity(bridge?: FloatingKinBridge) {
   }));
   const inFlight = useRef<Promise<FloatingKinActivityState> | null>(null);
   useEffect(() => {
-    if (!bridge) return;
+    if (!bridge || !visible) return;
     let closed = false;
     let polling = false;
     let timer: number | undefined;
@@ -61,7 +78,7 @@ export function useActivity(bridge?: FloatingKinBridge) {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [bridge]);
+  }, [bridge, visible]);
   return sample;
 }
 
@@ -89,7 +106,7 @@ type SummaryView = {
   result: FloatingKinSummary | null;
 };
 
-export function useSummary(bridge?: FloatingKinBridge) {
+export function useSummary(bridge?: KinActivityBridge) {
   const [view, setView] = useState<SummaryView | null>(null);
   const running = useRef<{
     request: FloatingKinSummaryRequest;
@@ -189,7 +206,7 @@ function preferredOverlayHeight(
   );
 }
 
-export function useOverlayWindow(bridge?: FloatingKinBridge) {
+export function useOverlayWindow(bridge?: FloatingKinBridge, visible = true) {
   const surface = useRef<HTMLElement>(null);
   const interactive = useRef(false);
   const setInteractive = (value: boolean) => {
@@ -199,7 +216,8 @@ export function useOverlayWindow(bridge?: FloatingKinBridge) {
   };
   useEffect(() => {
     const node = surface.current;
-    if (!bridge || !node) return;
+    if (!visible) interactive.current = false;
+    if (!bridge || !node || !visible) return;
     let size = "";
     let summary: HTMLDivElement | null = null;
     const resize = () => {
@@ -227,6 +245,6 @@ export function useOverlayWindow(bridge?: FloatingKinBridge) {
       interactive.current = false;
       bridge.setInteractive(false);
     };
-  }, [bridge]);
+  }, [bridge, visible]);
   return { surface, setInteractive };
 }

@@ -34,7 +34,11 @@ import {
   scopeDesktopWindowIpc
 } from "./ipc/commands.js";
 import { registerFloatingKinIpc } from "./ipc/floating-kin.js";
-import { floatingKinChannels } from "./ipc/floating-kin-protocol.js";
+import {
+  floatingKinChannels,
+  type KinPresentation
+} from "./ipc/floating-kin-protocol.js";
+import { resolveKinPlacement } from "./window/floating-kin-placement.js";
 import { registerDesktopUpdateIpc } from "./ipc/update.js";
 import {
   createUpdateDiscovery,
@@ -154,6 +158,7 @@ let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let floatingKin: ReturnType<typeof createFloatingKinWindow> | null = null;
+let clearKinHome = () => {};
 let quitting = false;
 let desktopMenuBar: DesktopMenuBar | null = null;
 let disposeDesktopUpdateIpc: (() => void) | null = null;
@@ -386,6 +391,9 @@ const createWindow = async () => {
     )
   );
   mainWindow = window;
+  window.webContents.on("did-navigate", () => {
+    if (window === mainWindow) clearKinHome();
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://") || url.startsWith("http://")) {
       void openExternal(url);
@@ -401,17 +409,19 @@ const createWindow = async () => {
     }
   });
   window.once("ready-to-show", () => window.show());
-
-  if (devServerUrl) {
-    await window.loadURL(devServerUrl);
-  } else {
-    await window.loadURL(`${KOED_APP_SCHEME}://app/`);
-  }
+  window.webContents.on("render-process-gone", () => {
+    if (window === mainWindow) clearKinHome();
+  });
   const personalMemoryController = new AbortController();
   window.once("closed", () => {
     personalMemoryController.abort();
-    if (mainWindow === window) mainWindow = null;
+    if (mainWindow === window) {
+      mainWindow = null;
+      clearKinHome();
+    }
   });
+  await window.loadURL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`);
+  if (window.isDestroyed()) return;
   void server
     .subscribePersonalMemory((change) => {
       if (!window.isDestroyed()) {
@@ -472,16 +482,71 @@ const configureFloatingKin = (
   server: KoedServerManager,
   account: ReturnType<typeof createAccountController>
 ) => {
-  if (process.platform !== "darwin" || quitting) return () => {};
-  const target = new URL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`);
+  const canFloat = process.platform === "darwin";
+  const desktopUrl = new URL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`).href;
+  const target = new URL(desktopUrl);
   target.hash = "floating-kin";
   const url = target.href;
+  let floatingEnabled = false;
+  let home = false;
+  let desktopReady = false;
+  let waitingForDesktop = false;
+  let presentation: KinPresentation = { placement: "sidebar", revision: 0 };
   const overlay = createFloatingKinWindow({
     appDir,
     url,
-    onDismiss: () => cancel()
+    onDismiss: () => cancel(),
+    onHidden: () => {
+      if (!presentation.homePending) return;
+      presentation = { ...presentation, homePending: false };
+      publish();
+    }
   });
+  const menuItem = canFloat ? addFloatingKinMenuItem(overlay.focus) : null;
   const getWebContents = () => overlay.getWindow()?.webContents ?? null;
+  const getDesktopContents = () =>
+    mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+  const publish = () => {
+    const contents = getDesktopContents();
+    if (contents && !contents.isDestroyed() && contents.getURL() === desktopUrl)
+      contents.send(floatingKinChannels.presentationChanged, presentation);
+    const panel = getWebContents();
+    if (panel && !panel.isDestroyed() && panel.getURL() === url)
+      panel.send(floatingKinChannels.presentationChanged, presentation);
+  };
+  const reconcile = (mainFocused = mainWindow?.isFocused() ?? false) => {
+    const placement = resolveKinPlacement({
+      floatingEnabled,
+      home,
+      mainFocused
+    });
+    if (placement !== presentation.placement) {
+      cancel("all");
+      // Commit removal in Desktop before showing the native panel. On return,
+      // reveal the Home avatar only after the native panel is actually hidden.
+      waitingForDesktop = placement === "desktop" && desktopReady;
+      presentation = {
+        placement,
+        homePending: placement === "home" && overlay.isShowing(),
+        revision: presentation.revision + 1
+      };
+      publish();
+    }
+    const showOverlay =
+      placement === "desktop" && (!waitingForDesktop || overlay.isShowing());
+    overlay.setVisible(showOverlay, presentation.revision);
+    if (menuItem) menuItem.enabled = showOverlay;
+  };
+  const setHomeVisible = (value: boolean) => {
+    home = value;
+    reconcile();
+  };
+  clearKinHome = () => {
+    desktopReady = false;
+    waitingForDesktop = false;
+    cancel("desktop");
+    setHomeVisible(false);
+  };
   const initialAccount = account.current();
   let accountKey = `${initialAccount.status}:${initialAccount.profile?.id ?? ""}`;
   const cancel = registerFloatingKinIpc({
@@ -489,6 +554,21 @@ const configureFloatingKin = (
     getWebContents,
     url,
     mainWindowFocused: () => mainWindow?.isFocused() ?? false,
+    presentation: () => presentation,
+    completeExit: overlay.completeExit,
+    desktop: {
+      getWebContents: getDesktopContents,
+      url: desktopUrl,
+      setHomeVisible: (value) => {
+        desktopReady = true;
+        setHomeVisible(value);
+      },
+      confirmPresentation: () => {
+        if (!waitingForDesktop || presentation.placement !== "desktop") return;
+        waitingForDesktop = false;
+        reconcile();
+      }
+    },
     runtime: createFloatingKinRuntime({
       koedHome: resolveApplicationKoedHome(koedEnvironment),
       // Cached observation only. Refresh notifies subscribers that may reconcile.
@@ -499,17 +579,23 @@ const configureFloatingKin = (
     resize: overlay.setSize,
     drag: overlay.drag
   });
-  // A fresh window drops all rendered evidence when the runtime or User changes.
-  const unsubscribeLifecycle = server.lifecycle.subscribe(overlay.reset);
+  // Drop rendered evidence when the runtime or User changes.
+  const invalidate = () => {
+    cancel("all");
+    overlay.reset();
+    presentation = { ...presentation, revision: presentation.revision + 1 };
+    publish();
+  };
+  const unsubscribeLifecycle = server.lifecycle.subscribe(invalidate);
   const unsubscribeAccount = account.subscribe((state) => {
     const next = `${state.status}:${state.profile?.id ?? ""}`;
     if (next === accountKey) return;
     accountKey = next;
-    cancel();
-    overlay.reset();
+    invalidate();
   });
   const publishFocus = (focused: boolean, window: BrowserWindow) => {
     if (window !== mainWindow) return;
+    reconcile(focused);
     const contents = getWebContents();
     if (contents && !contents.isDestroyed() && contents.getURL() === url)
       contents.send(floatingKinChannels.mainWindowFocusChanged, focused);
@@ -527,10 +613,12 @@ const configureFloatingKin = (
     unsubscribeAccount();
   });
   floatingKin = overlay;
-  const menuItem = addFloatingKinMenuItem(overlay.focus);
+  reconcile();
   return (enabled: boolean) => {
-    menuItem.enabled = enabled;
-    overlay.setEnabled(enabled);
+    floatingEnabled = canFloat && enabled;
+    if (!floatingEnabled) overlay.setEnabled(false);
+    reconcile();
+    if (floatingEnabled) overlay.setEnabled(true);
   };
 };
 

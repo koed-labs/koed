@@ -871,9 +871,10 @@ function SoloStage({
   keycaps,
   floorCoins,
   wide = false,
-  hopKey
+  hopKey,
+  chiefOfStaff
 }: {
-  agent: { name: string; look: AgentLook };
+  agent: HomeAgent;
   expression: "neutral" | "surprised" | "happy";
   label: string;
   caption: ReactNode;
@@ -884,6 +885,7 @@ function SoloStage({
   wide?: boolean;
   // Bumped when a coin lands on the Koed Kin.
   hopKey?: number;
+  chiefOfStaff?: boolean;
 }) {
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
@@ -914,17 +916,23 @@ function SoloStage({
         className="v1-home-host"
         data-coin-target
         style={placementStyle(layout, 0)}
-        {...hostSpin.handlers}
+        data-fk-placement={chiefOfStaff ? "home" : undefined}
+        {...(chiefOfStaff !== false ? hostSpin.handlers : {})}
       >
-        <Pixelkin
-          presentation="stage"
-          look={agent.look}
-          size={layout.placements[0]!.size}
-          expression={expression}
-          hopKey={hopKey}
-          spin={hostSpin.spin}
-        />
-        <span className="v1-home-kin-shadow" aria-hidden="true" />
+        {chiefOfStaff !== false && (
+          <Pixelkin
+            presentation="stage"
+            look={agent.look}
+            gradientTop={agent.gradientTop}
+            size={layout.placements[0]!.size}
+            expression={expression}
+            hopKey={hopKey}
+            spin={hostSpin.spin}
+          />
+        )}
+        {chiefOfStaff !== false && (
+          <span className="v1-home-kin-shadow" aria-hidden="true" />
+        )}
       </div>
       {floorCoins && (
         <FloorCoins
@@ -2059,6 +2067,28 @@ function HomeWarnings({
   );
 }
 
+type HomeAgent = { name: string; look: AgentLook; gradientTop?: string };
+
+function HomeChiefOfStaff({
+  agent,
+  visible,
+  progress
+}: {
+  agent: HomeAgent;
+  visible?: boolean;
+  progress?: ReactNode;
+}) {
+  if (!visible) return progress ?? null;
+  return (
+    <div className="v1-home-chief-of-staff">
+      <div data-fk-placement="home" role="img" aria-label="Chief of Staff">
+        <Pixelkin look={agent.look} gradientTop={agent.gradientTop} size={88} />
+      </div>
+      {progress}
+    </div>
+  );
+}
+
 export function Home({
   view,
   clients,
@@ -2071,13 +2101,15 @@ export function Home({
   onDropConversation,
   conversations,
   conversationScope = "home",
-  statusError = null
+  statusError = null,
+  chiefOfStaff
 }: {
   view: HomeView;
   statusError?: string | null;
+  chiefOfStaff?: boolean;
   clients: readonly HomeClient[];
   entries: readonly HomeProjectEntry[];
-  agent: { name: string; look: AgentLook };
+  agent: HomeAgent;
   statusStore: DesktopStatusStore;
   onOpenProject: (projectId: string) => void;
   looseConversations?: readonly HomeLooseConversation[];
@@ -2143,8 +2175,14 @@ export function Home({
               className="v1-home-startup-progress"
               title={`Up to ${AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI Client from the last ${AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.`}
             >
-              <IngestionProgress ingestion={ingestion} />
+              <HomeChiefOfStaff
+                agent={agent}
+                visible={chiefOfStaff}
+                progress={<IngestionProgress ingestion={ingestion} />}
+              />
             </div>
+          ) : chiefOfStaff ? (
+            <HomeChiefOfStaff agent={agent} visible />
           ) : (
             <div className="v1-home-startup-caption" aria-hidden="true">
               <span />
@@ -2161,16 +2199,26 @@ export function Home({
         <div className="v1-home-stage v1-home-recovery">
           <div
             className="v1-home-recovery-kin"
-            role="img"
-            aria-label={`${agent.name} looks concerned`}
+            data-fk-placement={chiefOfStaff ? "home" : undefined}
+            role={chiefOfStaff !== false ? "img" : undefined}
+            aria-label={
+              chiefOfStaff !== false
+                ? `${agent.name} looks concerned`
+                : undefined
+            }
           >
-            <Pixelkin
-              look={agent.look}
-              size={290}
-              presentation="stage"
-              expression="sad"
-            />
-            <span className="v1-home-recovery-shadow" aria-hidden="true" />
+            {chiefOfStaff !== false && (
+              <Pixelkin
+                look={agent.look}
+                gradientTop={agent.gradientTop}
+                size={290}
+                presentation="stage"
+                expression="sad"
+              />
+            )}
+            {chiefOfStaff !== false && (
+              <span className="v1-home-recovery-shadow" aria-hidden="true" />
+            )}
           </div>
           <div className="v1-home-caption">
             <h1>{agent.name} needs a hand</h1>
@@ -2209,6 +2257,7 @@ export function Home({
           keycaps={<Keycaps clients={clients} statusStore={statusStore} />}
           expression="neutral"
           label="No Projects yet"
+          chiefOfStaff={chiefOfStaff}
           floorCoins={floorCoins}
           caption={
             <>
@@ -2264,9 +2313,15 @@ export function Home({
               · {total.toLocaleString()} captured events
               {offStage > 0 && ` · ${offStage} more in the sidebar`}
             </p>
-            {view.ingestion && (
-              <IngestionProgress ingestion={view.ingestion} compact />
-            )}
+            <HomeChiefOfStaff
+              agent={agent}
+              visible={chiefOfStaff}
+              progress={
+                view.ingestion && (
+                  <IngestionProgress ingestion={view.ingestion} compact />
+                )
+              }
+            />
           </>
         }
       />
