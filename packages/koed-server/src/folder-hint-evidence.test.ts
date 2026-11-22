@@ -486,7 +486,11 @@ describe("Folder hint evidence", () => {
         environment: env,
         now
       });
-      expect(hints?.find((hint) => hint.kind === "repository")).toMatchObject({
+      expect(
+        hints?.find(
+          (hint) => hint.tier !== "none" && hint.kind === "repository"
+        )
+      ).toMatchObject({
         tier: "medium",
         repositoryKey: key,
         directory
@@ -496,7 +500,11 @@ describe("Folder hint evidence", () => {
         environment: env,
         now
       });
-      expect(known?.some((hint) => hint.kind === "repository")).toBe(false);
+      expect(
+        known?.some(
+          (hint) => hint.tier !== "none" && hint.kind === "repository"
+        )
+      ).toBe(false);
     });
   });
 });

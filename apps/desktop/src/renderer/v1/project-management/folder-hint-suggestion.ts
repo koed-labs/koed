@@ -1,8 +1,8 @@
-import {
-  personalFolderScopeId,
-  type PersonalFolderHint,
-  type PersonalFolderReference
+import type {
+  PersonalFolderHint,
+  PersonalFolderReference
 } from "@koed-labs/shared";
+import { personalFolderScopeId } from "@koed-labs/shared/personal-desktop";
 
 /** Agreeing evidence, strongest first. The last two are weak on their own and
  * are shown only when nothing stronger agrees. */
