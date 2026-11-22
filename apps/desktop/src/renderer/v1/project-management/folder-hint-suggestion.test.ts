@@ -40,6 +40,7 @@ describe("folderProposal", () => {
     expect(folderProposal([hint({ directory: "/work/api" })])).toEqual({
       action: "use",
       kind: "registered",
+      folder,
       tier: "strong",
       directory: "/work/api",
       projects: [],
@@ -47,16 +48,12 @@ describe("folderProposal", () => {
     });
   });
 
-  it("proposes creating a Folder only when nothing existing applies", () => {
-    expect(folderProposal([create()])).toMatchObject({
-      action: "create",
-      kind: "create",
-      directory: "/work/x"
-    });
+  it("never proposes using an unregistered directory", () => {
+    expect(folderProposal([create()])).toBeUndefined();
     expect(folderProposal([create(), hint()])?.kind).toBe("registered");
   });
 
-  it("prefers a worktree's main checkout, then an existing Folder, then a new one", () => {
+  it("prefers a worktree's main checkout over an existing Folder", () => {
     const parent = hint({ kind: "worktree-parent", directory: "/work/main" });
     expect(folderProposal([hint(), create(), parent])?.kind).toBe(
       "worktree-parent"
@@ -88,7 +85,7 @@ describe("folderProposal", () => {
     ).toBe("worktree-parent");
   });
 
-  it("proposes a Git Anchor a Project already uses over creating a Folder", () => {
+  it("proposes a Git Anchor only when a Project already uses it", () => {
     const repository = hint({
       kind: "repository",
       folder: undefined,
@@ -107,7 +104,7 @@ describe("folderProposal", () => {
     });
     // An anchor no Project uses has nothing to select, so it is dropped.
     expect(folderProposal([repository], {})).toBeUndefined();
-    expect(folderProposal([create(), repository], {})?.kind).toBe("create");
+    expect(folderProposal([create(), repository], {})).toBeUndefined();
     // A Folder that already lands in a Project still wins over the anchor.
     const inProject = { folder: () => ["Koed"], ...resolve };
     expect(folderProposal([repository, hint()], inProject)?.kind).toBe(

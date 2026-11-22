@@ -447,9 +447,18 @@ names, Codex commit hashes, and parent or fork ids are deliberately not used.
 The Personal API does not accept a standalone Folder observation write. Owner
 authentication and a local registry match do not bind the requesting device to
 the target Conversation's capture origin. Ordinary authenticated capture still
-records observations as described above. Source-context review and apply remain
-available, but a hint cannot supply missing evidence for an exact Folder
-reference.
+records observations as described above. Desktop does not offer unregistered
+creation hints as actions. When a User accepts a registered or worktree-parent
+hint, Desktop re-scores the Conversation with fresh bounded evidence and requires
+the same kind and full Folder reference. This check writes neither an observation
+nor the local Folder registry. Only the server's reviewed source correction can
+authorize an already-known Folder reference; a hint cannot supply missing evidence.
+
+For suggested additions, Desktop saves Project settings first and reads current
+Project versions before previewing each correction. It commits only a
+version-pinned preview that newly includes the explicit destination Project, and
+uses no direct membership change. The server rechecks the reviewed versions and
+source context at commit.
 
 A repository hint covers the other source axis. For a Conversation with no Git
 Anchor (automatic or chosen), run on this device in a directory that still exists

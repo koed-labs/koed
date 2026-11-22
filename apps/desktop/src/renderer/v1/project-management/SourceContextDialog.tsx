@@ -10,10 +10,7 @@ import {
 } from "@koed-labs/ui";
 import { ProposalWhy } from "./ProposalWhy.js";
 import { RefreshCw, Trash2 } from "lucide-react";
-import type {
-  PersonalFolderReference,
-  PersonalSourceCorrectionInput
-} from "@koed-labs/shared";
+import type { PersonalSourceCorrectionInput } from "@koed-labs/shared";
 import {
   effective,
   SourceContextStatus,
@@ -45,7 +42,7 @@ import {
 } from "./folder-label.js";
 import { useFolderHint } from "./use-folder-hint.js";
 
-const CREATED_FOLDER = "created-folder";
+const SUGGESTED_SOURCE = "suggested-source";
 
 export function SourceContextDialog(
   props: OrganizationDialogProps & { axis?: "git" | "folder" }
@@ -70,55 +67,44 @@ export function SourceContextDialog(
     props.target.sessionId,
     folderUnresolved || gitUnresolved
   );
-  const proposal = folderProposal(hints, proposalResolvers(props.projects));
-  const anchorName = proposal?.repositoryKey
-    ? repositoryTargetFor(props.projects, proposal.repositoryKey)?.repository
-        .anchorDisplay
-    : undefined;
-  const [created, setCreated] = useState<{
-    folder: PersonalFolderReference;
-    directory: string;
-  }>();
-  const [creating, setCreating] = useState(false);
-  /** Accepting a hint makes the Folder known to this Conversation (registering
-   * the directory first when it is new); it assigns nothing until the User
-   * reviews and saves the correction. */
-  const acceptFolder = async (
-    kind: "registered" | "worktree-parent" | "create"
-  ) => {
-    if (!props.api.createHintedFolder) return;
-    setCreating(true);
+  const proposal = folderProposal(
+    hints.filter((hint) =>
+      hint.kind === "repository"
+        ? gitUnresolved
+        : folderUnresolved && !!props.api.confirmFolderHint
+    ),
+    proposalResolvers(props.projects)
+  );
+  const anchorName =
+    proposal?.kind === "repository"
+      ? repositoryTargetFor(props.projects, proposal.repositoryKey)?.repository
+          .anchorDisplay
+      : undefined;
+  const [accepted, setAccepted] = useState<FolderProposal>();
+  const acceptedAnchor =
+    accepted?.kind === "repository"
+      ? repositoryTargetFor(props.projects, accepted.repositoryKey)?.repository
+      : undefined;
+  const [confirming, setConfirming] = useState(false);
+  const acceptProposal = async (candidate: FolderProposal) => {
+    const tab = candidate.kind === "repository" ? "git" : "folder";
+    setConfirming(true);
     setError("");
     try {
-      const result = await props.api.createHintedFolder({
-        sessionId: props.target.sessionId,
-        kind
-      });
-      setCreated({ folder: result.folder, directory: result.normalizedPath });
-      update("folder", CREATED_FOLDER);
-      setAxis("folder");
+      if (candidate.kind !== "repository")
+        await props.api.confirmFolderHint!({
+          sessionId: props.target.sessionId,
+          kind: candidate.kind,
+          folder: candidate.folder
+        });
+      setAccepted(candidate);
+      update(tab, SUGGESTED_SOURCE);
+      setAxis(tab);
     } catch (cause) {
       setError(projectErrorMessage(cause));
     } finally {
-      setCreating(false);
+      setConfirming(false);
     }
-  };
-  /** A Git Anchor proposal selects an anchor a Project already uses, so it needs
-   * no registration; a Folder proposal is accepted on the device first. */
-  const acceptProposal = async (accepted: FolderProposal) => {
-    if (accepted.kind !== "repository") {
-      await acceptFolder(accepted.kind);
-      return;
-    }
-    const target = accepted.repositoryKey
-      ? repositoryTargetFor(props.projects, accepted.repositoryKey)
-      : undefined;
-    if (!target) {
-      setError("That Git Anchor is no longer available.");
-      return;
-    }
-    update("git", target.sourceId);
-    setAxis("git");
   };
   const update = (tab: "git" | "folder", value: string) => {
     setDraft((old) => ({ ...old, [tab]: value }));
@@ -133,15 +119,27 @@ export function SourceContextDialog(
         if (value === "current") return [];
         if (value === "reset" || value === "unresolved")
           return [{ axis: tab, action: value, expectedVersion }];
-        if (tab === "folder" && value === CREATED_FOLDER && created)
-          return [
-            {
-              axis: tab,
-              action: "set",
-              folder: created.folder,
-              expectedVersion
-            }
-          ];
+        if (value === SUGGESTED_SOURCE && accepted) {
+          if (tab === "folder" && accepted.kind !== "repository")
+            return [
+              {
+                axis: tab,
+                action: "set",
+                folder: accepted.folder,
+                expectedVersion
+              }
+            ];
+          if (tab === "git" && acceptedAnchor)
+            return [
+              {
+                axis: tab,
+                action: "set",
+                repository: acceptedAnchor,
+                expectedVersion
+              }
+            ];
+          throw new Error("The selected source is no longer available.");
+        }
         const source = [...sources.repositories, ...sources.folders].find(
           (s) => s.id === value
         );
@@ -189,7 +187,7 @@ export function SourceContextDialog(
     <ProjectPopup
       title="Correct source context"
       description={props.target.title}
-      busy={busy || reviewing}
+      busy={busy || reviewing || confirming}
       onClose={props.onClose}
     >
       {!review && !error && <p role="status">Loading…</p>}
@@ -198,9 +196,7 @@ export function SourceContextDialog(
           <SourceContextStatus context={review.context} />
           {proposal &&
             draft.git === "current" &&
-            draft.folder === "current" &&
-            (proposal.kind === "repository" ||
-              props.api.createHintedFolder) && (
+            draft.folder === "current" && (
               <div className="v1-pm-context-suggestion">
                 <span className="v1-pm-context-suggested">
                   {proposal.projects.length > 0
@@ -222,14 +218,13 @@ export function SourceContextDialog(
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={busy || reviewing || creating}
+                  disabled={busy || reviewing || confirming}
                   onClick={() => void acceptProposal(proposal)}
                 >
-                  {proposal.action === "create" ? "Create and use" : "Use"}
+                  Use
                 </Button>
                 <ProposalWhy
                   proposal={proposal}
-                  context="single"
                   {...(anchorName ? { anchor: anchorName } : {})}
                 />
               </div>
@@ -271,11 +266,19 @@ export function SourceContextDialog(
                           value: "reset",
                           label: `Original: ${sourceLabel(assignment.original, props.projects)}`
                         },
-                        ...(tab === "folder" && created
+                        ...(accepted &&
+                        tab ===
+                          (accepted.kind === "repository" ? "git" : "folder")
                           ? [
                               {
-                                value: CREATED_FOLDER,
-                                label: folderLabelText(created.directory)
+                                value: SUGGESTED_SOURCE,
+                                label:
+                                  accepted.kind === "repository"
+                                    ? (acceptedAnchor?.anchorDisplay ??
+                                      "Suggested Git Anchor")
+                                    : accepted.directory
+                                      ? folderLabelText(accepted.directory)
+                                      : "Suggested Folder"
                               }
                             ]
                           : []),
@@ -288,7 +291,7 @@ export function SourceContextDialog(
                         }))
                       ]}
                       onChange={(value) => update(tab, value)}
-                      disabled={busy || reviewing || pending}
+                      disabled={busy || reviewing || confirming || pending}
                     />
                   </div>
                   <div className="v1-pm-context-actions">
@@ -299,6 +302,7 @@ export function SourceContextDialog(
                       disabled={
                         busy ||
                         reviewing ||
+                        confirming ||
                         pending ||
                         draft[tab] === "unresolved" ||
                         (draft[tab] === "current" && current.state !== "known")
@@ -315,6 +319,7 @@ export function SourceContextDialog(
                       disabled={
                         busy ||
                         reviewing ||
+                        confirming ||
                         pending ||
                         draft[tab] === "reset" ||
                         (draft[tab] === "current" &&
@@ -354,7 +359,7 @@ export function SourceContextDialog(
       <DialogFooter>
         <Button
           variant="outline"
-          disabled={busy || reviewing}
+          disabled={busy || reviewing || confirming}
           onClick={props.onClose}
         >
           Cancel
@@ -364,6 +369,7 @@ export function SourceContextDialog(
             !review ||
             busy ||
             reviewing ||
+            confirming ||
             (draft.git === "current" && draft.folder === "current")
           }
           onClick={() => void confirm()}

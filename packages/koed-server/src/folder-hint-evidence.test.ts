@@ -13,7 +13,6 @@ import { normalizeGitRemoteUrl } from "@koed-labs/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { observeCaptureFolder } from "./folder-context.js";
 import {
-  createHintedFolder,
   gatherFolderHintInput,
   hintForConversation,
   hintsForConversation,
@@ -245,7 +244,7 @@ describe("Folder hint evidence", () => {
       });
     };
 
-    it("offers to create a Folder for an unregistered directory, then registers it only on confirmation", async () => {
+    it("scores an advisory creation hint without registering a Folder", async () => {
       const { root, paths, env } = await fixture();
       const directory = resolve(root, "history");
       gitRepo(directory);
@@ -271,51 +270,6 @@ describe("Folder hint evidence", () => {
         now
       });
       expect(scored?.registry).toEqual({ state: "missing" });
-
-      const observation = await createHintedFolder(paths, subject, {
-        environment: env,
-        now
-      });
-      expect(observation?.normalizedPath).toBe(directory);
-      const after = await gatherFolderHintInput(paths, subject, {
-        environment: env,
-        now
-      });
-      expect(after?.registry).toMatchObject({
-        state: "matched",
-        folder: { folderId: observation?.identity.folderId }
-      });
-    });
-
-    it("refuses to create a Folder when the evidence no longer qualifies", async () => {
-      const { root, paths, env } = await fixture();
-      const directory = resolve(root, "later");
-      gitRepo(directory);
-      const subject = conversation({
-        recordedCwd: directory,
-        capturedOnThisDevice: true,
-        recordedRemoteFingerprint: fingerprint,
-        // The directory was created after this Conversation began.
-        firstConversationAt: Date.now() - 365 * day
-      });
-      expect(
-        await createHintedFolder(paths, subject, { environment: env })
-      ).toBeNull();
-      const replica = conversation({
-        recordedCwd: directory,
-        recordedRemoteFingerprint: fingerprint,
-        ...timing()
-      });
-      expect(
-        await createHintedFolder(paths, replica, {
-          environment: env,
-          now: timing().now
-        })
-      ).toBeNull();
-      expect(
-        (await gatherFolderHintInput(paths, subject, { environment: env }))
-          ?.registry
-      ).toEqual({ state: "missing" });
     });
 
     it("does not infer a parent for a standalone checkout at the Claude worktree path", async () => {
@@ -401,27 +355,6 @@ describe("Folder hint evidence", () => {
           { environment: env, now }
         )
       ).toMatchObject({ tier: "none" });
-      // Accepting it returns the main checkout's existing Folder, never a new one.
-      const subject = conversation({
-        recordedCwd: resolve(main, ".claude/worktrees/task-1"),
-        capturedOnThisDevice: true,
-        recordedRemoteFingerprint: fingerprint,
-        firstConversationAt
-      });
-      const accepted = await createHintedFolder(paths, subject, {
-        environment: env,
-        now,
-        kind: "worktree-parent"
-      });
-      expect(accepted?.identity.folderId).toBe(observed.identity.folderId);
-      // A kind the evidence does not support registers nothing.
-      expect(
-        await createHintedFolder(paths, subject, {
-          environment: env,
-          now,
-          kind: "create"
-        })
-      ).toBeNull();
     });
 
     it("links an existing linked worktree to its main checkout through Git", async () => {

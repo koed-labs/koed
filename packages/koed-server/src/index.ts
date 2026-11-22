@@ -231,7 +231,6 @@ export type {
   RepositoryAnchorResult
 } from "./folder-hint-confidence.js";
 export {
-  createHintedFolder,
   gatherFolderHintInput,
   hintForConversation,
   hintsForConversation

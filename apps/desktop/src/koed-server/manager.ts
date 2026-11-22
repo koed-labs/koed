@@ -4991,8 +4991,8 @@ export const createKoedServerManager = ({
         return projectCommands.manageSourceContext(request.input);
       case "personal.folders.hints":
         return projectCommands.folderHints(request.input);
-      case "personal.folders.hints.create":
-        return projectCommands.createHintedFolder(request.input);
+      case "personal.folders.hints.confirm":
+        return projectCommands.confirmFolderHint(request.input);
       case "personal.projects.manage":
         return projectCommands.manage(request.input);
       case "personal.projects.create":

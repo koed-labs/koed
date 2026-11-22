@@ -9,72 +9,93 @@ import { repositoryTargetFor } from "./repository-project.js";
 import type { SuggestionRow } from "./use-folder-suggestions.js";
 import { projectErrorMessage } from "./use-organization-review.js";
 
-/** Accept one suggestion as the single-conversation dialog does: make the
- * Folder known, review the correction against the Conversation's current
- * state, then save it as an ordinary version-pinned edit. The Conversation
- * then joins through the Project's own Folder or Git Anchor rule. */
-export async function applySuggestion(
+async function applySuggestion(
   api: PersonalDesktopApi,
   projects: readonly DesktopProject[],
-  row: SuggestionRow
+  row: SuggestionRow,
+  destinationProjectId: string,
+  check: () => void
 ): Promise<void> {
-  const { proposal } = row;
-  // A Git Anchor a Project already uses needs no device-side step; a Folder is
-  // made known to this Conversation first.
+  const { proposal, sessionId } = row;
+  if (!api.manageSourceContext)
+    throw new Error("Suggestions cannot be added here.");
   const anchor =
-    proposal.kind === "repository" && proposal.repositoryKey
+    proposal.kind === "repository"
       ? repositoryTargetFor(projects, proposal.repositoryKey)
       : undefined;
-  if (proposal.kind === "repository" && !anchor)
-    throw new Error("That Git Anchor is no longer available.");
-  if (!api.manageSourceContext || (!anchor && !api.createHintedFolder))
-    throw new Error("Suggestions cannot be added here.");
-  const accepted = anchor
-    ? undefined
-    : await api.createHintedFolder!({
-        sessionId: row.sessionId,
-        kind: proposal.kind as "registered" | "worktree-parent" | "create"
-      });
-  const review = await reviewConversationOrganization(
-    api,
-    projects,
-    row.sessionId
-  );
+  if (proposal.kind === "repository") {
+    if (!anchor) throw new Error("That Git Anchor is no longer available.");
+  } else {
+    if (!api.confirmFolderHint)
+      throw new Error("Folder suggestions cannot be added here.");
+    await api.confirmFolderHint({
+      sessionId,
+      kind: proposal.kind,
+      folder: proposal.folder
+    });
+    check();
+  }
+  const review = await reviewConversationOrganization(api, projects, sessionId);
+  check();
   const reviewed = await reviewSourceCorrections(api, review, [
-    anchor
+    proposal.kind === "repository"
       ? {
           axis: "git",
           action: "set",
-          repository: anchor.repository,
+          repository: anchor!.repository,
           expectedVersion: review.context.git.revision
         }
       : {
           axis: "folder",
           action: "set",
-          folder: accepted!.folder,
+          folder: proposal.folder,
           expectedVersion: review.context.folder.revision
         }
   ]);
-  await api.manageSourceContext({
+  check();
+  const destination = reviewed.projects.find(
+    (p) => p.id === destinationProjectId
+  );
+  if (!destination?.after)
+    throw new Error(
+      "The reviewed correction would not include this Conversation in the destination Project."
+    );
+  if (destination.before)
+    throw new Error("This Conversation is already in the destination Project.");
+  const result = await api.manageSourceContext({
     action: "organize",
-    sessionId: row.sessionId,
+    sessionId,
     edit: organizationEdit(review, [], reviewed.corrections)
   });
+  check();
+  if (
+    !result.organization?.after.projects.some(
+      ({ project, explanation }) =>
+        project.projectId === destinationProjectId && explanation.included
+    )
+  )
+    throw new Error(
+      "The saved result did not confirm inclusion in the destination Project."
+    );
 }
 
-/** Apply each suggestion in turn; one failure does not stop the rest. */
+/** Apply each suggestion in turn; ordinary failures do not stop the rest. */
 export async function applySuggestions(
   api: PersonalDesktopApi,
   projects: readonly DesktopProject[],
-  rows: readonly SuggestionRow[]
+  rows: readonly SuggestionRow[],
+  destinationProjectId: string,
+  check: () => void = () => {}
 ): Promise<{ done: number; failed: string[] }> {
   const failed: string[] = [];
   let done = 0;
   for (const row of rows) {
+    check();
     try {
-      await applySuggestion(api, projects, row);
+      await applySuggestion(api, projects, row, destinationProjectId, check);
       done += 1;
     } catch (cause) {
+      check();
       failed.push(`${row.title}: ${projectErrorMessage(cause)}`);
     }
   }

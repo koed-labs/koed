@@ -8,7 +8,6 @@ import {
   effectivePersonalSourceFact,
   normalizeRecordedProjectDirectory,
   type PersonalFolderAssignment,
-  type PersonalFolderObservation,
   type PersonalFolderReference
 } from "@koed-labs/shared";
 import {
@@ -21,7 +20,6 @@ import {
   createClientWorktreeLookup,
   type ClientWorktreeLookup
 } from "./client-worktree-source.js";
-import { observeCaptureFolder } from "./folder-context.js";
 import {
   folderHintFileMissing,
   inspectFolderHintFile,
@@ -529,38 +527,3 @@ export const hintForConversation = async (
   options?: Parameters<typeof gatherFolderHintInput>[2]
 ): Promise<FolderHintCandidate | null> =>
   (await hintsForConversation(paths, conversation, options))?.[0] ?? null;
-
-/** The only write in this module, and only at an explicit User confirmation.
- * It re-checks that the chosen candidate still holds, then registers its
- * directory exactly as live capture would (a no-op for a directory that is
- * already registered) and returns the observation so the Folder can be recorded
- * on the Conversation. Returns null when the candidate no longer qualifies, so
- * a stale or forged request cannot register anything. */
-export const createHintedFolder = async (
-  paths: KoedServerPaths,
-  conversation: FolderHintConversation,
-  options?: Parameters<typeof gatherFolderHintInput>[2] & {
-    kind?: "registered" | "worktree-parent" | "create";
-  }
-): Promise<PersonalFolderObservation | null> => {
-  const input = await gatherFolderHintInput(paths, conversation, options);
-  if (!input) return null;
-  const kind = options?.kind ?? "create";
-  let directory: string | undefined;
-  if (kind === "create") {
-    const creation = scoreFolderCreation(input);
-    if (creation.tier !== "none") directory = creation.directory;
-  } else if (kind === "registered") {
-    if (
-      scoreFolderHint(input).tier !== "none" &&
-      input.registry.state === "matched"
-    )
-      directory = input.registry.normalizedPath;
-  } else if (scoreWorktreeParentHint(input).tier !== "none") {
-    directory = input.worktree?.rootPath;
-  }
-  if (!directory) return null;
-  return (
-    (await observeCaptureFolder(paths, directory, options?.environment)) ?? null
-  );
-};

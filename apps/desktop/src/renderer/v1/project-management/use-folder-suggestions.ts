@@ -109,12 +109,14 @@ export function useFolderSuggestions(
     () =>
       candidates.flatMap((candidate): SuggestionRow[] => {
         const proposal = folderProposal(
-          hints.get(candidate.sessionId) ?? [],
+          (hints.get(candidate.sessionId) ?? []).filter(
+            (hint) => hint.kind === "repository" || api?.confirmFolderHint
+          ),
           proposalResolvers(projects)
         );
         return proposal ? [{ ...candidate, proposal }] : [];
       }),
-    [candidates, hints, projects]
+    [api, candidates, hints, projects]
   );
   return { rows, loading, total: candidates.length, checked: hints.size };
 }

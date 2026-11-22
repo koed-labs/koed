@@ -433,10 +433,6 @@ label.v1-pm-choice-row:hover {
 .v1-pm-why-detail {
   color: var(--muted-foreground);
 }
-.v1-pm-why-note {
-  margin: 0;
-  color: var(--muted-foreground);
-}
 .v1-pm-context-original {
   font-size: 11px;
   color: var(--muted-foreground);

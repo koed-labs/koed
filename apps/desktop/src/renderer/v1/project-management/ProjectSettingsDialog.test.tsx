@@ -214,6 +214,7 @@ it("lists suggestions on their own tab and saves ticked ones with the Project's 
     proposal: {
       action: "anchor" as const,
       kind: "repository" as const,
+      repositoryKey: "gr_koed",
       tier: "medium" as const,
       projects: [project],
       evidence: []

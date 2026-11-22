@@ -5,7 +5,7 @@ import {
   recallActivityDetailInputSchema,
   personalDesktopChangeSchema,
   personalDesktopLocalFolderPrepareInputSchema,
-  personalFolderHintCreateRequestSchema,
+  personalFolderHintConfirmRequestSchema,
   personalFolderHintRequestSchema,
   personalDesktopProjectCreateInputSchema,
   personalProjectCommandSchema,
@@ -170,20 +170,18 @@ export const createPersonalMemoryPreloadApi = (
         throw new Error("Invalid Folder hint result.");
       return result.data.hints;
     },
-    createHintedFolder: async (
-      value: Parameters<
-        NonNullable<PersonalDesktopApi["createHintedFolder"]>
-      >[0]
+    confirmFolderHint: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["confirmFolderHint"]>>[0]
     ) => {
       const result = requireSuccess(
         await invokePersonalMemory(invoke, {
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-          operation: "personal.folders.hints.create",
-          input: personalFolderHintCreateRequestSchema.parse(value)
+          operation: "personal.folders.hints.confirm",
+          input: personalFolderHintConfirmRequestSchema.parse(value)
         })
       );
-      if (result.operation !== "personal.folders.hints.create")
-        throw new Error("Invalid Folder creation result.");
+      if (result.operation !== "personal.folders.hints.confirm")
+        throw new Error("Invalid Folder confirmation result.");
       return result.data;
     },
     manageMembershipSync: async (

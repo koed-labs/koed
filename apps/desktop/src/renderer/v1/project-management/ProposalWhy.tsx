@@ -1,6 +1,6 @@
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@koed-labs/ui";
 import type { FolderProposal } from "./folder-hint-suggestion.js";
-import { evidenceLines, proposalLead, proposalNote } from "./proposal-text.js";
+import { evidenceLines, proposalLead } from "./proposal-text.js";
 
 /** Hidden until its wording is ready; the evidence text still drives tests of
  * `proposal-text.ts`. Flip to show the `?` again. */
@@ -10,15 +10,12 @@ export const SHOW_PROPOSAL_WHY = false;
  * the evidence for it, strongest first. */
 export function ProposalWhy({
   proposal,
-  context,
   anchor,
   client,
   label = "Why this suggestion",
   className = "v1-pm-context-why"
 }: {
   proposal: FolderProposal;
-  /** Which dialog it sits in, so any note is true there. */
-  context: "bulk" | "single";
   /** The Git Anchor's display name, for a Git remote suggestion. */
   anchor?: string;
   /** The AI Client's name, for a worktree it recorded. */
@@ -27,7 +24,6 @@ export function ProposalWhy({
   className?: string;
 }) {
   if (!SHOW_PROPOSAL_WHY) return null;
-  const note = proposalNote(proposal, context);
   return (
     <Tooltip>
       <TooltipTrigger
@@ -54,7 +50,6 @@ export function ProposalWhy({
               </li>
             ))}
           </ul>
-          {note && <p className="v1-pm-why-note">{note}</p>}
         </div>
       </TooltipPopup>
     </Tooltip>

@@ -13,7 +13,6 @@ export const EVIDENCE_ORDER = [
   "directory-remote",
   "live-registry-match",
   "worktree-parent-registered",
-  "directory-not-registered",
   "directory-birthtime",
   "worktree-parent-birthtime",
   "contained-transcript-file",
@@ -36,26 +35,26 @@ const agreeing = (hint: PersonalFolderHint): EvidenceCode[] => {
 };
 
 export type FolderProposal = {
-  /** Use a Folder this device already knows, register a new one first, or use
-   * the Git Anchor of the directory's remote. */
-  action: "use" | "create" | "anchor";
-  kind: "registered" | "worktree-parent" | "create" | "repository";
   tier: "medium" | "strong";
   /** The directory involved, for the label and tooltip. */
   directory?: string;
-  /** The portable key of the Git Anchor, for a repository proposal. */
-  repositoryKey?: string;
   /** Projects this would land the Conversation in, so the User sees them. */
   projects: string[];
   /** Agreeing evidence codes, strongest first; worded in the `?` tooltip. */
   evidence: EvidenceCode[];
-};
+} & (
+  | {
+      action: "use";
+      kind: "registered" | "worktree-parent";
+      folder: PersonalFolderReference;
+    }
+  | { action: "anchor"; kind: "repository"; repositoryKey: string }
+);
 
 const rank = {
   "worktree-parent": 0,
   registered: 1,
-  repository: 2,
-  create: 3
+  repository: 2
 } as const;
 
 export type ProposalResolvers = {
@@ -67,55 +66,44 @@ export type ProposalResolvers = {
 
 /** One advisory proposal. A candidate that lands the Conversation in a Project
  * wins; then a linked worktree's main checkout, an existing Folder, the Git
- * Anchor of the directory's remote, and a new Folder. A Git Anchor nothing uses
- * is dropped, since there is nothing to select. The User accepts it explicitly
- * and still reviews the correction before saving. */
+ * Anchor of the directory's remote. Unregistered directories and Git Anchors
+ * no Project uses have nothing to select. */
 export function folderProposal(
   hints: readonly PersonalFolderHint[],
   resolve: ProposalResolvers = {}
 ): FolderProposal | undefined {
-  type Candidate = {
-    hint: PersonalFolderHint;
-    kind: FolderProposal["kind"];
-    projects: string[];
-  };
-  const candidates = hints
-    .flatMap((hint): Candidate[] => {
-      if (hint.tier === "none") return [];
+  return hints
+    .flatMap((hint): FolderProposal[] => {
+      if (hint.tier === "none" || hint.kind === "create") return [];
       const kind = hint.kind ?? "registered";
+      const details = {
+        tier: hint.tier,
+        ...(hint.directory ? { directory: hint.directory } : {}),
+        evidence: agreeing(hint)
+      };
       if (kind === "repository") {
-        const projects = hint.repositoryKey
-          ? (resolve.repository?.(hint.repositoryKey) ?? [])
+        const { repositoryKey } = hint;
+        if (!repositoryKey) return [];
+        const projects = resolve.repository?.(repositoryKey) ?? [];
+        return projects.length
+          ? [{ ...details, action: "anchor", kind, repositoryKey, projects }]
           : [];
-        return projects.length > 0 ? [{ hint, kind, projects }] : [];
       }
-      if (kind === "create")
-        return hint.directory ? [{ hint, kind, projects: [] }] : [];
       return hint.folder
-        ? [{ hint, kind, projects: resolve.folder?.(hint.folder) ?? [] }]
+        ? [
+            {
+              ...details,
+              action: "use",
+              kind,
+              folder: hint.folder,
+              projects: resolve.folder?.(hint.folder) ?? []
+            }
+          ]
         : [];
     })
     .sort(
       (a, b) =>
         Number(b.projects.length > 0) - Number(a.projects.length > 0) ||
         rank[a.kind] - rank[b.kind]
-    );
-  const best = candidates[0];
-  if (!best || best.hint.tier === "none") return undefined;
-  return {
-    action:
-      best.kind === "create"
-        ? "create"
-        : best.kind === "repository"
-          ? "anchor"
-          : "use",
-    kind: best.kind,
-    tier: best.hint.tier,
-    ...(best.hint.directory ? { directory: best.hint.directory } : {}),
-    ...(best.hint.repositoryKey
-      ? { repositoryKey: best.hint.repositoryKey }
-      : {}),
-    projects: best.projects,
-    evidence: agreeing(best.hint)
-  };
+    )[0];
 }

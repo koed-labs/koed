@@ -74,7 +74,7 @@ describe("Personal Memory preload bridge", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("confirms Folder creation only by Conversation id", async () => {
+  it("confirms only an exact registered Folder hint", async () => {
     const session = "00000000-0000-4000-8000-000000000081";
     const folder = {
       ownerUserId: "00000000-0000-4000-8000-000000000001",
@@ -84,24 +84,28 @@ describe("Personal Memory preload bridge", () => {
       originatingProfileId: "profile",
       directoryIncarnationId: "incarnation"
     };
+    const input = {
+      sessionId: session,
+      kind: "worktree-parent",
+      folder
+    } as const;
     const invoke = vi.fn(async () =>
-      success("personal.folders.hints.create", {
-        folder,
-        normalizedPath: "/work/koed"
-      })
+      success("personal.folders.hints.confirm", { folder })
     );
     const bridge = createPersonalMemoryPreloadApi(invoke, events());
-    await expect(
-      bridge.createHintedFolder!({ sessionId: session })
-    ).resolves.toEqual({ folder, normalizedPath: "/work/koed" });
+    await expect(bridge.confirmFolderHint!(input)).resolves.toEqual({ folder });
     expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-      operation: "personal.folders.hints.create",
-      input: { sessionId: session }
+      operation: "personal.folders.hints.confirm",
+      input
     });
     invoke.mockClear();
-    for (const bad of [{}, { sessionId: session, path: "/arbitrary" }])
-      await expect(bridge.createHintedFolder!(bad as never)).rejects.toThrow();
+    for (const bad of [
+      { sessionId: session },
+      { ...input, kind: "create" },
+      { ...input, path: "/arbitrary" }
+    ])
+      await expect(bridge.confirmFolderHint!(bad as never)).rejects.toThrow();
     expect(invoke).not.toHaveBeenCalled();
   });
 
@@ -246,7 +250,7 @@ describe("Personal Memory preload bridge", () => {
 
     await expect(api.listProjects()).resolves.toEqual([]);
     expect(Object.keys(api).sort()).toEqual([
-      "createHintedFolder",
+      "confirmFolderHint",
       "createNote",
       "createProject",
       "folderHints",

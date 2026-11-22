@@ -3,22 +3,25 @@ import {
   folderProposal,
   type FolderProposal
 } from "./folder-hint-suggestion.js";
-import {
-  evidenceLines,
-  proposalLead,
-  proposalNote,
-  shortPath
-} from "./proposal-text.js";
+import { evidenceLines, proposalLead, shortPath } from "./proposal-text.js";
 
-const proposal = (overrides: Partial<FolderProposal>): FolderProposal => ({
+const folder = {
+  ownerUserId: "00000000-0000-4000-8000-000000000001",
+  folderId: "koed",
+  originatingDeploymentId: "deployment",
+  originatingDeviceId: "device",
+  originatingProfileId: "profile",
+  directoryIncarnationId: "incarnation"
+};
+const proposal = {
   action: "anchor",
   kind: "repository",
+  repositoryKey: "gr_koed",
   tier: "medium",
   directory: "/Users/someone/repos/koed-ai",
   projects: ["koed-ai"],
-  evidence: [],
-  ...overrides
-});
+  evidence: []
+} satisfies FolderProposal;
 
 describe("proposal text", () => {
   it("shortens the home folder and cuts the middle of a long path", () => {
@@ -33,25 +36,22 @@ describe("proposal text", () => {
   });
 
   it("leads with the reason and names the Project", () => {
-    expect(proposalLead(proposal({}))).toBe("Same Git remote as koed-ai");
+    expect(proposalLead(proposal)).toBe("Same Git remote as koed-ai");
     expect(
-      proposalLead(
-        proposal({
-          kind: "worktree-parent",
-          action: "use",
-          directory: "/w/koed"
-        })
-      )
+      proposalLead({
+        ...proposal,
+        kind: "worktree-parent",
+        action: "use",
+        folder,
+        directory: "/w/koed"
+      })
     ).toBe("Worktree of koed");
-    expect(
-      proposalLead(proposal({ kind: "create", action: "create", projects: [] }))
-    ).toBe("New Folder for ~/repos/koed-ai");
   });
 
   it("keeps each piece of evidence short, with the path or Git Anchor as detail", () => {
     expect(
       evidenceLines(
-        proposal({ evidence: ["directory-remote", "directory-birthtime"] }),
+        { ...proposal, evidence: ["directory-remote", "directory-birthtime"] },
         { anchor: "github.com/org/koed-ai" }
       )
     ).toEqual([
@@ -60,11 +60,14 @@ describe("proposal text", () => {
     ]);
     expect(
       evidenceLines(
-        proposal({
+        {
+          ...proposal,
           kind: "worktree-parent",
+          action: "use",
+          folder,
           directory: "/Users/someone/agents/koed",
           evidence: ["worktree-link-recorded"]
-        }),
+        },
         { client: "Claude Code" }
       )
     ).toEqual([
@@ -81,7 +84,8 @@ describe("proposal text", () => {
         sessionId: "00000000-0000-4000-8000-000000000001",
         tier: "medium",
         score: 5,
-        kind: "create",
+        kind: "registered",
+        folder,
         directory: "/w/x",
         reasons: [
           { code: "directory-activity", outcome: "agrees" },
@@ -91,15 +95,5 @@ describe("proposal text", () => {
       }
     ]);
     expect(made?.evidence).toEqual(["git-remote", "directory-birthtime"]);
-  });
-
-  it("adds a note only when accepting registers a new folder", () => {
-    expect(proposalNote(proposal({}), "bulk")).toBeUndefined();
-    expect(
-      proposalNote(proposal({ action: "create", kind: "create" }), "bulk")
-    ).toBe("Adding it registers this folder on this device.");
-    expect(
-      proposalNote(proposal({ action: "create", kind: "create" }), "single")
-    ).toBe("Using it registers this folder on this device.");
   });
 });

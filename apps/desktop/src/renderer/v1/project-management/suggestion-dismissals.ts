@@ -14,7 +14,9 @@ export const dismissalKey = ({ sessionId, proposal }: SuggestionRow) =>
   [
     sessionId,
     proposal.kind,
-    proposal.repositoryKey ?? proposal.directory ?? "",
+    proposal.kind === "repository"
+      ? proposal.repositoryKey
+      : (proposal.directory ?? ""),
     [...proposal.projects].sort().join(",")
   ].join("|");
 

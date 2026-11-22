@@ -20,8 +20,6 @@ export function suggestionReason(proposal: FolderProposal): string {
       return name ? `Worktree of ${name}` : "Worktree of the main checkout";
     case "repository":
       return "Git Anchor match";
-    case "create":
-      return name ? `New Folder for ${name}` : "New Folder";
     default:
       return "Folder match";
   }
@@ -35,8 +33,6 @@ export function proposalLead(proposal: FolderProposal): string {
       return proposal.projects.length > 0
         ? `Same Git remote as ${proposal.projects.join(", ")}`
         : "Same Git remote";
-    case "create":
-      return path ? `New Folder for ${path}` : "New Folder";
     case "registered":
       return path ? `Recorded in ${path}` : "Recorded Folder";
     default:
@@ -74,7 +70,6 @@ export function evidenceLines(
         },
     "live-registry-match": { text: "A later capture registered this folder" },
     "worktree-parent-registered": at("Already a Folder:"),
-    "directory-not-registered": at("No Folder yet for"),
     "directory-birthtime": {
       text: "Folder existed before this conversation"
     },
@@ -87,15 +82,4 @@ export function evidenceLines(
     "directory-activity": { text: "Recent activity in the folder" }
   };
   return proposal.evidence.map((code) => line[code]);
-}
-
-/** Only a new Folder needs a note: accepting it registers the directory. */
-export function proposalNote(
-  proposal: FolderProposal,
-  context: "bulk" | "single"
-): string | undefined {
-  if (proposal.action !== "create") return undefined;
-  return context === "bulk"
-    ? "Adding it registers this folder on this device."
-    : "Using it registers this folder on this device.";
 }

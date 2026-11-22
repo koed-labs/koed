@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   personalFolderAssignmentSchema,
-  personalFolderObservationSchema,
   personalFolderReferenceSchema,
   personalOwnerIdSchema
 } from "./personal-source-contract.js";
@@ -114,27 +113,15 @@ export const personalFolderHintsDataSchema = z
   })
   .strict();
 
-/** Explicit confirmation to register the directory a `create` hint named. */
-export const personalFolderHintCreateRequestSchema = z
+/** Read-only confirmation of the exact existing Folder the User reviewed. */
+export const personalFolderHintConfirmRequestSchema = z
   .object({
     sessionId: z.uuid(),
-    /** Which candidate is being accepted. Defaults to registering a new Folder. */
-    kind: z.enum(["registered", "worktree-parent", "create"]).optional()
-  })
-  .strict();
-export type PersonalFolderHintCreateRequest = z.infer<
-  typeof personalFolderHintCreateRequestSchema
->;
-
-/** The Folder the confirmed registration produced. It is not yet assigned. */
-export const personalFolderHintCreateDataSchema = z
-  .object({
-    folder: personalFolderReferenceSchema,
-    normalizedPath: z.string().min(1).max(4096)
+    kind: z.enum(["registered", "worktree-parent"]),
+    folder: personalFolderReferenceSchema
   })
   .strict();
 
-/** Body sent to the API so the new Folder becomes known to the owner. */
-export const personalFolderObservationRecordSchema = z
-  .object({ observation: personalFolderObservationSchema })
+export const personalFolderHintConfirmDataSchema = z
+  .object({ folder: personalFolderReferenceSchema })
   .strict();

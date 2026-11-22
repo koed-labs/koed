@@ -6,7 +6,10 @@ import type {
   PersonalConversationOrganizationResult
 } from "@koed-labs/shared";
 import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
-import type { DesktopProject } from "../../../project-memory-ui.js";
+import {
+  mergeProjectSources,
+  type DesktopProject
+} from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { SidebarManagement } from "../ProjectSidebar.js";
 import type { SidebarConversation } from "../project-sidebar-model.js";
@@ -74,14 +77,18 @@ export function useProjectManagement({
     preferredProjectId?: string
   ) => void;
 }) {
+  const operationScope = useMemo(
+    () => ({ scopeKey, api, store }),
+    [scopeKey, api, store]
+  );
+  const scope = useRef(operationScope);
+  scope.current = operationScope;
   const [state, setState] = useState<{
-    scope: string | null;
+    scope: typeof operationScope;
     modal: Modal | null;
     notice: Notice | null;
-  }>({ scope: scopeKey, modal: null, notice: null });
+  }>({ scope: operationScope, modal: null, notice: null });
   const [busy, setBusy] = useState(false);
-  const scope = useRef(scopeKey);
-  scope.current = scopeKey;
   const alive = useRef(true);
   const locked = useRef(false);
   useEffect(() => {
@@ -90,18 +97,22 @@ export function useProjectManagement({
       alive.current = false;
     };
   }, []);
-  const current =
-    state.scope === scopeKey
-      ? state
-      : { scope: scopeKey, modal: null, notice: null };
+  const sameScope = (value: typeof state) => value.scope === operationScope;
+  const scopeIsCurrent = () =>
+    alive.current && scope.current === operationScope;
+  const current = sameScope(state) ? state : { modal: null, notice: null };
   const open = (modal: Modal | null) =>
     setState((old) => ({
-      scope: scopeKey,
+      scope: operationScope,
       modal,
-      notice: old.scope === scopeKey ? old.notice : null
+      notice: sameScope(old) ? old.notice : null
     }));
   const notice = (value: Notice | null) =>
-    setState((old) => ({ ...old, scope: scopeKey, notice: value }));
+    setState((old) => ({
+      scope: operationScope,
+      notice: value,
+      modal: sameScope(old) ? old.modal : null
+    }));
   const available =
     !!scopeKey &&
     !!api?.manageProject &&
@@ -154,9 +165,8 @@ export function useProjectManagement({
   const run = async (work: (check: () => void) => Promise<void>) => {
     if (!available || locked.current)
       throw new Error("Project management is busy or unavailable.");
-    const expectedScope = scopeKey;
     const check = () => {
-      if (!alive.current || scope.current !== expectedScope)
+      if (!scopeIsCurrent())
         throw new Error("The active account or backend changed.");
     };
     check();
@@ -287,7 +297,7 @@ export function useProjectManagement({
     })
       .then(() => moved)
       .catch((cause) => {
-        if (scope.current === scopeKey)
+        if (scopeIsCurrent())
           notice({
             message: "Could not move Conversation",
             error: projectErrorMessage(cause)
@@ -353,7 +363,7 @@ export function useProjectManagement({
         }
       });
     } catch (cause) {
-      if (scope.current === scopeKey)
+      if (scopeIsCurrent())
         notice({ ...current.notice!, error: projectErrorMessage(cause) });
     }
   };
@@ -415,32 +425,45 @@ export function useProjectManagement({
               check();
               // Excluded now, so no longer suggested here or in the sidebar.
               if (rejected.length > 0) dismiss(rejected);
-              // Each suggestion is its own correction, saved after the
-              // Project's changes; one failure does not stop the rest.
-              const added = await applySuggestions(api!, projects, accepted);
-              check();
-              if (accepted.length > 0) forgetSuggestions();
+              const status: Notice = { message: "Project settings saved" };
+              if (accepted.length > 0) {
+                try {
+                  // Settings can advance Project versions. Pin each review to
+                  // the inventory after the settings write, not the draft.
+                  const latest = await api!.listProjects();
+                  check();
+                  const added = await applySuggestions(
+                    api!,
+                    mergeProjectSources(latest, []),
+                    accepted,
+                    project.id,
+                    check
+                  );
+                  check();
+                  if (added.failed.length > 0) {
+                    status.message += `. ${added.done} of ${accepted.length} suggested conversations added.`;
+                    status.error = added.failed.join("\n");
+                  } else {
+                    status.message += `. Added ${added.done} ${added.done === 1 ? "conversation" : "conversations"}.`;
+                  }
+                } catch (cause) {
+                  check();
+                  status.message += ". No suggested conversations added.";
+                  status.error = projectErrorMessage(cause);
+                }
+                forgetSuggestions();
+              }
               open(null);
-              notice(
-                added.failed.length > 0
-                  ? {
-                      message: `Project settings saved. ${added.done} of ${accepted.length} suggested conversations added.`,
-                      error: added.failed.join("\n")
-                    }
-                  : {
-                      message:
-                        accepted.length > 0
-                          ? `Project settings saved. Added ${added.done} ${added.done === 1 ? "conversation" : "conversations"}.`
-                          : "Project settings saved"
-                    }
-              );
+              notice(status);
               try {
                 await refresh(check);
               } catch (cause) {
                 check();
                 notice({
-                  message: "Project settings saved",
-                  error: projectErrorMessage(cause)
+                  ...status,
+                  error: [status.error, projectErrorMessage(cause)]
+                    .filter(Boolean)
+                    .join("\n")
                 });
               }
             })

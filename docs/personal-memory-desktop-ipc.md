@@ -20,6 +20,9 @@ The `explain_sessions` action reads up to 100 Conversations per request through
 one owner transaction and checks the reviewed Project version and source ownership.
 Settings and source previews request batches sequentially. A failed batch discards
 partial membership results but keeps the loaded Sync review accessible.
+Contract version 33 replaces the Folder hint creation command with the
+read-only `personal.folders.hints.confirm` command described below.
+
 Contract version 32 adds the `list_exclusions` action
 (`POST /v1/personal/projects/:projectId/exclusions/list`, owner-scoped, read-only,
 version-pinned), which returns the newest available session of every Conversation
@@ -50,9 +53,13 @@ Contract version 31 widens a hint with a `kind`: `registered` (unchanged),
 belongs to), or `create` (a directory with no Folder yet, named by `directory`).
 The Personal API does not expose a standalone Folder observation write. Owner
 authentication does not establish that the calling device captured the target
-Conversation. The Desktop hint command `personal.folders.hints.create` cannot
-record an observation for a Conversation through that API. Scoring stays
-read-only, and existing source-context review and apply routes remain available.
+Conversation. Desktop offers no action for `create` hints.
+`personal.folders.hints.confirm` takes a Conversation ID, `registered` or
+`worktree-parent` kind, and full Folder reference. Electron main fetches fresh
+evidence and runs the bounded scorer again. It confirms only that exact kind and
+reference, without writing an observation or registering a Folder. The server's
+reviewed source correction decides whether the Folder is already known and valid
+for the Conversation.
 The dialog resolves the suggested Folder to the named Projects whose active rules cover that exact Folder and words the suggestion "Suggested Project: X" when one does ("Suggested Folder" otherwise); a candidate that lands in a Project is preferred. Each Project row in the sidebar shows only its settings menu (⋯), with no counts. Project settings › Conversations shows the number of suggestions beside the page name, and which lists "In Project", "Suggested" and "Excluded" separately; the counts are worked out in the background shortly after start-up, a batch at a time (hints in batches of 50 with a short in-memory cache), and recomputed after an edit. A Conversation excluded from the Project is never suggested for it. Every row on the three tabs shows the AI Client, how the Conversation is or would be connected ("Git Anchor", "Folder", or "Added by you" when no rule matches; "Git Anchor match", "Folder match", "Worktree of koed" for suggestions; "Excluded by you") and its age, with one action: Remove, Add, or Add back. An action only stages a change: the row is tinted with "Will be added", "Will be removed", "Will be excluded" (a Conversation a rule still matches is excluded, since the rule would bring it back) or "Will be added back", and offers Undo. "Keep if rules change" (direct membership) and "Not this one" sit in the row's menu; "Not this one" stages "Will be excluded", and saving excludes the Conversation from the Project, so it moves to Excluded; a kept Conversation shows a padlock, is listed first on In Project, and always has the menu so it can be turned off (with no rule matching, turning it off stages "Will be removed"). The footer counts what saving will do ("1 to add · 1 to remove"). Save changes first applies the Project's own changes, then applies each ticked suggestion exactly as the single dialog does (accept the hint, review the correction against the Conversation's current state, save a version-pinned edit), so the Conversation joins through the Project's Folder or Git Anchor rule rather than direct membership. The two steps are not atomic; a suggestion that fails is reported and the rest still apply. After saving, an excluded suggestion is also hidden in renderer local storage per owner scope on this device, so it is no longer counted as a suggestion, until the suggestion itself changes (a different Folder, Git Anchor or Project).
 A hint can also have `kind: "repository"` with a `repositoryKey` (the portable fingerprint of the directory's current remote); the evidence the API returns carries `gitAnchorKnown` so a Conversation that already has an anchor gets none. Accepting one is a Git Anchor correction that needs no device-side step.
 A Conversation can return several hints, best first (a registered Folder, the main

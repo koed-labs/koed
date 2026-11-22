@@ -16,6 +16,14 @@ const row = (sessionId: string, directory = "/work/koed"): SuggestionRow => ({
     kind: "worktree-parent",
     tier: "medium",
     directory,
+    folder: {
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      folderId: directory,
+      originatingDeploymentId: "deployment",
+      originatingDeviceId: "device",
+      originatingProfileId: "profile",
+      directoryIncarnationId: "incarnation"
+    },
     projects: ["Koed"],
     evidence: []
   }

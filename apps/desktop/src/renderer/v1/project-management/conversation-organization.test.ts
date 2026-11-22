@@ -180,6 +180,8 @@ describe("Conversation organization drafts", () => {
         axis: "folder",
         projects: data.memberships.map((m) => ({
           projectId: m.project.id,
+          beforeIncluded: m.explanation.included,
+          afterIncluded: m.explanation.reasons.some((r) => r.kind !== "folder"),
           afterReasons: m.explanation.reasons.filter((r) => r.kind !== "folder")
         }))
       }

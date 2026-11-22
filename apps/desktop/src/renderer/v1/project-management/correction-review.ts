@@ -30,6 +30,8 @@ export async function reviewSourceCorrections(
       const preview = result.preview;
       if (
         !preview ||
+        preview.axis !== correction.axis ||
+        preview.expectedVersion !== correction.expectedVersion ||
         JSON.stringify(preview.before) !== JSON.stringify(review.context) ||
         preview.projects.length !== review.projects.length ||
         review.projects.some(
@@ -58,6 +60,17 @@ export function combineCorrectionPreviews(
   return {
     corrections,
     projects: review.memberships.map(({ project, explanation }) => {
+      const single =
+        previews.length === 1
+          ? previews[0]!.projects.find((p) => p.projectId === project.id)
+          : undefined;
+      if (single)
+        return {
+          id: project.id,
+          name: project.name,
+          before: single.beforeIncluded,
+          after: single.afterIncluded
+        };
       const reasons = ["session", "repository", "folder"].flatMap((kind) => {
         const preview = previews.find(
           (p) => p.axis === (kind === "repository" ? "git" : kind)

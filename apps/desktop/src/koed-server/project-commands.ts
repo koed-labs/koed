@@ -6,7 +6,6 @@ import {
   discoverProjectMetadata,
   hintsForConversation,
   createClientWorktreeLookup,
-  createHintedFolder as createHintedFolderOnDevice,
   setProjectRepositoryAnchor,
   type KoedServerPaths
 } from "@koed-labs/server";
@@ -18,10 +17,10 @@ import {
   personalMembershipSyncCommandResultSchema,
   personalSourceContextCommandSchema,
   personalSourceContextCommandResultSchema,
-  personalFolderHintCreateDataSchema,
-  personalFolderHintCreateRequestSchema,
+  personalFolderHintConfirmDataSchema,
+  personalFolderHintConfirmRequestSchema,
   personalFolderHintEvidenceSchema,
-  personalFolderObservationRecordSchema,
+  personalFolderScopeId,
   type PersonalFolderHintEvidence,
   personalFolderHintRequestSchema,
   personalFolderHintsDataSchema,
@@ -312,38 +311,31 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     }
     return personalFolderHintsDataSchema.parse({ hints });
   };
-  /** Explicit confirmation to register a hinted directory as a Folder. The
-   * evidence is re-gathered and re-scored here, so a stale or forged request
-   * cannot create a Folder. The Folder is then recorded as an observation on
-   * the Conversation, which makes it available to the ordinary reviewed
-   * correction. Nothing is assigned. */
-  const createHintedFolder = async (raw: unknown) => {
-    const { sessionId, kind } =
-      personalFolderHintCreateRequestSchema.parse(raw);
+  /** Re-score the exact advisory candidate. Only the reviewed correction can
+   * authorize this reference for the Conversation. */
+  const confirmFolderHint = async (raw: unknown) => {
+    const { sessionId, kind, folder } =
+      personalFolderHintConfirmRequestSchema.parse(raw);
     const payload = await fetchHintEvidence([sessionId]);
     const row = payload.evidence.find((item) => item.sessionId === sessionId);
     if (!row) throw new Error("Conversation not found.");
-    const observation = await createHintedFolderOnDevice(
+    const candidates = await hintsForConversation(
       deps.paths,
-      hintConversation(payload.ownerUserId, row),
-      kind ? { kind } : {}
+      hintConversation(payload.ownerUserId, row)
     );
-    if (!observation)
-      throw new Error("This directory no longer qualifies for a Folder.");
-    await deps.personalRequest(
-      `/v1/personal/sessions/${encodeURIComponent(sessionId)}/folder-observation`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(
-          personalFolderObservationRecordSchema.parse({ observation })
-        )
-      }
-    );
-    return personalFolderHintCreateDataSchema.parse({
-      folder: { ...observation.identity, ownerUserId: payload.ownerUserId },
-      normalizedPath: observation.normalizedPath
-    });
+    const reviewed = personalFolderScopeId(folder);
+    if (
+      !candidates?.some(
+        (candidate) =>
+          candidate.tier !== "none" &&
+          candidate.kind === kind &&
+          personalFolderScopeId(candidate.folder) === reviewed
+      )
+    )
+      throw new Error(
+        "This Folder suggestion no longer matches what you reviewed."
+      );
+    return personalFolderHintConfirmDataSchema.parse({ folder });
   };
   const manageSourceContext = async (raw: unknown) => {
     const input = personalSourceContextCommandSchema.parse(raw);
@@ -507,7 +499,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     manage: managePersonalProject,
     manageSourceContext,
     folderHints,
-    createHintedFolder,
+    confirmFolderHint,
     manageMembershipSync,
     lookupAssociatedSelection,
     selection: createProjectSelectionCommand({

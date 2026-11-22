@@ -84,7 +84,7 @@ afterEach(() => {
 
 const render = async (
   folderHints?: PersonalDesktopApi["folderHints"],
-  createHintedFolder?: PersonalDesktopApi["createHintedFolder"]
+  confirmFolderHint?: PersonalDesktopApi["confirmFolderHint"]
 ) => {
   const api = {
     manageSourceContext: vi.fn(async () => ({
@@ -100,7 +100,7 @@ const render = async (
     })),
     manageProject: vi.fn(),
     ...(folderHints ? { folderHints } : {}),
-    ...(createHintedFolder ? { createHintedFolder } : {})
+    ...(confirmFolderHint ? { confirmFolderHint } : {})
   } as unknown as PersonalDesktopApi;
   await act(async () => {
     root.render(
@@ -115,22 +115,20 @@ const render = async (
     );
   });
   await act(async () => {});
+  return api;
 };
 
 const button = (label: string) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent === label);
-const accepted = {
-  folder: folder.reference,
-  normalizedPath: "/work/koed/api"
-};
+const accepted = { folder: folder.reference };
 
 describe("SourceContextDialog Folder suggestion", () => {
   it("shows one short suggestion and makes it a choice only when the User accepts it", async () => {
     const folderHints = vi.fn(async () => [
       hint({ directory: "/work/koed/api" })
     ]);
-    const createHintedFolder = vi.fn(async () => accepted);
-    await render(folderHints, createHintedFolder);
+    const confirmFolderHint = vi.fn(async () => accepted);
+    await render(folderHints, confirmFolderHint);
     expect(folderHints).toHaveBeenCalledWith({ sessionIds: [id(50)] });
     const text = document.body.textContent ?? "";
     expect(text).toContain("Suggested Folder: api");
@@ -139,19 +137,20 @@ describe("SourceContextDialog Folder suggestion", () => {
     expect(
       document.querySelector('button[aria-label="Why this suggestion"]')
     ).toBeNull();
-    expect(createHintedFolder).not.toHaveBeenCalled();
+    expect(confirmFolderHint).not.toHaveBeenCalled();
     expect(button("Review changes")?.hasAttribute("disabled")).toBe(true);
     await act(async () => button("Use")!.click());
-    expect(createHintedFolder).toHaveBeenCalledWith({
+    expect(confirmFolderHint).toHaveBeenCalledWith({
       sessionId: id(50),
-      kind: "registered"
+      kind: "registered",
+      folder: folder.reference
     });
     expect(button("Review changes")?.hasAttribute("disabled")).toBe(false);
     expect(document.body.textContent).not.toContain("Suggested ");
   });
 
   it("names a worktree's suggestion after its project and accepts it as the main checkout", async () => {
-    const createHintedFolder = vi.fn(async () => accepted);
+    const confirmFolderHint = vi.fn(async () => accepted);
     await render(
       vi.fn(async () => [
         hint(),
@@ -160,14 +159,14 @@ describe("SourceContextDialog Folder suggestion", () => {
           directory: "/Users/me/agents/koed"
         })
       ]),
-      createHintedFolder
+      confirmFolderHint
     );
     expect(document.body.textContent).toContain("Suggested Folder: koed");
     await act(async () => button("Use")!.click());
-    expect(createHintedFolder).toHaveBeenCalledTimes(1);
-    expect(createHintedFolder).toHaveBeenCalledWith({
+    expect(confirmFolderHint).toHaveBeenCalledExactlyOnceWith({
       sessionId: id(50),
-      kind: "worktree-parent"
+      kind: "worktree-parent",
+      folder: folder.reference
     });
   });
 
@@ -217,19 +216,31 @@ describe("SourceContextDialog Git Anchor suggestion", () => {
     });
 
   it("suggests the Project whose Git Anchor matches, and selects it without registering anything", async () => {
-    const createHintedFolder = vi.fn();
-    await render(
+    const confirmFolderHint = vi.fn();
+    const api = await render(
       vi.fn(async () => [anchorHint()]),
-      createHintedFolder
+      confirmFolderHint
     );
     expect(document.body.textContent).toContain(
       "Suggested Project: lyons-mouth"
     );
     expect(button("Review changes")?.hasAttribute("disabled")).toBe(true);
     await act(async () => button("Use")!.click());
-    expect(createHintedFolder).not.toHaveBeenCalled();
+    expect(confirmFolderHint).not.toHaveBeenCalled();
     expect(button("Review changes")?.hasAttribute("disabled")).toBe(false);
     expect(document.body.textContent).not.toContain("Suggested Project");
+    await act(async () => button("Review changes")!.click());
+    expect(api.manageSourceContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "preview",
+        correction: {
+          axis: "git",
+          action: "set",
+          expectedVersion: 1,
+          repository: { key: "gr_lyons" }
+        }
+      })
+    );
   });
 
   it("shows the suggestion without the Folder bridge, since an anchor needs none", async () => {
@@ -240,47 +251,23 @@ describe("SourceContextDialog Git Anchor suggestion", () => {
   });
 });
 
-describe("SourceContextDialog Folder creation", () => {
-  const offer = () =>
-    hint({
-      kind: "create",
-      folder: undefined,
-      directory: "/work/history",
-      reasons: [{ code: "directory-birthtime", outcome: "agrees" }]
-    });
+it("does not offer unregistered directories even with confirmation available", async () => {
+  await render(
+    vi.fn(async () => [
+      hint({ kind: "create", folder: undefined, directory: "/work/history" })
+    ]),
+    vi.fn()
+  );
+  expect(document.body.textContent).not.toContain("Suggested ");
+  expect(button("Use")).toBeUndefined();
+});
 
-  it("registers a Folder only when the User asks, and still requires review", async () => {
-    const createHintedFolder = vi.fn(async () => ({
-      folder: { ...folder.reference, folderId: "new-folder" },
-      normalizedPath: "/work/history"
-    }));
-    await render(
-      vi.fn(async () => [offer()]),
-      createHintedFolder
-    );
-    expect(document.body.textContent).toContain("Suggested Folder: history");
-    expect(createHintedFolder).not.toHaveBeenCalled();
-    expect(button("Review changes")?.hasAttribute("disabled")).toBe(true);
-    await act(async () => button("Create and use")!.click());
-    expect(createHintedFolder).toHaveBeenCalledWith({
-      sessionId: id(50),
-      kind: "create"
-    });
-    expect(button("Review changes")?.hasAttribute("disabled")).toBe(false);
-    expect(document.body.textContent).not.toContain("Create and use");
-  });
-
-  it("shows no offer without the bridge method, and shows the failure when creation is refused", async () => {
-    await render(vi.fn(async () => [offer()]));
-    expect(document.body.textContent).not.toContain("Suggested ");
-    act(() => root.unmount());
-    root = createRoot(host);
-    await render(
-      vi.fn(async () => [offer()]),
-      vi.fn(async () => Promise.reject(new Error("no longer qualifies")))
-    );
-    await act(async () => button("Create and use")!.click());
-    expect(document.body.textContent).toContain("no longer qualifies");
-    expect(button("Review changes")?.hasAttribute("disabled")).toBe(true);
-  });
+it("shows confirmation failure without staging the Folder correction", async () => {
+  await render(
+    vi.fn(async () => [hint()]),
+    vi.fn().mockRejectedValue(new Error("no longer matches"))
+  );
+  await act(async () => button("Use")!.click());
+  expect(document.body.textContent).toContain("no longer matches");
+  expect(button("Review changes")?.hasAttribute("disabled")).toBe(true);
 });
