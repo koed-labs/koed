@@ -405,8 +405,11 @@ A device-local evidence gatherer builds the scorer's input. It reads the recorde
 facts from an owner-scoped, read-only API call, then the directory's stat times, its
 current portable Git remote fingerprint, bounded top-level activity, contained
 transcript files, and a read-only Folder registry lookup. A Conversation captured
-locally (not a replica) has this device as its origin. The gatherer returns nothing
-when the device identity is not ready, and it never registers a directory.
+locally (not a replica) has this device as its origin. The API omits deleted and
+invalidated Conversations. It reports a known Git Anchor only when the effective
+Git identity (override if present, otherwise automatic) identifies a portable or
+device-local repository. The gatherer returns nothing when the device identity
+is not ready and never registers a directory.
 
 Two further candidates apply only when the directory has no registered Folder.
 A linked worktree has its own directory, so it never matches the registry. The

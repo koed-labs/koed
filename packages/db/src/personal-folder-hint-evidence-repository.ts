@@ -55,11 +55,12 @@ export const createPersonalFolderHintEvidenceRepository = (
          exists (select 1 from pds_logical_replicas r
                   where r.local_session_id = s.id
                     and r.owner_user_id = s.owner_user_id) as replica,
-         (s.repository_automatic_identity->>'kind' = 'portable_repository'
-           or s.repository_override_identity is not null) as git_known
+         coalesce(coalesce(s.repository_override_identity, s.repository_automatic_identity)->>'kind'
+           in ('portable_repository', 'device_local_repository'), false) as git_known
        from sessions s
        where s.owner_user_id = $1 and s.visibility = 'personal'
-         and s.invalidated_at is null and s.id = any($2::uuid[])
+         and s.invalidated_at is null and s.personal_deleted_at is null
+         and s.id = any($2::uuid[])
        order by s.id`,
       [ownerUserId, sessionIds]
     );
