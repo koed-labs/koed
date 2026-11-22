@@ -428,6 +428,10 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         path = `${base}/memberships/explain-batch`;
         body.sessionIds = input.sessionIds;
         break;
+      case "list_exclusions":
+        method = "POST";
+        path = `${base}/exclusions/list`;
+        break;
       case "exclude_session":
         method = "POST";
         path = `${base}/exclusions`;

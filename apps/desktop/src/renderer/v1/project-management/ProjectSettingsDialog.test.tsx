@@ -35,13 +35,16 @@ it("opens sync conflict review even when a retained exclusion blocks membership 
   });
   const manageSync = vi.fn(f.api.manageMembershipSync!).mockResolvedValue(sync);
   f.api.manageMembershipSync = manageSync;
-  f.api.manageProject = vi
-    .fn()
-    .mockRejectedValue(
-      new Error(
-        "Synchronized Project membership needs review before it can be changed."
-      )
+  f.api.manageProject = vi.fn(async (input) => {
+    if (input.action === "list_exclusions")
+      return {
+        project: f.projects.get(projectId)!.meta,
+        excludedSessionIds: [sessionId]
+      };
+    throw new Error(
+      "Synchronized Project membership needs review before it can be changed."
     );
+  });
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);

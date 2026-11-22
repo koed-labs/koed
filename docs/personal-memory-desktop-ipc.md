@@ -20,6 +20,11 @@ The `explain_sessions` action reads up to 100 Conversations per request through
 one owner transaction and checks the reviewed Project version and source ownership.
 Settings and source previews request batches sequentially. A failed batch discards
 partial membership results but keeps the loaded Sync review accessible.
+Contract version 32 adds the `list_exclusions` action
+(`POST /v1/personal/projects/:projectId/exclusions/list`, owner-scoped, read-only,
+version-pinned), which returns the newest available session of every Conversation
+currently excluded from the Project. Settings loads these alongside the Project's
+members, so the Excluded tab lists every exclusion, whether or not the Project syncs.
 The settings editor sends one bounded batch through `personal.projects.manage` with the `apply_sources` action.
 The batch can include a rename, source rules, direct membership changes, and a version-pinned exclusion restore.
 The API commits the complete batch under one owner lock and transaction.

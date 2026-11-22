@@ -181,6 +181,14 @@ export async function loadProjectSettings(
       titles.set(reference.sessionId, thread.name);
   }
   try {
+    // Every Conversation excluded from the Project, whether or not it syncs.
+    const excluded = await api.manageProject({
+      action: "list_exclusions",
+      projectId: project.id,
+      expectedVersion: project.namedProject.version
+    });
+    for (const sessionId of excluded.excludedSessionIds ?? [])
+      sessionIds.add(sessionId);
     draft.conversations = await inspectConversations(
       api,
       project,

@@ -256,6 +256,9 @@ export const personalProjectCommandSchema = z.discriminatedUnion("action", [
     .extend({ action: z.literal("apply_sources"), projectId: z.uuid() })
     .strict(),
   z
+    .object({ ...projectCommandBase, action: z.literal("list_exclusions") })
+    .strict(),
+  z
     .object({
       ...projectCommandBase,
       action: z.literal("explain_session"),
@@ -346,7 +349,8 @@ export const personalProjectCommandResultSchema = z
     explanations: z
       .array(personalProjectMembershipExplanationSchema)
       .max(PERSONAL_PROJECT_INSPECTION_BATCH_SIZE)
-      .optional()
+      .optional(),
+    excludedSessionIds: z.array(z.uuid()).optional()
   })
   .strict();
 export type PersonalProjectCommand = z.infer<
