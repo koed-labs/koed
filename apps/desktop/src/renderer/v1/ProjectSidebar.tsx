@@ -46,6 +46,8 @@ import {
 } from "./project-sidebar-model.js";
 import { useSidebarPins } from "./use-sidebar-pins.js";
 import { useConversationDrag } from "./project-management/use-conversation-drag.js";
+import { Pixelkin } from "./pixelkin/Pixelkin.js";
+import { projectKinLook } from "./pixelkin/agent-kin.js";
 import "./project-management/project-management.css";
 
 const CONVERSATIONS_PER_PAGE = 5;
@@ -416,9 +418,19 @@ export function ProjectSidebar({
                           }
                         >
                           {open ? <ChevronDown /> : <ChevronRight />}
-                          {open ? <FolderOpen /> : <Folder />}
+                          {project.managed ? (
+                            <Pixelkin
+                              look={projectKinLook(project.id, project.kin)}
+                              size={30}
+                              className="v1-nav-project-kin"
+                              motion="still"
+                            />
+                          ) : open ? (
+                            <FolderOpen />
+                          ) : (
+                            <Folder />
+                          )}
                           <span>{project.name}</span>
-                          <small>{project.conversations.length}</small>
                         </Collapsible.Trigger>
                         {management && project.managed && (
                           <Button

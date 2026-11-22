@@ -2,10 +2,11 @@
 import { act } from "react";
 import { Storage } from "happy-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NavigationShell } from "./NavigationShell.js";
 import { useNavigationHistory } from "./use-navigation-history.js";
 import type { SidebarProject } from "./project-sidebar-model.js";
+import type { SidebarManagement } from "./ProjectSidebar.js";
 
 const projects: SidebarProject[] = [
   {
@@ -53,8 +54,10 @@ function Harness({
   reveal = null,
   servicesStarting = false,
   loading = false,
-  inventoryReady = true
+  inventoryReady = true,
+  management
 }: {
+  management?: SidebarManagement;
   scope?: string;
   data?: SidebarProject[];
   reveal?: { projectId: string; key: number } | null;
@@ -80,6 +83,7 @@ function Harness({
       canGoBack={navigation.canGoBack}
       canGoForward={navigation.canGoForward}
       onRetry={() => {}}
+      {...(management ? { management } : {})}
     >
       <p data-testid="route">{JSON.stringify(navigation.route)}</p>
     </NavigationShell>
@@ -109,6 +113,33 @@ afterEach(async () => {
 });
 
 describe("Project sidebar interactions", () => {
+  it("shows only a settings button on each Project row, without counts", async () => {
+    const onProjectSettings = vi.fn();
+    const management: SidebarManagement = {
+      onCreateProject: () => {},
+      onProjectSettings,
+      onConversationAction: () => {},
+      onDrop: async () => true
+    };
+    await act(async () =>
+      root.render(
+        <Harness
+          management={management}
+          data={[
+            { ...projectWithConversations("a", "Koed", 3), managed: true },
+            { ...projectWithConversations("b", "Quiet", 2), managed: true }
+          ]}
+        />
+      )
+    );
+    expect(container.querySelectorAll(".v1-pm-coin")).toHaveLength(0);
+    const settings = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Settings for Koed"]'
+    )!;
+    await act(async () => settings.click());
+    expect(onProjectSettings).toHaveBeenCalledWith("a");
+  });
+
   it("reveals conversations five at a time per Project and resets on collapse and owner changes", async () => {
     const data = [
       projectWithConversations("a", "Alpha", 12),

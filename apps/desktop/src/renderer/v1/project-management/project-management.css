@@ -477,6 +477,10 @@ label.v1-pm-choice-row:hover {
 .v1-pm-project-row {
   position: relative;
 }
+/* A Project row shows its settings menu at all times. */
+.v1-pm-project-row .v1-pm-row-menu {
+  opacity: 1;
+}
 .v1-pm-row-menu {
   position: absolute;
   right: 8px;

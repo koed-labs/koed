@@ -1,3 +1,4 @@
+import type { PersonalProjectKin } from "@koed-labs/shared";
 import {
   personalInventoryConversationKey,
   personalInventoryReference
@@ -36,6 +37,8 @@ export type SidebarProject = {
   latestAt: string;
   conversations: SidebarConversation[];
   managed?: boolean;
+  /** The Project's saved Kin, when it has one; its look is derived otherwise. */
+  kin?: PersonalProjectKin;
 };
 const timestamp = (value: string) => Date.parse(value) || 0;
 const activityOrder = <
@@ -76,7 +79,8 @@ export function buildProjectSidebar(
       name: ungrouped ? "No project" : project.name,
       latestAt: "",
       conversations: [],
-      managed: Boolean(project.namedProject)
+      managed: Boolean(project.namedProject),
+      ...(project.namedProject?.kin ? { kin: project.namedProject.kin } : {})
     };
     for (const thread of project.threads) {
       if (
