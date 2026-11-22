@@ -187,11 +187,9 @@ and subagent start/stop. The Hook uses the event only to identify and wake the
 matching local transcript source. It does not send prompt, response, or tool
 content to the API.
 
-When `SessionStart` begins a new Conversation, the Hook also pins the original
-Folder and the directory's selected Git remote before the watcher registers the
-Captured Session. A new launch (`startup`), a cleared context (`clear`), and a
-fork qualify. A fork reports `resume`, but its own transcript holds only
-messages copied from another session. See
+Only `SessionStart` with `startup` or `clear` can pin original Folder and Git
+context. A `resume` can update the latest Folder and wake the watcher, but
+copied history is ambiguous: it does not prove a new Conversation. See
 [Exact Folder capture and selection](personal-selection-contract.md#exact-folder-capture-and-selection).
 
 The `koed-server`-supervised Local AI Runtime owns the Claude Transcript Watcher when
@@ -423,32 +421,9 @@ final statuses, dependency ordering, and waiter interruption. See
 
 ### Repository assignments
 
-For new live captures, the Transcript Watcher resolves the transcript's checkout
-through the same selected-anchor resolver as Codex. It passes the portable,
-device-local, non-Git, or unresolved observation with the Captured Session
-registration. The Supported Capture Hook supplies lifecycle signals to this
-same path. Repository roots, subdirectories, and worktrees with the same selected
-remote therefore use the same portable Project fingerprint while retaining their
-checkout paths. Unavailable Git metadata produces an unresolved observation.
-
-Duplicate signals, reordered observations, resumed Conversations, and new
-subagent artifacts use the shared recorded-assignment boundary. They cannot
-replace a User override or resolve a pre-cutover logical Session. A historical
-import can use current Git in its recorded folder for initial grouping, but this
-does not establish source-time Git provenance. Desktop inspection shows the effective assignment
-recorded by the API rather than another caller-side identity policy.
-
-### Historical Project assignment
-
-Claude Code historical transcripts currently provide no supported source-time
-Git anchor. Fresh historical registration uses a valid absolute cwd recorded in
-the main transcript to discover its current Git Project. The normal anchor
-selection rules apply, and subdirectories resolve to the Git root. Auxiliary
-components use that same assignment. Missing or invalid recorded context stays
-unresolved. A current branch is not attributed to the historical Conversation.
-
-If the folder is missing or has no usable Git metadata, the recorded path supplies
-a local folder Project. Git selection conflicts remain unresolved. Koed never
-uses the importing process's cwd. Re-import and later live capture preserve
-existing assignments, User overrides, and the migration's historical-unresolved
-state. These imports do not repair previously captured Sessions.
+Claude Code transcripts can supply a recorded working directory but no native
+source-time Git Anchor. Live and historical registration use trustworthy pinned
+context when available; neither today's Git state nor a recorded path alone
+establishes an original Git Anchor or exact Folder. Replay and continued capture
+preserve existing assignments and User corrections. See
+[Source-Time Attribution](source-time-attribution.md).

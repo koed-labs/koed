@@ -290,12 +290,9 @@ Removal runs `pi remove $KOED_HOME/integrations/pi` and verifies that the active
 
 ### Repository assignments
 
-The Pi Transcript Watcher reads the Session header's checkout and applies the
-shared selected-anchor resolver when registering a new Captured Session. A
-repository root, its subdirectories, and worktrees with the same selected remote
-share a portable Project fingerprint. Non-Git checkouts retain device-local
-Project identity; unavailable metadata records an unresolved observation. The
-watcher's own cwd does not supply the Project.
+On first eligible live registration, the Pi Transcript Watcher uses the pinned
+original context or seals it as unresolved, just as exact historical registration
+does. The watcher's own working directory never supplies source context.
 
 Registration and Projection use the existing shared assignment contract.
 Duplicate, delayed, and conflicting observations cannot replace an assignment or
@@ -307,18 +304,12 @@ same effective assignment used by recall.
 
 ### Historical Project assignment
 
-Pi historical Session headers currently provide no supported source-time Git
-anchor. Fresh historical capture uses a valid absolute cwd from the verified
-Session header to discover its current Git Project. The normal anchor selection
-rules apply, and subdirectories resolve to the Git root. Missing or invalid
-recorded context stays unresolved. The importing process's cwd never supplies
-this identity, and a current branch is not attributed to historical activity.
-
-Missing folders and folders without usable Git metadata fall back to a local
-folder Project. Git selection conflicts remain unresolved. A local folder group
-claims no current checkout incarnation. Re-import,
-resumed capture, and later checkpoints preserve existing assignments, overrides,
-and the migration's unresolved history.
+Pi historical Session headers record a working directory, not a source-time Git
+Anchor or exact Folder. On first exact historical registration, Koed uses the
+original context already pinned for that Conversation or seals it as unresolved.
+It does not infer it from today's checkout. Re-import and continued capture
+preserve existing assignments and User corrections. See
+[Source-Time Attribution](source-time-attribution.md).
 
 ### Memory Answer worker tools and validation
 

@@ -7,10 +7,10 @@ lifetime, even when the path still exists.
 
 ## Evidence And Precedence
 
-1. A Supported Capture Hook at a new Conversation's native `SessionStart`
-   (`startup`, not resume) records Folder and selected repository context in the
-   existing source-context pin. Pi records the equivalent verified new-session
-   observation through its existing local runtime endpoint. The pin is keyed by
+1. A Supported Capture Hook can pin original Folder and selected repository
+   context on an authoritative lifecycle event: `SessionStart` with `startup`
+   for Codex, `SessionStart` with `startup` or `clear` for Claude Code, or an
+   explicit `new` or `fork` for Pi through the Local AI Runtime. The pin is keyed by
    AI Client and external Conversation ID, and its original context is immutable.
    The selected anchor includes explicit local or accepted associated selections;
    native `origin` metadata cannot replace that selection or a recorded selection
@@ -28,11 +28,19 @@ lifetime, even when the path still exists.
    path remains source metadata independently of Git identity.
 
 The new-session observation must come from the AI Client lifecycle, never from
-the Watcher's first discovery of a transcript. Existing source pins lacking the
-optional repository field remain readable; a resume or later startup signal
-cannot backfill them from today's filesystem. Reliable native metadata remains
-usable for those older pins. Missing startup evidence cannot be reconstructed
-automatically from an unchanged-looking path.
+first transcript discovery. Copied history on Claude Code `resume` is ambiguous.
+Pi `startup` is not authoritative, even for an empty transcript.
+
+Pi can publish a transcript before the lifecycle observation reaches Koed. On
+first eligible live registration or exact historical registration on a lookup
+miss, Koed reads both original facts together under the source lock. If no
+record exists, it seals both originals as unresolved and proceeds without
+waiting. A later observation can update the latest Folder, not those originals.
+
+Existing pins lacking the optional repository field remain readable. Reliable
+native metadata can still establish a Git Anchor for older pins where applicable;
+a later lifecycle signal or an unchanged-looking path cannot reconstruct missing
+original evidence.
 
 ## Assignment And Recovery
 
