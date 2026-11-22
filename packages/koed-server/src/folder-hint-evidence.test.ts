@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeGitRemoteUrl } from "@koed-labs/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import { observeCaptureFolder } from "./folder-context.js";
@@ -292,6 +292,52 @@ describe("Folder hint evidence", () => {
       ).toEqual({ state: "missing" });
     });
 
+    it("does not infer a parent for a standalone checkout at the Claude worktree path", async () => {
+      const { root, paths, env } = await fixture();
+      const main = resolve(root, "main");
+      const cwd = resolve(main, ".claude/worktrees/standalone");
+      gitRepo(main);
+      gitRepo(cwd);
+      await observeCaptureFolder(paths, main, env);
+      const { firstConversationAt, now } = timing();
+      const input = await gatherFolderHintInput(
+        paths,
+        conversation({
+          recordedCwd: cwd,
+          capturedOnThisDevice: true,
+          recordedRemoteFingerprint: fingerprint,
+          firstConversationAt
+        }),
+        { environment: env, now }
+      );
+      expect(input?.worktree).toBeUndefined();
+    });
+
+    it("skips worktree discovery for an ineligible Claude Conversation", async () => {
+      const { root, paths, env } = await fixture();
+      const main = resolve(root, "main");
+      gitRepo(main);
+      await observeCaptureFolder(paths, main, env);
+      const { firstConversationAt, now } = timing();
+      const lookupClientWorktree = vi.fn(async () => ({
+        state: "worktree" as const,
+        originPath: main
+      }));
+      const input = await gatherFolderHintInput(
+        paths,
+        conversation({
+          sourceRuntime: "claude-code",
+          externalSessionId: "cli-1",
+          recordedCwd: resolve(main, ".claude/worktrees/deleted"),
+          recordedRemoteFingerprint: fingerprint,
+          firstConversationAt
+        }),
+        { environment: env, now, lookupClientWorktree }
+      );
+      expect(input?.worktree).toBeUndefined();
+      expect(lookupClientWorktree).not.toHaveBeenCalled();
+    });
+
     it("links a deleted Claude Code worktree to its registered main checkout by path", async () => {
       const { root, paths, env } = await fixture();
       const main = resolve(root, "main");
@@ -314,6 +360,21 @@ describe("Folder hint evidence", () => {
         directory: main,
         folder: { folderId: observed.identity.folderId }
       });
+      expect(hint?.reasons).not.toContainEqual({
+        code: "worktree-link-git",
+        outcome: "agrees"
+      });
+      expect(
+        await hintForConversation(
+          paths,
+          conversation({
+            recordedCwd: resolve(main, ".claude/worktrees/task-1"),
+            capturedOnThisDevice: true,
+            firstConversationAt
+          }),
+          { environment: env, now }
+        )
+      ).toMatchObject({ tier: "none" });
       // Accepting it returns the main checkout's existing Folder, never a new one.
       const subject = conversation({
         recordedCwd: resolve(main, ".claude/worktrees/task-1"),
@@ -365,7 +426,6 @@ describe("Folder hint evidence", () => {
         conversation({
           recordedCwd: worktree,
           capturedOnThisDevice: true,
-          recordedRemoteFingerprint: fingerprint,
           firstConversationAt
         }),
         { environment: env, now }

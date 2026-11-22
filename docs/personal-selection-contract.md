@@ -412,24 +412,29 @@ Git identity (override if present, otherwise automatic) identifies a portable or
 device-local repository. The gatherer returns nothing when the device identity
 is not ready and never registers a directory.
 
-Two further candidates apply only when the directory has no registered Folder.
-A linked worktree has its own directory, so it never matches the registry. The
-gatherer finds its main checkout from the AI Client's own record when there is one,
-else Git's `.git` pointer file while the directory exists, else the
-`.claude/worktrees/<name>` path convention once it is gone. The Claude desktop app
-records `originCwd` (the project it was started from) beside the directory a session
-ran in; the gatherer matches it by session id and the recorded directory, reads it
-as an unverified path only (it is then checked against the disk, the registry, and
-the Git remote like any other), and a client record that says the session ran in its
-own directory overrides the path guess. Codex and Pi have no such link to read:
-Codex sub-agents share their parent's directory and Pi records only a directory. The
-worktree-parent hint suggests the main checkout's registered Folder, capped at
-medium, and requires a captured-here Conversation, a main checkout older than the
-Conversation, and a current remote that does not differ from the recorded one. A
-link the AI Client or Git itself recorded is direct evidence and adds two points,
-so it needs no recorded remote; a link inferred only from a path convention still
-needs the remote to agree. Otherwise a
-creation hint applies to an existing, unregistered directory: the Conversation
+A linked worktree has its own directory, distinct from the main checkout's Folder.
+For an eligible Conversation, the gatherer looks for the AI Client's own record
+first, then a verified Git link for an existing checkout. Git must resolve the
+`.git` pointer to linked-worktree metadata that points back to the checkout; a
+plain `.git` directory is not a link. The `.claude/worktrees/<name>` path convention
+is used only when the checkout is missing and its recorded remote matches the
+main checkout's current remote.
+
+Claude desktop records `originCwd` (the project it was started from) beside the
+directory a session ran in. The gatherer uses a single bounded, asynchronous
+index per hint batch, built only for eligible Claude Code lookups and reused for
+both matches and misses. It matches the session ID and recorded directory. The
+origin is a path to corroborate against current device-local evidence, not a
+Folder assignment. A record that says the session ran in its own directory rules
+out a worktree parent. Codex and Pi provide no equivalent link.
+
+The worktree-parent hint suggests the main checkout's registered Folder, capped
+at medium. It requires a same-device Conversation and a known parent birthtime
+strictly earlier than the first Conversation timestamp, regardless of score.
+Missing, equal, or later birthtime disqualifies the parent. A recorded remote
+mismatch always disqualifies it; a verified Git link or a client-recorded link
+can support a hint without remote agreement. A creation hint applies to an
+existing, unregistered directory: the Conversation
 must be captured here and the directory older than it (two points), with remote
 agreement (two) strong, and activity or a contained transcript file (one each)
 making a lesser medium of at least three points. The hints for one Conversation are all returned, best first (registered Folder,

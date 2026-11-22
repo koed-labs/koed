@@ -5,6 +5,7 @@ import {
   listProjectMetadata,
   discoverProjectMetadata,
   hintsForConversation,
+  createClientWorktreeLookup,
   createHintedFolder as createHintedFolderOnDevice,
   setProjectRepositoryAnchor,
   type KoedServerPaths
@@ -272,12 +273,14 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     const input = personalFolderHintRequestSchema.parse(raw);
     const payload = await fetchHintEvidence(input.sessionIds);
     const requested = new Set(input.sessionIds);
+    const lookupClientWorktree = createClientWorktreeLookup();
     const hints = [];
     for (const row of payload.evidence) {
       if (!requested.has(row.sessionId)) continue;
       const results = await hintsForConversation(
         deps.paths,
-        hintConversation(payload.ownerUserId, row)
+        hintConversation(payload.ownerUserId, row),
+        { lookupClientWorktree }
       );
       // No ready local identity: no Folder can be a candidate on this device.
       if (!results) continue;

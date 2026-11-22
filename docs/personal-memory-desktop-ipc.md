@@ -57,7 +57,10 @@ The dialog resolves the suggested Folder to the named Projects whose active rule
 A hint can also have `kind: "repository"` with a `repositoryKey` (the portable fingerprint of the directory's current remote); the evidence the API returns carries `gitAnchorKnown` so a Conversation that already has an anchor gets none. Accepting one is a Git Anchor correction that needs no device-side step.
 A Conversation can return several hints, best first (a registered Folder, the main
 checkout of a linked worktree, a new Folder), and a hint may carry the Folder's
-`directory` for display. A hint alone does not make its Folder eligible for a
+`directory` for display. Each hint batch reuses one lazy, bounded asynchronous
+Claude Code worktree record index; ineligible Conversations do not trigger that
+lookup. A worktree parent must have a known birthtime earlier than the first
+Conversation timestamp. A hint alone does not make its Folder eligible for a
 correction; the exact Folder reference must already be backed by server correction
 context.
 

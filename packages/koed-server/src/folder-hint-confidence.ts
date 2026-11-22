@@ -180,6 +180,17 @@ const assessMetadata = (
       ? "agrees"
       : "unavailable";
 
+/** Conditions that must hold before probing for any worktree parent. */
+export const canScoreWorktreeParent = (input: FolderHintInput): boolean =>
+  assessEligibility(input) === "agrees" &&
+  assessMetadata(input.recordedMetadataState) !== "rejects" &&
+  normalizeRecordedProjectDirectory(input.recordedCwd) !== null &&
+  compareEvidence(input.originDeviceId, input.currentDeviceId) === "agrees" &&
+  validTimestamp(input.firstConversationAtMs) &&
+  input.firstConversationAtMs > 0 &&
+  validTimestamp(input.evaluatedAtMs) &&
+  input.firstConversationAtMs <= input.evaluatedAtMs;
+
 const assessPrerequisites = (
   input: FolderHintInput,
   cwd: string | null,
@@ -382,11 +393,11 @@ export const scoreWorktreeParentHint = (
     points(remote, 2) +
     points(birthtime, 1) +
     (hardLink ? 2 : 0);
-  const origin = reasons.find(({ code }) => code === "origin-device");
   if (
+    !canScoreWorktreeParent(input) ||
     registry.state !== "matched" ||
     reasons.some(({ outcome }) => outcome === "rejects") ||
-    origin?.outcome !== "agrees" ||
+    birthtime !== "agrees" ||
     (remote !== "agrees" && !hardLink) ||
     score < 4
   )

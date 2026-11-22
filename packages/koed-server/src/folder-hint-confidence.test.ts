@@ -632,6 +632,18 @@ describe("scoreWorktreeParentHint", () => {
     }
   );
 
+  it.each([null, firstConversationAtMs])(
+    "rejects a direct link without earlier parent birthtime (%s), even with six points",
+    (birthtimeMs) => {
+      expect(
+        scoreWorktreeParentHint({
+          ...worktree,
+          worktree: { ...main, link: "git-pointer", birthtimeMs }
+        })
+      ).toMatchObject({ tier: "none", score: 6 });
+    }
+  );
+
   it("also applies when the worktree directory has a Folder of its own", () => {
     expect(scoreWorktreeParentHint({ ...worktree, registry }).tier).toBe(
       "medium"

@@ -236,6 +236,8 @@ export {
   hintForConversation,
   hintsForConversation
 } from "./folder-hint-evidence.js";
+export { createClientWorktreeLookup } from "./client-worktree-source.js";
+export type { ClientWorktreeLookup } from "./client-worktree-source.js";
 export type {
   FolderHintCandidate,
   FolderHintConversation

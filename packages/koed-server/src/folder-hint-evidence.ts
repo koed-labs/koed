@@ -1,12 +1,7 @@
-import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  statSync
-} from "node:fs";
+import { execFile } from "node:child_process";
+import { lstat, opendir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import {
   isPortableGitRemote,
   normalizeGitRemoteUrl,
@@ -19,12 +14,17 @@ import {
 import {
   findPersonalFolderDirectory,
   personalFolderRegistrySchema,
-  readPersonalFolderDirectoryMarker
+  readPersonalFolderDirectoryMarkerAsync
 } from "@koed-labs/shared/personal-local-folders";
 import { inspectDeviceIdentityStatus } from "./device-identity.js";
-import { readClientWorktreeLink } from "./client-worktree-source.js";
-import { observeCaptureFolder } from "./folder-context.js";
 import {
+  createClientWorktreeLookup,
+  type ClientWorktreeLookup
+} from "./client-worktree-source.js";
+import { observeCaptureFolder } from "./folder-context.js";
+import { readFolderHintFile } from "./folder-hint-file.js";
+import {
+  canScoreWorktreeParent,
   scoreFolderCreation,
   scoreFolderHint,
   scoreRepositoryAnchor,
@@ -63,144 +63,173 @@ export interface FolderHintConversation {
 const MAX_ACTIVITY_ENTRIES = 200;
 const MAX_REFERENCED_PATHS = 50;
 const GIT_TIMEOUT_MS = 2_000;
+const MAX_GIT_BYTES = 64 * 1024;
+const MAX_REGISTRY_BYTES = 16 * 1024 * 1024;
+const run = promisify(execFile);
 
-const toMs = (value: FolderHintConversation["firstConversationAt"]): number =>
-  value === null ? Number.NaN : new Date(value).getTime();
-
-const readStat = (path: string) => {
+const readGit = async (
+  directory: string,
+  args: string[]
+): Promise<string | null> => {
   try {
-    const stat = statSync(path);
-    return {
-      isDirectory: stat.isDirectory(),
-      birthtimeMs: stat.birthtimeMs > 0 ? stat.birthtimeMs : null,
-      mtimeMs: stat.mtimeMs
-    };
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+    delete env.GIT_DIR;
+    delete env.GIT_COMMON_DIR;
+    delete env.GIT_WORK_TREE;
+    const { stdout } = await run("git", ["-C", directory, ...args], {
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: MAX_GIT_BYTES,
+      killSignal: "SIGKILL",
+      env
+    });
+    return stdout.trim() || null;
   } catch {
     return null;
   }
 };
 
+const toMs = (value: FolderHintConversation["firstConversationAt"]): number =>
+  value === null ? Number.NaN : new Date(value).getTime();
+
+const readStat = (path: string) => stat(path).catch(() => null);
+
+const birthtimeMs = (birthtime: number) => (birthtime > 0 ? birthtime : null);
+
 /** Newest modification time of the directory, its Git bookkeeping, and a
  * bounded sample of its top-level entries. Never reads file contents. */
-const readActivityMs = (directory: string): number | null => {
-  let newest = readStat(directory)?.mtimeMs ?? null;
-  const consider = (path: string) => {
-    const stat = readStat(path);
-    if (stat && (newest === null || stat.mtimeMs > newest))
-      newest = stat.mtimeMs;
+const readActivityMs = async (
+  directory: string,
+  mtimeMs: number
+): Promise<number> => {
+  let newest = mtimeMs;
+  const consider = async (path: string) => {
+    const entry = await readStat(path);
+    if (entry) newest = Math.max(newest, entry.mtimeMs);
   };
   for (const name of [".git/HEAD", ".git/index", ".git/logs/HEAD"])
-    consider(join(directory, name));
+    await consider(join(directory, name));
   try {
-    for (const entry of readdirSync(directory).slice(0, MAX_ACTIVITY_ENTRIES))
-      consider(join(directory, entry));
+    const dir = await opendir(directory, { bufferSize: 1 });
+    try {
+      for (let visited = 0; visited < MAX_ACTIVITY_ENTRIES; visited++) {
+        const entry = await dir.read();
+        if (!entry) break;
+        await consider(join(directory, entry.name));
+      }
+    } finally {
+      await dir.close();
+    }
   } catch {
-    // An unreadable directory contributes no activity evidence.
+    // Keep any activity evidence collected before an unreadable entry.
   }
   return newest;
 };
 
 /** The directory's current portable remote fingerprint, or null. */
-const readCurrentRemoteFingerprint = (directory: string): string | null => {
-  try {
-    const url = execFileSync(
-      "git",
-      ["-C", directory, "config", "--get", "remote.origin.url"],
-      {
-        encoding: "utf8",
-        timeout: GIT_TIMEOUT_MS,
-        stdio: ["ignore", "pipe", "ignore"],
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }
-      }
-    ).trim();
-    if (!url) return null;
-    const remote = normalizeGitRemoteUrl(url);
-    return isPortableGitRemote(remote) ? remote.fingerprint : null;
-  } catch {
-    return null;
-  }
+const readCurrentRemoteFingerprint = async (
+  directory: string
+): Promise<string | null> => {
+  const url = await readGit(directory, [
+    "config",
+    "--get",
+    "remote.origin.url"
+  ]);
+  if (!url) return null;
+  const remote = normalizeGitRemoteUrl(url);
+  return isPortableGitRemote(remote) ? remote.fingerprint : null;
 };
 
 /** True only for an existing file whose real path is strictly inside `root`. */
-const hasContainedFile = (
+const hasContainedFile = async (
   root: string,
   paths: readonly string[] | undefined
-): boolean => {
-  let realRoot: string;
-  try {
-    realRoot = realpathSync(root);
-  } catch {
-    return false;
-  }
-  for (const candidate of (paths ?? []).slice(0, MAX_REFERENCED_PATHS)) {
-    try {
-      const resolved = resolve(candidate);
-      if (!existsSync(resolved)) continue;
-      const real = realpathSync(resolved);
-      const inside = relative(realRoot, real);
-      if (
-        inside &&
-        !inside.startsWith("..") &&
-        !inside.startsWith(sep) &&
-        statSync(real).isFile()
-      )
-        return true;
-    } catch {
-      continue;
-    }
+): Promise<boolean> => {
+  if (!paths?.length) return false;
+  const realRoot = await realpath(root).catch(() => null);
+  if (!realRoot) return false;
+  for (const candidate of paths.slice(0, MAX_REFERENCED_PATHS)) {
+    const real = await realpath(resolve(candidate)).catch(() => null);
+    if (!real) continue;
+    const inside = relative(realRoot, real);
+    if (
+      inside &&
+      !inside.startsWith("..") &&
+      !inside.startsWith(sep) &&
+      (await readStat(real))?.isFile()
+    )
+      return true;
   }
   return false;
 };
 
 const CLAUDE_WORKTREE_PATH = /^(.+)\/\.claude\/worktrees\/[^/]+(?:\/|$)/;
 
-/** The main checkout a directory is a linked worktree of, or null. Git's own
- * `.git` pointer file is used while the directory exists; the Claude Code
- * worktree path convention covers a directory that has since been deleted. */
-const readWorktreeMainRoot = (directory: string): string | null => {
+/** A plain .git directory or a copied gitfile is not a linked worktree. */
+const readGitWorktreeMainRoot = async (
+  directory: string
+): Promise<string | null> => {
+  const pointer = join(directory, ".git");
+  if (!(await lstat(pointer).catch(() => null))?.isFile()) return null;
+  const gitPaths = await readGit(directory, [
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-dir",
+    "--git-common-dir"
+  ]);
+  const [gitDir, common] = gitPaths?.split(/\r?\n/) ?? [];
+  if (
+    !gitDir ||
+    !common ||
+    basename(common) !== ".git" ||
+    dirname(gitDir) !== join(common, "worktrees")
+  )
+    return null;
+  const backlink = await readFolderHintFile(
+    join(gitDir, "gitdir"),
+    MAX_GIT_BYTES
+  );
+  if (!backlink?.trim()) return null;
+  const target = await realpath(resolve(gitDir, backlink.trim())).catch(
+    () => null
+  );
+  const actualPointer = await realpath(pointer).catch(() => null);
+  return target && target === actualPointer
+    ? normalizeRecordedProjectDirectory(dirname(common))
+    : null;
+};
+
+const missingOnDisk = async (directory: string): Promise<boolean> => {
   try {
-    const pointer = join(directory, ".git");
-    if (statSync(pointer).isFile()) {
-      const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(pointer, "utf8"));
-      if (match?.[1]) {
-        const worktrees = dirname(resolve(directory, match[1].trim()));
-        const common = dirname(worktrees);
-        if (basename(worktrees) === "worktrees" && basename(common) === ".git")
-          return normalizeRecordedProjectDirectory(dirname(common));
-      }
-    }
-  } catch {
-    // No readable pointer: fall through to the path convention.
+    await lstat(directory);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
   }
-  const root = CLAUDE_WORKTREE_PATH.exec(directory)?.[1];
-  return root ? normalizeRecordedProjectDirectory(root) : null;
 };
 
 /** Read-only registry lookup. It never registers a directory, so scoring a
  * hint cannot create the Folder it suggests. */
-const lookupRegistry = (
+const lookupRegistry = async (
   paths: KoedServerPaths,
   ownerUserId: string,
   normalizedPath: string,
   deploymentId: string,
   deviceId: string
-): FolderHintInput["registry"] => {
-  let marker: ReturnType<typeof readPersonalFolderDirectoryMarker>;
-  try {
-    marker = readPersonalFolderDirectoryMarker(normalizedPath);
-  } catch {
-    return { state: "missing" };
-  }
-  if (!marker) return { state: "missing" };
+): Promise<FolderHintInput["registry"]> => {
   const registryPath = join(paths.configDir, "folder-contexts.json");
+  const text = await readFolderHintFile(registryPath, MAX_REGISTRY_BYTES);
+  if (text === null) return { state: "missing" };
   let registry: ReturnType<typeof personalFolderRegistrySchema.parse>;
   try {
-    registry = personalFolderRegistrySchema.parse(
-      JSON.parse(readFileSync(registryPath, "utf8"))
-    );
+    registry = personalFolderRegistrySchema.parse(JSON.parse(text));
   } catch {
     return { state: "missing" };
   }
+  const marker = await readPersonalFolderDirectoryMarkerAsync(
+    normalizedPath
+  ).catch(() => null);
+  if (!marker) return { state: "missing" };
   const entry = findPersonalFolderDirectory(
     registry.directories,
     normalizedPath,
@@ -235,16 +264,125 @@ const lookupRegistry = (
   };
 };
 
+type FolderHintOptions = {
+  environment?: NodeJS.ProcessEnv;
+  now?: () => number;
+  /** Where per-client records live. Defaults to the current User's home. */
+  homeDir?: string;
+  /** Share one lazy Claude record index across a hint batch. */
+  lookupClientWorktree?: ClientWorktreeLookup;
+};
+
+type WorktreeEvidence = NonNullable<FolderHintInput["worktree"]>;
+type WorktreeOrigin = Pick<WorktreeEvidence, "link" | "rootPath">;
+
+const findWorktreeOrigin = async (
+  conversation: FolderHintConversation,
+  cwd: string,
+  usable: boolean,
+  options: FolderHintOptions
+): Promise<WorktreeOrigin | null> => {
+  if (
+    conversation.sourceRuntime === "claude-code" &&
+    conversation.externalSessionId
+  ) {
+    const lookup =
+      options.lookupClientWorktree ??
+      createClientWorktreeLookup(
+        options.homeDir === undefined ? {} : { homeDir: options.homeDir }
+      );
+    const record = await lookup(conversation, cwd);
+    if (record?.state === "not-a-worktree") return null;
+    if (record?.state === "worktree")
+      return { link: "client-recorded", rootPath: record.originPath };
+  }
+  if (usable) {
+    const rootPath = await readGitWorktreeMainRoot(cwd);
+    return rootPath ? { link: "git-pointer", rootPath } : null;
+  }
+  if (!conversation.recordedRemoteFingerprint) return null;
+  const root = CLAUDE_WORKTREE_PATH.exec(cwd)?.[1];
+  const rootPath = root ? normalizeRecordedProjectDirectory(root) : null;
+  return rootPath && (await missingOnDisk(cwd))
+    ? { link: "path-convention", rootPath }
+    : null;
+};
+
+const gatherWorktree = async (
+  paths: KoedServerPaths,
+  conversation: FolderHintConversation,
+  origin: WorktreeOrigin,
+  deploymentId: string,
+  deviceId: string
+): Promise<WorktreeEvidence | undefined> => {
+  const { rootPath } = origin;
+  const mainStat = await readStat(rootPath);
+  if (!mainStat?.isDirectory()) return;
+  const registry = await lookupRegistry(
+    paths,
+    conversation.ownerUserId,
+    rootPath,
+    deploymentId,
+    deviceId
+  );
+  return {
+    ...origin,
+    registry,
+    currentRemoteFingerprint: await readCurrentRemoteFingerprint(rootPath),
+    birthtimeMs: birthtimeMs(mainStat.birthtimeMs)
+  };
+};
+
+const gatherCheckout = async (
+  paths: KoedServerPaths,
+  conversation: FolderHintConversation,
+  cwd: string | null,
+  deploymentId: string,
+  deviceId: string
+): Promise<
+  Pick<
+    FolderHintInput,
+    | "directoryStat"
+    | "currentRemoteFingerprint"
+    | "registry"
+    | "hasContainedTranscriptFile"
+  >
+> => {
+  const directory = cwd ? await readStat(cwd) : null;
+  if (!cwd || !directory?.isDirectory()) {
+    return {
+      directoryStat: null,
+      currentRemoteFingerprint: null,
+      registry: { state: "missing" },
+      hasContainedTranscriptFile: false
+    };
+  }
+  return {
+    directoryStat: {
+      isDirectory: true,
+      birthtimeMs: birthtimeMs(directory.birthtimeMs),
+      activityMs: await readActivityMs(cwd, directory.mtimeMs)
+    },
+    currentRemoteFingerprint: await readCurrentRemoteFingerprint(cwd),
+    registry: await lookupRegistry(
+      paths,
+      conversation.ownerUserId,
+      cwd,
+      deploymentId,
+      deviceId
+    ),
+    hasContainedTranscriptFile: await hasContainedFile(
+      cwd,
+      conversation.referencedPaths
+    )
+  };
+};
+
 /** Collect current device-local evidence for one Conversation. Read-only. */
 export const gatherFolderHintInput = async (
   paths: KoedServerPaths,
   conversation: FolderHintConversation,
-  options: {
-    environment?: NodeJS.ProcessEnv;
-    now?: () => number;
-    /** Where per-client records live. Defaults to the current User's home. */
-    homeDir?: string;
-  } = {}
+  options: FolderHintOptions = {}
 ): Promise<FolderHintInput | null> => {
   const environment = options.environment ?? process.env;
   const evaluatedAtMs = (options.now ?? Date.now)();
@@ -258,54 +396,15 @@ export const gatherFolderHintInput = async (
     return null;
   const original = conversation.folderAssignment.original;
   const cwd = normalizeRecordedProjectDirectory(conversation.recordedCwd);
-  const stat = cwd ? readStat(cwd) : null;
-  const usable = cwd !== null && stat?.isDirectory === true;
-  const registry: FolderHintInput["registry"] = usable
-    ? lookupRegistry(
-        paths,
-        conversation.ownerUserId,
-        cwd,
-        device.deploymentId,
-        device.deviceInstanceId
-      )
-    : { state: "missing" };
-  const clientLink = cwd
-    ? readClientWorktreeLink(
-        conversation,
-        cwd,
-        options.homeDir ? { homeDir: options.homeDir } : {}
-      )
-    : null;
-  const inferredRoot =
-    cwd && clientLink?.state !== "not-a-worktree"
-      ? readWorktreeMainRoot(cwd)
-      : null;
-  const mainRoot =
-    clientLink?.state === "worktree" ? clientLink.originPath : inferredRoot;
-  const link: NonNullable<FolderHintInput["worktree"]>["link"] =
-    clientLink?.state === "worktree"
-      ? "client-recorded"
-      : mainRoot && cwd && existsSync(join(cwd, ".git"))
-        ? "git-pointer"
-        : "path-convention";
-  const mainStat = mainRoot && mainRoot !== cwd ? readStat(mainRoot) : null;
-  const worktree: FolderHintInput["worktree"] =
-    mainRoot && mainStat?.isDirectory
-      ? {
-          link,
-          rootPath: mainRoot,
-          registry: lookupRegistry(
-            paths,
-            conversation.ownerUserId,
-            mainRoot,
-            device.deploymentId,
-            device.deviceInstanceId
-          ),
-          currentRemoteFingerprint: readCurrentRemoteFingerprint(mainRoot),
-          birthtimeMs: mainStat.birthtimeMs
-        }
-      : undefined;
-  return {
+  const checkout = await gatherCheckout(
+    paths,
+    conversation,
+    cwd,
+    device.deploymentId,
+    device.deviceInstanceId
+  );
+  const input: FolderHintInput = {
+    ...checkout,
     effectiveFolderStatus: effectivePersonalSourceFact(
       conversation.folderAssignment
     ).state,
@@ -319,26 +418,28 @@ export const gatherFolderHintInput = async (
     currentDeviceId: device.deviceInstanceId,
     firstConversationAtMs: toMs(conversation.firstConversationAt),
     evaluatedAtMs,
-    directoryStat:
-      usable && stat
-        ? {
-            isDirectory: true,
-            birthtimeMs: stat.birthtimeMs,
-            activityMs: readActivityMs(cwd)
-          }
-        : null,
     recordedRemoteFingerprint: conversation.recordedRemoteFingerprint,
     ...(conversation.gitAnchorKnown !== undefined
       ? { gitAnchorKnown: conversation.gitAnchorKnown }
       : {}),
-    currentRemoteFingerprint: usable ? readCurrentRemoteFingerprint(cwd) : null,
-    registry,
-    hasContainedTranscriptFile: usable
-      ? hasContainedFile(cwd, conversation.referencedPaths)
-      : false,
-    ...(worktree ? { worktree } : {}),
     ...(conversation.project ? { project: conversation.project } : {})
   };
+  if (!cwd || !canScoreWorktreeParent(input)) return input;
+  const origin = await findWorktreeOrigin(
+    conversation,
+    cwd,
+    checkout.directoryStat !== null,
+    options
+  );
+  if (!origin || origin.rootPath === cwd) return input;
+  const worktree = await gatherWorktree(
+    paths,
+    conversation,
+    origin,
+    device.deploymentId,
+    device.deviceInstanceId
+  );
+  return worktree ? { ...input, worktree } : input;
 };
 
 export type FolderHintCandidate = Pick<FolderHintResult, "score" | "reasons"> &
