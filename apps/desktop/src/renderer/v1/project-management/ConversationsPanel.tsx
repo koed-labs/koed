@@ -28,6 +28,7 @@ import {
   type ProjectSettingsDraft,
   type SettingsConversation
 } from "./project-settings-model.js";
+import { suggestionApprovalKey } from "./folder-hint-suggestion.js";
 import { suggestionReason } from "./proposal-text.js";
 import type { SuggestionRow } from "./use-folder-suggestions.js";
 
@@ -212,15 +213,18 @@ export function ConversationsPanel({
     excludedMembership(c.explanation)
   );
   const open = suggested.filter((row) => !rejected.has(row.sessionId));
-  const allAdded = open.every((row) => accepted.has(row.sessionId));
+  const approvalKey = (row: SuggestionRow) =>
+    suggestionApprovalKey(draft.project.id, row);
+  const allAdded = open.every((row) => accepted.has(approvalKey(row)));
   // A suggestion is added, excluded, or left alone.
-  const choose = (sessionId: string, choice?: "add" | "exclude") => {
+  const choose = (row: SuggestionRow, choice?: "add" | "exclude") => {
+    const key = approvalKey(row);
     const add = new Set(accepted),
       exclude = new Set(rejected);
-    add.delete(sessionId);
-    exclude.delete(sessionId);
-    if (choice === "add") add.add(sessionId);
-    if (choice === "exclude") exclude.add(sessionId);
+    add.delete(key);
+    exclude.delete(row.sessionId);
+    if (choice === "add") add.add(key);
+    if (choice === "exclude") exclude.add(row.sessionId);
     onAccepted(add);
     onRejected(exclude);
   };
@@ -270,9 +274,7 @@ export function ConversationsPanel({
             size="xs"
             disabled={busy}
             onClick={() =>
-              onAccepted(
-                allAdded ? new Set() : new Set(open.map((row) => row.sessionId))
-              )
+              onAccepted(allAdded ? new Set() : new Set(open.map(approvalKey)))
             }
           >
             {allAdded ? "Undo all" : `Add all ${open.length}`}
@@ -388,20 +390,18 @@ export function ConversationsPanel({
                   busy={busy}
                   detail={suggestionReason(row.proposal)}
                   pending={
-                    accepted.has(row.sessionId)
+                    accepted.has(approvalKey(row))
                       ? "Will be added"
                       : rejected.has(row.sessionId)
                         ? "Will be excluded"
                         : undefined
                   }
                   action="Add"
-                  onAction={() => choose(row.sessionId, "add")}
-                  onUndo={() => choose(row.sessionId)}
+                  onAction={() => choose(row, "add")}
+                  onUndo={() => choose(row)}
                   menu={
                     <RowMenu title={row.title}>
-                      <DropdownMenuItem
-                        onClick={() => choose(row.sessionId, "exclude")}
-                      >
+                      <DropdownMenuItem onClick={() => choose(row, "exclude")}>
                         <EyeOff />
                         Not this one
                       </DropdownMenuItem>

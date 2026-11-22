@@ -200,6 +200,109 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
   }
 });
 
+it.each(["Add", "Add all"])(
+  "%s does not approve a replacement Folder for the same Conversation and Project",
+  async (action) => {
+    const f = createProjectManagementValidationApi();
+    const projectId = validationId(3);
+    const projects = mergeProjectSources(f.inventory(), []);
+    const target = projects.find((p) => p.id === projectId)!.inclusionRules![0]!
+      .target;
+    if (target.kind !== "folder") throw new Error("Missing Folder fixture");
+    const project = projects.find((p) => p.id === projectId)!;
+    const candidate = {
+      sessionId: validationId(108),
+      title: "Historical Conversation",
+      proposal: {
+        action: "use" as const,
+        kind: "worktree-parent" as const,
+        folder: target.folder,
+        tier: "medium" as const,
+        projects: [project.name],
+        evidence: []
+      }
+    };
+    const replacement = {
+      ...candidate,
+      proposal: {
+        ...candidate.proposal,
+        folder: { ...target.folder, directoryIncarnationId: "replacement" }
+      }
+    };
+    const unchanged = {
+      ...candidate,
+      sessionId: validationId(900),
+      title: "Unchanged Conversation"
+    };
+    const store = new PersonalMemoryStore(f.api);
+    const save = vi.fn(async () => {});
+    const container = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(container);
+    const render = (row: typeof candidate) =>
+      act(async () =>
+        root.render(
+          <ProjectSettingsDialog
+            api={f.api}
+            store={store}
+            projects={projects}
+            projectId={projectId}
+            page="conversations"
+            filter="suggested"
+            suggestions={{ rows: [row, unchanged], loading: false }}
+            onSave={save}
+            onClose={vi.fn()}
+            onDelete={vi.fn()}
+          />
+        )
+      );
+    const button = (text: string) =>
+      [...document.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === text
+      )!;
+    const click = (el: HTMLElement) => act(async () => el.click());
+    const add = () =>
+      document.querySelector<HTMLButtonElement>(
+        '[aria-label="Add Historical Conversation"]'
+      );
+    try {
+      await render(candidate);
+      await click(action === "Add" ? add()! : button("Add all 2"));
+      expect(add()).toBeNull();
+      await render(replacement);
+      expect(add()).not.toBeNull();
+      await render(candidate);
+      expect(add()).not.toBeNull();
+      await render(replacement);
+      await click(button("General"));
+      const name = document.querySelector<HTMLInputElement>(
+        "#v1-pm-project-name"
+      )!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(name, "Renamed Project");
+        name.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click(button("Save changes"));
+      expect(save).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: projectId }),
+        [
+          expect.objectContaining({
+            action: "rename",
+            name: "Renamed Project"
+          })
+        ],
+        action === "Add all" ? [unchanged] : [],
+        []
+      );
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  }
+);
+
 it("lists suggestions on their own tab and saves ticked ones with the Project's changes", async () => {
   const f = createProjectManagementValidationApi();
   const projectId = validationId(2);

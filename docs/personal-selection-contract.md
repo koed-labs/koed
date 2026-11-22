@@ -454,6 +454,8 @@ the same kind and full Folder reference. This check writes neither an observatio
 nor the local Folder registry. Only the server's reviewed source correction can
 authorize an already-known Folder reference; a hint cannot supply missing evidence.
 
+Add and Add all stage approval for the exact candidate and destination Project.
+If the candidate changes before Save, the User must approve the replacement.
 For suggested additions, Desktop saves Project settings first and reads current
 Project versions before previewing each correction. It commits only a
 version-pinned preview that newly includes the explicit destination Project, and

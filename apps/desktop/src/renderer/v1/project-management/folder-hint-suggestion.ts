@@ -1,6 +1,7 @@
-import type {
-  PersonalFolderHint,
-  PersonalFolderReference
+import {
+  personalFolderScopeId,
+  type PersonalFolderHint,
+  type PersonalFolderReference
 } from "@koed-labs/shared";
 
 /** Agreeing evidence, strongest first. The last two are weak on their own and
@@ -50,6 +51,20 @@ export type FolderProposal = {
     }
   | { action: "anchor"; kind: "repository"; repositoryKey: string }
 );
+
+export function suggestionApprovalKey(
+  projectId: string,
+  { sessionId, proposal }: { sessionId: string; proposal: FolderProposal }
+): string {
+  return JSON.stringify([
+    projectId,
+    sessionId,
+    proposal.kind,
+    proposal.kind === "repository"
+      ? proposal.repositoryKey
+      : personalFolderScopeId(proposal.folder)
+  ]);
+}
 
 const rank = {
   "worktree-parent": 0,

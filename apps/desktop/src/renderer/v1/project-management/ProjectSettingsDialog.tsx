@@ -38,6 +38,7 @@ import {
   membershipSummary,
   type ConversationFilter
 } from "./ConversationsPanel.js";
+import { suggestionApprovalKey } from "./folder-hint-suggestion.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
 import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
@@ -92,7 +93,7 @@ export function ProjectSettingsDialog({
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ConversationFilter>(initialFilter);
-  // Suggested Conversations ticked to join; saved with the other changes.
+  // Approvals bind the reviewed candidate to this destination Project.
   const [accepted, setAccepted] = useState<ReadonlySet<string>>(new Set());
   // Suggested Conversations turned down; saving excludes them.
   const [rejected, setRejected] = useState<ReadonlySet<string>>(new Set());
@@ -140,7 +141,15 @@ export function ProjectSettingsDialog({
         !excluded.has(row.sessionId)
     );
   }, [suggestions?.rows, activeName, draft?.conversations]);
-  const acceptedRows = suggested.filter((row) => accepted.has(row.sessionId));
+  const validApprovals = new Set<string>();
+  const acceptedRows = suggested.filter((row) => {
+    const key = suggestionApprovalKey(active, row);
+    if (!accepted.has(key)) return false;
+    validApprovals.add(key);
+    return true;
+  });
+  // Drop stale approvals so a later refresh cannot revive them.
+  if (validApprovals.size !== accepted.size) setAccepted(validApprovals);
   const rejectedRows = suggested.filter((row) => rejected.has(row.sessionId));
   const changes = draft ? settingsChanges(draft) : [];
   const dirty =
