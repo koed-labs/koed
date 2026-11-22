@@ -91,34 +91,24 @@ describe("Conversation organization route", () => {
     }
   });
 
-  it("records a Folder observation for the authenticated owner only", async () => {
+  it("rejects owner-only Folder observation requests without invoking a repository write", async () => {
     const sessionId = "00000000-0000-4000-8000-000000000001",
       userId = "00000000-0000-4000-8000-000000000002";
-    const record = vi.fn(async () => ({ recorded: true })),
-      write = vi.fn(async () => {});
+    const record = vi.fn(async () => ({ recorded: true }));
     const app = Fastify();
     registerPersonalSourceContextRoutes(app, {
       requireRepository: () => ({ recordPersonalFolderObservation: record }),
       auth: { authenticate: async () => ({ id: userId }) },
-      rateLimit: { memoryRead: async () => {}, memoryWrite: write }
+      rateLimit: { memoryRead: async () => {}, memoryWrite: async () => {} }
     } as unknown as ApiRouteContext);
-    const body = { observation: { identity: {} } };
     try {
-      const ok = await app.inject({
+      const response = await app.inject({
         method: "POST",
         url: `/v1/personal/sessions/${sessionId}/folder-observation`,
-        payload: body
+        payload: { observation: { identity: {} } }
       });
-      expect(ok.statusCode).toBe(200);
-      expect(record).toHaveBeenCalledWith({ userId }, sessionId, body);
-      expect(write).toHaveBeenCalledTimes(1);
-      const bad = await app.inject({
-        method: "POST",
-        url: "/v1/personal/sessions/not-a-uuid/folder-observation",
-        payload: body
-      });
-      expect(bad.statusCode).toBeGreaterThanOrEqual(400);
-      expect(record).toHaveBeenCalledTimes(1);
+      expect(record).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(404);
     } finally {
       await app.close();
     }

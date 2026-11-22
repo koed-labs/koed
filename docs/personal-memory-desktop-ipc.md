@@ -41,33 +41,25 @@ on an unresolved Folder. A `?` evidence tooltip exists but is hidden for now
 leads with the reason ("Same Git remote as koed-ai", "Worktree of koed"), then
 lists the agreeing reason codes as short lines, strongest first, with the path
 (`~` for the home folder) or Git Anchor shown as quieter detail. Weak activity
-and transcript-file evidence appear only when nothing stronger agrees. Only a
-new Folder adds a note, that accepting it registers the folder on this device. A
+and transcript-file evidence appear only when nothing stronger agrees. A
 worktree is named after its project (`koed · worktree task-1`); the label is
-presentation only and never changes Folder identity. Using it only fills the
-choice; the User still reviews and saves an ordinary correction.
+presentation only and never changes Folder identity.
 The folder-hint evidence the API returns also carries the AI Client (`sourceRuntime`) and its own session id, so Electron main can read that client's local worktree record on this device.
 Contract version 31 widens a hint with a `kind`: `registered` (unchanged),
 `worktree-parent` (the registered Folder of the main checkout a linked worktree
 belongs to), or `create` (a directory with no Folder yet, named by `directory`).
-It also adds `personal.folders.hints.create`, the only write in this flow. It takes
-only a Conversation id; Electron main re-gathers and re-scores the evidence, so a
-stale or forged request cannot create a Folder. It then registers the directory
-exactly as live capture would and records the resulting observation on the
-Conversation (`POST /v1/personal/sessions/:id/folder-observation`, owner-scoped,
-Folder-less local Conversations in the observed directory only). The command
-assigns nothing. The dialog then offers the new Folder as an ordinary correction
-the User reviews and saves.
+The Personal API does not expose a standalone Folder observation write. Owner
+authentication does not establish that the calling device captured the target
+Conversation. The Desktop hint command `personal.folders.hints.create` cannot
+record an observation for a Conversation through that API. Scoring stays
+read-only, and existing source-context review and apply routes remain available.
 The dialog resolves the suggested Folder to the named Projects whose active rules cover that exact Folder and words the suggestion "Suggested Project: X" when one does ("Suggested Folder" otherwise); a candidate that lands in a Project is preferred. Each Project row in the sidebar shows only its settings menu (⋯), with no counts. Project settings › Conversations shows the number of suggestions beside the page name, and which lists "In Project", "Suggested" and "Excluded" separately; the counts are worked out in the background shortly after start-up, a batch at a time (hints in batches of 50 with a short in-memory cache), and recomputed after an edit. A Conversation excluded from the Project is never suggested for it. Every row on the three tabs shows the AI Client, how the Conversation is or would be connected ("Git Anchor", "Folder", or "Added by you" when no rule matches; "Git Anchor match", "Folder match", "Worktree of koed" for suggestions; "Excluded by you") and its age, with one action: Remove, Add, or Add back. An action only stages a change: the row is tinted with "Will be added", "Will be removed", "Will be excluded" (a Conversation a rule still matches is excluded, since the rule would bring it back) or "Will be added back", and offers Undo. "Keep if rules change" (direct membership) and "Not this one" sit in the row's menu; "Not this one" stages "Will be excluded", and saving excludes the Conversation from the Project, so it moves to Excluded; a kept Conversation shows a padlock, is listed first on In Project, and always has the menu so it can be turned off (with no rule matching, turning it off stages "Will be removed"). The footer counts what saving will do ("1 to add · 1 to remove"). Save changes first applies the Project's own changes, then applies each ticked suggestion exactly as the single dialog does (accept the hint, review the correction against the Conversation's current state, save a version-pinned edit), so the Conversation joins through the Project's Folder or Git Anchor rule rather than direct membership. The two steps are not atomic; a suggestion that fails is reported and the rest still apply. After saving, an excluded suggestion is also hidden in renderer local storage per owner scope on this device, so it is no longer counted as a suggestion, until the suggestion itself changes (a different Folder, Git Anchor or Project).
 A hint can also have `kind: "repository"` with a `repositoryKey` (the portable fingerprint of the directory's current remote); the evidence the API returns carries `gitAnchorKnown` so a Conversation that already has an anchor gets none. Accepting one is a Git Anchor correction that needs no device-side step.
 A Conversation can return several hints, best first (a registered Folder, the main
 checkout of a linked worktree, a new Folder), and a hint may carry the Folder's
-`directory` for display. The create request takes an optional `kind`; accepting a
-`registered` or `worktree-parent` hint re-checks it, registers nothing new, and
-records that Folder on the Conversation so the Database accepts the correction. The
-recording endpoint accepts only Folder-less Conversations captured on this device;
-it no longer requires the observed directory to equal the Conversation's, because a
-worktree's main checkout is a different directory.
+`directory` for display. A hint alone does not make its Folder eligible for a
+correction; the exact Folder reference must already be backed by server correction
+context.
 
 Contract version 29 carries the optional Project Kin in named Project inventory and
 catalog review. The `set_details` change saves the name and Kin together at the

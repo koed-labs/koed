@@ -42,19 +42,6 @@ export const registerPersonalSourceContextRoutes = (
       );
     }
   );
-  app.post(
-    "/v1/personal/sessions/:sessionId/folder-observation",
-    { preHandler: write },
-    async (request) => {
-      const user = await authenticate(request),
-        { sessionId } = sourceParams.parse(request.params);
-      return requireRepository().recordPersonalFolderObservation(
-        { userId: user.id },
-        sessionId,
-        request.body
-      );
-    }
-  );
   app.get(
     "/v1/personal/sessions/:sessionId/source-context",
     { preHandler: read },

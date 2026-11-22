@@ -404,8 +404,9 @@ supporting evidence, not probability or permission.
 A device-local evidence gatherer builds the scorer's input. It reads the recorded
 facts from an owner-scoped, read-only API call, then the directory's stat times, its
 current portable Git remote fingerprint, bounded top-level activity, contained
-transcript files, and a read-only Folder registry lookup. A Conversation captured
-locally (not a replica) has this device as its origin. The API omits deleted and
+transcript files, and a read-only Folder registry lookup. For scoring, the API
+uses non-replica status as a local-origin signal, not as authenticated proof that
+this device captured the Conversation. The API omits deleted and
 invalidated Conversations. It reports a known Git Anchor only when the effective
 Git identity (override if present, otherwise automatic) identifies a portable or
 device-local repository. The gatherer returns nothing when the device identity
@@ -434,12 +435,15 @@ agreement (two) strong, and activity or a contained transcript file (one each)
 making a lesser medium of at least three points. The hints for one Conversation are all returned, best first (registered Folder,
 worktree-parent, create), because a worktree usually has its own registered Folder
 and a main checkout that a Project is built on; the User chooses. The worktree
-hint also applies when the worktree directory has a Folder of its own. Creation is a separate explicit action, never
-part of scoring: it re-scores, registers the directory as live capture would, and
-records the observation so an ordinary reviewed correction can use it. A Folder
-is not a Project, so a newly created Folder belongs to no Project until a rule
-adds it. Branch names, Codex commit hashes, and parent or fork ids are
-deliberately not used.
+hint also applies when the worktree directory has a Folder of its own. Branch
+names, Codex commit hashes, and parent or fork ids are deliberately not used.
+
+The Personal API does not accept a standalone Folder observation write. Owner
+authentication and a local registry match do not bind the requesting device to
+the target Conversation's capture origin. Ordinary authenticated capture still
+records observations as described above. Source-context review and apply remain
+available, but a hint cannot supply missing evidence for an exact Folder
+reference.
 
 A repository hint covers the other source axis. For a Conversation with no Git
 Anchor (automatic or chosen), run on this device in a directory that still exists
