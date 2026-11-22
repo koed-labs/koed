@@ -1,9 +1,10 @@
 import type pg from "pg";
 import {
-  personalFolderHintRequestSchema,
+  personalFolderHintEvidenceRequestSchema,
   personalOwnerIdSchema,
   type PersonalFolderHintEvidence
 } from "@koed-labs/shared";
+import { listKnownFolderCorrectionReferences } from "./personal-source-correction-context.js";
 import type { ActorContext } from "./types.js";
 
 export type PersonalFolderHintEvidenceRepository = {
@@ -36,7 +37,8 @@ export const createPersonalFolderHintEvidenceRepository = (
     raw: unknown
   ): Promise<PersonalFolderHintEvidence> {
     const ownerUserId = personalOwnerIdSchema.parse(actor.userId);
-    const { sessionIds } = personalFolderHintRequestSchema.parse(raw);
+    const { sessionIds, includeKnownFolders } =
+      personalFolderHintEvidenceRequestSchema.parse(raw);
     const result = await pool.query<EvidenceRow>(
       `select s.id, s.folder_assignment, s.cwd, s.source_runtime, s.external_session_id,
          (select min(coalesce(e.source_event_time, e.captured_at))
@@ -57,6 +59,13 @@ export const createPersonalFolderHintEvidenceRepository = (
     );
     return {
       ownerUserId,
+      ...(includeKnownFolders
+        ? {
+            knownFolders: result.rows.length
+              ? await listKnownFolderCorrectionReferences(pool, ownerUserId)
+              : []
+          }
+        : {}),
       evidence: result.rows.map((row) => ({
         sessionId: row.id,
         folderAssignment: row.folder_assignment as never,

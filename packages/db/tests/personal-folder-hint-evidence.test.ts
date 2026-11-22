@@ -58,6 +58,67 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
     await pool?.end();
   });
 
+  it("lists the same exact owned Folder references correction preview can resolve", async () => {
+    const repo = createMemorySourceRepository(pool, options);
+    const user = async () => ({
+      userId: (
+        await repo.createUser({ email: `hint-${randomUUID()}@example.test` })
+      ).id
+    });
+    const actor = await user();
+    const other = await user();
+    const source = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID()
+    });
+    const observation = {
+      identity: {
+        folderId: "folder",
+        originatingDeploymentId: "deployment",
+        originatingDeviceId: "device",
+        originatingProfileId: "profile",
+        directoryIncarnationId: "recorded"
+      },
+      normalizedPath: "/work/recorded",
+      capturedPath: "/work/recorded",
+      observedAt: new Date().toISOString()
+    };
+    await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      currentFolderObservation: observation
+    });
+    const foreign = await repo.createCapturedSession(other, {
+      externalSessionId: randomUUID(),
+      folderObservation: observation
+    });
+    const folder = { ...observation.identity, ownerUserId: actor.userId };
+    const result = await repo.getPersonalFolderHintEvidence(actor, {
+      sessionIds: [source.id, foreign.id],
+      includeKnownFolders: true
+    });
+    expect(personalFolderHintEvidenceSchema.parse(result).knownFolders).toEqual(
+      [folder]
+    );
+    expect(result.evidence.map(({ sessionId }) => sessionId)).toEqual([
+      source.id
+    ]);
+    const preview = (target: typeof folder) =>
+      repo.previewPersonalSourceCorrection(actor, source.id, {
+        axis: "folder",
+        action: "set",
+        expectedVersion: 1,
+        folder: target
+      });
+    expect(
+      (await preview(folder)).preview.after.folder.correction
+    ).toMatchObject({
+      state: "corrected",
+      value: { state: "known", value: { reference: folder } }
+    });
+    await expect(
+      preview({ ...folder, directoryIncarnationId: "registry-only" })
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
   it("reports known Git Anchors from effective identity without invalidating a mixed batch", async () => {
     const repo = createMemorySourceRepository(pool, options);
     const actor = {

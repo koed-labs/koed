@@ -47,13 +47,14 @@ working directory agree. Treat that link as a weak clue to corroborate, not a
 native Project sync, source-time pin, or Folder assignment. Koed reads no
 equivalent client-recorded worktree link for Codex or Pi.
 
-A hint for an observed, already-known Folder is different from a candidate path
-that has no registered Folder. Desktop offers no action for an unregistered
-candidate. Reviewing a hint does not register a Folder or write an observation.
-On confirmation, Desktop checks fresh evidence against the exact candidate you
-approved. A changed candidate needs fresh approval. When saving a Project
-suggestion, Koed previews whether the correction would newly include the
-Conversation in that exact Project through its rules. This is not direct
-membership, and a hint alone never changes attribution or membership.
+Desktop offers Folder actions only for exact references backed by recorded
+server evidence, not for paths or Folders known only to the local registry.
+Reviewing a hint does not register a Folder or write an observation.
+When confirming a Folder hint, Desktop rechecks server evidence and re-scores
+the exact candidate on the device. A changed candidate needs fresh approval.
+Git Anchor hints use reviewed source correction without a device-side rescore.
+When saving a Project suggestion, Koed previews whether the correction would
+newly include the Conversation in that exact Project through its rules. This is
+not direct membership, and a hint alone never changes attribution or membership.
 
 See [Desktop IPC](personal-memory-desktop-ipc.md) for the review contract.

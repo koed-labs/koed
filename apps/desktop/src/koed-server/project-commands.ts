@@ -243,7 +243,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       await deps.personalRequest("/v1/personal/sessions/folder-hint-evidence", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionIds })
+        body: JSON.stringify({ sessionIds, includeKnownFolders: true })
       })
     );
   const hintConversation = (
@@ -272,6 +272,9 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     const input = personalFolderHintRequestSchema.parse(raw);
     const payload = await fetchHintEvidence(input.sessionIds);
     const requested = new Set(input.sessionIds);
+    const knownFolders = new Set(
+      payload.knownFolders?.map(personalFolderScopeId)
+    );
     const lookupClientWorktree = createClientWorktreeLookup();
     const hints = [];
     for (const row of payload.evidence) {
@@ -283,7 +286,13 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       );
       // No ready local identity: no Folder can be a candidate on this device.
       if (!results) continue;
-      for (const result of results)
+      for (const result of results) {
+        if (
+          result.tier !== "none" &&
+          (result.kind === "registered" || result.kind === "worktree-parent") &&
+          !knownFolders.has(personalFolderScopeId(result.folder))
+        )
+          continue;
         hints.push({
           sessionId: row.sessionId,
           tier: result.tier,
@@ -308,22 +317,29 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
             outcome
           }))
         });
+      }
     }
     return personalFolderHintsDataSchema.parse({ hints });
   };
-  /** Re-score the exact advisory candidate. Only the reviewed correction can
-   * authorize this reference for the Conversation. */
+  /** Recheck the exact candidate against recorded and local evidence.
+   * Correction preview still validates the versioned change. */
   const confirmFolderHint = async (raw: unknown) => {
     const { sessionId, kind, folder } =
       personalFolderHintConfirmRequestSchema.parse(raw);
     const payload = await fetchHintEvidence([sessionId]);
     const row = payload.evidence.find((item) => item.sessionId === sessionId);
     if (!row) throw new Error("Conversation not found.");
+    const reviewed = personalFolderScopeId(folder);
+    if (
+      !payload.knownFolders?.some(
+        (known) => personalFolderScopeId(known) === reviewed
+      )
+    )
+      throw new Error("This Folder suggestion is not recorded on the server.");
     const candidates = await hintsForConversation(
       deps.paths,
       hintConversation(payload.ownerUserId, row)
     );
-    const reviewed = personalFolderScopeId(folder);
     if (
       !candidates?.some(
         (candidate) =>

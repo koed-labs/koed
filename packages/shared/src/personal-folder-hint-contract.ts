@@ -17,11 +17,18 @@ export type PersonalFolderHintRequest = z.infer<
   typeof personalFolderHintRequestSchema
 >;
 
+export const personalFolderHintEvidenceRequestSchema =
+  personalFolderHintRequestSchema.extend({
+    includeKnownFolders: z.boolean().optional()
+  });
+
 /** Recorded, owner-scoped facts the API exposes for scoring. The scorer adds
  * current, device-local evidence; the API never sees the local filesystem. */
 export const personalFolderHintEvidenceSchema = z
   .object({
     ownerUserId: personalOwnerIdSchema,
+    /** Exact owner-scoped targets from the Folder correction resolver. */
+    knownFolders: z.array(personalFolderReferenceSchema).optional(),
     evidence: z
       .array(
         z

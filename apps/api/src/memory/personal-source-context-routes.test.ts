@@ -56,23 +56,27 @@ describe("Conversation organization route", () => {
     const sessionId = "00000000-0000-4000-8000-000000000001",
       userId = "00000000-0000-4000-8000-000000000002";
     const evidence = vi.fn(async () => ({ ownerUserId: userId, evidence: [] }));
+    const read = vi.fn(async () => {});
+    const write = vi.fn(async () => {});
     const app = Fastify();
     registerPersonalSourceContextRoutes(app, {
       requireRepository: () => ({ getPersonalFolderHintEvidence: evidence }),
       auth: { authenticate: async () => ({ id: userId }) },
-      rateLimit: { memoryRead: async () => {}, memoryWrite: async () => {} }
+      rateLimit: { memoryRead: read, memoryWrite: write }
     } as unknown as ApiRouteContext);
     try {
       const ok = await app.inject({
         method: "POST",
         url: "/v1/personal/sessions/folder-hint-evidence",
-        payload: { sessionIds: [sessionId] }
+        payload: { sessionIds: [sessionId], includeKnownFolders: true }
       });
       expect(ok.statusCode).toBe(200);
       expect(evidence).toHaveBeenCalledWith(
         { userId },
-        { sessionIds: [sessionId] }
+        { sessionIds: [sessionId], includeKnownFolders: true }
       );
+      expect(read).toHaveBeenCalledOnce();
+      expect(write).not.toHaveBeenCalled();
       for (const payload of [
         { sessionIds: [] },
         { sessionIds: Array(51).fill(sessionId) },

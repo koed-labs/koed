@@ -9,9 +9,9 @@ lifetime, even when the path still exists.
 
 1. A Supported Capture Hook can pin original Folder and selected repository
    context on an authoritative lifecycle event: `SessionStart` with `startup`
-   for Codex, `SessionStart` with `startup` or `clear` for Claude Code, or an
-   explicit `new` or `fork` for Pi through the Local AI Runtime. The pin is keyed by
-   AI Client and external Conversation ID, and its original context is immutable.
+   or `clear` for Codex and Claude Code, or an explicit `new` or `fork` for Pi
+   through the Local AI Runtime. The pin is keyed by AI Client and external
+   Conversation ID, and its original context is immutable.
    The selected anchor includes explicit local or accepted associated selections;
    native `origin` metadata cannot replace that selection or a recorded selection
    conflict. Later observations update current Folder context only.

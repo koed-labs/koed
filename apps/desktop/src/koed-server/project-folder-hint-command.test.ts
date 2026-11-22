@@ -36,9 +36,12 @@ const candidate = {
 >[number];
 const score = vi.mocked(hintsForConversation);
 
-function setup() {
+function setup(knownFolders = [folder]) {
   const { contexts } = createProjectManagementValidationApi();
-  const request = vi.fn(async () => ({
+  const request = vi.fn(async (_path: string, init?: RequestInit) => ({
+    ...(JSON.parse(String(init?.body)).includeKnownFolders
+      ? { knownFolders }
+      : {}),
     ownerUserId: validationOwner,
     evidence: [
       {
@@ -55,7 +58,11 @@ function setup() {
     personalRequest: request,
     lookup: {}
   } as unknown as ProjectCommandsDeps);
-  return { request, confirm: commands.confirmFolderHint };
+  return {
+    request,
+    confirm: commands.confirmFolderHint,
+    hints: commands.folderHints
+  };
 }
 
 beforeEach(() => score.mockReset());
@@ -83,13 +90,43 @@ describe("Folder hint confirmation", () => {
     await expect(confirm(input)).rejects.toThrow("no longer matches");
   });
 
+  it("rejects an exact local candidate with no matching server reference", async () => {
+    const { confirm } = setup([
+      { ...folder, directoryIncarnationId: "replacement" }
+    ]);
+    score.mockResolvedValue([candidate]);
+    await expect(confirm(input)).rejects.toThrow("not recorded on the server");
+  });
+
   it("confirms the exact reference without calling any write endpoint", async () => {
     const { confirm, request } = setup();
     score.mockResolvedValue([{ ...candidate, reasons: [] }]);
     await expect(confirm(input)).resolves.toEqual({ folder });
     expect(request).toHaveBeenCalledExactlyOnceWith(
       "/v1/personal/sessions/folder-hint-evidence",
-      expect.anything()
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionIds: [sessionId],
+          includeKnownFolders: true
+        })
+      })
     );
+  });
+});
+
+describe("Folder hint listing", () => {
+  it("only returns Folder candidates with an exact server-known reference", async () => {
+    const { hints } = setup();
+    score.mockResolvedValue([
+      candidate,
+      {
+        ...candidate,
+        kind: "registered",
+        folder: { ...folder, directoryIncarnationId: "registry-only" }
+      }
+    ]);
+    await expect(hints({ sessionIds: [sessionId] })).resolves.toEqual({
+      hints: [{ ...candidate, sessionId }]
+    });
   });
 });

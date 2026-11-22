@@ -4,7 +4,7 @@ import {
   personalSourceCorrectionInputSchema,
   personalSourceCorrectionApplySchema,
   personalConversationOrganizationInputSchema,
-  personalFolderHintRequestSchema
+  personalFolderHintEvidenceRequestSchema
 } from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 
@@ -38,7 +38,7 @@ export const registerPersonalSourceContextRoutes = (
       const user = await authenticate(request);
       return requireRepository().getPersonalFolderHintEvidence(
         { userId: user.id },
-        personalFolderHintRequestSchema.parse(request.body)
+        personalFolderHintEvidenceRequestSchema.parse(request.body)
       );
     }
   );
