@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@koed-labs/ui";
 import { Check, X } from "lucide-react";
 import type {
@@ -20,11 +20,16 @@ import {
 import { CreateProjectDialog } from "./CreateProjectDialog.js";
 import {
   ProjectSettingsDialog,
+  type ConversationFilter,
   type ProjectSettingsPage
 } from "./ProjectSettingsDialog.js";
 import { MoveConversationDialog } from "./MoveConversationDialog.js";
 import { ConversationProjectsDialog } from "./ConversationProjectsDialog.js";
 import { SourceContextDialog } from "./SourceContextDialog.js";
+import { applySuggestions } from "./apply-suggestion.js";
+import { folderHintCache } from "./folder-hint-cache.js";
+import { useFolderSuggestions } from "./use-folder-suggestions.js";
+import { useSuggestionDismissals } from "./suggestion-dismissals.js";
 import {
   projectErrorMessage,
   type ConversationManagementTarget
@@ -32,7 +37,12 @@ import {
 
 type Modal =
   | { kind: "create" }
-  | { kind: "settings"; projectId: string; page?: ProjectSettingsPage }
+  | {
+      kind: "settings";
+      projectId: string;
+      page?: ProjectSettingsPage;
+      filter?: ConversationFilter;
+    }
   | {
       kind: "move" | "membership" | "context";
       target: ConversationManagementTarget;
@@ -98,6 +108,49 @@ export function useProjectManagement({
     !!api.manageSourceContext &&
     !!api.createProject &&
     !!store;
+  // Suggestions are worked out in the background, a little after start-up and
+  // a batch at a time, so the sidebar can show a count beside each Project.
+  const [suggestionsVersion, setSuggestionsVersion] = useState(0);
+  const forgetSuggestions = () => {
+    folderHintCache.clear();
+    setSuggestionsVersion((version) => version + 1);
+  };
+  const worked = useFolderSuggestions(api ?? undefined, projects, available, {
+    version: suggestionsVersion,
+    startDelayMs: 2500,
+    pauseMs: 300
+  });
+  // Suggestions the User turned down stay out of the list and the counts.
+  const { isDismissed, dismiss } = useSuggestionDismissals(scopeKey);
+  // Nor is a Conversation suggested for a Project it is already in (added
+  // directly, say): only the Projects it is not yet in stay on the row.
+  const members = useMemo(() => {
+    const byName = new Map<string, Set<string>>();
+    for (const project of projects) {
+      const ids = project.threads.flatMap((t) =>
+        t.sessionId ? [t.sessionId] : []
+      );
+      for (const name of [project.name, project.namedProject?.name])
+        if (name)
+          byName.set(name, new Set([...(byName.get(name) ?? []), ...ids]));
+    }
+    return byName;
+  }, [projects]);
+  const shown = useMemo(
+    () =>
+      worked.rows.flatMap((row) => {
+        if (isDismissed(row)) return [];
+        const open = row.proposal.projects.filter(
+          (name) => !members.get(name)?.has(row.sessionId)
+        );
+        if (open.length === row.proposal.projects.length) return [row];
+        return open.length > 0
+          ? [{ ...row, proposal: { ...row.proposal, projects: open } }]
+          : [];
+      }),
+    [worked.rows, isDismissed, members]
+  );
+  const suggestions = { ...worked, rows: shown };
   const run = async (work: (check: () => void) => Promise<void>) => {
     if (!available || locked.current)
       throw new Error("Project management is busy or unavailable.");
@@ -151,6 +204,7 @@ export function useProjectManagement({
         "The saved organization result is missing. Refresh before trying again."
       );
     open(null);
+    forgetSuggestions();
     notice({ message, undo: result.organization });
     try {
       await refresh(check, target.sessionId, preferredProjectId);
@@ -345,19 +399,41 @@ export function useProjectManagement({
           projects={projects}
           projectId={modal.projectId}
           page={modal.page}
+          {...(modal.filter ? { filter: modal.filter } : {})}
+          suggestions={suggestions}
           onClose={() => open(null)}
-          onSave={(project, changes) =>
+          onSave={(project, changes, accepted, rejected) =>
             run(async (check) => {
               check();
-              await api!.manageProject!({
-                action: "apply_sources",
-                projectId: project.id,
-                expectedVersion: project.namedProject!.version,
-                changes
-              });
+              if (changes.length > 0)
+                await api!.manageProject!({
+                  action: "apply_sources",
+                  projectId: project.id,
+                  expectedVersion: project.namedProject!.version,
+                  changes
+                });
               check();
+              // Excluded now, so no longer suggested here or in the sidebar.
+              if (rejected.length > 0) dismiss(rejected);
+              // Each suggestion is its own correction, saved after the
+              // Project's changes; one failure does not stop the rest.
+              const added = await applySuggestions(api!, projects, accepted);
+              check();
+              if (accepted.length > 0) forgetSuggestions();
               open(null);
-              notice({ message: "Project settings saved" });
+              notice(
+                added.failed.length > 0
+                  ? {
+                      message: `Project settings saved. ${added.done} of ${accepted.length} suggested conversations added.`,
+                      error: added.failed.join("\n")
+                    }
+                  : {
+                      message:
+                        accepted.length > 0
+                          ? `Project settings saved. Added ${added.done} ${added.done === 1 ? "conversation" : "conversations"}.`
+                          : "Project settings saved"
+                    }
+              );
               try {
                 await refresh(check);
               } catch (cause) {

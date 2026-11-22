@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge, Button, Checkbox, DialogFooter, Input } from "@koed-labs/ui";
 import {
   Check,
@@ -20,20 +20,26 @@ import { ProjectSyncDetails } from "../../views/personal/ProjectSyncDetails.js";
 import { ProjectChoice, ProjectError, ProjectPopup } from "./controls.js";
 import {
   activeNamedProjects,
-  excludedMembership,
-  unresolvedMembership
+  excludedMembership
 } from "./conversation-organization.js";
 import {
   loadProjectSettings,
   settingsChanges,
   settingsMembership,
-  settingsMatchingSources,
   selectSettingsSource,
   type ProjectSettingsDraft
 } from "./project-settings-model.js";
 import { projectErrorMessage } from "./use-organization-review.js";
 
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
+import { SuggestionCoin } from "./ProjectCoins.js";
+import {
+  ConversationsPanel,
+  membershipSummary,
+  type ConversationFilter
+} from "./ConversationsPanel.js";
+import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
+import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
 
 const pages = [
@@ -44,6 +50,7 @@ const pages = [
   { id: "sync", name: "Sync", Icon: RefreshCw }
 ] as const;
 export type ProjectSettingsPage = (typeof pages)[number]["id"];
+export type { ConversationFilter };
 
 export function ProjectSettingsDialog({
   api,
@@ -51,6 +58,8 @@ export function ProjectSettingsDialog({
   projects,
   projectId,
   page = "general",
+  filter: initialFilter = "in",
+  suggestions,
   onClose,
   onSave,
   onDelete
@@ -60,10 +69,18 @@ export function ProjectSettingsDialog({
   projects: readonly DesktopProject[];
   projectId: string;
   page?: ProjectSettingsPage;
+  /** Which Conversations to list first on the Conversations page. */
+  filter?: ConversationFilter;
+  /** Conversations suggested in the background, for every Project. */
+  suggestions?: { rows: readonly SuggestionRow[]; loading: boolean };
   onClose: () => void;
+  /** Saves the Project's changes (turned-down suggestions are excluded), then
+   * adds the accepted suggestions. */
   onSave: (
     project: DesktopProject,
-    changes: PersonalProjectBatchInput["changes"]
+    changes: PersonalProjectBatchInput["changes"],
+    accepted: SuggestionRow[],
+    rejected: SuggestionRow[]
   ) => Promise<void>;
   onDelete: (project: DesktopProject) => Promise<void>;
 }) {
@@ -74,6 +91,11 @@ export function ProjectSettingsDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<ConversationFilter>(initialFilter);
+  // Suggested Conversations ticked to join; saved with the other changes.
+  const [accepted, setAccepted] = useState<ReadonlySet<string>>(new Set());
+  // Suggested Conversations turned down; saving excludes them.
+  const [rejected, setRejected] = useState<ReadonlySet<string>>(new Set());
   const [confirmation, setConfirmation] = useState<"delete" | "discard" | null>(
     null
   );
@@ -100,8 +122,50 @@ export function ProjectSettingsDialog({
       current = false;
     };
   }, [active, api, initialProjects]);
+  const activeName = initialProjects.find((p) => p.id === active)?.name;
+  // Suggestions for this Project. A Conversation already in it, or excluded
+  // from it, never is.
+  const suggested = useMemo(() => {
+    const excluded = new Set(
+      (draft?.conversations ?? [])
+        .filter(
+          (c) => c.explanation.included || excludedMembership(c.explanation)
+        )
+        .map((c) => c.sessionId)
+    );
+    return (suggestions?.rows ?? []).filter(
+      (row) =>
+        !!activeName &&
+        row.proposal.projects.includes(activeName) &&
+        !excluded.has(row.sessionId)
+    );
+  }, [suggestions?.rows, activeName, draft?.conversations]);
+  const acceptedRows = suggested.filter((row) => accepted.has(row.sessionId));
+  const rejectedRows = suggested.filter((row) => rejected.has(row.sessionId));
   const changes = draft ? settingsChanges(draft) : [];
-  const dirty = changes.length > 0;
+  const dirty =
+    changes.length > 0 || acceptedRows.length > 0 || rejectedRows.length > 0;
+  // "1 to add · 1 to remove", plus any other edits on the other pages.
+  const footerSummary = (() => {
+    if (!draft) return "";
+    const { add, remove } = membershipSummary(draft, acceptedRows.length);
+    const membershipActions = new Set([
+      "add_session",
+      "remove_inclusion",
+      "exclude_session",
+      "add_back"
+    ]);
+    const parts = [
+      ...(add > 0 ? [`${add} to add`] : []),
+      ...(remove > 0 ? [`${remove} to remove`] : []),
+      ...(rejectedRows.length > 0 ? [`${rejectedRows.length} to exclude`] : []),
+      ...(changes.some((c) => !membershipActions.has(c.action)) ||
+      (add === 0 && remove === 0 && rejectedRows.length === 0)
+        ? ["Unsaved changes"]
+        : [])
+    ];
+    return parts.join(" · ");
+  })();
   const editError =
     draft?.inspectionError ??
     (draft?.sync?.catalog && draft.sync.catalog.state !== "available"
@@ -120,6 +184,9 @@ export function ProjectSettingsDialog({
       setActive(id);
       setPanel("general");
       setQuery("");
+      setFilter("in");
+      setAccepted(new Set());
+      setRejected(new Set());
     }
   };
   const mutate = (
@@ -137,6 +204,24 @@ export function ProjectSettingsDialog({
       setBusy(false);
     }
   };
+  const [now] = useState(Date.now);
+  // Client and latest activity per Conversation, for the row's mark and age.
+  const facts = useMemo(() => {
+    const map = new Map<
+      string,
+      { client?: SupportedAiClientDriverId; latestAt?: string }
+    >();
+    for (const project of projects)
+      for (const thread of project.threads)
+        if (thread.sessionId && !map.has(thread.sessionId)) {
+          const client = clientOf(thread.sourceAiClient);
+          map.set(thread.sessionId, {
+            ...(client ? { client } : {}),
+            ...(thread.latestAt ? { latestAt: thread.latestAt } : {})
+          });
+        }
+    return map;
+  }, [projects]);
   const syncEntities = draft?.sync
     ? [
         ...(draft.sync.catalog ? [draft.sync.catalog] : []),
@@ -183,6 +268,11 @@ export function ProjectSettingsDialog({
             >
               <Icon />
               {name}
+              {id === "conversations" && suggested.length > 0 && (
+                <span className="v1-pm-nav-coin">
+                  <SuggestionCoin count={suggested.length} />
+                </span>
+              )}
               {id === "sync" && (conflict || pending) && (
                 <span className="v1-pm-review-dot" />
               )}
@@ -321,128 +411,30 @@ export function ProjectSettingsDialog({
             </>
           )}
           {draft && !editError && panel === "conversations" && (
-            <>
-              <div className="v1-pm-list-controls">
-                <Input
-                  type="search"
-                  placeholder="Find a Conversation…"
-                  aria-label="Search Project Conversations"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-              </div>
-              <div className="v1-pm-list">
-                {draft.conversations
-                  .filter(
-                    (c) =>
-                      (c.explanation.included ||
-                        settingsMatchingSources(draft, c).length > 0 ||
-                        excludedMembership(c.explanation)) &&
-                      c.title
-                        .toLocaleLowerCase()
-                        .includes(query.toLocaleLowerCase())
-                  )
-                  .map((row) => {
-                    const membership = settingsMembership(draft, row),
-                      excluded = excludedMembership(row.explanation),
-                      unresolved = unresolvedMembership(row.explanation);
-                    const update = (next: typeof membership) =>
-                      mutate((old) => ({
-                        ...old,
-                        memberships: {
-                          ...old.memberships,
-                          [row.sessionId]: next
-                        }
-                      }));
-                    return (
-                      <div className="v1-pm-choice-row" key={row.sessionId}>
-                        <Checkbox
-                          aria-label={`Include ${row.title}`}
-                          checked={membership.included}
-                          disabled={
-                            busy ||
-                            unresolved ||
-                            (excluded && !membership.restore)
-                          }
-                          onCheckedChange={(checked) =>
-                            update({
-                              ...membership,
-                              included: checked,
-                              direct: checked
-                            })
-                          }
-                        />
-                        <span className="v1-pm-row-copy">
-                          <b>{row.title}</b>
-                          <small>
-                            {unresolved
-                              ? "Review sync conflict"
-                              : excluded && !membership.restore
-                                ? "Excluded"
-                                : membership.included
-                                  ? [
-                                      ...(membership.direct
-                                        ? ["Added directly"]
-                                        : []),
-                                      ...settingsMatchingSources(
-                                        draft,
-                                        row
-                                      ).map((r) =>
-                                        r.kind === "folder"
-                                          ? "Folder"
-                                          : "Git Anchor"
-                                      )
-                                    ].join(" · ")
-                                  : "Will be removed"}
-                          </small>
-                        </span>
-                        {excluded && !membership.restore && !unresolved && (
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            disabled={busy}
-                            onClick={() =>
-                              update({
-                                included: true,
-                                direct: true,
-                                restore: true
-                              })
-                            }
-                          >
-                            Add back
-                          </Button>
-                        )}
-                        {membership.included &&
-                          !excluded &&
-                          settingsMatchingSources(draft, row).length > 0 && (
-                            <Button
-                              variant="ghost"
-                              size="xs"
-                              aria-pressed={membership.direct}
-                              disabled={busy || unresolved}
-                              onClick={() =>
-                                update({
-                                  ...membership,
-                                  direct: !membership.direct
-                                })
-                              }
-                            >
-                              {membership.direct
-                                ? "Remove direct"
-                                : "Add directly"}
-                            </Button>
-                          )}
-                      </div>
-                    );
-                  })}
-              </div>
-              {!draft.conversations.length && (
-                <div className="v1-pm-empty">
-                  <MessageCircle />
-                  No Conversations
-                </div>
-              )}
-            </>
+            <ConversationsPanel
+              draft={draft}
+              busy={busy}
+              query={query}
+              onQuery={setQuery}
+              filter={filter}
+              onFilter={setFilter}
+              suggested={suggested}
+              suggestionsLoading={suggestions?.loading ?? false}
+              accepted={accepted}
+              onAccepted={setAccepted}
+              rejected={rejected}
+              onRejected={setRejected}
+              facts={facts}
+              now={now}
+              onMembership={(sessionId, next) =>
+                mutate((old) => {
+                  const memberships = { ...old.memberships };
+                  if (next) memberships[sessionId] = next;
+                  else delete memberships[sessionId];
+                  return { ...old, memberships };
+                })
+              }
+            />
           )}
           {draft && panel === "sync" && (
             <>
@@ -491,7 +483,7 @@ export function ProjectSettingsDialog({
           )}
         </div>
         <DialogFooter className="v1-pm-settings-footer">
-          <span>{dirty ? "Unsaved changes" : ""}</span>
+          <span>{dirty ? footerSummary : ""}</span>
           <Button variant="outline" disabled={busy} onClick={close}>
             Cancel
           </Button>
@@ -500,7 +492,21 @@ export function ProjectSettingsDialog({
               !draft || !!editError || !dirty || !draft.name.trim() || busy
             }
             onClick={() =>
-              draft && void run(() => onSave(draft.project, changes))
+              draft &&
+              void run(() =>
+                onSave(
+                  draft.project,
+                  [
+                    ...changes,
+                    ...rejectedRows.map((row) => ({
+                      action: "exclude_session" as const,
+                      sessionId: row.sessionId
+                    }))
+                  ],
+                  acceptedRows,
+                  rejectedRows
+                )
+              )
             }
           >
             {busy ? "Saving…" : "Save changes"}
@@ -540,6 +546,9 @@ export function ProjectSettingsDialog({
                   setActive(nextProject);
                   setPanel("general");
                   setQuery("");
+                  setFilter("in");
+                  setAccepted(new Set());
+                  setRejected(new Set());
                   setNextProject(undefined);
                   setConfirmation(null);
                 } else onClose();

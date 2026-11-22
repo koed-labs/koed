@@ -196,3 +196,132 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
     container.remove();
   }
 });
+
+it("lists suggestions on their own tab and saves ticked ones with the Project's changes", async () => {
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const projects = mergeProjectSources(f.inventory(), []);
+  // A Conversation already in the Project is never suggested for it.
+  const member = projects.find((p) => p.id === projectId)!.threads[0]!
+    .sessionId!;
+  const row = (n: number, project = "koed") => ({
+    sessionId: validationId(900 + n),
+    title: `Suggested ${n}`,
+    client: "claude" as const,
+    proposal: {
+      action: "anchor" as const,
+      kind: "repository" as const,
+      tier: "medium" as const,
+      projects: [project],
+      evidence: []
+    }
+  });
+  const save = vi.fn(async () => {});
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const button = (text: string) =>
+    [...document.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === text
+    )!;
+  try {
+    await act(async () =>
+      root.render(
+        <ProjectSettingsDialog
+          api={f.api}
+          store={new PersonalMemoryStore(f.api)}
+          projects={projects}
+          projectId={projectId}
+          page="conversations"
+          filter="suggested"
+          suggestions={{
+            rows: [
+              row(1),
+              row(2),
+              row(3, "koed-voice"),
+              { ...row(4), sessionId: member }
+            ],
+            loading: false
+          }}
+          onClose={vi.fn()}
+          onSave={save}
+          onDelete={vi.fn()}
+        />
+      )
+    );
+    const text = document.body.textContent ?? "";
+    // Only this Project's suggestions, none ticked until the User chooses.
+    expect(text).toContain("Suggested 1");
+    expect(text).toContain("Suggested 2");
+    expect(text).not.toContain("Suggested 3");
+    expect(text).not.toContain("Suggested 4");
+    expect(button("Save changes").disabled).toBe(true);
+    await act(async () =>
+      (
+        document.querySelector('[aria-label="Add Suggested 1"]') as HTMLElement
+      ).click()
+    );
+    expect(document.body.textContent).toContain("Will be added");
+    expect(document.body.textContent).toContain("1 to add");
+    // Undo puts the row back; Add stages it again.
+    await act(async () =>
+      (
+        document.querySelector(
+          '[aria-label="Undo for Suggested 1"]'
+        ) as HTMLElement
+      ).click()
+    );
+    expect(document.body.textContent).not.toContain("Will be added");
+    await act(async () =>
+      (
+        document.querySelector('[aria-label="Add Suggested 1"]') as HTMLElement
+      ).click()
+    );
+    // "Not this one" lives in the row's menu and stages an exclusion.
+    await act(async () =>
+      (
+        document.querySelector(
+          '[aria-label="More for Suggested 2"]'
+        ) as HTMLElement
+      ).click()
+    );
+    const notThis = [...document.querySelectorAll("[role=menuitem]")].find(
+      (item) => item.textContent?.includes("Not this one")
+    ) as HTMLElement;
+    await act(async () => notThis.click());
+    expect(document.body.textContent).toContain("Will be excluded");
+    expect(document.body.textContent).toContain("1 to add · 1 to exclude");
+    // A Conversation in the Project is removed with one action, then saved.
+    const tab = [...document.querySelectorAll("[role=tab]")].find((t) =>
+      t.textContent?.startsWith("In Project")
+    ) as HTMLElement;
+    await act(async () => tab.click());
+    const memberTitle = projects.find((p) => p.id === projectId)!.threads[0]!
+      .name;
+    await act(async () =>
+      (
+        document.querySelector(
+          `[aria-label="Remove ${memberTitle}"]`
+        ) as HTMLElement
+      ).click()
+    );
+    expect(document.body.textContent).toMatch(/Will be (excluded|removed)/);
+    expect(document.body.textContent).toContain(
+      "1 to add · 1 to remove · 1 to exclude"
+    );
+    await act(async () => button("Save changes").click());
+    expect(save).toHaveBeenCalledWith(
+      expect.anything(),
+      [
+        expect.objectContaining({
+          action: expect.stringMatching(/exclude_session|remove_inclusion/)
+        }),
+        { action: "exclude_session", sessionId: validationId(902) }
+      ],
+      [expect.objectContaining({ title: "Suggested 1" })],
+      [expect.objectContaining({ title: "Suggested 2" })]
+    );
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
