@@ -22,7 +22,11 @@ import {
   type ClientWorktreeLookup
 } from "./client-worktree-source.js";
 import { observeCaptureFolder } from "./folder-context.js";
-import { readFolderHintFile } from "./folder-hint-file.js";
+import {
+  folderHintFileMissing,
+  inspectFolderHintFile,
+  readFolderHintFile
+} from "./folder-hint-file.js";
 import {
   canScoreWorktreeParent,
   scoreFolderCreation,
@@ -218,18 +222,19 @@ const lookupRegistry = async (
   deviceId: string
 ): Promise<FolderHintInput["registry"]> => {
   const registryPath = join(paths.configDir, "folder-contexts.json");
-  const text = await readFolderHintFile(registryPath, MAX_REGISTRY_BYTES);
-  if (text === null) return { state: "missing" };
+  const text = await inspectFolderHintFile(registryPath, MAX_REGISTRY_BYTES);
+  if (text === folderHintFileMissing) return { state: "missing" };
+  if (text === null) return { state: "unavailable" };
   let registry: ReturnType<typeof personalFolderRegistrySchema.parse>;
   try {
     registry = personalFolderRegistrySchema.parse(JSON.parse(text));
   } catch {
-    return { state: "missing" };
+    return { state: "unavailable" };
   }
   const marker = await readPersonalFolderDirectoryMarkerAsync(
     normalizedPath
   ).catch(() => null);
-  if (!marker) return { state: "missing" };
+  if (!marker) return { state: "unavailable" };
   const entry = findPersonalFolderDirectory(
     registry.directories,
     normalizedPath,

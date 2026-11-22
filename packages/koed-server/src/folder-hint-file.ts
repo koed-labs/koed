@@ -1,19 +1,26 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
+export const folderHintFileMissing = Symbol("Folder hint file missing");
+
 /** Bound bytes at the read, not just at stat: the file can grow in between. */
-export const readFolderHintFile = async (
+export const inspectFolderHintFile = async (
   path: string,
   maxBytes: number,
   budget?: { remaining: number }
-): Promise<string | null> => {
+): Promise<string | null | typeof folderHintFileMissing> => {
   try {
     const file = await open(
       path,
       constants.O_RDONLY |
         (constants.O_NOFOLLOW ?? 0) |
         (constants.O_NONBLOCK ?? 0)
-    );
+    ).catch((error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return null;
+      throw error;
+    });
+    if (!file) return folderHintFileMissing;
     try {
       const stat = await file.stat();
       const limit = Math.min(maxBytes, budget?.remaining ?? maxBytes);
@@ -42,4 +49,13 @@ export const readFolderHintFile = async (
   } catch {
     return null;
   }
+};
+
+export const readFolderHintFile = async (
+  path: string,
+  maxBytes: number,
+  budget?: { remaining: number }
+): Promise<string | null> => {
+  const result = await inspectFolderHintFile(path, maxBytes, budget);
+  return typeof result === "string" ? result : null;
 };

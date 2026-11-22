@@ -434,8 +434,9 @@ strictly earlier than the first Conversation timestamp, regardless of score.
 Missing, equal, or later birthtime disqualifies the parent. A recorded remote
 mismatch always disqualifies it; a verified Git link or a client-recorded link
 can support a hint without remote agreement. A creation hint applies to an
-existing, unregistered directory: the Conversation
-must be captured here and the directory older than it (two points), with remote
+existing, unregistered directory. An unreadable, oversized, or invalid local
+Folder registry does not establish that the directory is unregistered. The
+Conversation must be captured here and the directory older than it (two points), with remote
 agreement (two) strong, and activity or a contained transcript file (one each)
 making a lesser medium of at least three points. The hints for one Conversation are all returned, best first (registered Folder,
 worktree-parent, create), because a worktree usually has its own registered Folder

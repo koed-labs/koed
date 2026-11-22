@@ -2,6 +2,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  truncateSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -95,6 +96,31 @@ describe("Folder hint evidence", () => {
     const observed = await observeCaptureFolder(paths, directory, env);
     expect(observed?.identity.folderId).toBeTruthy();
   });
+
+  it.each(["oversized", "invalid"])(
+    "suppresses creation when the registry is %s",
+    async (failure) => {
+      const { root, paths, env } = await fixture();
+      const directory = resolve(root, "registered");
+      mkdirSync(directory);
+      const observed = (await observeCaptureFolder(paths, directory, env))!;
+      const registry = resolve(paths.configDir, "folder-contexts.json");
+      if (failure === "oversized") truncateSync(registry, 16 * 1024 * 1024 + 1);
+      else writeFileSync(registry, "{}");
+      const hints = await hintsForConversation(
+        paths,
+        conversation({
+          recordedCwd: directory,
+          originDeviceId: observed.identity.originatingDeviceId,
+          firstConversationAt: Date.now() + 60_000
+        }),
+        { environment: env, now: () => Date.now() + 120_000 }
+      );
+      expect(hints).not.toContainEqual(
+        expect.objectContaining({ kind: "create" })
+      );
+    }
+  );
 
   it("matches a live registration and carries its exact Folder identity", async () => {
     const { root, paths, env } = await fixture();

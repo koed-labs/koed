@@ -14,7 +14,8 @@ type RegistryLookup =
       normalizedPath: string;
     }>
   | Readonly<{ state: "missing" }>
-  | Readonly<{ state: "ambiguous" }>;
+  | Readonly<{ state: "ambiguous" }>
+  | Readonly<{ state: "unavailable" }>;
 type ProjectContext = Readonly<{
   scope: "personal" | "shared" | "workspace-linked";
   reference: Readonly<PersonalProjectReference>;
@@ -73,6 +74,7 @@ type Reason = Readonly<{
     | "git-remote"
     | "live-registry-match"
     | "registry-marker-ambiguous"
+    | "registry-unavailable"
     | "registry-folder-missing"
     | "registry-path-mismatch"
     | "registry-device-mismatch"
@@ -147,6 +149,8 @@ const assessRegistry = (
   { registry, currentDeviceId, originalFolderReason }: FolderHintInput,
   normalizedCwd: string | null
 ): Reason => {
+  if (registry.state === "unavailable")
+    return { code: "registry-unavailable", outcome: "rejects" };
   if (registry.state === "ambiguous")
     return { code: "registry-marker-ambiguous", outcome: "rejects" };
   if (registry.state !== "matched")
@@ -305,7 +309,7 @@ export const scoreFolderCreation = (
   );
   if (
     !cwd ||
-    input.registry.state === "matched" ||
+    input.registry.state !== "missing" ||
     adjusted.some(({ outcome }) => outcome === "rejects") ||
     origin !== "agrees" ||
     birthtime !== "agrees" ||
