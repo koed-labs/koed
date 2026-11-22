@@ -213,6 +213,7 @@ export { resolveRepositoryIdentity } from "./repository-identity.js";
 export {
   observeCaptureFolder,
   pinSourceFolderObservation,
+  readOrSealSourceFolderContext,
   readSourceFolderObservation,
   readCurrentSourceFolderObservation,
   readSourceRepositoryIdentity

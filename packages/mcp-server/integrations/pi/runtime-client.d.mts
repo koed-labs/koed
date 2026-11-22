@@ -30,6 +30,5 @@ export declare const callLocalRuntimeTool: (input: {
   invocationKey: string;
 }) => Promise<Record<string, unknown>>;
 export declare const piSessionStartIsNewConversation: (
-  reason: unknown,
-  entries: unknown
+  reason: unknown
 ) => boolean;

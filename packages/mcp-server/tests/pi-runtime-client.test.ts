@@ -372,15 +372,15 @@ describe("Pi session_start Folder evidence", () => {
   const message = { type: "message", message: { role: "user" } };
   const header = { type: "model_change" };
   it.each([
-    // A plain `pi` launch reports "startup"; it must pin the original Folder.
-    { reason: "startup", entries: [], expected: true },
-    { reason: "startup", entries: [header], expected: true },
+    // A plain launch and a header-only reopen both report "startup".
+    { reason: "startup", entries: [], expected: false },
+    { reason: "startup", entries: [header], expected: false },
     { reason: "new", entries: [], expected: true },
     // A fork is a new Conversation lineage in the current directory.
     { reason: "fork", entries: [message], expected: true },
     // `pi --continue` and `--session` reopen history under "startup".
     { reason: "startup", entries: [header, message], expected: false },
-    { reason: "new", entries: [message], expected: false },
+    { reason: "new", entries: [message], expected: true },
     { reason: "resume", entries: [], expected: false },
     { reason: "reload", entries: [], expected: false },
     { reason: "startup", entries: undefined, expected: false },
@@ -388,7 +388,13 @@ describe("Pi session_start Folder evidence", () => {
   ])(
     "treats $reason with $entries.length entries as new: $expected",
     ({ reason, entries, expected }) => {
-      expect(piSessionStartIsNewConversation(reason, entries)).toBe(expected);
+      // Legacy callers may still pass entries; they are not creation evidence.
+      expect(
+        Reflect.apply(piSessionStartIsNewConversation, undefined, [
+          reason,
+          entries
+        ])
+      ).toBe(expected);
     }
   );
 });

@@ -156,11 +156,15 @@ authorization, and task lifecycle behavior.
 
 Local AI Runtime supervises Pi Transcript Watcher. Persistent Pi JSONL session file is Conversation source of truth. Extension writes content-free wake signal containing session ID, session path, cwd, event name, and observation time.
 
-On `session_start`, the extension asks the Local AI Runtime to record the Folder
-and the directory's selected Git remote. A plain launch (`startup`) or `/new`
-with no message entries, and a `fork`, pin them as the Conversation's original
-Folder and Git Anchor. `resume`, `reload`, and a launch that reopened history
-record only the latest observation. See
+On `session_start`, the extension asks the Local AI Runtime to record the Folder.
+Only explicit `new` and `fork` events can pin it and the directory's selected Git
+remote as the Conversation's original Folder and Git Anchor. Generic `startup`
+can mean a launch or a reopen, even when the session has no messages. Like
+`resume` and `reload`, it records the latest Folder without pinning originals.
+Pi can publish a fork with copied history before the extension records its context.
+If eligible live or exact historical registration reaches the source first, it
+atomically seals both originals as unresolved and continues. A late observation
+still updates the latest Folder. See
 [Exact Folder capture and selection](personal-selection-contract.md#exact-folder-capture-and-selection).
 
 Watcher:

@@ -335,20 +335,25 @@ disk state. The Pi Local AI Runtime endpoint accepts authenticated source contex
 observations without exposing a new agent-facing tool. Unrecognized Pi start
 reasons remain unresolved. Native historical import reads recorded evidence only.
 
-The first source record for a Conversation is final, so the start decision must
-recognize every way an AI Client opens a new Conversation. When it does, the same
+The first source record fixes both originals. At an authoritative start, the same
 record also pins the directory's selected Git remote as the original Git Anchor.
-The Transcript Watcher reads both pins when it registers the Captured Session, so
-the Conversation joins Projects through the existing Folder and Git Anchor rules.
+The Transcript Watcher uses recorded originals when it registers the Captured
+Session, so the Conversation joins Projects through the existing Folder and Git
+Anchor rules.
 
-| AI Client   | New Conversation start                                                                                                                                                   | Not a new start                                                                                     |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| Codex       | `SessionStart` with source `startup` or `clear`                                                                                                                          | `resume`, and every other hook event                                                                |
-| Claude Code | `SessionStart` with source `startup` or `clear`; `resume` for a fork, whose own transcript holds only messages copied from another session (synthetic stubs are ignored) | `resume` with a message under its own session id, `compact`, a transcript named for another session |
-| Pi          | `session_start` with reason `startup` or `new` and no message entries; reason `fork`                                                                                     | `resume`, `reload`, and `startup` or `new` that reopened history                                    |
+| AI Client   | Authoritative Conversation start                | Does not establish a start                                                |
+| ----------- | ----------------------------------------------- | ------------------------------------------------------------------------- |
+| Codex       | `SessionStart` with source `startup` or `clear` | `resume` and all other hook events                                        |
+| Claude Code | `SessionStart` with source `startup` or `clear` | `resume` (even with copied history), `compact`, and all other hook events |
+| Pi          | `session_start` with reason `new` or `fork`     | Generic `startup`, `resume`, and `reload`                                 |
 
-A Conversation whose first source record missed its start keeps an unresolved
-original. Capture never backfills or reassigns it from current disk state.
+Claude Code `resume` still records the latest Folder and signals the Transcript
+Watcher without scanning the transcript for a fork. For Pi, eligible live and
+exact historical registration consume both originals from one locked source
+snapshot. If no record exists, discovery seals both originals as unresolved and
+continues capture without waiting for a live observation. A late observation can
+update the latest Folder, but cannot change either original. Capture never
+backfills or reassigns an original from current disk state.
 
 Migration `0048_personal_project_model` gives existing Sessions an unresolved
 historical Folder assignment. Registration binds new source-time evidence to the

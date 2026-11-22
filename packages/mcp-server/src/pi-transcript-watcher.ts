@@ -1,8 +1,4 @@
-import {
-  recordedCaptureFolderObservation,
-  currentCaptureFolderObservation
-} from "./capture-repository-context.js";
-import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
+import { piCaptureRegistrationContext } from "./capture-repository-context.js";
 import { createHash } from "node:crypto";
 import { conversationSourceRewriteGenerationId } from "@koed-labs/shared";
 import fs, { type FSWatcher } from "node:fs";
@@ -357,12 +353,6 @@ export const processPiTranscriptSignal = async (
   if (boundary < captureBaseline) throw new Error("pi_session_truncated");
   if (artifact && file.size < artifact.providerCursorOffset)
     throw new Error("pi_session_truncated");
-  const repositoryIdentity = await resolveHistoricalCaptureRepositoryIdentity({
-    sourceTime: null,
-    source: { sourceKind: "pi", externalSessionId: identity.id },
-    cwd: identity.cwd,
-    env
-  });
   const journalStartOffset =
     artifact?.journalStartOffset ??
     (env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1" ? captureBaseline : 0);
@@ -377,20 +367,10 @@ export const processPiTranscriptSignal = async (
     await client.ensureConversationSourceArtifact({
       sourceSession: {
         externalSessionId: identity.id,
-        folderObservation: recordedCaptureFolderObservation({
-          sourceKind: "pi",
-          externalSessionId: identity.id,
-          env
-        }),
-        currentFolderObservation: currentCaptureFolderObservation({
-          sourceKind: "pi",
-          externalSessionId: identity.id,
-          env
-        }),
+        ...piCaptureRegistrationContext(identity.id, env),
         sourceRuntime: "pi",
         captureMethod: "api",
         cwd: identity.cwd,
-        ...(repositoryIdentity ? { repositoryIdentity } : {}),
         idempotencyKey: `pi-session:${identity.id}`,
         sourceHash: hash({ provider: "pi", sessionId: identity.id }),
         metadata: {

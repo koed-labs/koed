@@ -94,22 +94,9 @@ const request = async (
   return result;
 };
 
-/**
- * Whether a Pi session_start begins a new Conversation, so its current
- * directory is source-time evidence. Pi reports a plain launch as "startup"
- * and `/new` as "new"; both start empty unless `--continue` or `--session`
- * reopened history. A fork gets a fresh session id in the current directory.
- * "resume" and "reload" reopen an existing Conversation, which cannot take
- * today's directory as its original Folder.
- */
-export const piSessionStartIsNewConversation = (reason, entries) => {
-  if (reason === "fork") return true;
-  if (reason !== "startup" && reason !== "new") return false;
-  return (
-    Array.isArray(entries) &&
-    !entries.some((entry) => entry?.type === "message")
-  );
-};
+/** Generic startup can reopen history, even when no messages exist. */
+export const piSessionStartIsNewConversation = (reason) =>
+  reason === "new" || reason === "fork";
 
 export const recordCaptureFolderContext = (koedHome, input) =>
   request(

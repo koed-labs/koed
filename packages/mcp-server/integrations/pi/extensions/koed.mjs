@@ -355,13 +355,11 @@ export default function koedExtension(pi) {
     sessionController?.abort();
     sessionController = new AbortController();
     try {
-      // Resumed or reloaded history cannot acquire today's directory identity.
-      const entries = ctx.sessionManager.getEntries?.();
       await recordCaptureFolderContext(koedHome, {
         sourceKind: "pi",
         externalSessionId: ctx.sessionManager.getSessionId(),
         cwd: ctx.cwd,
-        newConversation: piSessionStartIsNewConversation(event.reason, entries)
+        newConversation: piSessionStartIsNewConversation(event.reason)
       });
     } catch {
       /* Missing source-time provenance remains unresolved. */
