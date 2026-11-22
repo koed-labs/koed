@@ -187,6 +187,13 @@ and subagent start/stop. The Hook uses the event only to identify and wake the
 matching local transcript source. It does not send prompt, response, or tool
 content to the API.
 
+When `SessionStart` begins a new Conversation, the Hook also pins the original
+Folder and the directory's selected Git remote before the watcher registers the
+Captured Session. A new launch (`startup`), a cleared context (`clear`), and a
+fork qualify. A fork reports `resume`, but its own transcript holds only
+messages copied from another session. See
+[Exact Folder capture and selection](personal-selection-contract.md#exact-folder-capture-and-selection).
+
 The `koed-server`-supervised Local AI Runtime owns the Claude Transcript Watcher when
 `MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED` is enabled (the default in developer
 and local-personal runtime modes) and a local API Token is available. The

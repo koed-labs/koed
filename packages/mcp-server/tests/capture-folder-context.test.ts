@@ -1,13 +1,20 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ensureDeviceIdentity,
   readSourceFolderObservation,
   readCurrentSourceFolderObservation,
+  readSourceRepositoryIdentity,
   resolveKoedServerPaths
 } from "@koed-labs/server";
-import { recordCaptureHookFolder } from "../src/capture-hook.js";
+import { normalizeGitRemoteUrl } from "@koed-labs/shared";
+import {
+  captureHookStartsConversation,
+  claudeTranscriptIsUnstartedFork,
+  recordCaptureHookFolder
+} from "../src/capture-hook.js";
 import { recordedCaptureFolderObservation } from "../src/capture-repository-context.js";
 
 const temporary: string[] = [];
@@ -88,4 +95,160 @@ describe("native Capture Hook Folder evidence", () => {
       ).toBeUndefined();
     }
   );
+});
+
+describe("Capture Hook new Conversation starts", () => {
+  const setup = async () => {
+    const parent = resolve(import.meta.dirname, "../../../scratch/p1-06/hooks");
+    mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(resolve(parent, "start-"));
+    temporary.push(root);
+    const env = {
+      NODE_ENV: "test",
+      KOED_HOME: resolve(root, "profile"),
+      KOED_REPO_ROOT: root
+    };
+    const paths = resolveKoedServerPaths(env);
+    await ensureDeviceIdentity(paths, { environment: env });
+    const cwd = resolve(root, "checkout");
+    mkdirSync(cwd, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+    git("init");
+    git("remote", "add", "origin", "git@example.test:team/capture-start.git");
+    return { root, env, paths, cwd };
+  };
+  const forkTranscript = (
+    root: string,
+    sessionId: string,
+    messages: Array<Record<string, unknown>>
+  ) => {
+    const transcriptPath = resolve(root, `${sessionId}.jsonl`);
+    writeFileSync(
+      transcriptPath,
+      [...messages, { type: "custom-title", customTitle: "Fork", sessionId }]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n"
+    );
+    return transcriptPath;
+  };
+
+  it.each([
+    { provider: "codex", source: "startup" },
+    { provider: "codex", source: "clear" },
+    { provider: "claude", source: "startup" },
+    { provider: "claude", source: "clear" }
+  ] as const)(
+    "pins the $provider Folder and portable Git remote on $source",
+    async ({ provider, source }) => {
+      const { env, paths, cwd } = await setup();
+      const key = {
+        sourceKind:
+          provider === "codex" ? ("codex" as const) : ("claude-code" as const),
+        externalSessionId: `new-${provider}-${source}`
+      };
+      await recordCaptureHookFolder(
+        env,
+        {
+          sourceSessionId: key.externalSessionId,
+          cwd,
+          hookEventName: "SessionStart",
+          sessionStartSource: source
+        },
+        ["--source", provider]
+      );
+      expect(readSourceFolderObservation(paths, key)?.normalizedPath).toBe(cwd);
+      // ssh and https spellings share one portable fingerprint.
+      expect(readSourceRepositoryIdentity(paths, key)).toMatchObject({
+        kind: "portable_repository",
+        key: normalizeGitRemoteUrl("https://example.test/team/capture-start")
+          .fingerprint
+      });
+    }
+  );
+
+  it("pins a Claude Code fork whose transcript only holds copied history", async () => {
+    const { root, env, paths, cwd } = await setup();
+    const sessionId = "forked-session";
+    const transcriptPath = forkTranscript(root, sessionId, [
+      { type: "user", sessionId: "parent-session" },
+      { type: "assistant", sessionId: "parent-session" },
+      {
+        type: "assistant",
+        sessionId,
+        message: { model: "<synthetic>" }
+      }
+    ]);
+    const metadata = {
+      sourceSessionId: sessionId,
+      cwd,
+      transcriptPath,
+      hookEventName: "SessionStart",
+      sessionStartSource: "resume"
+    };
+    await expect(
+      captureHookStartsConversation(metadata, "claude-code")
+    ).resolves.toBe(true);
+    // Codex has no equivalent fork shape; resume never pins there.
+    await expect(
+      captureHookStartsConversation(metadata, "codex")
+    ).resolves.toBe(false);
+    await recordCaptureHookFolder(env, metadata, ["--source", "claude"]);
+    const key = {
+      sourceKind: "claude-code" as const,
+      externalSessionId: sessionId
+    };
+    expect(readSourceFolderObservation(paths, key)?.normalizedPath).toBe(cwd);
+    expect(readSourceRepositoryIdentity(paths, key)?.kind).toBe(
+      "portable_repository"
+    );
+  });
+
+  it("keeps resumed Claude Code history without an original Folder", async () => {
+    const { root, env, paths, cwd } = await setup();
+    const sessionId = "resumed-session";
+    const transcriptPath = forkTranscript(root, sessionId, [
+      { type: "user", sessionId: "parent-session" },
+      { type: "user", sessionId }
+    ]);
+    const metadata = {
+      sourceSessionId: sessionId,
+      cwd,
+      transcriptPath,
+      hookEventName: "SessionStart",
+      sessionStartSource: "resume"
+    };
+    await expect(
+      captureHookStartsConversation(metadata, "claude-code")
+    ).resolves.toBe(false);
+    for (const candidate of [
+      { ...metadata, transcriptPath: resolve(root, "missing.jsonl") },
+      { ...metadata, transcriptPath: undefined },
+      { ...metadata, sessionStartSource: "compact" },
+      { ...metadata, hookEventName: "UserPromptSubmit" }
+    ])
+      await expect(
+        captureHookStartsConversation(candidate, "claude-code")
+      ).resolves.toBe(false);
+    await recordCaptureHookFolder(env, metadata, ["--source", "claude"]);
+    const key = {
+      sourceKind: "claude-code" as const,
+      externalSessionId: sessionId
+    };
+    expect(readSourceFolderObservation(paths, key)).toBeUndefined();
+    expect(readSourceRepositoryIdentity(paths, key)).toBeUndefined();
+    expect(readCurrentSourceFolderObservation(paths, key)?.normalizedPath).toBe(
+      cwd
+    );
+  });
+
+  it("does not treat a transcript named for another session as a fork", async () => {
+    const { root } = await setup();
+    const transcriptPath = forkTranscript(root, "other-session", [
+      { type: "user", sessionId: "parent-session" }
+    ]);
+    await expect(
+      claudeTranscriptIsUnstartedFork(transcriptPath, "forked-session")
+    ).resolves.toBe(false);
+  });
 });

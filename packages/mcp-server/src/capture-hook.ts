@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
@@ -150,6 +153,98 @@ export const signalCaptureHook = (
   });
 };
 
+const CLAUDE_FORK_SCAN_LIMIT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * A Claude Code fork starts a new Conversation under a new session id, but its
+ * SessionStart reports "resume" and its transcript begins with messages copied
+ * from the parent session. A genuine resume always has messages recorded under
+ * its own session id, so only a transcript whose messages all belong to other
+ * sessions is treated as a fork.
+ */
+export const claudeTranscriptIsUnstartedFork = async (
+  transcriptPath: string | undefined,
+  sessionId: string
+): Promise<boolean> => {
+  if (!transcriptPath || path.basename(transcriptPath) !== `${sessionId}.jsonl`)
+    return false;
+  let size: number;
+  try {
+    size = (await stat(transcriptPath)).size;
+  } catch {
+    return false;
+  }
+  if (size > CLAUDE_FORK_SCAN_LIMIT_BYTES) return false;
+  let copiedMessages = 0;
+  const lines = createInterface({
+    input: createReadStream(transcriptPath, { encoding: "utf8" }),
+    crlfDelay: Infinity
+  });
+  try {
+    for await (const line of lines) {
+      if (!line.includes('"sessionId"')) continue;
+      let entry: unknown;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!entry || typeof entry !== "object") continue;
+      const {
+        type,
+        sessionId: entrySessionId,
+        message
+      } = entry as Record<string, unknown>;
+      if (type !== "user" && type !== "assistant") continue;
+      // Claude Code writes a synthetic assistant stub under the new session id
+      // when it reopens an interrupted turn; it is not a turn of this session.
+      if (
+        type === "assistant" &&
+        message &&
+        typeof message === "object" &&
+        (message as Record<string, unknown>).model === "<synthetic>"
+      )
+        continue;
+      if (entrySessionId === sessionId) return false;
+      if (typeof entrySessionId === "string") copiedMessages += 1;
+    }
+  } catch {
+    return false;
+  } finally {
+    lines.close();
+  }
+  return copiedMessages > 0;
+};
+
+/**
+ * Whether this hook event begins a new Conversation, so the current directory
+ * and Git remote are source-time evidence. Codex and Claude Code report a new
+ * launch as "startup" and a cleared context as "clear"; both start a fresh
+ * session id with no history. "resume" and "compact" continue an existing
+ * Conversation, except a Claude Code fork, which resumes copied history under
+ * a new session id.
+ */
+export const captureHookStartsConversation = async (
+  metadata: CaptureHookMetadata,
+  sourceKind: "codex" | "claude-code"
+): Promise<boolean> => {
+  if (metadata.hookEventName !== "SessionStart") return false;
+  if (
+    metadata.sessionStartSource === "startup" ||
+    metadata.sessionStartSource === "clear"
+  )
+    return true;
+  return (
+    sourceKind === "claude-code" &&
+    metadata.sessionStartSource === "resume" &&
+    typeof metadata.sourceSessionId === "string" &&
+    (await claudeTranscriptIsUnstartedFork(
+      metadata.transcriptPath,
+      metadata.sourceSessionId
+    ))
+  );
+};
+
 export const recordCaptureHookFolder = async (
   environment: NodeJS.ProcessEnv,
   metadata: CaptureHookMetadata,
@@ -165,9 +260,10 @@ export const recordCaptureHookFolder = async (
     const observation = metadata.cwd
       ? await observeCaptureFolder(paths, metadata.cwd, environment)
       : undefined;
-    const newConversation =
-      metadata.hookEventName === "SessionStart" &&
-      metadata.sessionStartSource === "startup";
+    const newConversation = await captureHookStartsConversation(
+      metadata,
+      sourceKind
+    );
     const repository =
       newConversation && metadata.cwd
         ? await resolveCaptureRepositoryIdentity({

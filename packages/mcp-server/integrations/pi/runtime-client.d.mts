@@ -29,3 +29,7 @@ export declare const callLocalRuntimeTool: (input: {
   signal?: AbortSignal;
   invocationKey: string;
 }) => Promise<Record<string, unknown>>;
+export declare const piSessionStartIsNewConversation: (
+  reason: unknown,
+  entries: unknown
+) => boolean;

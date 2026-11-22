@@ -335,6 +335,21 @@ disk state. The Pi Local AI Runtime endpoint accepts authenticated source contex
 observations without exposing a new agent-facing tool. Unrecognized Pi start
 reasons remain unresolved. Native historical import reads recorded evidence only.
 
+The first source record for a Conversation is final, so the start decision must
+recognize every way an AI Client opens a new Conversation. When it does, the same
+record also pins the directory's selected Git remote as the original Git Anchor.
+The Transcript Watcher reads both pins when it registers the Captured Session, so
+the Conversation joins Projects through the existing Folder and Git Anchor rules.
+
+| AI Client   | New Conversation start                                                                                                                                                   | Not a new start                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| Codex       | `SessionStart` with source `startup` or `clear`                                                                                                                          | `resume`, and every other hook event                                                                |
+| Claude Code | `SessionStart` with source `startup` or `clear`; `resume` for a fork, whose own transcript holds only messages copied from another session (synthetic stubs are ignored) | `resume` with a message under its own session id, `compact`, a transcript named for another session |
+| Pi          | `session_start` with reason `startup` or `new` and no message entries; reason `fork`                                                                                     | `resume`, `reload`, and `startup` or `new` that reopened history                                    |
+
+A Conversation whose first source record missed its start keeps an unresolved
+original. Capture never backfills or reassigns it from current disk state.
+
 Migration `0048_personal_project_model` gives existing Sessions an unresolved
 historical Folder assignment. Registration binds new source-time evidence to the
 authenticated owner, pins it once, and inherits the earliest assignment when a

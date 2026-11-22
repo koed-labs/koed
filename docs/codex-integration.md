@@ -288,6 +288,12 @@ SubagentStop
 
 Parent and child transcripts are discovered independently. Provider session metadata in each journaled transcript preserves child identity and parent linkage; Hook payload paths are never trusted as content locations.
 
+A `SessionStart` with source `startup` or `clear` begins a new Conversation. The
+Hook then pins the original Folder and the directory's selected Git remote before
+the watcher registers the Captured Session. A `resume` records only the latest
+Folder observation. See
+[Exact Folder capture and selection](personal-selection-contract.md#exact-folder-capture-and-selection).
+
 Discovery registers a transcript through one local API-token-authenticated
 operation. Koed applies Capture Policy and atomically converges the Personal
 Captured Session with its source-journal artifact before any segment can be

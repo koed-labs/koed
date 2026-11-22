@@ -13,6 +13,7 @@ import {
   callLocalRuntimeTool,
   createRuntimeTaskPort,
   piRuntimeCallerContext,
+  piSessionStartIsNewConversation,
   readRuntimeRegistration
 } from "../integrations/pi/runtime-client.mjs";
 const directories: string[] = [];
@@ -365,4 +366,29 @@ describe("standalone Pi runtime port", () => {
     symlinkSync(other, join(h, "run/local-ai-runtime.json"));
     expect(() => readRuntimeRegistration(h)).toThrow();
   });
+});
+
+describe("Pi session_start Folder evidence", () => {
+  const message = { type: "message", message: { role: "user" } };
+  const header = { type: "model_change" };
+  it.each([
+    // A plain `pi` launch reports "startup"; it must pin the original Folder.
+    { reason: "startup", entries: [], expected: true },
+    { reason: "startup", entries: [header], expected: true },
+    { reason: "new", entries: [], expected: true },
+    // A fork is a new Conversation lineage in the current directory.
+    { reason: "fork", entries: [message], expected: true },
+    // `pi --continue` and `--session` reopen history under "startup".
+    { reason: "startup", entries: [header, message], expected: false },
+    { reason: "new", entries: [message], expected: false },
+    { reason: "resume", entries: [], expected: false },
+    { reason: "reload", entries: [], expected: false },
+    { reason: "startup", entries: undefined, expected: false },
+    { reason: undefined, entries: [], expected: false }
+  ])(
+    "treats $reason with $entries.length entries as new: $expected",
+    ({ reason, entries, expected }) => {
+      expect(piSessionStartIsNewConversation(reason, entries)).toBe(expected);
+    }
+  );
 });
