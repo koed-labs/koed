@@ -359,6 +359,89 @@ reuse previous answer text as current evidence or discover an ambient repository
 Like named Project inventory, this view reports an error above 5,000 Conversations.
 Complete enumeration uses the separate bounded selection APIs.
 
+### Advisory Folder hints
+
+The Folder-hint scorer evaluates an existing registry candidate only when a
+Conversation's effective Folder is unresolved and its original Folder reason is
+`historical_unresolved` or `missing`. The caller must verify a registry match
+for the relevant User, deployment, and local profile, including the current
+directory marker. The scorer checks the exact normalized recorded directory and
+current device against that match; it does not perform a registry lookup.
+Historical candidates can match the registry but do not earn the live registry
+vote. The scorer reads supplied evidence only; capture, import, and Desktop do
+not call it.
+
+Same-device birthtime strictly before the Conversation, matching Git remote
+fingerprints, and a live registry match each add two points. Birthtime and the
+Conversation's first timestamp must both be valid and no later than a valid
+injected evaluation time to earn birthtime points. A reliable birthtime after
+the Conversation began still vetoes the hint even if the evaluation time is
+invalid or earlier than both timestamps. Directory activity in the last 30 days
+(inclusive, not future) and a verified existing transcript file strictly inside
+the directory each add one. Strong requires at least five
+points and both birthtime and remote agreement; medium requires at least three
+and a two-point clue. Unknown origin requires remote agreement for medium.
+Conflicting metadata, an unusable directory, a known different origin device,
+a later birthtime, mismatched Git remotes, an ambiguous marker, or no verified
+candidate prevents a hint regardless of score. The raw score (0–8) measures
+supporting evidence, not probability or permission.
+
+A device-local evidence gatherer builds the scorer's input. It reads the recorded
+facts from an owner-scoped, read-only API call, then the directory's stat times, its
+current portable Git remote fingerprint, bounded top-level activity, contained
+transcript files, and a read-only Folder registry lookup. A Conversation captured
+locally (not a replica) has this device as its origin. The gatherer returns nothing
+when the device identity is not ready, and it never registers a directory.
+
+Two further candidates apply only when the directory has no registered Folder.
+A linked worktree has its own directory, so it never matches the registry. The
+gatherer finds its main checkout from the AI Client's own record when there is one,
+else Git's `.git` pointer file while the directory exists, else the
+`.claude/worktrees/<name>` path convention once it is gone. The Claude desktop app
+records `originCwd` (the project it was started from) beside the directory a session
+ran in; the gatherer matches it by session id and the recorded directory, reads it
+as an unverified path only (it is then checked against the disk, the registry, and
+the Git remote like any other), and a client record that says the session ran in its
+own directory overrides the path guess. Codex and Pi have no such link to read:
+Codex sub-agents share their parent's directory and Pi records only a directory. The
+worktree-parent hint suggests the main checkout's registered Folder, capped at
+medium, and requires a captured-here Conversation, a main checkout older than the
+Conversation, and a current remote that does not differ from the recorded one. A
+link the AI Client or Git itself recorded is direct evidence and adds two points,
+so it needs no recorded remote; a link inferred only from a path convention still
+needs the remote to agree. Otherwise a
+creation hint applies to an existing, unregistered directory: the Conversation
+must be captured here and the directory older than it (two points), with remote
+agreement (two) strong, and activity or a contained transcript file (one each)
+making a lesser medium of at least three points. The hints for one Conversation are all returned, best first (registered Folder,
+worktree-parent, create), because a worktree usually has its own registered Folder
+and a main checkout that a Project is built on; the User chooses. The worktree
+hint also applies when the worktree directory has a Folder of its own. Creation is a separate explicit action, never
+part of scoring: it re-scores, registers the directory as live capture would, and
+records the observation so an ordinary reviewed correction can use it. A Folder
+is not a Project, so a newly created Folder belongs to no Project until a rule
+adds it. Branch names, Codex commit hashes, and parent or fork ids are
+deliberately not used.
+
+A repository hint covers the other source axis. For a Conversation with no Git
+Anchor (automatic or chosen), run on this device in a directory that still exists
+with a portable remote, the directory's current remote is a clue to the anchor.
+It scores birthtime and a present remote (two points each), activity and a
+contained transcript file (one each), needs birthtime and at least four points,
+vetoes a recorded remote that differs from today's, and is capped at medium
+because a remote can be re-pointed. The hint carries the remote's portable
+fingerprint, which is identical for ssh, scp-style, and https spellings of the
+same repository, so a Project anchored one way matches a remote written the
+other. The desktop offers it only when a Project already uses that anchor; the
+correction selects that existing anchor and registers nothing.
+
+Every hint is `suggestion-only`, including for shared or Workspace-linked
+Projects. It is not a Folder observation, selection, or repair. Scoring does not
+create a Folder, change original or effective Folder context, assign a
+Conversation, or grant sharing or Workspace Access. Optional Project context
+must come from a caller-established Folder rule and belong to the same User as
+the Folder. Neither the path nor a Git Anchor implies Project membership.
+
 ## Git Anchor inclusion rules
 
 A Git Anchor rule independently retains one selected Git Anchor.

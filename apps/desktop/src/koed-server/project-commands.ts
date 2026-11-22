@@ -4,6 +4,8 @@ import {
   listPendingRepositoryChanges,
   listProjectMetadata,
   discoverProjectMetadata,
+  hintsForConversation,
+  createHintedFolder as createHintedFolderOnDevice,
   setProjectRepositoryAnchor,
   type KoedServerPaths
 } from "@koed-labs/server";
@@ -15,6 +17,13 @@ import {
   personalMembershipSyncCommandResultSchema,
   personalSourceContextCommandSchema,
   personalSourceContextCommandResultSchema,
+  personalFolderHintCreateDataSchema,
+  personalFolderHintCreateRequestSchema,
+  personalFolderHintEvidenceSchema,
+  personalFolderObservationRecordSchema,
+  type PersonalFolderHintEvidence,
+  personalFolderHintRequestSchema,
+  personalFolderHintsDataSchema,
   personalProjectCommandResultSchema,
   repositoryReviewCommandSchema,
   repositoryReviewCommandResultSchema,
@@ -229,6 +238,110 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       );
     return result;
   };
+  const fetchHintEvidence = async (sessionIds: string[]) =>
+    personalFolderHintEvidenceSchema.parse(
+      await deps.personalRequest("/v1/personal/sessions/folder-hint-evidence", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionIds })
+      })
+    );
+  const hintConversation = (
+    ownerUserId: string,
+    row: PersonalFolderHintEvidence["evidence"][number]
+  ) => ({
+    ownerUserId,
+    folderAssignment: row.folderAssignment,
+    recordedCwd: row.recordedCwd,
+    originDeviceId: null,
+    capturedOnThisDevice: row.capturedOnThisDevice,
+    ...(row.gitAnchorKnown !== undefined
+      ? { gitAnchorKnown: row.gitAnchorKnown }
+      : {}),
+    sourceRuntime: row.sourceRuntime ?? null,
+    externalSessionId: row.externalSessionId ?? null,
+    firstConversationAt: row.firstConversationAt,
+    recordedRemoteFingerprint: row.recordedRemoteFingerprint,
+    recordedMetadataState: row.recordedCwd
+      ? ("resolved" as const)
+      : ("absent" as const)
+  });
+  /** Advisory Folder hints. Recorded facts come from the API; the filesystem and
+   * registry evidence is read here, on the device that owns them. Read-only. */
+  const folderHints = async (raw: unknown) => {
+    const input = personalFolderHintRequestSchema.parse(raw);
+    const payload = await fetchHintEvidence(input.sessionIds);
+    const requested = new Set(input.sessionIds);
+    const hints = [];
+    for (const row of payload.evidence) {
+      if (!requested.has(row.sessionId)) continue;
+      const results = await hintsForConversation(
+        deps.paths,
+        hintConversation(payload.ownerUserId, row)
+      );
+      // No ready local identity: no Folder can be a candidate on this device.
+      if (!results) continue;
+      for (const result of results)
+        hints.push({
+          sessionId: row.sessionId,
+          tier: result.tier,
+          score: result.score,
+          ...(result.tier === "none"
+            ? {}
+            : result.kind === "create"
+              ? { kind: result.kind, directory: result.directory }
+              : result.kind === "repository"
+                ? {
+                    kind: result.kind,
+                    repositoryKey: result.repositoryKey,
+                    ...(result.directory ? { directory: result.directory } : {})
+                  }
+                : {
+                    kind: result.kind,
+                    folder: result.folder,
+                    ...(result.directory ? { directory: result.directory } : {})
+                  }),
+          reasons: result.reasons.map(({ code, outcome }) => ({
+            code,
+            outcome
+          }))
+        });
+    }
+    return personalFolderHintsDataSchema.parse({ hints });
+  };
+  /** Explicit confirmation to register a hinted directory as a Folder. The
+   * evidence is re-gathered and re-scored here, so a stale or forged request
+   * cannot create a Folder. The Folder is then recorded as an observation on
+   * the Conversation, which makes it available to the ordinary reviewed
+   * correction. Nothing is assigned. */
+  const createHintedFolder = async (raw: unknown) => {
+    const { sessionId, kind } =
+      personalFolderHintCreateRequestSchema.parse(raw);
+    const payload = await fetchHintEvidence([sessionId]);
+    const row = payload.evidence.find((item) => item.sessionId === sessionId);
+    if (!row) throw new Error("Conversation not found.");
+    const observation = await createHintedFolderOnDevice(
+      deps.paths,
+      hintConversation(payload.ownerUserId, row),
+      kind ? { kind } : {}
+    );
+    if (!observation)
+      throw new Error("This directory no longer qualifies for a Folder.");
+    await deps.personalRequest(
+      `/v1/personal/sessions/${encodeURIComponent(sessionId)}/folder-observation`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          personalFolderObservationRecordSchema.parse({ observation })
+        )
+      }
+    );
+    return personalFolderHintCreateDataSchema.parse({
+      folder: { ...observation.identity, ownerUserId: payload.ownerUserId },
+      normalizedPath: observation.normalizedPath
+    });
+  };
   const manageSourceContext = async (raw: unknown) => {
     const input = personalSourceContextCommandSchema.parse(raw);
     const base = `/v1/personal/sessions/${encodeURIComponent(input.sessionId)}/source-context`;
@@ -386,6 +499,8 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     create: createPersonalProject,
     manage: managePersonalProject,
     manageSourceContext,
+    folderHints,
+    createHintedFolder,
     manageMembershipSync,
     lookupAssociatedSelection,
     selection: createProjectSelectionCommand({

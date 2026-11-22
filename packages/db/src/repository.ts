@@ -9,6 +9,7 @@ import { createPersonalProjectDefaultRepository } from "./personal-project-defau
 import { createPersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
 import { createPersonalConfigurationRepository } from "./personal-configuration-repository.js";
 import { createPersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
+import { createPersonalFolderHintEvidenceRepository } from "./personal-folder-hint-evidence-repository.js";
 import { createPersonalConversationOrganizationRepository } from "./personal-conversation-organization-repository.js";
 import {
   effectiveProjectPathSql,
@@ -4739,6 +4740,7 @@ export const createMemorySourceRepository = (
     ...createPersonalProjectBatchRepository(pool),
     ...createPersonalProjectExclusionRepository(pool),
     ...createPersonalSourceCorrectionRepository(pool),
+    ...createPersonalFolderHintEvidenceRepository(pool),
     ...createPersonalConversationOrganizationRepository(pool),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,

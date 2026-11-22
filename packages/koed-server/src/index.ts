@@ -217,6 +217,29 @@ export {
   readCurrentSourceFolderObservation,
   readSourceRepositoryIdentity
 } from "./folder-context.js";
+export {
+  scoreFolderCreation,
+  scoreFolderHint,
+  scoreRepositoryAnchor,
+  scoreWorktreeParentHint
+} from "./folder-hint-confidence.js";
+export type {
+  FolderCreationResult,
+  FolderHintInput,
+  FolderHintResult,
+  FolderWorktreeResult,
+  RepositoryAnchorResult
+} from "./folder-hint-confidence.js";
+export {
+  createHintedFolder,
+  gatherFolderHintInput,
+  hintForConversation,
+  hintsForConversation
+} from "./folder-hint-evidence.js";
+export type {
+  FolderHintCandidate,
+  FolderHintConversation
+} from "./folder-hint-evidence.js";
 
 export {
   listPendingRepositoryChanges,

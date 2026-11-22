@@ -1921,6 +1921,7 @@ export type {
 export * from "./personal-project-contract.js";
 
 export * from "./personal-source-correction-contract.js";
+export * from "./personal-folder-hint-contract.js";
 
 export * from "./personal-source-context-transport.js";
 

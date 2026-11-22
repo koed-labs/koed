@@ -3,7 +3,8 @@ import { z } from "zod";
 import {
   personalSourceCorrectionInputSchema,
   personalSourceCorrectionApplySchema,
-  personalConversationOrganizationInputSchema
+  personalConversationOrganizationInputSchema,
+  personalFolderHintRequestSchema
 } from "@koed-labs/shared";
 import type { ApiRouteContext } from "../server/context.js";
 
@@ -27,6 +28,30 @@ export const registerPersonalSourceContextRoutes = (
         { userId: user.id },
         sessionId,
         personalConversationOrganizationInputSchema.parse(request.body)
+      );
+    }
+  );
+  app.post(
+    "/v1/personal/sessions/folder-hint-evidence",
+    { preHandler: read },
+    async (request) => {
+      const user = await authenticate(request);
+      return requireRepository().getPersonalFolderHintEvidence(
+        { userId: user.id },
+        personalFolderHintRequestSchema.parse(request.body)
+      );
+    }
+  );
+  app.post(
+    "/v1/personal/sessions/:sessionId/folder-observation",
+    { preHandler: write },
+    async (request) => {
+      const user = await authenticate(request),
+        { sessionId } = sourceParams.parse(request.params);
+      return requireRepository().recordPersonalFolderObservation(
+        { userId: user.id },
+        sessionId,
+        request.body
       );
     }
   );

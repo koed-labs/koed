@@ -23,6 +23,46 @@ partial membership results but keeps the loaded Sync review accessible.
 The settings editor sends one bounded batch through `personal.projects.manage` with the `apply_sources` action.
 The batch can include a rename, source rules, direct membership changes, and a version-pinned exclusion restore.
 The API commits the complete batch under one owner lock and transaction.
+Contract version 30 adds `personal.folders.hints`, which returns advisory Folder
+hints for up to 50 Conversations. Electron main asks the API for recorded evidence
+(`POST /v1/personal/sessions/folder-hint-evidence`, owner-scoped and read-only),
+then reads the current directory, Git remote, and Folder registry on this device
+and scores each Conversation with the Folder-hint scorer. The registry lookup never
+registers a directory. The renderer supplies no path and receives only a tier, a
+score, an existing Folder reference, and reason codes. The correction dialog shows
+one short "Suggested: <name>" row with a Use button, for a medium or strong hint
+on an unresolved Folder. A `?` evidence tooltip exists but is hidden for now
+(`SHOW_PROPOSAL_WHY`) until its wording is settled; when shown, the tooltip
+leads with the reason ("Same Git remote as koed-ai", "Worktree of koed"), then
+lists the agreeing reason codes as short lines, strongest first, with the path
+(`~` for the home folder) or Git Anchor shown as quieter detail. Weak activity
+and transcript-file evidence appear only when nothing stronger agrees. Only a
+new Folder adds a note, that accepting it registers the folder on this device. A
+worktree is named after its project (`koed · worktree task-1`); the label is
+presentation only and never changes Folder identity. Using it only fills the
+choice; the User still reviews and saves an ordinary correction.
+The folder-hint evidence the API returns also carries the AI Client (`sourceRuntime`) and its own session id, so Electron main can read that client's local worktree record on this device.
+Contract version 31 widens a hint with a `kind`: `registered` (unchanged),
+`worktree-parent` (the registered Folder of the main checkout a linked worktree
+belongs to), or `create` (a directory with no Folder yet, named by `directory`).
+It also adds `personal.folders.hints.create`, the only write in this flow. It takes
+only a Conversation id; Electron main re-gathers and re-scores the evidence, so a
+stale or forged request cannot create a Folder. It then registers the directory
+exactly as live capture would and records the resulting observation on the
+Conversation (`POST /v1/personal/sessions/:id/folder-observation`, owner-scoped,
+Folder-less local Conversations in the observed directory only). The command
+assigns nothing. The dialog then offers the new Folder as an ordinary correction
+the User reviews and saves.
+A hint can also have `kind: "repository"` with a `repositoryKey` (the portable fingerprint of the directory's current remote); the evidence the API returns carries `gitAnchorKnown` so a Conversation that already has an anchor gets none. Accepting one is a Git Anchor correction that needs no device-side step.
+A Conversation can return several hints, best first (a registered Folder, the main
+checkout of a linked worktree, a new Folder), and a hint may carry the Folder's
+`directory` for display. The create request takes an optional `kind`; accepting a
+`registered` or `worktree-parent` hint re-checks it, registers nothing new, and
+records that Folder on the Conversation so the Database accepts the correction. The
+recording endpoint accepts only Folder-less Conversations captured on this device;
+it no longer requires the observed directory to equal the Conversation's, because a
+worktree's main checkout is a different directory.
+
 Contract version 29 carries the optional Project Kin in named Project inventory and
 catalog review. The `set_details` change saves the name and Kin together at the
 reviewed Project version.

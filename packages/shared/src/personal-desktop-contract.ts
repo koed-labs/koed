@@ -64,13 +64,24 @@ export {
   personalProjectCommandSchema,
   personalProjectCommandResultSchema
 } from "./personal-project-contract.js";
+import {
+  personalFolderHintCreateDataSchema,
+  personalFolderHintCreateRequestSchema,
+  personalFolderHintRequestSchema,
+  personalFolderHintsDataSchema
+} from "./personal-folder-hint-contract.js";
+export {
+  PERSONAL_FOLDER_HINT_BATCH_SIZE,
+  personalFolderHintCreateRequestSchema,
+  personalFolderHintRequestSchema
+} from "./personal-folder-hint-contract.js";
 import { z } from "zod";
 export { personalProjectKinSchema } from "./personal-project-kin.js";
 import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 29;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 31;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -768,6 +779,20 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.folders.hints"),
+      input: personalFolderHintRequestSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.folders.hints.create"),
+      input: personalFolderHintCreateRequestSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.projects.sync"),
       input: personalMembershipSyncCommandSchema
     })
@@ -1061,6 +1086,24 @@ export const personalDesktopResultSchema = z.union([
     })
     .strict(),
   failedResult("personal.folders.local.prepare"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.folders.hints"),
+      ok: z.literal(true),
+      data: personalFolderHintsDataSchema
+    })
+    .strict(),
+  failedResult("personal.folders.hints"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.folders.hints.create"),
+      ok: z.literal(true),
+      data: personalFolderHintCreateDataSchema
+    })
+    .strict(),
+  failedResult("personal.folders.hints.create"),
   z
     .object({
       ...resultBase,
@@ -1406,6 +1449,12 @@ export interface PersonalDesktopApi {
   listProjects: () => Promise<PersonalDesktopProject[]>;
   listNamedProjects?: () => Promise<PersonalDesktopProject[]>;
   projectStatus?: () => Promise<{ reconciliationPending: boolean }>;
+  folderHints?: (
+    input: z.infer<typeof personalFolderHintRequestSchema>
+  ) => Promise<z.infer<typeof personalFolderHintsDataSchema>["hints"]>;
+  createHintedFolder?: (
+    input: z.infer<typeof personalFolderHintCreateRequestSchema>
+  ) => Promise<z.infer<typeof personalFolderHintCreateDataSchema>>;
   listLocalFolders?: () => Promise<
     z.infer<typeof personalFolderObservationSchema>[]
   >;

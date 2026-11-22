@@ -51,6 +51,60 @@ describe("Personal Memory preload bridge", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("validates Folder hint requests before IPC and sends no path", async () => {
+    const session = "00000000-0000-4000-8000-000000000081";
+    const invoke = vi.fn(async () =>
+      success("personal.folders.hints", { hints: [] })
+    );
+    const bridge = createPersonalMemoryPreloadApi(invoke, events());
+    await expect(
+      bridge.folderHints!({ sessionIds: [session] })
+    ).resolves.toEqual([]);
+    expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.folders.hints",
+      input: { sessionIds: [session] }
+    });
+    invoke.mockClear();
+    for (const bad of [
+      { sessionIds: [] },
+      { sessionIds: [session], path: "/arbitrary" }
+    ])
+      await expect(bridge.folderHints!(bad as never)).rejects.toThrow();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("confirms Folder creation only by Conversation id", async () => {
+    const session = "00000000-0000-4000-8000-000000000081";
+    const folder = {
+      ownerUserId: "00000000-0000-4000-8000-000000000001",
+      folderId: "folder-1",
+      originatingDeploymentId: "deployment",
+      originatingDeviceId: "device",
+      originatingProfileId: "profile",
+      directoryIncarnationId: "incarnation"
+    };
+    const invoke = vi.fn(async () =>
+      success("personal.folders.hints.create", {
+        folder,
+        normalizedPath: "/work/koed"
+      })
+    );
+    const bridge = createPersonalMemoryPreloadApi(invoke, events());
+    await expect(
+      bridge.createHintedFolder!({ sessionId: session })
+    ).resolves.toEqual({ folder, normalizedPath: "/work/koed" });
+    expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.folders.hints.create",
+      input: { sessionId: session }
+    });
+    invoke.mockClear();
+    for (const bad of [{}, { sessionId: session, path: "/arbitrary" }])
+      await expect(bridge.createHintedFolder!(bad as never)).rejects.toThrow();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("validates Project sync reviews before IPC and rejects caller-supplied apply changes", async () => {
     const projectId = "00000000-0000-4000-8000-000000000081";
     const state = {
@@ -192,8 +246,10 @@ describe("Personal Memory preload bridge", () => {
 
     await expect(api.listProjects()).resolves.toEqual([]);
     expect(Object.keys(api).sort()).toEqual([
+      "createHintedFolder",
       "createNote",
       "createProject",
+      "folderHints",
       "listAskThreads",
       "listLocalFolders",
       "listNamedProjects",
