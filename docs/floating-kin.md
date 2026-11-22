@@ -1,23 +1,27 @@
 # Floating Kin
 
-Floating Kin is an opt-in macOS Desktop companion for recent captured work. It
-shows Personal Conversations whose activity Koed has captured, not whether an
-AI Client is running, waiting, or finished. A quiet Kin does not mean the AI
+The Chief of Staff Kin shows recent captured Personal Conversations, not whether
+an AI Client is running, waiting, or finished. A quiet Kin does not mean the AI
 Client is idle. Capture can lag or miss activity, and imported history does not
 count as recent activity.
 
-Enable **Chief of Staff** under **Settings → General**. Desktop shows the Kin over
-other windows without moving focus there. Use **Window → Focus Floating Kin**
-for keyboard access. The Floating Kin uses the Koed mark’s rounded-square shape
-and blue-to-yellow gradient to distinguish it from Project Kins in Conversation
-chips. It stays visible below the chips even while a summary is open. The Kin
-sleeps when capture activity is quiet, wakes for a minute on hover, and stays
-awake while the main Koed window is focused. Drag the Kin to move the overlay
-for the current Desktop session. The Kin and its controls receive clicks;
-clicks in the surrounding transparent space pass through. Disable the preference
-to hide it. The overlay stays at 100% page zoom; the main Desktop window can
-still zoom independently. Quitting Desktop closes the Kin even if the Local AI
-Runtime stays up.
+On Home, the Kin sits beside the import progress bar or appears centered when
+there is no progress bar. Recent Conversation chips sit at the bottom of the
+Conversations and Projects sidebar. Away from Home, the Kin joins the chips in
+that sidebar unless desktop floating is enabled. The default Chief of Staff
+uses Koed’s yellow-and-blue gradient; Home still honors a saved Kin appearance.
+
+On macOS, turn on **Chief of Staff** under **Settings → General** to let the Kin
+float outside the Koed window. It slides into Home when the window comes into
+focus on that page: Home reveals its Kin after the desktop overlay finishes
+sliding out. With reduced motion enabled, the switch is immediate. When you
+leave Home, open Settings, or switch to another
+app, the Kin and its chips return to the desktop position you last dragged it
+to in this Desktop session. The overlay does not take focus automatically;
+use **Window → Focus Floating Kin** while it is on the desktop for keyboard
+access. Clicks around the Kin and its controls pass through. The overlay stays
+at 100% page zoom; the main Desktop window can zoom independently. Quitting
+Desktop closes the overlay even if the Local AI Runtime stays up.
 
 Choose **Summarize Conversation** for the latest captured work in a
 Conversation, or **Summarize Project** for context from its Project. The Project
@@ -29,8 +33,8 @@ model, and reasoning effort when available.
 
 ## Read and synthesis path
 
-1. The Desktop window uses a dedicated preload to ask the main process for
-   metadata or to request a fixed summary. It does not receive API credentials
+1. The active Desktop or overlay renderer asks the main process for metadata
+   or requests a fixed summary through its own preload. Neither renderer receives API credentials
    or raw capture. The main process reads an authenticated loopback registration
    for the existing Local AI Runtime. The Kin never starts or resumes a runtime,
    including after **Stop Koed**. If Koed is stopped, start it explicitly from

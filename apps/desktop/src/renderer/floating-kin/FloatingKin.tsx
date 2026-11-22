@@ -4,15 +4,17 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type KeyboardEvent,
   type RefObject
 } from "react";
-import type { FloatingKinBridge } from "../../ipc/floating-kin-protocol.js";
+import type {
+  FloatingKinBridge,
+  KinActivityBridge
+} from "../../ipc/floating-kin-protocol.js";
 import { Pixelkin } from "../v1/pixelkin/Pixelkin.js";
 import {
   DEFAULT_AGENT_LOOK,
-  projectKinLook,
-  type AgentLook
+  chiefOfStaffBrand,
+  projectKinLook
 } from "../v1/pixelkin/agent-kin.js";
 import {
   ClientMark,
@@ -25,7 +27,8 @@ import {
   useCaptureWake,
   useMainWindowFocus,
   useOverlayWindow,
-  useSummary
+  useSummary,
+  useKinSurfaceActivity
 } from "./use-floating-kin.js";
 import { useKinInteraction } from "./use-kin-interaction.js";
 import "./floating-kin.css";
@@ -34,20 +37,6 @@ export type { FloatingKinBridge } from "../../ipc/floating-kin-protocol.js";
 
 const chipLimit = 3;
 const recentSeconds = 60;
-const floatingKinLook: AgentLook = {
-  ...DEFAULT_AGENT_LOOK,
-  body: {
-    ...DEFAULT_AGENT_LOOK.body,
-    shape: "roundedBox",
-    width: 2,
-    height: 2,
-    depth: 0.9,
-    arms: true
-  },
-  face: { ...DEFAULT_AGENT_LOOK.face, personality: "joyful" },
-  palette: { base: "#3083ff", grayscale: false, gradient: true }
-};
-const floatingKinGradientTop = "#e8d31a";
 const states = {
   stopped: [
     "Local runtime stopped",
@@ -143,12 +132,14 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
   );
 }
 
-function StandaloneKin({
-  hasChips,
-  active
+export function StandaloneKin({
+  hasChips = false,
+  active,
+  placement = "desktop"
 }: {
-  hasChips: boolean;
+  hasChips?: boolean;
   active: boolean;
+  placement?: "desktop" | "sidebar";
 }) {
   const avatar = useRef<HTMLDivElement>(null);
   const wakeTimer = useRef<number | undefined>(undefined);
@@ -164,7 +155,7 @@ function StandaloneKin({
     const element = avatar.current;
     if (!hasChips || !element || document.activeElement !== element) return;
     element
-      .closest("main")
+      .closest(".fk-surface")
       ?.querySelector<HTMLButtonElement>(".fk-chip")
       ?.focus();
   }, [hasChips]);
@@ -175,15 +166,16 @@ function StandaloneKin({
       data-fk-hit
       data-fk-handle
       role="img"
-      aria-label="Floating Kin avatar"
+      aria-label={
+        placement === "desktop" ? "Floating Kin avatar" : "Chief of Staff"
+      }
       aria-description={awake ? "Awake" : "Sleeping"}
-      tabIndex={hasChips ? -1 : 0}
+      tabIndex={placement === "desktop" ? (hasChips ? -1 : 0) : undefined}
       onMouseEnter={wake}
     >
       <Pixelkin
-        look={floatingKinLook}
-        gradientTop={floatingKinGradientTop}
-        size={88}
+        {...chiefOfStaffBrand}
+        size={placement === "sidebar" ? 54 : 88}
         motion={awake ? "unfocused" : "still"}
         expression={awake ? "happy" : "sleepy"}
       />
@@ -199,22 +191,28 @@ function StandaloneKin({
 function useSelection(
   conversations: Conversation[],
   cancel: (dismiss: boolean) => Promise<void>,
-  surface: RefObject<HTMLElement | null>
+  surface: RefObject<HTMLElement | null>,
+  visible: boolean
 ) {
   const [selection, setSelection] = useState<string | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const selected = conversations.find(
     ({ sessionId }) => sessionId === selection
   );
+  useLayoutEffect(() => {
+    if (visible || !selection) return;
+    setSelection(null);
+    void cancel(true);
+  }, [cancel, selection, visible]);
   useEffect(() => {
-    if (!selection || selected) return;
+    if (!visible || !selection || selected) return;
     setSelection(null);
     void cancel(true);
     (
       surface.current?.querySelector<HTMLButtonElement>(".fk-chip") ??
       surface.current
     )?.focus();
-  }, [cancel, selected, selection, surface]);
+  }, [cancel, selected, selection, surface, visible]);
   const close = () => {
     setSelection(null);
     void cancel(true);
@@ -234,16 +232,8 @@ function useSelection(
   return { selected, close, toggle };
 }
 
-export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
-  const { activity, at } = useActivity(bridge);
-  const mainWindowFocused = useMainWindowFocus(bridge);
-  const { view, summarize, cancel, isCancelling } = useSummary(bridge);
-  const { surface, setInteractive } = useOverlayWindow(bridge);
-  const { dragging, handlers } = useKinInteraction(
-    bridge,
-    surface,
-    setInteractive
-  );
+export function useKinActivity(bridge?: KinActivityBridge, visible = true) {
+  const { activity, at } = useActivity(bridge, visible);
   const recent = activity.state === "running" ? activity.conversations : [];
   const latest = Math.max(
     0,
@@ -258,7 +248,30 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
     (activity.state === "running" ? activity.overflowCount : 0) +
     recent.length -
     conversations.length;
-  const { selected, close, toggle } = useSelection(recent, cancel, surface);
+  return { activity, at, recent, recentCapture, conversations, overflow };
+}
+
+export function KinActivityContent({
+  sample,
+  bridge,
+  surface,
+  visible = true,
+  showStatus = false
+}: {
+  sample: ReturnType<typeof useKinActivity>;
+  bridge?: KinActivityBridge;
+  surface: RefObject<HTMLElement | null>;
+  visible?: boolean;
+  showStatus?: boolean;
+}) {
+  const { activity, at, recent, conversations, overflow } = sample;
+  const { view, summarize, cancel, isCancelling } = useSummary(bridge);
+  const { selected, close, toggle } = useSelection(
+    recent,
+    cancel,
+    surface,
+    visible
+  );
   const selectedView =
     view?.request.sessionId === selected?.sessionId ? view : null;
   const staleProjectView =
@@ -267,23 +280,20 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
   useLayoutEffect(() => {
     if (staleProjectView) void cancel(true);
   }, [cancel, staleProjectView]);
-  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === "Escape" && selected) {
+  useEffect(() => {
+    if (!selected || !visible) return;
+    const node = surface.current;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
       event.preventDefault();
       close();
-    }
-  };
+    };
+    node?.addEventListener("keydown", onKeyDown);
+    return () => node?.removeEventListener("keydown", onKeyDown);
+  }, [close, selected, surface, visible]);
   return (
-    <main
-      className="fk-surface"
-      aria-label="Floating Kin"
-      tabIndex={-1}
-      ref={surface}
-      {...handlers}
-      data-dragging={dragging}
-      onKeyDown={onKeyDown}
-    >
-      {selected ? (
+    <>
+      {visible && selected ? (
         <FloatingKinPanel
           conversation={selected}
           isCancelling={isCancelling}
@@ -312,7 +322,9 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
               conversation={conversation}
               now={at}
               index={index}
-              expanded={selected?.sessionId === conversation.sessionId}
+              expanded={
+                visible && selected?.sessionId === conversation.sessionId
+              }
               toggle={(button) => toggle(conversation.sessionId, button)}
             />
           ))}
@@ -326,11 +338,113 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           ) : null}
         </div>
       ) : null}
-      {activity.state !== "running" && <ActivityPill state={activity.state} />}
-      <StandaloneKin
-        hasChips={conversations.length > 0}
-        active={mainWindowFocused || recentCapture}
+      {showStatus && activity.state !== "running" && (
+        <ActivityPill state={activity.state} />
+      )}
+    </>
+  );
+}
+
+function OverlayKinContent({
+  bridge,
+  surface,
+  focused
+}: {
+  bridge?: KinActivityBridge;
+  surface: RefObject<HTMLElement | null>;
+  focused: boolean;
+}) {
+  const sample = useKinActivity(bridge);
+  return (
+    <>
+      <KinActivityContent
+        sample={sample}
+        bridge={bridge}
+        surface={surface}
+        showStatus
       />
+      <StandaloneKin
+        hasChips={sample.conversations.length > 0}
+        active={focused || sample.recentCapture}
+      />
+    </>
+  );
+}
+
+function useExitCompletion(
+  bridge: FloatingKinBridge | undefined,
+  surface: RefObject<HTMLElement | null>,
+  revision: number | undefined
+) {
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!bridge || !element || revision === undefined) return;
+    // Resolve the committed visibility style before inspecting its transitions.
+    void window.getComputedStyle(element).opacity;
+    const transitions =
+      element
+        .getAnimations?.()
+        .filter(
+          (animation) =>
+            "transitionProperty" in animation &&
+            (animation.transitionProperty === "opacity" ||
+              animation.transitionProperty === "transform")
+        ) ?? [];
+    let current = true;
+    void Promise.all(transitions.map((animation) => animation.finished)).then(
+      () => {
+        if (current) bridge.completeExit(revision);
+      },
+      () => undefined // A cancelled transition is not a completed exit.
+    );
+    return () => {
+      current = false;
+    };
+  }, [bridge, surface, revision]);
+}
+
+export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
+  const [presentation, setPresentation] = useState<
+    import("../../ipc/floating-kin-protocol.js").KinPresentation | null
+  >(null);
+  useEffect(() => bridge?.onPresentation?.(setPresentation), [bridge]);
+  const visible =
+    !bridge?.onPresentation || presentation?.placement === "desktop";
+  const activityBridge = useKinSurfaceActivity(bridge, presentation?.revision);
+  const mainWindowFocused = useMainWindowFocus(bridge);
+  const { surface, setInteractive } = useOverlayWindow(bridge, visible);
+  useExitCompletion(
+    bridge,
+    surface,
+    presentation?.homePending ? presentation.revision : undefined
+  );
+  const { dragging, handlers } = useKinInteraction(
+    visible ? bridge : undefined,
+    surface,
+    setInteractive
+  );
+  return (
+    <main
+      className="fk-surface"
+      aria-label="Floating Kin"
+      tabIndex={-1}
+      ref={surface}
+      {...handlers}
+      data-fk-placement="desktop"
+      data-visible={visible}
+      data-dragging={dragging}
+      inert={!visible}
+    >
+      {visible ? (
+        <OverlayKinContent
+          key={presentation?.revision}
+          bridge={activityBridge}
+          surface={surface}
+          focused={mainWindowFocused}
+        />
+      ) : (
+        <StandaloneKin active={false} />
+      )}
     </main>
   );
 }

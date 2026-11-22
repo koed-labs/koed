@@ -67,9 +67,16 @@ import {
   saveV1Profile,
   v1State
 } from "./state.js";
-import { parseAgentLook, serializeAgentLook } from "./pixelkin/agent-kin.js";
-import { DEFAULT_AGENT_LOOK } from "./visual.js";
+import {
+  chiefOfStaffAppearance,
+  chiefOfStaffBrand,
+  DEFAULT_AGENT_LOOK,
+  parseAgentLook,
+  sameAgentLook,
+  serializeAgentLook
+} from "./pixelkin/agent-kin.js";
 import { useDesktopUpdate } from "../update/use-desktop-update.js";
+import { useDesktopKin } from "../floating-kin/DesktopKin.js";
 
 const defaultStatusStore = new DesktopStatusStore();
 const defaultThemeStore = new ThemeStore();
@@ -81,10 +88,7 @@ const emptyProvenance: V1Provenance = {
 const emptyProfile: V1Profile = {
   onboarding: { selections: {}, completed: false }
 };
-const fallbackAgent: OnboardingAgent = {
-  name: "Koed",
-  look: DEFAULT_AGENT_LOOK
-};
+const fallbackAgent = { name: "Koed", ...chiefOfStaffBrand };
 export const shouldShowV1Onboarding = (
   profile: V1Profile,
   backendComplete: boolean
@@ -253,12 +257,12 @@ export function V1App({
     revision,
     update: realtime
   });
-  const agent = useMemo<OnboardingAgent>(
+  const agent = useMemo(
     () =>
       profile
         ? {
             name: profile.agentName ?? fallbackAgent.name,
-            look: parseAgentLook(profile.agentLook)
+            ...chiefOfStaffAppearance(profile.agentLook)
           }
         : fallbackAgent,
     [profile]
@@ -1003,7 +1007,11 @@ export function V1App({
     await saveProfile((current) => ({
       ...current,
       agentName: next.name,
-      agentLook: serializeAgentLook(next.look, next.name)
+      agentLook:
+        current.agentLook ??
+        (sameAgentLook(next.look, DEFAULT_AGENT_LOOK)
+          ? undefined
+          : serializeAgentLook(next.look, next.name))
     }));
   };
   const onSaveDraft = async (draft: OnboardingDraft) => {
@@ -1027,6 +1035,15 @@ export function V1App({
       onboarding: { ...current.onboarding, completed: true, draft: undefined }
     }));
   };
+  const showOnboarding =
+    profile && shouldShowV1Onboarding(profile, onboardingComplete);
+  const kin = useDesktopKin(
+    window.koedDesktop?.kin,
+    Boolean(
+      profile && !showOnboarding && !settingsOpen && route.kind === "home"
+    ),
+    inventoryScope
+  );
   if (!profile)
     return profileReadError ? (
       <main role="alert">
@@ -1044,7 +1061,7 @@ export function V1App({
     ) : (
       <p role="status">Loading Koed…</p>
     );
-  if (shouldShowV1Onboarding(profile, onboardingComplete))
+  if (showOnboarding)
     return (
       <V1Onboarding
         savedAgent={{
@@ -1104,6 +1121,7 @@ export function V1App({
             else void loadInventory();
           }}
           management={projectManagement.management}
+          kinDock={kin.dock}
         >
           {pendingIntentError && (
             <p role="alert">
@@ -1189,6 +1207,9 @@ export function V1App({
           ) : (
             <Home
               view={homeView}
+              chiefOfStaff={
+                window.koedDesktop?.kin ? kin.showHomeAvatar : undefined
+              }
               statusError={statusError}
               clients={homeClients(status)}
               entries={homeEntries}

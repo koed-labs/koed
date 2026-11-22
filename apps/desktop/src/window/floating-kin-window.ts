@@ -2,6 +2,7 @@ import {
   BrowserWindow,
   screen,
   session,
+  systemPreferences,
   type Point,
   type Rectangle
 } from "electron";
@@ -10,6 +11,7 @@ import type {
   FloatingKinDrag,
   FloatingKinSize
 } from "../ipc/floating-kin-protocol.js";
+import { createKinHandoff } from "./floating-kin-placement.js";
 import { KOED_APP_SCHEME } from "./app-protocol.js";
 import { floatingKinBounds } from "./floating-kin-bounds.js";
 
@@ -71,20 +73,19 @@ const createWindow = (appDir: string, bounds: Rectangle, url: string) => {
   contents.on("will-frame-navigate", (event) => event.preventDefault());
   contents.on("will-redirect", (event) => event.preventDefault());
   contents.on("will-attach-webview", (event) => event.preventDefault());
-  contents.once("render-process-gone", () => {
-    if (!window.isDestroyed()) window.destroy();
-  });
   return window;
 };
 
 export const createFloatingKinWindow = ({
   appDir,
   url,
-  onDismiss
+  onDismiss,
+  onHidden = () => {}
 }: {
   appDir: string;
   url: string;
   onDismiss: () => void;
+  onHidden?: () => void;
 }) => {
   let window: BrowserWindow | null = null;
   let size = initialSize;
@@ -92,6 +93,9 @@ export const createFloatingKinWindow = ({
   let disposed = false;
   let focusRequested = false;
   let ready = false;
+  let visible = true;
+  let presentationRevision = 0;
+  let recover = true;
   let anchor: Point | undefined;
   let anchorDisplay: number | undefined;
   let dragOrigin: { pointer: Point; anchor: Point } | null = null;
@@ -134,9 +138,24 @@ export const createFloatingKinWindow = ({
     updateInput();
     onDismiss();
   };
+  const handoff = createKinHandoff({
+    reducedMotion: () =>
+      systemPreferences.getAnimationSettings().prefersReducedMotion,
+    show: () => {
+      position();
+      getWindow()?.showInactive();
+    },
+    slide: (value) => {
+      if (!value) clearInput();
+    },
+    hide: () => {
+      getWindow()?.hide();
+      onHidden();
+    }
+  });
   const drag = (input: FloatingKinDrag) => {
     const active = getWindow();
-    if (!active?.isVisible()) return;
+    if (!visible || !active?.isVisible()) return;
     if (input.phase === "end") {
       if (!dragOrigin) return;
       dragOrigin = null;
@@ -176,7 +195,7 @@ export const createFloatingKinWindow = ({
   };
 
   const open = (requestFocus = false) => {
-    if (!enabled || disposed) return;
+    if (!enabled || disposed || !visible) return;
     const active = getWindow();
     if (active) {
       if (requestFocus && ready) {
@@ -187,6 +206,7 @@ export const createFloatingKinWindow = ({
       }
       return;
     }
+    handoff.dispose();
     ready = false;
     focusRequested = requestFocus;
     size = initialSize;
@@ -199,17 +219,28 @@ export const createFloatingKinWindow = ({
     next.webContents.on("did-start-navigation", (details) => {
       if (details.isMainFrame && !details.isSameDocument) clearInput();
     });
+    next.webContents.once("render-process-gone", () => {
+      if (getWindow() !== next) return;
+      const retry = recover && enabled && visible && !disposed;
+      recover = false;
+      next.destroy();
+      if (retry) open();
+    });
     next.once("closed", () => {
       screen.off("display-metrics-changed", position);
       screen.off("display-removed", position);
-      if (window === next) window = null;
+      if (window === next) {
+        handoff.dispose();
+        window = null;
+      }
       clearInput();
+      if (!visible) onHidden();
     });
     next.once("ready-to-show", () => {
       if (getWindow() !== next) return;
       ready = true;
-      next.showInactive();
-      if (focusRequested) focus(next);
+      handoff.setVisible(visible, presentationRevision);
+      if (visible && focusRequested) focus(next);
       focusRequested = false;
     });
     void next.loadURL(url).catch((error: unknown) => {
@@ -224,9 +255,19 @@ export const createFloatingKinWindow = ({
     setEnabled(value: boolean) {
       if (disposed || value === enabled) return;
       enabled = value;
+      recover = true;
       if (value) open();
       else getWindow()?.destroy();
     },
+    completeExit: handoff.completeExit,
+    setVisible(value: boolean, revision: number) {
+      if (visible !== value) recover = true;
+      visible = value;
+      presentationRevision = revision;
+      if (ready && getWindow()) handoff.setVisible(value, revision);
+      else if (value) open();
+    },
+    isShowing: () => getWindow()?.isVisible() ?? false,
     focus: () => open(true),
     reset() {
       const active = getWindow();
@@ -236,7 +277,7 @@ export const createFloatingKinWindow = ({
     },
     drag,
     setInteractive(value: boolean) {
-      if (interactive === value) return;
+      if (!visible || interactive === value) return;
       interactive = value;
       updateInput();
     },
@@ -246,6 +287,7 @@ export const createFloatingKinWindow = ({
     },
     dispose() {
       disposed = true;
+      handoff.dispose();
       getWindow()?.destroy();
     }
   };

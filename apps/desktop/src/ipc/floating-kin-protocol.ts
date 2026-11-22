@@ -13,10 +13,37 @@ export type FloatingKinDrag =
   | { phase: "start" | "move"; x: number; y: number }
   | { phase: "end" };
 
-export type FloatingKinBridge = {
+export type KinPlacement = "home" | "sidebar" | "desktop";
+export type KinPresentation = {
+  placement: KinPlacement;
+  revision: number;
+  homePending?: boolean;
+};
+
+export type KinActivityBridge = {
   activity: () => Promise<FloatingKinActivityState>;
   summarize: (input: FloatingKinSummaryRequest) => Promise<FloatingKinSummary>;
   cancel: () => Promise<void>;
+};
+
+export type KinSurfaceBridge = {
+  activity: (revision?: number) => Promise<FloatingKinActivityState>;
+  summarize: (
+    input: FloatingKinSummaryRequest,
+    revision?: number
+  ) => Promise<FloatingKinSummary>;
+  cancel: (revision?: number) => Promise<void>;
+  onPresentation?: (listener: (state: KinPresentation) => void) => () => void;
+};
+
+export type DesktopKinBridge = KinSurfaceBridge & {
+  setHomeVisible: (home: boolean) => void;
+  confirmPresentation: (revision: number) => void;
+  onPresentation: (listener: (state: KinPresentation) => void) => () => void;
+};
+
+export type FloatingKinBridge = KinSurfaceBridge & {
+  completeExit: (revision: number) => void;
   setInteractive: (interactive: boolean) => void;
   setSize: (size: FloatingKinSize) => void;
   drag: (input: FloatingKinDrag) => void;
@@ -31,5 +58,10 @@ export const floatingKinChannels = {
   setSize: "koed:floating-kin:set-size",
   drag: "koed:floating-kin:drag",
   mainWindowFocused: "koed:floating-kin:main-window-focused",
-  mainWindowFocusChanged: "koed:floating-kin:main-window-focus-changed"
+  mainWindowFocusChanged: "koed:floating-kin:main-window-focus-changed",
+  setHomeVisible: "koed:floating-kin:set-home-visible",
+  presentation: "koed:floating-kin:presentation",
+  confirmPresentation: "koed:floating-kin:confirm-presentation",
+  completeExit: "koed:floating-kin:complete-exit",
+  presentationChanged: "koed:floating-kin:presentation-changed"
 } as const;
