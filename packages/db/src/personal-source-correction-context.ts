@@ -12,6 +12,7 @@ import {
   personalSourceContextStateSchema,
   repositoryScopeId,
   type PersonalFolderAssignment,
+  type PersonalFolderReference,
   type PersonalGitAssignment,
   type PersonalSourceContextSync,
   personalGitAssignmentSchema,
@@ -140,25 +141,32 @@ const folderCorrectionTargets = `
   select fact.value->'value' as context from sessions s
   cross join lateral(values(s.folder_assignment->'original'),(s.folder_assignment->'correction'->'value')) fact(value)
   where s.owner_user_id=$1 and s.visibility='personal' and s.personal_deleted_at is null and fact.value->>'state'='known'
+    and fact.value->'value'->'reference'=any($2::jsonb[])
   union all
   select jsonb_build_object('reference',o.observation->'identity'||jsonb_build_object('ownerUserId',o.owner_user_id),'normalizedPath',o.observation->'normalizedPath','capturedPath',o.observation->'capturedPath')
   from session_folder_observations o join sessions s on s.id=o.session_id
   where o.owner_user_id=$1 and s.owner_user_id=$1 and s.visibility='personal' and s.personal_deleted_at is null
+    and (o.observation->'identity'||jsonb_build_object('ownerUserId',o.owner_user_id))=any($2::jsonb[])
   union all
   select fact.value->'value' as context from personal_source_context_revisions r
   join personal_source_bindings b on b.binding_id=r.binding_id join sessions s on s.id=b.local_session_id
   cross join lateral(values(r.assignment->'original'),(r.assignment->'correction'->'value')) fact(value)
-  where b.owner_user_id=$1 and s.owner_user_id=$1 and s.invalidated_at is null and s.personal_deleted_at is null and r.axis='folder' and fact.value->>'state'='known'`;
+  where b.owner_user_id=$1 and s.owner_user_id=$1 and s.invalidated_at is null and s.personal_deleted_at is null and r.axis='folder' and fact.value->>'state'='known'
+    and fact.value->'value'->'reference'=any($2::jsonb[])`;
 
-export const listKnownFolderCorrectionReferences = async (
+export const findKnownFolderCorrectionReferences = async (
   pool: pg.Pool,
-  ownerUserId: string
+  ownerUserId: string,
+  proposedFolders: readonly PersonalFolderReference[]
 ) => {
+  const proposed = proposedFolders.flatMap((folder) =>
+    folder.ownerUserId === ownerUserId ? [JSON.stringify(folder)] : []
+  );
+  if (!proposed.length) return [];
   const result = await pool.query<{ reference: unknown }>(
     `select distinct context->'reference' as reference
-     from (${folderCorrectionTargets}) targets
-     where context->'reference'->>'ownerUserId'=$1::uuid::text`,
-    [ownerUserId]
+     from (${folderCorrectionTargets}) targets`,
+    [ownerUserId, proposed]
   );
   return result.rows.map(({ reference }) =>
     personalFolderReferenceSchema.parse(reference)
@@ -229,9 +237,8 @@ export const personalCorrectionPatch = async (
           statusCode: 403
         });
       const target = await client.query<{ context: unknown }>(
-        `select context from (${folderCorrectionTargets}) targets
-         where context->'reference'=$2::jsonb limit 1`,
-        [actor.userId, input.folder]
+        `select context from (${folderCorrectionTargets}) targets limit 1`,
+        [actor.userId, [JSON.stringify(input.folder)]]
       );
       if (!target.rows[0]) throw unavailable();
       value = {

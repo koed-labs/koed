@@ -21,7 +21,9 @@ import {
   personalFolderHintConfirmRequestSchema,
   personalFolderHintEvidenceSchema,
   personalFolderScopeId,
+  type PersonalFolderHint,
   type PersonalFolderHintEvidence,
+  type PersonalFolderReference,
   personalFolderHintRequestSchema,
   personalFolderHintsDataSchema,
   personalProjectCommandResultSchema,
@@ -238,12 +240,15 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       );
     return result;
   };
-  const fetchHintEvidence = async (sessionIds: string[]) =>
+  const fetchHintEvidence = async (
+    sessionIds: string[],
+    proposedFolders?: PersonalFolderReference[]
+  ) =>
     personalFolderHintEvidenceSchema.parse(
       await deps.personalRequest("/v1/personal/sessions/folder-hint-evidence", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionIds, includeKnownFolders: true })
+        body: JSON.stringify({ sessionIds, proposedFolders })
       })
     );
   const hintConversation = (
@@ -272,11 +277,9 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     const input = personalFolderHintRequestSchema.parse(raw);
     const payload = await fetchHintEvidence(input.sessionIds);
     const requested = new Set(input.sessionIds);
-    const knownFolders = new Set(
-      payload.knownFolders?.map(personalFolderScopeId)
-    );
+    const proposed = new Map<string, PersonalFolderReference>();
     const lookupClientWorktree = createClientWorktreeLookup();
-    const hints = [];
+    const hints: PersonalFolderHint[] = [];
     for (const row of payload.evidence) {
       if (!requested.has(row.sessionId)) continue;
       const results = await hintsForConversation(
@@ -289,10 +292,9 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       for (const result of results) {
         if (
           result.tier !== "none" &&
-          (result.kind === "registered" || result.kind === "worktree-parent") &&
-          !knownFolders.has(personalFolderScopeId(result.folder))
+          (result.kind === "registered" || result.kind === "worktree-parent")
         )
-          continue;
+          proposed.set(personalFolderScopeId(result.folder), result.folder);
         hints.push({
           sessionId: row.sessionId,
           tier: result.tier,
@@ -319,14 +321,26 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         });
       }
     }
-    return personalFolderHintsDataSchema.parse({ hints });
+    if (!proposed.size) return personalFolderHintsDataSchema.parse({ hints });
+    const checked = await fetchHintEvidence(input.sessionIds, [
+      ...proposed.values()
+    ]);
+    const knownFolders = new Set(
+      checked.knownFolders?.map(personalFolderScopeId)
+    );
+    return personalFolderHintsDataSchema.parse({
+      hints: hints.filter(
+        (hint) =>
+          !hint.folder || knownFolders.has(personalFolderScopeId(hint.folder))
+      )
+    });
   };
   /** Recheck the exact candidate against recorded and local evidence.
    * Correction preview still validates the versioned change. */
   const confirmFolderHint = async (raw: unknown) => {
     const { sessionId, kind, folder } =
       personalFolderHintConfirmRequestSchema.parse(raw);
-    const payload = await fetchHintEvidence([sessionId]);
+    const payload = await fetchHintEvidence([sessionId], [folder]);
     const row = payload.evidence.find((item) => item.sessionId === sessionId);
     if (!row) throw new Error("Conversation not found.");
     const reviewed = personalFolderScopeId(folder);

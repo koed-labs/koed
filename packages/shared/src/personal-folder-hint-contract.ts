@@ -7,6 +7,8 @@ import {
 
 /** Largest batch of Conversations a single hint request may name. */
 export const PERSONAL_FOLDER_HINT_BATCH_SIZE = 50;
+/** One registered Folder and one worktree parent per Conversation. */
+const MAX_PROPOSED_FOLDERS = 2 * PERSONAL_FOLDER_HINT_BATCH_SIZE;
 
 export const personalFolderHintRequestSchema = z
   .object({
@@ -19,7 +21,10 @@ export type PersonalFolderHintRequest = z.infer<
 
 export const personalFolderHintEvidenceRequestSchema =
   personalFolderHintRequestSchema.extend({
-    includeKnownFolders: z.boolean().optional()
+    proposedFolders: z
+      .array(personalFolderReferenceSchema)
+      .max(MAX_PROPOSED_FOLDERS)
+      .optional()
   });
 
 /** Recorded, owner-scoped facts the API exposes for scoring. The scorer adds
@@ -27,8 +32,11 @@ export const personalFolderHintEvidenceRequestSchema =
 export const personalFolderHintEvidenceSchema = z
   .object({
     ownerUserId: personalOwnerIdSchema,
-    /** Exact owner-scoped targets from the Folder correction resolver. */
-    knownFolders: z.array(personalFolderReferenceSchema).optional(),
+    /** Subset of proposed references eligible for Folder correction. */
+    knownFolders: z
+      .array(personalFolderReferenceSchema)
+      .max(MAX_PROPOSED_FOLDERS)
+      .optional(),
     evidence: z
       .array(
         z

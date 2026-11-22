@@ -4,7 +4,7 @@ import {
   personalOwnerIdSchema,
   type PersonalFolderHintEvidence
 } from "@koed-labs/shared";
-import { listKnownFolderCorrectionReferences } from "./personal-source-correction-context.js";
+import { findKnownFolderCorrectionReferences } from "./personal-source-correction-context.js";
 import type { ActorContext } from "./types.js";
 
 export type PersonalFolderHintEvidenceRepository = {
@@ -37,7 +37,7 @@ export const createPersonalFolderHintEvidenceRepository = (
     raw: unknown
   ): Promise<PersonalFolderHintEvidence> {
     const ownerUserId = personalOwnerIdSchema.parse(actor.userId);
-    const { sessionIds, includeKnownFolders } =
+    const { sessionIds, proposedFolders } =
       personalFolderHintEvidenceRequestSchema.parse(raw);
     const result = await pool.query<EvidenceRow>(
       `select s.id, s.folder_assignment, s.cwd, s.source_runtime, s.external_session_id,
@@ -59,10 +59,14 @@ export const createPersonalFolderHintEvidenceRepository = (
     );
     return {
       ownerUserId,
-      ...(includeKnownFolders
+      ...(proposedFolders
         ? {
             knownFolders: result.rows.length
-              ? await listKnownFolderCorrectionReferences(pool, ownerUserId)
+              ? await findKnownFolderCorrectionReferences(
+                  pool,
+                  ownerUserId,
+                  proposedFolders
+                )
               : []
           }
         : {}),

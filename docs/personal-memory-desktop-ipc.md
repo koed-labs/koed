@@ -54,14 +54,16 @@ belongs to), or `create` (a directory with no Folder yet, named by `directory`).
 The Personal API does not expose a standalone Folder observation write. Owner
 authentication does not establish that the calling device captured the target
 Conversation. Desktop offers no action for `create` hints.
-Electron main requests `includeKnownFolders` with each evidence batch. The
-read-only API returns exact owner-scoped references from the same recorded facts
-as the correction resolver. A registry-only Folder is not offered as an action.
+Electron main fetches evidence, scores locally, then sends only distinct scored
+Folder references as `proposedFolders` on the same read-only route (at most 100
+references per request). The API returns only proposed references backed by the
+same owner-scoped recorded facts as correction preview. A registry-only Folder
+is not offered as an action. Batches without Folder candidates skip this check.
 `personal.folders.hints.confirm` takes a Conversation ID, `registered` or
-`worktree-parent` kind, and full Folder reference. Electron main fetches the recorded
-evidence and references again, and re-scores the exact kind and reference on the
-device. No observation or Folder is written. The versioned correction preview
-remains authoritative for the Conversation.
+`worktree-parent` kind, and full Folder reference. Electron main fetches fresh
+evidence, checks only that reference, and re-scores the exact kind and reference
+on the device. No observation or Folder is written. The versioned correction
+preview remains authoritative for the Conversation.
 The dialog resolves the suggested Folder to the named Projects whose active rules cover that exact Folder and words the suggestion "Suggested Project: X" when one does ("Suggested Folder" otherwise); a candidate that lands in a Project is preferred. Each Project row in the sidebar shows only its settings menu (⋯), with no counts. Project settings › Conversations shows the number of suggestions beside the page name, and which lists "In Project", "Suggested" and "Excluded" separately; the counts are worked out in the background shortly after start-up, a batch at a time (hints in batches of 50 with a short in-memory cache), and recomputed after an edit. A Conversation excluded from the Project is never suggested for it. Every row on the three tabs shows the AI Client, how the Conversation is or would be connected ("Git Anchor", "Folder", or "Added by you" when no rule matches; "Git Anchor match", "Folder match", "Worktree of koed" for suggestions; "Excluded by you") and its age, with one action: Remove, Add, or Add back. An action only stages a change: the row is tinted with "Will be added", "Will be removed", "Will be excluded" (a Conversation a rule still matches is excluded, since the rule would bring it back) or "Will be added back", and offers Undo. "Keep if rules change" (direct membership) and "Not this one" sit in the row's menu; "Not this one" stages "Will be excluded", and saving excludes the Conversation from the Project, so it moves to Excluded; a kept Conversation shows a padlock, is listed first on In Project, and always has the menu so it can be turned off (with no rule matching, turning it off stages "Will be removed"). The footer counts what saving will do ("1 to add · 1 to remove"). Save changes first applies the Project's own changes, then applies each ticked suggestion exactly as the single dialog does (accept the hint, review the correction against the Conversation's current state, save a version-pinned edit), so the Conversation joins through the Project's Folder or Git Anchor rule rather than direct membership. The two steps are not atomic; a suggestion that fails is reported and the rest still apply. After saving, an excluded suggestion is also hidden in renderer local storage per owner scope on this device, so it is no longer counted as a suggestion, until the suggestion itself changes (a different Folder, Git Anchor or Project).
 A hint can also have `kind: "repository"` with a `repositoryKey` (the portable fingerprint of the directory's current remote); the evidence the API returns carries `gitAnchorKnown` so a Conversation that already has an anchor gets none. Accepting one is a Git Anchor correction that needs no device-side step.
 A Conversation can return several hints, best first (a registered Folder, the main

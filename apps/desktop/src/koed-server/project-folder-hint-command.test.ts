@@ -39,9 +39,7 @@ const score = vi.mocked(hintsForConversation);
 function setup(knownFolders = [folder]) {
   const { contexts } = createProjectManagementValidationApi();
   const request = vi.fn(async (_path: string, init?: RequestInit) => ({
-    ...(JSON.parse(String(init?.body)).includeKnownFolders
-      ? { knownFolders }
-      : {}),
+    ...(JSON.parse(String(init?.body)).proposedFolders ? { knownFolders } : {}),
     ownerUserId: validationOwner,
     evidence: [
       {
@@ -107,7 +105,7 @@ describe("Folder hint confirmation", () => {
       expect.objectContaining({
         body: JSON.stringify({
           sessionIds: [sessionId],
-          includeKnownFolders: true
+          proposedFolders: [folder]
         })
       })
     );
@@ -116,17 +114,36 @@ describe("Folder hint confirmation", () => {
 
 describe("Folder hint listing", () => {
   it("only returns Folder candidates with an exact server-known reference", async () => {
-    const { hints } = setup();
+    const { hints, request } = setup();
+    const unknown = { ...folder, directoryIncarnationId: "registry-only" };
     score.mockResolvedValue([
       candidate,
-      {
-        ...candidate,
-        kind: "registered",
-        folder: { ...folder, directoryIncarnationId: "registry-only" }
-      }
+      { ...candidate, kind: "registered", folder: unknown }
     ]);
     await expect(hints({ sessionIds: [sessionId] })).resolves.toEqual({
       hints: [{ ...candidate, sessionId }]
     });
+    expect(
+      request.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))
+    ).toEqual([
+      { sessionIds: [sessionId] },
+      { sessionIds: [sessionId], proposedFolders: [folder, unknown] }
+    ]);
+  });
+
+  it("does not request Folder eligibility for Git Anchor hints", async () => {
+    const { hints, request } = setup();
+    const anchor = {
+      tier: "medium",
+      kind: "repository",
+      repositoryKey: "remote",
+      score: 4,
+      reasons: []
+    } as const;
+    score.mockResolvedValue([{ ...anchor, reasons: [] }]);
+    await expect(hints({ sessionIds: [sessionId] })).resolves.toEqual({
+      hints: [{ ...anchor, sessionId }]
+    });
+    expect(request).toHaveBeenCalledOnce();
   });
 });

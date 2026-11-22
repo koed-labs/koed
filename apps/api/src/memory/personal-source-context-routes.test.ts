@@ -52,9 +52,17 @@ describe("Conversation organization route", () => {
     }
   });
 
-  it("scopes Folder hint evidence to the authenticated owner and bounds the batch", async () => {
+  it("accepts only bounded exact Folder proposals on the read-only evidence route", async () => {
     const sessionId = "00000000-0000-4000-8000-000000000001",
       userId = "00000000-0000-4000-8000-000000000002";
+    const folder = {
+      ownerUserId: userId,
+      folderId: "folder",
+      originatingDeploymentId: "deployment",
+      originatingDeviceId: "device",
+      originatingProfileId: "profile",
+      directoryIncarnationId: "incarnation"
+    };
     const evidence = vi.fn(async () => ({ ownerUserId: userId, evidence: [] }));
     const read = vi.fn(async () => {});
     const write = vi.fn(async () => {});
@@ -68,18 +76,20 @@ describe("Conversation organization route", () => {
       const ok = await app.inject({
         method: "POST",
         url: "/v1/personal/sessions/folder-hint-evidence",
-        payload: { sessionIds: [sessionId], includeKnownFolders: true }
+        payload: { sessionIds: [sessionId], proposedFolders: [folder] }
       });
       expect(ok.statusCode).toBe(200);
       expect(evidence).toHaveBeenCalledWith(
         { userId },
-        { sessionIds: [sessionId], includeKnownFolders: true }
+        { sessionIds: [sessionId], proposedFolders: [folder] }
       );
       expect(read).toHaveBeenCalledOnce();
       expect(write).not.toHaveBeenCalled();
       for (const payload of [
         { sessionIds: [] },
         { sessionIds: Array(51).fill(sessionId) },
+        { sessionIds: [sessionId], includeKnownFolders: true },
+        { sessionIds: [sessionId], proposedFolders: Array(101).fill(folder) },
         { sessionIds: [sessionId], userId: "another-owner" }
       ]) {
         const denied = await app.inject({

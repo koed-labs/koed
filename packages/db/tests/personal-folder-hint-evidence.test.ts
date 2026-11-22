@@ -58,7 +58,7 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
     await pool?.end();
   });
 
-  it("lists the same exact owned Folder references correction preview can resolve", async () => {
+  it("returns only proposed owned Folder references that correction preview can resolve", async () => {
     const repo = createMemorySourceRepository(pool, options);
     const user = async () => ({
       userId: (
@@ -86,15 +86,42 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
       externalSessionId: randomUUID(),
       currentFolderObservation: observation
     });
+    const unproposed = {
+      ...observation.identity,
+      directoryIncarnationId: "unproposed"
+    };
+    await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      currentFolderObservation: { ...observation, identity: unproposed }
+    });
+    const foreignIdentity = {
+      ...observation.identity,
+      directoryIncarnationId: "foreign-only"
+    };
     const foreign = await repo.createCapturedSession(other, {
       externalSessionId: randomUUID(),
-      folderObservation: observation
+      currentFolderObservation: { ...observation, identity: foreignIdentity }
     });
     const folder = { ...observation.identity, ownerUserId: actor.userId };
+    const unknown = { ...folder, directoryIncarnationId: "registry-only" };
     const result = await repo.getPersonalFolderHintEvidence(actor, {
       sessionIds: [source.id, foreign.id],
-      includeKnownFolders: true
+      proposedFolders: [
+        folder,
+        folder,
+        unknown,
+        { ...folder, ownerUserId: other.userId },
+        { ...foreignIdentity, ownerUserId: actor.userId }
+      ]
     });
+    expect(
+      (
+        await repo.getPersonalFolderHintEvidence(actor, {
+          sessionIds: [foreign.id],
+          proposedFolders: [folder]
+        })
+      ).knownFolders
+    ).toEqual([]);
     expect(personalFolderHintEvidenceSchema.parse(result).knownFolders).toEqual(
       [folder]
     );
@@ -114,9 +141,7 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
       state: "corrected",
       value: { state: "known", value: { reference: folder } }
     });
-    await expect(
-      preview({ ...folder, directoryIncarnationId: "registry-only" })
-    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(preview(unknown)).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("reports known Git Anchors from effective identity without invalidating a mixed batch", async () => {
