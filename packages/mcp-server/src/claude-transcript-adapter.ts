@@ -217,7 +217,8 @@ export const adaptMessages = (input: {
   let currentTurnId = `session:${input.sessionId}:preamble`;
   const items: RawConversationItemRequest[] = [];
   input.messages.forEach((message, messageIndex) => {
-    if (isHumanUserMessage(message)) currentTurnId = message.uuid;
+    const startsTurn = isHumanUserMessage(message);
+    if (startsTurn) currentTurnId = message.uuid;
     const sourceTimestamp = input.timestamps.get(message.uuid);
     if (messageIndex < input.minimumMessageIndex) return;
     if (!sourceTimestamp) {
@@ -230,7 +231,13 @@ export const adaptMessages = (input: {
       return;
     }
     const eventTime = sourceTimestamp;
-    adaptedBlocks(message).forEach((block, blockIndex) => {
+    const blocks = adaptedBlocks(message);
+    const initiatingMainMessage =
+      startsTurn &&
+      input.componentId === "main" &&
+      !message.parent_agent_id &&
+      !message.parent_tool_use_id;
+    blocks.forEach((block, blockIndex) => {
       const stableItemId = `${input.componentId}:${message.uuid}:${blockIndex}`;
       const key = canonicalKey({
         sessionId: input.sessionId,
@@ -276,6 +283,9 @@ export const adaptMessages = (input: {
           transcriptType: block.transcriptType,
           sourceRuntime: "claude-code",
           sourceComponentId: input.componentId,
+          ...(initiatingMainMessage
+            ? { sourceMessageBlockCount: blocks.length }
+            : {}),
           cwd: input.cwd
         }
       });

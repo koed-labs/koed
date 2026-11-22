@@ -90,6 +90,13 @@ The [installation guide](docs/optional-privacy-installation.md) defines compatib
 - [ ] Add unobtrusive date separators for Conversations spanning multiple days.
       Preserve stable virtualized row keys and pagination anchors.
 
+## Floating Kin
+
+- [ ] Support first-time Memory Answer assignment for a Codex profile signed in
+      through Keychain, without asking the User to sign in a second time.
+- [ ] Recover the overlay automatically after its renderer fails, without
+      reopening during Quit Desktop or starting a stopped Local AI Runtime.
+
 ## Desktop Preferences design
 
 - [ ] Restart services after a Privacy rollback compare-and-swap conflict

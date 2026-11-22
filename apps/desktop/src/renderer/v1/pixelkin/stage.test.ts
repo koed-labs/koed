@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KIN_DEFAULTS } from "./vendor/index.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
-import { addPixelkin, createPixelkinActor } from "./stage.js";
+import { addPixelkin, createPixelkinActor, setPixelkinKin } from "./stage.js";
 import { kinStageSurface } from "./presentation.js";
 
 const engine = vi.hoisted(() => ({ render: vi.fn() }));
@@ -173,7 +173,7 @@ describe("Kin stage rendering", () => {
     }
   );
   describe("idle rendering", () => {
-    const setup = (focused: boolean) => {
+    const setup = (focused: boolean, animateUnfocused = false) => {
       const frames: FrameRequestCallback[] = [];
       vi.stubGlobal("WebGL2RenderingContext", class {});
       vi.stubGlobal(
@@ -196,9 +196,37 @@ describe("Kin stage rendering", () => {
         drawImage: vi.fn()
       } as unknown as CanvasRenderingContext2D);
       const actor = createPixelkinActor(canvas, KIN_DEFAULTS, 64, "avatar");
-      const remove = addPixelkin(actor);
+      const remove = addPixelkin(actor, { animateUnfocused });
       return { frames, hasFocus, actor, remove };
     };
+
+    it("passes a custom gradient endpoint with the existing canvas palette", () => {
+      const { frames, actor, remove } = setup(false);
+      setPixelkinKin(actor, {
+        ...KIN_DEFAULTS,
+        palette: { base: "#3083ff", grayscale: false, gradient: true }
+      });
+      actor.gradientTop = "#e8d31a";
+      try {
+        frames[0]!(100);
+        expect(engine.render).toHaveBeenCalledWith(
+          expect.objectContaining({
+            paletteMode: "canvas",
+            objects: [
+              expect.objectContaining({
+                member: expect.objectContaining({
+                  palette: "#3083ff",
+                  gradient: true,
+                  gradientComplement: "#e8d31a"
+                })
+              })
+            ]
+          })
+        );
+      } finally {
+        remove();
+      }
+    });
 
     it("paints once and stops while another app has focus", () => {
       const { frames, remove } = setup(false);
@@ -209,6 +237,30 @@ describe("Kin stage rendering", () => {
         // No further frames are scheduled until the window has focus.
         expect(frames).toHaveLength(1);
       } finally {
+        remove();
+      }
+    });
+
+    it("keeps a visible opt-in Kin animated after blur, without painting other Kin", () => {
+      const { frames, hasFocus, actor, remove } = setup(true, true);
+      const removeOther = addPixelkin(
+        createPixelkinActor(actor.canvas, KIN_DEFAULTS, 40)
+      );
+      try {
+        frames.at(-1)!(100);
+        engine.render.mockClear();
+        hasFocus.mockReturnValue(false);
+        window.dispatchEvent(new Event("blur"));
+        frames.at(-1)!(140);
+        expect(engine.render).toHaveBeenCalledTimes(1);
+        frames.at(-1)!(180);
+        expect(engine.render).toHaveBeenCalledTimes(2);
+        actor.visible = false;
+        const count = frames.length;
+        frames.at(-1)!(220);
+        expect(frames).toHaveLength(count);
+      } finally {
+        removeOther();
         remove();
       }
     });

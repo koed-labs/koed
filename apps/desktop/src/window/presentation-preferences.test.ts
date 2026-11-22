@@ -17,7 +17,8 @@ it("persists window preferences independently of backend acceleration", () => {
   const file = join(root, "preferences.json");
   expect(readPresentationPreferences(file)).toEqual({
     graphicsAcceleration: true,
-    showMenuBar: true
+    showMenuBar: true,
+    floatingKin: false
   });
   writePresentationPreferences(file, {
     graphicsAcceleration: false,
@@ -25,12 +26,22 @@ it("persists window preferences independently of backend acceleration", () => {
   });
   expect(readPresentationPreferences(file)).toEqual({
     graphicsAcceleration: false,
-    showMenuBar: false
+    showMenuBar: false,
+    floatingKin: false
   });
+  writePresentationPreferences(file, {
+    graphicsAcceleration: true,
+    showMenuBar: true,
+    floatingKin: true
+  });
+  expect(readPresentationPreferences(file).floatingKin).toBe(true);
   expect(statSync(file).mode & 0o077).toBe(0);
+  writeFileSync(file, JSON.stringify({ floatingKin: "true" }));
+  expect(readPresentationPreferences(file).floatingKin).toBe(false);
   writeFileSync(file, "invalid");
   expect(readPresentationPreferences(file)).toEqual({
     graphicsAcceleration: true,
-    showMenuBar: true
+    showMenuBar: true,
+    floatingKin: false
   });
 });
