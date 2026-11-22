@@ -1,0 +1,126 @@
+import { describe, expect, it } from "vitest";
+import type { PersonalFolderHint } from "@koed-labs/shared";
+import { folderProposal } from "./folder-hint-suggestion.js";
+
+const folder = {
+  ownerUserId: "00000000-0000-4000-8000-000000000001",
+  folderId: "api",
+  originatingDeploymentId: "deployment",
+  originatingDeviceId: "device",
+  originatingProfileId: "profile",
+  directoryIncarnationId: "api-lifetime"
+};
+const session = "00000000-0000-4000-8000-000000000002";
+const hint = (
+  overrides: Partial<PersonalFolderHint> = {}
+): PersonalFolderHint => ({
+  sessionId: session,
+  tier: "strong",
+  score: 6,
+  folder,
+  reasons: [
+    { code: "git-remote", outcome: "agrees" },
+    { code: "directory-birthtime", outcome: "agrees" },
+    { code: "directory-activity", outcome: "does-not-agree" }
+  ],
+  ...overrides
+});
+
+const create = (overrides: Partial<PersonalFolderHint> = {}) =>
+  hint({
+    kind: "create",
+    folder: undefined,
+    directory: "/work/x",
+    tier: "medium",
+    ...overrides
+  });
+
+describe("folderProposal", () => {
+  it("proposes using an existing Folder, with its evidence strongest first", () => {
+    expect(folderProposal([hint({ directory: "/work/api" })])).toEqual({
+      action: "use",
+      kind: "registered",
+      tier: "strong",
+      directory: "/work/api",
+      projects: [],
+      evidence: ["git-remote", "directory-birthtime"]
+    });
+  });
+
+  it("proposes creating a Folder only when nothing existing applies", () => {
+    expect(folderProposal([create()])).toMatchObject({
+      action: "create",
+      kind: "create",
+      directory: "/work/x"
+    });
+    expect(folderProposal([create(), hint()])?.kind).toBe("registered");
+  });
+
+  it("prefers a worktree's main checkout, then an existing Folder, then a new one", () => {
+    const parent = hint({ kind: "worktree-parent", directory: "/work/main" });
+    expect(folderProposal([hint(), create(), parent])?.kind).toBe(
+      "worktree-parent"
+    );
+    expect(folderProposal([create(), hint()])?.kind).toBe("registered");
+  });
+
+  it("prefers a candidate that lands in a Project over one that does not", () => {
+    const own = { ...folder, folderId: "worktree-own" };
+    const hints = [
+      hint({ folder: own, directory: "/work/wt" }),
+      hint({ kind: "worktree-parent", directory: "/work/main" })
+    ];
+    const inProject = (f: typeof folder) =>
+      f.folderId === "api" ? ["Koed"] : [];
+    expect(folderProposal(hints, { folder: inProject })).toMatchObject({
+      kind: "worktree-parent",
+      projects: ["Koed"]
+    });
+    // With no Project anywhere, the worktree-parent rank decides.
+    expect(folderProposal(hints)?.kind).toBe("worktree-parent");
+    expect(
+      folderProposal([hints[0]!, create()], { folder: inProject })?.kind
+    ).toBe("registered");
+    expect(
+      folderProposal([create(), hints[1]!], {
+        folder: (f) => (f.folderId === "api" ? [] : ["x"])
+      })?.kind
+    ).toBe("worktree-parent");
+  });
+
+  it("proposes a Git Anchor a Project already uses over creating a Folder", () => {
+    const repository = hint({
+      kind: "repository",
+      folder: undefined,
+      repositoryKey: "gr_lyons",
+      directory: "/repos/lyons-mouth",
+      tier: "medium"
+    });
+    const resolve = {
+      repository: (key: string) => (key === "gr_lyons" ? ["lyons-mouth"] : [])
+    };
+    expect(folderProposal([create(), repository], resolve)).toMatchObject({
+      action: "anchor",
+      kind: "repository",
+      repositoryKey: "gr_lyons",
+      projects: ["lyons-mouth"]
+    });
+    // An anchor no Project uses has nothing to select, so it is dropped.
+    expect(folderProposal([repository], {})).toBeUndefined();
+    expect(folderProposal([create(), repository], {})?.kind).toBe("create");
+    // A Folder that already lands in a Project still wins over the anchor.
+    const inProject = { folder: () => ["Koed"], ...resolve };
+    expect(folderProposal([repository, hint()], inProject)?.kind).toBe(
+      "registered"
+    );
+  });
+
+  it("proposes nothing for tier none, an unusable hint, or no hints", () => {
+    expect(
+      folderProposal([hint({ tier: "none", folder: undefined })])
+    ).toBeUndefined();
+    expect(folderProposal([create({ directory: undefined })])).toBeUndefined();
+    expect(folderProposal([hint({ folder: undefined })])).toBeUndefined();
+    expect(folderProposal([])).toBeUndefined();
+  });
+});

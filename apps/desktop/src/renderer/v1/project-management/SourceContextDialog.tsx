@@ -8,8 +8,12 @@ import {
   TabsPanel,
   TabsTab
 } from "@koed-labs/ui";
+import { ProposalWhy } from "./ProposalWhy.js";
 import { RefreshCw, Trash2 } from "lucide-react";
-import type { PersonalSourceCorrectionInput } from "@koed-labs/shared";
+import type {
+  PersonalFolderReference,
+  PersonalSourceCorrectionInput
+} from "@koed-labs/shared";
 import {
   effective,
   SourceContextStatus,
@@ -28,6 +32,20 @@ import {
   type OrganizationDialogProps
 } from "./use-organization-review.js";
 import { sourceLabel } from "./source-label.js";
+import {
+  folderProposal,
+  type FolderProposal
+} from "./folder-hint-suggestion.js";
+import { proposalResolvers } from "./proposal-resolvers.js";
+import { repositoryTargetFor } from "./repository-project.js";
+import {
+  folderLabel,
+  folderLabelText,
+  folderSourceLabel
+} from "./folder-label.js";
+import { useFolderHint } from "./use-folder-hint.js";
+
+const CREATED_FOLDER = "created-folder";
 
 export function SourceContextDialog(
   props: OrganizationDialogProps & { axis?: "git" | "folder" }
@@ -41,6 +59,67 @@ export function SourceContextDialog(
     () => projectTransferSources(props.projects),
     [props.projects]
   );
+  const folderUnresolved =
+    !!review &&
+    effective<SourceContextFact>(review.context.folder).state !== "known";
+  const gitUnresolved =
+    !!review &&
+    effective<SourceContextFact>(review.context.git).state !== "known";
+  const hints = useFolderHint(
+    props.api,
+    props.target.sessionId,
+    folderUnresolved || gitUnresolved
+  );
+  const proposal = folderProposal(hints, proposalResolvers(props.projects));
+  const anchorName = proposal?.repositoryKey
+    ? repositoryTargetFor(props.projects, proposal.repositoryKey)?.repository
+        .anchorDisplay
+    : undefined;
+  const [created, setCreated] = useState<{
+    folder: PersonalFolderReference;
+    directory: string;
+  }>();
+  const [creating, setCreating] = useState(false);
+  /** Accepting a hint makes the Folder known to this Conversation (registering
+   * the directory first when it is new); it assigns nothing until the User
+   * reviews and saves the correction. */
+  const acceptFolder = async (
+    kind: "registered" | "worktree-parent" | "create"
+  ) => {
+    if (!props.api.createHintedFolder) return;
+    setCreating(true);
+    setError("");
+    try {
+      const result = await props.api.createHintedFolder({
+        sessionId: props.target.sessionId,
+        kind
+      });
+      setCreated({ folder: result.folder, directory: result.normalizedPath });
+      update("folder", CREATED_FOLDER);
+      setAxis("folder");
+    } catch (cause) {
+      setError(projectErrorMessage(cause));
+    } finally {
+      setCreating(false);
+    }
+  };
+  /** A Git Anchor proposal selects an anchor a Project already uses, so it needs
+   * no registration; a Folder proposal is accepted on the device first. */
+  const acceptProposal = async (accepted: FolderProposal) => {
+    if (accepted.kind !== "repository") {
+      await acceptFolder(accepted.kind);
+      return;
+    }
+    const target = accepted.repositoryKey
+      ? repositoryTargetFor(props.projects, accepted.repositoryKey)
+      : undefined;
+    if (!target) {
+      setError("That Git Anchor is no longer available.");
+      return;
+    }
+    update("git", target.sourceId);
+    setAxis("git");
+  };
   const update = (tab: "git" | "folder", value: string) => {
     setDraft((old) => ({ ...old, [tab]: value }));
     setPreview(undefined);
@@ -54,6 +133,15 @@ export function SourceContextDialog(
         if (value === "current") return [];
         if (value === "reset" || value === "unresolved")
           return [{ axis: tab, action: value, expectedVersion }];
+        if (tab === "folder" && value === CREATED_FOLDER && created)
+          return [
+            {
+              axis: tab,
+              action: "set",
+              folder: created.folder,
+              expectedVersion
+            }
+          ];
         const source = [...sources.repositories, ...sources.folders].find(
           (s) => s.id === value
         );
@@ -108,6 +196,44 @@ export function SourceContextDialog(
       {review && (
         <>
           <SourceContextStatus context={review.context} />
+          {proposal &&
+            draft.git === "current" &&
+            draft.folder === "current" &&
+            (proposal.kind === "repository" ||
+              props.api.createHintedFolder) && (
+              <div className="v1-pm-context-suggestion">
+                <span className="v1-pm-context-suggested">
+                  {proposal.projects.length > 0
+                    ? "Suggested Project: "
+                    : "Suggested Folder: "}
+                  <strong>
+                    {proposal.projects.length > 0
+                      ? proposal.projects.join(", ")
+                      : proposal.directory
+                        ? folderLabel(proposal.directory).name
+                        : "this Folder"}
+                  </strong>
+                  {proposal.projects.length === 0 &&
+                    proposal.directory &&
+                    folderLabel(proposal.directory).detail && (
+                      <> · {folderLabel(proposal.directory).detail}</>
+                    )}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy || reviewing || creating}
+                  onClick={() => void acceptProposal(proposal)}
+                >
+                  {proposal.action === "create" ? "Create and use" : "Use"}
+                </Button>
+                <ProposalWhy
+                  proposal={proposal}
+                  context="single"
+                  {...(anchorName ? { anchor: anchorName } : {})}
+                />
+              </div>
+            )}
           <Tabs
             value={axis}
             onValueChange={(value) => setAxis(value as "git" | "folder")}
@@ -145,7 +271,21 @@ export function SourceContextDialog(
                           value: "reset",
                           label: `Original: ${sourceLabel(assignment.original, props.projects)}`
                         },
-                        ...items.map((s) => ({ value: s.id, label: s.detail }))
+                        ...(tab === "folder" && created
+                          ? [
+                              {
+                                value: CREATED_FOLDER,
+                                label: folderLabelText(created.directory)
+                              }
+                            ]
+                          : []),
+                        ...items.map((s) => ({
+                          value: s.id,
+                          label:
+                            tab === "folder"
+                              ? folderSourceLabel(s.detail)
+                              : s.detail
+                        }))
                       ]}
                       onChange={(value) => update(tab, value)}
                       disabled={busy || reviewing || pending}

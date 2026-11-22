@@ -367,6 +367,76 @@ label.v1-pm-choice-row:hover {
   gap: 6px;
   margin-top: 10px;
 }
+.v1-pm-context-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.v1-pm-context-suggested {
+  flex: 1;
+  min-width: 0;
+}
+.v1-pm-context-why {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+}
+.v1-pm-why-popup {
+  /* The shared popup balances lines, which breaks these early. */
+  text-wrap: wrap;
+  max-width: min(380px, var(--available-width, 380px));
+}
+.v1-pm-why {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: max-content;
+  max-width: 356px;
+  padding: 6px 4px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.v1-pm-why-lead {
+  font-size: 13px;
+  font-weight: 600;
+}
+.v1-pm-why-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v1-pm-why-facts li {
+  position: relative;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+.v1-pm-why-facts li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--v1-heat-2, #14946f);
+}
+.v1-pm-why-detail {
+  color: var(--muted-foreground);
+}
+.v1-pm-why-note {
+  margin: 0;
+  color: var(--muted-foreground);
+}
 .v1-pm-context-original {
   font-size: 11px;
   color: var(--muted-foreground);
