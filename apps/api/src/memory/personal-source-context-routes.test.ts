@@ -52,6 +52,78 @@ describe("Conversation organization route", () => {
     }
   });
 
+  it("passes Git inference intent only to the dedicated preview route", async () => {
+    const sessionId = "00000000-0000-4000-8000-000000000001";
+    const userId = "00000000-0000-4000-8000-000000000002";
+    const correction = {
+      axis: "git",
+      action: "set",
+      expectedVersion: 1,
+      inferenceIntent: "user-confirmed-unknown",
+      repository: {
+        kind: "portable_repository",
+        key: "gr_reviewed",
+        root: null,
+        branch: null,
+        reason: "origin",
+        checkoutId: null,
+        originatingDeviceId: "device",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/repo"
+      }
+    };
+    const axis = {
+      revision: 1,
+      original: { state: "unresolved", reason: "historical_unresolved" },
+      correction: { state: "original" }
+    };
+    const preview = vi.fn(async () => ({
+      preview: { inferenceIntent: correction.inferenceIntent }
+    }));
+    const organize = vi.fn();
+    const app = Fastify();
+    registerPersonalSourceContextRoutes(app, {
+      requireRepository: () => ({
+        previewPersonalSourceCorrection: preview,
+        organizePersonalConversation: organize
+      }),
+      auth: { authenticate: async () => ({ id: userId }) },
+      rateLimit: { memoryRead: async () => {}, memoryWrite: async () => {} }
+    } as unknown as ApiRouteContext);
+    try {
+      const base = `/v1/personal/sessions/${sessionId}`;
+      const accepted = await app.inject({
+        method: "POST",
+        url: `${base}/source-context/reviews`,
+        payload: correction
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json().preview.inferenceIntent).toBe(
+        correction.inferenceIntent
+      );
+      expect(preview).toHaveBeenCalledWith({ userId }, sessionId, correction);
+      const denied = await app.inject({
+        method: "POST",
+        url: `${base}/organization`,
+        payload: {
+          expectedContext: {
+            sessionId,
+            logicalSessionId: sessionId,
+            git: axis,
+            folder: axis
+          },
+          reviewedProjects: [],
+          memberships: [],
+          corrections: [correction]
+        }
+      });
+      expect(denied.statusCode).toBeGreaterThanOrEqual(400);
+      expect(organize).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("accepts only bounded exact Folder proposals on the read-only evidence route", async () => {
     const sessionId = "00000000-0000-4000-8000-000000000001",
       userId = "00000000-0000-4000-8000-000000000002";

@@ -58,12 +58,14 @@ newly include the Conversation in that exact Project through its rules. This is
 not direct membership. A Folder hint alone never changes attribution or
 membership.
 
-One case is recorded without review: a Git Anchor hint where the recorded
-directory still exists on the device that recorded the Conversation, existed
-before it started, and has that Git Anchor's remote today, for a Conversation
-whose Git Anchor is unresolved and never corrected. Desktop records it through
-the same source correction, so Git Anchor rules include the Conversation, and a
-later correction replaces it. See
+For unresolved historical Conversations never corrected by a User, Koed can
+infer an effective Git Anchor when trusted source evidence identifies the
+recording device, the checkout predates a trustworthy source start, and the
+current remote resolves to a Git Anchor a Project already uses. Device sync
+is not required. Importing a transcript does not establish where it was
+recorded. If Koed cannot identify the recording device, review the Project's
+suggestions before applying them. Neither inference nor correction rewrites
+the original. See
 [ADR 0070](adr/0070-inferred-git-anchors-for-unresolved-history.md).
 
 See [Desktop IPC](personal-memory-desktop-ipc.md) for the review contract.

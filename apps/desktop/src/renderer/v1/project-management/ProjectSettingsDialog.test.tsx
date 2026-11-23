@@ -324,6 +324,197 @@ it.each(["Add", "Add all"])(
   }
 );
 
+it("keeps a staged exclusion individually undoable when its final rule is removed", async () => {
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const projects = mergeProjectSources(f.inventory(), []);
+  const project = projects.find((p) => p.id === projectId)!;
+  const rule = project.inclusionRules![0]!;
+  const save = vi.fn(async () => projects);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const click = (el: HTMLElement) => act(async () => el.click());
+  const action = (label: string) =>
+    document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  const row = (title: string) =>
+    [...document.querySelectorAll(".v1-pm-conversation-row")].find(
+      (el) => el.querySelector("b")?.textContent === title
+    );
+  const excludedTitle = "A calmer sidebar for Koed";
+  const untouchedTitle = "Refine the settings popup";
+  try {
+    await act(async () =>
+      root.render(
+        <ProjectSettingsDialog
+          api={f.api}
+          store={new PersonalMemoryStore(f.api)}
+          projects={projects}
+          projectId={projectId}
+          page="conversations"
+          onClose={vi.fn()}
+          onSave={save}
+          onRefresh={vi.fn()}
+          onDelete={vi.fn()}
+        />
+      )
+    );
+    await openGroups();
+    await click(action(`Remove ${excludedTitle}`)!);
+    expect(row(excludedTitle)?.textContent).toContain("Will be excluded");
+    const ruleName = document.querySelector(
+      ".v1-pm-group-toggle b"
+    )!.textContent;
+    await click(action(`More for ${ruleName}`)!);
+    await click(
+      [...document.querySelectorAll<HTMLElement>("[role=menuitem]")].find(
+        (item) => item.textContent?.includes("Remove Git Anchor")
+      )!
+    );
+    expect(row(excludedTitle)?.textContent).toContain("Will be excluded");
+    expect(row(excludedTitle)?.textContent).not.toContain(
+      "Leaves with this rule"
+    );
+    expect(row(untouchedTitle)?.textContent).toContain("Leaves with this rule");
+    expect(action(`Undo for ${untouchedTitle}`)).toBeNull();
+    const ruleStatus = () =>
+      document.querySelector(".v1-pm-group-toggle")?.textContent;
+    expect(ruleStatus()).toContain("Will be removed · 5 leave");
+    await click(action(`Undo for ${excludedTitle}`)!);
+    expect(row(excludedTitle)?.textContent).toContain("Leaves with this rule");
+    expect(action(`Undo for ${excludedTitle}`)).toBeNull();
+    expect(action(`Undo for ${ruleName}`)).not.toBeNull();
+    expect(ruleStatus()).toContain("Will be removed · 6 leave");
+    await click(
+      [...document.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Save changes"
+      )!
+    );
+    expect(save).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: projectId }),
+      [{ action: "remove_rule", inclusionId: rule.inclusionId }],
+      [],
+      []
+    );
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it("distinguishes same-named Folder rule options by path, device, and directory incarnation", async () => {
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const projects = mergeProjectSources(f.inventory(), []);
+  const original = projects.find((p) => p.folder && p.name === "koed-desktop")!;
+  const folder = original.folder!;
+  const otherPath = { ...folder.reference, folderId: "folder_other_path" };
+  const otherDevice = {
+    ...folder.reference,
+    originatingDeviceId: "test-device"
+  };
+  const unnamedDevice = {
+    ...folder.reference,
+    originatingDeviceId: "test-unnamed"
+  };
+  const replacement = {
+    ...folder.reference,
+    directoryIncarnationId: "directory_replacement"
+  };
+  projects.push(
+    {
+      ...original,
+      id: "test-folder-replacement",
+      folder: { ...folder, reference: replacement }
+    },
+    {
+      ...original,
+      id: "test-folder-other-path",
+      folder: {
+        ...folder,
+        reference: otherPath,
+        normalizedPath: "/work/koed-desktop"
+      }
+    },
+    {
+      ...original,
+      id: "test-folder-other-device",
+      folder: { ...folder, reference: otherDevice },
+      threads: [
+        {
+          ...original.threads[0]!,
+          originDevice: { id: "test-device", name: "This Mac" }
+        }
+      ]
+    },
+    {
+      ...original,
+      id: "test-folder-unnamed-device",
+      folder: { ...folder, reference: unnamedDevice },
+      threads: []
+    }
+  );
+  const save = vi.fn(async () => projects);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const click = (el: HTMLElement) => act(async () => el.click());
+  const button = (label: string) =>
+    [...document.querySelectorAll("button")].find(
+      (el) => el.textContent?.trim() === label
+    )!;
+  try {
+    await act(async () =>
+      root.render(
+        <ProjectSettingsDialog
+          api={f.api}
+          store={new PersonalMemoryStore(f.api)}
+          projects={projects}
+          projectId={projectId}
+          page="conversations"
+          onClose={vi.fn()}
+          onSave={save}
+          onRefresh={vi.fn()}
+          onDelete={vi.fn()}
+        />
+      )
+    );
+    await click(button("Add rule"));
+    const options = [
+      ...document.querySelectorAll<HTMLElement>("[role=menuitem]")
+    ];
+    const folderOptions = options.filter((el) =>
+      el.textContent?.startsWith("koed-desktop")
+    );
+    const originalDetail = "/code/koed-desktop · This Mac · this-mac";
+    const replacementDetail = `${originalDetail} · ${replacement.directoryIncarnationId}`;
+    expect(
+      folderOptions.map((el) => el.querySelector("small")?.textContent).sort()
+    ).toEqual(
+      [
+        `${originalDetail} · ${folder.reference.directoryIncarnationId}`,
+        replacementDetail,
+        "/work/koed-desktop · This Mac",
+        "/code/koed-desktop · This Mac · test-device",
+        "/code/koed-desktop · test-unnamed"
+      ].sort()
+    );
+    await click(
+      folderOptions.find(
+        (el) => el.querySelector("small")?.textContent === replacementDetail
+      )!
+    );
+    await click(button("Save changes"));
+    expect(save).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: projectId }),
+      [{ action: "add_folder", folder: replacement }],
+      [],
+      []
+    );
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
 it("groups suggestions by rule and saves ticked ones with the Project's changes", async () => {
   const f = createProjectManagementValidationApi();
   const projectId = validationId(2);
@@ -333,7 +524,7 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
   const member = project.threads[0]!.sessionId!;
   const rule = project.inclusionRules![0]!.target;
   if (rule.kind !== "repository") throw new Error("Missing Git Anchor fixture");
-  const row = (n: number, destinationId = projectId) => ({
+  const row = (n: number, destinationId = projectId, gitRevision = 1) => ({
     sessionId: validationId(900 + n),
     title: `Suggested ${n}`,
     client: "claude" as const,
@@ -341,6 +532,7 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
       action: "anchor" as const,
       kind: "repository" as const,
       repositoryKey: rule.repository.key,
+      gitRevision,
       tier: "medium" as const,
       projects: [{ id: destinationId, name: "koed" }],
       evidence: []
@@ -353,18 +545,19 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
     [...document.querySelectorAll("button")].find(
       (b) => b.textContent?.trim() === text
     )!;
-  try {
-    await act(async () =>
+  const store = new PersonalMemoryStore(f.api);
+  const renderSuggestions = (gitRevision: number) =>
+    act(async () =>
       root.render(
         <ProjectSettingsDialog
           api={f.api}
-          store={new PersonalMemoryStore(f.api)}
+          store={store}
           projects={projects}
           projectId={projectId}
           page="conversations"
           suggestions={{
             rows: [
-              row(1),
+              row(1, projectId, gitRevision),
               row(2),
               row(3, validationId(3)), // Same display name, different Project.
               { ...row(4), sessionId: member }
@@ -378,6 +571,8 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
         />
       )
     );
+  try {
+    await renderSuggestions(1);
     // Every group starts closed.
     expect(document.body.textContent).not.toContain("Suggested 1");
     // The first section is the Project's rules, titled without a count.
@@ -399,6 +594,14 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
     );
     expect(document.body.textContent).toContain("Will be added");
     expect(document.body.textContent).toContain("1 to add");
+    await renderSuggestions(2);
+    expect(document.body.textContent).not.toContain("Will be added");
+    expect(button("Save changes").disabled).toBe(true);
+    await act(async () =>
+      document
+        .querySelector<HTMLElement>('[aria-label="Add Suggested 1"]')!
+        .click()
+    );
     // Removing the rule drops its staged addition. Undo restores the rule,
     // but the addition must be approved again.
     const ruleName = document.querySelector(
@@ -472,7 +675,12 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
         }),
         { action: "exclude_session", sessionId: validationId(902) }
       ],
-      [expect.objectContaining({ title: "Suggested 1" })],
+      [
+        expect.objectContaining({
+          title: "Suggested 1",
+          proposal: expect.objectContaining({ gitRevision: 2 })
+        })
+      ],
       [expect.objectContaining({ title: "Suggested 2" })]
     );
   } finally {

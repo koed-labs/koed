@@ -19,8 +19,10 @@ describe("Folder hint evidence repository", () => {
           cwd: "/work/koed",
           first_at: new Date("2026-10-01T00:00:00.000Z"),
           remote: "gr_koed",
-          replica: false,
+          known_copy: false,
+          git_eligible: false,
           git_known: false,
+          git_revision: 3,
           source_runtime: "claude-code",
           external_session_id: "cli-1"
         }
@@ -52,8 +54,11 @@ describe("Folder hint evidence repository", () => {
           recordedCwd: "/work/koed",
           firstConversationAt: "2026-10-01T00:00:00.000Z",
           recordedRemoteFingerprint: "gr_koed",
-          capturedOnThisDevice: true,
+          capturedOnThisDevice: false,
+          recordingDeviceProvenance: "unknown",
+          gitInferenceEligibility: false,
           gitAnchorKnown: false,
+          gitRevision: 3,
           sourceRuntime: "claude-code",
           externalSessionId: "cli-1"
         }
@@ -74,7 +79,8 @@ describe("Folder hint evidence repository", () => {
           cwd: null,
           first_at: null,
           remote: null,
-          replica: true
+          known_copy: true,
+          git_eligible: false
         }
       ]
     }));
@@ -87,6 +93,8 @@ describe("Folder hint evidence repository", () => {
     );
     expect(result.evidence[0]).toMatchObject({
       capturedOnThisDevice: false,
+      recordingDeviceProvenance: "known-copy",
+      gitInferenceEligibility: false,
       firstConversationAt: null
     });
     await expect(

@@ -6,7 +6,7 @@ import {
   personalDesktopChangeSchema,
   personalDesktopLocalFolderPrepareInputSchema,
   personalFolderHintConfirmRequestSchema,
-  personalFolderHintRequestSchema,
+  personalDesktopFolderHintInputSchema,
   personalDesktopProjectCreateInputSchema,
   personalProjectCommandSchema,
   personalMembershipSyncCommandSchema,
@@ -163,7 +163,7 @@ export const createPersonalMemoryPreloadApi = (
         await invokePersonalMemory(invoke, {
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
           operation: "personal.folders.hints",
-          input: personalFolderHintRequestSchema.parse(value)
+          input: personalDesktopFolderHintInputSchema.parse(value)
         })
       );
       if (result.operation !== "personal.folders.hints")

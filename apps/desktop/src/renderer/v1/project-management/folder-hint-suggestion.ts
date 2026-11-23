@@ -51,7 +51,13 @@ export type FolderProposal = {
       kind: "registered" | "worktree-parent";
       folder: PersonalFolderReference;
     }
-  | { action: "anchor"; kind: "repository"; repositoryKey: string }
+  | {
+      action: "anchor";
+      kind: "repository";
+      repositoryKey: string;
+      gitRevision?: number;
+      recordingDeviceUnknown?: true;
+    }
 );
 
 export const proposalProjectLabel = (proposal: FolderProposal): string =>
@@ -66,7 +72,13 @@ export function suggestionApprovalKey(
     sessionId,
     proposal.kind,
     proposal.kind === "repository"
-      ? proposal.repositoryKey
+      ? proposal.recordingDeviceUnknown
+        ? [
+            proposal.repositoryKey,
+            proposal.directory,
+            "unknown-recording-device"
+          ]
+        : proposal.repositoryKey
       : personalFolderScopeId(proposal.folder)
   ]);
 }
@@ -82,6 +94,8 @@ export type ProposalResolvers = {
   folder?: (folder: PersonalFolderReference) => ProposalProject[];
   /** Projects a Git Anchor key is already in; empty if none can be set. */
   repository?: (key: string) => ProposalProject[];
+  /** Only Project Suggestions have the guarded unknown-device review flow. */
+  reviewBatch?: boolean;
 };
 
 /** One advisory proposal. A candidate that lands the Conversation in a Project
@@ -102,11 +116,36 @@ export function folderProposal(
         evidence: agreeing(hint)
       };
       if (kind === "repository") {
-        const { repositoryKey } = hint;
-        if (!repositoryKey) return [];
+        const { repositoryKey, gitRevision, recordingDeviceProvenance } = hint;
+        if (
+          !repositoryKey ||
+          (resolve.reviewBatch && recordingDeviceProvenance === "known-copy")
+        )
+          return [];
+        const recordingDeviceUnknown = recordingDeviceProvenance === "unknown";
+        if (
+          recordingDeviceUnknown &&
+          (!resolve.reviewBatch ||
+            hint.gitInferenceEligibility !== true ||
+            gitRevision !== 1 ||
+            !hint.directory)
+        )
+          return [];
         const projects = resolve.repository?.(repositoryKey) ?? [];
         return projects.length
-          ? [{ ...details, action: "anchor", kind, repositoryKey, projects }]
+          ? [
+              {
+                ...details,
+                action: "anchor",
+                kind,
+                repositoryKey,
+                gitRevision,
+                ...(recordingDeviceUnknown
+                  ? { recordingDeviceUnknown: true }
+                  : {}),
+                projects
+              }
+            ]
           : [];
       }
       return hint.folder

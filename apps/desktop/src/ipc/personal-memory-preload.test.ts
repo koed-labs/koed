@@ -51,24 +51,27 @@ describe("Personal Memory preload bridge", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("validates Folder hint requests before IPC and sends no path", async () => {
+  it("requires the expected Folder hint scope before IPC and sends no path", async () => {
     const session = "00000000-0000-4000-8000-000000000081";
+    const expectedScopeKey = "a".repeat(64);
     const invoke = vi.fn(async () =>
       success("personal.folders.hints", { hints: [] })
     );
     const bridge = createPersonalMemoryPreloadApi(invoke, events());
     await expect(
-      bridge.folderHints!({ sessionIds: [session] })
+      bridge.folderHints!({ sessionIds: [session], expectedScopeKey })
     ).resolves.toEqual([]);
     expect(invoke).toHaveBeenCalledWith(personalMemoryCommandChannel, {
       contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
       operation: "personal.folders.hints",
-      input: { sessionIds: [session] }
+      input: { sessionIds: [session], expectedScopeKey }
     });
     invoke.mockClear();
     for (const bad of [
-      { sessionIds: [] },
-      { sessionIds: [session], path: "/arbitrary" }
+      { sessionIds: [], expectedScopeKey },
+      { sessionIds: [session] },
+      { sessionIds: [session], expectedScopeKey: "bad" },
+      { sessionIds: [session], expectedScopeKey, path: "/arbitrary" }
     ])
       await expect(bridge.folderHints!(bad as never)).rejects.toThrow();
     expect(invoke).not.toHaveBeenCalled();

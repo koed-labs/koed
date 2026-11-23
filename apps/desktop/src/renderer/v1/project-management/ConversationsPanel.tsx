@@ -77,6 +77,33 @@ export function membershipSummary(
 const isRule = (s: SettingsSource) =>
   (s.kind === "repository" || s.kind === "folder") && !!s.target;
 
+function folderPickerDetails(sources: readonly SettingsSource[]) {
+  const folders = sources.flatMap(({ id, detail, target }) =>
+    target?.kind === "folder" ? [{ id, detail, folder: target.folder }] : []
+  );
+  const detailCounts = new Map<string, number>();
+  for (const { detail } of folders)
+    detailCounts.set(detail, (detailCounts.get(detail) ?? 0) + 1);
+
+  const labelCounts = new Map<string, number>();
+  const labels = folders.map(({ id, detail, folder }) => {
+    const label =
+      (detailCounts.get(detail) ?? 0) > 1
+        ? `${detail} · ${folder.originatingDeviceId}`
+        : detail;
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+    return { id, label, folder };
+  });
+  return new Map(
+    labels.map(({ id, label, folder }) => [
+      id,
+      (labelCounts.get(label) ?? 0) > 1
+        ? `${label} · ${folder.directoryIncarnationId}`
+        : label
+    ])
+  );
+}
+
 /** The Project's Folder and Git Anchor rules: saved ones, including any staged
  * for removal, and new ones staged for adding. */
 export function projectRules(draft: ProjectSettingsDraft): SettingsSource[] {
@@ -167,7 +194,11 @@ export function leavingWith(
 ): number {
   const rules = projectRules(draft);
   return draft.conversations.filter((row) => {
-    if (excludedMembership(row.explanation)) return false;
+    if (
+      excludedMembership(row.explanation) ||
+      draft.memberships[row.sessionId]?.included === false
+    )
+      return false;
     const matched = rulesFor(rules, row);
     if (!matched.some((r) => r.id === rule.id)) return false;
     return (
@@ -507,12 +538,17 @@ export function ConversationsPanel({
   const unusedRules = draft.sources.filter(
     (s) => isRule(s) && !s.inclusionId && !draft.selectedSources.has(s.id)
   );
+  const folderDetails = folderPickerDetails(unusedRules);
 
   const memberRow = (row: SettingsConversation, rule?: SettingsSource) => {
     const membership = settingsMembership(draft, row);
     const rules = settingsMatchingSources(draft, row);
     const unresolved = unresolvedMembership(row.explanation);
     const leaving = rule && ruleState(draft, rule) === "removing";
+    const stagedExclusion =
+      draft.memberships[row.sessionId]?.included === false &&
+      row.explanation.included &&
+      row.explanation.reasons.some((reason) => reason.kind !== "session");
     const { client, latestAt } = fact(row.sessionId);
     return (
       <Row
@@ -541,7 +577,9 @@ export function ConversationsPanel({
         locked={membership.direct}
         pending={
           leaving
-            ? undefined
+            ? stagedExclusion
+              ? "Will be excluded"
+              : undefined
             : membership.included
               ? membership.direct !== directMembership(row.explanation)
                 ? membership.direct
@@ -834,6 +872,9 @@ export function ConversationsPanel({
                           {kind === "repository" ? <GitFork /> : <Folder />}
                           <span className="v1-pm-menu-two-line">
                             {source.name}
+                            {source.target?.kind === "folder" ? (
+                              <small>{folderDetails.get(source.id)}</small>
+                            ) : null}
                             <small>{source.threads.length} Conversations</small>
                           </span>
                         </DropdownMenuItem>

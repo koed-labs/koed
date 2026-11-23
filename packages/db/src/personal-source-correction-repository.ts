@@ -20,6 +20,26 @@ import {
   type PersonalCorrectionSourceRow
 } from "./personal-source-correction-context.js";
 import { readPersonalCorrectionEffects } from "./personal-source-correction-effects.js";
+import { personalGitInferenceEligibilityQuery } from "./personal-git-inference-evidence.js";
+
+const requireInferenceProjectRule = (
+  projects: Awaited<ReturnType<typeof readPersonalCorrectionEffects>>
+) => {
+  if (
+    !projects.some((project) =>
+      project.afterReasons.some(({ kind }) => kind === "repository")
+    )
+  )
+    throw Object.assign(
+      new Error("Git inference requires an active Project Git Anchor rule."),
+      { statusCode: 409 }
+    );
+};
+
+const inferenceUnavailable = () =>
+  Object.assign(new Error("Conversation is not eligible for Git inference."), {
+    statusCode: 409
+  });
 
 const stale = () =>
   Object.assign(
@@ -117,6 +137,22 @@ export const createPersonalSourceCorrectionRepository = (
               ),
               { statusCode: 409 }
             );
+          const inferenceIntent =
+            "inferenceIntent" in input ? input.inferenceIntent : undefined;
+          if ("inferenceIntent" in input && inferenceIntent) {
+            // Manual confirmation is not recording-device attestation.
+            if (
+              inferenceIntent !== "user-confirmed-unknown" ||
+              input.repository.kind !== "portable_repository" ||
+              !(
+                await client.query(personalGitInferenceEligibilityQuery, [
+                  actor.userId,
+                  sessionId
+                ])
+              ).rowCount
+            )
+              throw inferenceUnavailable();
+          }
           const revisionId = randomUUID(),
             reviewId = randomUUID();
           const patch = await personalCorrectionPatch(
@@ -136,10 +172,12 @@ export const createPersonalSourceCorrectionRepository = (
             sessionId,
             patch
           );
+          if (inferenceIntent) requireInferenceProjectRule(projects);
           const preview = personalSourceCorrectionPreviewSchema.parse({
             reviewId,
             axis: input.axis,
             expectedVersion: input.expectedVersion,
+            ...(inferenceIntent ? { inferenceIntent } : {}),
             before,
             after,
             projects
@@ -215,6 +253,12 @@ export const createPersonalSourceCorrectionRepository = (
             sessionId,
             review.patch
           );
+          const intent = preview.inferenceIntent;
+          if (intent) {
+            if (intent !== "user-confirmed-unknown" || review.axis !== "git")
+              throw inferenceUnavailable();
+            requireInferenceProjectRule(effects);
+          }
           if (JSON.stringify(effects) !== JSON.stringify(preview.projects))
             throw stale();
           const after = afterRow(
@@ -233,8 +277,9 @@ export const createPersonalSourceCorrectionRepository = (
             [reviewId]
           );
           if (review.axis === "git") {
-            await client.query(
-              "update sessions set repository_override_identity=$3,repository_assignment_revision_id=$4,repository_assignment_version=repository_assignment_version+1,updated_at=now() where owner_user_id=$1 and id=$2",
+            const updated = await client.query(
+              `update sessions set repository_override_identity=$3,repository_assignment_revision_id=$4,repository_assignment_version=repository_assignment_version+1,updated_at=now() where owner_user_id=$1 and id=$2
+               ${intent ? `and exists (${personalGitInferenceEligibilityQuery})` : ""}`,
               [
                 actor.userId,
                 sessionId,
@@ -242,6 +287,7 @@ export const createPersonalSourceCorrectionRepository = (
                 review.revision_id
               ]
             );
+            if (intent && !updated.rowCount) throw inferenceUnavailable();
           } else {
             await client.query(
               "update sessions set folder_assignment=$3,updated_at=now() where owner_user_id=$1 and id=$2",

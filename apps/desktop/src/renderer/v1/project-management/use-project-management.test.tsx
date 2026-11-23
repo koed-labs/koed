@@ -306,6 +306,7 @@ it.each([
       tier: "medium" as const,
       score: 4,
       repositoryKey: "gr_validation_0",
+      gitRevision: 1,
       reasons: []
     }
   ]);

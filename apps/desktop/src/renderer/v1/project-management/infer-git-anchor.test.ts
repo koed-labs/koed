@@ -21,11 +21,14 @@ const hint = (
   outcomes: Record<string, string> = {}
 ): PersonalFolderHint =>
   ({
-    sessionId: "11111111-1111-4111-8111-111111111111",
+    sessionId: "session-1",
     tier: "medium",
     kind: "repository",
     repositoryKey: KEY,
-    score: 70,
+    score: 4,
+    recordingDeviceProvenance: "recording-device",
+    gitInferenceEligibility: true,
+    gitRevision: 1,
     reasons: [
       ...INFERRED_GIT_ANCHOR_CHECKS.map((code) => ({
         code,
@@ -47,6 +50,22 @@ describe("inferredGitAnchorKey", () => {
         undefined
       );
     }
+  });
+
+  it("never upgrades legacy, unknown, or known-copy hints into automatic proof", () => {
+    for (const provenance of [undefined, "unknown", "known-copy"] as const) {
+      expect(
+        inferredGitAnchorKey(hint({ recordingDeviceProvenance: provenance }))
+      ).toBeUndefined();
+    }
+    for (const eligible of [undefined, false]) {
+      expect(
+        inferredGitAnchorKey(hint({ gitInferenceEligibility: eligible }))
+      ).toBeUndefined();
+    }
+    expect(
+      inferredGitAnchorKey(hint({ gitRevision: undefined }))
+    ).toBeUndefined();
   });
 
   it("ignores Folder hints, tier none, and any rejecting evidence", () => {
@@ -72,15 +91,22 @@ describe("recordInferredGitAnchors", () => {
     }
   ] as unknown as DesktopProject[];
 
-  const api = (git: { original: object; correction: object }) => {
+  const api = (
+    git: { original: object; correction: object; revision?: number },
+    intent: string | null = "recording-device"
+  ) => {
     const manageSourceContext = vi.fn(
       async (input: { action: string }): Promise<unknown> => {
         if (input.action === "get")
-          return { context: { git: { revision: 3, ...git } } };
+          return { context: { git: { revision: 1, ...git } } };
         if (input.action === "preview")
           return {
             context: {},
-            preview: { reviewId: "review-1", expectedVersion: 3 }
+            preview: {
+              reviewId: "review-1",
+              expectedVersion: 1,
+              inferenceIntent: intent ?? undefined
+            }
           };
         return { context: {} };
       }
@@ -107,15 +133,46 @@ describe("recordInferredGitAnchors", () => {
         axis: "git",
         action: "set",
         repository,
-        expectedVersion: 3
+        expectedVersion: 1,
+        inferenceIntent: "recording-device"
       }
     });
     expect(a.manageSourceContext).toHaveBeenLastCalledWith({
       action: "apply",
       sessionId: "session-1",
       reviewId: "review-1",
-      expectedVersion: 3
+      expectedVersion: 1
     });
+  });
+
+  it("never applies when the backend does not bind the inference intent", async () => {
+    const a = api(
+      {
+        original: { state: "unresolved", reason: "historical_unresolved" },
+        correction: { state: "original" }
+      },
+      null
+    );
+    expect(
+      (await recordInferredGitAnchors(a, projects, hints)).recorded
+    ).toEqual([]);
+    expect(
+      a.manageSourceContext.mock.calls.map(([call]) => call.action)
+    ).not.toContain("apply");
+  });
+
+  it("never previews after a reset changes the Git version", async () => {
+    const a = api({
+      original: { state: "unresolved", reason: "historical_unresolved" },
+      correction: { state: "original" },
+      revision: 2
+    });
+    expect(
+      (await recordInferredGitAnchors(a, projects, hints)).recorded
+    ).toEqual([]);
+    expect(
+      a.manageSourceContext.mock.calls.map(([call]) => call.action)
+    ).toEqual(["get"]);
   });
 
   it("never touches a known Git Anchor or one the User corrected", async () => {

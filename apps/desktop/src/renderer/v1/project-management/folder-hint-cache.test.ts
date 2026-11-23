@@ -26,6 +26,8 @@ describe("createFolderHintCache", () => {
   });
 });
 
+const expectedScopeKey = "a".repeat(64);
+
 describe("loadFolderHints", () => {
   it("asks in batches of 50, asks once per id, and reports each batch", async () => {
     const ids = Array.from({ length: 120 }, (_, i) => id(i + 1));
@@ -37,6 +39,7 @@ describe("loadFolderHints", () => {
     const cache = createFolderHintCache();
     await loadFolderHints(api(folderHints), [...ids, ids[0]!], {
       cache,
+      expectedScopeKey,
       onBatch
     });
     expect(
@@ -44,7 +47,7 @@ describe("loadFolderHints", () => {
     ).toEqual([50, 50, 20]);
     expect(onBatch).toHaveBeenCalledTimes(3);
     // A second load is served from the cache.
-    await loadFolderHints(api(folderHints), ids, { cache });
+    await loadFolderHints(api(folderHints), ids, { cache, expectedScopeKey });
     expect(folderHints).toHaveBeenCalledTimes(3);
   });
 
@@ -55,15 +58,62 @@ describe("loadFolderHints", () => {
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValueOnce([none(51)]);
     const cache = createFolderHintCache();
-    const result = await loadFolderHints(api(folderHints), ids, { cache });
+    const result = await loadFolderHints(api(folderHints), ids, {
+      cache,
+      expectedScopeKey
+    });
     expect(result.has(id(1))).toBe(false);
     expect(result.get(id(51))).toEqual([none(51)]);
     expect(result.get(id(52))).toEqual([]);
     const cancelled = vi.fn();
     await loadFolderHints(api(cancelled), [id(99)], {
       cache: createFolderHintCache(),
+      expectedScopeKey,
       isCancelled: () => true
     });
     expect(cancelled).not.toHaveBeenCalled();
+  });
+
+  it.each(["invalidation", "cancellation"])(
+    "does not cache or report a response after %s",
+    async (stop) => {
+      const cache = createFolderHintCache();
+      let resolve!: (hints: PersonalFolderHint[]) => void;
+      const response = new Promise<PersonalFolderHint[]>((done) => {
+        resolve = done;
+      });
+      const onBatch = vi.fn();
+      let cancelled = false;
+      const pending = loadFolderHints(
+        api(() => response),
+        [id(1)],
+        {
+          cache,
+          expectedScopeKey,
+          onBatch,
+          isCancelled: () => cancelled
+        }
+      );
+      if (stop === "invalidation") cache.clear();
+      else cancelled = true;
+      resolve([none(1)]);
+      expect(await pending).toEqual(new Map());
+      expect(cache.get(id(1))).toBeUndefined();
+      expect(onBatch).not.toHaveBeenCalled();
+    }
+  );
+
+  it("reports checked IDs omitted by the API immediately", async () => {
+    const onBatch = vi.fn();
+    await loadFolderHints(
+      api(async () => []),
+      [id(1)],
+      {
+        cache: createFolderHintCache(),
+        expectedScopeKey,
+        onBatch
+      }
+    );
+    expect(onBatch).toHaveBeenCalledWith(new Map([[id(1), []]]));
   });
 });

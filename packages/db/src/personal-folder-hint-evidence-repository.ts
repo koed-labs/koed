@@ -5,6 +5,10 @@ import {
   type PersonalFolderHintEvidence
 } from "@koed-labs/shared";
 import { findKnownFolderCorrectionReferences } from "./personal-source-correction-context.js";
+import {
+  personalGitInferenceEvidenceJoins,
+  personalGitInferenceEligible
+} from "./personal-git-inference-evidence.js";
 import type { ActorContext } from "./types.js";
 
 export type PersonalFolderHintEvidenceRepository = {
@@ -20,8 +24,10 @@ type EvidenceRow = {
   cwd: string | null;
   first_at: Date | null;
   remote: string | null;
-  replica: boolean;
+  known_copy: boolean;
+  git_eligible: boolean;
   git_known: boolean;
+  git_revision: number;
   source_runtime: string | null;
   external_session_id: string | null;
 };
@@ -41,16 +47,15 @@ export const createPersonalFolderHintEvidenceRepository = (
       personalFolderHintEvidenceRequestSchema.parse(raw);
     const result = await pool.query<EvidenceRow>(
       `select s.id, s.folder_assignment, s.cwd, s.source_runtime, s.external_session_id,
-         (select min(coalesce(e.source_event_time, e.captured_at))
-            from memory_events e where e.session_id = s.id) as first_at,
+         native.first_at, provenance.known_copy,
+         ${personalGitInferenceEligible} as git_eligible,
          case when s.repository_automatic_identity->>'kind' = 'portable_repository'
               then s.repository_automatic_identity->>'key' end as remote,
-         exists (select 1 from pds_logical_replicas r
-                  where r.local_session_id = s.id
-                    and r.owner_user_id = s.owner_user_id) as replica,
          coalesce(coalesce(s.repository_override_identity, s.repository_automatic_identity)->>'kind'
-           in ('portable_repository', 'device_local_repository'), false) as git_known
+           in ('portable_repository', 'device_local_repository'), false) as git_known,
+         s.repository_assignment_version as git_revision
        from sessions s
+       ${personalGitInferenceEvidenceJoins}
        where s.owner_user_id = $1 and s.visibility = 'personal'
          and s.invalidated_at is null and s.personal_deleted_at is null
          and s.id = any($2::uuid[])
@@ -76,8 +81,11 @@ export const createPersonalFolderHintEvidenceRepository = (
         recordedCwd: row.cwd,
         firstConversationAt: row.first_at ? row.first_at.toISOString() : null,
         recordedRemoteFingerprint: row.remote,
-        capturedOnThisDevice: !row.replica,
+        capturedOnThisDevice: false,
+        recordingDeviceProvenance: row.known_copy ? "known-copy" : "unknown",
+        gitInferenceEligibility: row.git_eligible,
         gitAnchorKnown: row.git_known,
+        gitRevision: row.git_revision,
         sourceRuntime: row.source_runtime,
         externalSessionId: row.external_session_id
       }))

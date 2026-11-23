@@ -50,6 +50,13 @@ const pages = [
 ] as const;
 export type ProjectSettingsPage = (typeof pages)[number]["id"];
 
+function stagedApprovalKey(projectId: string, row: SuggestionRow): string {
+  const key = suggestionApprovalKey(projectId, row);
+  return row.proposal.kind === "repository"
+    ? JSON.stringify([key, row.proposal.gitRevision])
+    : key;
+}
+
 export function ProjectSettingsDialog({
   api,
   store,
@@ -96,7 +103,7 @@ export function ProjectSettingsDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
-  // Approvals bind the reviewed candidate to this destination Project.
+  // Approvals bind the reviewed candidate and Git revision to this Project.
   const [accepted, setAccepted] = useState<ReadonlySet<string>>(new Set());
   // Suggested Conversations turned down; saving excludes them.
   const [rejected, setRejected] = useState<ReadonlySet<string>>(new Set());
@@ -150,7 +157,9 @@ export function ProjectSettingsDialog({
       (suggestions?.rows ?? []).filter(
         (row) =>
           row.proposal.projects.some(({ id }) => id === active) &&
-          !unavailable.has(row.sessionId)
+          !unavailable.has(row.sessionId) &&
+          (row.proposal.kind !== "repository" ||
+            row.proposal.gitRevision !== undefined)
       )
     );
   }, [suggestions?.rows, active, draft]);
@@ -159,14 +168,16 @@ export function ProjectSettingsDialog({
   );
   const stillValid = (keys: ReadonlySet<string>) =>
     new Set([...keys].filter((key) => validKeys.has(key)));
-  const validAccepted = stillValid(accepted);
+  const acceptedRows = suggested.filter((row) =>
+    accepted.has(stagedApprovalKey(active, row))
+  );
+  const validAccepted = new Set(
+    acceptedRows.map((row) => stagedApprovalKey(active, row))
+  );
   const validRejected = stillValid(rejected);
-  // Drop stale decisions so a changed candidate or removed rule needs fresh review.
+  // Drop stale decisions so changed evidence or removed rules need fresh review.
   if (validAccepted.size !== accepted.size) setAccepted(validAccepted);
   if (validRejected.size !== rejected.size) setRejected(validRejected);
-  const acceptedRows = suggested.filter((row) =>
-    validAccepted.has(suggestionApprovalKey(active, row))
-  );
   const rejectedRows = suggested.filter((row) =>
     validRejected.has(suggestionApprovalKey(active, row))
   );
@@ -436,8 +447,22 @@ export function ProjectSettingsDialog({
               onQuery={setQuery}
               suggested={suggested}
               suggestionsLoading={suggestions?.loading ?? false}
-              accepted={accepted}
-              onAccepted={setAccepted}
+              accepted={
+                new Set(
+                  acceptedRows.map((row) => suggestionApprovalKey(active, row))
+                )
+              }
+              onAccepted={(keys) =>
+                setAccepted(
+                  new Set(
+                    suggested
+                      .filter((row) =>
+                        keys.has(suggestionApprovalKey(active, row))
+                      )
+                      .map((row) => stagedApprovalKey(active, row))
+                  )
+                )
+              }
               rejected={rejected}
               onRejected={setRejected}
               facts={facts}

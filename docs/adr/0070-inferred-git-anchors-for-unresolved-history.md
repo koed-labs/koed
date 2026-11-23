@@ -23,20 +23,29 @@ today names a Git Anchor a Project already uses.
 Koed Desktop records that Git Anchor itself when every one of these holds:
 
 - The Conversation recorded a directory, which still exists on this device.
-- This device recorded the Conversation.
-- The directory existed before the Conversation started.
-- The directory's selected remote today names the Git Anchor (ADR 0064).
-- No evidence rejects it, and exactly one Git Anchor is proven.
-- Some Project already knows that Git Anchor.
-- The Conversation's Git Anchor is unresolved and the User never corrected it.
+- Trusted source evidence identifies this device as the recording device.
+  Importing a transcript here, or not finding a sync replica, does not establish this.
+- The directory existed before a trustworthy source start. Import time and
+  filesystem creation time of the transcript are not source starts.
+- Capture's remote-selection rules resolve the directory to one portable Git Anchor
+  without a conflict (ADR 0064), and a Project already uses that Git Anchor.
+- The Conversation was imported with an unresolved Git Anchor and has no prior Git Anchor
+  correction, including a reset to the original.
 
-It writes through the same versioned, replicated source correction a User's
-review uses, so a later User correction replaces it. Folders are never inferred:
-a Folder needs a registered Folder, which stays a User decision.
+The write is versioned and guarded; it supplies the effective Git Anchor without
+changing the original. A later User correction replaces it. Device sync is not
+required. Current historical records do not establish the recording device, so
+existing imports do not qualify for unattended inference. If the recording
+device is unknown, the User can review and accept eligible suggestions together
+in Project settings. These are manual source corrections, not attestations:
+Desktop checks the checkout, and the API enforces stored eligibility and the
+reviewed versions. Known copied history is not automatically assigned. Folders
+are never inferred.
 
 ## Consequences
 
-- Git Anchor rules include most historical Conversations without a click.
+- Git Anchor rules can include qualifying historical Conversations without a click.
+  Coverage depends on available provenance; incomplete evidence stays advisory.
 - The remaining risk is a checkout whose remote was repointed after the
   Conversation, which the birthtime check cannot catch. A User can correct it.
 - An inferred Git Anchor is stored as a correction, so it is not distinguished

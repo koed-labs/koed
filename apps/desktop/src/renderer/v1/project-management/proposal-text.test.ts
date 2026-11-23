@@ -3,7 +3,12 @@ import {
   folderProposal,
   type FolderProposal
 } from "./folder-hint-suggestion.js";
-import { evidenceLines, proposalLead, shortPath } from "./proposal-text.js";
+import {
+  evidenceLines,
+  proposalLead,
+  shortPath,
+  suggestionReason
+} from "./proposal-text.js";
 
 const folder = {
   ownerUserId: "00000000-0000-4000-8000-000000000001",
@@ -46,6 +51,17 @@ describe("proposal text", () => {
         directory: "/w/koed"
       })
     ).toBe("Worktree of koed");
+  });
+
+  it("discloses unknown recording device on the review row and in details", () => {
+    const unknown = { ...proposal, recordingDeviceUnknown: true as const };
+    expect(suggestionReason(unknown)).toContain(
+      "Koed couldn’t verify where this was recorded"
+    );
+    expect(proposalLead(unknown)).toContain("Same Git remote as koed-ai");
+    expect(proposalLead(unknown)).toContain(
+      "Koed couldn’t verify where this was recorded"
+    );
   });
 
   it("keeps each piece of evidence short, with the path or Git Anchor as detail", () => {

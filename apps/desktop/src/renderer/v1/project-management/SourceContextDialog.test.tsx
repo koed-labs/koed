@@ -109,6 +109,7 @@ const render = async (
         projects={projects}
         target={{ sessionId: id(50), title: "Conversation" }}
         axis="folder"
+        scopeKey={"a".repeat(64)}
         onClose={() => {}}
         onApply={async () => {}}
       />
@@ -129,7 +130,10 @@ describe("SourceContextDialog Folder suggestion", () => {
     ]);
     const confirmFolderHint = vi.fn(async () => accepted);
     await render(folderHints, confirmFolderHint);
-    expect(folderHints).toHaveBeenCalledWith({ sessionIds: [id(50)] });
+    expect(folderHints).toHaveBeenCalledWith({
+      sessionIds: [id(50)],
+      expectedScopeKey: "a".repeat(64)
+    });
     const text = document.body.textContent ?? "";
     expect(text).toContain("Suggested Folder: api");
     // No evidence on the page, and the `?` is hidden until its wording is ready.

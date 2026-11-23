@@ -11,6 +11,8 @@ import {
 } from "@koed-labs/server";
 import {
   repositoryChangeSchema,
+  inspectDeviceIdentityAtKoedHome,
+  type PersonalSourceCorrectionInput,
   personalNamedProjectSchema,
   personalProjectCommandSchema,
   personalMembershipSyncCommandSchema,
@@ -40,6 +42,7 @@ import {
   type ProjectSelectionLookup
 } from "./project-selection-command.js";
 import { PersonalMemoryBoundaryError } from "./personal-memory-boundary.js";
+import { projectSelectionLookupResponseSchema } from "@koed-labs/shared/project-selection";
 
 export type ProjectCommandsDeps = {
   paths: KoedServerPaths;
@@ -251,15 +254,87 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         body: JSON.stringify({ sessionIds, proposedFolders })
       })
     );
+  type HintEvidence = PersonalFolderHintEvidence["evidence"][number];
+  type InferenceCorrection = Extract<
+    PersonalSourceCorrectionInput,
+    { axis: "git"; action: "set" }
+  >;
+  type InferenceEvidence = {
+    directory: string;
+    directoryIncarnation: string;
+    startedAt: string;
+  };
+  const sourceContextReviews = new Map<
+    string,
+    {
+      sessionId: string;
+      expectedVersion: number;
+      inference?: {
+        correction: InferenceCorrection;
+        evidence: InferenceEvidence;
+      };
+    }
+  >();
+  const lookupHintAssociation: NonNullable<
+    NonNullable<
+      Parameters<typeof hintsForConversation>[2]
+    >["lookupAssociatedSelection"]
+  > = async (checkout, signal) => {
+    const result = projectSelectionLookupResponseSchema.parse(
+      await deps.personalRequest(
+        `/v1/memory/repository-selection?${new URLSearchParams(checkout)}`,
+        { signal }
+      )
+    );
+    return result.association?.selection
+      ? {
+          associationId: result.association.associationId,
+          selection: result.association.selection
+        }
+      : undefined;
+  };
+  const recordingDeviceProvenance = (
+    ownerUserId: string,
+    row: HintEvidence
+  ) => {
+    const provenance = row.recordingDeviceProvenance;
+    if (!provenance || provenance === "known-copy") return provenance;
+    const original = row.folderAssignment.original;
+    if (original.state !== "known")
+      return provenance === "unknown" ? provenance : undefined;
+    if (original.value.reference.ownerUserId !== ownerUserId) return undefined;
+    const device = inspectDeviceIdentityAtKoedHome({
+      koedHome: deps.paths.koedHome
+    });
+    if (!device.remoteOperationsAllowed) return undefined;
+    return original.value.reference.originatingDeviceId ===
+      device.deviceInstanceId &&
+      original.value.reference.originatingDeploymentId === device.deploymentId
+      ? provenance === "recording-device"
+        ? provenance
+        : undefined
+      : "known-copy";
+  };
+  const inferenceEligible = (row: HintEvidence) =>
+    row.gitInferenceEligibility === true &&
+    row.gitRevision === 1 &&
+    row.firstConversationAt !== null &&
+    Number.isFinite(Date.parse(row.firstConversationAt));
   const hintConversation = (
     ownerUserId: string,
-    row: PersonalFolderHintEvidence["evidence"][number]
+    row: HintEvidence,
+    provenance: ReturnType<typeof recordingDeviceProvenance>
   ) => ({
+    allowUnknownRepositoryCandidate:
+      provenance === "unknown" && inferenceEligible(row),
     ownerUserId,
     folderAssignment: row.folderAssignment,
     recordedCwd: row.recordedCwd,
-    originDeviceId: null,
-    capturedOnThisDevice: row.capturedOnThisDevice,
+    originDeviceId:
+      provenance === "recording-device" &&
+      row.folderAssignment.original.state === "known"
+        ? row.folderAssignment.original.value.reference.originatingDeviceId
+        : null,
     ...(row.gitAnchorKnown !== undefined
       ? { gitAnchorKnown: row.gitAnchorKnown }
       : {}),
@@ -271,6 +346,20 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       ? ("resolved" as const)
       : ("absent" as const)
   });
+  const scoreHintEvidence = (
+    ownerUserId: string,
+    row: HintEvidence,
+    provenance: ReturnType<typeof recordingDeviceProvenance>,
+    lookupClientWorktree = createClientWorktreeLookup()
+  ) =>
+    hintsForConversation(
+      deps.paths,
+      hintConversation(ownerUserId, row, provenance),
+      {
+        lookupClientWorktree,
+        lookupAssociatedSelection: lookupHintAssociation
+      }
+    );
   /** Advisory Folder hints. Recorded facts come from the API; the filesystem and
    * registry evidence is read here, on the device that owns them. Read-only. */
   const folderHints = async (raw: unknown) => {
@@ -282,10 +371,12 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     const hints: PersonalFolderHint[] = [];
     for (const row of payload.evidence) {
       if (!requested.has(row.sessionId)) continue;
-      const results = await hintsForConversation(
-        deps.paths,
-        hintConversation(payload.ownerUserId, row),
-        { lookupClientWorktree }
+      const provenance = recordingDeviceProvenance(payload.ownerUserId, row);
+      const results = await scoreHintEvidence(
+        payload.ownerUserId,
+        row,
+        provenance,
+        lookupClientWorktree
       );
       // No ready local identity: no Folder can be a candidate on this device.
       if (!results) continue;
@@ -307,6 +398,15 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
                 ? {
                     kind: result.kind,
                     repositoryKey: result.repositoryKey,
+                    ...(provenance === undefined
+                      ? {}
+                      : { recordingDeviceProvenance: provenance }),
+                    ...(row.gitInferenceEligibility === undefined
+                      ? {}
+                      : { gitInferenceEligibility: inferenceEligible(row) }),
+                    ...(row.gitRevision === undefined
+                      ? {}
+                      : { gitRevision: row.gitRevision }),
                     ...(result.directory ? { directory: result.directory } : {})
                   }
                 : {
@@ -350,9 +450,10 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       )
     )
       throw new Error("This Folder suggestion is not recorded on the server.");
-    const candidates = await hintsForConversation(
-      deps.paths,
-      hintConversation(payload.ownerUserId, row)
+    const candidates = await scoreHintEvidence(
+      payload.ownerUserId,
+      row,
+      recordingDeviceProvenance(payload.ownerUserId, row)
     );
     if (
       !candidates?.some(
@@ -367,8 +468,104 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       );
     return personalFolderHintConfirmDataSchema.parse({ folder });
   };
+  const staleGitInference = () =>
+    new Error("This Git Anchor suggestion no longer matches current evidence.");
+  const confirmGitInference = async (
+    sessionId: string,
+    correction: InferenceCorrection
+  ): Promise<InferenceEvidence> => {
+    const payload = await fetchHintEvidence([sessionId]);
+    const row = payload.evidence.find((item) => item.sessionId === sessionId);
+    if (
+      !row ||
+      !inferenceEligible(row) ||
+      !row.firstConversationAt ||
+      row.gitRevision !== correction.expectedVersion
+    )
+      throw staleGitInference();
+    const provenance = recordingDeviceProvenance(payload.ownerUserId, row);
+    const automatic = correction.inferenceIntent === "recording-device";
+    if (
+      provenance !== (automatic ? "recording-device" : "unknown") ||
+      correction.repository.kind !== "portable_repository"
+    )
+      throw staleGitInference();
+    const candidates = (
+      await scoreHintEvidence(payload.ownerUserId, row, provenance)
+    )?.filter(
+      (candidate) =>
+        candidate.tier !== "none" && candidate.kind === "repository"
+    );
+    const candidate = candidates?.[0];
+    if (
+      candidates?.length !== 1 ||
+      !candidate ||
+      candidate.kind !== "repository" ||
+      !candidate.directory ||
+      !candidate.directoryIncarnation ||
+      candidate.repositoryKey !== correction.repository.key ||
+      candidate.reasons.some(({ outcome }) => outcome === "rejects") ||
+      !candidate.reasons.some(
+        ({ code, outcome }) =>
+          code === "origin-device" &&
+          outcome === (automatic ? "agrees" : "unavailable")
+      ) ||
+      ![
+        "recorded-cwd",
+        "local-directory",
+        "directory-birthtime",
+        "directory-remote"
+      ].every((code) =>
+        candidate.reasons.some(
+          (reason) => reason.code === code && reason.outcome === "agrees"
+        )
+      )
+    )
+      throw staleGitInference();
+    return {
+      directory: candidate.directory,
+      directoryIncarnation: candidate.directoryIncarnation,
+      startedAt: row.firstConversationAt
+    };
+  };
   const manageSourceContext = async (raw: unknown) => {
     const input = personalSourceContextCommandSchema.parse(raw);
+    const guardedPreview =
+      input.action === "preview" &&
+      input.correction.axis === "git" &&
+      input.correction.action === "set" &&
+      input.correction.inferenceIntent
+        ? input.correction
+        : undefined;
+    const freshEvidence = guardedPreview
+      ? await confirmGitInference(input.sessionId, guardedPreview)
+      : undefined;
+    if (
+      input.action === "preview" &&
+      input.reviewedDirectory !== undefined &&
+      input.reviewedDirectory !== freshEvidence?.directory
+    )
+      throw staleGitInference();
+    if (input.action === "apply") {
+      const review = sourceContextReviews.get(input.reviewId);
+      if (
+        review?.sessionId !== input.sessionId ||
+        review.expectedVersion !== input.expectedVersion
+      )
+        throw new Error(
+          "This source context review is unavailable. Review the change again."
+        );
+      if (review.inference) {
+        const { correction, evidence } = review.inference;
+        const current = await confirmGitInference(input.sessionId, correction);
+        if (
+          current.directory !== evidence.directory ||
+          current.directoryIncarnation !== evidence.directoryIncarnation ||
+          current.startedAt !== evidence.startedAt
+        )
+          throw staleGitInference();
+      }
+    }
     const base = `/v1/personal/sessions/${encodeURIComponent(input.sessionId)}/source-context`;
     const payload =
       input.action === "organize"
@@ -428,6 +625,39 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       throw new Error(
         "Source context response belongs to another Conversation or review."
       );
+    if (guardedPreview) {
+      const preview = result.preview;
+      if (
+        preview?.axis !== "git" ||
+        preview.inferenceIntent !== guardedPreview.inferenceIntent ||
+        preview.expectedVersion !== guardedPreview.expectedVersion ||
+        preview.after.git.correction.state !== "corrected" ||
+        preview.after.git.correction.value.state !== "known" ||
+        !repositoryIdentityMatches(
+          preview.after.git.correction.value.value,
+          guardedPreview.repository
+        )
+      )
+        throw staleGitInference();
+    }
+    if (input.action === "preview" && result.preview) {
+      // A missing receipt must not let a persisted inference review bypass the
+      // fresh local check, even when Apply has no intent field of its own.
+      if (sourceContextReviews.size >= 256) {
+        const oldest = sourceContextReviews.keys().next().value;
+        if (oldest !== undefined) sourceContextReviews.delete(oldest);
+      }
+      sourceContextReviews.set(result.preview.reviewId, {
+        sessionId: input.sessionId,
+        expectedVersion: result.preview.expectedVersion,
+        ...(guardedPreview && freshEvidence
+          ? {
+              inference: { correction: guardedPreview, evidence: freshEvidence }
+            }
+          : {})
+      });
+    }
+    if (input.action === "apply") sourceContextReviews.delete(input.reviewId);
     return result;
   };
   const managePersonalProject = async (raw: unknown) => {

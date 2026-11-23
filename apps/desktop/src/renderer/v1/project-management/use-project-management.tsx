@@ -29,7 +29,10 @@ import { MoveConversationDialog } from "./MoveConversationDialog.js";
 import { ConversationProjectsDialog } from "./ConversationProjectsDialog.js";
 import { SourceContextDialog } from "./SourceContextDialog.js";
 import { applySuggestions } from "./apply-suggestion.js";
-import { recordInferredGitAnchors } from "./infer-git-anchor.js";
+import {
+  inferredGitAnchorKey,
+  recordInferredGitAnchors
+} from "./infer-git-anchor.js";
 import { folderHintCache } from "./folder-hint-cache.js";
 import { useFolderSuggestions } from "./use-folder-suggestions.js";
 import { useSuggestionDismissals } from "./suggestion-dismissals.js";
@@ -120,26 +123,30 @@ export function useProjectManagement({
     !!store;
   // Suggestions are worked out in the background, a little after start-up and
   // a batch at a time, so the sidebar can show a count beside each Project.
-  const [suggestionsVersion, setSuggestionsVersion] = useState(0);
-  const forgetSuggestions = () => {
-    folderHintCache.clear();
-    setSuggestionsVersion((version) => version + 1);
-  };
+  const forgetSuggestions = () => folderHintCache.clear(api, scopeKey);
   const worked = useFolderSuggestions(api ?? undefined, projects, available, {
-    version: suggestionsVersion,
+    scopeKey,
     startDelayMs: 2500,
     pauseMs: 300
   });
-  // A Git Anchor the evidence proves is recorded, not suggested, so Git Anchor
-  // rules include the Conversation. Each Conversation is tried once a session.
-  const inferred = useRef(new Set<string>());
+  // Background writes are reserved for proven recording-device candidates.
+  // Unknown-device candidates stay in the User's Project review.
+  const inferred = useRef({
+    scope: operationScope,
+    attempted: new Set<string>()
+  });
   useEffect(() => {
     if (!api || !store || !available || worked.loading) return;
+    if (inferred.current.scope !== operationScope)
+      inferred.current = { scope: operationScope, attempted: new Set() };
+    const { attempted } = inferred.current;
     const fresh = new Map(
-      [...worked.hints].filter(([id]) => !inferred.current.has(id))
+      [...worked.hints].filter(
+        ([id, hints]) => !attempted.has(id) && hints.some(inferredGitAnchorKey)
+      )
     );
     if (fresh.size === 0) return;
-    for (const id of fresh.keys()) inferred.current.add(id);
+    for (const id of fresh.keys()) attempted.add(id);
     const check = () => {
       if (!scopeIsCurrent())
         throw new Error("The active account or backend changed.");
@@ -153,7 +160,7 @@ export function useProjectManagement({
       })
       .catch(() => {});
     // `worked.hints` changes only when a batch lands.
-  }, [api, store, available, worked.loading, worked.hints]);
+  }, [operationScope, available, worked.loading, worked.hints]);
   // Suggestions the User turned down stay out of the list and the counts.
   const { isDismissed, dismiss } = useSuggestionDismissals(scopeKey);
   // Nor is a Conversation suggested for a Project it is already in (added
@@ -455,26 +462,42 @@ export function useProjectManagement({
           onSave={(project, changes, accepted, rejected) =>
             run(async (check) => {
               check();
-              if (changes.length > 0)
-                await api!.manageProject!({
-                  action: "apply_sources",
-                  projectId: project.id,
-                  expectedVersion: project.namedProject!.version,
-                  changes
-                });
+              const reviewedVersion = project.namedProject!.version;
+              const saved =
+                changes.length > 0
+                  ? await api!.manageProject!({
+                      action: "apply_sources",
+                      projectId: project.id,
+                      expectedVersion: reviewedVersion,
+                      changes
+                    })
+                  : undefined;
               check();
               // Excluded now, so no longer suggested here or in the sidebar.
               if (rejected.length > 0) dismiss(project.id, rejected);
               const status: Notice = { message: "Project settings saved" };
               if (accepted.length > 0) {
                 try {
-                  // Settings can advance Project versions. Pin each review to
-                  // the inventory after the settings write, not the draft.
-                  const latest = await api!.listProjects();
+                  const latest = mergeProjectSources(
+                    await api!.listProjects(),
+                    []
+                  );
                   check();
+                  // Only this Save may advance the reviewed destination version.
+                  const destination = latest.find(
+                    (entry) => entry.id === project.id
+                  );
+                  if (
+                    (saved && saved.project.projectId !== project.id) ||
+                    destination?.namedProject?.version !==
+                      (saved?.project.version ?? reviewedVersion)
+                  )
+                    throw new Error(
+                      "The destination Project changed. Review the suggestions again."
+                    );
                   const added = await applySuggestions(
                     api!,
-                    mergeProjectSources(latest, []),
+                    latest,
                     accepted,
                     project.id,
                     check
@@ -553,6 +576,7 @@ export function useProjectManagement({
           key={`${scopeKey}:${modal.target.sessionId}:context`}
           {...dialogProps}
           axis={modal.axis}
+          scopeKey={scopeKey}
         />
       )}
       {current.notice && (

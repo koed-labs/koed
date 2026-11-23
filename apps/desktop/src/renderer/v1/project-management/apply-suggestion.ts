@@ -2,12 +2,72 @@ import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import {
   organizationEdit,
-  reviewConversationOrganization
+  reviewConversationOrganization,
+  type OrganizationReview
 } from "./conversation-organization.js";
-import { reviewSourceCorrections } from "./correction-review.js";
+import {
+  previewSourceCorrection,
+  reviewSourceCorrections
+} from "./correction-review.js";
 import { repositoryTargetFor } from "./repository-project.js";
 import type { SuggestionRow } from "./use-folder-suggestions.js";
 import { projectErrorMessage } from "./use-organization-review.js";
+
+async function applyReviewedUnknown(
+  api: PersonalDesktopApi,
+  review: OrganizationReview,
+  proposal: Extract<SuggestionRow["proposal"], { kind: "repository" }>,
+  anchor: NonNullable<ReturnType<typeof repositoryTargetFor>>,
+  destinationProjectId: string,
+  check: () => void
+) {
+  if (proposal.gitRevision !== 1 || !proposal.directory)
+    throw new Error("This Git Anchor suggestion is no longer available.");
+  const preview = await previewSourceCorrection(
+    api,
+    review,
+    {
+      axis: "git",
+      action: "set",
+      repository: anchor.repository,
+      expectedVersion: proposal.gitRevision,
+      inferenceIntent: "user-confirmed-unknown"
+    },
+    proposal.directory
+  );
+  check();
+  const destination = preview.projects.find(
+    (p) => p.projectId === destinationProjectId
+  );
+  const git = preview.after.git.correction;
+  if (
+    !destination?.afterIncluded ||
+    destination.beforeIncluded ||
+    !proposal.projects.some(({ id }) => id === destinationProjectId) ||
+    git.state !== "corrected" ||
+    git.value.state !== "known" ||
+    git.value.value.kind !== "portable_repository" ||
+    git.value.value.key !== proposal.repositoryKey
+  )
+    throw new Error(
+      "The reviewed correction would not add this Conversation to the destination Project."
+    );
+  // Apply rechecks the saved review, including source and Project versions.
+  const result = await api.manageSourceContext!({
+    action: "apply",
+    sessionId: review.context.sessionId,
+    reviewId: preview.reviewId,
+    expectedVersion: preview.expectedVersion
+  });
+  check();
+  if (
+    JSON.stringify(result.preview) !== JSON.stringify(preview) ||
+    JSON.stringify(result.context) !== JSON.stringify(preview.after)
+  )
+    throw new Error(
+      "The saved result did not confirm the reviewed Git Anchor."
+    );
+}
 
 async function applySuggestion(
   api: PersonalDesktopApi,
@@ -37,13 +97,27 @@ async function applySuggestion(
   }
   const review = await reviewConversationOrganization(api, projects, sessionId);
   check();
+  if (
+    proposal.kind === "repository" &&
+    proposal.gitRevision !== review.context.git.revision
+  )
+    throw new Error("Git Anchor changed. Review the suggestion again.");
+  if (proposal.kind === "repository" && proposal.recordingDeviceUnknown)
+    return applyReviewedUnknown(
+      api,
+      review,
+      proposal,
+      anchor!,
+      destinationProjectId,
+      check
+    );
   const reviewed = await reviewSourceCorrections(api, review, [
     proposal.kind === "repository"
       ? {
           axis: "git",
           action: "set",
           repository: anchor!.repository,
-          expectedVersion: review.context.git.revision
+          expectedVersion: proposal.gitRevision!
         }
       : {
           axis: "folder",

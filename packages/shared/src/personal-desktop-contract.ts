@@ -81,7 +81,11 @@ import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 33;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 34;
+export const personalDesktopFolderHintInputSchema =
+  personalFolderHintRequestSchema.extend({
+    expectedScopeKey: z.string().regex(/^[0-9a-f]{64}$/u)
+  });
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -780,7 +784,7 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.folders.hints"),
-      input: personalFolderHintRequestSchema
+      input: personalDesktopFolderHintInputSchema
     })
     .strict(),
   z
@@ -1450,7 +1454,7 @@ export interface PersonalDesktopApi {
   listNamedProjects?: () => Promise<PersonalDesktopProject[]>;
   projectStatus?: () => Promise<{ reconciliationPending: boolean }>;
   folderHints?: (
-    input: z.infer<typeof personalFolderHintRequestSchema>
+    input: z.infer<typeof personalDesktopFolderHintInputSchema>
   ) => Promise<z.infer<typeof personalFolderHintsDataSchema>["hints"]>;
   confirmFolderHint?: (
     input: z.infer<typeof personalFolderHintConfirmRequestSchema>

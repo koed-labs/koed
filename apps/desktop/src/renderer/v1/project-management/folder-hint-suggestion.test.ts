@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { PersonalFolderHint } from "@koed-labs/shared";
-import { folderProposal } from "./folder-hint-suggestion.js";
+import {
+  folderProposal,
+  suggestionApprovalKey
+} from "./folder-hint-suggestion.js";
 
 const folder = {
   ownerUserId: "00000000-0000-4000-8000-000000000001",
@@ -93,6 +96,7 @@ describe("folderProposal", () => {
       kind: "repository",
       folder: undefined,
       repositoryKey: "gr_lyons",
+      gitRevision: 3,
       directory: "/repos/lyons-mouth",
       tier: "medium"
     });
@@ -103,6 +107,7 @@ describe("folderProposal", () => {
       action: "anchor",
       kind: "repository",
       repositoryKey: "gr_lyons",
+      gitRevision: 3,
       projects: [lyons]
     });
     // An anchor no Project uses has nothing to select, so it is dropped.
@@ -112,6 +117,54 @@ describe("folderProposal", () => {
     const inProject = { folder: () => [koed], ...resolve };
     expect(folderProposal([repository, hint()], inProject)?.kind).toBe(
       "registered"
+    );
+  });
+
+  it("binds eligible unknown-device batch approvals to the proposed checkout and leaves copies advisory", () => {
+    const unknown = hint({
+      kind: "repository",
+      repositoryKey: "gr_lyons",
+      directory: "/work/a",
+      recordingDeviceProvenance: "unknown",
+      gitRevision: 1,
+      gitInferenceEligibility: true
+    });
+    const advisory = { repository: () => [lyons] };
+    const batch = { ...advisory, reviewBatch: true };
+    const proposal = folderProposal([unknown], batch)!;
+    expect(proposal).toMatchObject({
+      kind: "repository",
+      recordingDeviceUnknown: true,
+      gitRevision: 1
+    });
+    const changed = folderProposal(
+      [{ ...unknown, directory: "/work/b" }],
+      batch
+    )!;
+    expect(
+      suggestionApprovalKey(lyons.id, { sessionId: session, proposal })
+    ).not.toBe(
+      suggestionApprovalKey(lyons.id, { sessionId: session, proposal: changed })
+    );
+    expect(folderProposal([unknown], advisory)).toBeUndefined();
+    for (const change of [
+      { gitRevision: 2 },
+      { gitInferenceEligibility: false },
+      { directory: undefined }
+    ])
+      expect(
+        folderProposal([{ ...unknown, ...change }], batch)
+      ).toBeUndefined();
+    const copy = {
+      ...unknown,
+      recordingDeviceProvenance: "known-copy" as const
+    };
+    expect(folderProposal([copy], batch)).toBeUndefined();
+    expect(folderProposal([copy], advisory)).toMatchObject({
+      kind: "repository"
+    });
+    expect(folderProposal([copy], advisory)).not.toHaveProperty(
+      "recordingDeviceUnknown"
     );
   });
 

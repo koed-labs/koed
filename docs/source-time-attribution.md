@@ -52,6 +52,10 @@ operations. Named Project membership remains independent of original Git and
 Folder facts; adding a Conversation to a Project does not assert a historical
 checkout identity.
 
+[Historical Git Anchor inference](adr/0070-inferred-git-anchors-for-unresolved-history.md)
+can fill a gap in effective source context without changing the unresolved original.
+A current checkout is evidence for an inference, not a new source-time fact.
+
 Path-local catalog labels are attached by the Codex Watcher only when their
 recorded checkout and anchor match the source-time pin. They cannot supply an
 otherwise missing source association. Repository identity remains unrelated to

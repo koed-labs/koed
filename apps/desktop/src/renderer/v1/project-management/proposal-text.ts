@@ -15,6 +15,8 @@ export function shortPath(path: string, max = 44): string {
 }
 
 /** A few words on where the suggestion comes from, for the row. */
+const unverifiedRecording = "Koed couldn’t verify where this was recorded";
+
 export function suggestionReason(proposal: FolderProposal): string {
   const name = proposal.directory
     ? folderLabel(proposal.directory).name
@@ -23,7 +25,9 @@ export function suggestionReason(proposal: FolderProposal): string {
     case "worktree-parent":
       return name ? `Worktree of ${name}` : "Worktree of the main checkout";
     case "repository":
-      return "Git Anchor match";
+      return proposal.recordingDeviceUnknown
+        ? `Git Anchor match · ${unverifiedRecording}`
+        : "Git Anchor match";
     default:
       return "Folder match";
   }
@@ -33,10 +37,15 @@ export function suggestionReason(proposal: FolderProposal): string {
 export function proposalLead(proposal: FolderProposal): string {
   const path = proposal.directory ? shortPath(proposal.directory) : undefined;
   switch (proposal.kind) {
-    case "repository":
-      return proposal.projects.length > 0
-        ? `Same Git remote as ${proposalProjectLabel(proposal)}`
-        : "Same Git remote";
+    case "repository": {
+      const match =
+        proposal.projects.length > 0
+          ? `Same Git remote as ${proposalProjectLabel(proposal)}`
+          : "Same Git remote";
+      return proposal.recordingDeviceUnknown
+        ? `${match} · ${unverifiedRecording}`
+        : match;
+    }
     case "registered":
       return path ? `Recorded in ${path}` : "Recorded Folder";
     default:

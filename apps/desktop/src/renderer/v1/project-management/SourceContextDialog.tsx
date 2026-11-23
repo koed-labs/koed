@@ -46,7 +46,10 @@ import { useFolderHint } from "./use-folder-hint.js";
 const SUGGESTED_SOURCE = "suggested-source";
 
 export function SourceContextDialog(
-  props: OrganizationDialogProps & { axis?: "git" | "folder" }
+  props: OrganizationDialogProps & {
+    axis?: "git" | "folder";
+    scopeKey: string | null;
+  }
 ) {
   const { review, error, setError, busy, apply } = useOrganizationReview(props);
   const [axis, setAxis] = useState(props.axis ?? "git");
@@ -66,6 +69,7 @@ export function SourceContextDialog(
   const hints = useFolderHint(
     props.api,
     props.target.sessionId,
+    props.scopeKey,
     folderUnresolved || gitUnresolved
   );
   const proposal = folderProposal(

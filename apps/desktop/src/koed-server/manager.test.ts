@@ -21,6 +21,7 @@ import {
   storeDesktopLocalCredential
 } from "@koed-labs/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { v1OwnerScope } from "../v1-state.js";
 
 // These manager unit tests use synthetic paths. Real receipt persistence is
 // covered by operation-receipt and setup-acceleration's disposable homes.
@@ -6801,6 +6802,90 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       error: "spawn /missing-electron ENOENT"
     });
   });
+
+  it.each(["owner retry", "backend retry", "evidence owner", "unchanged"])(
+    "binds Folder hints to the expected scope: %s",
+    async (change) => {
+      const koedHome = mkdtempSync(
+        resolve(tmpdir(), "koed-desktop-hint-scope-")
+      );
+      const credentialDirectory = resolve(koedHome, "config");
+      mkdirSync(credentialDirectory, { recursive: true });
+      writeFileSync(
+        resolve(credentialDirectory, "local-app-credential.json"),
+        JSON.stringify({ apiToken: "local_app_token" })
+      );
+      const first = "00000000-0000-4000-8000-000000000001";
+      const second = "00000000-0000-4000-8000-000000000002";
+      let ownerUserId = first;
+      let origin = "http://127.0.0.1:4170";
+      const evidenceOrigins: string[] = [];
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args,
+          env: { KOED_HOME: koedHome }
+        }),
+        existsSync: () => true,
+        execFile: (_command, args, _options, callback) => {
+          callback(
+            null,
+            JSON.stringify(
+              args.includes("status")
+                ? { ok: true, api: { state: "healthy", url: origin } }
+                : { ok: true }
+            ),
+            ""
+          );
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined,
+        personalMemoryFetch: async (input) => {
+          const url = new URL(String(input));
+          if (url.pathname === "/v1/managed-conversations/access")
+            return Response.json({ user: { id: ownerUserId } });
+          expect(url.pathname).toBe(
+            "/v1/personal/sessions/folder-hint-evidence"
+          );
+          evidenceOrigins.push(url.origin);
+          if (evidenceOrigins.length === 1 && change.endsWith("retry")) {
+            if (change === "owner retry") ownerUserId = second;
+            else origin = "http://127.0.0.1:4171";
+            return Response.json({}, { status: 401 });
+          }
+          return Response.json({
+            ownerUserId: change === "evidence owner" ? second : ownerUserId,
+            evidence: []
+          });
+        }
+      });
+      try {
+        const identity = await manager.v1StateIdentity();
+        const request: Parameters<typeof manager.personalMemory>[0] = {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.folders.hints",
+          input: {
+            sessionIds: [first],
+            expectedScopeKey: v1OwnerScope(
+              identity.apiOrigin,
+              identity.ownerUserId
+            )
+          }
+        };
+        await expect(manager.personalMemory(request)).resolves.toMatchObject(
+          change === "unchanged"
+            ? { ok: true, data: { hints: [] } }
+            : { ok: false, error: { code: "conflict" } }
+        );
+        expect(evidenceOrigins).toEqual(["http://127.0.0.1:4170"]);
+      } finally {
+        rmSync(koedHome, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("scopes managed Conversation drafts and recovery to the authenticated owner and backend", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-drafts-"));

@@ -7,14 +7,15 @@ import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 export function useFolderHint(
   api: PersonalDesktopApi,
   sessionId: string,
+  expectedScopeKey: string | null,
   enabled: boolean
 ): PersonalFolderHint[] {
   const [hints, setHints] = useState<PersonalFolderHint[]>([]);
   useEffect(() => {
-    if (!enabled || !api.folderHints) return;
+    if (!enabled || !api.folderHints || !expectedScopeKey) return;
     let current = true;
     void api
-      .folderHints({ sessionIds: [sessionId] })
+      .folderHints({ sessionIds: [sessionId], expectedScopeKey })
       .then((all) => {
         if (current)
           setHints(all.filter((item) => item.sessionId === sessionId));
@@ -23,6 +24,6 @@ export function useFolderHint(
     return () => {
       current = false;
     };
-  }, [api, sessionId, enabled]);
+  }, [api, sessionId, expectedScopeKey, enabled]);
   return hints;
 }

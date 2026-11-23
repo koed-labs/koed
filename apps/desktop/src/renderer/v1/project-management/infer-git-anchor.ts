@@ -20,7 +20,14 @@ export const INFERRED_GIT_ANCHOR_CHECKS = [
 export function inferredGitAnchorKey(
   hint: PersonalFolderHint
 ): string | undefined {
-  if (hint.kind !== "repository" || hint.tier === "none" || !hint.repositoryKey)
+  if (
+    hint.kind !== "repository" ||
+    hint.tier === "none" ||
+    !hint.repositoryKey ||
+    hint.recordingDeviceProvenance !== "recording-device" ||
+    hint.gitInferenceEligibility !== true ||
+    hint.gitRevision !== 1
+  )
     return undefined;
   if (hint.reasons.some((reason) => reason.outcome === "rejects"))
     return undefined;
@@ -48,15 +55,15 @@ export async function recordInferredGitAnchors(
   let failed = 0;
   if (!api.manageSourceContext) return { recorded, failed };
   for (const [sessionId, sessionHints] of hints) {
-    // One clear answer only: two different proven anchors is not a fact.
-    const keys = new Set(
-      sessionHints.flatMap((hint) => {
-        const key = inferredGitAnchorKey(hint);
-        return key ? [key] : [];
-      })
+    const candidates = sessionHints.filter(
+      (hint) => hint.sessionId === sessionId && hint.kind === "repository"
     );
-    if (keys.size !== 1) continue;
-    const target = repositoryTargetFor(projects, [...keys][0]!);
+    if (candidates.length !== 1) continue;
+    const candidate = candidates[0]!;
+    const key = inferredGitAnchorKey(candidate);
+    const version = candidate.gitRevision;
+    if (!key || version === undefined) continue;
+    const target = repositoryTargetFor(projects, key);
     if (!target) continue;
     try {
       check();
@@ -66,7 +73,9 @@ export async function recordInferredGitAnchors(
       });
       if (
         context.git.original.state !== "unresolved" ||
-        context.git.correction.state !== "original"
+        context.git.original.reason !== "historical_unresolved" ||
+        context.git.correction.state !== "original" ||
+        context.git.revision !== version
       )
         continue;
       check();
@@ -77,10 +86,16 @@ export async function recordInferredGitAnchors(
           axis: "git",
           action: "set",
           repository: target.repository,
-          expectedVersion: context.git.revision
+          expectedVersion: version,
+          inferenceIntent: "recording-device"
         }
       });
-      if (!preview) continue;
+      if (
+        preview?.inferenceIntent !== "recording-device" ||
+        preview.expectedVersion !== version
+      )
+        continue;
+      // The Desktop command rechecks current local evidence before forwarding Apply.
       check();
       await api.manageSourceContext({
         action: "apply",

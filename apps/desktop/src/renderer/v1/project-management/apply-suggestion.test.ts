@@ -5,6 +5,10 @@ import {
 } from "../../../project-management-validation-api.js";
 import { mergeProjectSources } from "../../../project-memory-ui.js";
 import { applySuggestions } from "./apply-suggestion.js";
+import {
+  organizationEdit,
+  reviewConversationOrganization
+} from "./conversation-organization.js";
 import type { SuggestionRow } from "./use-folder-suggestions.js";
 
 const sessionId = validationId(108);
@@ -44,7 +48,77 @@ function fixture() {
   };
 }
 
+function stagedGitSuggestion(row: SuggestionRow, gitRevision: number) {
+  const proposal = {
+    action: "anchor" as const,
+    kind: "repository" as const,
+    tier: "medium" as const,
+    repositoryKey: "gr_validation_0",
+    gitRevision,
+    projects: [{ id: gitProject, name: "koed" }],
+    evidence: []
+  };
+  return { ...row, proposal };
+}
+
 describe("applySuggestions", () => {
+  it.each(["manual correction", "reset"] as const)(
+    "does not preview or overwrite a staged Git Anchor after %s",
+    async (intervening) => {
+      const f = fixture();
+      const correctGit = async (action: "set" | "unresolved" | "reset") => {
+        const review = await reviewConversationOrganization(
+          f.api,
+          f.projects,
+          sessionId
+        );
+        const expectedVersion = review.context.git.revision;
+        const other = f.contexts.get(validationId(104))!.git.original;
+        if (other.state !== "known") throw new Error("Missing Git Anchor");
+        return f.originalManage({
+          action: "organize",
+          sessionId,
+          edit: organizationEdit(
+            review,
+            [],
+            [
+              action === "set"
+                ? {
+                    axis: "git",
+                    action,
+                    expectedVersion,
+                    repository: other.value
+                  }
+                : { axis: "git", action, expectedVersion }
+            ]
+          )
+        });
+      };
+      // A reset can make the same candidate available again at a new revision.
+      if (intervening === "reset") await correctGit("unresolved");
+      const staged = stagedGitSuggestion(
+        f.row,
+        f.contexts.get(sessionId)!.git.revision
+      );
+      const changed = await correctGit(
+        intervening === "reset" ? "reset" : "set"
+      );
+      f.manage.mockClear();
+
+      expect(
+        await applySuggestions(f.api, f.projects, [staged], gitProject)
+      ).toMatchObject({
+        done: 0,
+        failed: [expect.stringContaining("changed")]
+      });
+      expect(f.manage.mock.calls.map(([input]) => input.action)).toEqual([
+        "get"
+      ]);
+      const saved = await f.originalManage({ action: "get", sessionId });
+      expect(saved.context.git).toEqual(changed.context.git);
+    }
+  );
+
   it("does not preview or commit when the same-kind Folder changes on re-score", async () => {
     const f = fixture();
     f.confirm.mockRejectedValueOnce(
@@ -152,19 +226,62 @@ describe("applySuggestions", () => {
     ]);
   });
 
+  it.each(["valid", "missing intent", "changed Project", "wrong destination"])(
+    "uses only a guarded version-pinned review for an approved unknown device: %s",
+    async (scenario) => {
+      const f = fixture();
+      const staged = stagedGitSuggestion(f.row, 1);
+      const row = {
+        ...staged,
+        proposal: {
+          ...staged.proposal,
+          recordingDeviceUnknown: true as const,
+          directory: "/work/checkout"
+        }
+      };
+      f.manage.mockImplementation(async (input) => {
+        if (input.action === "apply") {
+          if (!preview) throw new Error("Missing preview");
+          return { context: preview.after, preview };
+        }
+        const result = await f.originalManage(input);
+        if (input.action === "preview" && result.preview) {
+          preview = result.preview;
+          if (scenario !== "missing intent")
+            preview.inferenceIntent = "user-confirmed-unknown";
+          if (scenario === "changed Project")
+            preview.projects.find((p) => p.projectId === gitProject)!.version++;
+        }
+        return result;
+      });
+      let preview: Awaited<ReturnType<typeof f.originalManage>>["preview"];
+      const result = await applySuggestions(
+        f.api,
+        f.projects,
+        [row],
+        scenario === "wrong destination" ? folderProject : gitProject
+      );
+      expect(result.done).toBe(scenario === "valid" ? 1 : 0);
+      expect(f.manage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "preview",
+          reviewedDirectory: "/work/checkout",
+          correction: expect.objectContaining({
+            inferenceIntent: "user-confirmed-unknown",
+            expectedVersion: 1,
+            repository: expect.objectContaining({ key: "gr_validation_0" })
+          })
+        })
+      );
+      expect(f.manage.mock.calls.map(([input]) => input.action)).toEqual(
+        scenario === "valid" ? ["get", "preview", "apply"] : ["get", "preview"]
+      );
+    }
+  );
+
   it("preserves the selected portable Git Anchor key without Folder confirmation", async () => {
     const f = fixture();
-    const row: SuggestionRow = {
-      ...f.row,
-      proposal: {
-        action: "anchor",
-        kind: "repository",
-        tier: "medium",
-        repositoryKey: "gr_validation_0",
-        projects: [{ id: validationId(2), name: "koed" }],
-        evidence: []
-      }
-    };
+    const row = stagedGitSuggestion(f.row, 1);
     expect(
       await applySuggestions(f.api, f.projects, [row], gitProject)
     ).toEqual({ done: 1, failed: [] });
@@ -174,6 +291,7 @@ describe("applySuggestions", () => {
         action: "preview",
         correction: expect.objectContaining({
           axis: "git",
+          expectedVersion: 1,
           repository: expect.objectContaining({ key: "gr_validation_0" })
         })
       })

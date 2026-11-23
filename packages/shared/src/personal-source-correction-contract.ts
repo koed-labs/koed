@@ -52,12 +52,14 @@ const expectedVersion = z.number().int().positive().safe();
 export const personalSourceCorrectionApplySchema = z
   .object({ expectedVersion })
   .strict();
+const inferenceIntent = z.enum(["recording-device", "user-confirmed-unknown"]);
 export const personalSourceCorrectionInputSchema = z.union([
   z
     .object({
       axis: z.literal("git"),
       action: z.literal("set"),
       repository: personalGitContextSchema,
+      inferenceIntent: inferenceIntent.optional(),
       expectedVersion
     })
     .strict(),
@@ -82,6 +84,7 @@ export const personalSourceCorrectionPreviewSchema = z
     reviewId: z.uuid(),
     axis: z.enum(["git", "folder"]),
     expectedVersion,
+    inferenceIntent: inferenceIntent.optional(),
     before: personalSourceContextStateSchema,
     after: personalSourceContextStateSchema,
     projects: z
@@ -165,6 +168,11 @@ export const personalConversationOrganizationInputSchema = z
       ctx.addIssue({
         code: "custom",
         message: "Corrections must bind the reviewed source versions"
+      });
+    if (input.corrections.some((c) => "inferenceIntent" in c))
+      ctx.addIssue({
+        code: "custom",
+        message: "Git inference requires a dedicated source correction review"
       });
     if (!input.memberships.length && !input.corrections.length)
       ctx.addIssue({
@@ -260,7 +268,8 @@ export const personalSourceContextCommandSchema = z
       .object({
         action: z.literal("preview"),
         sessionId: z.uuid(),
-        correction: personalSourceCorrectionInputSchema
+        correction: personalSourceCorrectionInputSchema,
+        reviewedDirectory: z.string().min(1).optional()
       })
       .strict(),
     z
@@ -278,6 +287,17 @@ export const personalSourceContextCommandSchema = z
       input.sessionId === input.edit.expectedContext.sessionId,
     {
       message: "Organization edit must bind the requested Conversation"
+    }
+  )
+  .refine(
+    (input) =>
+      input.action !== "preview" ||
+      !!input.reviewedDirectory ===
+        (input.correction.axis === "git" &&
+          input.correction.action === "set" &&
+          input.correction.inferenceIntent === "user-confirmed-unknown"),
+    {
+      message: "Unknown recording-device review must bind the reviewed checkout"
     }
   );
 export type PersonalSourceContextCommandResult = {

@@ -12,6 +12,8 @@ const DEFAULT_TTL_MS = 30 * 60_000;
 export type FolderHintCache = {
   get(sessionId: string): PersonalFolderHint[] | undefined;
   set(sessionId: string, hints: PersonalFolderHint[]): void;
+  revision(): number;
+  subscribe(listener: () => void): () => void;
   clear(): void;
 };
 
@@ -23,6 +25,8 @@ export function createFolderHintCache(
     string,
     { at: number; hints: PersonalFolderHint[] }
   >();
+  let revision = 0;
+  const listeners = new Set<() => void>();
   return {
     get(sessionId) {
       const entry = entries.get(sessionId);
@@ -36,11 +40,36 @@ export function createFolderHintCache(
     set(sessionId, hints) {
       entries.set(sessionId, { at: now(), hints });
     },
-    clear: () => entries.clear()
+    revision: () => revision,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    clear() {
+      entries.clear();
+      revision++;
+      for (const listener of listeners) listener();
+    }
   };
 }
 
-export const folderHintCache = createFolderHintCache();
+const cachesByApi = new WeakMap<
+  PersonalDesktopApi,
+  Map<string, FolderHintCache>
+>();
+
+export const folderHintCache = {
+  forScope(api: PersonalDesktopApi, scopeKey: string): FolderHintCache {
+    let scopes = cachesByApi.get(api);
+    if (!scopes) cachesByApi.set(api, (scopes = new Map()));
+    let cache = scopes.get(scopeKey);
+    if (!cache) scopes.set(scopeKey, (cache = createFolderHintCache()));
+    return cache;
+  },
+  clear(api: PersonalDesktopApi | null, scopeKey: string | null) {
+    if (api && scopeKey) cachesByApi.get(api)?.get(scopeKey)?.clear();
+  }
+};
 
 /** Load hints for many Conversations in bounded batches, reporting each batch as
  * it arrives. A failed batch is skipped, not fatal: hints are only advisory. */
@@ -48,15 +77,20 @@ export async function loadFolderHints(
   api: PersonalDesktopApi,
   sessionIds: readonly string[],
   options: {
-    cache?: FolderHintCache;
+    cache: FolderHintCache;
+    expectedScopeKey: string;
     isCancelled?: () => boolean;
     /** Wait this long between batches, so a long load does not hog the main process. */
     pauseMs?: number;
     onBatch?: (hints: ReadonlyMap<string, PersonalFolderHint[]>) => void;
-  } = {}
+  }
 ): Promise<Map<string, PersonalFolderHint[]>> {
-  const cache = options.cache ?? folderHintCache;
+  const { cache } = options;
+  const revision = cache.revision();
+  const stopped = () =>
+    revision !== cache.revision() || options.isCancelled?.();
   const result = new Map<string, PersonalFolderHint[]>();
+  if (stopped()) return result;
   const missing: string[] = [];
   for (const id of new Set(sessionIds)) {
     const cached = cache.get(id);
@@ -70,30 +104,33 @@ export async function loadFolderHints(
     index < missing.length;
     index += PERSONAL_FOLDER_HINT_BATCH_SIZE
   ) {
-    if (options.isCancelled?.()) break;
+    if (stopped()) break;
     if (index > 0 && options.pauseMs)
       await new Promise((done) => setTimeout(done, options.pauseMs));
-    if (options.isCancelled?.()) break;
+    if (stopped()) break;
     const batch = missing.slice(index, index + PERSONAL_FOLDER_HINT_BATCH_SIZE);
     let hints: PersonalFolderHint[];
     try {
-      hints = await api.folderHints({ sessionIds: batch });
+      hints = await api.folderHints({
+        sessionIds: batch,
+        expectedScopeKey: options.expectedScopeKey
+      });
     } catch {
       continue;
     }
-    const grouped = new Map<string, PersonalFolderHint[]>();
+    if (stopped()) break;
+    const grouped = new Map(
+      batch.map((id) => [id, [] as PersonalFolderHint[]])
+    );
     for (const hint of hints) {
-      const list = grouped.get(hint.sessionId) ?? [];
-      list.push(hint);
-      grouped.set(hint.sessionId, list);
+      grouped.get(hint.sessionId)?.push(hint);
     }
-    // An id the API did not return has no candidate: remember that too.
-    for (const id of batch) {
-      const list = grouped.get(id) ?? [];
+    // An id the API did not return was still checked.
+    for (const [id, list] of grouped) {
       cache.set(id, list);
       result.set(id, list);
     }
-    options.onBatch?.(new Map(grouped));
+    options.onBatch?.(grouped);
   }
-  return result;
+  return stopped() ? new Map() : result;
 }

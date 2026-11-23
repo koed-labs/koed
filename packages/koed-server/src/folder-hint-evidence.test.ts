@@ -1,8 +1,10 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   truncateSync,
+  statSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -19,6 +21,11 @@ import {
   type FolderHintConversation
 } from "./folder-hint-evidence.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import {
+  discoverProjectMetadata,
+  setProjectAssociationLookup,
+  setProjectRepositoryAnchor
+} from "./project-metadata.js";
 
 const OWNER = "00000000-0000-4000-8000-000000000001";
 const temporary: string[] = [];
@@ -458,6 +465,205 @@ describe("Folder hint evidence", () => {
         options
       );
       expect(denied?.tier).not.toBe("medium");
+    });
+
+    const upstream = "https://example.test/acme/main.git";
+    const custom = "https://example.test/acme/custom.git";
+    const addRemote = (cwd: string, name: string, url: string) =>
+      execFileSync("git", ["remote", "add", name, url], { cwd });
+
+    const anchorFixture = async () => {
+      const { root, paths, env } = await fixture();
+      const directory = resolve(root, "fork");
+      gitRepo(directory);
+      addRemote(directory, "upstream", upstream);
+      addRemote(directory, "custom", custom);
+      const { firstConversationAt, now } = timing();
+      const anchor = async (
+        lookupAssociatedSelection?: NonNullable<
+          Parameters<typeof hintsForConversation>[2]
+        >["lookupAssociatedSelection"],
+        cwd = directory
+      ) => {
+        const hints = await hintsForConversation(
+          paths,
+          conversation({
+            recordedCwd: cwd,
+            capturedOnThisDevice: true,
+            firstConversationAt
+          }),
+          { environment: env, now, lookupAssociatedSelection }
+        );
+        return hints?.find(
+          (hint) => hint.tier !== "none" && hint.kind === "repository"
+        );
+      };
+      const discover = async () => {
+        const { project } = await discoverProjectMetadata(paths, {
+          cwd: directory
+        });
+        return {
+          localProjectId: project!.localProjectId,
+          expectedCheckoutId: project!.repository!.checkoutId!
+        };
+      };
+      return { directory, paths, anchor, discover };
+    };
+
+    it("infers upstream rather than the fork's origin without creating checkout metadata", async () => {
+      const { paths, anchor } = await anchorFixture();
+      expect(await anchor()).toMatchObject({
+        repositoryKey: normalizeGitRemoteUrl(upstream).fingerprint
+      });
+      expect(() => readFileSync(paths.projectMetadataPath)).toThrow(/ENOENT/);
+    });
+
+    it("does not infer a Git Anchor from conflicting fetch and push URLs on upstream", async () => {
+      const { directory, anchor } = await anchorFixture();
+      execFileSync("git", ["remote", "set-url", "--push", "upstream", custom], {
+        cwd: directory
+      });
+      expect(await anchor()).toBeUndefined();
+    });
+
+    it("does not infer a Git Anchor when Git's remote listing hides a second fetch URL", async () => {
+      const { directory, paths, anchor } = await anchorFixture();
+      execFileSync("git", ["remote", "set-url", "--add", "upstream", custom], {
+        cwd: directory
+      });
+      execFileSync(
+        "git",
+        ["remote", "set-url", "--push", "upstream", upstream],
+        {
+          cwd: directory
+        }
+      );
+      expect(await anchor()).toBeUndefined();
+      const { project } = await discoverProjectMetadata(paths, {
+        cwd: directory
+      });
+      expect(project?.repository).toMatchObject({
+        kind: "unresolved",
+        reason: "selection_conflict",
+        selectedRemote: "upstream",
+        key: null
+      });
+    });
+
+    it("uses the current checkout's explicit selection from a subdirectory and never falls back if it is missing", async () => {
+      const { directory, paths, anchor, discover } = await anchorFixture();
+      await setProjectRepositoryAnchor(paths, {
+        ...(await discover()),
+        remoteName: "custom"
+      });
+      const snapshot = readFileSync(paths.projectMetadataPath, "utf8");
+      const nested = resolve(directory, "nested");
+      mkdirSync(nested);
+      expect(await anchor(undefined, nested)).toMatchObject({
+        repositoryKey: normalizeGitRemoteUrl(custom).fingerprint
+      });
+      execFileSync("git", ["remote", "remove", "custom"], { cwd: directory });
+      expect(await anchor(undefined, nested)).toBeUndefined();
+      expect(readFileSync(paths.projectMetadataPath, "utf8")).toBe(snapshot);
+    });
+
+    it("honors enabled associated selections and does not guess when lookup is unavailable or conflicted", async () => {
+      const { paths, anchor, discover } = await anchorFixture();
+      await setProjectAssociationLookup(paths, {
+        ...(await discover()),
+        enabled: true
+      });
+      expect(
+        await anchor(async () => ({
+          associationId: "accepted",
+          selection: {
+            state: "selected",
+            anchorFingerprint: normalizeGitRemoteUrl(custom).fingerprint
+          }
+        }))
+      ).toMatchObject({
+        repositoryKey: normalizeGitRemoteUrl(custom).fingerprint
+      });
+      expect(
+        await anchor(async () => ({
+          associationId: "accepted",
+          selection: { state: "conflict" }
+        }))
+      ).toBeUndefined();
+      expect(await anchor()).toBeUndefined();
+      expect(await anchor(async () => undefined)).toMatchObject({
+        repositoryKey: normalizeGitRemoteUrl(upstream).fingerprint
+      });
+    });
+
+    it("observes remotes after an associated selection lookup", async () => {
+      const { directory, paths, anchor, discover } = await anchorFixture();
+      await setProjectAssociationLookup(paths, {
+        ...(await discover()),
+        enabled: true
+      });
+      expect(
+        await anchor(async () => {
+          execFileSync("git", ["remote", "remove", "custom"], {
+            cwd: directory
+          });
+          return {
+            associationId: "accepted",
+            selection: {
+              state: "selected",
+              anchorFingerprint: normalizeGitRemoteUrl(custom).fingerprint
+            }
+          };
+        })
+      ).toBeUndefined();
+    });
+
+    it("offers an eligible unknown-device repository only for strict pre-start birthtime", async () => {
+      const { root, paths, env } = await fixture();
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync(
+        "git",
+        ["remote", "add", "origin", "https://github.com/acme/history.git"],
+        { cwd: root }
+      );
+      const birth = statSync(root).birthtimeMs;
+      const find = async (
+        firstConversationAt: number | null,
+        overrides: Partial<FolderHintConversation> = {}
+      ) =>
+        (
+          await hintsForConversation(
+            paths,
+            conversation({
+              recordedCwd: root,
+              firstConversationAt,
+              allowUnknownRepositoryCandidate: true,
+              ...overrides
+            }),
+            { environment: env, now: () => birth + 10_000 }
+          )
+        )?.filter((hint) => hint.tier !== "none");
+      expect(await find(birth + 1)).toEqual([
+        expect.objectContaining({
+          kind: "repository",
+          directory: root,
+          repositoryKey: normalizeGitRemoteUrl(
+            "https://github.com/acme/history.git"
+          ).fingerprint,
+          reasons: expect.arrayContaining([
+            { code: "origin-device", outcome: "unavailable" },
+            { code: "directory-birthtime", outcome: "agrees" }
+          ]) as unknown
+        })
+      ]);
+      for (const start of [birth, birth - 1, null, birth + 10_001])
+        expect(await find(start)).toEqual([]);
+      expect(
+        await find(birth + 1, { allowUnknownRepositoryCandidate: false })
+      ).toEqual([]);
+      expect(
+        await find(birth + 1, { originDeviceId: "foreign-device" })
+      ).toEqual([]);
     });
 
     it("suggests the Git Anchor of an unregistered directory's remote, whatever protocol the remote uses", async () => {

@@ -27,6 +27,14 @@ export const personalFolderHintEvidenceRequestSchema =
       .optional()
   });
 
+const gitInferenceEvidence = {
+  gitRevision: z.number().int().positive().safe().optional(),
+  gitInferenceEligibility: z.boolean().optional(),
+  recordingDeviceProvenance: z
+    .enum(["recording-device", "known-copy", "unknown"])
+    .optional()
+};
+
 /** Recorded, owner-scoped facts the API exposes for scoring. The scorer adds
  * current, device-local evidence; the API never sees the local filesystem. */
 export const personalFolderHintEvidenceSchema = z
@@ -44,16 +52,18 @@ export const personalFolderHintEvidenceSchema = z
             sessionId: z.uuid(),
             folderAssignment: personalFolderAssignmentSchema,
             recordedCwd: z.string().max(4096).nullable(),
+            /** Source-native start, never capture or import time. */
             firstConversationAt: z
               .string()
               .datetime({ offset: true })
               .nullable(),
             recordedRemoteFingerprint: z.string().max(256).nullable(),
-            /** False for a replica received from another device. */
+            /** True only with positive recording-device evidence. */
             capturedOnThisDevice: z.boolean(),
             /** True when the Conversation already has a Git Anchor, automatic or
              * chosen, so no anchor needs suggesting. Absent means unknown. */
             gitAnchorKnown: z.boolean().optional(),
+            ...gitInferenceEvidence,
             /** The AI Client that produced the Conversation, e.g. "claude-code". */
             sourceRuntime: z.string().max(64).nullable().optional(),
             /** The client's own session id, used only to find its local record. */
@@ -88,6 +98,7 @@ export const personalFolderHintSchema = z
     /** A repository hint names the Git Anchor of the directory's current remote
      * (its portable fingerprint, the same key whatever the protocol). */
     repositoryKey: z.string().min(1).max(256).optional(),
+    ...gitInferenceEvidence,
     score: z.number().int().min(0).max(8),
     folder: personalFolderReferenceSchema.optional(),
     /** The directory a create hint would register, or the directory of the

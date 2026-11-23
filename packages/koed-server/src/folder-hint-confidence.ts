@@ -440,10 +440,25 @@ export type RepositoryAnchorResult = {
  * the anchor, not a record of it (a remote can be re-pointed), so this is
  * capped at medium. Read-only. */
 export const scoreRepositoryAnchor = (
-  input: FolderHintInput
+  input: FolderHintInput,
+  allowUnknownRecordingDevice = false
 ): RepositoryAnchorResult => {
-  const { cwd, directory, origin, birthtime, activity } =
-    assessDirectoryEvidence(input);
+  const {
+    cwd,
+    directory,
+    origin,
+    birthtime: localBirthtime,
+    activity
+  } = assessDirectoryEvidence(input);
+  const reviewUnknown = allowUnknownRecordingDevice && origin === "unavailable";
+  const birthtime = reviewUnknown
+    ? assessBirthtime(
+        directory?.birthtimeMs ?? null,
+        input.firstConversationAtMs,
+        input.evaluatedAtMs,
+        true
+      )
+    : localBirthtime;
   const current = input.currentRemoteFingerprint?.trim() || null;
   // A recorded remote that differs from today's is a conflict, not a gap.
   const recorded = input.recordedRemoteFingerprint?.trim() || null;
@@ -481,7 +496,7 @@ export const scoreRepositoryAnchor = (
     !current ||
     anchored ||
     reasons.some(({ outcome }) => outcome === "rejects") ||
-    origin !== "agrees" ||
+    (origin !== "agrees" && !reviewUnknown) ||
     birthtime !== "agrees" ||
     score < 4
   )
