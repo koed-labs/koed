@@ -1,6 +1,56 @@
 # Durable Memory Answer Execution
 
 Personal and Team `memory_answer` calls use one durable execution path.
+
+## Opt-In Evidence Delivery
+
+`KOED_EXPERIMENTAL_PROGRESSIVE_EVIDENCE=1` on both the MCP adapter and the
+Local AI Runtime enables the evidence delivery preview. The default
+contract is unchanged. In the preview, `memory_answer` chooses what to
+include inline; its input does not expose `include_evidence` or
+`response_detail` because the caller can open the authorized Evidence Bundle
+on demand. Start
+and collect a Memory Answer as usual; the answer includes its task ID and
+supporting source references. Use the answer and any inline evidence directly.
+If the worker marks exact material as necessary and it fits, it is included
+whole. Otherwise, `next_evidence_reads` identifies the selections to open
+before acting. Keep the exact structured task ID in caller state. Use it
+with up to eight `selections` in one `memory_answer_evidence` call; use the
+returned pages and continue with any returned `next_evidence_reads`, retaining
+any original selections beyond this batch. A single-source read still takes
+`source` or `answer=true` and follows `next_offset`. Read the body, not merely
+its size or metadata. If the selected sources do not contain necessary exact
+material, ask a narrower Memory question instead of re-reading already delivered
+evidence.
+In Codex Code Mode, use `store` and `load` to pass the returned
+`structuredContent.task_id` unchanged between calls. With other AI Clients,
+keep the original task ID using the client's own state where available.
+Each read uses the normal task authorization and expiry checks. Reading does
+not enqueue new work. The Pi native extension and Desktop delivery are not
+changed by this MCP preview.
+
+Both source listings report UTF-8 bytes and real token counts for each
+supported local tokenizer encoding. Counts describe the serialized source,
+not the enclosing tool call or the model's total input. Use only a count
+whose encoding matches the intended model. The list does not assign an
+OpenAI encoding to models whose tokenizer is unknown, including Haiku.
+
+The experimental worker searches and expands through the existing retrieval
+pipeline. When a summary only names a requested artifact, the worker can
+use a filename, symbol, or output label to look up its original captured
+body in the same scope. This does not give the worker direct file access.
+Initial results, search, and expansion include leading complete
+sources when they fit; the remaining sources can be opened through bounded
+observations. Scratch source handles are local to the worker request and cannot be used to open
+arbitrary Memory. The worker may cite a record only after reading it. The
+legacy cumulative prompt counter is telemetry for this path, not a stop rule;
+wall time, operation, request storage and final persisted-result constraints
+still apply. The worker uses conservative page sizing, shrinking pages when
+Codex reports a small context window. This is not full context-headroom
+negotiation or a guarantee against an external client's output limit.
+
+## Execution Boundary
+
 PostgreSQL stores acceptance, lease, cancellation, retry, result, and retention
 state in `memory_answer_tasks`. For a Team Workspace request, the authoritative
 Team backend holds that record. The `koed-server`-supervised Local AI Runtime

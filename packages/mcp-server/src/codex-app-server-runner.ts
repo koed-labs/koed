@@ -1976,6 +1976,13 @@ export class CodexAppServerThreadSession {
     return this.threadId ?? undefined;
   }
 
+  contextWindowForTurn(
+    threadId: string,
+    turnId: string
+  ): number | null | undefined {
+    return this.client.turnTokenUsage(threadId, turnId)?.modelContextWindow;
+  }
+
   async runTurn(
     prompt: string,
     timeoutMs: number

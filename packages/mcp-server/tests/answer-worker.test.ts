@@ -112,6 +112,7 @@ const writeFakeDynamicMemoryAnswerAppServer = (
   directory: string,
   options: {
     useTools?: boolean;
+    progressive?: boolean;
     mode?:
       | "happy"
       | "expandSuccess"
@@ -205,7 +206,12 @@ lineReader.on("line", (line) => {
   if (message.method === "thread/start") {
     nextAttempt();
     const toolNames = (message.params.dynamicTools ?? []).map((tool) => tool.namespace + "." + tool.name).sort();
-    if (JSON.stringify(toolNames) !== JSON.stringify(["koed_memory.expand", "koed_memory.scan", "koed_memory.search"])) {
+    if (JSON.stringify(toolNames) !== JSON.stringify(${JSON.stringify([
+      "koed_memory.expand",
+      ...(options.progressive ? ["koed_memory.read_evidence"] : []),
+      "koed_memory.scan",
+      "koed_memory.search"
+    ])})) {
       console.error("expected Koed memory dynamic tools, got " + JSON.stringify(toolNames));
       process.exit(61);
     }
@@ -389,6 +395,66 @@ const resolveMemoryAnswerWorkerTestConfig = (
   });
 
 const promptBudgetRegressionModel = "gpt-5.6-luna";
+
+it("lets the worker cite a complete initial source without opening it again", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-inline-"));
+  const exact = "Apply kestrel guard --fingerprint opal-59 before restarting.";
+  const small = {
+    sourceType: "memory_event",
+    sourceId: "short-runbook",
+    sourceChunkIndex: 0,
+    visibility: "personal",
+    summaryText: "Prior rollout steps. ".repeat(25) + exact
+  };
+  try {
+    const response = await answerWithMemoryWorker(
+      {
+        evidenceBundle: {
+          query: "What is the prior rollout recipe?",
+          evidence: [small]
+        }
+      },
+      {
+        client: {
+          async search() {
+            return {};
+          },
+          async expand() {
+            return {};
+          }
+        },
+        responseDetail: "with_evidence",
+        evaluationController: { scriptedFirstPass: false },
+        config: resolveMemoryAnswerWorkerTestConfig(directory, {
+          MEMORY_ANSWER_PROVIDER: "codex",
+          KOED_EXPERIMENTAL_PROGRESSIVE_EVIDENCE: "1",
+          MEMORY_CODEX_APP_SERVER_BINARY: writeFakeDynamicMemoryAnswerAppServer(
+            directory,
+            {
+              progressive: true,
+              useTools: false,
+              requiredPromptSnippets: [exact],
+              answer: {
+                ...answerObject("Apply the prior rollout recipe."),
+                evidence: [{ evidence_index: 0, required_to_act: "true" }]
+              }
+            }
+          )
+        })
+      }
+    );
+    expect(
+      response.localMemoryWorker.usedFallback,
+      response.localMemoryWorker.errorMessage
+    ).toBe(false);
+    expect(response.evidence).toEqual([expect.objectContaining(small)]);
+    expect(response.structuredAnswer).toMatchObject({
+      required_source_numbers: [1]
+    });
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 interface AdmissionTestObservation {
   kind: string;
