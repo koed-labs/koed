@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Button, Checkbox, DialogFooter, Input } from "@koed-labs/ui";
+import { Badge, Button, DialogFooter, Input } from "@koed-labs/ui";
 import {
   Check,
   ChevronRight,
   CircleAlert,
-  Folder,
-  GitFork,
   Laptop,
   MessageCircle,
   RefreshCw,
@@ -36,7 +34,7 @@ import { SuggestionCoin } from "./ProjectCoins.js";
 import {
   ConversationsPanel,
   membershipSummary,
-  type ConversationFilter
+  projectRules
 } from "./ConversationsPanel.js";
 import { suggestionApprovalKey } from "./folder-hint-suggestion.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
@@ -46,12 +44,10 @@ import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
 const pages = [
   { id: "general", name: "General", Icon: Settings2 },
   { id: "kin", name: "Kin", Icon: Smile },
-  { id: "sources", name: "Sources", Icon: GitFork },
   { id: "conversations", name: "Conversations", Icon: MessageCircle },
   { id: "sync", name: "Sync", Icon: RefreshCw }
 ] as const;
 export type ProjectSettingsPage = (typeof pages)[number]["id"];
-export type { ConversationFilter };
 
 export function ProjectSettingsDialog({
   api,
@@ -59,7 +55,6 @@ export function ProjectSettingsDialog({
   projects,
   projectId,
   page = "general",
-  filter: initialFilter = "in",
   suggestions,
   onClose,
   onSave,
@@ -71,8 +66,6 @@ export function ProjectSettingsDialog({
   projects: readonly DesktopProject[];
   projectId: string;
   page?: ProjectSettingsPage;
-  /** Which Conversations to list first on the Conversations page. */
-  filter?: ConversationFilter;
   /** Conversations suggested in the background, for every Project. */
   suggestions?: { rows: readonly SuggestionRow[]; loading: boolean };
   onClose: () => void;
@@ -102,7 +95,6 @@ export function ProjectSettingsDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<ConversationFilter>(initialFilter);
   // Approvals bind the reviewed candidate to this destination Project.
   const [accepted, setAccepted] = useState<ReadonlySet<string>>(new Set());
   // Suggested Conversations turned down; saving excludes them.
@@ -209,7 +201,6 @@ export function ProjectSettingsDialog({
       setActive(id);
       showPanel("general");
       setQuery("");
-      setFilter("in");
       setAccepted(new Set());
       setRejected(new Set());
     }
@@ -397,14 +388,17 @@ export function ProjectSettingsDialog({
                   }{" "}
                   Conversations
                 </Badge>
-                <Badge>{draft.selectedSources.size} sources</Badge>
+                <Badge>
+                  {projectRules(draft).length} rule
+                  {projectRules(draft).length === 1 ? "" : "s"}
+                </Badge>
               </div>
               <div className="v1-pm-setting-row">
-                <span>Sources</span>
+                <span>Folders and Git Anchors</span>
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => showPanel("sources")}
+                  onClick={() => showPanel("conversations")}
                 >
                   Manage
                   <ChevronRight />
@@ -423,66 +417,12 @@ export function ProjectSettingsDialog({
               </div>
             </>
           )}
-          {draft && !editError && panel === "sources" && (
-            <>
-              <div className="v1-pm-facts">
-                <Badge>{draft.selectedSources.size} sources</Badge>
-              </div>
-              {(["repository", "folder"] as const).map((kind) => (
-                <section className="v1-pm-section" key={kind}>
-                  <h3>{kind === "repository" ? "Git Anchors" : "Folders"}</h3>
-                  <div className="v1-pm-list">
-                    {draft.sources
-                      .filter((s) => s.kind === kind)
-                      .map((source) => (
-                        <label className="v1-pm-choice-row" key={source.id}>
-                          <Checkbox
-                            aria-label={`Include source ${source.name}`}
-                            checked={draft.selectedSources.has(source.id)}
-                            disabled={busy}
-                            onCheckedChange={(checked) =>
-                              void run(async () =>
-                                setDraft(
-                                  await selectSettingsSource(
-                                    api,
-                                    draft,
-                                    source.id,
-                                    checked
-                                  )
-                                )
-                              )
-                            }
-                          />
-                          {kind === "repository" ? <GitFork /> : <Folder />}
-                          <span className="v1-pm-row-copy">
-                            <b>{source.name}</b>
-                            <small>{source.detail}</small>
-                          </span>
-                          <Badge variant="outline">
-                            {source.previewSessions?.length ??
-                              source.threads.length}
-                          </Badge>
-                        </label>
-                      ))}
-                  </div>
-                  {!draft.sources.some((s) => s.kind === kind) && (
-                    <p className="v1-pm-empty">
-                      No recorded{" "}
-                      {kind === "repository" ? "Git Anchors" : "Folders"}
-                    </p>
-                  )}
-                </section>
-              ))}
-            </>
-          )}
           {draft && !editError && panel === "conversations" && (
             <ConversationsPanel
               draft={draft}
               busy={busy}
               query={query}
               onQuery={setQuery}
-              filter={filter}
-              onFilter={setFilter}
               suggested={suggested}
               suggestionsLoading={suggestions?.loading ?? false}
               accepted={accepted}
@@ -491,6 +431,13 @@ export function ProjectSettingsDialog({
               onRejected={setRejected}
               facts={facts}
               now={now}
+              onRule={(sourceId, selected) =>
+                void run(async () =>
+                  setDraft(
+                    await selectSettingsSource(api, draft, sourceId, selected)
+                  )
+                )
+              }
               onMembership={(sessionId, next) =>
                 mutate((old) => {
                   const memberships = { ...old.memberships };
@@ -595,7 +542,6 @@ export function ProjectSettingsDialog({
                   setActive(nextProject);
                   showPanel("general");
                   setQuery("");
-                  setFilter("in");
                   setAccepted(new Set());
                   setRejected(new Set());
                   setNextProject(undefined);

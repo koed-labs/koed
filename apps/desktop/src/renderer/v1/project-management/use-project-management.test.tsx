@@ -44,10 +44,18 @@ function settingsScreen(
   const click = (el: HTMLElement) => act(async () => el.click());
   const rowAction = (label: string) =>
     document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+  // Groups start closed; open each one so its rows can be used.
+  const openGroups = async () => {
+    for (const toggle of document.querySelectorAll<HTMLElement>(
+      '.v1-pm-group-toggle[aria-expanded="false"]'
+    ))
+      await click(toggle);
+  };
   return {
     button,
     click,
     rowAction,
+    openGroups,
     store,
     open: async () => {
       await act(async () => root.render(<Screen />));
@@ -89,15 +97,15 @@ it("keeps Conversations open and uses the refreshed Project version on the next 
   try {
     await ui.open();
     await ui.click(ui.button(/^Conversations/));
+    await ui.openGroups();
     await ui.click(ui.rowAction("Remove Refine the settings popup"));
-    await ui.click(ui.button(/^Excluded/));
+    await ui.openGroups();
     await setInput(conversationSearch(), "sidebar");
     await ui.click(ui.button(/^Save changes$/));
     expect(f.projects.get(projectId)!.meta.version).toBe(3);
     expect(
       document.querySelector('[role="dialog"] h2:last-child')?.textContent
     ).toBe("Conversations");
-    expect(ui.button(/^Excluded/).getAttribute("aria-selected")).toBe("true");
     expect(conversationSearch().value).toBe("sidebar");
     expect(ui.button(/^Save changes$/).disabled).toBe(true);
 
@@ -128,6 +136,7 @@ it("uses authoritative versions even when a background refresh supersedes the sa
   try {
     await ui.open();
     await ui.click(ui.button(/^Conversations/));
+    await ui.openGroups();
     await ui.click(ui.rowAction("Remove Refine the settings popup"));
     vi.spyOn(f.api, "listProjects")
       .mockReturnValueOnce(saveRefresh.promise)
@@ -136,7 +145,7 @@ it("uses authoritative versions even when a background refresh supersedes the sa
     const background = ui.store.loadProjects({ silent: true });
     await act(async () => saveRefresh.resolve());
     expect(document.body.textContent).not.toContain("Project changed");
-    await ui.click(ui.button(/^Excluded/));
+    await ui.openGroups();
     await ui.click(ui.rowAction("Add back Refine the settings popup"));
     await ui.click(ui.button(/^Save changes$/));
     expect(f.projects.get(validationId(2))!.meta.version).toBe(3);
@@ -168,8 +177,9 @@ it.each(["sidebar inventory", "authoritative inventory", "draft"])(
     try {
       await ui.open();
       await ui.click(ui.button(/^Conversations/));
+      await ui.openGroups();
       await ui.click(ui.rowAction("Remove Refine the settings popup"));
-      await ui.click(ui.button(/^Excluded/));
+      await ui.openGroups();
       await setInput(conversationSearch(), "settings");
       const original = f.api.manageProject!;
       const manage = vi.spyOn(f.api, "manageProject");
@@ -205,7 +215,6 @@ it.each(["sidebar inventory", "authoritative inventory", "draft"])(
         expect(retry).toBeDefined();
         await ui.click(retry);
       }
-      expect(ui.button(/^Excluded/).getAttribute("aria-selected")).toBe("true");
       expect(conversationSearch().value).toBe("settings");
       expect(ui.rowAction("Add back Refine the settings popup")).not.toBeNull();
       expect(ui.button(/^Save changes$/).disabled).toBe(true);
@@ -226,6 +235,7 @@ it("blocks row menu edits during save without disabling search or filters", asyn
   try {
     await ui.open();
     await ui.click(ui.button(/^Conversations/));
+    await ui.openGroups();
     await ui.click(ui.rowAction("Remove Refine the settings popup"));
     const more = ui.rowAction("More for A calmer sidebar for Koed");
     await ui.click(more);
@@ -240,8 +250,7 @@ it("blocks row menu edits during save without disabling search or filters", asyn
       keep.isConnected && keep.getAttribute("aria-disabled") !== "true"
     ).toBe(false);
     expect(conversationSearch().disabled).toBe(false);
-    await ui.click(ui.button(/^Excluded/));
-    expect(ui.button(/^Excluded/).getAttribute("aria-selected")).toBe("true");
+    await ui.openGroups();
   } finally {
     await act(async () => inventory.resolve());
     await ui.cleanup();
@@ -267,6 +276,7 @@ it.each(["General", "Conversations"])(
       expect(document.querySelector('[role="dialog"]')).not.toBeNull();
       if (panel === "Conversations")
         await ui.click(ui.button(/^Conversations/));
+      await ui.openGroups();
       await act(async () => inventory.resolve());
       if (panel === "Conversations") {
         expect(conversationSearch()).not.toBeNull();
@@ -344,7 +354,10 @@ it.each([
       name.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await click(button(/^Conversations/));
-    await click(button(/^Suggested/));
+    for (const toggle of document.querySelectorAll<HTMLElement>(
+      '.v1-pm-group-toggle[aria-expanded="false"]'
+    ))
+      await click(toggle);
     await click(
       document.querySelector<HTMLElement>(
         '[aria-label="Add Notes on personal knowledge"]'

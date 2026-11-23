@@ -12,6 +12,14 @@ import { projectKinLook } from "../pixelkin/agent-kin.js";
 import { homeProjectEntries } from "../home/home-model.js";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog.js";
 
+// Groups start closed; open each one so its rows can be used.
+const openGroups = async () => {
+  for (const toggle of document.querySelectorAll<HTMLElement>(
+    '.v1-pm-group-toggle[aria-expanded="false"]'
+  ))
+    await act(async () => toggle.click());
+};
+
 it("opens sync conflict review even when a retained exclusion blocks membership inspection", async () => {
   const f = createProjectManagementValidationApi();
   const projectId = validationId(2),
@@ -241,8 +249,8 @@ it.each(["Add", "Add all"])(
     const save = vi.fn(async () => [...projects]);
     const container = document.body.appendChild(document.createElement("div"));
     const root = createRoot(container);
-    const render = (row: typeof candidate) =>
-      act(async () =>
+    const render = async (row: typeof candidate) => {
+      await act(async () =>
         root.render(
           <ProjectSettingsDialog
             api={f.api}
@@ -250,7 +258,6 @@ it.each(["Add", "Add all"])(
             projects={projects}
             projectId={projectId}
             page="conversations"
-            filter="suggested"
             suggestions={{ rows: [row, unchanged], loading: false }}
             onSave={save}
             onRefresh={vi.fn()}
@@ -259,6 +266,8 @@ it.each(["Add", "Add all"])(
           />
         )
       );
+      await openGroups();
+    };
     const button = (text: string) =>
       [...document.querySelectorAll("button")].find(
         (b) => b.textContent?.trim() === text
@@ -270,7 +279,7 @@ it.each(["Add", "Add all"])(
       );
     try {
       await render(candidate);
-      await click(action === "Add" ? add()! : button("Add all 2"));
+      await click(action === "Add" ? add()! : button("Add 2"));
       expect(add()).toBeNull();
       await render(replacement);
       expect(add()).not.toBeNull();
@@ -307,7 +316,7 @@ it.each(["Add", "Add all"])(
   }
 );
 
-it("lists suggestions on their own tab and saves ticked ones with the Project's changes", async () => {
+it("groups suggestions by rule and saves ticked ones with the Project's changes", async () => {
   const f = createProjectManagementValidationApi();
   const projectId = validationId(2);
   const projects = mergeProjectSources(f.inventory(), []);
@@ -343,7 +352,6 @@ it("lists suggestions on their own tab and saves ticked ones with the Project's 
           projects={projects}
           projectId={projectId}
           page="conversations"
-          filter="suggested"
           suggestions={{
             rows: [
               row(1),
@@ -360,6 +368,9 @@ it("lists suggestions on their own tab and saves ticked ones with the Project's 
         />
       )
     );
+    // Every group starts closed.
+    expect(document.body.textContent).not.toContain("Suggested 1");
+    await openGroups();
     const text = document.body.textContent ?? "";
     // Only this Project's suggestions, none ticked until the User chooses.
     expect(text).toContain("Suggested 1");
@@ -403,10 +414,7 @@ it("lists suggestions on their own tab and saves ticked ones with the Project's 
     expect(document.body.textContent).toContain("Will be excluded");
     expect(document.body.textContent).toContain("1 to add · 1 to exclude");
     // A Conversation in the Project is removed with one action, then saved.
-    const tab = [...document.querySelectorAll("[role=tab]")].find((t) =>
-      t.textContent?.startsWith("In Project")
-    ) as HTMLElement;
-    await act(async () => tab.click());
+    await openGroups();
     const memberTitle = projects.find((p) => p.id === projectId)!.threads[0]!
       .name;
     await act(async () =>

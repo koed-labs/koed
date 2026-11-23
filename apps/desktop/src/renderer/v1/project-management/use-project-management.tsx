@@ -23,7 +23,6 @@ import {
 import { CreateProjectDialog } from "./CreateProjectDialog.js";
 import {
   ProjectSettingsDialog,
-  type ConversationFilter,
   type ProjectSettingsPage
 } from "./ProjectSettingsDialog.js";
 import { MoveConversationDialog } from "./MoveConversationDialog.js";
@@ -44,7 +43,6 @@ type Modal =
       kind: "settings";
       projectId: string;
       page?: ProjectSettingsPage;
-      filter?: ConversationFilter;
     }
   | {
       kind: "move" | "membership" | "context";
@@ -424,7 +422,6 @@ export function useProjectManagement({
           projects={projects}
           projectId={modal.projectId}
           page={modal.page}
-          {...(modal.filter ? { filter: modal.filter } : {})}
           suggestions={suggestions}
           onClose={() => {
             if (scopeIsCurrent()) open(null);
