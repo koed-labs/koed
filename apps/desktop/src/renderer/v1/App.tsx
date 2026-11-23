@@ -165,6 +165,12 @@ export function V1App({
     useState<DesktopProject | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<V1SettingsTab>("general");
+  const [settingsRevision, setSettingsRevision] = useState(0);
+  const openKinAiModels = useCallback(() => {
+    setSettingsTab("ai");
+    setSettingsRevision((revision) => revision + 1);
+    setSettingsOpen(true);
+  }, []);
   const [revision, setRevision] = useState(0);
   const attemptedReconcile = useRef(new Set<string>());
   const attemptedCaptures = useRef(new Set<string>());
@@ -1040,7 +1046,8 @@ export function V1App({
   const kin = useDesktopKin(
     window.koedDesktop?.kin,
     inventoryScope,
-    Boolean(profile && !showOnboarding)
+    Boolean(profile && !showOnboarding),
+    openKinAiModels
   );
   if (!profile)
     return profileReadError ? (
@@ -1231,6 +1238,7 @@ export function V1App({
           {projectManagement.overlays}
           {settingsOpen && (
             <V1Settings
+              key={settingsRevision}
               statusStore={statusStore}
               themeStore={themeStore}
               onClose={() => setSettingsOpen(false)}

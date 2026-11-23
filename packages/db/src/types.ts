@@ -1,7 +1,9 @@
 import type {
   FloatingKinActivity,
   FloatingKinEvidence,
-  FloatingKinEvidenceRequest
+  FloatingKinEvidenceRequest,
+  FloatingKinPreview,
+  FloatingKinPreviewRequest
 } from "@koed-labs/shared";
 import type { RecallActivityRepository } from "./recall-activity-repository.js";
 import type { MemoryModelFlowKey } from "@koed-labs/shared/ai-client-flow-defaults";
@@ -2037,6 +2039,10 @@ export interface MemorySourceRepository
     TeamConversationSourceRepository,
     WorkflowTokenUsageRepository {
   getFloatingKinActivity(actor: ActorContext): Promise<FloatingKinActivity>;
+  getFloatingKinPreview(
+    actor: ActorContext,
+    input: FloatingKinPreviewRequest
+  ): Promise<FloatingKinPreview>;
   getFloatingKinEvidence(
     actor: ActorContext,
     input: FloatingKinEvidenceRequest

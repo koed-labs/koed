@@ -23,11 +23,13 @@ type RenderDock = (focusFallback: FocusFallback) => ReactNode;
 function DesktopKinDock({
   bridge,
   focusFallback,
-  sample
+  sample,
+  openAiModels
 }: {
   bridge: KinActivityBridge;
   focusFallback: FocusFallback;
   sample: ReturnType<typeof useKinActivity>;
+  openAiModels?: () => void;
 }) {
   const surface = useRef<HTMLElement>(null);
   useLayoutEffect(
@@ -45,7 +47,12 @@ function DesktopKinDock({
       ref={surface}
       tabIndex={-1}
     >
-      <KinActivityContent sample={sample} bridge={bridge} surface={surface} />
+      <KinActivityContent
+        sample={sample}
+        bridge={bridge}
+        surface={surface}
+        openAiModels={openAiModels}
+      />
     </section>
   );
 }
@@ -53,12 +60,16 @@ function DesktopKinDock({
 export function useDesktopKin(
   bridge: DesktopKinBridge | undefined,
   scopeKey: string | null = null,
-  shellVisible = true
+  shellVisible = true,
+  openAiModels?: () => void
 ) {
   const [presentation, setPresentation] = useState<KinPresentation | null>(
     null
   );
   useLayoutEffect(() => bridge?.onPresentation(setPresentation), [bridge]);
+  useLayoutEffect(() => {
+    if (openAiModels) return bridge?.onOpenAiModels(openAiModels);
+  }, [bridge, openAiModels]);
   useLayoutEffect(() => {
     bridge?.setShellVisible(shellVisible);
   }, [bridge, shellVisible]);
@@ -70,7 +81,7 @@ export function useDesktopKin(
   const activityBridge = useKinSurfaceActivity(bridge, presentation?.revision);
   const inApp =
     shellVisible && placement === "sidebar" && !presentation?.sidebarPending;
-  const sample = useKinActivity(activityBridge, inApp, scopeKey);
+  const sample = useKinActivity(activityBridge, "sidebar", inApp, scopeKey);
   const dock: RenderDock = (focusFallback) =>
     inApp &&
     activityBridge &&
@@ -80,6 +91,7 @@ export function useDesktopKin(
         bridge={activityBridge}
         sample={sample}
         focusFallback={focusFallback}
+        openAiModels={openAiModels}
       />
     ) : null;
   const avatar = (collapsed: boolean) =>

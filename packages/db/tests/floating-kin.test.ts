@@ -108,9 +108,9 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
           second === 6 ? "claude-code" : "codex-cli"
         )
       );
-    await capture(other.id, 59);
-    await capture(owner.id, -3600);
-    await capture(owner.id, 58, { approvalReview: true });
+    const foreign = await capture(other.id, 59);
+    const old = await capture(owner.id, -3600);
+    const approval = await capture(owner.id, 58, { approvalReview: true });
     const historical = await capture(owner.id, 57);
     const deleted = await capture(owner.id, 56);
     await pool!.query(
@@ -130,6 +130,30 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
       })),
       overflowCount: 1
     });
+    expect(
+      await repo.getFloatingKinPreview(actor, {
+        sessionId: expected[5]!.session.id
+      })
+    ).toEqual({
+      title: null,
+      projectName: null,
+      reply: null,
+      request: { text: "secret", occurredAt: timestamp(1) }
+    });
+    for (const { session } of [foreign, old, approval, historical, deleted]) {
+      expect(
+        await repo.getFloatingKinPreview(actor, { sessionId: session.id })
+      ).toBeNull();
+    }
+    await pool!.query(
+      "update conversation_items set observed_at=now() - interval '31 minutes' where id=$1",
+      [expected[5]!.item.id]
+    );
+    expect(
+      await repo.getFloatingKinPreview(actor, {
+        sessionId: expected[5]!.session.id
+      })
+    ).toBeNull();
     const raw = await repo.getFloatingKinEvidence(actor, {
       action: "conversation",
       sessionId: expected[0]!.session.id
@@ -237,6 +261,8 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     };
     return {
       add,
+      preview: () =>
+        repo.getFloatingKinPreview(actor, { sessionId: session.id }),
       read: (evidenceIds?: string[]) =>
         repo.getFloatingKinEvidence(actor, { ...input, evidenceIds })
     };
@@ -266,7 +292,7 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
   });
 
   it("does not admit a partial initiating Claude message and preserves all eligible blocks once complete", async () => {
-    const { add, read } = await claudeTurn();
+    const { add, read, preview } = await claudeTurn();
     const content = [
       { type: "text", text: "first" },
       { type: "tool_result", text: "internal tool output" },
@@ -274,6 +300,12 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     ];
     const [first] = await add({ content });
     await add({ content, index: 2 });
+    expect(await preview()).toEqual({
+      title: null,
+      projectName: null,
+      request: null,
+      reply: null
+    });
     expect((await read()).items).toEqual([]);
     expect((await read([first!.id])).items).toEqual([]);
     await add({ content, index: 1 });
@@ -518,7 +550,7 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
           }
         ]
       });
-    await add("user_message", "previous", 1, {}, "previous");
+    const older = await add("user_message", "previous", 1, {}, "previous");
     await add("user_message", "current prompt", 2);
     const [update] = await add("agent_message", "current update", 3);
     await upsertEncryptedFieldPayloadWithClient(pool!, actor, encryption, {
@@ -538,6 +570,15 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     await add("reasoning", "hidden thought", 4);
     await add("agent_message", "approval secret", 5, { approvalReview: true });
     const input = { sessionId: session.id, action: "conversation" as const };
+    const previewInput = { sessionId: session.id };
+    expect(await repo.getFloatingKinPreview(actor, previewInput)).toMatchObject(
+      {
+        title: null,
+        projectName: null,
+        request: { text: "current prompt" },
+        reply: { text: "current update" }
+      }
+    );
     const raw = await repo.getFloatingKinEvidence(actor, input);
     expect(raw.items.map(({ kind, text }) => [kind, text])).toEqual([
       ["conversation_item", "current prompt"],
@@ -567,15 +608,17 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         ...input,
         evidenceIds: raw.items.map(({ id }) => id)
       });
-    await add("user_message", "newer turn", 6, {}, "newer");
+    await add("user_message", "u".repeat(280), 6, {}, "newer");
+    let lastUpdateId: string | undefined;
     for (let sequence = 10; sequence < 43; sequence++) {
-      await add(
+      const [item] = await add(
         "agent_message",
         `newer update ${sequence}`,
         sequence,
         {},
         "newer"
       );
+      lastUpdateId = item!.id;
     }
     expect((await revalidate()).items).toEqual(raw.items);
     await add("task_complete", "control", 7);
@@ -584,6 +627,10 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect((await revalidate()).items).toEqual(raw.items);
     await add("task_complete", "control", 8, {}, "newer");
     await repo.projectPendingConversationItems(actor, { limit: 100 });
+    await pool!.query(
+      "update conversation_items set event_time=now() - interval '31 minutes' where id=$1",
+      [older[0]!.id]
+    );
     const sealed = await repo.getFloatingKinEvidence(actor, input);
     expect(sealed.items.map(({ kind, text }) => [kind, text])).toEqual(
       expect.arrayContaining([
@@ -593,6 +640,10 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     );
     expect(JSON.stringify(sealed)).not.toMatch(
       /raw secret|hidden thought|approval secret|control/
+    );
+    await pool!.query(
+      `update sessions set metadata=metadata || $2::jsonb where id=$1`,
+      [session.id, JSON.stringify({ threadName: `   ${"t".repeat(300)}   ` })]
     );
     const project = await repo.createNamedPersonalProject(actor, {
       name: "Kin scope"
@@ -608,6 +659,14 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         projectId: project.projectId
       })
     ).toEqual(sealed);
+    expect(await repo.getFloatingKinPreview(actor, previewInput)).toMatchObject(
+      {
+        title: "t".repeat(240),
+        projectName: "Kin scope",
+        request: { text: "u".repeat(240) },
+        reply: { text: "newer update 42" }
+      }
+    );
     const sealedIds = sealed.items.map(({ id }) => id);
     expect(
       (
@@ -646,5 +705,40 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect(
       (await repo.getFloatingKinActivity(actor)).conversations[0]?.projectId
     ).toBe(project.projectId);
+
+    const { rowCount } = await pool!.query(
+      `update memory_events me set payload=jsonb_set(payload, '{metadata,semanticItemManifest}', (
+         select jsonb_agg(case when entry->'sourceIds' ? $1::text
+           then jsonb_set(entry, '{includeInLcm}', 'false') else entry end order by ordinality)
+         from jsonb_array_elements(payload->'metadata'->'semanticItemManifest') with ordinality entries(entry, ordinality)
+       )) where me.include_in_lcm and me.seal_reason is not null and exists (
+         select 1 from memory_event_sources ref where ref.memory_event_id=me.id and ref.conversation_item_id=$1::uuid
+       )`,
+      [lastUpdateId]
+    );
+    expect(rowCount).toBeGreaterThan(0);
+    expect(
+      (await repo.getFloatingKinPreview(actor, previewInput))?.reply?.text
+    ).toBe("newer update 41");
+
+    const [promptItem] = await add(
+      "user_message",
+      "sealed prompt",
+      50,
+      {},
+      "unfinished"
+    );
+    await add("agent_message", "unfinished reply", 51, {}, "unfinished");
+    await repo.projectPendingConversationItems(actor, { limit: 20 });
+    const { rowCount: invalidatedSeals } = await pool!.query(
+      `update memory_events me set include_in_lcm=false
+       from memory_event_sources ref where ref.memory_event_id=me.id
+         and ref.conversation_item_id=$1 and me.seal_reason is not null`,
+      [promptItem!.id]
+    );
+    expect(invalidatedSeals).toBe(1);
+    const unfinished = await repo.getFloatingKinPreview(actor, previewInput);
+    expect(unfinished?.request?.text).not.toBe("sealed prompt");
+    expect(unfinished?.reply?.text).toBe("unfinished reply");
   });
 });

@@ -9,6 +9,8 @@ import {
 const bridge: FloatingKinBridge = {
   ...createKinSurfacePreloadApi(ipcRenderer),
   completeExit: (revision) => ipcRenderer.send(channels.completeExit, revision),
+  openDesktop: (revision) => ipcRenderer.send(channels.openDesktop, revision),
+  openAiModels: (revision) => ipcRenderer.send(channels.openAiModels, revision),
   setInteractive: (interactive) =>
     ipcRenderer.send(channels.setInteractive, interactive),
   setSize: (size) => ipcRenderer.send(channels.setSize, size),

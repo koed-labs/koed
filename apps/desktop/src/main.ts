@@ -84,7 +84,10 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { createFloatingKinWindow } from "./window/floating-kin-window.js";
-import { createFloatingKinRuntime } from "./koed-server/floating-kin.js";
+import {
+  createFloatingKinLaunchState,
+  createFloatingKinRuntime
+} from "./koed-server/floating-kin.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
 import { createDesktopCliInstallManager } from "./cli-install/manager.js";
 import {
@@ -480,7 +483,8 @@ const addFloatingKinMenuItem = (focus: () => void): MenuItem => {
 
 const configureFloatingKin = (
   server: KoedServerManager,
-  account: ReturnType<typeof createAccountController>
+  account: ReturnType<typeof createAccountController>,
+  launchPending: () => boolean
 ) => {
   const canFloat = process.platform === "darwin";
   const desktopUrl = new URL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`).href;
@@ -491,6 +495,7 @@ const configureFloatingKin = (
   // A foreground launch has not handed off from the main window yet.
   let desktopAnchorAvailable = backgroundLaunchPending;
   let desktopReady = false;
+  let aiModelsRequested = false;
   let dockWait: ReturnType<typeof setTimeout> | undefined;
   const clearDockWait = () => {
     clearTimeout(dockWait);
@@ -511,6 +516,29 @@ const configureFloatingKin = (
   const getWebContents = () => overlay.getWindow()?.webContents ?? null;
   const getDesktopContents = () =>
     mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+  const showRequestedAiModels = () => {
+    const contents = getDesktopContents();
+    if (
+      !aiModelsRequested ||
+      !desktopReady ||
+      !contents ||
+      contents.isDestroyed() ||
+      contents.getURL() !== desktopUrl
+    )
+      return;
+    aiModelsRequested = false;
+    contents.send(floatingKinChannels.showAiModels);
+  };
+  const revealDesktop = (aiModels = false) => {
+    if (!overlay.isShowing() || quitting) return;
+    if (aiModels) aiModelsRequested = true;
+    void showDesktopWindow()
+      .then(showRequestedAiModels)
+      .catch(() => {
+        if (aiModels) aiModelsRequested = false;
+        console.warn("Could not open Koed Desktop from Floating Kin.");
+      });
+  };
   const publish = () => {
     const contents = getDesktopContents();
     if (contents && !contents.isDestroyed() && contents.getURL() === desktopUrl)
@@ -562,13 +590,20 @@ const configureFloatingKin = (
     getWebContents,
     url,
     mainWindowFocused: () => mainWindow?.isFocused() ?? false,
+    overlayVisible: overlay.isShowing,
     presentation: () => presentation,
     completeExit: overlay.completeExit,
+    openDesktop: () => revealDesktop(),
+    openAiModels: () => revealDesktop(true),
     desktop: {
       getWebContents: getDesktopContents,
       url: desktopUrl,
+      isShellVisible: () =>
+        desktopReady &&
+        Boolean(mainWindow?.isVisible() && !mainWindow.isMinimized()),
       setShellVisible: (visible) => {
         desktopReady = visible;
+        if (visible) showRequestedAiModels();
         if (!visible && dockWait) {
           clearDockWait();
           reconcile();
@@ -584,6 +619,7 @@ const configureFloatingKin = (
       koedHome: resolveApplicationKoedHome(koedEnvironment),
       // Cached observation only. Refresh notifies subscribers that may reconcile.
       lifecycle: () => server.lifecycle.current()?.state ?? "starting",
+      launchPending,
       accountKey: () => accountKey
     }),
     interactive: overlay.setInteractive,
@@ -745,7 +781,12 @@ const bootstrap = async () => {
     app.dock?.setIcon(desktopIconPath);
   }
   registerAppProtocol();
-  const setFloatingKinEnabled = configureFloatingKin(server, controller);
+  const kinLaunch = createFloatingKinLaunchState();
+  const setFloatingKinEnabled = configureFloatingKin(
+    server,
+    controller,
+    kinLaunch.pending
+  );
   const desktopWindowIpc = scopeDesktopWindowIpc(ipcMain, () =>
     mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null
   );
@@ -978,6 +1019,7 @@ const bootstrap = async () => {
   });
   server.lifecycle.start();
   setFloatingKinEnabled(presentationPreferences.floatingKin);
+  let runtimeResumed = false;
   await startDesktopWindowAndRuntime({
     background: backgroundLaunchPending,
     createWindow,
@@ -1002,7 +1044,8 @@ const bootstrap = async () => {
         );
       }
       const result = await server.resume();
-      if (shouldRefreshLocalAiClientsAfterResume(result)) {
+      runtimeResumed = shouldRefreshLocalAiClientsAfterResume(result);
+      if (runtimeResumed) {
         void server
           .localAiClients({ operation: "refresh" })
           .catch(() => undefined);
@@ -1011,6 +1054,7 @@ const bootstrap = async () => {
       return result;
     },
     onRuntimeSettled: () => {
+      kinLaunch.settle(runtimeResumed);
       attachPackagedSmokeHarness({
         packaged: app.isPackaged,
         argv: process.argv,

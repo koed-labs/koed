@@ -45,9 +45,22 @@ function setup(placement: KinPlacement = "desktop") {
     sender: desktopContents,
     senderFrame: desktopFrame
   } as IpcMainInvokeEvent;
-  const setShellVisible = vi.fn();
+  let shellVisible = false;
+  const setShellVisible = vi.fn((value: boolean) => {
+    shellVisible = value;
+  });
+  const overlayVisible = vi.fn(() => true);
   const confirmPresentation = vi.fn();
   const completeExit = vi.fn();
+  const openDesktop = vi.fn();
+  const openAiModels = vi.fn();
+  const preview = vi.fn<
+    NonNullable<
+      Parameters<typeof registerFloatingKinIpc>[0]["runtime"]["preview"]
+    >
+  >(async () => null);
+  const latest = vi.fn(async () => ({ action: "conversation" as const }));
+  const reopen = vi.fn(async () => null);
   const dismiss = registerFloatingKinIpc({
     ipcMain: {
       handle: (channel, handler) => {
@@ -60,16 +73,20 @@ function setup(placement: KinPlacement = "desktop") {
     },
     getWebContents: () => contents,
     url,
-    runtime: { activity, summarize },
+    runtime: { activity, summarize, latest, reopen, preview },
     mainWindowFocused,
+    overlayVisible,
     presentation: () => presentation,
     completeExit,
+    openDesktop,
+    openAiModels,
     interactive,
     resize,
     drag,
     desktop: {
       getWebContents: () => desktopContents,
       url: desktopFrame.url,
+      isShellVisible: () => shellVisible,
       setShellVisible,
       confirmPresentation
     }
@@ -78,6 +95,12 @@ function setup(placement: KinPlacement = "desktop") {
     desktopEvent,
     presentation,
     completeExit,
+    openDesktop,
+    openAiModels,
+    latest,
+    reopen,
+    preview,
+    overlayVisible,
     setShellVisible,
     confirmPresentation,
     event,
@@ -184,6 +207,142 @@ it("accepts exit completion only from the overlay for the pending sidebar revisi
   presentation.sidebarPending = false;
   send(event as IpcMainEvent, 3);
   expect(completeExit).toHaveBeenCalledExactlyOnceWith(3);
+});
+
+it("opens Desktop only for the current visible overlay revision", () => {
+  const { event, desktopEvent, frame, sends, presentation, openDesktop } =
+    setup();
+  const send = sends.get(channels.openDesktop)!;
+  presentation.revision = 3;
+  send(desktopEvent as IpcMainEvent, 3);
+  send({ ...event, senderFrame: { ...frame } } as IpcMainEvent, 3);
+  send(event as IpcMainEvent, 2);
+  send(event as IpcMainEvent, "3");
+  send(event as IpcMainEvent, 3);
+  presentation.placement = "sidebar";
+  send(event as IpcMainEvent, 3);
+  expect(openDesktop).toHaveBeenCalledTimes(1);
+});
+
+it("gates AI models requests on the current visible overlay revision", () => {
+  const { event, desktopEvent, sends, presentation, openAiModels } = setup();
+  const send = sends.get(channels.openAiModels)!;
+  send(desktopEvent as IpcMainEvent, 0);
+  send(event as IpcMainEvent, 1);
+  send(event as IpcMainEvent, 0);
+  presentation.placement = "sidebar";
+  send(event as IpcMainEvent, 0);
+  expect(openAiModels).toHaveBeenCalledTimes(1);
+});
+
+it("restricts captured previews to the visible revision and discards pending replies on handoff", async () => {
+  const {
+    event,
+    desktopEvent,
+    presentation,
+    invokes,
+    sends,
+    overlayVisible,
+    preview,
+    dismiss
+  } = setup();
+  const read = invokes.get(channels.preview)!;
+  const input = { sessionId: "00000000-0000-4000-8000-000000000001" };
+  expect(await read(desktopEvent, input, 0)).toBeNull();
+  expect(await read(event, input, 1)).toBeNull();
+  expect(await read(event, { ...input, text: "not allowed" }, 0)).toBeNull();
+  overlayVisible.mockReturnValueOnce(false);
+  expect(await read(event, input, 0)).toBeNull();
+  expect(preview).not.toHaveBeenCalled();
+  let finish = () => {};
+  preview.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () =>
+          resolve({
+            title: "Captured",
+            projectName: null,
+            request: null,
+            reply: null
+          });
+      })
+  );
+  const pending = read(event, input, 0);
+  const signal = preview.mock.calls[0]?.[1];
+  dismiss("overlay");
+  expect(signal?.aborted).toBe(true);
+  finish();
+  expect(await pending).toBeNull();
+  Object.assign(presentation, { placement: "sidebar", revision: 1 });
+  sends.get(channels.setShellVisible)!(desktopEvent as IpcMainEvent, true);
+  expect(await read(desktopEvent, input, 1)).toBeNull();
+  expect(preview).toHaveBeenCalledTimes(2);
+});
+
+it("withholds pending preview content when the Desktop dock is hidden", async () => {
+  const {
+    desktopEvent,
+    presentation,
+    invokes,
+    sends,
+    setShellVisible,
+    preview
+  } = setup("sidebar");
+  const read = invokes.get(channels.preview)!;
+  const setVisible = (value: boolean) =>
+    sends.get(channels.setShellVisible)!(desktopEvent as IpcMainEvent, value);
+  const input = { sessionId: "00000000-0000-4000-8000-000000000001" };
+  expect(await read(desktopEvent, input, 0)).toBeNull();
+  setVisible(true);
+  presentation.sidebarPending = true;
+  expect(await read(desktopEvent, input, 0)).toBeNull();
+  expect(preview).not.toHaveBeenCalled();
+  presentation.sidebarPending = false;
+  let finish = () => {};
+  preview.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () =>
+          resolve({
+            title: "Captured",
+            projectName: null,
+            request: null,
+            reply: null
+          });
+      })
+  );
+  const pending = read(desktopEvent, input, 0);
+  const signal = preview.mock.calls[0]?.[1];
+  setVisible(false);
+  expect(setShellVisible).toHaveBeenLastCalledWith(false);
+  expect(signal?.aborted).toBe(true);
+  finish();
+  expect(await pending).toBeNull();
+});
+
+it("gates latest and reopen by surface, revision and exact target shape", async () => {
+  const { event, desktopEvent, invokes, presentation, latest, reopen } =
+    setup();
+  const target = {
+    sessionId: "00000000-0000-4000-8000-000000000001",
+    projectId: null
+  };
+  const peek = invokes.get(channels.latest)!;
+  const open = invokes.get(channels.reopen)!;
+  expect(await peek(desktopEvent, target, 0)).toEqual({ action: null });
+  expect(await peek(event, { ...target, prompt: "invalid" }, 0)).toEqual({
+    action: null
+  });
+  expect(await open(event, target, 1)).toBeNull();
+  expect(latest).not.toHaveBeenCalled();
+  expect(reopen).not.toHaveBeenCalled();
+  expect(await peek(event, target, 0)).toEqual({ action: "conversation" });
+  presentation.placement = "sidebar";
+  await open(desktopEvent, target, 0);
+  expect(reopen).toHaveBeenCalledExactlyOnceWith(
+    target,
+    expect.any(AbortSignal)
+  );
 });
 
 it("reads the main Desktop focus snapshot only from the trusted overlay", () => {

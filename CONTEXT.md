@@ -119,8 +119,10 @@ _Avoid_: Project membership, all remote aliases, sharing permission
 
 **Kin**:
 A Koed companion that represents a Project or helps a User make sense of recent
-captured work. It reflects what Koed has captured, not what an AI Client is
-currently doing, and does not control a Conversation.
+captured work. It reflects what Koed has captured and does not control a
+Conversation. Its recent Conversation chips can also show temporary status
+reported explicitly by the connected AI Client; captured activity by itself
+never indicates that an AI Client is working.
 _Avoid_: Live agent monitor, Conversation owner
 
 **Koed**:

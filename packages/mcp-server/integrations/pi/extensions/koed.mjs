@@ -1,5 +1,5 @@
 /* global AbortController, AbortSignal */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
@@ -9,6 +9,7 @@ import {
   callLocalRuntimeTool,
   piRuntimeCallerContext,
   recordCaptureFolderContext,
+  recordPiLiveness,
   createRuntimeTaskPort,
   piSessionStartIsNewConversation
 } from "../runtime-client.mjs";
@@ -52,6 +53,76 @@ const signalWatcher = (ctx, eventName) => {
     `${JSON.stringify({ sourceSessionId, transcriptPath: resolve(transcriptPath), cwd: ctx.cwd, eventName, observedAt: new Date().toISOString() })}\n`
   );
   writePrivate(wakePath, `${Date.now()}\n`);
+};
+
+const persistentSessionId = (ctx) => {
+  if (!ctx.sessionManager.getSessionFile()) return;
+  const id = ctx.sessionManager.getSessionId();
+  if (
+    typeof id === "string" &&
+    id.trim() &&
+    id.length <= 1024 &&
+    !id.includes("\0")
+  )
+    return id;
+};
+
+const createLivenessPublisher = () => {
+  const publisherId = randomUUID();
+  let sequence = 0;
+  let activeId;
+  let heartbeat;
+  let pending;
+
+  const publish = (externalSessionId, working) => {
+    if (pending || sequence === Number.MAX_SAFE_INTEGER) return;
+    const controller = new AbortController();
+    pending = controller;
+    void recordPiLiveness(
+      koedHome,
+      {
+        externalSessionId,
+        publisherId,
+        sequence: ++sequence,
+        observedAt: Date.now(),
+        working
+      },
+      controller.signal
+    )
+      .catch(() => {
+        /* Liveness is best effort; missed updates expire at the runtime. */
+      })
+      .finally(() => {
+        if (pending === controller) pending = undefined;
+      });
+  };
+  const clear = () => {
+    globalThis.clearInterval(heartbeat);
+    activeId = undefined;
+    pending?.abort();
+    pending = undefined;
+  };
+  const stop = () => {
+    if (!activeId) return;
+    const id = activeId;
+    clear();
+    publish(id, false);
+  };
+  const start = (ctx) => {
+    const id = persistentSessionId(ctx);
+    if (id === activeId) return;
+    if (!id) return stop();
+    clear();
+    activeId = id;
+    // A newer signal replaces any previous lease from the same publisher.
+    publish(id, true);
+    heartbeat = globalThis.setInterval(() => {
+      if (persistentSessionId(ctx) !== id) stop();
+      else publish(id, true);
+    }, 5_000);
+    heartbeat.unref();
+  };
+  return { start, stop };
 };
 
 export const callTool = async (name, input, ctx, signal, invocationKey) => {
@@ -181,6 +252,7 @@ const intakeParameters = Type.Object(
 
 export default function koedExtension(pi) {
   let sessionController;
+  const liveness = createLivenessPublisher();
   const port = createRuntimeTaskPort(koedHome);
   const register = (name, label, description, parameters) =>
     pi.registerTool({
@@ -352,6 +424,7 @@ export default function koedExtension(pi) {
     intakeParameters
   );
   pi.on("session_start", async (event, ctx) => {
+    liveness.stop();
     sessionController?.abort();
     sessionController = new AbortController();
     try {
@@ -370,7 +443,11 @@ export default function koedExtension(pi) {
       /* Filesystem discovery still performs catch-up. */
     }
   });
+  pi.on("agent_start", (_event, ctx) => {
+    liveness.start(ctx);
+  });
   pi.on("agent_settled", (_event, ctx) => {
+    liveness.stop();
     try {
       signalWatcher(ctx, "agent_settled");
     } catch {
@@ -378,6 +455,7 @@ export default function koedExtension(pi) {
     }
   });
   pi.on("session_tree", (_event, ctx) => {
+    liveness.stop();
     sessionController?.abort();
     sessionController = new AbortController();
     try {
@@ -387,6 +465,7 @@ export default function koedExtension(pi) {
     }
   });
   pi.on("session_shutdown", (_event, ctx) => {
+    liveness.stop();
     try {
       signalWatcher(ctx, "session_shutdown");
     } catch {

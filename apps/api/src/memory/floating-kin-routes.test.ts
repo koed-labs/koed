@@ -7,7 +7,7 @@ import { expect, it, vi } from "vitest";
 import type { ApiRouteContext } from "../server/context.js";
 import { registerFloatingKinRoutes } from "./floating-kin-routes.js";
 
-it("requires a Personal API Token and the local runtime credential for activity and evidence", async () => {
+it("requires a Personal API Token and local runtime proof for activity, preview, and evidence", async () => {
   const scratch = fileURLToPath(
     new URL("../../../../scratch/", import.meta.url)
   );
@@ -19,6 +19,13 @@ it("requires a Personal API Token and the local runtime credential for activity 
   const runtimeAuthorization = `Bearer ${"a".repeat(43)}`;
   const activity = vi.fn(async () => ({ conversations: [], overflowCount: 0 }));
   const evidence = vi.fn(async () => ({ items: [], truncated: false }));
+  const captured = {
+    title: "Captured Conversation",
+    projectName: null,
+    request: { text: "Request", occurredAt: "2026-01-01T12:00:00.000Z" },
+    reply: null
+  };
+  const preview = vi.fn(async () => captured as typeof captured | null);
   let kind = "delegated";
   const config = { koedHome, deploymentProfile: "local_personal" };
   try {
@@ -37,7 +44,8 @@ it("requires a Personal API Token and the local runtime credential for activity 
       config,
       requireRepository: () => ({
         getFloatingKinActivity: activity,
-        getFloatingKinEvidence: evidence
+        getFloatingKinEvidence: evidence,
+        getFloatingKinPreview: preview
       }),
       auth: {
         authenticateApiToken: async () => ({ id: userId }),
@@ -72,7 +80,27 @@ it("requires a Personal API Token and the local runtime credential for activity 
     expect((await get(runtimeAuthorization)).statusCode).toBe(403);
     expect((await post(runtimeAuthorization)).statusCode).toBe(403);
     expect(activity).not.toHaveBeenCalled();
+    const postPreview = (
+      token?: string,
+      remoteAddress = "127.0.0.1",
+      payload = { sessionId: input.sessionId }
+    ) =>
+      app.inject({
+        method: "POST",
+        remoteAddress,
+        url: "/v1/memory/floating-kin/preview",
+        payload,
+        headers: {
+          host: "127.0.0.1",
+          ...(token ? { "x-koed-local-runtime-authorization": token } : {})
+        }
+      });
+    expect((await postPreview(runtimeAuthorization)).statusCode).toBe(403);
     kind = "api_token";
+    expect((await postPreview()).statusCode).toBe(403);
+    expect(
+      (await postPreview(runtimeAuthorization, "192.0.2.1")).statusCode
+    ).toBe(403);
     expect((await get()).statusCode).toBe(403);
     expect((await get("Bearer bad")).statusCode).toBe(403);
     expect((await get(runtimeAuthorization, "192.0.2.1")).statusCode).toBe(403);
@@ -90,6 +118,8 @@ it("requires a Personal API Token and the local runtime credential for activity 
     expect((await post(runtimeAuthorization)).statusCode).toBe(403);
     expect(activity).not.toHaveBeenCalled();
     expect(evidence).not.toHaveBeenCalled();
+    expect((await postPreview(runtimeAuthorization)).statusCode).toBe(403);
+    expect(preview).not.toHaveBeenCalled();
     config.deploymentProfile = "local_personal";
     const activityResult = await get(runtimeAuthorization, "::1");
     expect(activityResult.statusCode).toBe(200);
@@ -100,6 +130,16 @@ it("requires a Personal API Token and the local runtime credential for activity 
     );
     expect(evidence).toHaveBeenCalledWith({ userId }, input);
     expect((await post(runtimeAuthorization, "::1")).statusCode).toBe(200);
+    const previewResult = await postPreview(runtimeAuthorization, "::1");
+    expect(previewResult.statusCode).toBe(200);
+    expect(previewResult.headers["cache-control"]).toBe("no-store");
+    expect(previewResult.json()).toEqual(captured);
+    expect(preview).toHaveBeenCalledWith(
+      { userId },
+      { sessionId: input.sessionId }
+    );
+    preview.mockResolvedValueOnce(null);
+    expect((await postPreview(runtimeAuthorization)).json()).toBeNull();
   } finally {
     await app.close();
     await rm(koedHome, { recursive: true, force: true });
