@@ -1027,3 +1027,8 @@ button.v1-pm-row-action svg {
   opacity: 1;
   color: var(--foreground);
 }
+/* The sections scroll as one, so the lists need no scrollbar room of their
+   own; rows and their tint run edge to edge. */
+.v1-pm-membership-sections .v1-pm-conversation-list {
+  scrollbar-gutter: auto;
+}

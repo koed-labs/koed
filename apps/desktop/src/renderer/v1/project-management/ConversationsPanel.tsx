@@ -250,6 +250,7 @@ export function Row({
   title,
   mark,
   className,
+  menuSlot = true,
   client,
   latestAt,
   now,
@@ -268,6 +269,8 @@ export function Row({
   mark?: ReactNode;
   /** Extra class for the row, such as one that dims it. */
   className?: string | undefined;
+  /** Keep room for a menu so actions line up with rows that have one. */
+  menuSlot?: boolean;
   client?: SupportedAiClientDriverId | undefined;
   latestAt?: string | undefined;
   now?: number;
@@ -330,12 +333,13 @@ export function Row({
               {action}
             </button>
           )}
-          {(!pending && menu) || (
-            <span className="v1-pm-row-action-slot" aria-hidden />
-          )}
+          {(!pending && menu) ||
+            (menuSlot && (
+              <span className="v1-pm-row-action-slot" aria-hidden />
+            ))}
         </>
       )}
-      {pending && onUndo && (
+      {pending && onUndo && menuSlot && (
         <span className="v1-pm-row-action-slot" aria-hidden />
       )}
     </div>

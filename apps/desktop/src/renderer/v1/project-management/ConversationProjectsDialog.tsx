@@ -148,6 +148,7 @@ export function ConversationProjectsDialog(props: OrganizationDialogProps) {
                           detail={
                             detail === "Not in this Project" ? "" : detail
                           }
+                          menuSlot={false}
                           locked={directMembership(explanation)}
                           pending={pending}
                           action={action}
