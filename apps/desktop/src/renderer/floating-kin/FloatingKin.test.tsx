@@ -94,7 +94,7 @@ it("drops captured chips and summary state even when a handoff reverses in one r
   const fresh = deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
   vi.mocked(bridge.activity).mockReturnValueOnce(fresh.promise);
   await act(async () => {
-    publish({ placement: "home", revision: 2 });
+    publish({ placement: "sidebar", revision: 2 });
     publish({ placement: "desktop", revision: 3 });
   });
   expect(mount.querySelector(".fk-panel, .fk-chip")).toBeNull();
@@ -116,7 +116,7 @@ it("completes a pending Home handoff only after the native renderer finishes sli
     value: () => [{ transitionProperty: "opacity", finished: finished.promise }]
   });
   await act(async () =>
-    publish({ placement: "home", revision: 2, homePending: true })
+    publish({ placement: "sidebar", revision: 2, sidebarPending: true })
   );
   expect(surface.inert).toBe(true);
   expect(mount.querySelector(".fk-chip")).toBeNull();

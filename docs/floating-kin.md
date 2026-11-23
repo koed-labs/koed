@@ -5,23 +5,24 @@ an AI Client is running, waiting, or finished. A quiet Kin does not mean the AI
 Client is idle. Capture can lag or miss activity, and imported history does not
 count as recent activity.
 
-Inside Koed, the Chief of Staff sits in the bottom-right corner of the window,
-separate from import progress. It uses the same yellow-and-blue gradient square
-with arms as the floating Kin. Recent Conversation chips sit at the bottom of
-the Conversations and Projects sidebar.
+Inside Koed, the Chief of Staff sits at the bottom-right of the Projects list,
+above the recent Conversation chips. It stays there as you switch screens. If
+you collapse the Conversations and Projects sidebar, the Kin moves to the
+bottom of the left rail.
 
 On macOS, turn on **Chief of Staff** under **Settings → General** to let the Kin
-float outside the Koed window. It slides into the window’s corner when Home
-comes into focus: Koed reveals the Kin after the desktop overlay finishes
-sliding out. With reduced motion enabled, the switch is immediate. When you
-leave Home, open Settings, or switch to another
-app, the Kin and its chips return to the desktop position you last dragged it
-to in this Desktop session. The overlay does not take focus automatically;
-use **Window → Focus Floating Kin** while it is on the desktop for keyboard
-access. Clicks around the Kin and its controls pass through. The overlay stays
-at 100% page zoom; the main Desktop window can zoom independently. Quitting
-Desktop closes the overlay even if the Local AI Runtime stays up.
+float outside the Koed window. When the window loses focus or closes, the Kin
+and its chips return to the desktop position you last dragged it to in this
+Desktop session. When the window regains focus, the Kin docks in the sidebar
+once the overlay finishes sliding out. With reduced motion enabled, the switch
+is immediate. The overlay does not take focus automatically; use
+**Window → Focus Floating Kin** for keyboard access. Clicks around the Kin and
+its controls pass through. The overlay stays at 100% page zoom; the main
+Desktop window can zoom independently. Quitting Desktop closes the overlay
+even if the Local AI Runtime stays up.
 
+Click a Conversation chip to open its summary dialog on the same surface,
+without reopening the Koed window from the desktop overlay.
 Choose **Summarize Conversation** for the latest captured work in a
 Conversation, or **Summarize Project** for context from its Project. The Project
 action requires a resolved Project. There is no free-text prompt. An answer

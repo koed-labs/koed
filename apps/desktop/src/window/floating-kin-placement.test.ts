@@ -6,18 +6,14 @@ import {
 
 describe("Chief of Staff placement", () => {
   it.each([
-    [true, true, true, "home"],
-    [true, true, false, "desktop"],
-    [true, false, true, "desktop"],
-    [true, false, false, "desktop"],
-    [false, true, true, "home"],
-    [false, true, false, "home"],
-    [false, false, true, "sidebar"],
-    [false, false, false, "sidebar"]
+    [true, true, "sidebar"],
+    [true, false, "desktop"],
+    [false, true, "sidebar"],
+    [false, false, "sidebar"]
   ] as const)(
-    "floating %s, Home %s, focused %s → %s",
-    (floatingEnabled, home, mainFocused, placement) => {
-      expect(resolveKinPlacement({ floatingEnabled, home, mainFocused })).toBe(
+    "floating %s, focused %s → %s",
+    (floatingEnabled, mainFocused, placement) => {
+      expect(resolveKinPlacement({ floatingEnabled, mainFocused })).toBe(
         placement
       );
     }

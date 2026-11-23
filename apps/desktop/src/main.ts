@@ -158,7 +158,7 @@ let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let floatingKin: ReturnType<typeof createFloatingKinWindow> | null = null;
-let clearKinHome = () => {};
+let clearKinRenderer = () => {};
 let quitting = false;
 let desktopMenuBar: DesktopMenuBar | null = null;
 let disposeDesktopUpdateIpc: (() => void) | null = null;
@@ -392,7 +392,7 @@ const createWindow = async () => {
   );
   mainWindow = window;
   window.webContents.on("did-navigate", () => {
-    if (window === mainWindow) clearKinHome();
+    if (window === mainWindow) clearKinRenderer();
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://") || url.startsWith("http://")) {
@@ -410,14 +410,14 @@ const createWindow = async () => {
   });
   window.once("ready-to-show", () => window.show());
   window.webContents.on("render-process-gone", () => {
-    if (window === mainWindow) clearKinHome();
+    if (window === mainWindow) clearKinRenderer();
   });
   const personalMemoryController = new AbortController();
   window.once("closed", () => {
     personalMemoryController.abort();
     if (mainWindow === window) {
       mainWindow = null;
-      clearKinHome();
+      clearKinRenderer();
     }
   });
   await window.loadURL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`);
@@ -488,17 +488,22 @@ const configureFloatingKin = (
   target.hash = "floating-kin";
   const url = target.href;
   let floatingEnabled = false;
-  let home = false;
+  // A foreground launch has not handed off from the main window yet.
+  let desktopAnchorAvailable = backgroundLaunchPending;
   let desktopReady = false;
-  let waitingForDesktop = false;
+  let dockWait: ReturnType<typeof setTimeout> | undefined;
+  const clearDockWait = () => {
+    clearTimeout(dockWait);
+    dockWait = undefined;
+  };
   let presentation: KinPresentation = { placement: "sidebar", revision: 0 };
   const overlay = createFloatingKinWindow({
     appDir,
     url,
     onDismiss: () => cancel(),
     onHidden: () => {
-      if (!presentation.homePending) return;
-      presentation = { ...presentation, homePending: false };
+      if (!presentation.sidebarPending) return;
+      presentation = { ...presentation, sidebarPending: false };
       publish();
     }
   });
@@ -516,36 +521,39 @@ const configureFloatingKin = (
   };
   const reconcile = (mainFocused = mainWindow?.isFocused() ?? false) => {
     const placement = resolveKinPlacement({
-      floatingEnabled,
-      home,
+      floatingEnabled: floatingEnabled && desktopAnchorAvailable,
       mainFocused
     });
     if (placement !== presentation.placement) {
       cancel("all");
       // Commit removal in Desktop before showing the native panel. On return,
-      // reveal the Home avatar only after the native panel is actually hidden.
-      waitingForDesktop = placement === "desktop" && desktopReady;
+      // reveal the sidebar Kin only after the native panel is actually hidden.
+      clearDockWait();
+      if (placement === "desktop" && desktopReady) {
+        // A hung renderer may never acknowledge removing its dock.
+        dockWait = setTimeout(() => {
+          clearDockWait();
+          reconcile();
+        }, 750);
+      }
       presentation = {
         placement,
-        homePending: placement === "home" && overlay.isShowing(),
+        sidebarPending: placement === "sidebar" && overlay.isShowing(),
         revision: presentation.revision + 1
       };
       publish();
     }
     const showOverlay =
-      placement === "desktop" && (!waitingForDesktop || overlay.isShowing());
+      placement === "desktop" && (!dockWait || overlay.isShowing());
     overlay.setVisible(showOverlay, presentation.revision);
     if (menuItem) menuItem.enabled = showOverlay;
   };
-  const setHomeVisible = (value: boolean) => {
-    home = value;
-    reconcile();
-  };
-  clearKinHome = () => {
+  clearKinRenderer = () => {
     desktopReady = false;
-    waitingForDesktop = false;
+    clearDockWait();
+    if (!mainWindow) desktopAnchorAvailable = true;
     cancel("desktop");
-    setHomeVisible(false);
+    reconcile();
   };
   const initialAccount = account.current();
   let accountKey = `${initialAccount.status}:${initialAccount.profile?.id ?? ""}`;
@@ -559,13 +567,16 @@ const configureFloatingKin = (
     desktop: {
       getWebContents: getDesktopContents,
       url: desktopUrl,
-      setHomeVisible: (value) => {
-        desktopReady = true;
-        setHomeVisible(value);
+      setShellVisible: (visible) => {
+        desktopReady = visible;
+        if (!visible && dockWait) {
+          clearDockWait();
+          reconcile();
+        }
       },
       confirmPresentation: () => {
-        if (!waitingForDesktop || presentation.placement !== "desktop") return;
-        waitingForDesktop = false;
+        if (!dockWait || presentation.placement !== "desktop") return;
+        clearDockWait();
         reconcile();
       }
     },
@@ -595,6 +606,7 @@ const configureFloatingKin = (
   });
   const publishFocus = (focused: boolean, window: BrowserWindow) => {
     if (window !== mainWindow) return;
+    desktopAnchorAvailable = true;
     reconcile(focused);
     const contents = getWebContents();
     if (contents && !contents.isDestroyed() && contents.getURL() === url)
@@ -609,6 +621,7 @@ const configureFloatingKin = (
   app.once("will-quit", () => {
     app.off("browser-window-focus", onMainFocus);
     app.off("browser-window-blur", onMainBlur);
+    clearDockWait();
     unsubscribeLifecycle();
     unsubscribeAccount();
   });

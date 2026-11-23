@@ -45,7 +45,7 @@ function setup(placement: KinPlacement = "desktop") {
     sender: desktopContents,
     senderFrame: desktopFrame
   } as IpcMainInvokeEvent;
-  const setHomeVisible = vi.fn();
+  const setShellVisible = vi.fn();
   const confirmPresentation = vi.fn();
   const completeExit = vi.fn();
   const dismiss = registerFloatingKinIpc({
@@ -70,7 +70,7 @@ function setup(placement: KinPlacement = "desktop") {
     desktop: {
       getWebContents: () => desktopContents,
       url: desktopFrame.url,
-      setHomeVisible,
+      setShellVisible,
       confirmPresentation
     }
   });
@@ -78,7 +78,7 @@ function setup(placement: KinPlacement = "desktop") {
     desktopEvent,
     presentation,
     completeExit,
-    setHomeVisible,
+    setShellVisible,
     confirmPresentation,
     event,
     frame,
@@ -136,26 +136,26 @@ it("rejects all overlay channels from another window, a subframe, or a different
   expect(resize).not.toHaveBeenCalled();
 });
 
-it("lets the main renderer see the activity and report Home, but not control the panel", async () => {
-  const { desktopEvent, event, invokes, sends, resize, setHomeVisible } =
-    setup("home");
+it("lets the main renderer see the activity and report shell visibility, but not control the panel", async () => {
+  const { desktopEvent, event, invokes, sends, resize, setShellVisible } =
+    setup("sidebar");
   expect(await invokes.get(channels.activity)?.(desktopEvent, 0)).toEqual({
     state: "stopped"
   });
   expect(invokes.get(channels.presentation)?.(desktopEvent)).toMatchObject({
-    placement: "home"
+    placement: "sidebar"
   });
   expect(await invokes.get(channels.activity)?.(event, 0)).toEqual({
     state: "unavailable"
   });
-  sends.get(channels.setHomeVisible)?.(event as IpcMainEvent, true);
-  sends.get(channels.setHomeVisible)?.(desktopEvent as IpcMainEvent, "yes");
-  sends.get(channels.setHomeVisible)?.(desktopEvent as IpcMainEvent, true);
+  sends.get(channels.setShellVisible)?.(event as IpcMainEvent, true);
+  sends.get(channels.setShellVisible)?.(desktopEvent as IpcMainEvent, "yes");
+  sends.get(channels.setShellVisible)?.(desktopEvent as IpcMainEvent, true);
   sends.get(channels.setSize)?.(desktopEvent as IpcMainEvent, {
     width: 440,
     height: 200
   });
-  expect(setHomeVisible).toHaveBeenCalledExactlyOnceWith(true);
+  expect(setShellVisible).toHaveBeenCalledExactlyOnceWith(true);
   expect(resize).not.toHaveBeenCalled();
 });
 
@@ -170,18 +170,18 @@ it("accepts a presentation confirmation only for the current revision from Deskt
   expect(confirmPresentation).toHaveBeenCalledExactlyOnceWith(3);
 });
 
-it("accepts exit completion only from the overlay for the pending Home revision", () => {
+it("accepts exit completion only from the overlay for the pending sidebar revision", () => {
   const { event, desktopEvent, sends, presentation, completeExit } = setup();
   const send = sends.get(channels.completeExit)!;
   Object.assign(presentation, {
-    placement: "home",
+    placement: "sidebar",
     revision: 3,
-    homePending: true
+    sidebarPending: true
   });
   send(desktopEvent as IpcMainEvent, 3);
   send(event as IpcMainEvent, 2);
   send(event as IpcMainEvent, 3);
-  presentation.homePending = false;
+  presentation.sidebarPending = false;
   send(event as IpcMainEvent, 3);
   expect(completeExit).toHaveBeenCalledExactlyOnceWith(3);
 });
@@ -252,7 +252,7 @@ it("rejects delayed activity, summary and cancellation from a previous handoff",
   const run = invokes.get(channels.summarize)!;
   const read = invokes.get(channels.activity)!;
   dismiss("all");
-  Object.assign(presentation, { placement: "home", revision: 1 });
+  Object.assign(presentation, { placement: "sidebar", revision: 1 });
   expect(run(event, input, 0)).toEqual({ status: "unavailable" });
   expect(read(event, 0)).toEqual({ state: "unavailable" });
   expect(activity).not.toHaveBeenCalled();

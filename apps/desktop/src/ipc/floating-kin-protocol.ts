@@ -13,11 +13,11 @@ export type FloatingKinDrag =
   | { phase: "start" | "move"; x: number; y: number }
   | { phase: "end" };
 
-export type KinPlacement = "home" | "sidebar" | "desktop";
+export type KinPlacement = "sidebar" | "desktop";
 export type KinPresentation = {
   placement: KinPlacement;
   revision: number;
-  homePending?: boolean;
+  sidebarPending?: boolean;
 };
 
 export type KinActivityBridge = {
@@ -37,7 +37,7 @@ export type KinSurfaceBridge = {
 };
 
 export type DesktopKinBridge = KinSurfaceBridge & {
-  setHomeVisible: (home: boolean) => void;
+  setShellVisible: (visible: boolean) => void;
   confirmPresentation: (revision: number) => void;
   onPresentation: (listener: (state: KinPresentation) => void) => () => void;
 };
@@ -59,7 +59,7 @@ export const floatingKinChannels = {
   drag: "koed:floating-kin:drag",
   mainWindowFocused: "koed:floating-kin:main-window-focused",
   mainWindowFocusChanged: "koed:floating-kin:main-window-focus-changed",
-  setHomeVisible: "koed:floating-kin:set-home-visible",
+  setShellVisible: "koed:floating-kin:set-shell-visible",
   presentation: "koed:floating-kin:presentation",
   confirmPresentation: "koed:floating-kin:confirm-presentation",
   completeExit: "koed:floating-kin:complete-exit",

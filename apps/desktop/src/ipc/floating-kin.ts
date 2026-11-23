@@ -133,7 +133,7 @@ export const registerFloatingKinIpc = ({
   desktop?: {
     getWebContents: () => WebContents | null;
     url: string;
-    setHomeVisible: (home: boolean) => void;
+    setShellVisible: (visible: boolean) => void;
     confirmPresentation: (revision: number) => void;
   };
 }): ((surface?: "overlay" | "desktop" | "all") => void) => {
@@ -194,9 +194,9 @@ export const registerFloatingKinIpc = ({
     if (!desktopTrusted(event)) assertTrusted(event);
     return presentation();
   });
-  ipcMain.on(channels.setHomeVisible, (event, value: unknown) => {
+  ipcMain.on(channels.setShellVisible, (event, value: unknown) => {
     if (desktopTrusted(event) && typeof value === "boolean")
-      desktop?.setHomeVisible(value);
+      desktop?.setShellVisible(value);
   });
   ipcMain.on(channels.confirmPresentation, (event, value: unknown) => {
     if (desktopTrusted(event) && value === presentation().revision)
@@ -204,8 +204,8 @@ export const registerFloatingKinIpc = ({
   });
   ipcMain.on(channels.completeExit, (event, value: unknown) => {
     if (!trusted(event)) return;
-    const { placement, homePending, revision } = presentation();
-    if (placement === "home" && homePending && value === revision)
+    const { placement, sidebarPending, revision } = presentation();
+    if (placement === "sidebar" && sidebarPending && value === revision)
       completeExit(revision);
   });
   ipcMain.on(channels.setInteractive, (event, value: unknown) => {

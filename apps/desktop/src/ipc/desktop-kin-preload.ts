@@ -40,7 +40,7 @@ export function createKinSurfacePreloadApi(ipc: KinIpc) {
 export function createDesktopKinPreloadApi(ipc: KinIpc): DesktopKinBridge {
   return {
     ...createKinSurfacePreloadApi(ipc),
-    setHomeVisible: (home) => ipc.send(channels.setHomeVisible, home),
+    setShellVisible: (visible) => ipc.send(channels.setShellVisible, visible),
     confirmPresentation: (revision) =>
       ipc.send(channels.confirmPresentation, revision)
   };

@@ -257,8 +257,14 @@ export function useOverlayWindow(bridge?: FloatingKinBridge, visible = true) {
     };
     const mutations = new MutationObserver(watchContent);
     mutations.observe(node, { childList: true });
+    const refreshSize = () => {
+      size = "";
+      resize();
+    };
+    window.addEventListener("resize", refreshSize);
     watchContent();
     return () => {
+      window.removeEventListener("resize", refreshSize);
       observer.disconnect();
       mutations.disconnect();
       interactive.current = false;

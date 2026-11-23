@@ -92,6 +92,7 @@ export const createFloatingKinWindow = ({
   let enabled = false;
   let disposed = false;
   let focusRequested = false;
+  let keyboardFocus = false;
   let ready = false;
   let visible = true;
   let presentationRevision = 0;
@@ -127,14 +128,33 @@ export const createFloatingKinWindow = ({
       active.setBounds(bounds);
     }
   };
+  const refreshPointerHit = () => {
+    const active = getWindow();
+    if (!visible || !active?.isVisible() || dragOrigin) return;
+    const bounds = active.getContentBounds();
+    const cursor = screen.getCursorScreenPoint();
+    const x = cursor.x - bounds.x;
+    const y = cursor.y - bounds.y;
+    if (x >= 0 && x < bounds.width && y >= 0 && y < bounds.height) {
+      // Showing or resizing the panel can put a control under a parked cursor.
+      active.webContents.sendInputEvent({ type: "mouseMove", x, y });
+    }
+  };
   const updateInput = () => {
     const active = getWindow();
-    if (dragOrigin || interactive) active?.setIgnoreMouseEvents(false);
-    else active?.setIgnoreMouseEvents(true, { forward: true });
+    if (!active) return;
+    const hit = Boolean(dragOrigin || interactive);
+    // An interactive NSPanel must be eligible to receive the first click
+    // itself rather than leaving macOS to make the main window key.
+    const focusable = hit || keyboardFocus;
+    if (active.isFocusable() !== focusable) active.setFocusable(focusable);
+    if (hit) active.setIgnoreMouseEvents(false);
+    else active.setIgnoreMouseEvents(true, { forward: true });
   };
   const clearInput = () => {
     dragOrigin = null;
     interactive = false;
+    keyboardFocus = false;
     updateInput();
     onDismiss();
   };
@@ -144,6 +164,7 @@ export const createFloatingKinWindow = ({
     show: () => {
       position();
       getWindow()?.showInactive();
+      refreshPointerHit();
     },
     slide: (value) => {
       if (!value) clearInput();
@@ -190,7 +211,8 @@ export const createFloatingKinWindow = ({
     position();
   };
   const focus = (active: BrowserWindow) => {
-    active.setFocusable(true);
+    keyboardFocus = true;
+    updateInput();
     active.focus();
   };
 
@@ -214,7 +236,10 @@ export const createFloatingKinWindow = ({
     window = next;
     screen.on("display-metrics-changed", position);
     screen.on("display-removed", position);
-    next.on("blur", () => next.setFocusable(false));
+    next.on("blur", () => {
+      keyboardFocus = false;
+      updateInput();
+    });
     next.on("hide", clearInput);
     next.webContents.on("did-start-navigation", (details) => {
       if (details.isMainFrame && !details.isSameDocument) clearInput();
@@ -284,6 +309,7 @@ export const createFloatingKinWindow = ({
     setSize(value: FloatingKinSize) {
       size = value;
       position();
+      refreshPointerHit();
     },
     dispose() {
       disposed = true;

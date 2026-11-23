@@ -12,6 +12,7 @@ import {
   ipcMain,
   Menu,
   protocol,
+  screen,
   systemPreferences
 } from "electron";
 import { registerFloatingKinIpc } from "../dist-electron/ipc/floating-kin.js";
@@ -89,12 +90,46 @@ async function assertHandoffRetainsAnchor(overlay, window) {
   assert.deepEqual(window.getBounds(), anchor);
 }
 
-async function waitFor(check) {
+async function waitFor(check, subject = "the packaged Kin renderer") {
   for (let attempt = 0; attempt < 200; attempt++) {
     if (await check()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.fail("Timed out waiting for the packaged Kin renderer");
+  assert.fail(`Timed out waiting for ${subject}`);
+}
+
+async function assertChipOpensSummary(window) {
+  const { webContents } = window;
+  await waitFor(() =>
+    webContents.executeJavaScript(`!!document.querySelector('.fk-chip')`)
+  );
+  const { x, y } = await webContents.executeJavaScript(`(() => {
+    const { x, y, width, height } = document.querySelector('.fk-chip').getBoundingClientRect();
+    return { x: Math.round(x + width - 8), y: Math.round(y + height / 2) };
+  })()`);
+  // Model the panel resizing under a stationary cursor without moving the
+  // real system pointer. The native window code must arm the chip itself.
+  const getCursorScreenPoint = screen.getCursorScreenPoint;
+  screen.getCursorScreenPoint = () => {
+    const { x: left, y: top } = window.getContentBounds();
+    return { x: left + x, y: top + y };
+  };
+  try {
+    await webContents.executeJavaScript(
+      `window.dispatchEvent(new Event('resize'))`
+    );
+    await waitFor(() => window.isFocusable(), "the native panel to arm");
+  } finally {
+    screen.getCursorScreenPoint = getCursorScreenPoint;
+  }
+  assert.equal(window.isFocused(), false, "hover only arms the panel");
+  for (const type of ["mouseDown", "mouseUp"])
+    webContents.sendInputEvent({ type, button: "left", clickCount: 1, x, y });
+  await waitFor(() =>
+    webContents.executeJavaScript(`
+    document.querySelector('#floating-kin-summary')?.textContent.includes('Summarize Conversation')
+  `)
+  );
 }
 
 async function testPackagedExit() {
@@ -112,7 +147,18 @@ async function testPackagedExit() {
     getWebContents: () => overlay.getWindow()?.webContents ?? null,
     url,
     runtime: {
-      activity: async () => ({ state: "stopped" }),
+      activity: async () => ({
+        state: "running",
+        overflowCount: 0,
+        conversations: [
+          {
+            sessionId: "00000000-0000-4000-8000-000000000001",
+            client: "codex",
+            lastActivityAt: new Date().toISOString(),
+            projectId: null
+          }
+        ]
+      }),
       summarize: async () => ({ status: "unavailable" })
     },
     mainWindowFocused: () => false,
@@ -127,7 +173,8 @@ async function testPackagedExit() {
   });
   try {
     overlay.setEnabled(true);
-    const { webContents } = overlay.getWindow();
+    const window = overlay.getWindow();
+    const { webContents } = window;
     await once(webContents, "did-finish-load");
     await waitFor(
       async () =>
@@ -144,12 +191,13 @@ async function testPackagedExit() {
     if (!reduced)
       await waitFor(() =>
         webContents.executeJavaScript(`(() => {
-      const surface = document.querySelector('.fk-surface');
-      const style = getComputedStyle(surface);
-      return style.opacity === '1' && style.transitionProperty.includes('opacity') && !surface.getAnimations().length;
-    })()`)
+          const surface = document.querySelector('.fk-surface');
+          const style = getComputedStyle(surface);
+          return style.opacity === '1' && style.transitionProperty.includes('opacity') && !surface.getAnimations().length;
+        })()`)
       );
-    presentation = { placement: "home", revision: 1, homePending: true };
+    await assertChipOpensSummary(window);
+    presentation = { placement: "sidebar", revision: 1, sidebarPending: true };
     webContents.send(channels.presentationChanged, presentation);
     overlay.setVisible(false, presentation.revision);
     if (!reduced) {
@@ -247,7 +295,9 @@ const timeout = setTimeout(() => {
 void testZoomSizing().then(
   () => {
     clearTimeout(timeout);
-    console.log("Floating Kin native zoom, sizing, and handoff passed.");
+    console.log(
+      "Floating Kin zoom, sizing, handoff, and packaged chip interaction passed."
+    );
     app.exit(0);
   },
   (error) => {
