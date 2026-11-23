@@ -29,6 +29,7 @@ import { MoveConversationDialog } from "./MoveConversationDialog.js";
 import { ConversationProjectsDialog } from "./ConversationProjectsDialog.js";
 import { SourceContextDialog } from "./SourceContextDialog.js";
 import { applySuggestions } from "./apply-suggestion.js";
+import { recordInferredGitAnchors } from "./infer-git-anchor.js";
 import { folderHintCache } from "./folder-hint-cache.js";
 import { useFolderSuggestions } from "./use-folder-suggestions.js";
 import { useSuggestionDismissals } from "./suggestion-dismissals.js";
@@ -129,6 +130,30 @@ export function useProjectManagement({
     startDelayMs: 2500,
     pauseMs: 300
   });
+  // A Git Anchor the evidence proves is recorded, not suggested, so Git Anchor
+  // rules include the Conversation. Each Conversation is tried once a session.
+  const inferred = useRef(new Set<string>());
+  useEffect(() => {
+    if (!api || !store || !available || worked.loading) return;
+    const fresh = new Map(
+      [...worked.hints].filter(([id]) => !inferred.current.has(id))
+    );
+    if (fresh.size === 0) return;
+    for (const id of fresh.keys()) inferred.current.add(id);
+    const check = () => {
+      if (!scopeIsCurrent())
+        throw new Error("The active account or backend changed.");
+    };
+    void recordInferredGitAnchors(api, projects, fresh, check)
+      .then(async ({ recorded }) => {
+        if (recorded.length === 0) return;
+        check();
+        await store.loadProjects({ silent: true });
+        if (alive.current) forgetSuggestions();
+      })
+      .catch(() => {});
+    // `worked.hints` changes only when a batch lands.
+  }, [api, store, available, worked.loading, worked.hints]);
   // Suggestions the User turned down stay out of the list and the counts.
   const { isDismissed, dismiss } = useSuggestionDismissals(scopeKey);
   // Nor is a Conversation suggested for a Project it is already in (added

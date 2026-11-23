@@ -65,7 +65,14 @@ export function useFolderSuggestions(
     startDelayMs?: number;
     pauseMs?: number;
   } = {}
-): { rows: SuggestionRow[]; loading: boolean; total: number; checked: number } {
+): {
+  rows: SuggestionRow[];
+  /** Every hint loaded so far, by Conversation. */
+  hints: ReadonlyMap<string, PersonalFolderHint[]>;
+  loading: boolean;
+  total: number;
+  checked: number;
+} {
   const { version = 0, startDelayMs = 0, pauseMs = 0 } = options;
   const candidates = useMemo(() => suggestionCandidates(projects), [projects]);
   const key = candidates.map((item) => item.sessionId).join(",");
@@ -113,5 +120,11 @@ export function useFolderSuggestions(
       }),
     [api, candidates, hints, projects]
   );
-  return { rows, loading, total: candidates.length, checked: hints.size };
+  return {
+    rows,
+    hints,
+    loading,
+    total: candidates.length,
+    checked: hints.size
+  };
 }

@@ -55,6 +55,15 @@ the exact candidate on the device. A changed candidate needs fresh approval.
 Git Anchor hints use reviewed source correction without a device-side rescore.
 When saving a Project suggestion, Koed previews whether the correction would
 newly include the Conversation in that exact Project through its rules. This is
-not direct membership, and a hint alone never changes attribution or membership.
+not direct membership. A Folder hint alone never changes attribution or
+membership.
+
+One case is recorded without review: a Git Anchor hint where the recorded
+directory still exists on the device that recorded the Conversation, existed
+before it started, and has that Git Anchor's remote today, for a Conversation
+whose Git Anchor is unresolved and never corrected. Desktop records it through
+the same source correction, so Git Anchor rules include the Conversation, and a
+later correction replaces it. See
+[ADR 0070](adr/0070-inferred-git-anchors-for-unresolved-history.md).
 
 See [Desktop IPC](personal-memory-desktop-ipc.md) for the review contract.
