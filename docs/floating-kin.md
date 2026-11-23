@@ -1,9 +1,10 @@
 # Floating Kin
 
-The Chief of Staff Kin shows recent captured Personal Conversations, not whether
-an AI Client is running, waiting, or finished. A quiet Kin does not mean the AI
-Client is idle. Capture can lag or miss activity, and imported history does not
-count as recent activity.
+The Chief of Staff Kin shows recent captured Personal Conversations. Capture
+can lag or miss activity, and imported history does not count as recent
+activity. An eligible Pi chip can also show **Working** when the connected Pi
+extension explicitly reports active work. No badge means liveness is unknown,
+not idle or finished. Other AI Clients do not report this status.
 
 Inside Koed, the Chief of Staff sits at the bottom-right of the Projects list,
 above the recent Conversation chips. It stays there as you switch screens. If
@@ -16,16 +17,23 @@ and its chips return to the desktop position you last dragged it to in this
 Desktop session. When the window regains focus, the Kin docks in the sidebar
 once the overlay finishes sliding out. With reduced motion enabled, the switch
 is immediate. The overlay does not take focus automatically; use
-**Window → Focus Floating Kin** for keyboard access. Clicks around the Kin and
-its controls pass through. The overlay stays at 100% page zoom; the main
-Desktop window can zoom independently. Quitting Desktop closes the overlay
+**Window → Focus Floating Kin** for keyboard access. Click the floating avatar
+itself to open or focus Koed Desktop, or drag it to move the overlay. Clicks
+around the Kin and its controls pass through. The overlay stays at 100% page
+zoom; the main Desktop window can zoom independently. Quitting Desktop closes the overlay
 even if the Local AI Runtime stays up.
 
-Click a Conversation chip to open its summary dialog on the same surface,
-without reopening the Koed window from the desktop overlay.
-Choose **Summarize Conversation** for the latest captured work in a
-Conversation, or **Summarize Project** for context from its Project. The Project
-action requires a resolved Project. There is no free-text prompt. An answer
+Click a Conversation chip to see its captured context on the same surface,
+without reopening the Koed window from the desktop overlay. The dialog shows
+when the Conversation was last captured and, when available, its title, Project,
+and short excerpts of the latest captured request and reply. A reply captured
+before the latest request is labeled **Previous captured reply**. The preview
+uses no model and does not indicate whether the AI Client is still working.
+Choose **Summarize Conversation** for a brief on the latest captured work.
+**Open last summary** reopens
+the chip’s most recent successful summary, even after moving between the
+sidebar and desktop, without using the model again. The settings button in the
+dialog opens **Settings → AI models**. There is no free-text prompt. An answer
 separates the account of captured work from any inference. **As of** is the time
 of the newest cited source, calculated by Koed. It is not the current state of
 the AI Client. The answer identifies its sources and the synthesis AI Client,
@@ -33,20 +41,28 @@ model, and reasoning effort when available.
 
 ## Read and synthesis path
 
-1. The active Desktop or overlay renderer asks the main process for metadata
-   or requests a fixed summary through its own preload. Neither renderer receives API credentials
-   or raw capture. The main process reads an authenticated loopback registration
-   for the existing Local AI Runtime. The Kin never starts or resumes a runtime,
-   including after **Stop Koed**. If Koed is stopped, start it explicitly from
+1. The active Desktop or overlay renderer asks the main process for activity,
+   a bounded preview, or a fixed summary through its own preload. Neither
+   renderer receives API credentials or raw records. The main process reads an authenticated loopback registration
+   for the existing Local AI Runtime. While Desktop is starting and the runtime
+   hasn’t published its endpoint yet, the Kin shows that it’s starting. The Kin
+   never starts or resumes a runtime, including after **Stop Koed**. If Koed is stopped, start it explicitly from
    Desktop to use the Kin again.
 2. The runtime asks the local API for recent Personal activity. Activity and
    evidence reads require a Personal API Token and the Local AI Runtime’s
    same-user registration proof over loopback. Hosted deployments cannot serve
-   those reads. Desktop polls a bounded feed of captured messages from the last
+   those reads. Preview reads use the same authorization. Desktop polls a bounded feed of captured messages from the last
    30 minutes, ordered by captured activity time. Replay and imports do not
-   create a fresh activity signal. Displayed information is limited to
-   Conversation, Project, AI Client, and time metadata. Local reads do not
-   require [optional Desktop sign-in](desktop-accounts.md); synthesis still
+   create a fresh activity signal. The activity feed contains only Conversation,
+   Project, AI Client, and time metadata. The runtime can add a short-lived Pi
+   status to already eligible chips. It matches the authenticated owner's Pi
+   Conversation and rechecks its Personal Capture Policy and connection. This
+   does not create, reorder, or keep a chip in the feed. Opening a chip makes a separate
+   local-only preview request for that Conversation. It checks that the
+   Conversation still qualifies for the feed and returns only short excerpts of
+   eligible Personal messages. Unfinished turns must pass the same proof as
+   summary evidence; Pi previews are sealed only. Local reads do not require
+   [optional Desktop sign-in](desktop-accounts.md); synthesis still
    requires the assigned AI Client to be ready. There is no Team path.
 3. For a Conversation summary, the API can supply eligible captured items from
    the latest unfinished Claude Code or Codex turn before its Memory Events
@@ -103,8 +119,12 @@ model, and reasoning effort when available.
    the result to be discarded. The runtime computes the freshness timestamp and
    returns a transient result. It requests cancellation after 30 seconds; the
    AI Client may need additional time to shut down. Cancelling or closing the
-   Kin discards the result. This path creates neither a Conversation nor a
-   durable Memory Answer.
+   dialog discards in-flight work. The Local AI Runtime keeps the latest
+   successful summary per recent Conversation in a bounded in-memory cache.
+   Opening it again rechecks every admitted evidence item, including uncited
+   items, before showing the answer. Project summaries also require the same
+   Project. History expires and is lost when the Local AI Runtime restarts.
+   This path creates neither a Conversation nor a durable Memory Answer.
    It does not start, continue, interrupt, or hand off any captured work.
 
 See [Desktop settings](desktop-settings.md#general),

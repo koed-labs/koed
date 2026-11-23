@@ -24,9 +24,12 @@ import {
   isLoopbackHostname,
   floatingKinActivitySchema,
   floatingKinEvidenceSchema,
+  floatingKinPreviewSchema,
   type FloatingKinActivity,
   type FloatingKinEvidence,
-  type FloatingKinEvidenceRequest
+  type FloatingKinEvidenceRequest,
+  type FloatingKinPreview,
+  type FloatingKinPreviewRequest
 } from "@koed-labs/shared";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { BackgroundApiRequestScheduler } from "./background-api-requests.js";
@@ -597,18 +600,23 @@ export class MemoryApiClient {
     return this.request<Record<string, unknown>>("GET", "/v1/capabilities");
   }
 
-  async getEffectiveCapturePolicy(input: {
-    projectId?: string;
-    threadId?: string;
-    sessionId?: string;
-  }): Promise<Record<string, unknown>> {
+  async getEffectiveCapturePolicy(
+    input: {
+      projectId?: string;
+      threadId?: string;
+      sessionId?: string;
+    },
+    options?: { signal?: AbortSignal; runtimeAuthorization?: string }
+  ): Promise<Record<string, unknown>> {
     const params = new URLSearchParams();
     if (input.projectId) params.set("projectId", input.projectId);
     if (input.threadId) params.set("threadId", input.threadId);
     if (input.sessionId) params.set("sessionId", input.sessionId);
     return this.request(
       "GET",
-      `/v1/capture-policy/effective?${params.toString()}`
+      `/v1/capture-policy/effective?${params.toString()}`,
+      undefined,
+      options
     );
   }
 
@@ -624,11 +632,14 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/conversation-source-artifacts", input);
   }
 
-  async lookupConversationSourceArtifact(input: {
-    sourceKind: "codex" | "claude-code" | "pi";
-    externalSessionId: string;
-    sourceComponentId?: string;
-  }): Promise<Record<string, unknown>> {
+  async lookupConversationSourceArtifact(
+    input: {
+      sourceKind: "codex" | "claude-code" | "pi";
+      externalSessionId: string;
+      sourceComponentId?: string;
+    },
+    options?: { signal?: AbortSignal; runtimeAuthorization?: string }
+  ): Promise<Record<string, unknown>> {
     const params = new URLSearchParams({
       source_kind: input.sourceKind,
       external_session_id: input.externalSessionId,
@@ -636,7 +647,9 @@ export class MemoryApiClient {
     });
     return this.request(
       "GET",
-      `/v1/conversation-source-artifacts/lookup?${params.toString()}`
+      `/v1/conversation-source-artifacts/lookup?${params.toString()}`,
+      undefined,
+      options
     );
   }
 
@@ -1067,6 +1080,57 @@ export class MemoryApiClient {
         runtimeAuthorization
       })
     );
+  }
+
+  async readFloatingKinPreview(
+    input: FloatingKinPreviewRequest,
+    runtimeAuthorization: string,
+    signal: AbortSignal
+  ): Promise<FloatingKinPreview> {
+    const url = new URL(this.config.apiUrl);
+    if (
+      !this.config.apiToken ||
+      this.config.authorizationProvider ||
+      !isLoopbackHostname(url.hostname) ||
+      !["http:", "https:"].includes(url.protocol)
+    ) {
+      throw new Error(
+        "Floating Kin preview requires a loopback Personal Memory API"
+      );
+    }
+    return floatingKinPreviewSchema.parse(
+      await this.request("POST", "/v1/memory/floating-kin/preview", input, {
+        signal,
+        runtimeAuthorization
+      })
+    );
+  }
+
+  async readFloatingKinHistoryOwner(
+    runtimeAuthorization: string,
+    signal: AbortSignal
+  ): Promise<string | null> {
+    const url = new URL(this.config.apiUrl);
+    if (
+      !this.config.apiToken ||
+      this.config.authorizationProvider ||
+      !isLoopbackHostname(url.hostname) ||
+      !["http:", "https:"].includes(url.protocol)
+    )
+      return null;
+
+    const identity = await this.requestOnce<AccessCheckResult>(
+      "GET",
+      "/v1/access/check",
+      undefined,
+      { signal, runtimeAuthorization }
+    );
+    return identity.ok &&
+      identity.auth === "bearer_api_token" &&
+      typeof identity.user?.id === "string" &&
+      identity.user.id
+      ? identity.user.id
+      : null;
   }
 
   async readFloatingKinEvidence(

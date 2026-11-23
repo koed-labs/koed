@@ -11,9 +11,12 @@ type KinIpc = Pick<IpcRenderer, "invoke" | "send" | "on" | "removeListener">;
 export function createKinSurfacePreloadApi(ipc: KinIpc) {
   return {
     activity: (revision) => ipc.invoke(channels.activity, revision),
+    preview: (input, revision) => ipc.invoke(channels.preview, input, revision),
     summarize: (input, revision) =>
       ipc.invoke(channels.summarize, input, revision),
     cancel: (revision) => ipc.invoke(channels.cancel, revision),
+    latest: (target, revision) => ipc.invoke(channels.latest, target, revision),
+    reopen: (target, revision) => ipc.invoke(channels.reopen, target, revision),
     onPresentation(listener) {
       let changed = false;
       const receive = (_event: unknown, presentation: KinPresentation) => {
@@ -41,6 +44,11 @@ export function createDesktopKinPreloadApi(ipc: KinIpc): DesktopKinBridge {
   return {
     ...createKinSurfacePreloadApi(ipc),
     setShellVisible: (visible) => ipc.send(channels.setShellVisible, visible),
+    onOpenAiModels(listener) {
+      const receive = () => listener();
+      ipc.on(channels.showAiModels, receive);
+      return () => ipc.removeListener(channels.showAiModels, receive);
+    },
     confirmPresentation: (revision) =>
       ipc.send(channels.confirmPresentation, revision)
   };

@@ -58,6 +58,14 @@ const floatingKinLiveItemSql = (
       and a->>'sourceRuntime'=s.source_runtime::text)
 `;
 
+const floatingKinRecentItemSql = `
+  ci.event_time > now() - interval '30 minutes'
+  and ci.observed_at > now() - interval '30 minutes'
+  and ${conversationMessageSql}
+  and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
+  and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
+`;
+
 export const floatingKinOwnerSelection = (actor: ActorContext) =>
   JSON.stringify({ ownerUserId: actor.userId, searchDomain: "global" });
 
@@ -81,11 +89,7 @@ export const getFloatingKinActivity = async (
     select s.id session_id, max(ci.event_time) activity_at
     from conversation_items ci join sessions s on s.id=ci.session_id
     where ${floatingKinLiveItemSql("$1", "$2", "$3")}
-      and ci.event_time > now() - interval '30 minutes'
-      and ci.observed_at > now() - interval '30 minutes'
-      and ${conversationMessageSql}
-      and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
-      and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
+      and ${floatingKinRecentItemSql}
     group by s.id
   ), recent as (
     select *, count(*) over () total from latest
@@ -129,14 +133,21 @@ export const readFloatingKinRawRows = <Row extends pg.QueryResultRow>(
   pool: pg.Pool,
   actor: ActorContext,
   sessionId: string,
-  evidenceIds?: string[],
-  initiatingFor?: string
+  {
+    evidenceIds,
+    initiatingFor,
+    preview = false
+  }: {
+    evidenceIds?: string[];
+    initiatingFor?: string;
+    preview?: boolean;
+  } = {}
 ) =>
   pool.query<Row>(
     `select ci.*, s.metadata session_metadata,
       ${projectionProject("ci")} as evidence_project,
       ${projectionTurn("ci")} as evidence_turn,
-      ($6::uuid[] is not null and exists (
+      (($6::uuid[] is not null or $8::boolean) and exists (
         select 1 from memory_event_sources ref join memory_events me on me.id=ref.memory_event_id
         where ref.conversation_item_id=ci.id and ref.source_role='derived_from'
           and me.owner_user_id=ci.owner_user_id and me.session_id=ci.session_id
@@ -207,7 +218,8 @@ export const readFloatingKinRawRows = <Row extends pg.QueryResultRow>(
       sessionId,
       floatingKinEvidenceLimit + 1,
       evidenceIds ?? null,
-      initiatingFor ?? null
+      initiatingFor ?? null,
+      preview
     ]
   );
 
@@ -225,6 +237,74 @@ const eligibleSealedLineageSql = `
       and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
     ), false)
   )`;
+
+export const readFloatingKinPreviewHeader = async (
+  pool: pg.Pool,
+  actor: ActorContext,
+  sessionId: string
+) => {
+  const { rows } = await pool.query<{
+    title: string | null;
+    project_name: string | null;
+  }>(
+    `select case when jsonb_typeof(s.metadata->'threadName')='string'
+      then s.metadata->>'threadName' end title,
+      (select case when count(*)=1 then min(p.name) end
+       from personal_named_projects p where ${personalSessionProjectMembershipSql("s", "p")}) project_name
+    from sessions s where s.id=$4 and exists (
+      select 1 from conversation_items ci where ci.session_id=s.id
+        and ${floatingKinLiveItemSql("$1", "$2", "$3")}
+        and ${floatingKinRecentItemSql}
+    )`,
+    [actor.userId, floatingKinOwnerSelection(actor), adapters, sessionId]
+  );
+  return rows[0];
+};
+
+export const readFloatingKinProjectedPreview = async (
+  pool: pg.Pool,
+  actor: ActorContext,
+  sessionId: string
+) => {
+  const { rows } = await pool.query<{
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    event_time: Date;
+  }>(
+    `select latest.* from (values ('user'), ('assistant')) roles(role)
+    cross join lateral (
+      select m.id, m.role, m.content, ci.event_time
+      from conversation_items ci join sessions s on s.id=ci.session_id
+      join messages m on m.session_id=s.id and m.owner_user_id=ci.owner_user_id
+        and m.visibility=ci.visibility
+        and m.idempotency_key='message:' || case
+          when jsonb_typeof(ci.metadata->'canonicalConversationItemKey')='string'
+            and ci.metadata->>'canonicalConversationItemKey' ~ '[^[:space:]]'
+          then ci.metadata->>'canonicalConversationItemKey' else ci.canonical_item_key end
+        and m.source_hash='message:' || ci.source_hash and m.source_event_time=ci.event_time
+      where s.id=$4 and ${floatingKinLiveItemSql("$1", "$2", "$3")}
+        and ${floatingKinRecentItemSql} and ci.projection_status='projected'
+        and m.role::text=roles.role and m.invalidated_at is null and m.recall_eligible
+        and m.presentation_mode <> 'hidden' and m.presentation_renderer='message'
+        and exists (
+          select 1 from memory_event_sources source
+          join memory_events me on me.id=source.memory_event_id
+          where source.conversation_item_id=ci.id and source.source_role='derived_from'
+            and me.session_id=s.id and me.owner_user_id=ci.owner_user_id and me.visibility=ci.visibility
+            and me.event_type='captured' and me.seal_reason is not null and me.include_in_lcm
+            and me.payload->'metadata'->'semanticItemManifest' @> jsonb_build_array(
+              jsonb_build_object('sourceIds', jsonb_build_array(ci.id::text), 'includeInLcm', true)
+            )
+            and me.invalidated_at is null and me.personal_deleted_at is null and me.source_event_time <= now()
+            and (${semanticMemoryEventEligibleSql("me")}) ${eligibleSealedLineageSql}
+        )
+      order by ci.event_time desc, ci.source_sequence desc nulls last, ci.id, m.id limit 1
+    ) latest`,
+    [actor.userId, floatingKinOwnerSelection(actor), adapters, sessionId]
+  );
+  return rows;
+};
 
 export const readFloatingKinSealedRows = <Row extends pg.QueryResultRow>(
   pool: pg.Pool,

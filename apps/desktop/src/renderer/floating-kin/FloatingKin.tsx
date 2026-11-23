@@ -8,7 +8,8 @@ import {
 } from "react";
 import type {
   FloatingKinBridge,
-  KinActivityBridge
+  KinActivityBridge,
+  KinPlacement
 } from "../../ipc/floating-kin-protocol.js";
 import { Pixelkin } from "../v1/pixelkin/Pixelkin.js";
 import {
@@ -25,10 +26,12 @@ import {
 import {
   useActivity,
   useCaptureWake,
+  useCapturedPreview,
   useMainWindowFocus,
   useOverlayWindow,
   useSummary,
-  useKinSurfaceActivity
+  useKinSurfaceActivity,
+  useLatestSummary
 } from "./use-floating-kin.js";
 import { useKinInteraction } from "./use-kin-interaction.js";
 import "./floating-kin.css";
@@ -63,6 +66,32 @@ function captureAge(seconds: number) {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
+function workingDeadline(conversation: Conversation) {
+  return conversation.client === "pi" && conversation.workingUntil
+    ? Date.parse(conversation.workingUntil)
+    : 0;
+}
+
+function useWorkingClock(deadlines: number[], sampledAt: number) {
+  const [check, setCheck] = useState<{ sampledAt: number; at: number }>();
+  const now = check?.sampledAt === sampledAt ? check.at : sampledAt;
+  const next = Math.min(...deadlines.filter((deadline) => deadline > now));
+  // Expire visible leases even when the activity read never settles.
+  useEffect(() => {
+    if (!Number.isFinite(next)) return;
+    let timer: number | undefined;
+    const expire = () => {
+      const time = Date.now();
+      if (time >= next) setCheck({ sampledAt, at: time });
+      else
+        timer = window.setTimeout(expire, Math.min(next - time, 2_147_483_647));
+    };
+    expire();
+    return () => window.clearTimeout(timer);
+  }, [next, sampledAt]);
+  return now;
+}
+
 const ChipKin = memo(function ChipKin({
   projectId,
   animate
@@ -83,12 +112,14 @@ function CaptureChip({
   conversation,
   index,
   now,
+  working,
   expanded,
   toggle
 }: {
   conversation: Conversation;
   index: number;
   now: number;
+  working: boolean;
   expanded: boolean;
   toggle: (trigger: HTMLButtonElement) => void;
 }) {
@@ -99,10 +130,11 @@ function CaptureChip({
     <button
       type="button"
       className="fk-chip"
+      data-client={conversation.client}
       data-fk-hit
       aria-expanded={expanded}
       aria-controls={expanded ? "floating-kin-summary" : undefined}
-      aria-label={`${clientNames[conversation.client]} Conversation ${index + 1}. Captured ${age} ago.`}
+      aria-label={`${clientNames[conversation.client]} Conversation ${index + 1}. ${working ? "Working. " : ""}Captured ${age} ago.`}
       onClick={(event) => toggle(event.currentTarget)}
     >
       <span className="fk-avatar" data-fk-handle>
@@ -113,9 +145,13 @@ function CaptureChip({
         <ClientMark client={conversation.client} />
       </span>
       <span className="fk-dot" data-recent={recent} aria-hidden="true" />
-      <time dateTime={conversation.lastActivityAt} aria-hidden="true">
-        {age}
-      </time>
+      <span className="fk-chip-label" aria-hidden="true">
+        {working ? (
+          <span className="fk-working">Working</span>
+        ) : (
+          <time dateTime={conversation.lastActivityAt}>{age}</time>
+        )}
+      </span>
     </button>
   );
 }
@@ -133,17 +169,17 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
 }
 
 export function StandaloneKin({
-  hasChips = false,
   active,
   placement = "desktop",
-  size = 88
+  size = 88,
+  onOpenDesktop
 }: {
-  hasChips?: boolean;
   active: boolean;
   placement?: "desktop" | "sidebar";
   size?: number;
+  onOpenDesktop?: () => void;
 }) {
-  const avatar = useRef<HTMLDivElement>(null);
+  const Avatar = onOpenDesktop ? "button" : "div";
   const wakeTimer = useRef<number | undefined>(undefined);
   const [recentHover, setRecentHover] = useState(false);
   const awake = active || recentHover;
@@ -153,26 +189,22 @@ export function StandaloneKin({
     wakeTimer.current = window.setTimeout(() => setRecentHover(false), 60_000);
   };
   useEffect(() => () => window.clearTimeout(wakeTimer.current), []);
-  useEffect(() => {
-    const element = avatar.current;
-    if (!hasChips || !element || document.activeElement !== element) return;
-    element
-      .closest(".fk-surface")
-      ?.querySelector<HTMLButtonElement>(".fk-chip")
-      ?.focus();
-  }, [hasChips]);
   return (
-    <div
+    <Avatar
       className="fk-kin-avatar"
-      ref={avatar}
       data-fk-hit
       data-fk-handle
-      role="img"
+      {...(onOpenDesktop
+        ? { type: "button" as const, onClick: onOpenDesktop }
+        : { role: "img" })}
       aria-label={
-        placement === "desktop" ? "Floating Kin avatar" : "Chief of Staff"
+        onOpenDesktop
+          ? "Open Koed Desktop"
+          : placement === "desktop"
+            ? "Floating Kin avatar"
+            : "Chief of Staff"
       }
       aria-description={awake ? "Awake" : "Sleeping"}
-      tabIndex={placement === "desktop" ? (hasChips ? -1 : 0) : undefined}
       onMouseEnter={wake}
     >
       <Pixelkin
@@ -186,7 +218,7 @@ export function StandaloneKin({
           z
         </span>
       )}
-    </div>
+    </Avatar>
   );
 }
 
@@ -235,7 +267,8 @@ function useSelection(
 }
 
 export function useKinActivity(
-  bridge?: KinActivityBridge,
+  bridge: KinActivityBridge | undefined,
+  placement: KinPlacement,
   visible = true,
   scopeKey?: string | null
 ) {
@@ -262,27 +295,38 @@ export function KinActivityContent({
   bridge,
   surface,
   visible = true,
-  showStatus = false
+  showStatus = false,
+  openAiModels
 }: {
   sample: ReturnType<typeof useKinActivity>;
   bridge?: KinActivityBridge;
   surface: RefObject<HTMLElement | null>;
   visible?: boolean;
   showStatus?: boolean;
+  openAiModels?: () => void;
 }) {
   const { activity, at, recent, conversations, overflow } = sample;
-  const { view, summarize, cancel, isCancelling } = useSummary(bridge);
+  const deadlines = visible ? conversations.map(workingDeadline) : [];
+  const workingNow = useWorkingClock(deadlines, at);
+  const { view, summarize, reopen, cancel, isCancelling } = useSummary(bridge);
   const { selected, close, toggle } = useSelection(
     recent,
     cancel,
     surface,
     visible
   );
+  const preview = useCapturedPreview(bridge, visible ? selected : undefined);
   const selectedView =
     view?.request.sessionId === selected?.sessionId ? view : null;
   const staleProjectView =
     selectedView?.request.action === "project" &&
     selectedView.request.projectId !== selected?.projectId;
+  const latest = useLatestSummary(
+    bridge,
+    visible ? selected?.sessionId : undefined,
+    selected?.projectId ?? null,
+    staleProjectView ? undefined : selectedView?.result
+  );
   useLayoutEffect(() => {
     if (staleProjectView) void cancel(true);
   }, [cancel, staleProjectView]);
@@ -302,18 +346,31 @@ export function KinActivityContent({
       {visible && selected ? (
         <FloatingKinPanel
           conversation={selected}
+          preview={preview}
           isCancelling={isCancelling}
           view={staleProjectView ? null : selectedView}
           age={captureAge(captureSeconds(selected.lastActivityAt, at))}
           close={close}
-          summarize={(action) => {
-            const { sessionId, projectId } = selected;
-            if (action === "conversation")
-              void summarize({ sessionId, action });
-            else if (projectId)
-              void summarize({ sessionId, action, projectId });
-          }}
+          summarize={() =>
+            void summarize({
+              sessionId: selected.sessionId,
+              action: "conversation"
+            })
+          }
           cancel={() => void cancel()}
+          openAiModels={openAiModels}
+          openLastSummary={
+            latest
+              ? () =>
+                  void reopen(
+                    {
+                      sessionId: selected.sessionId,
+                      projectId: selected.projectId
+                    },
+                    latest
+                  )
+              : undefined
+          }
         />
       ) : null}
       {conversations.length > 0 || overflow > 0 ? (
@@ -327,6 +384,7 @@ export function KinActivityContent({
               key={conversation.sessionId}
               conversation={conversation}
               now={at}
+              working={(deadlines[index] ?? 0) > workingNow}
               index={index}
               expanded={
                 visible && selected?.sessionId === conversation.sessionId
@@ -354,13 +412,17 @@ export function KinActivityContent({
 function OverlayKinContent({
   bridge,
   surface,
-  focused
+  focused,
+  onOpenDesktop,
+  openAiModels
 }: {
   bridge?: KinActivityBridge;
   surface: RefObject<HTMLElement | null>;
   focused: boolean;
+  onOpenDesktop?: () => void;
+  openAiModels?: () => void;
 }) {
-  const sample = useKinActivity(bridge);
+  const sample = useKinActivity(bridge, "desktop");
   return (
     <>
       <KinActivityContent
@@ -368,10 +430,11 @@ function OverlayKinContent({
         bridge={bridge}
         surface={surface}
         showStatus
+        openAiModels={openAiModels}
       />
       <StandaloneKin
-        hasChips={sample.conversations.length > 0}
         active={focused || sample.recentCapture}
+        onOpenDesktop={onOpenDesktop}
       />
     </>
   );
@@ -416,7 +479,8 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
   useEffect(() => bridge?.onPresentation?.(setPresentation), [bridge]);
   const visible =
     !bridge?.onPresentation || presentation?.placement === "desktop";
-  const activityBridge = useKinSurfaceActivity(bridge, presentation?.revision);
+  const revision = presentation?.revision;
+  const activityBridge = useKinSurfaceActivity(bridge, revision);
   const mainWindowFocused = useMainWindowFocus(bridge);
   const { surface, setInteractive } = useOverlayWindow(bridge, visible);
   useExitCompletion(
@@ -447,6 +511,16 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           bridge={activityBridge}
           surface={surface}
           focused={mainWindowFocused}
+          openAiModels={
+            bridge && revision !== undefined
+              ? () => bridge.openAiModels(revision)
+              : undefined
+          }
+          onOpenDesktop={
+            bridge && revision !== undefined
+              ? () => bridge.openDesktop(revision)
+              : undefined
+          }
         />
       ) : (
         <StandaloneKin active={false} />

@@ -174,6 +174,15 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   min-height: 42px;
   font-variant-numeric: tabular-nums;
 }
+/* Keep the hit area stable when a Pi lease appears or expires. */
+.fk-chip[data-client="pi"] .fk-chip-label {
+  inline-size: 4em;
+  text-align: start;
+}
+.fk-working {
+  font-size: 0.9em;
+  font-weight: 600;
+}
 .fk-chip:hover,
 .fk-chip[aria-expanded="true"] {
   border-color: var(--fk-accent);
@@ -248,6 +257,11 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   place-items: center;
   width: 88px;
   height: 88px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.fk-surface .fk-kin-avatar[data-fk-hit] {
   pointer-events: none;
 }
 .fk-kin-avatar .v1-pixelkin,
@@ -309,7 +323,18 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   color: var(--fk-muted);
   font-size: 12px;
 }
+.fk-header > div {
+  min-width: 0;
+}
+.fk-header h2,
+.fk-project-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .fk-header button {
+  flex: none;
   border: 0;
   border-radius: 6px;
   background: var(--fk-subtle);
@@ -344,6 +369,9 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   white-space: pre-wrap;
   user-select: text;
 }
+.fk-preview p {
+  white-space: normal;
+}
 .fk-sources summary {
   cursor: pointer;
   color: var(--fk-accent);
@@ -359,7 +387,14 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 }
 .fk-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+.fk-actions .fk-settings-button {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  padding: 6px;
 }
 .fk-body button {
   border: 1px solid var(--fk-line);

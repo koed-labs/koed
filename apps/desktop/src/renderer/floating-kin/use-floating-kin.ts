@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  FloatingKinPreview,
   FloatingKinSummary,
   FloatingKinSummaryRequest
 } from "@koed-labs/shared";
@@ -7,7 +8,8 @@ import type {
   FloatingKinActivityState,
   FloatingKinBridge,
   KinActivityBridge,
-  KinSurfaceBridge
+  KinSurfaceBridge,
+  KinSummaryTarget
 } from "../../ipc/floating-kin-protocol.js";
 
 export function useKinSurfaceActivity(
@@ -19,7 +21,10 @@ export function useKinSurfaceActivity(
     if (revision === undefined) return bridge;
     return {
       activity: () => bridge.activity(revision),
+      preview: (input) => bridge.preview(input, revision),
       summarize: (input) => bridge.summarize(input, revision),
+      latest: (target) => bridge.latest(target, revision),
+      reopen: (target) => bridge.reopen(target, revision),
       cancel: () => bridge.cancel(revision)
     };
   }, [bridge, revision]);
@@ -29,7 +34,7 @@ const activePollMs = 3_000;
 const quietPollMs = 10_000;
 
 export function useActivity(
-  bridge?: KinActivityBridge,
+  bridge: KinActivityBridge | undefined,
   visible = true,
   scopeKey: string | null = null
 ) {
@@ -123,6 +128,7 @@ export function useMainWindowFocus(bridge?: FloatingKinBridge) {
 type SummaryView = {
   request: FloatingKinSummaryRequest;
   result: FloatingKinSummary | null;
+  reopening?: boolean;
 };
 
 export function useSummary(bridge?: KinActivityBridge) {
@@ -134,20 +140,47 @@ export function useSummary(bridge?: KinActivityBridge) {
   const cancelling = useRef(false);
   const [isCancelling, setIsCancelling] = useState(false);
 
-  const summarize = async (request: FloatingKinSummaryRequest) => {
-    if (!bridge || running.current || cancelling.current) return;
+  const run = async (
+    request: FloatingKinSummaryRequest,
+    read: () => Promise<FloatingKinSummary>,
+    reopening = false
+  ) => {
+    if (running.current || cancelling.current) return;
     const pending = {
       request,
       result: Promise.resolve()
-        .then(() => bridge.summarize(request))
+        .then(read)
         .catch(() => ({ status: "unavailable" as const }))
     };
     running.current = pending;
-    setView({ request, result: null });
+    setView({ request, result: null, reopening });
     const result = await pending.result;
     if (running.current !== pending) return;
     running.current = null;
-    setView({ request, result });
+    setView({ request, result, reopening });
+  };
+  const summarize = (request: FloatingKinSummaryRequest) => {
+    if (bridge) return run(request, () => bridge.summarize(request));
+  };
+  const reopen = (
+    target: KinSummaryTarget,
+    action: FloatingKinSummaryRequest["action"]
+  ) => {
+    if (!bridge || (action === "project" && !target.projectId)) return;
+    const request: FloatingKinSummaryRequest =
+      action === "project" && target.projectId
+        ? { sessionId: target.sessionId, projectId: target.projectId, action }
+        : { sessionId: target.sessionId, action: "conversation" };
+    return run(
+      request,
+      async () => {
+        const stored = await bridge.reopen(target);
+        return stored?.action === action
+          ? stored.result
+          : { status: "unavailable" };
+      },
+      true
+    );
   };
 
   const cancel = useCallback(
@@ -187,7 +220,68 @@ export function useSummary(bridge?: KinActivityBridge) {
     [bridge]
   );
 
-  return { view, summarize, cancel, isCancelling };
+  return { view, summarize, reopen, cancel, isCancelling };
+}
+
+export function useCapturedPreview(
+  bridge: KinActivityBridge | undefined,
+  conversation:
+    | { sessionId: string; projectId: string | null; lastActivityAt: string }
+    | undefined
+): FloatingKinPreview {
+  const { sessionId, projectId, lastActivityAt } = conversation ?? {};
+  const key = useMemo(
+    () => ({ bridge, sessionId, projectId, lastActivityAt }),
+    [bridge, sessionId, projectId, lastActivityAt]
+  );
+  const [sample, setSample] = useState<{
+    key: typeof key;
+    value: FloatingKinPreview;
+  }>();
+  useEffect(() => {
+    if (!bridge || !sessionId) return;
+    let current = true;
+    void bridge
+      .preview({ sessionId })
+      .then((value) => {
+        if (current) setSample({ key, value });
+      })
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [bridge, key, sessionId]);
+  return sample?.key === key ? sample.value : null;
+}
+
+export function useLatestSummary(
+  bridge: KinActivityBridge | undefined,
+  sessionId: string | undefined,
+  projectId: string | null,
+  result: FloatingKinSummary | null | undefined
+) {
+  const key = useMemo(
+    () => ({ bridge, sessionId, projectId, result }),
+    [bridge, sessionId, projectId, result]
+  );
+  const [sample, setSample] = useState<{
+    key: typeof key;
+    action: FloatingKinSummaryRequest["action"] | null;
+  }>();
+  useEffect(() => {
+    if (!bridge || !sessionId || result === null) return;
+    let current = true;
+    void bridge
+      .latest({ sessionId, projectId })
+      .then(({ action }) => {
+        if (current) setSample({ key, action });
+      })
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [bridge, key, projectId, result, sessionId]);
+  return sample?.key === key ? sample.action : null;
 }
 
 const pixels = (value: string) => Number.parseFloat(value) || 0;

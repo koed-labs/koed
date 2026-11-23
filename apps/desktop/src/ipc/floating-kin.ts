@@ -1,6 +1,10 @@
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import {
+  floatingKinPreviewRequestSchema,
   floatingKinSummaryRequestSchema,
+  floatingKinSummaryTargetSchema,
+  type FloatingKinPreview,
+  type FloatingKinPreviewRequest,
   type FloatingKinSummary,
   type FloatingKinSummaryRequest
 } from "@koed-labs/shared";
@@ -9,15 +13,30 @@ import {
   type FloatingKinActivityState,
   type FloatingKinDrag,
   type FloatingKinSize,
-  type KinPresentation
+  type KinLatestSummary,
+  type KinPresentation,
+  type KinReopenedSummary,
+  type KinSummaryTarget
 } from "./floating-kin-protocol.js";
 
 type FloatingKinRuntime = {
   activity: (signal: AbortSignal) => Promise<FloatingKinActivityState>;
+  preview: (
+    input: FloatingKinPreviewRequest,
+    signal: AbortSignal
+  ) => Promise<FloatingKinPreview>;
   summarize: (
     input: FloatingKinSummaryRequest,
     signal: AbortSignal
   ) => Promise<FloatingKinSummary>;
+  latest: (
+    target: KinSummaryTarget,
+    signal: AbortSignal
+  ) => Promise<KinLatestSummary>;
+  reopen: (
+    target: KinSummaryTarget,
+    signal: AbortSignal
+  ) => Promise<KinReopenedSummary>;
 };
 
 const sizeFrom = (value: unknown): FloatingKinSize | null => {
@@ -60,22 +79,33 @@ const dragFrom = (value: unknown): FloatingKinDrag | null => {
 
 const summaryRequests = (runtime: FloatingKinRuntime) => {
   let pending: AbortController | null = null;
+  const run = <T>(read: (signal: AbortSignal) => Promise<T>, fallback: T) => {
+    const request = new AbortController();
+    pending = request;
+    return read(request.signal)
+      .then((result) => (request.signal.aborted ? fallback : result))
+      .finally(() => {
+        if (pending === request) pending = null;
+      });
+  };
   return {
     cancel: () => pending?.abort(),
     run(value: unknown): FloatingKinSummary | Promise<FloatingKinSummary> {
       const input = floatingKinSummaryRequestSchema.safeParse(value);
       if (!input.success) return { status: "unavailable" };
       if (pending) return { status: "busy" };
-      const request = new AbortController();
-      pending = request;
-      return runtime
-        .summarize(input.data, request.signal)
-        .then<FloatingKinSummary>((result) =>
-          request.signal.aborted ? { status: "cancelled" } : result
-        )
-        .finally(() => {
-          pending = null;
-        });
+      return run<FloatingKinSummary>(
+        (signal) => runtime.summarize(input.data, signal),
+        { status: "cancelled" }
+      );
+    },
+    reopen(value: unknown) {
+      const input = floatingKinSummaryTargetSchema.safeParse(value);
+      if (!input.success || pending) return null;
+      return run<KinReopenedSummary>(
+        (signal) => runtime.reopen(input.data, signal),
+        null
+      );
     }
   };
 };
@@ -107,14 +137,37 @@ const activityRequests = (runtime: FloatingKinRuntime) => {
   };
 };
 
+function previewRequests(runtime: FloatingKinRuntime) {
+  let pending: AbortController | undefined;
+  return {
+    cancel: () => pending?.abort(),
+    async run(value: unknown) {
+      const input = floatingKinPreviewRequestSchema.safeParse(value);
+      if (!input.success) return null;
+      pending?.abort();
+      const request = new AbortController();
+      pending = request;
+      try {
+        const result = await runtime.preview(input.data, request.signal);
+        return request.signal.aborted ? null : result;
+      } finally {
+        if (pending === request) pending = undefined;
+      }
+    }
+  };
+}
+
 export const registerFloatingKinIpc = ({
   ipcMain,
   getWebContents,
   url,
   runtime,
   mainWindowFocused,
+  overlayVisible,
   presentation,
   completeExit,
+  openDesktop,
+  openAiModels,
   interactive,
   resize,
   drag,
@@ -125,14 +178,18 @@ export const registerFloatingKinIpc = ({
   url: string;
   runtime: FloatingKinRuntime;
   mainWindowFocused: () => boolean;
+  overlayVisible: () => boolean;
   presentation: () => KinPresentation;
   completeExit: (revision: number) => void;
+  openDesktop: () => void;
+  openAiModels: () => void;
   interactive: (value: boolean) => void;
   resize: (size: FloatingKinSize) => void;
   drag: (input: FloatingKinDrag) => void;
   desktop?: {
     getWebContents: () => WebContents | null;
     url: string;
+    isShellVisible: () => boolean;
     setShellVisible: (visible: boolean) => void;
     confirmPresentation: (revision: number) => void;
   };
@@ -152,14 +209,13 @@ export const registerFloatingKinIpc = ({
     event.sender === desktop.getWebContents() &&
     event.senderFrame === event.sender.mainFrame &&
     event.senderFrame?.url === desktop.url;
-  const overlayRequests = {
+  const createRequests = () => ({
     activity: activityRequests(runtime),
-    summaries: summaryRequests(runtime)
-  };
-  const desktopRequests = {
-    activity: activityRequests(runtime),
-    summaries: summaryRequests(runtime)
-  };
+    summaries: summaryRequests(runtime),
+    preview: previewRequests(runtime)
+  });
+  const overlayRequests = createRequests();
+  const desktopRequests = createRequests();
   const requestsFor = (event: IpcMainInvokeEvent, revision: unknown) => {
     const inApp = desktopTrusted(event);
     if (!inApp) assertTrusted(event);
@@ -181,11 +237,46 @@ export const registerFloatingKinIpc = ({
       requestsFor(event, revision)?.activity.run() ?? { state: "unavailable" }
   );
   ipcMain.handle(
+    channels.preview,
+    (event, value: unknown, revision: unknown) => {
+      const requests = requestsFor(event, revision);
+      if (!requests) return null;
+      const visible = () => {
+        const state = presentation();
+        if (state.revision !== revision) return false;
+        return requests === desktopRequests
+          ? state.placement === "sidebar" &&
+              !state.sidebarPending &&
+              desktop?.isShellVisible()
+          : state.placement === "desktop" && overlayVisible();
+      };
+      if (!visible()) return null;
+      return requests.preview
+        .run(value)
+        .then((result) => (visible() ? result : null));
+    }
+  );
+  ipcMain.handle(
     channels.summarize,
     (event, value: unknown, revision: unknown) =>
       requestsFor(event, revision)?.summaries.run(value) ?? {
         status: "unavailable"
       }
+  );
+  ipcMain.handle(
+    channels.latest,
+    (event, value: unknown, revision: unknown) => {
+      const requests = requestsFor(event, revision);
+      const target = floatingKinSummaryTargetSchema.safeParse(value);
+      return requests && target.success
+        ? runtime.latest(target.data, AbortSignal.timeout(6000))
+        : { action: null };
+    }
+  );
+  ipcMain.handle(
+    channels.reopen,
+    (event, value: unknown, revision: unknown) =>
+      requestsFor(event, revision)?.summaries.reopen(value) ?? null
   );
   ipcMain.handle(channels.cancel, (event, revision: unknown) =>
     requestsFor(event, revision)?.summaries.cancel()
@@ -195,8 +286,10 @@ export const registerFloatingKinIpc = ({
     return presentation();
   });
   ipcMain.on(channels.setShellVisible, (event, value: unknown) => {
-    if (desktopTrusted(event) && typeof value === "boolean")
+    if (desktopTrusted(event) && typeof value === "boolean") {
+      if (!value) desktopRequests.preview.cancel();
       desktop?.setShellVisible(value);
+    }
   });
   ipcMain.on(channels.confirmPresentation, (event, value: unknown) => {
     if (desktopTrusted(event) && value === presentation().revision)
@@ -207,6 +300,16 @@ export const registerFloatingKinIpc = ({
     const { placement, sidebarPending, revision } = presentation();
     if (placement === "sidebar" && sidebarPending && value === revision)
       completeExit(revision);
+  });
+  ipcMain.on(channels.openDesktop, (event, value: unknown) => {
+    if (!trusted(event)) return;
+    const { placement, revision } = presentation();
+    if (placement === "desktop" && value === revision) openDesktop();
+  });
+  ipcMain.on(channels.openAiModels, (event, value: unknown) => {
+    if (!trusted(event)) return;
+    const { placement, revision } = presentation();
+    if (placement === "desktop" && value === revision) openAiModels();
   });
   ipcMain.on(channels.setInteractive, (event, value: unknown) => {
     if (trusted(event) && typeof value === "boolean") interactive(value);
@@ -225,10 +328,12 @@ export const registerFloatingKinIpc = ({
     if (surface !== "desktop") {
       overlayRequests.activity.cancel();
       overlayRequests.summaries.cancel();
+      overlayRequests.preview.cancel();
     }
     if (surface !== "overlay") {
       desktopRequests.activity.cancel();
       desktopRequests.summaries.cancel();
+      desktopRequests.preview.cancel();
     }
   };
 };

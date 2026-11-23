@@ -1,7 +1,12 @@
 import type {
   FloatingKinActivity,
+  FloatingKinPreview,
+  FloatingKinPreviewRequest,
   FloatingKinSummary,
-  FloatingKinSummaryRequest
+  FloatingKinSummaryLatest,
+  FloatingKinSummaryOpen,
+  FloatingKinSummaryRequest,
+  FloatingKinSummaryTarget
 } from "@koed-labs/shared";
 
 export type FloatingKinActivityState =
@@ -20,18 +25,37 @@ export type KinPresentation = {
   sidebarPending?: boolean;
 };
 
+export type KinSummaryTarget = FloatingKinSummaryTarget;
+export type KinLatestSummary = FloatingKinSummaryLatest;
+export type KinReopenedSummary = FloatingKinSummaryOpen;
+
 export type KinActivityBridge = {
   activity: () => Promise<FloatingKinActivityState>;
+  preview: (input: FloatingKinPreviewRequest) => Promise<FloatingKinPreview>;
   summarize: (input: FloatingKinSummaryRequest) => Promise<FloatingKinSummary>;
+  latest: (target: KinSummaryTarget) => Promise<KinLatestSummary>;
+  reopen: (target: KinSummaryTarget) => Promise<KinReopenedSummary>;
   cancel: () => Promise<void>;
 };
 
 export type KinSurfaceBridge = {
   activity: (revision?: number) => Promise<FloatingKinActivityState>;
+  preview: (
+    input: FloatingKinPreviewRequest,
+    revision?: number
+  ) => Promise<FloatingKinPreview>;
   summarize: (
     input: FloatingKinSummaryRequest,
     revision?: number
   ) => Promise<FloatingKinSummary>;
+  latest: (
+    target: KinSummaryTarget,
+    revision?: number
+  ) => Promise<KinLatestSummary>;
+  reopen: (
+    target: KinSummaryTarget,
+    revision?: number
+  ) => Promise<KinReopenedSummary>;
   cancel: (revision?: number) => Promise<void>;
   onPresentation?: (listener: (state: KinPresentation) => void) => () => void;
 };
@@ -39,11 +63,14 @@ export type KinSurfaceBridge = {
 export type DesktopKinBridge = KinSurfaceBridge & {
   setShellVisible: (visible: boolean) => void;
   confirmPresentation: (revision: number) => void;
+  onOpenAiModels: (listener: () => void) => () => void;
   onPresentation: (listener: (state: KinPresentation) => void) => () => void;
 };
 
 export type FloatingKinBridge = KinSurfaceBridge & {
   completeExit: (revision: number) => void;
+  openDesktop: (revision: number) => void;
+  openAiModels: (revision: number) => void;
   setInteractive: (interactive: boolean) => void;
   setSize: (size: FloatingKinSize) => void;
   drag: (input: FloatingKinDrag) => void;
@@ -52,7 +79,10 @@ export type FloatingKinBridge = KinSurfaceBridge & {
 
 export const floatingKinChannels = {
   activity: "koed:floating-kin:activity",
+  preview: "koed:floating-kin:preview",
   summarize: "koed:floating-kin:summarize",
+  latest: "koed:floating-kin:latest-summary",
+  reopen: "koed:floating-kin:reopen-summary",
   cancel: "koed:floating-kin:cancel",
   setInteractive: "koed:floating-kin:set-interactive",
   setSize: "koed:floating-kin:set-size",
@@ -63,5 +93,8 @@ export const floatingKinChannels = {
   presentation: "koed:floating-kin:presentation",
   confirmPresentation: "koed:floating-kin:confirm-presentation",
   completeExit: "koed:floating-kin:complete-exit",
+  openDesktop: "koed:floating-kin:open-desktop",
+  openAiModels: "koed:floating-kin:open-ai-models",
+  showAiModels: "koed:floating-kin:show-ai-models",
   presentationChanged: "koed:floating-kin:presentation-changed"
 } as const;

@@ -14,12 +14,18 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
   document.body.append(mount);
   const root = createRoot(mount);
   let change: (state: KinPresentation) => void = () => {};
+  let showAiModels: () => void = () => {};
+  const openAiModels = vi.fn();
   const bridge: DesktopKinBridge = {
     onPresentation: (listener) => {
       change = listener;
       return () => {};
     },
     setShellVisible: vi.fn(),
+    onOpenAiModels: (listener) => {
+      showAiModels = listener;
+      return () => {};
+    },
     confirmPresentation: vi.fn(),
     activity: vi.fn<DesktopKinBridge["activity"]>(async () => ({
       state: "running",
@@ -36,11 +42,14 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
     summarize: vi.fn<DesktopKinBridge["summarize"]>(async () => ({
       status: "unavailable"
     })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
     cancel: vi.fn(async () => {})
   };
   const noop = () => {};
   function Harness({ route }: { route: "home" | "recall" }) {
-    const { dock, avatar } = useDesktopKin(bridge);
+    const { dock, avatar } = useDesktopKin(bridge, null, true, openAiModels);
     return (
       <NavigationShell
         projects={[]}
@@ -104,6 +113,11 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
     );
     await act(async () => chip.click());
     expect(projects.querySelector(".fk-panel")).not.toBeNull();
+    const settings = projects.querySelector<HTMLButtonElement>(
+      'button[aria-label="AI models settings"]'
+    )!;
+    await act(async () => settings.click());
+    expect(openAiModels).toHaveBeenCalledTimes(1);
     chip.focus();
     vi.mocked(bridge.activity).mockResolvedValueOnce({
       state: "running",
@@ -122,6 +136,8 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
     await transition("desktop", 2);
     expect(mount.querySelector(".fk-kin-avatar, .fk-chip")).toBeNull();
     expect(bridge.confirmPresentation).toHaveBeenCalledExactlyOnceWith(2);
+    await act(async () => showAiModels());
+    expect(openAiModels).toHaveBeenCalledTimes(2);
   } finally {
     await act(async () => root.unmount());
     mount.remove();
