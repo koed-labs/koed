@@ -39,7 +39,28 @@ const hint = (
     ...overrides
   }) as unknown as PersonalFolderHint;
 
+const assumedLocalHint = (outcomes: Record<string, string> = {}) =>
+  hint(
+    { recordingDeviceProvenance: "assumed-local-import" },
+    {
+      "origin-device": "unavailable",
+      ...outcomes
+    }
+  );
+
 describe("inferredGitAnchorKey", () => {
+  it("allows assumed-local imports without claiming recording origin", () => {
+    expect(inferredGitAnchorKey(assumedLocalHint())).toBe(KEY);
+    for (const [code, outcome] of [
+      ["origin-device", "agrees"],
+      ["directory-birthtime", "unavailable"],
+      ["directory-remote", "does-not-agree"]
+    ] as const)
+      expect(
+        inferredGitAnchorKey(assumedLocalHint({ [code]: outcome }))
+      ).toBeUndefined();
+  });
+
   it("proves a Git Anchor only when every check agrees", () => {
     expect(inferredGitAnchorKey(hint())).toBe(KEY);
     for (const code of INFERRED_GIT_ANCHOR_CHECKS) {
@@ -96,7 +117,10 @@ describe("recordInferredGitAnchors", () => {
     intent: string | null = "recording-device"
   ) => {
     const manageSourceContext = vi.fn(
-      async (input: { action: string }): Promise<unknown> => {
+      async (input: {
+        action: string;
+        expectedScopeKey?: string;
+      }): Promise<unknown> => {
         if (input.action === "get")
           return { context: { git: { revision: 1, ...git } } };
         if (input.action === "preview")
@@ -143,6 +167,52 @@ describe("recordInferredGitAnchors", () => {
       reviewId: "review-1",
       expectedVersion: 1
     });
+  });
+
+  it("records an assumed-local Git Anchor with its distinct guarded intent", async () => {
+    const a = api(
+      {
+        original: { state: "unresolved", reason: "historical_unresolved" },
+        correction: { state: "original" }
+      },
+      "assumed-local-import"
+    );
+    const assumedLocal = new Map([["session-1", [assumedLocalHint()]]]);
+    expect(await recordInferredGitAnchors(a, projects, assumedLocal)).toEqual({
+      recorded: [],
+      failed: 0
+    });
+    expect(a.manageSourceContext).not.toHaveBeenCalled();
+    const expectedScopeKey = "a".repeat(64);
+    expect(
+      await recordInferredGitAnchors(
+        a,
+        projects,
+        assumedLocal,
+        expectedScopeKey
+      )
+    ).toEqual({
+      recorded: ["session-1"],
+      failed: 0
+    });
+    expect(
+      a.manageSourceContext.mock.calls.map(([input]) => [
+        input.action,
+        input.expectedScopeKey
+      ])
+    ).toEqual([
+      ["get", expectedScopeKey],
+      ["preview", expectedScopeKey],
+      ["apply", expectedScopeKey]
+    ]);
+    expect(a.manageSourceContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "preview",
+        correction: expect.objectContaining({
+          inferenceIntent: "assumed-local-import"
+        })
+      })
+    );
   });
 
   it("never applies when the backend does not bind the inference intent", async () => {

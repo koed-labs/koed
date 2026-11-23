@@ -129,14 +129,14 @@ export function useProjectManagement({
     startDelayMs: 2500,
     pauseMs: 300
   });
-  // Background writes are reserved for proven recording-device candidates.
+  // Background writes require recording-device evidence or a scoped local import.
   // Unknown-device candidates stay in the User's Project review.
   const inferred = useRef({
     scope: operationScope,
     attempted: new Set<string>()
   });
   useEffect(() => {
-    if (!api || !store || !available || worked.loading) return;
+    if (!api || !store || !scopeKey || !available || worked.loading) return;
     if (inferred.current.scope !== operationScope)
       inferred.current = { scope: operationScope, attempted: new Set() };
     const { attempted } = inferred.current;
@@ -151,7 +151,7 @@ export function useProjectManagement({
       if (!scopeIsCurrent())
         throw new Error("The active account or backend changed.");
     };
-    void recordInferredGitAnchors(api, projects, fresh, check)
+    void recordInferredGitAnchors(api, projects, fresh, scopeKey, check)
       .then(async ({ recorded }) => {
         if (recorded.length === 0) return;
         check();

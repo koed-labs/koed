@@ -6803,8 +6803,17 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     });
   });
 
-  it.each(["owner retry", "backend retry", "evidence owner", "unchanged"])(
-    "binds Folder hints to the expected scope: %s",
+  it.each([
+    "owner retry",
+    "backend retry",
+    "evidence owner",
+    "unchanged",
+    "source context",
+    "apply receipt",
+    "apply owner retry",
+    "apply backend retry"
+  ])(
+    "binds Folder hints and source context to the expected scope: %s",
     async (change) => {
       const koedHome = mkdtempSync(
         resolve(tmpdir(), "koed-desktop-hint-scope-")
@@ -6820,6 +6829,26 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       let ownerUserId = first;
       let origin = "http://127.0.0.1:4170";
       const evidenceOrigins: string[] = [];
+      const sourceCalls: string[] = [];
+      const assignment = {
+        revision: 1,
+        original: { state: "unresolved", reason: "historical_unresolved" },
+        correction: { state: "original" }
+      };
+      const context = {
+        sessionId: first,
+        logicalSessionId: first,
+        git: assignment,
+        folder: assignment
+      };
+      const preview = {
+        reviewId: second,
+        axis: "git",
+        expectedVersion: 1,
+        before: context,
+        after: context,
+        projects: []
+      };
       const manager = createKoedServerManager({
         repoRoot: "/repo",
         cliPath: "/repo/cli.js",
@@ -6847,6 +6876,18 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           const url = new URL(String(input));
           if (url.pathname === "/v1/managed-conversations/access")
             return Response.json({ user: { id: ownerUserId } });
+          if (url.pathname.includes("/source-context")) {
+            sourceCalls.push(url.pathname);
+            if (url.pathname.endsWith("/apply") && change.endsWith("retry")) {
+              if (change === "apply owner retry") ownerUserId = second;
+              else origin = "http://127.0.0.1:4171";
+              return Response.json({}, { status: 401 });
+            }
+            return Response.json({
+              context,
+              ...(url.pathname.endsWith("/source-context") ? {} : { preview })
+            });
+          }
           expect(url.pathname).toBe(
             "/v1/personal/sessions/folder-hint-evidence"
           );
@@ -6864,6 +6905,65 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       });
       try {
         const identity = await manager.v1StateIdentity();
+        if (change === "source context" || change.startsWith("apply")) {
+          const expectedScopeKey = v1OwnerScope(
+            identity.apiOrigin,
+            identity.ownerUserId
+          );
+          const sourceCommand = (
+            input:
+              | { action: "get" }
+              | {
+                  action: "preview";
+                  correction: {
+                    action: "reset";
+                    axis: "git";
+                    expectedVersion: number;
+                  };
+                }
+              | { action: "apply"; reviewId: string; expectedVersion: number }
+          ) =>
+            manager.personalMemory({
+              contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+              operation: "personal.sources.manage",
+              input: { sessionId: first, expectedScopeKey, ...input }
+            });
+          await expect(sourceCommand({ action: "get" })).resolves.toMatchObject(
+            { ok: true }
+          );
+          if (change === "source context") {
+            ownerUserId = second;
+            await expect(
+              sourceCommand({ action: "get" })
+            ).resolves.toMatchObject({
+              ok: false,
+              error: { code: "conflict" }
+            });
+            expect(sourceCalls).toHaveLength(1);
+            return;
+          }
+          await expect(
+            sourceCommand({
+              action: "preview",
+              correction: { action: "reset", axis: "git", expectedVersion: 1 }
+            })
+          ).resolves.toMatchObject({ ok: true });
+          await expect(
+            sourceCommand({
+              action: "apply",
+              reviewId: second,
+              expectedVersion: 1
+            })
+          ).resolves.toMatchObject(
+            change === "apply receipt"
+              ? { ok: true }
+              : { ok: false, error: { code: "conflict" } }
+          );
+          expect(
+            sourceCalls.filter((path) => path.endsWith("/apply"))
+          ).toHaveLength(1);
+          return;
+        }
         const request: Parameters<typeof manager.personalMemory>[0] = {
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
           operation: "personal.folders.hints",

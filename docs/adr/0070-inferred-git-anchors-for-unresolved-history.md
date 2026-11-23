@@ -23,30 +23,47 @@ today names a Git Anchor a Project already uses.
 Koed Desktop records that Git Anchor itself when every one of these holds:
 
 - The Conversation recorded a directory, which still exists on this device.
-- Trusted source evidence identifies this device as the recording device.
-  Importing a transcript here, or not finding a sync replica, does not establish this.
+- The recording device is established by trusted source evidence, or Koed
+  assumes local origin from a historical import bound to this Desktop's device
+  and deployment. The assumption requires a positively ingested historical prefix
+  of a local AI Client artifact, with no known copy or replica. It is not proof
+  of the recording device: history can be copied into a local AI Client's files.
+  The absence of a sync replica on its own is not evidence of import or origin.
 - The directory existed before a trustworthy source start. Import time and
-  filesystem creation time of the transcript are not source starts.
+  filesystem creation time of the transcript are not source starts. Currently
+  only the native start on the initial primary Codex rollout qualifies.
 - Capture's remote-selection rules resolve the directory to one portable Git Anchor
   without a conflict (ADR 0064), and a Project already uses that Git Anchor.
 - The Conversation was imported with an unresolved Git Anchor and has no prior Git Anchor
   correction, including a reset to the original.
 
 The write is versioned and guarded; it supplies the effective Git Anchor without
-changing the original. A later User correction replaces it. Device sync is not
-required. Current historical records do not establish the recording device, so
-existing imports do not qualify for unattended inference. If the recording
-device is unknown, the User can review and accept eligible suggestions together
-in Project settings. These are manual source corrections, not attestations:
-Desktop checks the checkout, and the API enforces stored eligibility and the
-reviewed versions. Known copied history is not automatically assigned. Folders
-are never inferred.
+changing the original. An assumed-local import has distinct advisory provenance
+and uses an `assumed-local-import` review. Desktop pins the authenticated owner
+and backend for source-context and evidence requests. It submits the exact
+artifact, import source, native start, deployment, and device it validated.
+The API matches that basis against stored evidence at preview and again at
+apply. Desktop separately rechecks the same basis and exact checkout, including
+directory incarnation, before apply. A later User correction replaces the
+inference. Device sync is not required.
+
+The source-context API is owner-authorized, not Desktop-attested. Current
+Desktop-specific credentials do not authorize these routes. The API checks
+stored evidence and Project eligibility; it cannot verify Desktop filesystem
+checks or recording origin. An authorized owner API client can still make
+manual corrections.
+
+If the assumption cannot be made, eligible suggestions can still be reviewed and
+accepted together in Project settings. These are manual source corrections, not
+attestations: Desktop checks the checkout, and the API enforces stored eligibility
+and the reviewed versions. Known copied history does not qualify for inference.
+Folders are never inferred.
 
 ## Consequences
 
 - Git Anchor rules can include qualifying historical Conversations without a click.
   Coverage depends on available provenance; incomplete evidence stays advisory.
-- The remaining risk is a checkout whose remote was repointed after the
-  Conversation, which the birthtime check cannot catch. A User can correct it.
+- Unmarked copies and checkout remotes repointed after the Conversation can
+  still lead to incorrect inference. A User can correct it.
 - An inferred Git Anchor is stored as a correction, so it is not distinguished
   from a User's own in the source-context history.

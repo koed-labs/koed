@@ -3088,7 +3088,8 @@ export const createKoedServerManager = ({
       init: RequestInit;
     },
     maximumResponseBytes: number,
-    expectedFolderHintScope?: string
+    expectedScopeKey?: string,
+    requireResponseOwner = false
   ): Promise<Record<string, unknown>> => {
     const perform = async (options?: {
       refreshOrigin?: boolean;
@@ -3097,7 +3098,7 @@ export const createKoedServerManager = ({
       const access = await personalMemoryAccess(options);
       const exactRequest = request(access);
       try {
-        if (expectedFolderHintScope) {
+        if (expectedScopeKey) {
           // Verify the same origin and token used for this attempt, including retries.
           const identity = await fetchPersonalMemoryWithToken(
             access.apiToken,
@@ -3107,7 +3108,7 @@ export const createKoedServerManager = ({
           );
           if (!identity.response.ok) return identity;
           requirePersonalScope(
-            expectedFolderHintScope,
+            expectedScopeKey,
             access.apiOrigin,
             objectValue(identity.payload.user)?.id
           );
@@ -3118,9 +3119,11 @@ export const createKoedServerManager = ({
           exactRequest.init,
           maximumResponseBytes
         );
-        if (expectedFolderHintScope && remote.response.ok)
+        // Evidence carries an owner; source-context responses do not. Writes only
+        // use the preflight, so an ownerless receipt cannot fail after commit.
+        if (expectedScopeKey && requireResponseOwner && remote.response.ok)
           requirePersonalScope(
-            expectedFolderHintScope,
+            expectedScopeKey,
             access.apiOrigin,
             remote.payload.ownerUserId
           );
@@ -3170,12 +3173,13 @@ export const createKoedServerManager = ({
   const repositoryReviewJson = (
     path: string,
     init: RequestInit = { method: "GET" },
-    expectedFolderHintScope?: string
+    expectedScopeKey?: string
   ) =>
     authenticatedPersonalMemoryRequest(
       ({ apiOrigin }) => ({ url: new URL(path, apiOrigin), init }),
       2 * 1024 * 1024,
-      expectedFolderHintScope
+      expectedScopeKey,
+      path === "/v1/personal/sessions/folder-hint-evidence"
     );
   const projectSelectionRequest = async (
     path: string,

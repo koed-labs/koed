@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { personalGitLocalImportBasisSchema } from "./personal-folder-hint-contract.js";
 import {
   personalFolderAssignmentSchema,
   personalSourceReferenceSchema,
@@ -52,7 +53,11 @@ const expectedVersion = z.number().int().positive().safe();
 export const personalSourceCorrectionApplySchema = z
   .object({ expectedVersion })
   .strict();
-const inferenceIntent = z.enum(["recording-device", "user-confirmed-unknown"]);
+const inferenceIntent = z.enum([
+  "recording-device",
+  "assumed-local-import",
+  "user-confirmed-unknown"
+]);
 export const personalSourceCorrectionInputSchema = z.union([
   z
     .object({
@@ -60,9 +65,15 @@ export const personalSourceCorrectionInputSchema = z.union([
       action: z.literal("set"),
       repository: personalGitContextSchema,
       inferenceIntent: inferenceIntent.optional(),
+      localImportBasis: personalGitLocalImportBasisSchema.optional(),
       expectedVersion
     })
-    .strict(),
+    .strict()
+    .refine(
+      (input) =>
+        !input.localImportBasis ||
+        input.inferenceIntent === "assumed-local-import"
+    ),
   z
     .object({
       axis: z.literal("folder"),
@@ -254,9 +265,19 @@ export type PersonalConversationOrganizationResult = z.infer<
   typeof personalConversationOrganizationResultSchema
 >;
 
+const sourceContextScopeKey = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/u)
+  .optional();
 export const personalSourceContextCommandSchema = z
   .discriminatedUnion("action", [
-    z.object({ action: z.literal("get"), sessionId: z.uuid() }).strict(),
+    z
+      .object({
+        action: z.literal("get"),
+        sessionId: z.uuid(),
+        expectedScopeKey: sourceContextScopeKey
+      })
+      .strict(),
     z
       .object({
         action: z.literal("organize"),
@@ -269,6 +290,7 @@ export const personalSourceContextCommandSchema = z
         action: z.literal("preview"),
         sessionId: z.uuid(),
         correction: personalSourceCorrectionInputSchema,
+        expectedScopeKey: sourceContextScopeKey,
         reviewedDirectory: z.string().min(1).optional()
       })
       .strict(),
@@ -277,10 +299,23 @@ export const personalSourceContextCommandSchema = z
         action: z.literal("apply"),
         sessionId: z.uuid(),
         reviewId: z.uuid(),
-        expectedVersion
+        expectedVersion,
+        expectedScopeKey: sourceContextScopeKey
       })
       .strict()
   ])
+  .refine(
+    (input) =>
+      input.action !== "preview" ||
+      !("inferenceIntent" in input.correction) ||
+      (!input.correction.localImportBasis &&
+        (input.correction.inferenceIntent !== "assumed-local-import" ||
+          !!input.expectedScopeKey)),
+    {
+      message:
+        "Assumed-local preview requires scope and obtains import evidence on Desktop"
+    }
+  )
   .refine(
     (input) =>
       input.action !== "organize" ||

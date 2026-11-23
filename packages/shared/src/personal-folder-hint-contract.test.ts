@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { personalSourceContextCommandSchema } from "./personal-source-correction-contract.js";
 import {
   PERSONAL_FOLDER_HINT_BATCH_SIZE,
   personalFolderHintSchema,
@@ -45,6 +46,74 @@ describe("personalFolderHintSchema", () => {
     ])
       expect(personalFolderHintSchema.safeParse(hint).success).toBe(false);
   });
+});
+
+it("distinguishes assumed-local inference from explicit unknown-device checkout review", () => {
+  const preview = {
+    sessionId: session,
+    action: "preview",
+    correction: {
+      axis: "git",
+      action: "set",
+      expectedVersion: 1,
+      repository: {
+        kind: "portable_repository",
+        key: "gr_x",
+        root: "/work/x",
+        branch: null,
+        reason: "origin",
+        checkoutId: null,
+        originatingDeviceId: "device",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/repo"
+      },
+      inferenceIntent: "assumed-local-import"
+    }
+  };
+  expect(personalSourceContextCommandSchema.safeParse(preview).success).toBe(
+    false
+  );
+  const scoped = { ...preview, expectedScopeKey: "a".repeat(64) };
+  expect(personalSourceContextCommandSchema.safeParse(scoped).success).toBe(
+    true
+  );
+  expect(
+    personalSourceContextCommandSchema.safeParse({
+      ...scoped,
+      correction: {
+        ...preview.correction,
+        localImportBasis: {
+          artifactId: session,
+          importSourceId: session,
+          startedAt: "2024-01-01T00:00:00.000001Z",
+          deviceId: "device",
+          deploymentId: "deployment"
+        }
+      }
+    }).success
+  ).toBe(false);
+  expect(
+    personalSourceContextCommandSchema.safeParse({
+      ...scoped,
+      reviewedDirectory: "/work/x"
+    }).success
+  ).toBe(false);
+  const manual = {
+    ...preview,
+    correction: {
+      ...preview.correction,
+      inferenceIntent: "user-confirmed-unknown"
+    }
+  };
+  expect(personalSourceContextCommandSchema.safeParse(manual).success).toBe(
+    false
+  );
+  expect(
+    personalSourceContextCommandSchema.safeParse({
+      ...manual,
+      reviewedDirectory: "/work/x"
+    }).success
+  ).toBe(true);
 });
 
 describe("personalFolderHintsDataSchema", () => {

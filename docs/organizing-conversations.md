@@ -52,19 +52,21 @@ server evidence, not for paths or Folders known only to the local registry.
 Reviewing a hint does not register a Folder or write an observation.
 When confirming a Folder hint, Desktop rechecks server evidence and re-scores
 the exact candidate on the device. A changed candidate needs fresh approval.
-Git Anchor hints use reviewed source correction without a device-side rescore.
+Guarded historical Git Anchor hints use reviewed source correction and a
+fresh device-side score before preview and apply.
 When saving a Project suggestion, Koed previews whether the correction would
 newly include the Conversation in that exact Project through its rules. This is
 not direct membership. A Folder hint alone never changes attribution or
 membership.
 
 For unresolved historical Conversations never corrected by a User, Koed can
-infer an effective Git Anchor when trusted source evidence identifies the
-recording device, the checkout predates a trustworthy source start, and the
-current remote resolves to a Git Anchor a Project already uses. Device sync
-is not required. Importing a transcript does not establish where it was
-recorded. If Koed cannot identify the recording device, review the Project's
-suggestions before applying them. Neither inference nor correction rewrites
+infer an effective Git Anchor when recording origin is established or the
+history was imported from this device's local AI Client and is not a known
+copy. The checkout must predate a trustworthy source start, and its current
+remote must resolve to a Git Anchor a Project already uses. Koed assumes local
+origin for qualifying imports; it does not verify where they were recorded.
+Device sync is not required. When Koed cannot infer an anchor, eligible Project
+suggestions remain available for review. Neither inference nor correction rewrites
 the original. See
 [ADR 0070](adr/0070-inferred-git-anchors-for-unresolved-history.md).
 

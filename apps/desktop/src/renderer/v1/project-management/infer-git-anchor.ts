@@ -3,10 +3,7 @@ import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import { repositoryTargetFor } from "./repository-project.js";
 
-/** Every check that must agree before a Git Anchor counts as a recorded fact:
- * the Conversation recorded a directory, it still exists on this device, this
- * is the device that recorded the Conversation, the directory existed before
- * the Conversation started, and its Git remote today names the Git Anchor. */
+/** Required checks. An assumed-local import leaves recording origin unavailable. */
 export const INFERRED_GIT_ANCHOR_CHECKS = [
   "recorded-cwd",
   "local-directory",
@@ -15,33 +12,39 @@ export const INFERRED_GIT_ANCHOR_CHECKS = [
   "directory-remote"
 ] as const;
 
-/** The Git Anchor key this hint proves, or undefined when any check is missing,
- * unavailable or disagrees, or any evidence rejects it. */
+/** The Git Anchor key eligible for guarded inference, if any. */
 export function inferredGitAnchorKey(
   hint: PersonalFolderHint
 ): string | undefined {
+  const provenance = hint.recordingDeviceProvenance;
   if (
     hint.kind !== "repository" ||
     hint.tier === "none" ||
     !hint.repositoryKey ||
-    hint.recordingDeviceProvenance !== "recording-device" ||
+    (provenance !== "recording-device" &&
+      provenance !== "assumed-local-import") ||
     hint.gitInferenceEligibility !== true ||
     hint.gitRevision !== 1
   )
     return undefined;
   if (hint.reasons.some((reason) => reason.outcome === "rejects"))
     return undefined;
-  const agrees = (code: string) =>
-    hint.reasons.some(
-      (reason) => reason.code === code && reason.outcome === "agrees"
+  const matches = (code: string) => {
+    const outcome =
+      code === "origin-device" && provenance === "assumed-local-import"
+        ? "unavailable"
+        : "agrees";
+    return hint.reasons.some(
+      (reason) => reason.code === code && reason.outcome === outcome
     );
-  return INFERRED_GIT_ANCHOR_CHECKS.every(agrees)
+  };
+  return INFERRED_GIT_ANCHOR_CHECKS.every(matches)
     ? hint.repositoryKey
     : undefined;
 }
 
-/** Records the Git Anchor a Conversation's evidence proves, through the same
- * versioned correction a User's Add uses, so Git Anchor rules include it.
+/** Records an eligible inferred Git Anchor through a guarded, versioned
+ * correction so Git Anchor rules include it.
  * Only a Conversation whose Git Anchor is unresolved and that the User never
  * corrected is touched; a Git Anchor no Project knows is left alone. Failures
  * are skipped, never retried in a loop: the next refresh asks again. */
@@ -49,6 +52,7 @@ export async function recordInferredGitAnchors(
   api: PersonalDesktopApi,
   projects: readonly DesktopProject[],
   hints: ReadonlyMap<string, readonly PersonalFolderHint[]>,
+  scopeKey?: string,
   check: () => void = () => {}
 ): Promise<{ recorded: string[]; failed: number }> {
   const recorded: string[] = [];
@@ -62,14 +66,27 @@ export async function recordInferredGitAnchors(
     const candidate = candidates[0]!;
     const key = inferredGitAnchorKey(candidate);
     const version = candidate.gitRevision;
-    if (!key || version === undefined) continue;
+    const inferenceIntent = candidate.recordingDeviceProvenance;
+    if (
+      !key ||
+      version === undefined ||
+      (inferenceIntent !== "recording-device" &&
+        inferenceIntent !== "assumed-local-import")
+    )
+      continue;
+    if (inferenceIntent === "assumed-local-import" && !scopeKey) continue;
+    const scope =
+      inferenceIntent === "assumed-local-import"
+        ? { expectedScopeKey: scopeKey }
+        : {};
     const target = repositoryTargetFor(projects, key);
     if (!target) continue;
     try {
       check();
       const { context } = await api.manageSourceContext({
         action: "get",
-        sessionId
+        sessionId,
+        ...scope
       });
       if (
         context.git.original.state !== "unresolved" ||
@@ -82,16 +99,17 @@ export async function recordInferredGitAnchors(
       const { preview } = await api.manageSourceContext({
         action: "preview",
         sessionId,
+        ...scope,
         correction: {
           axis: "git",
           action: "set",
           repository: target.repository,
           expectedVersion: version,
-          inferenceIntent: "recording-device"
+          inferenceIntent
         }
       });
       if (
-        preview?.inferenceIntent !== "recording-device" ||
+        preview?.inferenceIntent !== inferenceIntent ||
         preview.expectedVersion !== version
       )
         continue;
@@ -100,6 +118,7 @@ export async function recordInferredGitAnchors(
       await api.manageSourceContext({
         action: "apply",
         sessionId,
+        ...scope,
         reviewId: preview.reviewId,
         expectedVersion: preview.expectedVersion
       });

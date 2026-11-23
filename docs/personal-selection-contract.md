@@ -409,9 +409,8 @@ supporting evidence, not probability or permission.
 A device-local evidence gatherer builds the scorer's input. It reads the recorded
 facts from an owner-scoped, read-only API call, then the directory's stat times, its
 current portable Git remote fingerprint, bounded top-level activity, contained
-transcript files, and a read-only Folder registry lookup. For scoring, the API
-uses non-replica status as a local-origin signal, not as authenticated proof that
-this device captured the Conversation. The API omits deleted and
+transcript files, and a read-only Folder registry lookup. Non-replica status
+alone is not evidence of local import or recording origin. The API omits deleted and
 invalidated Conversations. It reports a known Git Anchor only when the effective
 Git identity (override if present, otherwise automatic) identifies a portable or
 device-local repository. The gatherer returns nothing when the device identity
@@ -478,6 +477,18 @@ fingerprint, which is identical for ssh, scp-style, and https spellings of the
 same repository, so a Project anchored one way matches a remote written the
 other. The desktop offers it only when a Project already uses that anchor; the
 correction selects that existing anchor and registers nothing.
+
+For unresolved historical Git Anchors with no correction history, evidence can
+identify an `assumed-local-import`: a qualifying initial native Codex artifact
+with a positively ingested historical prefix and no known copy or replica.
+Desktop matches the importing deployment and device, without treating either
+as recording provenance or changing Folder scores. Guarded inference requires
+birthtime strictly before the source-native start and a current portable remote
+that matches an active Project rule. Desktop pins the authenticated backend
+and owner and rechecks the exact checkout and import basis. The owner-authorized
+API independently matches that basis at preview and apply; it does not attest
+the checkout or recording origin. See
+[ADR 0070](adr/0070-inferred-git-anchors-for-unresolved-history.md).
 
 Every hint is `suggestion-only`, including for shared or Workspace-linked
 Projects. It is not a Folder observation, selection, or repair. Scoring does not

@@ -2,12 +2,14 @@ import type pg from "pg";
 import {
   personalFolderHintEvidenceRequestSchema,
   personalOwnerIdSchema,
-  type PersonalFolderHintEvidence
+  type PersonalFolderHintEvidence,
+  type PersonalGitLocalImportBasis
 } from "@koed-labs/shared";
 import { findKnownFolderCorrectionReferences } from "./personal-source-correction-context.js";
 import {
   personalGitInferenceEvidenceJoins,
-  personalGitInferenceEligible
+  personalGitInferenceEligible,
+  personalGitInferenceLocalImport
 } from "./personal-git-inference-evidence.js";
 import type { ActorContext } from "./types.js";
 
@@ -25,6 +27,7 @@ type EvidenceRow = {
   first_at: Date | null;
   remote: string | null;
   known_copy: boolean;
+  local_import: PersonalGitLocalImportBasis | null;
   git_eligible: boolean;
   git_known: boolean;
   git_revision: number;
@@ -48,6 +51,7 @@ export const createPersonalFolderHintEvidenceRepository = (
     const result = await pool.query<EvidenceRow>(
       `select s.id, s.folder_assignment, s.cwd, s.source_runtime, s.external_session_id,
          native.first_at, provenance.known_copy,
+         ${personalGitInferenceLocalImport} as local_import,
          ${personalGitInferenceEligible} as git_eligible,
          case when s.repository_automatic_identity->>'kind' = 'portable_repository'
               then s.repository_automatic_identity->>'key' end as remote,
@@ -82,7 +86,12 @@ export const createPersonalFolderHintEvidenceRepository = (
         firstConversationAt: row.first_at ? row.first_at.toISOString() : null,
         recordedRemoteFingerprint: row.remote,
         capturedOnThisDevice: false,
-        recordingDeviceProvenance: row.known_copy ? "known-copy" : "unknown",
+        recordingDeviceProvenance: row.known_copy
+          ? "known-copy"
+          : row.local_import
+            ? "assumed-local-import"
+            : "unknown",
+        ...(row.local_import ? { importAuthority: row.local_import } : {}),
         gitInferenceEligibility: row.git_eligible,
         gitAnchorKnown: row.git_known,
         gitRevision: row.git_revision,

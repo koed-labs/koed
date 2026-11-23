@@ -122,7 +122,9 @@ export function folderProposal(
           (resolve.reviewBatch && recordingDeviceProvenance === "known-copy")
         )
           return [];
-        const recordingDeviceUnknown = recordingDeviceProvenance === "unknown";
+        const recordingDeviceUnknown =
+          recordingDeviceProvenance === "unknown" ||
+          recordingDeviceProvenance === "assumed-local-import";
         if (
           recordingDeviceUnknown &&
           (!resolve.reviewBatch ||

@@ -48,7 +48,8 @@ export type ProjectCommandsDeps = {
   paths: KoedServerPaths;
   personalRequest(
     path: string,
-    init?: RequestInit
+    init?: RequestInit,
+    expectedScopeKey?: string
   ): Promise<Record<string, unknown>>;
   governanceRequest(
     path: string,
@@ -245,14 +246,19 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
   };
   const fetchHintEvidence = async (
     sessionIds: string[],
-    proposedFolders?: PersonalFolderReference[]
+    proposedFolders?: PersonalFolderReference[],
+    expectedScopeKey?: string
   ) =>
     personalFolderHintEvidenceSchema.parse(
-      await deps.personalRequest("/v1/personal/sessions/folder-hint-evidence", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionIds, proposedFolders })
-      })
+      await deps.personalRequest(
+        "/v1/personal/sessions/folder-hint-evidence",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionIds, proposedFolders })
+        },
+        expectedScopeKey
+      )
     );
   type HintEvidence = PersonalFolderHintEvidence["evidence"][number];
   type InferenceCorrection = Extract<
@@ -263,36 +269,44 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     directory: string;
     directoryIncarnation: string;
     startedAt: string;
+    ownerUserId: string;
+    importAuthority?: HintEvidence["importAuthority"];
   };
   const sourceContextReviews = new Map<
     string,
     {
       sessionId: string;
       expectedVersion: number;
+      expectedScopeKey?: string;
       inference?: {
         correction: InferenceCorrection;
         evidence: InferenceEvidence;
       };
     }
   >();
-  const lookupHintAssociation: NonNullable<
-    NonNullable<
-      Parameters<typeof hintsForConversation>[2]
-    >["lookupAssociatedSelection"]
-  > = async (checkout, signal) => {
-    const result = projectSelectionLookupResponseSchema.parse(
-      await deps.personalRequest(
-        `/v1/memory/repository-selection?${new URLSearchParams(checkout)}`,
-        { signal }
-      )
-    );
-    return result.association?.selection
-      ? {
-          associationId: result.association.associationId,
-          selection: result.association.selection
-        }
-      : undefined;
-  };
+  const lookupHintAssociation =
+    (
+      expectedScopeKey?: string
+    ): NonNullable<
+      NonNullable<
+        Parameters<typeof hintsForConversation>[2]
+      >["lookupAssociatedSelection"]
+    > =>
+    async (checkout, signal) => {
+      const result = projectSelectionLookupResponseSchema.parse(
+        await deps.personalRequest(
+          `/v1/memory/repository-selection?${new URLSearchParams(checkout)}`,
+          { signal },
+          expectedScopeKey
+        )
+      );
+      return result.association?.selection
+        ? {
+            associationId: result.association.associationId,
+            selection: result.association.selection
+          }
+        : undefined;
+    };
   const recordingDeviceProvenance = (
     ownerUserId: string,
     row: HintEvidence
@@ -300,20 +314,30 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     const provenance = row.recordingDeviceProvenance;
     if (!provenance || provenance === "known-copy") return provenance;
     const original = row.folderAssignment.original;
-    if (original.state !== "known")
+    const reference =
+      original.state === "known" ? original.value.reference : null;
+    if (!reference && provenance !== "assumed-local-import")
       return provenance === "unknown" ? provenance : undefined;
-    if (original.value.reference.ownerUserId !== ownerUserId) return undefined;
+    if (reference && reference.ownerUserId !== ownerUserId) return undefined;
     const device = inspectDeviceIdentityAtKoedHome({
       koedHome: deps.paths.koedHome
     });
     if (!device.remoteOperationsAllowed) return undefined;
-    return original.value.reference.originatingDeviceId ===
-      device.deviceInstanceId &&
-      original.value.reference.originatingDeploymentId === device.deploymentId
-      ? provenance === "recording-device"
+    if (
+      reference &&
+      (reference.originatingDeviceId !== device.deviceInstanceId ||
+        reference.originatingDeploymentId !== device.deploymentId)
+    )
+      return "known-copy";
+    if (provenance === "assumed-local-import") {
+      const authority = row.importAuthority;
+      return authority &&
+        authority.deviceId === device.deviceInstanceId &&
+        authority.deploymentId === device.deploymentId
         ? provenance
-        : undefined
-      : "known-copy";
+        : "unknown";
+    }
+    return provenance === "recording-device" ? provenance : undefined;
   };
   const inferenceEligible = (row: HintEvidence) =>
     row.gitInferenceEligibility === true &&
@@ -326,7 +350,8 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     provenance: ReturnType<typeof recordingDeviceProvenance>
   ) => ({
     allowUnknownRepositoryCandidate:
-      provenance === "unknown" && inferenceEligible(row),
+      (provenance === "unknown" || provenance === "assumed-local-import") &&
+      inferenceEligible(row),
     ownerUserId,
     folderAssignment: row.folderAssignment,
     recordedCwd: row.recordedCwd,
@@ -350,14 +375,15 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     ownerUserId: string,
     row: HintEvidence,
     provenance: ReturnType<typeof recordingDeviceProvenance>,
-    lookupClientWorktree = createClientWorktreeLookup()
+    lookupClientWorktree = createClientWorktreeLookup(),
+    expectedScopeKey?: string
   ) =>
     hintsForConversation(
       deps.paths,
       hintConversation(ownerUserId, row, provenance),
       {
         lookupClientWorktree,
-        lookupAssociatedSelection: lookupHintAssociation
+        lookupAssociatedSelection: lookupHintAssociation(expectedScopeKey)
       }
     );
   /** Advisory Folder hints. Recorded facts come from the API; the filesystem and
@@ -472,9 +498,14 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     new Error("This Git Anchor suggestion no longer matches current evidence.");
   const confirmGitInference = async (
     sessionId: string,
-    correction: InferenceCorrection
+    correction: InferenceCorrection,
+    expectedScopeKey?: string
   ): Promise<InferenceEvidence> => {
-    const payload = await fetchHintEvidence([sessionId]);
+    const payload = await fetchHintEvidence(
+      [sessionId],
+      undefined,
+      expectedScopeKey
+    );
     const row = payload.evidence.find((item) => item.sessionId === sessionId);
     if (
       !row ||
@@ -484,14 +515,32 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     )
       throw staleGitInference();
     const provenance = recordingDeviceProvenance(payload.ownerUserId, row);
-    const automatic = correction.inferenceIntent === "recording-device";
+    const recordingDevice = correction.inferenceIntent === "recording-device";
+    const matchesIntent =
+      correction.inferenceIntent === "user-confirmed-unknown"
+        ? provenance === "unknown" || provenance === "assumed-local-import"
+        : provenance === correction.inferenceIntent;
+    const importAuthority =
+      correction.inferenceIntent === "assumed-local-import"
+        ? row.importAuthority
+        : undefined;
     if (
-      provenance !== (automatic ? "recording-device" : "unknown") ||
-      correction.repository.kind !== "portable_repository"
+      !matchesIntent ||
+      correction.repository.kind !== "portable_repository" ||
+      (correction.inferenceIntent === "assumed-local-import" &&
+        (!importAuthority ||
+          Date.parse(importAuthority.startedAt) !==
+            Date.parse(row.firstConversationAt)))
     )
       throw staleGitInference();
     const candidates = (
-      await scoreHintEvidence(payload.ownerUserId, row, provenance)
+      await scoreHintEvidence(
+        payload.ownerUserId,
+        row,
+        provenance,
+        undefined,
+        expectedScopeKey
+      )
     )?.filter(
       (candidate) =>
         candidate.tier !== "none" && candidate.kind === "repository"
@@ -508,7 +557,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       !candidate.reasons.some(
         ({ code, outcome }) =>
           code === "origin-device" &&
-          outcome === (automatic ? "agrees" : "unavailable")
+          outcome === (recordingDevice ? "agrees" : "unavailable")
       ) ||
       ![
         "recorded-cwd",
@@ -525,11 +574,15 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     return {
       directory: candidate.directory,
       directoryIncarnation: candidate.directoryIncarnation,
-      startedAt: row.firstConversationAt
+      startedAt: row.firstConversationAt,
+      ownerUserId: payload.ownerUserId,
+      ...(importAuthority ? { importAuthority } : {})
     };
   };
   const manageSourceContext = async (raw: unknown) => {
     const input = personalSourceContextCommandSchema.parse(raw);
+    const expectedScopeKey =
+      input.action === "organize" ? undefined : input.expectedScopeKey;
     const guardedPreview =
       input.action === "preview" &&
       input.correction.axis === "git" &&
@@ -538,7 +591,11 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         ? input.correction
         : undefined;
     const freshEvidence = guardedPreview
-      ? await confirmGitInference(input.sessionId, guardedPreview)
+      ? await confirmGitInference(
+          input.sessionId,
+          guardedPreview,
+          expectedScopeKey
+        )
       : undefined;
     if (
       input.action === "preview" &&
@@ -555,13 +612,30 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         throw new Error(
           "This source context review is unavailable. Review the change again."
         );
+      if (review.expectedScopeKey !== expectedScopeKey)
+        throw staleGitInference();
       if (review.inference) {
         const { correction, evidence } = review.inference;
-        const current = await confirmGitInference(input.sessionId, correction);
+        const current = await confirmGitInference(
+          input.sessionId,
+          correction,
+          expectedScopeKey
+        );
         if (
           current.directory !== evidence.directory ||
           current.directoryIncarnation !== evidence.directoryIncarnation ||
-          current.startedAt !== evidence.startedAt
+          current.startedAt !== evidence.startedAt ||
+          current.ownerUserId !== evidence.ownerUserId ||
+          current.importAuthority?.artifactId !==
+            evidence.importAuthority?.artifactId ||
+          current.importAuthority?.importSourceId !==
+            evidence.importAuthority?.importSourceId ||
+          current.importAuthority?.startedAt !==
+            evidence.importAuthority?.startedAt ||
+          current.importAuthority?.deviceId !==
+            evidence.importAuthority?.deviceId ||
+          current.importAuthority?.deploymentId !==
+            evidence.importAuthority?.deploymentId
         )
           throw staleGitInference();
       }
@@ -578,13 +652,22 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
             }
           )
         : input.action === "get"
-          ? await deps.personalRequest(base)
+          ? await deps.personalRequest(base, undefined, expectedScopeKey)
           : input.action === "preview"
-            ? await deps.personalRequest(`${base}/reviews`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify(input.correction)
-              })
+            ? await deps.personalRequest(
+                `${base}/reviews`,
+                {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                    ...input.correction,
+                    ...(freshEvidence?.importAuthority
+                      ? { localImportBasis: freshEvidence.importAuthority }
+                      : {})
+                  })
+                },
+                expectedScopeKey
+              )
             : await deps.personalRequest(
                 `${base}/reviews/${encodeURIComponent(input.reviewId)}/apply`,
                 {
@@ -593,7 +676,8 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
                   body: JSON.stringify({
                     expectedVersion: input.expectedVersion
                   })
-                }
+                },
+                expectedScopeKey
               );
     const result = personalSourceContextCommandResultSchema.parse(payload);
     if (
@@ -650,6 +734,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       sourceContextReviews.set(result.preview.reviewId, {
         sessionId: input.sessionId,
         expectedVersion: result.preview.expectedVersion,
+        ...(expectedScopeKey ? { expectedScopeKey } : {}),
         ...(guardedPreview && freshEvidence
           ? {
               inference: { correction: guardedPreview, evidence: freshEvidence }

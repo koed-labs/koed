@@ -115,11 +115,13 @@ function setup(
 function setupGitReview({
   target = repository,
   startedAt = "2024-01-01T00:00:00.000Z",
-  paths
+  paths,
+  importAuthority
 }: {
   target?: { key: string; root: string };
   startedAt?: string;
   paths?: ProjectCommandsDeps["paths"];
+  importAuthority?: { deploymentId: string; deviceId: string };
 } = {}) {
   const fixture = createProjectManagementValidationApi();
   const context = fixture.contexts.get(sessionId)!;
@@ -131,37 +133,49 @@ function setupGitReview({
     recordedRemoteFingerprint: null,
     capturedOnThisDevice: false,
     gitInferenceEligibility: true,
-    recordingDeviceProvenance: "unknown",
+    recordingDeviceProvenance: importAuthority
+      ? "assumed-local-import"
+      : "unknown",
+    importAuthority: importAuthority && {
+      ...importAuthority,
+      artifactId: validationId(910),
+      importSourceId: validationId(911),
+      startedAt
+    },
     gitRevision: 1
   };
-  const request = vi.fn(async (path: string) => {
-    if (path.endsWith("/folder-hint-evidence")) {
-      return { ownerUserId: validationOwner, evidence: [evidence] };
-    }
-    return {
-      context,
-      preview: {
-        reviewId: validationId(900),
-        axis: "git",
-        expectedVersion: 1,
-        before: context,
-        after: {
-          ...context,
-          git: {
-            ...context.git,
-            correction: {
-              state: "corrected",
-              value: { state: "known", value: { ...repository, ...target } },
-              revisionId: validationId(901)
-            },
-            revision: 2
-          }
-        },
-        projects: [],
-        inferenceIntent: "user-confirmed-unknown"
+  const request = vi.fn(
+    async (path: string, _init?: RequestInit, _scope?: string) => {
+      if (path.endsWith("/folder-hint-evidence")) {
+        return { ownerUserId: validationOwner, evidence: [evidence] };
       }
-    };
-  });
+      return {
+        context,
+        preview: {
+          reviewId: validationId(900),
+          axis: "git",
+          expectedVersion: 1,
+          before: context,
+          after: {
+            ...context,
+            git: {
+              ...context.git,
+              correction: {
+                state: "corrected",
+                value: { state: "known", value: { ...repository, ...target } },
+                revisionId: validationId(901)
+              },
+              revision: 2
+            }
+          },
+          projects: [],
+          inferenceIntent: importAuthority
+            ? "assumed-local-import"
+            : "user-confirmed-unknown"
+        }
+      };
+    }
+  );
   const commands = () =>
     createProjectCommands({
       personalRequest: request,
@@ -172,6 +186,7 @@ function setupGitReview({
     evidence,
     request,
     manage: commands().manageSourceContext,
+    hints: commands().folderHints,
     restart: () => commands().manageSourceContext
   };
 }
@@ -194,12 +209,23 @@ const guardedPreview = {
   }
 };
 
+const expectedScopeKey = "a".repeat(64);
+const assumedLocalPreview = {
+  expectedScopeKey,
+  sessionId,
+  action: "preview",
+  correction: {
+    ...guardedPreview.correction,
+    inferenceIntent: "assumed-local-import"
+  }
+};
+
 const identifiableGitCandidate = {
   ...gitCandidate,
   directoryIncarnation: "reviewed-incarnation"
 };
 
-async function setupReplaceableGitReview(root: string) {
+async function setupReplaceableGitReview(root: string, assumedLocal = false) {
   const directory = resolve(root, "reviewed");
   const replacement = resolve(root, "replacement");
   const remote = "https://github.com/acme/history.git";
@@ -212,7 +238,15 @@ async function setupReplaceableGitReview(root: string) {
   const start = Date.now() + 1_000;
   const environment = { NODE_ENV: "test", KOED_HOME: resolve(root, "profile") };
   const paths = resolveKoedServerPaths(environment);
-  await ensureDeviceIdentity(paths, { environment });
+  const identity = await ensureDeviceIdentity(paths, { environment });
+  const importAuthority = assumedLocal
+    ? {
+        deploymentId: identity.deploymentId!,
+        deviceId: identity.deviceInstanceId!
+      }
+    : undefined;
+  if (assumedLocal)
+    vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue(identity);
   const target = {
     ...repository,
     root: directory,
@@ -233,7 +267,8 @@ async function setupReplaceableGitReview(root: string) {
     ...setupGitReview({
       target,
       startedAt: new Date(start).toISOString(),
-      paths
+      paths,
+      importAuthority
     }),
     directory,
     replacement,
@@ -242,6 +277,115 @@ async function setupReplaceableGitReview(root: string) {
 }
 
 describe("Git inference confirmation", () => {
+  it("binds the assumed-local import to both current Desktop authority IDs", async () => {
+    const importAuthority = { deploymentId: "deployment", deviceId: "device" };
+    const { evidence, hints, manage, request } = setupGitReview({
+      paths: { koedHome: "/koed-home" } as ProjectCommandsDeps["paths"],
+      importAuthority
+    });
+    const identity = (deploymentId: string, deviceInstanceId: string) => {
+      vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+        remoteOperationsAllowed: true,
+        deploymentId,
+        deviceInstanceId
+      } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+    };
+    score.mockResolvedValue([identifiableGitCandidate]);
+    identity("deployment", "other-device");
+    await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+      hints: [{ recordingDeviceProvenance: "unknown" }]
+    });
+    await expect(manage(assumedLocalPreview)).rejects.toThrow(
+      "no longer matches"
+    );
+    identity("deployment", "device");
+    await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+      hints: [{ recordingDeviceProvenance: "assumed-local-import" }]
+    });
+    expect(score.mock.lastCall?.[1]).toMatchObject({ originDeviceId: null });
+    await manage(assumedLocalPreview);
+    const scopedCalls = request.mock.calls.slice(-2);
+    expect(
+      scopedCalls.map(([path, , scope]) => [path.split("/").at(-1), scope])
+    ).toEqual([
+      ["folder-hint-evidence", expectedScopeKey],
+      ["reviews", expectedScopeKey]
+    ]);
+    expect(JSON.parse(scopedCalls[1]![1]!.body as string)).toMatchObject({
+      localImportBasis: evidence.importAuthority
+    });
+    identity("other-deployment", "device");
+    await expect(
+      manage({
+        sessionId,
+        action: "apply",
+        reviewId: validationId(900),
+        expectedVersion: 1,
+        expectedScopeKey
+      })
+    ).rejects.toThrow("no longer matches");
+    expect(request.mock.calls.some(([path]) => path.endsWith("/apply"))).toBe(
+      false
+    );
+  });
+
+  it.each([
+    "missing scope",
+    "different scope",
+    "artifactId",
+    "importSourceId",
+    "startedAt",
+    "unchanged"
+  ])(
+    "requires the reviewed scope and import basis at apply: %s",
+    async (change) => {
+      const { evidence, manage, request } = setupGitReview({
+        paths: { koedHome: "/koed-home" } as ProjectCommandsDeps["paths"],
+        importAuthority: { deploymentId: "deployment", deviceId: "device" }
+      });
+      vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+        remoteOperationsAllowed: true,
+        deploymentId: "deployment",
+        deviceInstanceId: "device"
+      } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+      score.mockResolvedValue([identifiableGitCandidate]);
+      await manage(assumedLocalPreview);
+      if (
+        change === "artifactId" ||
+        change === "importSourceId" ||
+        change === "startedAt"
+      )
+        evidence.importAuthority![change] =
+          change === "startedAt"
+            ? "2024-01-01T00:00:00.000001Z"
+            : validationId(912);
+      const apply = manage({
+        action: "apply",
+        sessionId,
+        reviewId: validationId(900),
+        expectedVersion: 1,
+        expectedScopeKey:
+          change === "missing scope"
+            ? undefined
+            : change === "different scope"
+              ? "b".repeat(64)
+              : expectedScopeKey
+      });
+      const applyCalls = () =>
+        request.mock.calls.filter(([path]) => path.endsWith("/apply"));
+      if (change === "unchanged") {
+        await apply;
+        expect(
+          request.mock.calls.slice(-2).map(([, , scope]) => scope)
+        ).toEqual([expectedScopeKey, expectedScopeKey]);
+        expect(applyCalls()).toHaveLength(1);
+      } else {
+        await expect(apply).rejects.toThrow("no longer matches");
+        expect(applyCalls()).toHaveLength(0);
+      }
+    }
+  );
+
   it.each([{ repositoryKey: "changed" }, { directory: "/other/checkout" }])(
     "rechecks the exact repository against current evidence again at apply: %j",
     async (changed) => {
@@ -267,35 +411,41 @@ describe("Git inference confirmation", () => {
     }
   );
 
-  it("does not apply after a different checkout takes the reviewed path", async () => {
-    const parent = resolve(import.meta.dirname, "../../../../scratch");
-    mkdirSync(parent, { recursive: true });
-    const root = mkdtempSync(resolve(parent, "git-review-"));
-    try {
-      const { manage, request, directory, replacement, target } =
-        await setupReplaceableGitReview(root);
-      await manage({
-        ...guardedPreview,
-        reviewedDirectory: directory,
-        correction: { ...guardedPreview.correction, repository: target }
-      });
-      renameSync(directory, resolve(root, "retired"));
-      renameSync(replacement, directory);
-      await expect(
-        manage({
-          sessionId,
-          action: "apply",
-          reviewId: validationId(900),
-          expectedVersion: 1
-        })
-      ).rejects.toThrow("no longer matches");
-      expect(request.mock.calls.some(([path]) => path.endsWith("/apply"))).toBe(
-        false
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+  it.each([false, true])(
+    "does not apply after a different checkout takes the reviewed path (assumed-local: %s)",
+    async (assumedLocal) => {
+      const parent = resolve(import.meta.dirname, "../../../../scratch");
+      mkdirSync(parent, { recursive: true });
+      const root = mkdtempSync(resolve(parent, "git-review-"));
+      try {
+        const { manage, request, directory, replacement, target } =
+          await setupReplaceableGitReview(root, assumedLocal);
+        const preview = assumedLocal
+          ? assumedLocalPreview
+          : { ...guardedPreview, reviewedDirectory: directory };
+        await manage({
+          ...preview,
+          correction: { ...preview.correction, repository: target }
+        });
+        renameSync(directory, resolve(root, "retired"));
+        renameSync(replacement, directory);
+        await expect(
+          manage({
+            sessionId,
+            action: "apply",
+            reviewId: validationId(900),
+            expectedVersion: 1,
+            ...(assumedLocal ? { expectedScopeKey } : {})
+          })
+        ).rejects.toThrow("no longer matches");
+        expect(
+          request.mock.calls.some(([path]) => path.endsWith("/apply"))
+        ).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it("does not preview an approved checkout that moved to a different directory", async () => {
     const { manage, request } = setupGitReview();
@@ -407,7 +557,8 @@ describe("Folder hint confirmation", () => {
           sessionIds: [sessionId],
           proposedFolders: [folder]
         })
-      })
+      }),
+      undefined
     );
   });
 });

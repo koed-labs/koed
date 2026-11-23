@@ -186,15 +186,30 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
           sessionIds: [source.id]
         })
       ).evidence[0];
+    let importBasis:
+      | {
+          artifactId: string;
+          importSourceId: string;
+          deploymentId: string;
+          deviceId: string;
+          startedAt: string;
+        }
+      | undefined;
     const preview = (
-      inferenceIntent: "recording-device" | "user-confirmed-unknown"
+      inferenceIntent:
+        | "recording-device"
+        | "user-confirmed-unknown"
+        | "assumed-local-import"
     ) => {
       const correction = {
         axis: "git",
         action: "set",
         repository: portable,
         expectedVersion: 1,
-        inferenceIntent
+        inferenceIntent,
+        ...(inferenceIntent === "assumed-local-import" && importBasis
+          ? { localImportBasis: importBasis }
+          : {})
       } as const;
       return repo.previewPersonalSourceCorrection(actor, source.id, correction);
     };
@@ -235,16 +250,29 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
       firstConversationAt: nativeStart,
       gitInferenceEligibility: false
     });
+    await expect(preview("assumed-local-import")).rejects.toMatchObject({
+      statusCode: 409
+    });
     const run = await repo.createHistoricalImportRun(actor);
-    await pool.query(
+    const {
+      rows: [importRecord]
+    } = await pool.query<{ id: string }>(
       `insert into historical_import_sources(run_id,owner_user_id,artifact_id,ai_client,raw_ingested_record_count)
-       values($1,$2,$3,'codex',1)`,
+       values($1,$2,$3,'codex',1) returning id`,
       [run.id, actor.userId, artifactId]
     );
+    const correctBasis = {
+      artifactId,
+      importSourceId: importRecord!.id,
+      startedAt: "2024-07-01T00:00:00.000000Z",
+      deploymentId: "deployment",
+      deviceId: "device"
+    };
     expect(await evidence()).toMatchObject({
       firstConversationAt: nativeStart,
       capturedOnThisDevice: false,
-      recordingDeviceProvenance: "unknown",
+      recordingDeviceProvenance: "assumed-local-import",
+      importAuthority: correctBasis,
       gitInferenceEligibility: true,
       gitRevision: 1
     });
@@ -273,7 +301,21 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
         repository: portable
       }
     );
-    const staleReview = (await preview("user-confirmed-unknown")).preview;
+    for (const mismatch of [
+      undefined,
+      { ...correctBasis, artifactId: randomUUID() },
+      { ...correctBasis, importSourceId: randomUUID() },
+      { ...correctBasis, startedAt: "2024-07-01T00:00:00.000001Z" },
+      { ...correctBasis, deploymentId: "elsewhere" },
+      { ...correctBasis, deviceId: "elsewhere" }
+    ]) {
+      importBasis = mismatch;
+      await expect(preview("assumed-local-import")).rejects.toMatchObject({
+        statusCode: 409
+      });
+    }
+    importBasis = correctBasis;
+    const staleReview = (await preview("assumed-local-import")).preview;
     expect(staleReview.projects).toContainEqual(
       expect.objectContaining({
         projectId: project.projectId,
@@ -304,9 +346,42 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
       expectedVersion: removed.project.version,
       repository: portable
     });
-    const review = (await preview("user-confirmed-unknown")).preview;
-    expect(review).toMatchObject({ inferenceIntent: "user-confirmed-unknown" });
+    const review = (await preview("assumed-local-import")).preview;
+    expect(review).toMatchObject({ inferenceIntent: "assumed-local-import" });
+    const setImportCount = (count: number) =>
+      pool.query(
+        "update historical_import_sources set raw_ingested_record_count=$2 where artifact_id=$1",
+        [artifactId, count]
+      );
+    await setImportCount(0);
+    await expect(apply(review.reviewId)).rejects.toMatchObject({
+      statusCode: 409
+    });
+    await setImportCount(1);
+    const setImportingDevice = (device: string) =>
+      pool.query(
+        "update conversation_source_artifacts set origin_device_id=$2 where id=$1",
+        [artifactId, device]
+      );
+    await setImportingDevice("different-device");
+    await expect(apply(review.reviewId)).rejects.toMatchObject({
+      statusCode: 409
+    });
+    await setImportingDevice("device");
+    const setImportSourceId = (id: string) =>
+      pool.query(
+        "update historical_import_sources set id=$2 where artifact_id=$1",
+        [artifactId, id]
+      );
+    await setImportSourceId(randomUUID());
+    await expect(apply(review.reviewId)).rejects.toMatchObject({
+      statusCode: 409
+    });
+    await setImportSourceId(correctBasis.importSourceId);
     const copyId = await addArtifact("hosted_personal");
+    await expect(preview("assumed-local-import")).rejects.toMatchObject({
+      statusCode: 409
+    });
     expect(await evidence()).toMatchObject({
       recordingDeviceProvenance: "known-copy",
       gitInferenceEligibility: false
@@ -317,7 +392,7 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
     await pool.query("delete from conversation_source_artifacts where id=$1", [
       copyId
     ]);
-    const competing = (await preview("user-confirmed-unknown")).preview;
+    const competing = (await preview("assumed-local-import")).preview;
     const outcomes = await Promise.allSettled([
       apply(review.reviewId),
       apply(competing.reviewId)
@@ -329,7 +404,7 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
     expect(await evidence()).toMatchObject({
       gitAnchorKnown: true,
       gitRevision: 2,
-      recordingDeviceProvenance: "unknown",
+      recordingDeviceProvenance: "assumed-local-import",
       gitInferenceEligibility: false
     });
     const reset = (
@@ -351,7 +426,8 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
       action: "set",
       repository: portable,
       expectedVersion: 3,
-      inferenceIntent: "user-confirmed-unknown"
+      localImportBasis: correctBasis,
+      inferenceIntent: "assumed-local-import"
     } as const;
     await expect(
       repo.previewPersonalSourceCorrection(actor, source.id, afterReset)

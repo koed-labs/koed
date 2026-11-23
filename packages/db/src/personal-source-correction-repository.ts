@@ -20,7 +20,11 @@ import {
   type PersonalCorrectionSourceRow
 } from "./personal-source-correction-context.js";
 import { readPersonalCorrectionEffects } from "./personal-source-correction-effects.js";
-import { personalGitInferenceEligibilityQuery } from "./personal-git-inference-evidence.js";
+import {
+  personalGitInferenceEligibilityQuery,
+  personalGitInferenceLocalImportPreviewQuery,
+  personalGitInferenceLocalImportMatchQuery
+} from "./personal-git-inference-evidence.js";
 
 const requireInferenceProjectRule = (
   projects: Awaited<ReturnType<typeof readPersonalCorrectionEffects>>
@@ -137,21 +141,28 @@ export const createPersonalSourceCorrectionRepository = (
               ),
               { statusCode: 409 }
             );
-          const inferenceIntent =
-            "inferenceIntent" in input ? input.inferenceIntent : undefined;
-          if ("inferenceIntent" in input && inferenceIntent) {
-            // Manual confirmation is not recording-device attestation.
+          const gitSet =
+            input.axis === "git" && input.action === "set" ? input : undefined;
+          const inferenceIntent = gitSet?.inferenceIntent;
+          const localImport =
+            inferenceIntent === "assumed-local-import"
+              ? gitSet?.localImportBasis
+              : undefined;
+          if (inferenceIntent) {
+            // Neither historical import nor manual confirmation attests recording origin.
             if (
-              inferenceIntent !== "user-confirmed-unknown" ||
-              input.repository.kind !== "portable_repository" ||
-              !(
-                await client.query(personalGitInferenceEligibilityQuery, [
-                  actor.userId,
-                  sessionId
-                ])
-              ).rowCount
+              inferenceIntent === "recording-device" ||
+              gitSet.repository.kind !== "portable_repository" ||
+              (inferenceIntent === "assumed-local-import" && !localImport)
             )
               throw inferenceUnavailable();
+            const eligible = await client.query(
+              localImport
+                ? personalGitInferenceLocalImportPreviewQuery
+                : personalGitInferenceEligibilityQuery,
+              [actor.userId, sessionId, ...(localImport ? [localImport] : [])]
+            );
+            if (!eligible.rows.length) throw inferenceUnavailable();
           }
           const revisionId = randomUUID(),
             reviewId = randomUUID();
@@ -192,7 +203,10 @@ export const createPersonalSourceCorrectionRepository = (
               input.axis,
               input.expectedVersion,
               revisionId,
-              patch,
+              {
+                ...patch,
+                ...(localImport ? { gitInferenceLocalImport: localImport } : {})
+              },
               preview
             ]
           );
@@ -247,26 +261,22 @@ export const createPersonalSourceCorrectionRepository = (
           )
             throw stale();
           if (row.source_body_pending) throw stale();
+          const { gitInferenceLocalImport, ...patch } = review.patch;
           const effects = await readPersonalCorrectionEffects(
             client,
             actor,
             sessionId,
-            review.patch
+            patch
           );
           const intent = preview.inferenceIntent;
           if (intent) {
-            if (intent !== "user-confirmed-unknown" || review.axis !== "git")
+            if (intent === "recording-device" || review.axis !== "git")
               throw inferenceUnavailable();
             requireInferenceProjectRule(effects);
           }
           if (JSON.stringify(effects) !== JSON.stringify(preview.projects))
             throw stale();
-          const after = afterRow(
-            row,
-            review.axis,
-            review.patch,
-            review.revision_id
-          );
+          const after = afterRow(row, review.axis, patch, review.revision_id);
           if (
             JSON.stringify(personalCorrectionContext(after)) !==
             JSON.stringify(preview.after)
@@ -277,21 +287,26 @@ export const createPersonalSourceCorrectionRepository = (
             [reviewId]
           );
           if (review.axis === "git") {
+            const assumedLocal = intent === "assumed-local-import";
+            const evidenceQuery = assumedLocal
+              ? personalGitInferenceLocalImportMatchQuery
+              : personalGitInferenceEligibilityQuery;
             const updated = await client.query(
               `update sessions set repository_override_identity=$3,repository_assignment_revision_id=$4,repository_assignment_version=repository_assignment_version+1,updated_at=now() where owner_user_id=$1 and id=$2
-               ${intent ? `and exists (${personalGitInferenceEligibilityQuery})` : ""}`,
+               ${intent ? `and exists (${evidenceQuery})` : ""}`,
               [
                 actor.userId,
                 sessionId,
-                review.patch.repository_override_identity,
-                review.revision_id
+                patch.repository_override_identity,
+                review.revision_id,
+                ...(assumedLocal ? [gitInferenceLocalImport ?? null] : [])
               ]
             );
             if (intent && !updated.rowCount) throw inferenceUnavailable();
           } else {
             await client.query(
               "update sessions set folder_assignment=$3,updated_at=now() where owner_user_id=$1 and id=$2",
-              [actor.userId, sessionId, review.patch.folder_assignment]
+              [actor.userId, sessionId, patch.folder_assignment]
             );
           }
           await client.query(

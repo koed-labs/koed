@@ -4,10 +4,16 @@ export const personalGitInferenceEvidenceJoins = `
   left join lateral (
     select case when min(a.source_created_at) = max(a.source_created_at)
                 then min(a.source_created_at) end as first_at,
-           coalesce(bool_or(a.live_start_offset > 0 and h.raw_ingested_record_count > 0), false) as imported
+           coalesce(bool_or(h.id is not null), false) as imported,
+           array_agg(jsonb_build_object(
+             'artifactId', a.id, 'importSourceId', h.id,
+             'deploymentId', a.origin_deployment_id, 'deviceId', a.origin_device_id,
+             'startedAt', to_char(a.source_created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+           )) filter (where h.id is not null and a.replica_role = 'origin_local') as local_imports
     from conversation_source_artifacts a
     left join historical_import_sources h on h.artifact_id = a.id
       and h.owner_user_id = a.owner_user_id and h.ai_client = 'codex'
+      and a.live_start_offset > 0 and h.raw_ingested_record_count > 0
     where a.session_id = s.id and a.owner_user_id = s.owner_user_id
       and a.external_session_id = s.external_session_id
       and a.source_kind = 'codex' and a.artifact_format = 'codex_rollout_jsonl'
@@ -32,8 +38,8 @@ export const personalGitInferenceEvidenceJoins = `
 // Codex's initial rollout artifact uses the native session header timestamp.
 // Rewrite generations and other clients can populate creation time with a
 // fallback. Registration, even origin_local, only proves the importing device.
-// The imported prefix proves historical origin. The Codex watcher can store
-// its missing-history sentinel as the original; preserve actual source pins.
+// The imported prefix identifies historical ingestion, not where it was recorded.
+// Preserve actual source pins; the Codex watcher's missing-history sentinel is not one.
 export const personalGitInferenceEligible = `(
   native.imported and native.first_at is not null and not provenance.known_copy
   and (s.repository_automatic_identity is null or
@@ -57,7 +63,20 @@ export const personalGitInferenceEligible = `(
   )
 )`;
 
+// Do not choose an importing authority when multiple artifacts qualify.
+export const personalGitInferenceLocalImport = `case
+  when not provenance.known_copy and cardinality(native.local_imports) = 1
+  then native.local_imports[1] end`;
+
 export const personalGitInferenceEligibilityQuery = `
-  select 1 from sessions s
+  select ${personalGitInferenceLocalImport} as local_import from sessions s
   ${personalGitInferenceEvidenceJoins}
   where s.id = $2 and s.owner_user_id = $1 and ${personalGitInferenceEligible}`;
+
+export const personalGitInferenceLocalImportPreviewQuery = `
+  select 1 from (${personalGitInferenceEligibilityQuery}) eligible
+  where eligible.local_import = $3::jsonb`;
+
+export const personalGitInferenceLocalImportMatchQuery = `
+  select 1 from (${personalGitInferenceEligibilityQuery}) eligible
+  where eligible.local_import = $5::jsonb`;

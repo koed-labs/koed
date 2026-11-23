@@ -27,11 +27,24 @@ export const personalFolderHintEvidenceRequestSchema =
       .optional()
   });
 
+export const personalGitLocalImportBasisSchema = z
+  .object({
+    artifactId: z.uuid(),
+    importSourceId: z.uuid(),
+    startedAt: z.iso.datetime({ offset: true }),
+    deploymentId: z.string().min(1).max(500),
+    deviceId: z.string().min(1).max(500)
+  })
+  .strict();
+export type PersonalGitLocalImportBasis = z.infer<
+  typeof personalGitLocalImportBasisSchema
+>;
+
 const gitInferenceEvidence = {
   gitRevision: z.number().int().positive().safe().optional(),
   gitInferenceEligibility: z.boolean().optional(),
   recordingDeviceProvenance: z
-    .enum(["recording-device", "known-copy", "unknown"])
+    .enum(["recording-device", "assumed-local-import", "known-copy", "unknown"])
     .optional()
 };
 
@@ -64,6 +77,8 @@ export const personalFolderHintEvidenceSchema = z
              * chosen, so no anchor needs suggesting. Absent means unknown. */
             gitAnchorKnown: z.boolean().optional(),
             ...gitInferenceEvidence,
+            /** Exact historical import basis, not proof of the recording device. */
+            importAuthority: personalGitLocalImportBasisSchema.optional(),
             /** The AI Client that produced the Conversation, e.g. "claude-code". */
             sourceRuntime: z.string().max(64).nullable().optional(),
             /** The client's own session id, used only to find its local record. */
