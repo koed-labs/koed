@@ -10,6 +10,276 @@ import { mergeProjectSources } from "../../../project-memory-ui.js";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { useProjectManagement } from "./use-project-management.js";
 
+function settingsScreen(
+  f: ReturnType<typeof createProjectManagementValidationApi>
+) {
+  const projectId = validationId(2);
+  // Deliberately keep the parent inventory fixed. Only the explicit refresh
+  // should replace the dialog's reviewed Project version.
+  const projects = mergeProjectSources(f.inventory(), []);
+  const store = new PersonalMemoryStore(f.api);
+  function Screen() {
+    const management = useProjectManagement({
+      scopeKey: "settings-test",
+      api: f.api,
+      store,
+      projects,
+      onOrganized: () => {}
+    });
+    return (
+      <>
+        <button onClick={() => management.openSettings(projectId)}>
+          Open settings
+        </button>
+        {management.overlays}
+      </>
+    );
+  }
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  const button = (text: RegExp) =>
+    [...document.querySelectorAll("button")].find((b) =>
+      text.test(b.textContent?.trim() ?? "")
+    )!;
+  const click = (el: HTMLElement) => act(async () => el.click());
+  const rowAction = (label: string) =>
+    document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+  return {
+    button,
+    click,
+    rowAction,
+    store,
+    open: async () => {
+      await act(async () => root.render(<Screen />));
+      await click(button(/^Open settings$/));
+    },
+    cleanup: async () => {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  };
+}
+
+const conversationSearch = () =>
+  document.querySelector<HTMLInputElement>(
+    '[aria-label="Search Project Conversations"]'
+  )!;
+
+const setInput = (input: HTMLInputElement, value: string) =>
+  act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+it("keeps Conversations open and uses the refreshed Project version on the next save", async () => {
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const sessionId = validationId(100);
+  await f.api.manageProject!({
+    action: "exclude_session",
+    projectId,
+    expectedVersion: 1,
+    sessionId
+  });
+  const manage = vi.spyOn(f.api, "manageProject");
+  const ui = settingsScreen(f);
+  try {
+    await ui.open();
+    await ui.click(ui.button(/^Conversations/));
+    await ui.click(ui.rowAction("Remove Refine the settings popup"));
+    await ui.click(ui.button(/^Excluded/));
+    await setInput(conversationSearch(), "sidebar");
+    await ui.click(ui.button(/^Save changes$/));
+    expect(f.projects.get(projectId)!.meta.version).toBe(3);
+    expect(
+      document.querySelector('[role="dialog"] h2:last-child')?.textContent
+    ).toBe("Conversations");
+    expect(ui.button(/^Excluded/).getAttribute("aria-selected")).toBe("true");
+    expect(conversationSearch().value).toBe("sidebar");
+    expect(ui.button(/^Save changes$/).disabled).toBe(true);
+
+    await ui.click(ui.rowAction("Add back A calmer sidebar for Koed"));
+    await ui.click(ui.button(/^Save changes$/));
+    expect(f.projects.get(projectId)!.meta.version).toBe(4);
+    expect(manage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "apply_sources",
+        projectId,
+        expectedVersion: 3
+      })
+    );
+    expect(conversationSearch().value).toBe("sidebar");
+    expect(ui.rowAction("Add back A calmer sidebar for Koed")).toBeNull();
+    expect(ui.button(/^Save changes$/).disabled).toBe(true);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+it("uses authoritative versions even when a background refresh supersedes the save refresh", async () => {
+  const f = createProjectManagementValidationApi();
+  const ui = settingsScreen(f);
+  await ui.store.loadProjects();
+  const saveRefresh = deferredInventory(f);
+  const backgroundRefresh = deferredInventory(f);
+  try {
+    await ui.open();
+    await ui.click(ui.button(/^Conversations/));
+    await ui.click(ui.rowAction("Remove Refine the settings popup"));
+    vi.spyOn(f.api, "listProjects")
+      .mockReturnValueOnce(saveRefresh.promise)
+      .mockReturnValueOnce(backgroundRefresh.promise);
+    await ui.click(ui.button(/^Save changes$/));
+    const background = ui.store.loadProjects({ silent: true });
+    await act(async () => saveRefresh.resolve());
+    expect(document.body.textContent).not.toContain("Project changed");
+    await ui.click(ui.button(/^Excluded/));
+    await ui.click(ui.rowAction("Add back Refine the settings popup"));
+    await ui.click(ui.button(/^Save changes$/));
+    expect(f.projects.get(validationId(2))!.meta.version).toBe(3);
+    await act(async () => {
+      backgroundRefresh.resolve();
+      await background;
+    });
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+function deferredInventory(
+  f: ReturnType<typeof createProjectManagementValidationApi>
+) {
+  let resolve!: (projects: ReturnType<typeof f.inventory>) => void;
+  const promise = new Promise<ReturnType<typeof f.inventory>>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: () => resolve(f.inventory()) };
+}
+
+it.each(["sidebar inventory", "authoritative inventory", "draft"])(
+  "recovers from a failed %s refresh without replaying committed edits",
+  async (failure) => {
+    const f = createProjectManagementValidationApi();
+    const projectId = validationId(2);
+    const ui = settingsScreen(f);
+    try {
+      await ui.open();
+      await ui.click(ui.button(/^Conversations/));
+      await ui.click(ui.rowAction("Remove Refine the settings popup"));
+      await ui.click(ui.button(/^Excluded/));
+      await setInput(conversationSearch(), "settings");
+      const original = f.api.manageProject!;
+      const manage = vi.spyOn(f.api, "manageProject");
+      if (failure !== "draft") {
+        const originalList = f.api.listProjects;
+        const list = vi.spyOn(f.api, "listProjects");
+        if (failure === "authoritative inventory")
+          list.mockImplementationOnce(originalList);
+        list.mockRejectedValueOnce(new Error("Inventory unavailable"));
+      } else {
+        manage.mockImplementation(async (input) => {
+          if (input.action === "list_exclusions") {
+            manage.mockImplementation(original);
+            throw new Error("Draft unavailable");
+          }
+          return original(input);
+        });
+      }
+      await ui.click(ui.button(/^Save changes$/));
+      expect(f.projects.get(projectId)!.meta.version).toBe(2);
+      expect(document.body.textContent).toContain(
+        failure === "draft" ? "Draft unavailable" : "Inventory unavailable"
+      );
+      expect(ui.button(/^Conversations/)?.getAttribute("aria-current")).toBe(
+        "page"
+      );
+      expect(ui.button(/^Save changes$/).disabled).toBe(true);
+      expect(ui.rowAction("Undo for Refine the settings popup")).toBeNull();
+      const retry = ui.button(/^Retry refresh$/);
+      if (failure === "sidebar inventory") {
+        expect(retry).toBeUndefined();
+      } else {
+        expect(retry).toBeDefined();
+        await ui.click(retry);
+      }
+      expect(ui.button(/^Excluded/).getAttribute("aria-selected")).toBe("true");
+      expect(conversationSearch().value).toBe("settings");
+      expect(ui.rowAction("Add back Refine the settings popup")).not.toBeNull();
+      expect(ui.button(/^Save changes$/).disabled).toBe(true);
+      expect(
+        manage.mock.calls.filter(([input]) => input.action === "apply_sources")
+      ).toHaveLength(1);
+      expect(f.projects.get(projectId)!.meta.version).toBe(2);
+    } finally {
+      await ui.cleanup();
+    }
+  }
+);
+
+it("blocks row menu edits during save without disabling search or filters", async () => {
+  const f = createProjectManagementValidationApi();
+  const ui = settingsScreen(f);
+  const inventory = deferredInventory(f);
+  try {
+    await ui.open();
+    await ui.click(ui.button(/^Conversations/));
+    await ui.click(ui.rowAction("Remove Refine the settings popup"));
+    const more = ui.rowAction("More for A calmer sidebar for Koed");
+    await ui.click(more);
+    const keep = document.querySelector<HTMLElement>(
+      '[role="menuitemcheckbox"]'
+    )!;
+    expect(keep.textContent).toContain("Keep if rules change");
+    vi.spyOn(f.api, "listProjects").mockReturnValueOnce(inventory.promise);
+    await ui.click(ui.button(/^Save changes$/));
+    expect(more.disabled).toBe(true);
+    expect(
+      keep.isConnected && keep.getAttribute("aria-disabled") !== "true"
+    ).toBe(false);
+    expect(conversationSearch().disabled).toBe(false);
+    await ui.click(ui.button(/^Excluded/));
+    expect(ui.button(/^Excluded/).getAttribute("aria-selected")).toBe("true");
+  } finally {
+    await act(async () => inventory.resolve());
+    await ui.cleanup();
+  }
+});
+
+it.each(["General", "Conversations"])(
+  "uses the live %s tab when the post-save refresh finishes",
+  async (panel) => {
+    const f = createProjectManagementValidationApi();
+    const projectId = validationId(2);
+    const ui = settingsScreen(f);
+    try {
+      await ui.open();
+      await setInput(
+        document.querySelector<HTMLInputElement>("#v1-pm-project-name")!,
+        "Renamed Koed"
+      );
+      const inventory = deferredInventory(f);
+      vi.spyOn(f.api, "listProjects").mockReturnValueOnce(inventory.promise);
+      await ui.click(ui.button(/^Save changes$/));
+      expect(f.projects.get(projectId)!.meta.version).toBe(2);
+      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+      if (panel === "Conversations")
+        await ui.click(ui.button(/^Conversations/));
+      await act(async () => inventory.resolve());
+      if (panel === "Conversations") {
+        expect(conversationSearch()).not.toBeNull();
+        expect(ui.button(/^Save changes$/).disabled).toBe(true);
+      } else {
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
+      }
+    } finally {
+      await ui.cleanup();
+    }
+  }
+);
+
 it.each([
   "same account and backend",
   "account changed",

@@ -162,7 +162,7 @@ export function useProjectManagement({
     [worked.rows, isDismissed, members]
   );
   const suggestions = { ...worked, rows: shown };
-  const run = async (work: (check: () => void) => Promise<void>) => {
+  const run = async <T,>(work: (check: () => void) => Promise<T>) => {
     if (!available || locked.current)
       throw new Error("Project management is busy or unavailable.");
     const check = () => {
@@ -173,7 +173,7 @@ export function useProjectManagement({
     locked.current = true;
     setBusy(true);
     try {
-      await work(check);
+      return await work(check);
     } finally {
       locked.current = false;
       if (alive.current) setBusy(false);
@@ -191,9 +191,24 @@ export function useProjectManagement({
       throw new Error(
         `Saved, but the sidebar could not refresh. ${snapshot.error}`
       );
-    const next = [...snapshot.projectsById.values()];
-    if (sessionId) onOrganized(sessionId, next, preferredProjectId);
-    return next;
+    if (sessionId)
+      onOrganized(
+        sessionId,
+        [...snapshot.projectsById.values()],
+        preferredProjectId
+      );
+  };
+  const readSettingsInventory = async (check: () => void) => {
+    check();
+    const { localCheckouts } = store!.current().inventory;
+    // A concurrent store refresh can supersede ours and leave its published
+    // snapshot behind. Review versions from a direct post-write inventory read.
+    const [latest, local] = await Promise.all([
+      api!.listProjects(),
+      api!.listProjectMetadata?.().catch(() => localCheckouts) ?? localCheckouts
+    ]);
+    check();
+    return mergeProjectSources(latest, local);
   };
   const perform = async (
     check: () => void,
@@ -411,7 +426,10 @@ export function useProjectManagement({
           page={modal.page}
           {...(modal.filter ? { filter: modal.filter } : {})}
           suggestions={suggestions}
-          onClose={() => open(null)}
+          onClose={() => {
+            if (scopeIsCurrent()) open(null);
+          }}
+          onRefresh={() => run(readSettingsInventory)}
           onSave={(project, changes, accepted, rejected) =>
             run(async (check) => {
               check();
@@ -453,18 +471,21 @@ export function useProjectManagement({
                 }
                 forgetSuggestions();
               }
-              open(null);
               notice(status);
-              try {
-                await refresh(check);
-              } catch (cause) {
+              let saveError = status.error;
+              const reportRefreshError = (cause: unknown) => {
                 check();
-                notice({
-                  ...status,
-                  error: [status.error, projectErrorMessage(cause)]
-                    .filter(Boolean)
-                    .join("\n")
-                });
+                saveError = [saveError, projectErrorMessage(cause)]
+                  .filter(Boolean)
+                  .join("\n");
+                notice({ ...status, error: saveError });
+              };
+              await refresh(check).catch(reportRefreshError);
+              try {
+                return await readSettingsInventory(check);
+              } catch (cause) {
+                reportRefreshError(cause);
+                return null;
               }
             })
           }

@@ -147,10 +147,19 @@ function Row({
   );
 }
 
-function RowMenu({ title, children }: { title: string; children: ReactNode }) {
+function RowMenu({
+  title,
+  busy,
+  children
+}: {
+  title: string;
+  busy: boolean;
+  children: ReactNode;
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
+        disabled={busy}
         render={
           <button
             type="button"
@@ -342,8 +351,9 @@ export function ConversationsPanel({
                     menu={
                       !unresolved &&
                       (rules.length > 0 || membership.direct) && (
-                        <RowMenu title={row.title}>
+                        <RowMenu title={row.title} busy={busy}>
                           <DropdownMenuCheckboxItem
+                            disabled={busy}
                             checked={membership.direct}
                             // With no rule to fall back on, turning it off
                             // takes the Conversation out of the Project.
@@ -400,8 +410,11 @@ export function ConversationsPanel({
                   onAction={() => choose(row, "add")}
                   onUndo={() => choose(row)}
                   menu={
-                    <RowMenu title={row.title}>
-                      <DropdownMenuItem onClick={() => choose(row, "exclude")}>
+                    <RowMenu title={row.title} busy={busy}>
+                      <DropdownMenuItem
+                        disabled={busy}
+                        onClick={() => choose(row, "exclude")}
+                      >
                         <EyeOff />
                         Not this one
                       </DropdownMenuItem>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Checkbox, DialogFooter, Input } from "@koed-labs/ui";
 import {
   Check,
@@ -63,6 +63,7 @@ export function ProjectSettingsDialog({
   suggestions,
   onClose,
   onSave,
+  onRefresh,
   onDelete
 }: {
   api: PersonalDesktopApi;
@@ -75,20 +76,29 @@ export function ProjectSettingsDialog({
   /** Conversations suggested in the background, for every Project. */
   suggestions?: { rows: readonly SuggestionRow[]; loading: boolean };
   onClose: () => void;
-  /** Saves the Project's changes (turned-down suggestions are excluded), then
-   * adds the accepted suggestions. */
+  /** Saves changes and suggestions, returning refreshed Projects, or null if
+   * the save completed but the inventory could not be refreshed. */
   onSave: (
     project: DesktopProject,
     changes: PersonalProjectBatchInput["changes"],
     accepted: SuggestionRow[],
     rejected: SuggestionRow[]
-  ) => Promise<void>;
+  ) => Promise<readonly DesktopProject[] | null>;
+  onRefresh: () => Promise<readonly DesktopProject[]>;
   onDelete: (project: DesktopProject) => Promise<void>;
 }) {
-  const [initialProjects] = useState(projects);
+  const [reviewedProjects, setReviewedProjects] = useState<
+    readonly DesktopProject[] | null
+  >(projects);
   const [active, setActive] = useState(projectId);
   const [panel, setPanel] = useState<ProjectSettingsPage>(page);
+  const livePanel = useRef(panel);
+  const showPanel = (next: ProjectSettingsPage) => {
+    livePanel.current = next;
+    setPanel(next);
+  };
   const [draft, setDraft] = useState<ProjectSettingsDraft>();
+  const [refreshAfterSave, setRefreshAfterSave] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
@@ -102,19 +112,25 @@ export function ProjectSettingsDialog({
   );
   const [nextProject, setNextProject] = useState<string>();
   const [syncOpen, setSyncOpen] = useState(false);
-  const named = activeNamedProjects(initialProjects);
+  const named = activeNamedProjects(reviewedProjects ?? projects);
   useEffect(() => {
     let current = true;
     setDraft(undefined);
+    if (!reviewedProjects) {
+      setError("Changes were saved, but Project settings could not refresh.");
+      return;
+    }
     setError("");
-    const project = initialProjects.find((p) => p.id === active);
+    const project = reviewedProjects.find((p) => p.id === active);
     if (!project) {
       setError("This Project is no longer available.");
       return;
     }
-    void loadProjectSettings(api, project, initialProjects)
+    void loadProjectSettings(api, project, reviewedProjects)
       .then((value) => {
-        if (current) setDraft(value);
+        if (!current) return;
+        setDraft(value);
+        if (!value.inspectionError) setRefreshAfterSave(false);
       })
       .catch((cause) => {
         if (current) setError(projectErrorMessage(cause));
@@ -122,8 +138,8 @@ export function ProjectSettingsDialog({
     return () => {
       current = false;
     };
-  }, [active, api, initialProjects]);
-  const activeName = initialProjects.find((p) => p.id === active)?.name;
+  }, [active, api, reviewedProjects]);
+  const activeName = reviewedProjects?.find((p) => p.id === active)?.name;
   // Suggestions for this Project. A Conversation already in it, or excluded
   // from it, never is.
   const suggested = useMemo(() => {
@@ -191,7 +207,7 @@ export function ProjectSettingsDialog({
       setConfirmation("discard");
     } else {
       setActive(id);
-      setPanel("general");
+      showPanel("general");
       setQuery("");
       setFilter("in");
       setAccepted(new Set());
@@ -213,6 +229,37 @@ export function ProjectSettingsDialog({
       setBusy(false);
     }
   };
+  const save = async (current: ProjectSettingsDraft) => {
+    const refreshed = await onSave(
+      current.project,
+      [
+        ...changes,
+        ...rejectedRows.map((row) => ({
+          action: "exclude_session" as const,
+          sessionId: row.sessionId
+        }))
+      ],
+      acceptedRows,
+      rejectedRows
+    );
+    if (livePanel.current !== "conversations") {
+      onClose();
+      return;
+    }
+    setAccepted(new Set());
+    setRejected(new Set());
+    setRefreshAfterSave(true);
+    setDraft(undefined);
+    setReviewedProjects(refreshed);
+  };
+  const retryRefresh = async () => {
+    const refreshed = await onRefresh();
+    setDraft(undefined);
+    setReviewedProjects(refreshed);
+  };
+  const canRetryRefresh =
+    refreshAfterSave &&
+    (!reviewedProjects || (!draft && !!error) || !!draft?.inspectionError);
   const [now] = useState(Date.now);
   // Client and latest activity per Conversation, for the row's mark and age.
   const facts = useMemo(() => {
@@ -261,7 +308,7 @@ export function ProjectSettingsDialog({
             label: p.id === active ? draft?.name || p.name : p.name
           }))}
           onChange={switchProject}
-          disabled={busy}
+          disabled={busy || !reviewedProjects}
         />
         <div className="v1-pm-settings-links">
           {pages.map(({ id, name, Icon }) => (
@@ -271,7 +318,7 @@ export function ProjectSettingsDialog({
               className="v1-pm-nav-link"
               aria-current={panel === id ? "page" : undefined}
               onClick={() => {
-                setPanel(id);
+                showPanel(id);
                 setQuery("");
               }}
             >
@@ -297,6 +344,15 @@ export function ProjectSettingsDialog({
           {!draft && !error && <p role="status">Loading…</p>}
           <ProjectError error={error} />
           {panel !== "sync" && <ProjectError error={editError} />}
+          {canRetryRefresh && (
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => void run(retryRefresh)}
+            >
+              Retry refresh
+            </Button>
+          )}
           {draft && !editError && panel === "kin" && (
             <fieldset
               disabled={busy}
@@ -348,7 +404,7 @@ export function ProjectSettingsDialog({
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => setPanel("sources")}
+                  onClick={() => showPanel("sources")}
                 >
                   Manage
                   <ChevronRight />
@@ -500,23 +556,7 @@ export function ProjectSettingsDialog({
             disabled={
               !draft || !!editError || !dirty || !draft.name.trim() || busy
             }
-            onClick={() =>
-              draft &&
-              void run(() =>
-                onSave(
-                  draft.project,
-                  [
-                    ...changes,
-                    ...rejectedRows.map((row) => ({
-                      action: "exclude_session" as const,
-                      sessionId: row.sessionId
-                    }))
-                  ],
-                  acceptedRows,
-                  rejectedRows
-                )
-              )
-            }
+            onClick={() => draft && void run(() => save(draft))}
           >
             {busy ? "Saving…" : "Save changes"}
           </Button>
@@ -553,7 +593,7 @@ export function ProjectSettingsDialog({
                   void run(() => onDelete(draft.project));
                 else if (nextProject) {
                   setActive(nextProject);
-                  setPanel("general");
+                  showPanel("general");
                   setQuery("");
                   setFilter("in");
                   setAccepted(new Set());

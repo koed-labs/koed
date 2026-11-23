@@ -62,6 +62,7 @@ it("opens sync conflict review even when a retained exclusion blocks membership 
           projectId={projectId}
           onClose={vi.fn()}
           onSave={vi.fn()}
+          onRefresh={vi.fn()}
           onDelete={vi.fn()}
         />
       )
@@ -116,6 +117,7 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
           expectedVersion: project.namedProject!.version,
           changes
         });
+        return mergeProjectSources(await f.api.listProjects(), []);
       }
     )
     .mockRejectedValueOnce(new Error("Save failed"));
@@ -131,6 +133,7 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
           projectId={projectId}
           onClose={close}
           onSave={save}
+          onRefresh={vi.fn()}
           onDelete={vi.fn()}
         />
       )
@@ -235,7 +238,7 @@ it.each(["Add", "Add all"])(
       title: "Unchanged Conversation"
     };
     const store = new PersonalMemoryStore(f.api);
-    const save = vi.fn(async () => {});
+    const save = vi.fn(async () => [...projects]);
     const container = document.body.appendChild(document.createElement("div"));
     const root = createRoot(container);
     const render = (row: typeof candidate) =>
@@ -250,6 +253,7 @@ it.each(["Add", "Add all"])(
             filter="suggested"
             suggestions={{ rows: [row, unchanged], loading: false }}
             onSave={save}
+            onRefresh={vi.fn()}
             onClose={vi.fn()}
             onDelete={vi.fn()}
           />
@@ -323,7 +327,7 @@ it("lists suggestions on their own tab and saves ticked ones with the Project's 
       evidence: []
     }
   });
-  const save = vi.fn(async () => {});
+  const save = vi.fn(async () => [...projects]);
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   const button = (text: string) =>
@@ -351,6 +355,7 @@ it("lists suggestions on their own tab and saves ticked ones with the Project's 
           }}
           onClose={vi.fn()}
           onSave={save}
+          onRefresh={vi.fn()}
           onDelete={vi.fn()}
         />
       )
