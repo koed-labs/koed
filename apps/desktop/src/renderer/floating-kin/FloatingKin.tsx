@@ -139,7 +139,7 @@ export function StandaloneKin({
 }: {
   hasChips?: boolean;
   active: boolean;
-  placement?: "desktop" | "sidebar";
+  placement?: "desktop" | "window";
 }) {
   const avatar = useRef<HTMLDivElement>(null);
   const wakeTimer = useRef<number | undefined>(undefined);
@@ -175,7 +175,7 @@ export function StandaloneKin({
     >
       <Pixelkin
         {...chiefOfStaffBrand}
-        size={placement === "sidebar" ? 54 : 88}
+        size={88}
         motion={awake ? "unfocused" : "still"}
         expression={awake ? "happy" : "sleepy"}
       />
@@ -232,8 +232,12 @@ function useSelection(
   return { selected, close, toggle };
 }
 
-export function useKinActivity(bridge?: KinActivityBridge, visible = true) {
-  const { activity, at } = useActivity(bridge, visible);
+export function useKinActivity(
+  bridge?: KinActivityBridge,
+  visible = true,
+  scopeKey?: string | null
+) {
+  const { activity, at } = useActivity(bridge, visible, scopeKey);
   const recent = activity.state === "running" ? activity.conversations : [];
   const latest = Math.max(
     0,

@@ -39,16 +39,15 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
   };
   function Harness({ home }: { home: boolean }) {
     const search = useRef<HTMLInputElement>(null);
-    const { showHomeAvatar, dock } = useDesktopKin(bridge, home);
+    const { dock, corner } = useDesktopKin(bridge, home);
     return (
       <>
-        <section id="home">
-          {showHomeAvatar && <span className="fk-kin-avatar" />}
-        </section>
+        <section id="home" />
         <aside>
           <input ref={search} aria-label="Search" />
           {dock(search)}
         </aside>
+        {corner}
       </>
     );
   }
@@ -61,10 +60,18 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
     await act(async () => root.render(<Harness home />));
     expect(bridge.setHomeVisible).toHaveBeenLastCalledWith(true);
     await transition("home", 0, true);
-    expect(mount.querySelector("#home .fk-kin-avatar")).toBeNull();
+    const corner = () =>
+      mount.querySelector(".fk-window-corner .fk-kin-avatar");
+    expect(corner()).toBeNull();
     await transition("home");
-    expect(mount.querySelector("#home .fk-kin-avatar")).not.toBeNull();
-    expect(mount.querySelector("aside .fk-kin-avatar")).toBeNull();
+    expect(
+      corner()?.querySelector(
+        '[data-kin-shape="roundedBox"][data-kin-colour="#3083ff"][data-kin-gradient="true"]'
+      )
+    ).not.toBeNull();
+    expect(
+      mount.querySelector("#home .fk-kin-avatar, aside .fk-kin-avatar")
+    ).toBeNull();
     await act(async () =>
       mount.querySelector<HTMLButtonElement>("aside .fk-chip")?.click()
     );
@@ -86,8 +93,8 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
     await act(async () => root.render(<Harness home={false} />));
     expect(bridge.setHomeVisible).toHaveBeenLastCalledWith(false);
     await transition("sidebar", 1);
-    expect(mount.querySelector("#home .fk-kin-avatar")).toBeNull();
-    expect(mount.querySelector("aside .fk-kin-avatar")).not.toBeNull();
+    expect(corner()).not.toBeNull();
+    expect(mount.querySelector("aside .fk-kin-avatar")).toBeNull();
     expect(mount.querySelector("aside .fk-chip")).not.toBeNull();
     await transition("desktop", 2);
     expect(mount.querySelector(".fk-kin-avatar, .fk-chip")).toBeNull();

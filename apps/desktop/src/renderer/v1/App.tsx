@@ -1042,7 +1042,8 @@ export function V1App({
     Boolean(
       profile && !showOnboarding && !settingsOpen && route.kind === "home"
     ),
-    inventoryScope
+    inventoryScope,
+    Boolean(profile && !showOnboarding)
   );
   if (!profile)
     return profileReadError ? (
@@ -1207,9 +1208,7 @@ export function V1App({
           ) : (
             <Home
               view={homeView}
-              chiefOfStaff={
-                window.koedDesktop?.kin ? kin.showHomeAvatar : undefined
-              }
+              showStageHost={!window.koedDesktop?.kin}
               statusError={statusError}
               clients={homeClients(status)}
               entries={homeEntries}
@@ -1254,6 +1253,7 @@ export function V1App({
             />
           )}
         </NavigationShell>
+        {kin.corner}
       </ConversationPresentationContext.Provider>
     </V1AgentContext.Provider>
   );

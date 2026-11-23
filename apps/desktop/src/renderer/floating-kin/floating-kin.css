@@ -47,12 +47,26 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
       transform 220ms ease,
       opacity 220ms ease;
   }
-  [data-fk-placement="home"] {
-    animation: fk-home-entry 220ms ease-out;
+  .fk-window-corner {
+    animation: fk-window-entry 220ms ease-out;
   }
 }
 
-@keyframes fk-home-entry {
+.fk-window-corner {
+  position: fixed;
+  inset-inline-end: 12px;
+  bottom: 10px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* Keep the composer’s rightmost controls clear of the fixed avatar. */
+#app:has(.fk-window-corner) .v1-app .v1-runtime-input {
+  width: min(880px, calc(100% - 100px));
+  margin-inline-end: max(100px, calc((100% - 880px) / 2));
+}
+
+@keyframes fk-window-entry {
   from {
     opacity: 0;
     translate: 24px 24px;
@@ -221,17 +235,13 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   padding: 7px 13px 7px 7px;
   max-width: 310px;
 }
-.fk-surface .fk-kin-avatar {
+.fk-kin-avatar {
   position: relative;
   display: grid;
   place-items: center;
   width: 88px;
   height: 88px;
   pointer-events: none;
-}
-.fk-surface[data-fk-placement="sidebar"] .fk-kin-avatar {
-  width: 54px;
-  height: 54px;
 }
 .fk-kin-avatar .v1-pixelkin,
 .fk-kin-avatar::after {
@@ -244,6 +254,9 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   inset: 16%;
   border-radius: 20%;
   pointer-events: auto;
+}
+.fk-window-corner .fk-kin-avatar::after {
+  pointer-events: none;
 }
 .fk-kin-avatar .v1-pixelkin-fallback::before {
   inset: 16%;
