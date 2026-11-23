@@ -197,6 +197,19 @@ const sourceTarget = (source: SettingsSource) =>
       ? `folder:${personalFolderScopeId(source.target.folder)}`
       : undefined;
 
+/** Suggestions require a rule that will still be selected at Save. */
+export function suggestionsForSelectedRules(
+  draft: ProjectSettingsDraft,
+  rows: readonly SuggestionRow[]
+): SuggestionRow[] {
+  const targets = new Set(
+    draft.sources
+      .filter((source) => draft.selectedSources.has(source.id))
+      .map(sourceTarget)
+  );
+  return rows.filter((row) => targets.has(proposalTarget(row.proposal)));
+}
+
 /** Suggestions, grouped by the rule of this Project they would join. */
 export function suggestionGroups(
   draft: ProjectSettingsDraft,
@@ -476,10 +489,11 @@ export function ConversationsPanel({
     const add = new Set(accepted),
       exclude = new Set(rejected);
     for (const row of rows) {
-      add.delete(approvalKey(row));
-      exclude.delete(row.sessionId);
-      if (choice === "add") add.add(approvalKey(row));
-      if (choice === "exclude") exclude.add(row.sessionId);
+      const key = approvalKey(row);
+      add.delete(key);
+      exclude.delete(key);
+      if (choice === "add") add.add(key);
+      if (choice === "exclude") exclude.add(key);
     }
     onAccepted(add);
     onRejected(exclude);
@@ -708,7 +722,7 @@ export function ConversationsPanel({
       const shown = group.rows.filter((row) => matches(row.title));
       if (searching && shown.length === 0) return [];
       const key = `suggested:${group.key}`;
-      const open = group.rows.filter((row) => !rejected.has(row.sessionId));
+      const open = group.rows.filter((row) => !rejected.has(approvalKey(row)));
       const allAdded =
         open.length > 0 && open.every((row) => accepted.has(approvalKey(row)));
       return [
@@ -751,7 +765,7 @@ export function ConversationsPanel({
               pending={
                 accepted.has(approvalKey(row))
                   ? "Will be added"
-                  : rejected.has(row.sessionId)
+                  : rejected.has(approvalKey(row))
                     ? "Will be excluded"
                     : undefined
               }

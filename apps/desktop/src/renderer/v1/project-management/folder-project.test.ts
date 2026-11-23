@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DesktopProject } from "../../../project-memory-ui.js";
-import { projectNamesForFolder } from "./folder-project.js";
+import { projectsForFolder } from "./folder-project.js";
 
 const folder = {
   ownerUserId: "00000000-0000-4000-8000-000000000001",
@@ -26,7 +26,7 @@ const project = (name: string | null, rules: unknown[]) =>
     inclusionRules: rules
   }) as unknown as DesktopProject;
 
-describe("projectNamesForFolder", () => {
+describe("projectsForFolder", () => {
   it("returns the named Projects with an active rule for exactly this Folder", () => {
     const projects = [
       project("Koed", [rule({ kind: "folder", folder })]),
@@ -34,7 +34,9 @@ describe("projectNamesForFolder", () => {
         rule({ kind: "folder", folder: { ...folder, folderId: "other" } })
       ])
     ];
-    expect(projectNamesForFolder(projects, folder)).toEqual(["Koed"]);
+    expect(projectsForFolder(projects, folder)).toEqual([
+      { id: "Koed", name: "Koed" }
+    ]);
   });
 
   it("also names a Project built on the Folder itself, and only that exact Folder", () => {
@@ -50,7 +52,9 @@ describe("projectNamesForFolder", () => {
       folder: { reference: { ...folder, folderId: "other" } },
       inclusionRules: []
     } as unknown as DesktopProject;
-    expect(projectNamesForFolder([own, other], folder)).toEqual(["koed"]);
+    expect(projectsForFolder([own, other], folder)).toEqual([
+      { id: "koed", name: "koed" }
+    ]);
   });
 
   it("ignores removed rules, repository rules, and unnamed groups", () => {
@@ -61,7 +65,7 @@ describe("projectNamesForFolder", () => {
       project("Repo", [rule({ kind: "repository", repository: {} })]),
       project(null, [rule({ kind: "folder", folder })])
     ];
-    expect(projectNamesForFolder(projects, folder)).toEqual([]);
+    expect(projectsForFolder(projects, folder)).toEqual([]);
   });
 
   it("lists each Project once, in order", () => {
@@ -70,6 +74,9 @@ describe("projectNamesForFolder", () => {
       project("B", [rule({ kind: "folder", folder })]),
       project("A", [rule({ kind: "folder", folder })])
     ];
-    expect(projectNamesForFolder(both, folder)).toEqual(["A", "B"]);
+    expect(projectsForFolder(both, folder)).toEqual([
+      { id: "A", name: "A" },
+      { id: "B", name: "B" }
+    ]);
   });
 });

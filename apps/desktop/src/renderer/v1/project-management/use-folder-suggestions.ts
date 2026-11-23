@@ -6,6 +6,7 @@ import type {
   PersonalDesktopProjectThread
 } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
+import { conversationClient } from "../conversation/presentation.js";
 import { loadFolderHints } from "./folder-hint-cache.js";
 import {
   folderProposal,
@@ -27,13 +28,7 @@ export type SuggestionRow = Candidate & { proposal: FolderProposal };
 export const clientOf = (
   source: PersonalDesktopProjectThread["sourceAiClient"] | undefined
 ): SupportedAiClientDriverId | undefined =>
-  source === "claude-code"
-    ? "claude"
-    : source === "pi"
-      ? "pi"
-      : source === "codex" || source === "codex-cli"
-        ? "codex"
-        : undefined;
+  conversationClient(source).id ?? undefined;
 
 const MAX_CONVERSATIONS = 300;
 

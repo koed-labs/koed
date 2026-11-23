@@ -127,7 +127,7 @@ describe("suggestionGroups", () => {
       kind: "repository",
       repositoryKey: key,
       tier: "medium",
-      projects: ["koed"],
+      projects: [{ id: "koed", name: "koed" }],
       evidence: []
     }
   });

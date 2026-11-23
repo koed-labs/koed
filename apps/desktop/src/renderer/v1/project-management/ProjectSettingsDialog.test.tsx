@@ -216,6 +216,14 @@ it.each(["Add", "Add all"])(
   async (action) => {
     const f = createProjectManagementValidationApi();
     const projectId = validationId(3);
+    const alternate = f.contexts.get(validationId(100))!.folder.original;
+    if (alternate.state !== "known") throw new Error("Missing Folder fixture");
+    await f.api.manageProject!({
+      action: "add_folder",
+      projectId,
+      expectedVersion: 1,
+      folder: alternate.value.reference
+    });
     const projects = mergeProjectSources(f.inventory(), []);
     const target = projects.find((p) => p.id === projectId)!.inclusionRules![0]!
       .target;
@@ -229,7 +237,7 @@ it.each(["Add", "Add all"])(
         kind: "worktree-parent" as const,
         folder: target.folder,
         tier: "medium" as const,
-        projects: [project.name],
+        projects: [{ id: projectId, name: project.name }],
         evidence: []
       }
     };
@@ -237,7 +245,7 @@ it.each(["Add", "Add all"])(
       ...candidate,
       proposal: {
         ...candidate.proposal,
-        folder: { ...target.folder, directoryIncarnationId: "replacement" }
+        folder: alternate.value.reference
       }
     };
     const unchanged = {
@@ -321,18 +329,20 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
   const projectId = validationId(2);
   const projects = mergeProjectSources(f.inventory(), []);
   // A Conversation already in the Project is never suggested for it.
-  const member = projects.find((p) => p.id === projectId)!.threads[0]!
-    .sessionId!;
-  const row = (n: number, project = "koed") => ({
+  const project = projects.find((p) => p.id === projectId)!;
+  const member = project.threads[0]!.sessionId!;
+  const rule = project.inclusionRules![0]!.target;
+  if (rule.kind !== "repository") throw new Error("Missing Git Anchor fixture");
+  const row = (n: number, destinationId = projectId) => ({
     sessionId: validationId(900 + n),
     title: `Suggested ${n}`,
     client: "claude" as const,
     proposal: {
       action: "anchor" as const,
       kind: "repository" as const,
-      repositoryKey: "gr_koed",
+      repositoryKey: rule.repository.key,
       tier: "medium" as const,
-      projects: [project],
+      projects: [{ id: destinationId, name: "koed" }],
       evidence: []
     }
   });
@@ -356,7 +366,7 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
             rows: [
               row(1),
               row(2),
-              row(3, "koed-voice"),
+              row(3, validationId(3)), // Same display name, different Project.
               { ...row(4), sessionId: member }
             ],
             loading: false
@@ -385,6 +395,27 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
     );
     expect(document.body.textContent).toContain("Will be added");
     expect(document.body.textContent).toContain("1 to add");
+    // Removing the rule drops its staged addition. Undo restores the rule,
+    // but the addition must be approved again.
+    const ruleName = document.querySelector(
+      ".v1-pm-group-toggle b"
+    )!.textContent;
+    const action = (label: string) =>
+      document.querySelector<HTMLButtonElement>(
+        `button[aria-label="${label}"]`
+      )!;
+    await act(async () => action(`More for ${ruleName}`).click());
+    const removeRule = [
+      ...document.querySelectorAll<HTMLElement>("[role=menuitem]")
+    ].find((item) => item.textContent?.includes("Remove Git Anchor"))!;
+    await act(async () => removeRule.click());
+    expect(button("Add 2")).toBeUndefined();
+    expect(document.body.textContent).not.toContain("1 to add");
+    await act(async () => action(`Undo for ${ruleName}`).click());
+    await openGroups();
+    expect(action("Add Suggested 1")).not.toBeNull();
+    await act(async () => action("Add Suggested 1").click());
+
     // Undo puts the row back; Add stages it again.
     await act(async () =>
       (

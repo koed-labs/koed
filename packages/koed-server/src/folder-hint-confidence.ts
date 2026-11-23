@@ -212,7 +212,7 @@ const assessPrerequisites = (
 const points = (outcome: Outcome, weight: number): number =>
   outcome === "agrees" ? weight : 0;
 
-const assessEvidence = (input: FolderHintInput) => {
+const assessDirectoryEvidence = (input: FolderHintInput) => {
   const cwd = normalizeRecordedProjectDirectory(input.recordedCwd);
   const directory =
     cwd && input.directoryStat?.isDirectory ? input.directoryStat : null;
@@ -223,15 +223,21 @@ const assessEvidence = (input: FolderHintInput) => {
     input.evaluatedAtMs,
     origin === "agrees"
   );
+  const activity = assessActivity(
+    directory?.activityMs ?? null,
+    input.evaluatedAtMs
+  );
+  return { cwd, directory, origin, birthtime, activity };
+};
+
+const assessEvidence = (input: FolderHintInput) => {
+  const { cwd, directory, origin, birthtime, activity } =
+    assessDirectoryEvidence(input);
   const remote = compareEvidence(
     input.recordedRemoteFingerprint,
     input.currentRemoteFingerprint
   );
   const registry = assessRegistry(input, cwd);
-  const activity = assessActivity(
-    directory?.activityMs ?? null,
-    input.evaluatedAtMs
-  );
   const transcript = input.hasContainedTranscriptFile
     ? "agrees"
     : "does-not-agree";
@@ -436,20 +442,8 @@ export type RepositoryAnchorResult = {
 export const scoreRepositoryAnchor = (
   input: FolderHintInput
 ): RepositoryAnchorResult => {
-  const cwd = normalizeRecordedProjectDirectory(input.recordedCwd);
-  const directory =
-    cwd && input.directoryStat?.isDirectory ? input.directoryStat : null;
-  const origin = compareEvidence(input.originDeviceId, input.currentDeviceId);
-  const birthtime = assessBirthtime(
-    directory?.birthtimeMs ?? null,
-    input.firstConversationAtMs,
-    input.evaluatedAtMs,
-    origin === "agrees"
-  );
-  const activity = assessActivity(
-    directory?.activityMs ?? null,
-    input.evaluatedAtMs
-  );
+  const { cwd, directory, origin, birthtime, activity } =
+    assessDirectoryEvidence(input);
   const current = input.currentRemoteFingerprint?.trim() || null;
   // A recorded remote that differs from today's is a conflict, not a gap.
   const recorded = input.recordedRemoteFingerprint?.trim() || null;

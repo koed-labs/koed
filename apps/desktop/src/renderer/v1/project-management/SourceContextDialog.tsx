@@ -31,6 +31,7 @@ import {
 import { sourceLabel } from "./source-label.js";
 import {
   folderProposal,
+  proposalProjectLabel,
   type FolderProposal
 } from "./folder-hint-suggestion.js";
 import { proposalResolvers } from "./proposal-resolvers.js";
@@ -204,7 +205,7 @@ export function SourceContextDialog(
                     : "Suggested Folder: "}
                   <strong>
                     {proposal.projects.length > 0
-                      ? proposal.projects.join(", ")
+                      ? proposalProjectLabel(proposal)
                       : proposal.directory
                         ? folderLabel(proposal.directory).name
                         : "this Folder"}

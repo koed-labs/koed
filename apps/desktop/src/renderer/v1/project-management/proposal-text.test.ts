@@ -19,7 +19,7 @@ const proposal = {
   repositoryKey: "gr_koed",
   tier: "medium",
   directory: "/Users/someone/repos/koed-ai",
-  projects: ["koed-ai"],
+  projects: [{ id: "project", name: "koed-ai" }],
   evidence: []
 } satisfies FolderProposal;
 

@@ -34,7 +34,8 @@ import { SuggestionCoin } from "./ProjectCoins.js";
 import {
   ConversationsPanel,
   membershipSummary,
-  projectRules
+  projectRules,
+  suggestionsForSelectedRules
 } from "./ConversationsPanel.js";
 import { suggestionApprovalKey } from "./folder-hint-suggestion.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
@@ -131,34 +132,44 @@ export function ProjectSettingsDialog({
       current = false;
     };
   }, [active, api, reviewedProjects]);
-  const activeName = reviewedProjects?.find((p) => p.id === active)?.name;
-  // Suggestions for this Project. A Conversation already in it, or excluded
-  // from it, never is.
+  // A Conversation already in this Project, or excluded from it, is not suggested.
   const suggested = useMemo(() => {
-    const excluded = new Set(
-      (draft?.conversations ?? [])
+    if (!draft || draft.project.id !== active) return [];
+    const unavailable = new Set(
+      draft.conversations
         .filter(
-          (c) => c.explanation.included || excludedMembership(c.explanation)
+          (c) =>
+            c.explanation.included ||
+            excludedMembership(c.explanation) ||
+            settingsMembership(draft, c).included
         )
         .map((c) => c.sessionId)
     );
-    return (suggestions?.rows ?? []).filter(
-      (row) =>
-        !!activeName &&
-        row.proposal.projects.includes(activeName) &&
-        !excluded.has(row.sessionId)
+    return suggestionsForSelectedRules(
+      draft,
+      (suggestions?.rows ?? []).filter(
+        (row) =>
+          row.proposal.projects.some(({ id }) => id === active) &&
+          !unavailable.has(row.sessionId)
+      )
     );
-  }, [suggestions?.rows, activeName, draft?.conversations]);
-  const validApprovals = new Set<string>();
-  const acceptedRows = suggested.filter((row) => {
-    const key = suggestionApprovalKey(active, row);
-    if (!accepted.has(key)) return false;
-    validApprovals.add(key);
-    return true;
-  });
-  // Drop stale approvals so a later refresh cannot revive them.
-  if (validApprovals.size !== accepted.size) setAccepted(validApprovals);
-  const rejectedRows = suggested.filter((row) => rejected.has(row.sessionId));
+  }, [suggestions?.rows, active, draft]);
+  const validKeys = new Set(
+    suggested.map((row) => suggestionApprovalKey(active, row))
+  );
+  const stillValid = (keys: ReadonlySet<string>) =>
+    new Set([...keys].filter((key) => validKeys.has(key)));
+  const validAccepted = stillValid(accepted);
+  const validRejected = stillValid(rejected);
+  // Drop stale decisions so a changed candidate or removed rule needs fresh review.
+  if (validAccepted.size !== accepted.size) setAccepted(validAccepted);
+  if (validRejected.size !== rejected.size) setRejected(validRejected);
+  const acceptedRows = suggested.filter((row) =>
+    validAccepted.has(suggestionApprovalKey(active, row))
+  );
+  const rejectedRows = suggested.filter((row) =>
+    validRejected.has(suggestionApprovalKey(active, row))
+  );
   const changes = draft ? settingsChanges(draft) : [];
   const dirty =
     changes.length > 0 || acceptedRows.length > 0 || rejectedRows.length > 0;

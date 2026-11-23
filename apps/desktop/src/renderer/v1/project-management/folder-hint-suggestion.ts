@@ -35,12 +35,14 @@ const agreeing = (hint: PersonalFolderHint): EvidenceCode[] => {
   return strong.length > 0 ? strong : codes;
 };
 
+export type ProposalProject = { id: string; name: string };
+
 export type FolderProposal = {
   tier: "medium" | "strong";
   /** The directory involved, for the label and tooltip. */
   directory?: string;
   /** Projects this would land the Conversation in, so the User sees them. */
-  projects: string[];
+  projects: ProposalProject[];
   /** Agreeing evidence codes, strongest first; worded in the `?` tooltip. */
   evidence: EvidenceCode[];
 } & (
@@ -51,6 +53,9 @@ export type FolderProposal = {
     }
   | { action: "anchor"; kind: "repository"; repositoryKey: string }
 );
+
+export const proposalProjectLabel = (proposal: FolderProposal): string =>
+  [...new Set(proposal.projects.map(({ name }) => name))].join(", ");
 
 export function suggestionApprovalKey(
   projectId: string,
@@ -73,10 +78,10 @@ const rank = {
 } as const;
 
 export type ProposalResolvers = {
-  /** Project names an existing Folder is already in. */
-  folder?: (folder: PersonalFolderReference) => string[];
-  /** Project names a Git Anchor key is already in; empty if none can be set. */
-  repository?: (key: string) => string[];
+  /** Projects an existing Folder is already in. */
+  folder?: (folder: PersonalFolderReference) => ProposalProject[];
+  /** Projects a Git Anchor key is already in; empty if none can be set. */
+  repository?: (key: string) => ProposalProject[];
 };
 
 /** One advisory proposal. A candidate that lands the Conversation in a Project

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { suggestionApprovalKey } from "./folder-hint-suggestion.js";
 import type { SuggestionRow } from "./use-folder-suggestions.js";
 
 /** Kept per owner scope on this device, like sidebar pins. Hints come from this
@@ -7,18 +8,6 @@ const storageKey = (scopeKey: string) =>
   `koed:suggestion-dismissals:${scopeKey}`;
 const MAX_DISMISSALS = 2_000;
 const NONE: ReadonlySet<string> = new Set();
-
-/** One suggestion for one Conversation. A different suggestion for the same
- * Conversation, such as a new Folder or Project, is not dismissed by this. */
-export const dismissalKey = ({ sessionId, proposal }: SuggestionRow) =>
-  [
-    sessionId,
-    proposal.kind,
-    proposal.kind === "repository"
-      ? proposal.repositoryKey
-      : (proposal.directory ?? ""),
-    [...proposal.projects].sort().join(",")
-  ].join("|");
 
 function read(scopeKey: string): string[] {
   try {
@@ -48,10 +37,13 @@ export function useSuggestionDismissals(scopeKey: string | null) {
   }, [scopeKey]);
   const keys = state.scope === scopeKey ? state.keys : NONE;
   const dismiss = useCallback(
-    (rows: readonly SuggestionRow[]) => {
+    (projectId: string, rows: readonly SuggestionRow[]) => {
       if (!scopeKey) return;
       const next = [
-        ...new Set([...read(scopeKey), ...rows.map(dismissalKey)])
+        ...new Set([
+          ...read(scopeKey),
+          ...rows.map((row) => suggestionApprovalKey(projectId, row))
+        ])
       ].slice(-MAX_DISMISSALS);
       try {
         window.localStorage.setItem(storageKey(scopeKey), JSON.stringify(next));
@@ -63,7 +55,8 @@ export function useSuggestionDismissals(scopeKey: string | null) {
     [scopeKey]
   );
   const isDismissed = useCallback(
-    (row: SuggestionRow) => keys.has(dismissalKey(row)),
+    (projectId: string, row: SuggestionRow) =>
+      keys.has(suggestionApprovalKey(projectId, row)),
     [keys]
   );
   return { isDismissed, dismiss };

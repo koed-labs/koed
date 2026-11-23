@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import {
-  projectNamesForRepository,
+  projectsForRepository,
   repositoryTargetFor
 } from "./repository-project.js";
 
@@ -32,16 +32,16 @@ describe("repository Projects", () => {
     expect(repositoryTargetFor(projects, "gr_lyons")?.repository.key).toBe(
       "gr_lyons"
     );
-    expect(projectNamesForRepository(projects, "gr_lyons")).toEqual([
-      "lyons-mouth"
+    expect(projectsForRepository(projects, "gr_lyons")).toEqual([
+      { id: "g", name: "lyons-mouth" }
     ]);
   });
 
   it("returns nothing for a key no Project uses, so there is nothing to select", () => {
     const projects = [group({ repository })];
     expect(repositoryTargetFor(projects, "gr_other")).toBeUndefined();
-    expect(projectNamesForRepository(projects, "gr_other")).toEqual([]);
-    expect(projectNamesForRepository([], "gr_lyons")).toEqual([]);
+    expect(projectsForRepository(projects, "gr_other")).toEqual([]);
+    expect(projectsForRepository([], "gr_lyons")).toEqual([]);
   });
 
   it("names one destination when a Project is built on the anchor's address and another uses it by name", () => {
@@ -63,12 +63,12 @@ describe("repository Projects", () => {
         ]
       })
     ];
-    expect(projectNamesForRepository(projects, "gr_lyons")).toEqual([
-      "lyons-mouth"
+    expect(projectsForRepository(projects, "gr_lyons")).toEqual([
+      { id: "b", name: "lyons-mouth" }
     ]);
     // Only the address is known: keep it rather than show nothing.
-    expect(projectNamesForRepository([projects[0]!], "gr_lyons")).toEqual([
-      "github.com/diffhq/lyons-mouth"
+    expect(projectsForRepository([projects[0]!], "gr_lyons")).toEqual([
+      { id: "a", name: "github.com/diffhq/lyons-mouth" }
     ]);
   });
 });

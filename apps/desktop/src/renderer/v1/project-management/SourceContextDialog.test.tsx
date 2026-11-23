@@ -9,20 +9,20 @@ import {
 import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import { SourceContextDialog } from "./SourceContextDialog.js";
-import { projectNamesForFolder } from "./folder-project.js";
+import { projectsForFolder } from "./folder-project.js";
 
 vi.mock("./folder-project.js", () => ({
-  projectNamesForFolder: vi.fn(() => [] as string[])
+  projectsForFolder: vi.fn(() => [])
 }));
-const projectNames = vi.mocked(projectNamesForFolder);
+const projectNames = vi.mocked(projectsForFolder);
 vi.mock("./repository-project.js", () => ({
   repositoryTargetFor: vi.fn((_projects: unknown, key: string) =>
     key === "gr_lyons"
       ? { sourceId: "repo-source", repository: { key } }
       : undefined
   ),
-  projectNamesForRepository: vi.fn((_projects: unknown, key: string) =>
-    key === "gr_lyons" ? ["lyons-mouth"] : []
+  projectsForRepository: vi.fn((_projects: unknown, key: string) =>
+    key === "gr_lyons" ? [{ id: "lyons", name: "lyons-mouth" }] : []
   )
 }));
 
@@ -193,7 +193,7 @@ describe("SourceContextDialog Folder suggestion", () => {
 
 describe("SourceContextDialog Project suggestion", () => {
   it("names the Project the suggested Folder is already in", async () => {
-    projectNames.mockImplementation(() => ["Koed"]);
+    projectNames.mockReturnValue([{ id: "koed", name: "Koed" }]);
     await render(
       vi.fn(async () => [hint({ directory: "/work/koed/api" })]),
       vi.fn()

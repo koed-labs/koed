@@ -1,5 +1,9 @@
 import { folderLabel } from "./folder-label.js";
-import type { EvidenceCode, FolderProposal } from "./folder-hint-suggestion.js";
+import {
+  proposalProjectLabel,
+  type EvidenceCode,
+  type FolderProposal
+} from "./folder-hint-suggestion.js";
 
 /** `~` for the home folder, and the middle of a long path cut out, so a path
  * fits on one tooltip line. Display only. */
@@ -31,7 +35,7 @@ export function proposalLead(proposal: FolderProposal): string {
   switch (proposal.kind) {
     case "repository":
       return proposal.projects.length > 0
-        ? `Same Git remote as ${proposal.projects.join(", ")}`
+        ? `Same Git remote as ${proposalProjectLabel(proposal)}`
         : "Same Git remote";
     case "registered":
       return path ? `Recorded in ${path}` : "Recorded Folder";

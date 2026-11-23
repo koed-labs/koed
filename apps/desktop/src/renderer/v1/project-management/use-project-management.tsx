@@ -134,23 +134,23 @@ export function useProjectManagement({
   // Nor is a Conversation suggested for a Project it is already in (added
   // directly, say): only the Projects it is not yet in stay on the row.
   const members = useMemo(() => {
-    const byName = new Map<string, Set<string>>();
+    const byProject = new Map<string, Set<string>>();
     for (const project of projects) {
-      const ids = project.threads.flatMap((t) =>
-        t.sessionId ? [t.sessionId] : []
+      byProject.set(
+        project.id,
+        new Set(
+          project.threads.flatMap((t) => (t.sessionId ? [t.sessionId] : []))
+        )
       );
-      for (const name of [project.name, project.namedProject?.name])
-        if (name)
-          byName.set(name, new Set([...(byName.get(name) ?? []), ...ids]));
     }
-    return byName;
+    return byProject;
   }, [projects]);
   const shown = useMemo(
     () =>
       worked.rows.flatMap((row) => {
-        if (isDismissed(row)) return [];
         const open = row.proposal.projects.filter(
-          (name) => !members.get(name)?.has(row.sessionId)
+          ({ id }) =>
+            !isDismissed(id, row) && !members.get(id)?.has(row.sessionId)
         );
         if (open.length === row.proposal.projects.length) return [row];
         return open.length > 0
@@ -439,7 +439,7 @@ export function useProjectManagement({
                 });
               check();
               // Excluded now, so no longer suggested here or in the sidebar.
-              if (rejected.length > 0) dismiss(rejected);
+              if (rejected.length > 0) dismiss(project.id, rejected);
               const status: Notice = { message: "Project settings saved" };
               if (accepted.length > 0) {
                 try {

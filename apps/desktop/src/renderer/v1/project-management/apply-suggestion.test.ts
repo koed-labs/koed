@@ -29,7 +29,7 @@ function fixture() {
       kind: "worktree-parent",
       folder: folder.folder,
       tier: "medium",
-      projects: ["Voice exploration"],
+      projects: [{ id: validationId(3), name: "Voice exploration" }],
       evidence: []
     }
   };
@@ -161,7 +161,7 @@ describe("applySuggestions", () => {
         kind: "repository",
         tier: "medium",
         repositoryKey: "gr_validation_0",
-        projects: ["koed"],
+        projects: [{ id: validationId(2), name: "koed" }],
         evidence: []
       }
     };

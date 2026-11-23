@@ -2,29 +2,32 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  dismissalKey,
-  useSuggestionDismissals
-} from "./suggestion-dismissals.js";
+import { useSuggestionDismissals } from "./suggestion-dismissals.js";
 import type { SuggestionRow } from "./use-folder-suggestions.js";
 
-const row = (sessionId: string, directory = "/work/koed"): SuggestionRow => ({
+const row = (
+  sessionId: string,
+  incarnation = "incarnation"
+): SuggestionRow => ({
   sessionId,
   title: sessionId,
   proposal: {
     action: "use",
     kind: "worktree-parent",
     tier: "medium",
-    directory,
+    directory: "/work/koed",
     folder: {
       ownerUserId: "00000000-0000-4000-8000-000000000001",
-      folderId: directory,
+      folderId: "koed",
       originatingDeploymentId: "deployment",
       originatingDeviceId: "device",
       originatingProfileId: "profile",
-      directoryIncarnationId: "incarnation"
+      directoryIncarnationId: incarnation
     },
-    projects: ["Koed"],
+    projects: [
+      { id: "a", name: "Koed" },
+      { id: "b", name: "Koed" }
+    ],
     evidence: []
   }
 });
@@ -54,31 +57,30 @@ afterEach(() => {
 });
 
 describe("useSuggestionDismissals", () => {
-  it("remembers a dismissed suggestion across reloads, per owner scope", async () => {
+  it("remembers a dismissal across reloads only for the same owner and Project", async () => {
     await mount("owner-a");
-    await act(async () => hook.dismiss([row("s1")]));
-    expect(hook.isDismissed(row("s1"))).toBe(true);
-    expect(hook.isDismissed(row("s2"))).toBe(false);
+    await act(async () => hook.dismiss("a", [row("s1")]));
+    expect(hook.isDismissed("a", row("s1"))).toBe(true);
+    expect(hook.isDismissed("a", row("s2"))).toBe(false);
+    expect(hook.isDismissed("b", row("s1"))).toBe(false);
     act(() => root.unmount());
     root = createRoot(host);
     await mount("owner-a");
-    expect(hook.isDismissed(row("s1"))).toBe(true);
+    expect(hook.isDismissed("a", row("s1"))).toBe(true);
+    expect(hook.isDismissed("b", row("s1"))).toBe(false);
     await mount("owner-b");
-    expect(hook.isDismissed(row("s1"))).toBe(false);
+    expect(hook.isDismissed("a", row("s1"))).toBe(false);
   });
 
   it("lets a different suggestion for the same conversation through", async () => {
     await mount("owner-a");
-    await act(async () => hook.dismiss([row("s1")]));
-    expect(hook.isDismissed(row("s1", "/work/other"))).toBe(false);
-    expect(dismissalKey(row("s1"))).not.toBe(
-      dismissalKey(row("s1", "/work/other"))
-    );
+    await act(async () => hook.dismiss("a", [row("s1")]));
+    expect(hook.isDismissed("a", row("s1", "replacement"))).toBe(false);
   });
 
   it("ignores unreadable saved data", async () => {
     window.localStorage.setItem("koed:suggestion-dismissals:owner-a", "{bad");
     await mount("owner-a");
-    expect(hook.isDismissed(row("s1"))).toBe(false);
+    expect(hook.isDismissed("a", row("s1"))).toBe(false);
   });
 });

@@ -35,6 +35,9 @@ const create = (overrides: Partial<PersonalFolderHint> = {}) =>
     ...overrides
   });
 
+const koed = { id: "koed", name: "Koed" };
+const lyons = { id: "lyons", name: "lyons-mouth" };
+
 describe("folderProposal", () => {
   it("proposes using an existing Folder, with its evidence strongest first", () => {
     expect(folderProposal([hint({ directory: "/work/api" })])).toEqual({
@@ -68,10 +71,10 @@ describe("folderProposal", () => {
       hint({ kind: "worktree-parent", directory: "/work/main" })
     ];
     const inProject = (f: typeof folder) =>
-      f.folderId === "api" ? ["Koed"] : [];
+      f.folderId === "api" ? [koed] : [];
     expect(folderProposal(hints, { folder: inProject })).toMatchObject({
       kind: "worktree-parent",
-      projects: ["Koed"]
+      projects: [koed]
     });
     // With no Project anywhere, the worktree-parent rank decides.
     expect(folderProposal(hints)?.kind).toBe("worktree-parent");
@@ -80,7 +83,7 @@ describe("folderProposal", () => {
     ).toBe("registered");
     expect(
       folderProposal([create(), hints[1]!], {
-        folder: (f) => (f.folderId === "api" ? [] : ["x"])
+        folder: (f) => (f.folderId === "api" ? [] : [{ id: "x", name: "x" }])
       })?.kind
     ).toBe("worktree-parent");
   });
@@ -94,19 +97,19 @@ describe("folderProposal", () => {
       tier: "medium"
     });
     const resolve = {
-      repository: (key: string) => (key === "gr_lyons" ? ["lyons-mouth"] : [])
+      repository: (key: string) => (key === "gr_lyons" ? [lyons] : [])
     };
     expect(folderProposal([create(), repository], resolve)).toMatchObject({
       action: "anchor",
       kind: "repository",
       repositoryKey: "gr_lyons",
-      projects: ["lyons-mouth"]
+      projects: [lyons]
     });
     // An anchor no Project uses has nothing to select, so it is dropped.
     expect(folderProposal([repository], {})).toBeUndefined();
     expect(folderProposal([create(), repository], {})).toBeUndefined();
     // A Folder that already lands in a Project still wins over the anchor.
-    const inProject = { folder: () => ["Koed"], ...resolve };
+    const inProject = { folder: () => [koed], ...resolve };
     expect(folderProposal([repository, hint()], inProject)?.kind).toBe(
       "registered"
     );
