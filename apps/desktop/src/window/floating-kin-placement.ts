@@ -4,15 +4,12 @@ export const kinExitTimeoutMs = 750;
 
 export function resolveKinPlacement({
   floatingEnabled,
-  home,
   mainFocused
 }: {
   floatingEnabled: boolean;
-  home: boolean;
   mainFocused: boolean;
 }): KinPlacement {
-  if (floatingEnabled && !(home && mainFocused)) return "desktop";
-  return home ? "home" : "sidebar";
+  return floatingEnabled && !mainFocused ? "desktop" : "sidebar";
 }
 
 export function createKinHandoff({

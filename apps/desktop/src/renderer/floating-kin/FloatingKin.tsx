@@ -135,11 +135,13 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
 export function StandaloneKin({
   hasChips = false,
   active,
-  placement = "desktop"
+  placement = "desktop",
+  size = 88
 }: {
   hasChips?: boolean;
   active: boolean;
-  placement?: "desktop" | "window";
+  placement?: "desktop" | "sidebar";
+  size?: number;
 }) {
   const avatar = useRef<HTMLDivElement>(null);
   const wakeTimer = useRef<number | undefined>(undefined);
@@ -175,7 +177,7 @@ export function StandaloneKin({
     >
       <Pixelkin
         {...chiefOfStaffBrand}
-        size={88}
+        size={size}
         motion={awake ? "unfocused" : "still"}
         expression={awake ? "happy" : "sleepy"}
       />
@@ -420,7 +422,7 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
   useExitCompletion(
     bridge,
     surface,
-    presentation?.homePending ? presentation.revision : undefined
+    presentation?.sidebarPending ? presentation.revision : undefined
   );
   const { dragging, handlers } = useKinInteraction(
     visible ? bridge : undefined,

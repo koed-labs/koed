@@ -58,6 +58,7 @@ type Props = {
   update?: DesktopUpdateController;
   accountApi?: AccountDesktopApi;
   kinDock?: (focusFallback: RefObject<HTMLInputElement | null>) => ReactNode;
+  kinAvatar?: (collapsed: boolean) => ReactNode;
 };
 export function NavigationShell(props: Props) {
   return (
@@ -70,7 +71,8 @@ export function NavigationShell(props: Props) {
   );
 }
 function ShellContent(props: Props) {
-  const { isMobile, setOpen, setOpenMobile } = useSidebar();
+  const { isMobile, open, openMobile, setOpen, setOpenMobile } = useSidebar();
+  const projectsVisible = isMobile ? openMobile : open;
   const searchRef = useRef<HTMLInputElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const routeKey = JSON.stringify(props.route);
@@ -142,6 +144,7 @@ function ShellContent(props: Props) {
           </SidebarMenu>
         </SidebarHeader>
         <SidebarFooter>
+          {!projectsVisible && props.kinAvatar?.(true)}
           <SidebarMenu>
             {railButton(
               "Recall activity",
@@ -185,6 +188,7 @@ function ShellContent(props: Props) {
           management={props.management}
         />
         {props.update ? <DesktopUpdateNotice update={props.update} /> : null}
+        {projectsVisible && props.kinAvatar?.(false)}
         {props.kinDock?.(searchRef)}
       </Sidebar>
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>

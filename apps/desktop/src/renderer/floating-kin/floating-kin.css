@@ -47,26 +47,33 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
       transform 220ms ease,
       opacity 220ms ease;
   }
-  .fk-window-corner {
-    animation: fk-window-entry 220ms ease-out;
+  .fk-sidebar-avatar .fk-kin-avatar {
+    animation: fk-sidebar-entry 220ms ease-out;
   }
 }
 
-.fk-window-corner {
-  position: fixed;
-  inset-inline-end: 12px;
-  bottom: 10px;
-  z-index: 10;
-  pointer-events: none;
+.fk-sidebar-avatar {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding-inline: 8px;
+  --fk-text: var(--v1-fg);
+  --fk-bg: var(--v1-rail);
+}
+.fk-sidebar-avatar[data-collapsed] {
+  padding: 0;
+  justify-content: center;
+}
+.fk-sidebar-avatar[data-collapsed] .fk-kin-avatar {
+  width: 42px;
+  height: 42px;
+}
+.fk-sidebar-avatar[data-collapsed] .fk-sleep-mark {
+  inset: 0 2px auto auto;
+  font-size: 10px;
 }
 
-/* Keep the composer’s rightmost controls clear of the fixed avatar. */
-#app:has(.fk-window-corner) .v1-app .v1-runtime-input {
-  width: min(880px, calc(100% - 100px));
-  margin-inline-end: max(100px, calc((100% - 880px) / 2));
-}
-
-@keyframes fk-window-entry {
+@keyframes fk-sidebar-entry {
   from {
     opacity: 0;
     translate: 24px 24px;
@@ -254,9 +261,6 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   inset: 16%;
   border-radius: 20%;
   pointer-events: auto;
-}
-.fk-window-corner .fk-kin-avatar::after {
-  pointer-events: none;
 }
 .fk-kin-avatar .v1-pixelkin-fallback::before {
   inset: 16%;

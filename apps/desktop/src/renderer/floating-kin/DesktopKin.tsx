@@ -52,7 +52,6 @@ function DesktopKinDock({
 
 export function useDesktopKin(
   bridge: DesktopKinBridge | undefined,
-  home: boolean,
   scopeKey: string | null = null,
   shellVisible = true
 ) {
@@ -61,15 +60,16 @@ export function useDesktopKin(
   );
   useLayoutEffect(() => bridge?.onPresentation(setPresentation), [bridge]);
   useLayoutEffect(() => {
-    bridge?.setHomeVisible(home);
-  }, [bridge, home]);
+    bridge?.setShellVisible(shellVisible);
+  }, [bridge, shellVisible]);
   const placement = presentation?.placement;
   useLayoutEffect(() => {
     if (placement === "desktop" && presentation)
       bridge?.confirmPresentation(presentation.revision);
   }, [bridge, placement, presentation]);
   const activityBridge = useKinSurfaceActivity(bridge, presentation?.revision);
-  const inApp = shellVisible && placement === (home ? "home" : "sidebar");
+  const inApp =
+    shellVisible && placement === "sidebar" && !presentation?.sidebarPending;
   const sample = useKinActivity(activityBridge, inApp, scopeKey);
   const dock: RenderDock = (focusFallback) =>
     inApp &&
@@ -82,11 +82,18 @@ export function useDesktopKin(
         focusFallback={focusFallback}
       />
     ) : null;
-  const corner =
-    inApp && !presentation?.homePending ? (
-      <div className="fk-window-corner" data-fk-placement="window">
-        <StandaloneKin active={sample.recentCapture} placement="window" />
+  const avatar = (collapsed: boolean) =>
+    inApp ? (
+      <div
+        className="fk-sidebar-avatar"
+        data-collapsed={collapsed || undefined}
+      >
+        <StandaloneKin
+          active={sample.recentCapture}
+          placement="sidebar"
+          size={collapsed ? 42 : 88}
+        />
       </div>
     ) : null;
-  return { dock, corner };
+  return { dock, avatar };
 }

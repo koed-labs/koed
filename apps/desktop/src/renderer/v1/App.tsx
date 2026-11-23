@@ -1039,9 +1039,6 @@ export function V1App({
     profile && shouldShowV1Onboarding(profile, onboardingComplete);
   const kin = useDesktopKin(
     window.koedDesktop?.kin,
-    Boolean(
-      profile && !showOnboarding && !settingsOpen && route.kind === "home"
-    ),
     inventoryScope,
     Boolean(profile && !showOnboarding)
   );
@@ -1123,6 +1120,7 @@ export function V1App({
           }}
           management={projectManagement.management}
           kinDock={kin.dock}
+          kinAvatar={kin.avatar}
         >
           {pendingIntentError && (
             <p role="alert">
@@ -1253,7 +1251,6 @@ export function V1App({
             />
           )}
         </NavigationShell>
-        {kin.corner}
       </ConversationPresentationContext.Provider>
     </V1AgentContext.Provider>
   );
