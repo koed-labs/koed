@@ -14,7 +14,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { cpus, tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import {
   readDesktopLocalCredentialAuthorization,
   storeDesktopLocalCredential
@@ -1493,134 +1493,152 @@ describe("start supervisor", () => {
     }
   );
 
-  it("loads runtime and path settings from the selected env before startup", async () => {
-    const root = tempDir();
-    const resources = createNativeResources(root);
-    createSourceDesktopDbRuntime(root, "77777777-7777-4777-8777-777777777777");
-    const modelsDir = resolve(root, "shared-models");
-    const envPath = resolve(root, "profile.env");
-    mkdirSync(modelsDir);
-    writeFileSync(
-      resolve(modelsDir, "Qwen3-Embedding-0.6B-Q8_0.gguf"),
-      "model"
-    );
-    mkdirSync(resolve(root, "config"), { recursive: true });
-    writeFileSync(
-      resolve(root, "config/server.json"),
-      JSON.stringify({ hardwareAcceleration: "cpu" })
-    );
-    writeFileSync(
-      envPath,
-      [
-        "KOED_RUNTIME_MODE=local-personal",
-        "KOED_DEPENDENCY_MODE=bundled-local",
-        `KOED_MODELS_DIR=${modelsDir}`,
-        "API_HOST_PORT=23300",
-        "POSTGRES_HOST_PORT=25432",
-        "EMBEDDING_SERVICE_HOST_PORT=23800",
-        "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
-        "KOED_EMBEDDING_ACCELERATION=metal",
-        "WORKER_KOED_EMBEDDING_POOL_KEY=local-metal-pool",
-        ""
-      ].join("\n")
-    );
-    const spawned: Array<{
-      command: string;
-      args: string[];
-      env?: NodeJS.ProcessEnv;
-    }> = [];
-    let runtime:
-      | {
-          runtimeMode?: string;
-          dependencyMode?: string;
-          automaticPorts?: boolean;
-        }
-      | undefined;
+  it.each([
+    ["a bare", (path: string) => path],
+    ["a quoted, commented", (path: string) => `"${path}" # managed`]
+  ])(
+    "loads runtime settings from a profile with %s binary path and forwards the resolved environment file to services",
+    async (_spelling, spellBinaryPath) => {
+      const root = tempDir();
+      const resources = createNativeResources(root);
+      createSourceDesktopDbRuntime(
+        root,
+        "77777777-7777-4777-8777-777777777777"
+      );
+      const modelsDir = resolve(root, "shared-models");
+      const envPath = resolve(root, "profile.env");
+      mkdirSync(modelsDir);
+      writeFileSync(
+        resolve(modelsDir, "Qwen3-Embedding-0.6B-Q8_0.gguf"),
+        "model"
+      );
+      mkdirSync(resolve(root, "config"), { recursive: true });
+      writeFileSync(
+        resolve(root, "config/server.json"),
+        JSON.stringify({ hardwareAcceleration: "cpu" })
+      );
+      writeFileSync(
+        envPath,
+        [
+          "KOED_RUNTIME_MODE=local-personal",
+          "KOED_DEPENDENCY_MODE=bundled-local",
+          `KOED_MODELS_DIR=${modelsDir}`,
+          "API_HOST_PORT=23300",
+          "POSTGRES_HOST_PORT=25432",
+          "EMBEDDING_SERVICE_HOST_PORT=23800",
+          "EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT=28080",
+          "KOED_EMBEDDING_ACCELERATION=metal",
+          "WORKER_KOED_EMBEDDING_POOL_KEY=local-metal-pool",
+          `EMBEDDING_LLAMA_SERVER_BINARY=${spellBinaryPath(resources.llamaServer)}`,
+          ""
+        ].join("\n")
+      );
+      const spawned: Array<{
+        command: string;
+        args: string[];
+        env?: NodeJS.ProcessEnv;
+      }> = [];
+      let runtime:
+        | {
+            runtimeMode?: string;
+            dependencyMode?: string;
+            automaticPorts?: boolean;
+          }
+        | undefined;
 
-    await startKoedServer({
-      ...cleanShutdownAfterReady(),
-      environment: {
-        KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        KOED_ENV_PATH: envPath,
-        KOED_LOCAL_PORT_LEASES_PATH: resolve(root, "port-leases.json"),
-        KOED_AUTO_PORTS: "1",
-        API_TOKEN_PEPPER: "test-api-token-pepper"
-      },
-      timeoutMs: 1,
-      pollIntervalMs: 1,
-      spawnSync: (command, args) => {
-        if (command.endsWith("pg_ctl") && args.includes("status")) {
-          return {
-            stdout: "",
-            stderr: "not running",
-            status: 1,
-            signal: null,
-            pid: 1,
-            output: []
-          } as never;
+      await startKoedServer({
+        ...cleanShutdownAfterReady(),
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_ENV_PATH: relative(process.cwd(), envPath),
+          KOED_LOCAL_PORT_LEASES_PATH: resolve(root, "port-leases.json"),
+          KOED_AUTO_PORTS: "1",
+          API_TOKEN_PEPPER: "test-api-token-pepper"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: (command, args) => {
+          if (command.endsWith("pg_ctl") && args.includes("status")) {
+            return {
+              stdout: "",
+              stderr: "not running",
+              status: 1,
+              signal: null,
+              pid: 1,
+              output: []
+            } as never;
+          }
+          return spawnResult();
+        },
+        spawn: (command, args, options) => {
+          spawned.push({ command, args, env: options?.env });
+          return child(spawned.length);
+        },
+        collectStatus: async () => {
+          runtime = JSON.parse(
+            readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+          ) as { runtimeMode?: string; dependencyMode?: string };
+          return healthyStatus(root);
         }
-        return spawnResult();
-      },
-      spawn: (command, args, options) => {
-        spawned.push({ command, args, env: options?.env });
-        return child(spawned.length);
-      },
-      collectStatus: async () => {
-        runtime = JSON.parse(
-          readFileSync(resolve(root, "run/koed-server.json"), "utf8")
-        ) as { runtimeMode?: string; dependencyMode?: string };
-        return healthyStatus(root);
+      });
+
+      expect(runtime).toMatchObject({
+        runtimeMode: "local-personal",
+        dependencyMode: "bundled-local",
+        automaticPorts: true
+      });
+      expect(spawned[0]).toMatchObject({
+        command: process.execPath,
+        args: [resources.serviceEntry]
+      });
+      expect(spawned[0]?.env?.MODEL_PATH).toBe(
+        resolve(modelsDir, "Qwen3-Embedding-0.6B-Q8_0.gguf")
+      );
+      expect(spawned[0]?.env?.EMBEDDING_SERVICE_PORT).toBe("23800");
+      expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("28080");
+      expect(spawned[0]?.env?.KOED_ENV_PATH).toBe(envPath);
+      expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(resources.llamaServer);
+
+      expect(spawned[0]?.env?.KOED_EMBEDDING_ACCELERATION).toBe("metal");
+      expect(spawned.at(-1)?.env?.API_PORT).toBe("23300");
+      expect(
+        spawned.find((entry) =>
+          entry.args.some((arg) => arg.endsWith("apps/api/dist/index.js"))
+        )?.env?.KOED_ENV_PATH
+      ).toBe(envPath);
+      const provisionedTokenFile: unknown = JSON.parse(
+        readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
+      );
+      if (
+        provisionedTokenFile === null ||
+        typeof provisionedTokenFile !== "object" ||
+        !("apiToken" in provisionedTokenFile) ||
+        typeof provisionedTokenFile.apiToken !== "string"
+      ) {
+        throw new TypeError("Local app credential fixture is invalid");
       }
-    });
-
-    expect(runtime).toMatchObject({
-      runtimeMode: "local-personal",
-      dependencyMode: "bundled-local",
-      automaticPorts: true
-    });
-    expect(spawned[0]).toMatchObject({
-      command: process.execPath,
-      args: [resources.serviceEntry]
-    });
-    expect(spawned[0]?.env?.MODEL_PATH).toBe(
-      resolve(modelsDir, "Qwen3-Embedding-0.6B-Q8_0.gguf")
-    );
-    expect(spawned[0]?.env?.EMBEDDING_SERVICE_PORT).toBe("23800");
-    expect(spawned[0]?.env?.LLAMA_EMBEDDING_SERVER_PORT).toBe("28080");
-
-    expect(spawned[0]?.env?.KOED_EMBEDDING_ACCELERATION).toBe("metal");
-    expect(spawned.at(-1)?.env?.API_PORT).toBe("23300");
-    const provisionedTokenFile: unknown = JSON.parse(
-      readFileSync(resolve(root, "config/local-app-credential.json"), "utf8")
-    );
-    if (
-      provisionedTokenFile === null ||
-      typeof provisionedTokenFile !== "object" ||
-      !("apiToken" in provisionedTokenFile) ||
-      typeof provisionedTokenFile.apiToken !== "string"
-    ) {
-      throw new TypeError("Local app credential fixture is invalid");
+      const provisionedToken = provisionedTokenFile.apiToken;
+      const worker = spawned.find((entry) =>
+        entry.args.some((arg) => arg.endsWith("apps/worker/dist/index.js"))
+      );
+      expect(provisionedToken).toMatch(/^cmt_/);
+      expect(worker?.env?.MEMORY_API_TOKEN).toBe(provisionedToken);
+      expect(worker?.env?.MEMORY_API_URL).toBe("http://localhost:23300");
+      expect(worker?.env?.KOED_EMBEDDING_POOL_KEY).toBe("local-metal-pool");
+      expect(worker?.env?.KOED_ENV_PATH).toBe(envPath);
+      const localPorts = JSON.parse(
+        readFileSync(resolve(root, "config/local-ports.json"), "utf8")
+      ) as Record<string, unknown>;
+      expect(localPorts).toMatchObject({
+        api: "23300",
+        postgres: "25432",
+        embedding: "23800",
+        llamaEmbedding: "28080"
+      });
+      expect(typeof localPorts.privacy).toBe("string");
     }
-    const provisionedToken = provisionedTokenFile.apiToken;
-    const worker = spawned.find((entry) =>
-      entry.args.some((arg) => arg.endsWith("apps/worker/dist/index.js"))
-    );
-    expect(provisionedToken).toMatch(/^cmt_/);
-    expect(worker?.env?.MEMORY_API_TOKEN).toBe(provisionedToken);
-    expect(worker?.env?.MEMORY_API_URL).toBe("http://localhost:23300");
-    expect(worker?.env?.KOED_EMBEDDING_POOL_KEY).toBe("local-metal-pool");
-    const localPorts = JSON.parse(
-      readFileSync(resolve(root, "config/local-ports.json"), "utf8")
-    ) as Record<string, unknown>;
-    expect(localPorts).toMatchObject({
-      api: "23300",
-      postgres: "25432",
-      embedding: "23800",
-      llamaEmbedding: "28080"
-    });
-    expect(typeof localPorts.privacy).toBe("string");
-  });
+  );
 
   it("fails bundled-local clearly when native resources are missing", async () => {
     const root = tempDir();

@@ -72,6 +72,27 @@ describe("repo env loading", () => {
 
     expect(loadRepoEnv(root)).toEqual({ VALUE: "override" });
   });
+
+  it("rereads an explicit profile with the strict grammar", () => {
+    const root = tempDir();
+    const envPath = resolve(root, "profile.env");
+    writeFileSync(envPath, 'BINARY="/opt/llama-server" # managed\n');
+
+    expect(loadRepoEnv(root, { KOED_ENV_PATH: envPath })).toEqual({
+      BINARY: "/opt/llama-server"
+    });
+    writeFileSync(envPath, "BINARY='unterminated\n");
+    expect(() => loadRepoEnv(root, { KOED_ENV_PATH: envPath })).toThrow(
+      `${envPath}:1: unterminated quoted value for BINARY`
+    );
+  });
+
+  it("keeps legacy parsing for an implicitly discovered repo .env", () => {
+    const root = tempDir();
+    writeFileSync(resolve(root, ".env"), "VALUE='unfinished\n");
+
+    expect(loadRepoEnv(root, {})).toEqual({ VALUE: "'unfinished" });
+  });
 });
 
 describe("local URL resolution", () => {

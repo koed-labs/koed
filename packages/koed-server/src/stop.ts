@@ -280,10 +280,6 @@ export const stopKoedServer = ({
   const paths = resolveKoedServerPaths(environment);
   const waitForExitMs = requestedWait ?? 5_000;
   const releaseManaged = hasReleaseRuntime(paths);
-  const runtimeEnvironment = environmentWithRepoEnv(
-    paths.repoRoot,
-    environment
-  );
   const runtime = readRuntimeState(paths.runtimeStatePath, {
     existsSync: pathExists,
     readFileSync: readFile
@@ -537,17 +533,33 @@ export const stopKoedServer = ({
       }
 
       if (canSignalFallbackProcesses() && shouldStopNativePostgres(runtime)) {
-        const stopped = stopLocalPostgresRuntime(paths, runtimeEnvironment, {
-          existsSync: pathExists,
-          spawnSync
-        });
-        if (stopped.ok) {
-          stoppedServices.push("postgres-native");
-        } else {
+        // Read the profile only here: a typo introduced after startup must
+        // not block identity checks or graceful supervisor shutdown.
+        let runtimeEnvironment: NodeJS.ProcessEnv | undefined;
+        try {
+          runtimeEnvironment = environmentWithRepoEnv(
+            paths.repoRoot,
+            environment
+          );
+        } catch (error) {
           errors.push({
             target: "postgres-native",
-            error: stopped.error ?? stopped.message
+            error: error instanceof Error ? error.message : String(error)
           });
+        }
+        if (runtimeEnvironment) {
+          const stopped = stopLocalPostgresRuntime(paths, runtimeEnvironment, {
+            existsSync: pathExists,
+            spawnSync
+          });
+          if (stopped.ok) {
+            stoppedServices.push("postgres-native");
+          } else {
+            errors.push({
+              target: "postgres-native",
+              error: stopped.error ?? stopped.message
+            });
+          }
         }
       }
     }

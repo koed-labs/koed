@@ -1,79 +1,44 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseEnvFile } from "@koed-labs/shared/env-file";
 
-export interface ParseEnvFileOptions {
-  strict?: boolean;
-  source?: string;
-}
+export {
+  parseEnvFile,
+  type ParseEnvFileOptions
+} from "@koed-labs/shared/env-file";
 
-export const parseEnvFile = (
-  content: string,
-  options: ParseEnvFileOptions = {}
-): Record<string, string> => {
-  const values: Record<string, string> = {};
-  const fail = (lineNumber: number, reason: string): never => {
-    throw new Error(
-      `${options.source ?? "Environment file"}:${lineNumber}: ${reason}`
-    );
-  };
-  for (const [index, line] of content.split(/\r?\n/).entries()) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-    const equals = trimmed.indexOf("=");
-    if (equals <= 0) {
-      if (options.strict) fail(index + 1, "expected KEY=VALUE");
-      continue;
-    }
-    const key = trimmed.slice(0, equals).trim();
-    let value = trimmed.slice(equals + 1).trim();
-    const quoted = value.startsWith('"') || value.startsWith("'");
-    if (quoted && options.strict) {
-      const quote = value[0];
-      let closingQuote = -1;
-      for (let position = 1; position < value.length; position += 1) {
-        if (quote === '"' && value[position] === "\\") {
-          position += 1;
-        } else if (value[position] === quote) {
-          closingQuote = position;
-          break;
-        }
-      }
-      if (closingQuote < 0) {
-        fail(index + 1, `unterminated quoted value for ${key}`);
-      }
-      const trailing = value.slice(closingQuote + 1).trim();
-      if (trailing && !trailing.startsWith("#")) {
-        fail(index + 1, `unexpected text after quoted value for ${key}`);
-      }
-      value = value.slice(1, closingQuote);
-    } else if (quoted) {
-      if (value.length < 2 || value.at(-1) !== value[0]) {
-        // Keep legacy parsing unchanged for implicitly discovered source env.
-      } else {
-        value = value.slice(1, -1);
-      }
-    }
-    if (options.strict && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-      fail(index + 1, `invalid environment variable name ${key}`);
-    }
-    values[key] = value;
-  }
-  return values;
+/**
+ * Resolves a relative `KOED_ENV_PATH` against the launching process's working
+ * directory. Detached supervisors start in another directory, so the path must
+ * be absolute before it crosses that spawn.
+ */
+export const withAbsoluteEnvPath = (
+  environment: NodeJS.ProcessEnv,
+  cwd: string = process.cwd()
+): NodeJS.ProcessEnv => {
+  const selectedPath = environment.KOED_ENV_PATH?.trim();
+  return selectedPath
+    ? { ...environment, KOED_ENV_PATH: resolve(cwd, selectedPath) }
+    : environment;
 };
 
 export const loadRepoEnv = (
   repoRoot: string,
   environment: NodeJS.ProcessEnv = process.env
 ): Record<string, string> => {
-  const envPath = environment.KOED_ENV_PATH?.trim()
-    ? resolve(environment.KOED_ENV_PATH)
+  const explicitPath = environment.KOED_ENV_PATH?.trim();
+  const envPath = explicitPath
+    ? resolve(explicitPath)
     : resolve(repoRoot, ".env");
   if (!existsSync(envPath)) {
     return {};
   }
-  return parseEnvFile(readFileSync(envPath, "utf8"));
+  // An explicitly selected profile uses the strict grammar everywhere, so
+  // rereads match what the supervisor and services parsed at startup.
+  return parseEnvFile(
+    readFileSync(envPath, "utf8"),
+    explicitPath ? { strict: true, source: envPath } : {}
+  );
 };
 
 export const environmentWithRepoEnv = (
