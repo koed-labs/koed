@@ -396,6 +396,56 @@ describe("experimental answer-first MCP delivery", () => {
     expect(JSON.parse(reconstructed)).toEqual(long);
   });
 
+  it("opens required evidence from the blocking completion's structured receipt", async () => {
+    const item = {
+      summaryText: "Saved verification output. ".repeat(500) + "PREFLIGHT-17"
+    };
+    const complete = task({
+      status: "completed",
+      result: {
+        markdown: "Use the exact validation output.",
+        evidence: [item],
+        structuredAnswer: { required_source_numbers: [1] }
+      }
+    });
+    const { client } = await connect(
+      {
+        startMemoryAnswerTask: vi.fn(async () => complete),
+        getMemoryAnswerTask: vi.fn(async () => complete)
+      },
+      "modern",
+      environment
+    );
+    const completion = await submit(client, { delivery_mode: "blocking" });
+    expect(completion.isError).not.toBe(true);
+    expect(completion.structuredContent).toEqual({
+      task_id: complete.id,
+      status: "completed",
+      next_evidence_reads: [{ source: 1, offset: 0 }]
+    });
+    type Selection = { source: number; offset: number };
+    const receipt = completion.structuredContent as {
+      task_id: string;
+      next_evidence_reads: Selection[];
+    };
+    let selections = receipt.next_evidence_reads;
+    let body = "";
+    let reads = 0;
+    while (selections.length) {
+      const page = decode(
+        await read(client, receipt.task_id, { selections })
+      ) as unknown as {
+        pages: { text: string }[];
+        next_evidence_reads?: Selection[];
+      };
+      expect(++reads).toBeLessThan(5);
+      body += page.pages[0]!.text;
+      selections = page.next_evidence_reads ?? [];
+    }
+    expect(reads).toBeGreaterThan(1);
+    expect(JSON.parse(body)).toEqual(item);
+  });
+
   it("rejects reads for wrong, pending, expired and no-longer-authorized tasks", async () => {
     const current = task();
     const getMemoryAnswerTask =

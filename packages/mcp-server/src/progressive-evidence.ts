@@ -142,6 +142,17 @@ const scope = (task: MemoryAnswerTask) => ({
   expires_at: task.expiresAt
 });
 
+export const progressiveCompletionReceipt = (value: {
+  task_id: string;
+  next_evidence_reads?: EvidenceSelection[];
+}) => ({
+  task_id: value.task_id,
+  status: "completed" as const,
+  ...(value.next_evidence_reads
+    ? { next_evidence_reads: value.next_evidence_reads }
+    : {})
+});
+
 const label = (item: unknown, index: number) => {
   const record = isRecord(item) ? item : {};
   return {
@@ -203,10 +214,10 @@ export const progressiveMemoryAnswer = (task: MemoryAnswerTask) => {
   const inline: Array<{ source: number; item: unknown }> = [];
   let remaining = required;
   const render = (included: typeof inline, pending: number[]) => {
-    const next = [
+    const next: EvidenceSelection[] = [
       ...(answer?.next_offset === undefined
         ? []
-        : [{ answer: true, offset: answer.next_offset }]),
+        : [{ answer: true as const, offset: answer.next_offset }]),
       ...pending.map((source) => ({ source, offset: 0 }))
     ];
     return {
@@ -231,14 +242,24 @@ export const progressiveMemoryAnswer = (task: MemoryAnswerTask) => {
       ...(included.length ? { inline_evidence: included } : {})
     };
   };
-  if (text && !fitsEvidenceObservation(render([], required))) {
+  const fitsCompletion = (value: ReturnType<typeof render>) =>
+    fitsEvidenceObservation(
+      value,
+      PAGE_BYTES -
+        Buffer.byteLength(
+          JSON.stringify({
+            structuredContent: progressiveCompletionReceipt(value)
+          })
+        )
+    );
+  if (text && !fitsCompletion(render([], required))) {
     let low = 96;
     let high = PAGE_BYTES;
     let best = evidenceTextPage(text, 0, low);
     while (low <= high) {
       const size = Math.floor((low + high) / 2);
       answer = evidenceTextPage(text, 0, size);
-      if (fitsEvidenceObservation(render([], required))) {
+      if (fitsCompletion(render([], required))) {
         best = answer;
         low = size + 1;
       } else high = size - 1;
@@ -250,7 +271,7 @@ export const progressiveMemoryAnswer = (task: MemoryAnswerTask) => {
     if (!fitsEvidenceObservation(item)) continue;
     const pending = remaining.filter((value) => value !== source);
     const included = [...inline, { source, item }];
-    if (fitsEvidenceObservation(render(included, pending))) {
+    if (fitsCompletion(render(included, pending))) {
       inline.push({ source, item });
       remaining = pending;
     }

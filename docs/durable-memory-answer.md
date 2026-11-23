@@ -23,8 +23,11 @@ its size or metadata. If the selected sources do not contain necessary exact
 material, ask a narrower Memory question instead of re-reading already delivered
 evidence.
 In Codex Code Mode, use `store` and `load` to pass the returned
-`structuredContent.task_id` unchanged between calls. With other AI Clients,
-keep the original task ID using the client's own state where available.
+`structuredContent.task_id` unchanged between calls. Blocking and collected
+completions expose the task ID and any `next_evidence_reads` in
+`structuredContent`. The answer and evidence bodies remain in the text
+content and are not duplicated. With other AI Clients, keep the original
+task ID using the client's own state where available.
 Each read uses the normal task authorization and expiry checks. Reading does
 not enqueue new work. The Pi native extension and Desktop delivery are not
 changed by this MCP preview.

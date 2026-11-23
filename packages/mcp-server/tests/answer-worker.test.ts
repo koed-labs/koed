@@ -2,19 +2,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
+  createSdkMcpServer,
   Options,
   Query,
   SDKMessage
 } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { RecallExecution } from "@koed-labs/shared";
 
-const sdk = vi.hoisted(() => ({ query: vi.fn() }));
+const sdk = vi.hoisted(() => ({ query: vi.fn(), createServer: vi.fn() }));
 
-vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>()),
-  query: sdk.query
-}));
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
+  sdk.createServer.mockImplementation(original.createSdkMcpServer);
+  return {
+    ...original,
+    createSdkMcpServer: sdk.createServer,
+    query: sdk.query
+  };
+});
 import { countTokensForModel } from "@koed-labs/core";
 import {
   MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT,
@@ -47,6 +55,7 @@ import { loadPrompt } from "../src/prompt-loader.js";
 
 afterEach(() => {
   sdk.query.mockReset();
+  sdk.createServer.mockClear();
 });
 
 const answerObject = (
@@ -1746,6 +1755,132 @@ process.stdin.once("data", () => {
       transport: "agent_sdk",
       skippedReason: "missing_retrieval_client"
     });
+  });
+
+  it("forwards a bounded exact artifact hint from Claude's progressive search tool", async () => {
+    const artifact = "build-check.log";
+    const marker = "PREFLIGHT-PASSED-17";
+    const overview = {
+      sourceType: "memory_node",
+      nodeId: "saved-overview",
+      sourceId: "saved-overview",
+      sourceChunkIndex: 0,
+      summaryText: `The original validation output is in ${artifact}.`
+    };
+    const original = {
+      sourceType: "memory_event",
+      sourceId: "saved-validation",
+      sourceChunkIndex: 0,
+      summaryText: marker
+    };
+    const search = vi.fn<MemoryAnswerRetrievalClient["search"]>(
+      async (input) => ({
+        hits:
+          input.retrieval_stage === "leaf_search"
+            ? [overview]
+            : input.retrieval_stage === "raw_fallback_search" &&
+                Array.isArray(input.exact_hints) &&
+                input.exact_hints.some((hint: unknown) => hint === artifact)
+              ? [original]
+              : []
+      })
+    );
+
+    sdk.query.mockImplementation(() => {
+      async function* resultStream(): AsyncGenerator<SDKMessage, void> {
+        const registration = sdk.createServer.mock.lastCall?.[0] as
+          | Parameters<typeof createSdkMcpServer>[0]
+          | undefined;
+        const tool = registration?.tools?.find(({ name }) => name === "search");
+        if (!tool) throw new Error("Expected Claude's registered search tool.");
+        const inputSchema = z.object(tool.inputSchema as z.ZodRawShape);
+        const invoke = (args: Record<string, unknown>) =>
+          tool.handler(inputSchema.parse(args), {});
+        const leaf = await invoke({ stage: "leaf_search" });
+        const summary = leaf.content[0];
+        if (summary?.type !== "text" || leaf.isError)
+          throw new Error("Expected the saved summary.");
+        expect(summary.text).toContain(artifact);
+        for (const exact_hints of [
+          ["a".repeat(MEMORY_RETRIEVAL_HINT_MAX_LENGTH + 1)],
+          Array<string>(MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT + 1).fill(
+            artifact
+          )
+        ]) {
+          expect(
+            inputSchema.safeParse({
+              stage: "raw_fallback_search",
+              exact_hints
+            }).success
+          ).toBe(false);
+        }
+        const raw = await invoke({
+          stage: "raw_fallback_search",
+          exact_hints: [artifact]
+        });
+        const content = raw.content[0];
+        if (content?.type !== "text" || raw.isError)
+          throw new Error("Expected the exact saved validation output.");
+        expect(content.text).toContain(marker);
+        const observation = JSON.parse(content.text) as {
+          inline_evidence: [{ evidence_index: number }];
+        };
+        const structuredOutput = {
+          ...answerObject(marker),
+          evidence: [
+            {
+              evidence_index: observation.inline_evidence[0].evidence_index,
+              relevance: "direct answer",
+              support: marker
+            }
+          ]
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          structured_output: structuredOutput,
+          result: JSON.stringify(structuredOutput),
+          modelUsage: {},
+          usage: {}
+        } as SDKMessage;
+      }
+      return Object.assign(resultStream(), { close: vi.fn() });
+    });
+
+    const response = await answerWithMemoryWorker(
+      {
+        evidenceBundle: {
+          query: "What did the saved validation print?",
+          evidence: []
+        }
+      },
+      {
+        client: { search, expand: async () => ({ sourceItems: [] }) },
+        searchDomain: "global",
+        responseDetail: "internal",
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            KOED_EXPERIMENTAL_PROGRESSIVE_EVIDENCE: "1"
+          }),
+          provider: "claude",
+          executablePath: process.execPath,
+          maxAttempts: 1
+        }
+      }
+    );
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({
+        retrieval_stage: "raw_fallback_search",
+        retrieval_scope: "personal",
+        search_domain: "global",
+        exact_hints: [artifact]
+      })
+    );
+    expect(response.localMemoryWorker).toMatchObject({
+      memoryStatus: "found",
+      usedFallback: false
+    });
+    expect(response.markdown).toContain(marker);
   });
 
   it.each([

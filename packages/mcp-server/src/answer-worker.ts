@@ -2656,6 +2656,16 @@ const searchDomainArg = (
     : undefined;
 };
 
+const workerExactHintsSchema = z
+  .array(z.string().max(MEMORY_RETRIEVAL_HINT_MAX_LENGTH))
+  .max(MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT)
+  .describe(
+    "Narrow lexical or exact anchors for this follow-up search. Duplicate values are ignored and caller hints remain the fallback when omitted."
+  );
+const workerExactHintsInput = z.toJSONSchema(
+  z.object({ exact_hints: workerExactHintsSchema })
+).properties!.exact_hints!;
+
 const dynamicToolSpecs = (
   progressive = false
 ): CodexAppServerDynamicToolSpec[] => [
@@ -2706,16 +2716,7 @@ const dynamicToolSpecs = (
         project_id: { type: "string" },
         session_id: { type: "string" },
         parent_node_ids: { type: "array", items: { type: "string" } },
-        exact_hints: {
-          type: "array",
-          description:
-            "Narrow lexical or exact anchors for this follow-up search. Duplicate values are ignored and caller hints remain the fallback when omitted.",
-          items: {
-            type: "string",
-            maxLength: MEMORY_RETRIEVAL_HINT_MAX_LENGTH
-          },
-          maxItems: MEMORY_RETRIEVAL_EXACT_HINT_MAX_COUNT
-        },
+        exact_hints: workerExactHintsInput,
         limit: { type: "integer", minimum: 1, maximum: 50 }
       },
       required: ["stage"],
@@ -4211,6 +4212,7 @@ const runClaudeMemoryAnswer = async (
           project_id: z.string().optional(),
           session_id: z.string().optional(),
           parent_node_ids: z.array(z.string()).optional(),
+          exact_hints: workerExactHintsSchema.optional(),
           limit: z.number().int().min(1).max(50).optional()
         },
         (args) => invoke("search", args),

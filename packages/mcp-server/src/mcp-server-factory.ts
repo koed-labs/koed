@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { MemoryAnswerTask } from "@koed-labs/shared";
 import { resolveMcpConversationDirectory } from "./conversation-directory.js";
 import { resolveMcpConversationBinding } from "./conversation-binding.js";
 import { formatMemoryAnswerCompletion } from "../integrations/pi/memory-answer-presentation.mjs";
@@ -6,6 +7,7 @@ import { splitMemoryAnswerDeliveryInput } from "../integrations/pi/memory-answer
 import {
   escapeEvidenceJson,
   memoryAnswerEvidenceInputSchema,
+  progressiveCompletionReceipt,
   progressiveEvidenceEnabled,
   progressiveMemoryAnswer,
   readProgressiveMemoryAnswer
@@ -95,6 +97,14 @@ const toolErrorResponse = (message: string) => ({
 const progressiveResponse = (value: Record<string, unknown>) => ({
   content: [{ type: "text" as const, text: escapeEvidenceJson(value) }]
 });
+
+const progressiveCompletionResponse = (task: MemoryAnswerTask) => {
+  const value = progressiveMemoryAnswer(task);
+  return {
+    ...progressiveResponse(value),
+    structuredContent: progressiveCompletionReceipt(value)
+  };
+};
 
 type RuntimeToolCapabilities = BackendToolCapabilities &
   Pick<
@@ -354,7 +364,7 @@ export const createKoedMcpServer = async (
         description:
           toolName === "memory_answer" && progressiveEvidence
             ? toolDescription(toolName) +
-              "\nUse the answer and inline evidence without rereading. Pass up to eight next_evidence_reads at a time as selections to memory_answer_evidence with the same task_id. Keep any unused selectors and follow returned cursors. Ask a narrower Memory question only for necessary material missing from those sources."
+              "\nUse the answer and inline evidence in the text content without rereading. Pass the structured task_id and up to eight next_evidence_reads at a time to memory_answer_evidence as task_id and selections. Keep unused selectors and follow returned cursors. Ask a narrower Memory question only for necessary material missing from those sources."
             : toolDescription(toolName),
         ...(toolName === "memory_answer"
           ? { annotations: { readOnlyHint: true, destructiveHint: false } }
@@ -495,7 +505,7 @@ export const createKoedMcpServer = async (
               throw error;
             }
             return task.status === "completed"
-              ? progressiveResponse(progressiveMemoryAnswer(task))
+              ? progressiveCompletionResponse(task)
               : jsonResponse({ ...presentMemoryAnswerTask(task) });
           }
           const response = await runtimeClient.callTool(
@@ -579,7 +589,7 @@ export const createKoedMcpServer = async (
           description:
             name === "memory_answer_result"
               ? progressiveEvidence
-                ? "Collect a Memory Answer using the task_id saved unchanged from the submission's structured result. Do not transcribe it. Use wait=true when independent work is finished. Pending is not not-found. Use the answer and inline evidence; read the needed next_evidence_reads before acting."
+                ? "Collect a Memory Answer using the task_id saved unchanged from the submission's structured result. Do not transcribe it. Use wait=true when independent work is finished. Pending is not not-found. Use the answer and inline evidence in the text content; read needed structured next_evidence_reads before acting."
                 : memoryAnswerResultToolDescription
               : memoryAnswerCancelToolDescription,
           annotations: {
@@ -640,7 +650,7 @@ export const createKoedMcpServer = async (
               });
             }
             if (progressiveEvidence && task.status === "completed")
-              return progressiveResponse(progressiveMemoryAnswer(task));
+              return progressiveCompletionResponse(task);
             const presentation = presentMemoryAnswerTask(task);
             if (
               presentation.status === "completed" &&
