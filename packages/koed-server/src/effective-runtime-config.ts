@@ -18,28 +18,31 @@ export function resolveEffectiveRuntimeConfig(
   environment: NodeJS.ProcessEnv,
   execution: "source" | "packaged"
 ): EffectiveRuntimeConfig {
-  const envPath = environment.KOED_ENV_PATH?.trim()
-    ? resolve(environment.KOED_ENV_PATH)
-    : execution === "source"
-      ? resolve(paths.repoRoot, ".env")
-      : undefined;
+  const selectedPath = environment.KOED_ENV_PATH?.trim();
+  const explicitEnvPath = selectedPath ? resolve(selectedPath) : undefined;
+  const envPath =
+    explicitEnvPath ??
+    (execution === "source" ? resolve(paths.repoRoot, ".env") : undefined);
   let fileEnvironment: Record<string, string> = {};
   if (envPath) {
     if (!existsSync(envPath)) {
-      if (environment.KOED_ENV_PATH?.trim()) {
+      if (explicitEnvPath) {
         throw new Error(`Explicit environment file does not exist: ${envPath}`);
       }
     } else {
       fileEnvironment = parseEnvFile(readFileSync(envPath, "utf8"), {
-        strict: Boolean(environment.KOED_ENV_PATH?.trim()),
+        strict: Boolean(explicitEnvPath),
         source: envPath
       });
     }
   }
-  const effectiveEnvironment = { ...fileEnvironment, ...environment };
+  const effectiveEnvironment = {
+    ...fileEnvironment,
+    ...environment,
+    ...(explicitEnvPath ? { KOED_ENV_PATH: explicitEnvPath } : {})
+  };
   const config = resolveKoedServerConfig(paths, effectiveEnvironment, {
-    strict:
-      execution === "packaged" || Boolean(environment.KOED_ENV_PATH?.trim())
+    strict: execution === "packaged" || Boolean(explicitEnvPath)
   });
   return {
     config,

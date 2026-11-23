@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { withAbsoluteEnvPath } from "./env-file.js";
 import { startKoedServer, type KoedServerStartOptions } from "./start.js";
 import { stopKoedServer, type KoedServerStopOptions } from "./stop.js";
 
@@ -50,7 +51,7 @@ const startDetached = ({
   const child = spawn(process.execPath, [startCommand, "start"], {
     cwd: cwd ?? environment.KOED_REPO_ROOT ?? process.cwd(),
     detached: true,
-    env: environment,
+    env: withAbsoluteEnvPath(environment),
     stdio: "ignore"
   }) as ChildProcess;
   if (!child.pid) {

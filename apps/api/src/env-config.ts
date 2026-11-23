@@ -1,6 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config as loadDotenv } from "dotenv";
+import { config as loadDotenv, populate } from "dotenv";
+import { loadExplicitServiceEnvFile } from "@koed-labs/shared/env-file";
 import {
   requireEnv,
   validateEnvelopeEncryptionProviderEnvironment
@@ -16,8 +17,22 @@ export interface ApiEnvConfig {
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export const loadApiEnv = (): void => {
-  loadDotenv({ path: resolve(appDir, ".env"), override: false, quiet: true });
+export const loadApiEnv = (
+  environment: NodeJS.ProcessEnv = process.env
+): void => {
+  if (loadExplicitServiceEnvFile(environment)) {
+    return;
+  }
+  const { parsed } = loadDotenv({
+    path: resolve(appDir, ".env"),
+    processEnv: { ...environment },
+    override: false,
+    quiet: true
+  });
+  if (parsed) {
+    delete parsed.PRIVACY_RUNTIME_CONTROL_TOKEN;
+    populate(environment, parsed);
+  }
 };
 
 const intEnv = (

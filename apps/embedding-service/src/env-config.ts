@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolveSupportedEmbeddingModelConfig } from "@koed-labs/shared";
+import { loadExplicitServiceEnvFile } from "@koed-labs/shared/env-file";
 import type { AccelerationPolicy } from "./acceleration.js";
 import { resourceProfileValues } from "@koed-labs/shared/resource-profiles";
 
@@ -91,15 +92,23 @@ const parseEnvLine = (line: string): [string, string] | null => {
 };
 
 export const loadEmbeddingServiceEnv = (
-  path = appEnvPath,
+  path: string | undefined = undefined,
   environment: NodeJS.ProcessEnv = process.env
 ): void => {
-  if (!existsSync(path)) {
+  if (path === undefined && loadExplicitServiceEnvFile(environment)) {
     return;
   }
-  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+  const selectedPath = path ?? appEnvPath;
+  if (!existsSync(selectedPath)) {
+    return;
+  }
+  for (const line of readFileSync(selectedPath, "utf8").split(/\r?\n/)) {
     const parsed = parseEnvLine(line);
-    if (parsed && environment[parsed[0]] === undefined) {
+    if (
+      parsed &&
+      parsed[0] !== "PRIVACY_RUNTIME_CONTROL_TOKEN" &&
+      environment[parsed[0]] === undefined
+    ) {
       environment[parsed[0]] = parsed[1];
     }
   }
