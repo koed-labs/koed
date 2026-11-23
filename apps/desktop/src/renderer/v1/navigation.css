@@ -257,7 +257,7 @@
   height: 52px;
   border-radius: 9px;
   gap: 7px;
-  /* Room on the right for the settings menu beside the row. */
+  /* Room on the right for actions beside the row. */
   padding: 0 36px 0 8px;
   font-size: 12px;
   font-weight: 500;
@@ -318,7 +318,8 @@
 .v1-nav-conversation-wrap {
   position: relative;
 }
-.v1-nav-conversation {
+.v1-nav-conversation,
+.v1-nav-pinned-project {
   text-align: left;
   width: 100%;
   height: auto;
@@ -328,6 +329,12 @@
   padding: 9px 8px;
   font-size: 12px;
   translate: none;
+}
+.v1-nav-pinned-project {
+  padding-right: 36px;
+}
+.v1-nav-pinned-project > svg {
+  color: var(--v1-muted);
 }
 .v1-nav-conversation[aria-current] {
   background: var(--v1-accent-soft);

@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject
+} from "react";
 import { createPortal } from "react-dom";
 import {
   Badge,
@@ -39,7 +46,8 @@ import {
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
 import {
   filterSidebar,
-  pinnedConversations,
+  pinnedSidebarItems,
+  projectPinKey,
   type SidebarConversation,
   type SidebarProject,
   type NavigationRoute
@@ -62,6 +70,95 @@ export type SidebarManagement = {
   onDrop: (row: SidebarConversation, projectId: string) => Promise<unknown>;
   busy?: boolean;
 };
+
+function ProjectActions({
+  name,
+  settings,
+  settingsBusy,
+  pinned,
+  canPin,
+  onTogglePin
+}: {
+  name: string;
+  settings?: () => void;
+  settingsBusy?: boolean;
+  pinned: boolean;
+  canPin: boolean;
+  onTogglePin: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="v1-pm-row-menu"
+            aria-label={`Actions for Project ${name}`}
+          >
+            <Ellipsis />
+          </Button>
+        }
+      />
+      <DropdownMenuPopup
+        className="v1-app v1-project-ui v1-pm-menu"
+        align="start"
+      >
+        {settings && (
+          <DropdownMenuItem disabled={settingsBusy} onClick={settings}>
+            <Settings2 />
+            Project settings
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem disabled={!canPin} onClick={onTogglePin}>
+          {pinned ? <PinOff /> : <Pin />}
+          {pinned ? "Unpin Project" : "Pin Project"}
+        </DropdownMenuItem>
+      </DropdownMenuPopup>
+    </DropdownMenu>
+  );
+}
+
+function PinnedProject({
+  project,
+  onJump,
+  onUnpin,
+  canUnpin
+}: {
+  project: SidebarProject;
+  onJump: () => void;
+  onUnpin: () => void;
+  canUnpin: boolean;
+}) {
+  return (
+    <SidebarMenuItem className="v1-pm-project-row">
+      <SidebarMenuButton
+        className="v1-nav-pinned-project"
+        render={<button type="button" />}
+        aria-label={`Show Project ${project.name} in Projects`}
+        title={`Show ${project.name} in Projects`}
+        onClick={onJump}
+      >
+        <Folder aria-hidden="true" />
+        <span className="v1-nav-copy">
+          <span>{project.name}</span>
+          <small>Project</small>
+        </span>
+      </SidebarMenuButton>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className="v1-pm-row-menu"
+        aria-label={`Unpin Project ${project.name}`}
+        title="Unpin Project"
+        disabled={!canUnpin}
+        onClick={onUnpin}
+      >
+        <PinOff />
+      </Button>
+    </SidebarMenuItem>
+  );
+}
 
 export const conversationActivity = (value: string, now: number) => {
   const at = Date.parse(value);
@@ -110,6 +207,7 @@ export function ProjectSidebar({
   const [visibleCounts, setVisibleCounts] = useState(new Map<string, number>());
   const initialized = useRef(false);
   const [pinnedOpen, setPinnedOpen] = useState(true);
+  const pinnedTrigger = useRef<HTMLButtonElement>(null);
   const [now, setNow] = useState(Date.now);
   const { pins, toggle, ready, error: pinError } = useSidebarPins(scopeKey);
   const drag = useConversationDrag(
@@ -159,7 +257,19 @@ export function ProjectSidebar({
     () => filterSidebar(projects, query),
     [projects, query]
   );
-  const pinned = pinnedConversations(visible, pins);
+  const pinned = pinnedSidebarItems(visible, pins);
+  const projectRowPrefix = useId();
+  const projectRowId = (projectId: string) =>
+    `${projectRowPrefix}-${projectId}`;
+  function jumpToProject(projectId: string) {
+    setQuery("");
+    setExpanded((previous) => new Set(previous).add(projectId));
+    requestAnimationFrame(() => {
+      const row = document.getElementById(projectRowId(projectId));
+      row?.focus({ preventScroll: true });
+      row?.scrollIntoView({ block: "nearest" });
+    });
+  }
   const selected = (row: SidebarConversation) =>
     route.kind === "conversation" &&
     (route.executionId
@@ -277,8 +387,8 @@ export function ProjectSidebar({
           <Search aria-hidden="true" />
           <SidebarInput
             ref={searchRef}
-            aria-label="Find a Conversation"
-            placeholder="Find a Conversation…"
+            aria-label="Find Projects or Conversations"
+            placeholder="Find Projects or Conversations…"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
@@ -307,7 +417,7 @@ export function ProjectSidebar({
       >
         <SidebarGroup className="v1-nav-pinned">
           <Collapsible.Root open={pinnedOpen} onOpenChange={setPinnedOpen}>
-            <Collapsible.Trigger className="v1-nav-heading">
+            <Collapsible.Trigger ref={pinnedTrigger} className="v1-nav-heading">
               <ChevronDown className={pinnedOpen ? "" : "closed"} />
               <Pin />
               <span>Pinned</span>
@@ -316,13 +426,29 @@ export function ProjectSidebar({
             <Collapsible.Panel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {pinned.map((row) => conversation(row, false))}
+                  {pinned.map((item) =>
+                    item.kind === "conversation" ? (
+                      conversation(item.row, false)
+                    ) : (
+                      <PinnedProject
+                        key={item.key}
+                        project={item.project}
+                        onJump={() => jumpToProject(item.project.id)}
+                        onUnpin={() => {
+                          if (toggle(item.key, [item.key])) {
+                            pinnedTrigger.current?.focus();
+                          }
+                        }}
+                        canUnpin={ready}
+                      />
+                    )
+                  )}
                 </SidebarMenu>
                 {!pinned.length && (
                   <p className="v1-nav-empty">
                     {query && showEmptyStates
                       ? "No matching pins"
-                      : "Pin conversations to keep them here."}
+                      : "Pin Projects or Conversations to keep them here."}
                   </p>
                 )}
               </SidebarGroupContent>
@@ -373,6 +499,7 @@ export function ProjectSidebar({
           <SidebarGroupContent>
             <SidebarMenu>
               {visible.map((project) => {
+                const pinKey = projectPinKey(project.id);
                 const open = Boolean(query.trim()) || expanded.has(project.id);
                 const limit =
                   visibleCounts.get(project.id) ?? CONVERSATIONS_PER_PAGE;
@@ -410,11 +537,14 @@ export function ProjectSidebar({
                       }}
                     >
                       <div
-                        className={`v1-pm-project-row ${management && project.managed ? "v1-pm-has-menu" : ""}`}
+                        className={`v1-pm-project-row ${project.managed ? "v1-pm-has-menu" : ""}`}
                       >
                         <Collapsible.Trigger
                           render={
-                            <SidebarMenuButton className="v1-nav-project" />
+                            <SidebarMenuButton
+                              id={projectRowId(project.id)}
+                              className="v1-nav-project"
+                            />
                           }
                         >
                           {open ? <ChevronDown /> : <ChevronRight />}
@@ -432,20 +562,18 @@ export function ProjectSidebar({
                           )}
                           <span>{project.name}</span>
                         </Collapsible.Trigger>
-                        {management && project.managed && (
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            className="v1-pm-row-menu"
-                            aria-label={`Settings for ${project.name}`}
-                            title="Project settings"
-                            disabled={management.busy}
-                            onClick={() =>
-                              management.onProjectSettings(project.id)
+                        {project.managed && (
+                          <ProjectActions
+                            name={project.name}
+                            settings={
+                              management &&
+                              (() => management.onProjectSettings(project.id))
                             }
-                          >
-                            <Ellipsis />
-                          </Button>
+                            settingsBusy={management?.busy}
+                            pinned={pins.includes(pinKey)}
+                            canPin={ready}
+                            onTogglePin={() => toggle(pinKey, [pinKey])}
+                          />
                         )}
                       </div>
                       <Collapsible.Panel>
