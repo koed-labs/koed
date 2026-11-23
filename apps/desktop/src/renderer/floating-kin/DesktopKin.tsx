@@ -1,4 +1,10 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject
+} from "react";
 import type {
   DesktopKinBridge,
   KinPresentation,
@@ -12,26 +18,14 @@ import {
 import { useKinSurfaceActivity } from "./use-floating-kin.js";
 
 type FocusFallback = RefObject<HTMLInputElement | null>;
+type RenderDock = (focusFallback: FocusFallback) => ReactNode;
 
-function DesktopKinDock(props: {
-  bridge: KinActivityBridge;
-  avatar: boolean;
-  focusFallback: FocusFallback;
-}) {
-  const sample = useKinActivity(props.bridge);
-  if (!props.avatar && !sample.conversations.length && !sample.overflow)
-    return null;
-  return <VisibleKinDock {...props} sample={sample} />;
-}
-
-function VisibleKinDock({
+function DesktopKinDock({
   bridge,
-  avatar,
   focusFallback,
   sample
 }: {
   bridge: KinActivityBridge;
-  avatar: boolean;
   focusFallback: FocusFallback;
   sample: ReturnType<typeof useKinActivity>;
 }) {
@@ -51,9 +45,6 @@ function VisibleKinDock({
       ref={surface}
       tabIndex={-1}
     >
-      {avatar && (
-        <StandaloneKin active={sample.recentCapture} placement="sidebar" />
-      )}
       <KinActivityContent sample={sample} bridge={bridge} surface={surface} />
     </section>
   );
@@ -62,7 +53,8 @@ function VisibleKinDock({
 export function useDesktopKin(
   bridge: DesktopKinBridge | undefined,
   home: boolean,
-  scopeKey: string | null = null
+  scopeKey: string | null = null,
+  shellVisible = true
 ) {
   const [presentation, setPresentation] = useState<KinPresentation | null>(
     null
@@ -77,18 +69,24 @@ export function useDesktopKin(
       bridge?.confirmPresentation(presentation.revision);
   }, [bridge, placement, presentation]);
   const activityBridge = useKinSurfaceActivity(bridge, presentation?.revision);
-  const dock = (focusFallback: FocusFallback) =>
+  const inApp = shellVisible && placement === (home ? "home" : "sidebar");
+  const sample = useKinActivity(activityBridge, inApp, scopeKey);
+  const dock: RenderDock = (focusFallback) =>
+    inApp &&
     activityBridge &&
-    presentation &&
-    placement === (home ? "home" : "sidebar") ? (
+    (sample.conversations.length || sample.overflow) ? (
       <DesktopKinDock
-        key={`${placement}:${presentation.revision}:${scopeKey}`}
+        key={JSON.stringify([placement, presentation?.revision, scopeKey])}
         bridge={activityBridge}
-        avatar={placement === "sidebar"}
+        sample={sample}
         focusFallback={focusFallback}
       />
     ) : null;
-  const showHomeAvatar =
-    home && presentation?.placement === "home" && !presentation.homePending;
-  return { showHomeAvatar, dock };
+  const corner =
+    inApp && !presentation?.homePending ? (
+      <div className="fk-window-corner" data-fk-placement="window">
+        <StandaloneKin active={sample.recentCapture} placement="window" />
+      </div>
+    ) : null;
+  return { dock, corner };
 }

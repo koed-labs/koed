@@ -28,16 +28,26 @@ export function useKinSurfaceActivity(
 const activePollMs = 3_000;
 const quietPollMs = 10_000;
 
-export function useActivity(bridge?: KinActivityBridge, visible = true) {
+export function useActivity(
+  bridge?: KinActivityBridge,
+  visible = true,
+  scopeKey: string | null = null
+) {
+  const source = useMemo(
+    () => ({ bridge, visible, scopeKey }),
+    [bridge, visible, scopeKey]
+  );
   const [sample, setSample] = useState<{
+    source: typeof source;
     activity: FloatingKinActivityState;
     at: number;
-  }>(() => ({
-    activity: { state: bridge ? "starting" : "unavailable" },
-    at: Date.now()
-  }));
-  const inFlight = useRef<Promise<FloatingKinActivityState> | null>(null);
+  } | null>(null);
+  const inFlight = useRef<{
+    source: typeof source;
+    read: Promise<FloatingKinActivityState>;
+  } | null>(null);
   useEffect(() => {
+    const { bridge, visible } = source;
     if (!bridge || !visible) return;
     let closed = false;
     let polling = false;
@@ -46,19 +56,21 @@ export function useActivity(bridge?: KinActivityBridge, visible = true) {
       if (closed || polling || document.hidden) return;
       polling = true;
       let activity: FloatingKinActivityState;
-      const read = (inFlight.current ??= Promise.resolve().then(() =>
-        bridge.activity()
-      ));
+      const read =
+        inFlight.current?.source === source
+          ? inFlight.current.read
+          : Promise.resolve().then(() => bridge.activity());
+      inFlight.current = { source, read };
       try {
         activity = await read;
       } catch {
         activity = { state: "unavailable" };
       } finally {
-        if (inFlight.current === read) inFlight.current = null;
+        if (inFlight.current?.read === read) inFlight.current = null;
         polling = false;
       }
       if (closed || document.hidden) return;
-      setSample({ activity, at: Date.now() });
+      setSample({ source, activity, at: Date.now() });
       const active =
         activity.state === "starting" ||
         (activity.state === "running" && activity.conversations.length > 0);
@@ -78,8 +90,15 @@ export function useActivity(bridge?: KinActivityBridge, visible = true) {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [bridge, visible]);
-  return sample;
+  }, [source]);
+  return sample?.source === source
+    ? sample
+    : {
+        activity: {
+          state: bridge ? "starting" : "unavailable"
+        } as FloatingKinActivityState,
+        at: 0
+      };
 }
 
 export function useCaptureWake(deadline: number, sampledAt: number) {

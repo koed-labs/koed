@@ -872,7 +872,7 @@ function SoloStage({
   floorCoins,
   wide = false,
   hopKey,
-  chiefOfStaff
+  showStageHost = true
 }: {
   agent: HomeAgent;
   expression: "neutral" | "surprised" | "happy";
@@ -885,7 +885,7 @@ function SoloStage({
   wide?: boolean;
   // Bumped when a coin lands on the Koed Kin.
   hopKey?: number;
-  chiefOfStaff?: boolean;
+  showStageHost?: boolean;
 }) {
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
@@ -916,10 +916,9 @@ function SoloStage({
         className="v1-home-host"
         data-coin-target
         style={placementStyle(layout, 0)}
-        data-fk-placement={chiefOfStaff ? "home" : undefined}
-        {...(chiefOfStaff !== false ? hostSpin.handlers : {})}
+        {...(showStageHost ? hostSpin.handlers : {})}
       >
-        {chiefOfStaff !== false && (
+        {showStageHost && (
           <Pixelkin
             presentation="stage"
             look={agent.look}
@@ -930,7 +929,7 @@ function SoloStage({
             spin={hostSpin.spin}
           />
         )}
-        {chiefOfStaff !== false && (
+        {showStageHost && (
           <span className="v1-home-kin-shadow" aria-hidden="true" />
         )}
       </div>
@@ -2069,26 +2068,6 @@ function HomeWarnings({
 
 type HomeAgent = { name: string; look: AgentLook; gradientTop?: string };
 
-function HomeChiefOfStaff({
-  agent,
-  visible,
-  progress
-}: {
-  agent: HomeAgent;
-  visible?: boolean;
-  progress?: ReactNode;
-}) {
-  if (!visible) return progress ?? null;
-  return (
-    <div className="v1-home-chief-of-staff">
-      <div data-fk-placement="home" role="img" aria-label="Chief of Staff">
-        <Pixelkin look={agent.look} gradientTop={agent.gradientTop} size={88} />
-      </div>
-      {progress}
-    </div>
-  );
-}
-
 export function Home({
   view,
   clients,
@@ -2102,11 +2081,11 @@ export function Home({
   conversations,
   conversationScope = "home",
   statusError = null,
-  chiefOfStaff
+  showStageHost = true
 }: {
   view: HomeView;
   statusError?: string | null;
-  chiefOfStaff?: boolean;
+  showStageHost?: boolean;
   clients: readonly HomeClient[];
   entries: readonly HomeProjectEntry[];
   agent: HomeAgent;
@@ -2175,14 +2154,8 @@ export function Home({
               className="v1-home-startup-progress"
               title={`Up to ${AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI Client from the last ${AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.`}
             >
-              <HomeChiefOfStaff
-                agent={agent}
-                visible={chiefOfStaff}
-                progress={<IngestionProgress ingestion={ingestion} />}
-              />
+              <IngestionProgress ingestion={ingestion} />
             </div>
-          ) : chiefOfStaff ? (
-            <HomeChiefOfStaff agent={agent} visible />
           ) : (
             <div className="v1-home-startup-caption" aria-hidden="true">
               <span />
@@ -2199,15 +2172,12 @@ export function Home({
         <div className="v1-home-stage v1-home-recovery">
           <div
             className="v1-home-recovery-kin"
-            data-fk-placement={chiefOfStaff ? "home" : undefined}
-            role={chiefOfStaff !== false ? "img" : undefined}
+            role={showStageHost ? "img" : undefined}
             aria-label={
-              chiefOfStaff !== false
-                ? `${agent.name} looks concerned`
-                : undefined
+              showStageHost ? `${agent.name} looks concerned` : undefined
             }
           >
-            {chiefOfStaff !== false && (
+            {showStageHost && (
               <Pixelkin
                 look={agent.look}
                 gradientTop={agent.gradientTop}
@@ -2216,7 +2186,7 @@ export function Home({
                 expression="sad"
               />
             )}
-            {chiefOfStaff !== false && (
+            {showStageHost && (
               <span className="v1-home-recovery-shadow" aria-hidden="true" />
             )}
           </div>
@@ -2257,7 +2227,7 @@ export function Home({
           keycaps={<Keycaps clients={clients} statusStore={statusStore} />}
           expression="neutral"
           label="No Projects yet"
-          chiefOfStaff={chiefOfStaff}
+          showStageHost={showStageHost}
           floorCoins={floorCoins}
           caption={
             <>
@@ -2313,15 +2283,9 @@ export function Home({
               · {total.toLocaleString()} captured events
               {offStage > 0 && ` · ${offStage} more in the sidebar`}
             </p>
-            <HomeChiefOfStaff
-              agent={agent}
-              visible={chiefOfStaff}
-              progress={
-                view.ingestion && (
-                  <IngestionProgress ingestion={view.ingestion} compact />
-                )
-              }
-            />
+            {view.ingestion && (
+              <IngestionProgress ingestion={view.ingestion} compact />
+            )}
           </>
         }
       />

@@ -5,15 +5,14 @@ an AI Client is running, waiting, or finished. A quiet Kin does not mean the AI
 Client is idle. Capture can lag or miss activity, and imported history does not
 count as recent activity.
 
-On Home, the Kin sits beside the import progress bar or appears centered when
-there is no progress bar. Recent Conversation chips sit at the bottom of the
-Conversations and Projects sidebar. Away from Home, the Kin joins the chips in
-that sidebar unless desktop floating is enabled. The default Chief of Staff
-uses Koed’s yellow-and-blue gradient; Home still honors a saved Kin appearance.
+Inside Koed, the Chief of Staff sits in the bottom-right corner of the window,
+separate from import progress. It uses the same yellow-and-blue gradient square
+with arms as the floating Kin. Recent Conversation chips sit at the bottom of
+the Conversations and Projects sidebar.
 
 On macOS, turn on **Chief of Staff** under **Settings → General** to let the Kin
-float outside the Koed window. It slides into Home when the window comes into
-focus on that page: Home reveals its Kin after the desktop overlay finishes
+float outside the Koed window. It slides into the window’s corner when Home
+comes into focus: Koed reveals the Kin after the desktop overlay finishes
 sliding out. With reduced motion enabled, the switch is immediate. When you
 leave Home, open Settings, or switch to another
 app, the Kin and its chips return to the desktop position you last dragged it

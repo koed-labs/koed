@@ -752,8 +752,7 @@ describe("Home", () => {
     await render({
       entries: [],
       view: { kind: "empty", warnings: [] },
-      agent: oldAgent,
-      chiefOfStaff: true
+      agent: oldAgent
     });
     expect(
       container
@@ -1035,22 +1034,23 @@ describe("Home", () => {
     expect(container.querySelector(".v1-home-spinner")).toBeNull();
   });
 
-  it("places the Chief of Staff beside progress, then leaves it on its own when import finishes", async () => {
+  it("keeps import progress separate from the window's Chief of Staff avatar", async () => {
     const entries = [entry("koed", "2026-11-03T11:00:00Z")];
-    const chiefOfStaff = true;
-    const row = () => container.querySelector(".v1-home-chief-of-staff");
     for (const view of [reading(2), projectReading(2)]) {
-      await render({ entries, view, chiefOfStaff });
+      await render({ entries, view, showStageHost: false });
       expect(
-        row()?.querySelector(":scope > [data-fk-placement=home] .v1-pixelkin")
+        container.querySelector('.v1-home-progress [role="progressbar"]')
       ).not.toBeNull();
       expect(
-        row()?.querySelector(":scope > .v1-home-progress [role=progressbar]")
-      ).not.toBeNull();
+        container.querySelector(".v1-home-progress .v1-pixelkin")
+      ).toBeNull();
     }
-    await render({ entries, view: projectsView, chiefOfStaff });
-    expect(row()?.childElementCount).toBe(1);
-    expect(row()?.querySelector(".v1-pixelkin")).not.toBeNull();
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      showStageHost: false
+    });
+    expect(container.querySelector(".v1-home-host .v1-pixelkin")).toBeNull();
   });
 
   it("does not produce coins when only ingestion progress rises", async () => {
