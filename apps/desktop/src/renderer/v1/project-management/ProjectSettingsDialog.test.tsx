@@ -380,6 +380,10 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
     );
     // Every group starts closed.
     expect(document.body.textContent).not.toContain("Suggested 1");
+    // The first section is the Project's rules, titled without a count.
+    const heading = document.querySelector(".v1-pm-group-heading h3")!;
+    expect(heading.textContent).toBe("Rules");
+    expect(heading.querySelector(".v1-pm-coin")).toBeNull();
     await openGroups();
     const text = document.body.textContent ?? "";
     // Only this Project's suggestions, none ticked until the User chooses.

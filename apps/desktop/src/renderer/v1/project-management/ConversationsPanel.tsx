@@ -123,7 +123,7 @@ type MemberGroup = {
   excluded: SettingsConversation[];
 };
 
-/** In Project, grouped by the rule that brings each Conversation in. A
+/** Rules: Conversations in the Project, grouped by the rule that brings each Conversation in. A
  * Conversation two rules match is listed once, under the first. */
 export function memberGroups(draft: ProjectSettingsDraft): MemberGroup[] {
   const rules = projectRules(draft);
@@ -421,7 +421,7 @@ function Group({
           <ChevronRight className="v1-pm-group-chevron" aria-hidden />
           {icon}
           <b title={name}>{name}</b>
-          {detail && (
+          {detail && detail !== name && (
             <span className="v1-pm-group-detail" title={detail}>
               {detail}
             </span>
@@ -504,9 +504,6 @@ export function ConversationsPanel({
   };
   const fact = (sessionId: string) => facts.get(sessionId) ?? {};
   const groups = memberGroups(draft);
-  const members = draft.conversations.filter(
-    (c) => settingsMembership(draft, c).included
-  ).length;
   const unusedRules = draft.sources.filter(
     (s) => isRule(s) && !s.inclusionId && !draft.selectedSources.has(s.id)
   );
@@ -806,10 +803,7 @@ export function ConversationsPanel({
         />
       </div>
       <div className="v1-pm-group-heading">
-        <h3>
-          In Project
-          <CountCoin count={members} tone="gold" />
-        </h3>
+        <h3>Rules</h3>
         {unusedRules.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger
