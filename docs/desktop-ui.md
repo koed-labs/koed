@@ -21,7 +21,8 @@ narrow windows, it opens as a drawer. While services or inventory are loading,
 the sidebar shows that state rather than an empty Conversation list.
 **Projects** lists named Projects and **No project**. Below it, **Anchors** lists
 the Git Anchor and Folder groups of captured Conversations that no named Project
-includes, such as a Conversation excluded from the Project its rule would match.
+includes, such as a Conversation excluded from the Project whose Anchor would
+match it.
 Each Anchor expands to its Conversations like a Project. **Conversations**,
 **Projects**, and **Anchors** collapse from their headings. **Conversations**
 scrolls on its own; **Projects** and **Anchors** share a scroll area, and each
@@ -59,7 +60,7 @@ paired Personal devices.
 Project. That Kin is saved on this device for the current account and backend;
 it does not sync to paired devices.
 
-Project settings also manages names, source rules, Conversation membership, and
+Project settings also manages names, Anchors, Conversation membership, and
 Personal Device sync. The **Sync** page appears only when
 `KOED_PERSONAL_DEVICE_SYNC_ENABLED` is `true`; Personal Device Sync is off by
 default. Sync review remains available when Conversation membership

@@ -34,7 +34,7 @@ import {
   ChevronRight,
   Folder,
   FolderOpen,
-  GitBranch,
+  GitFork,
   MessageCircle,
   Pin,
   PinOff,
@@ -376,7 +376,7 @@ export function ProjectSidebar({
                   motion="still"
                 />
               ) : project.source === "git" ? (
-                <GitBranch />
+                <GitFork />
               ) : open ? (
                 <FolderOpen />
               ) : (

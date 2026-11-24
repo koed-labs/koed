@@ -418,15 +418,19 @@ it("keeps a staged exclusion individually undoable when its final rule is remove
     );
     expect(row(excludedTitle)?.textContent).toContain("Will be excluded");
     expect(row(excludedTitle)?.textContent).not.toContain(
-      "Leaves with this rule"
+      "Leaves with this Anchor"
     );
-    expect(row(untouchedTitle)?.textContent).toContain("Leaves with this rule");
+    expect(row(untouchedTitle)?.textContent).toContain(
+      "Leaves with this Anchor"
+    );
     expect(action(`Undo for ${untouchedTitle}`)).toBeNull();
     const ruleStatus = () =>
       document.querySelector(".v1-pm-group-toggle")?.textContent;
     expect(ruleStatus()).toContain("Will be removed · 5 leave");
     await click(action(`Undo for ${excludedTitle}`)!);
-    expect(row(excludedTitle)?.textContent).toContain("Leaves with this rule");
+    expect(row(excludedTitle)?.textContent).toContain(
+      "Leaves with this Anchor"
+    );
     expect(action(`Undo for ${excludedTitle}`)).toBeNull();
     expect(action(`Undo for ${ruleName}`)).not.toBeNull();
     expect(ruleStatus()).toContain("Will be removed · 6 leave");
@@ -523,7 +527,7 @@ it("distinguishes same-named Folder rule options by path, device, and directory 
         />
       )
     );
-    await click(button("Add rule"));
+    await click(button("Add Anchor"));
     const options = [
       ...document.querySelectorAll<HTMLElement>("[role=menuitem]")
     ];
@@ -733,7 +737,7 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
     expect(document.body.textContent).not.toContain("Suggested 1");
     // The first section is the Project's rules, titled without a count.
     const heading = document.querySelector(".v1-pm-group-heading h3")!;
-    expect(heading.textContent).toBe("Rules");
+    expect(heading.textContent).toBe("Anchors");
     expect(heading.querySelector(".v1-pm-coin")).toBeNull();
     await openGroups();
     const text = document.body.textContent ?? "";
