@@ -496,6 +496,7 @@ const configureFloatingKin = (
   let desktopAnchorAvailable = backgroundLaunchPending;
   let desktopReady = false;
   let aiModelsRequested = false;
+  let conversationRequested: string | null = null;
   let dockWait: ReturnType<typeof setTimeout> | undefined;
   const clearDockWait = () => {
     clearTimeout(dockWait);
@@ -529,13 +530,34 @@ const configureFloatingKin = (
     aiModelsRequested = false;
     contents.send(floatingKinChannels.showAiModels);
   };
-  const revealDesktop = (aiModels = false) => {
+  const showRequestedConversation = () => {
+    const contents = getDesktopContents();
+    if (
+      !conversationRequested ||
+      !desktopReady ||
+      !contents ||
+      contents.isDestroyed() ||
+      contents.getURL() !== desktopUrl
+    )
+      return;
+    const sessionId = conversationRequested;
+    conversationRequested = null;
+    contents.send(floatingKinChannels.showConversation, sessionId);
+  };
+  const revealDesktop = (
+    request: { aiModels?: boolean; sessionId?: string } = {}
+  ) => {
     if (!overlay.isShowing() || quitting) return;
-    if (aiModels) aiModelsRequested = true;
+    if (request.aiModels) aiModelsRequested = true;
+    if (request.sessionId) conversationRequested = request.sessionId;
     void showDesktopWindow()
-      .then(showRequestedAiModels)
+      .then(() => {
+        showRequestedAiModels();
+        showRequestedConversation();
+      })
       .catch(() => {
-        if (aiModels) aiModelsRequested = false;
+        if (request.aiModels) aiModelsRequested = false;
+        if (request.sessionId) conversationRequested = null;
         console.warn("Could not open Koed Desktop from Floating Kin.");
       });
   };
@@ -594,7 +616,8 @@ const configureFloatingKin = (
     presentation: () => presentation,
     completeExit: overlay.completeExit,
     openDesktop: () => revealDesktop(),
-    openAiModels: () => revealDesktop(true),
+    openAiModels: () => revealDesktop({ aiModels: true }),
+    openConversation: (sessionId) => revealDesktop({ sessionId }),
     desktop: {
       getWebContents: getDesktopContents,
       url: desktopUrl,
@@ -603,7 +626,10 @@ const configureFloatingKin = (
         Boolean(mainWindow?.isVisible() && !mainWindow.isMinimized()),
       setShellVisible: (visible) => {
         desktopReady = visible;
-        if (visible) showRequestedAiModels();
+        if (visible) {
+          showRequestedAiModels();
+          showRequestedConversation();
+        }
         if (!visible && dockWait) {
           clearDockWait();
           reconcile();

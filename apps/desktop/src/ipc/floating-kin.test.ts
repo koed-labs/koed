@@ -20,7 +20,7 @@ function setup(placement: KinPlacement = "desktop") {
   >();
   const sends = new Map<
     string,
-    (event: IpcMainEvent, value: unknown) => void
+    (event: IpcMainEvent, value: unknown, extra?: unknown) => void
   >();
   const activity = vi.fn(async (): Promise<FloatingKinActivityState> => ({
     state: "stopped"
@@ -54,6 +54,7 @@ function setup(placement: KinPlacement = "desktop") {
   const completeExit = vi.fn();
   const openDesktop = vi.fn();
   const openAiModels = vi.fn();
+  const openConversation = vi.fn();
   const preview = vi.fn<
     NonNullable<
       Parameters<typeof registerFloatingKinIpc>[0]["runtime"]["preview"]
@@ -80,6 +81,7 @@ function setup(placement: KinPlacement = "desktop") {
     completeExit,
     openDesktop,
     openAiModels,
+    openConversation,
     interactive,
     resize,
     drag,
@@ -97,6 +99,7 @@ function setup(placement: KinPlacement = "desktop") {
     completeExit,
     openDesktop,
     openAiModels,
+    openConversation,
     latest,
     reopen,
     preview,
@@ -233,6 +236,21 @@ it("gates AI models requests on the current visible overlay revision", () => {
   presentation.placement = "sidebar";
   send(event as IpcMainEvent, 0);
   expect(openAiModels).toHaveBeenCalledTimes(1);
+});
+
+it("opens a Conversation only for the visible overlay revision and a plausible session id", () => {
+  const { event, desktopEvent, sends, presentation, openConversation } =
+    setup();
+  const send = sends.get(channels.openConversation)!;
+  send(desktopEvent as IpcMainEvent, 0, "session-1");
+  send(event as IpcMainEvent, 1, "session-1");
+  send(event as IpcMainEvent, 0, 42);
+  send(event as IpcMainEvent, 0, "");
+  send(event as IpcMainEvent, 0, "x".repeat(513));
+  send(event as IpcMainEvent, 0, "session-1");
+  presentation.placement = "sidebar";
+  send(event as IpcMainEvent, 0, "session-2");
+  expect(openConversation).toHaveBeenCalledExactlyOnceWith("session-1");
 });
 
 it("restricts captured previews to the visible revision and discards pending replies on handoff", async () => {

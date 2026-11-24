@@ -124,7 +124,8 @@ export function FloatingKinPanel({
   summarize,
   cancel,
   openLastSummary,
-  openAiModels
+  openAiModels,
+  openConversation
 }: {
   conversation: Conversation;
   preview: FloatingKinPreview;
@@ -140,6 +141,8 @@ export function FloatingKinPanel({
   cancel: () => void;
   openLastSummary?: () => void;
   openAiModels?: () => void;
+  // Opens this Conversation in Koed Desktop.
+  openConversation?: () => void;
 }) {
   const closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -178,7 +181,17 @@ export function FloatingKinPanel({
       <header className="fk-header">
         <div>
           <h2 id="fk-panel-title" title={title}>
-            {title}
+            {openConversation && !showingSummary ? (
+              <button
+                type="button"
+                className="fk-title-link"
+                onClick={openConversation}
+              >
+                {title}
+              </button>
+            ) : (
+              title
+            )}
           </h2>
           <small>
             <ClientMark client={conversation.client} />{" "}

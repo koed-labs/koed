@@ -64,6 +64,7 @@ beforeEach(() => {
       result: answered
     })),
     openAiModels: vi.fn(),
+    openConversation: vi.fn(),
     cancel: vi.fn(async () => undefined),
     completeExit: vi.fn(),
     openDesktop: vi.fn(),
@@ -369,8 +370,21 @@ describe("Floating Kin", () => {
     expect(panel.textContent).not.toContain("Uses your assigned AI Client");
     expect(
       [...panel.querySelectorAll("button")].map((button) => button.textContent)
-    ).toEqual(["×", "Open last summary", "Summarize Conversation", ""]);
+    ).toEqual([
+      "Recent Conversation",
+      "×",
+      "Open last summary",
+      "Summarize Conversation",
+      ""
+    ]);
+    await click("Recent Conversation");
+    expect(bridge.openConversation).toHaveBeenCalledExactlyOnceWith(
+      7,
+      sessionId
+    );
     await click("Open last summary");
+    // The summary title isn't the Conversation's, so it isn't a link.
+    expect(panel.querySelector(".fk-title-link")).toBeNull();
     expect(panel.textContent).toContain("Project summary");
     expect(panel.textContent).toContain(answered.captured);
     expect(bridge.reopen).toHaveBeenCalledExactlyOnceWith(

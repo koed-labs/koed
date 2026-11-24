@@ -899,6 +899,25 @@ export function V1App({
       ? projectManagement.management.onDrop(row, projectId).then(Boolean)
       : Promise.resolve(false);
   };
+  // The Chief of Staff opens a captured Conversation by its session id.
+  const openKinConversation = useCallback(
+    (sessionId: string) => {
+      for (const project of sidebarProjects) {
+        const row = project.conversations.find(
+          (conversation) => conversation.sessionId === sessionId
+        );
+        if (!row) continue;
+        setRoute(row.route);
+        setRevealProject((previous) => ({
+          projectId: project.id,
+          key: (previous?.key ?? 0) + 1
+        }));
+        return true;
+      }
+      return false;
+    },
+    [sidebarProjects]
+  );
   const openProject = (projectId: string) => {
     const latest = sidebarProjects
       .find((project) => project.id === projectId)
@@ -1047,7 +1066,8 @@ export function V1App({
     window.koedDesktop?.kin,
     inventoryScope,
     Boolean(profile && !showOnboarding),
-    openKinAiModels
+    openKinAiModels,
+    openKinConversation
   );
   if (!profile)
     return profileReadError ? (

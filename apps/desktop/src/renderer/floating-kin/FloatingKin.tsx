@@ -402,13 +402,15 @@ export function useKinSummaryPanel({
   bridge,
   surface,
   visible = true,
-  openAiModels
+  openAiModels,
+  openConversation
 }: {
   sample: ReturnType<typeof useKinActivity>;
   bridge?: KinActivityBridge;
   surface: RefObject<HTMLElement | null>;
   visible?: boolean;
   openAiModels?: () => void;
+  openConversation?: (sessionId: string) => void;
 }) {
   const { at, recent } = sample;
   const deadlines = visible ? recent.map(workingDeadline) : [];
@@ -463,6 +465,11 @@ export function useKinSummaryPanel({
         }
         cancel={() => void cancel()}
         openAiModels={openAiModels}
+        openConversation={
+          openConversation
+            ? () => openConversation(selected.sessionId)
+            : undefined
+        }
         openLastSummary={
           latest
             ? () =>
@@ -493,7 +500,8 @@ export function KinActivityContent({
   surface,
   visible = true,
   showStatus = false,
-  openAiModels
+  openAiModels,
+  openConversation
 }: {
   sample: ReturnType<typeof useKinActivity>;
   bridge?: KinActivityBridge;
@@ -501,6 +509,7 @@ export function KinActivityContent({
   visible?: boolean;
   showStatus?: boolean;
   openAiModels?: () => void;
+  openConversation?: (sessionId: string) => void;
 }) {
   const { activity, at, conversations, overflow } = sample;
   const { panel, selected, toggle, isWorking } = useKinSummaryPanel({
@@ -508,7 +517,8 @@ export function KinActivityContent({
     bridge,
     surface,
     visible,
-    openAiModels
+    openAiModels,
+    openConversation
   });
   return (
     <>
@@ -552,13 +562,15 @@ function OverlayKinContent({
   surface,
   focused,
   onOpenDesktop,
-  openAiModels
+  openAiModels,
+  openConversation
 }: {
   bridge?: KinActivityBridge;
   surface: RefObject<HTMLElement | null>;
   focused: boolean;
   onOpenDesktop?: () => void;
   openAiModels?: () => void;
+  openConversation?: (sessionId: string) => void;
 }) {
   const sample = useKinActivity(bridge, "desktop");
   return (
@@ -569,6 +581,7 @@ function OverlayKinContent({
         surface={surface}
         showStatus
         openAiModels={openAiModels}
+        openConversation={openConversation}
       />
       <StandaloneKin
         active={focused || sample.recentCapture}
@@ -653,6 +666,11 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           openAiModels={
             bridge && revision !== undefined
               ? () => bridge.openAiModels(revision)
+              : undefined
+          }
+          openConversation={
+            bridge && revision !== undefined
+              ? (sessionId) => bridge.openConversation(revision, sessionId)
               : undefined
           }
           onOpenDesktop={

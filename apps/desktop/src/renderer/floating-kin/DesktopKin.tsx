@@ -75,7 +75,10 @@ export function useDesktopKin(
   bridge: DesktopKinBridge | undefined,
   scopeKey: string | null = null,
   shellVisible = true,
-  openAiModels?: () => void
+  openAiModels?: () => void,
+  // Opens a captured Conversation by its session id; false when Desktop
+  // has no row for it.
+  openConversation?: (sessionId: string) => boolean
 ) {
   const [presentation, setPresentation] = useState<KinPresentation | null>(
     null
@@ -84,6 +87,12 @@ export function useDesktopKin(
   useLayoutEffect(() => {
     if (openAiModels) return bridge?.onOpenAiModels(openAiModels);
   }, [bridge, openAiModels]);
+  useLayoutEffect(() => {
+    if (openConversation)
+      return bridge?.onOpenConversation((sessionId) => {
+        openConversation(sessionId);
+      });
+  }, [bridge, openConversation]);
   useLayoutEffect(() => {
     bridge?.setShellVisible(shellVisible);
   }, [bridge, shellVisible]);
@@ -97,13 +106,22 @@ export function useDesktopKin(
     shellVisible && placement === "sidebar" && !presentation?.sidebarPending;
   const sample = useKinActivity(activityBridge, "sidebar", inApp, scopeKey);
   const surface = useRef<HTMLElement>(null);
+  const closePanel = useRef<() => void>(() => {});
+  const openFromPanel = useCallback(
+    (sessionId: string) => {
+      if (openConversation?.(sessionId)) closePanel.current();
+    },
+    [openConversation]
+  );
   const summary = useKinSummaryPanel({
     sample,
     bridge: activityBridge,
     surface,
     visible: inApp && Boolean(activityBridge),
-    openAiModels
+    openAiModels,
+    openConversation: openConversation ? openFromPanel : undefined
   });
+  closePanel.current = summary.close;
   const [anchor, setAnchor] = useState<{
     trigger: HTMLElement;
     at: Anchor;

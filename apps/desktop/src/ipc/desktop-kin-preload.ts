@@ -49,6 +49,13 @@ export function createDesktopKinPreloadApi(ipc: KinIpc): DesktopKinBridge {
       ipc.on(channels.showAiModels, receive);
       return () => ipc.removeListener(channels.showAiModels, receive);
     },
+    onOpenConversation(listener) {
+      const receive = (_event: unknown, sessionId: unknown) => {
+        if (typeof sessionId === "string") listener(sessionId);
+      };
+      ipc.on(channels.showConversation, receive);
+      return () => ipc.removeListener(channels.showConversation, receive);
+    },
     confirmPresentation: (revision) =>
       ipc.send(channels.confirmPresentation, revision)
   };
