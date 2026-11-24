@@ -132,28 +132,44 @@ function setupGitReview({
   startedAt = "2024-01-01T00:00:00.000Z",
   paths,
   importAuthority,
-  gitUnknownReviewEligible = !importAuthority
+  recordingDevice = false,
+  gitUnknownReviewEligible = !importAuthority && !recordingDevice
 }: {
   target?: { key: string; root: string };
   startedAt?: string;
   paths?: ProjectCommandsDeps["paths"];
   importAuthority?: { deploymentId: string; deviceId: string };
+  recordingDevice?: boolean;
   gitUnknownReviewEligible?: boolean;
 } = {}) {
   const fixture = createProjectManagementValidationApi();
   const context = fixture.contexts.get(sessionId)!;
   const evidence = {
     sessionId,
-    folderAssignment: context.folder,
+    folderAssignment: recordingDevice
+      ? {
+          ...context.folder,
+          original: {
+            state: "known",
+            value: {
+              reference: folder,
+              normalizedPath: target.root,
+              capturedPath: target.root
+            }
+          }
+        }
+      : context.folder,
     recordedCwd: target.root,
     firstConversationAt: startedAt,
     recordedRemoteFingerprint: null,
     capturedOnThisDevice: false,
     gitInferenceEligibility: true,
     gitUnknownReviewEligible,
-    recordingDeviceProvenance: importAuthority
-      ? "assumed-local-import"
-      : "unknown",
+    recordingDeviceProvenance: recordingDevice
+      ? "recording-device"
+      : importAuthority
+        ? "assumed-local-import"
+        : "unknown",
     importAuthority: importAuthority && {
       ...importAuthority,
       artifactId: validationId(910),
@@ -187,9 +203,11 @@ function setupGitReview({
             }
           },
           projects: [],
-          inferenceIntent: importAuthority
-            ? "assumed-local-import"
-            : "user-confirmed-unknown"
+          inferenceIntent: recordingDevice
+            ? "recording-device"
+            : importAuthority
+              ? "assumed-local-import"
+              : "user-confirmed-unknown"
         }
       };
     }
@@ -444,18 +462,20 @@ describe("Git inference confirmation", () => {
             reviewedCheckout: await reviewedCheckout(hints)
           })
         ).resolves.toMatchObject({ ok: true });
-        await expect(
+        const apply = () =>
           command({
             action: "apply",
             sessionId,
             reviewId: validationId(900),
             expectedVersion: 1
-          })
-        ).resolves.toMatchObject(
+          });
+        await expect(apply()).resolves.toMatchObject(
           failure === "401"
             ? { ok: false, error: { code: "not_ready" } }
             : { ok: false, error: { code: "request_failed" } }
         );
+        expect(applyAttempts()).toBe(1);
+        await expect(apply()).resolves.toMatchObject({ ok: false });
         expect(applyAttempts()).toBe(1);
       } finally {
         rmSync(root, { recursive: true, force: true });
@@ -888,6 +908,50 @@ describe("Git inference confirmation", () => {
     ]);
     await expect(manage(guardedPreview)).rejects.toThrow("no longer matches");
     expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("keeps automatic recording-device inference usable without manual review scope", async () => {
+    vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+      remoteOperationsAllowed: true,
+      deploymentId: folder.originatingDeploymentId,
+      deviceInstanceId: folder.originatingDeviceId
+    } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+    const { manage, request } = setupGitReview({
+      recordingDevice: true,
+      paths: resolveKoedServerPaths({ KOED_HOME: "/koed-home" })
+    });
+    score.mockResolvedValue([
+      {
+        ...identifiableGitCandidate,
+        reasons: identifiableGitCandidate.reasons.map((reason) =>
+          reason.code === "origin-device"
+            ? { ...reason, outcome: "agrees" }
+            : reason
+        )
+      }
+    ]);
+    await expect(
+      manage({
+        sessionId,
+        action: "preview",
+        correction: {
+          ...guardedPreview.correction,
+          inferenceIntent: "recording-device"
+        }
+      })
+    ).resolves.toHaveProperty("preview.inferenceIntent", "recording-device");
+    await manage({
+      action: "apply",
+      sessionId,
+      reviewId: validationId(900),
+      expectedVersion: 1
+    });
+    expect(request.mock.calls.map(([path]) => path.split("/").at(-1))).toEqual([
+      "folder-hint-evidence",
+      "reviews",
+      "folder-hint-evidence",
+      "apply"
+    ]);
   });
 
   it("rejects unscoped manual preview before requesting evidence", async () => {
