@@ -5,7 +5,6 @@ import {
   recallActivityDetailInputSchema,
   personalDesktopChangeSchema,
   personalDesktopLocalFolderPrepareInputSchema,
-  personalFolderHintConfirmRequestSchema,
   personalDesktopFolderHintInputSchema,
   personalDesktopProjectCreateInputSchema,
   personalProjectCommandSchema,
@@ -177,7 +176,7 @@ export const createPersonalMemoryPreloadApi = (
         await invokePersonalMemory(invoke, {
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
           operation: "personal.folders.hints.confirm",
-          input: personalFolderHintConfirmRequestSchema.parse(value)
+          input: value
         })
       );
       if (result.operation !== "personal.folders.hints.confirm")
