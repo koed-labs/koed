@@ -59,6 +59,26 @@ export const personalMemoryThreadKey = (
   thread: Pick<PersonalDesktopProjectThread, "projectId" | "id">
 ): string => `${thread.projectId}:${thread.id}`;
 
+/**
+ * Change notices name a Conversation by its captured source: the capture
+ * project (often the working folder) and the AI Client's thread ID. Inventory
+ * may group that Conversation under a Git Anchor, Folder, or named Project, so
+ * match the source thread against every place the capture project can appear.
+ */
+const changeNamesThread = (
+  thread: PersonalDesktopProjectThread,
+  projectId: string,
+  threadId: string
+): boolean =>
+  Boolean(thread.sourceThreadId) &&
+  thread.sourceThreadId === threadId &&
+  [
+    thread.sourceProject?.id,
+    thread.sourceProject?.path,
+    thread.projectPath,
+    thread.capturedCwd
+  ].includes(projectId);
+
 const emptySnapshot = (): PersonalMemorySnapshot => ({
   inventory: {
     ...partitionPersonalInventory<DesktopProject>([]),
@@ -127,11 +147,7 @@ export class PersonalMemoryStore {
           eventIds.add(id);
           this.#detailRefreshEventIds.set(key, eventIds);
           for (const thread of this.#snapshot.threadsByKey.values()) {
-            if (
-              thread.sourceThreadId &&
-              thread.sourceProject?.id === projectId &&
-              thread.sourceThreadId === threadId
-            ) {
+            if (changeNamesThread(thread, projectId, threadId)) {
               const namedKey = personalMemoryThreadKey(thread);
               const pending =
                 this.#detailRefreshEventIds.get(namedKey) ?? new Set<string>();
