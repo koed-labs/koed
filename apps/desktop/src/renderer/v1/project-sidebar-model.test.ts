@@ -5,6 +5,7 @@ import {
   buildProjectSidebar,
   conversationList,
   filterSidebar,
+  pinnedFirst,
   pinnedSidebarItems,
   projectPinKey
 } from "./project-sidebar-model.js";
@@ -238,7 +239,7 @@ describe("Project sidebar inventory", () => {
       ]).map((item) => item.key)
     ).toEqual(["session:Build", "project:Empty", "session:Privacy"]);
   });
-  it("lists pins first, then the other Conversations once by recency", () => {
+  it("lists pinned Conversations first, then the rest once by recency", () => {
     const groups = buildProjectSidebar(
       [
         named("Koed", [thread("Privacy", after), thread("Build", before)]),
@@ -252,11 +253,30 @@ describe("Project sidebar inventory", () => {
       projectPinKey(docs.id),
       "session:Build"
     ]);
-    expect(
-      list.pinned.map((item) =>
-        item.kind === "project" ? item.project.name : item.row.title
-      )
-    ).toEqual(["Docs", "Build"]);
+    expect(list.pinned.map((r) => r.title)).toEqual(["Build"]);
     expect(list.recent.map((r) => r.title)).toEqual(["Privacy", "Notes"]);
+  });
+  it("puts pinned Projects first, and pinned Conversations first in each Project", () => {
+    const groups = buildProjectSidebar(
+      [
+        named("Koed", [thread("Privacy", after), thread("Build", before)]),
+        named("Docs", [thread("Notes", after), thread("Build", before)])
+      ],
+      [],
+      new Map()
+    ).map((project) => ({ ...project, managed: true }));
+    const docs = groups.find((project) => project.name === "Docs")!;
+    const ordered = pinnedFirst(groups, [
+      "session:Build",
+      projectPinKey(docs.id)
+    ]);
+    expect(ordered.map((project) => project.name)).toEqual(
+      ["Docs", ...groups.map((project) => project.name)].filter(
+        (name, index, names) => names.indexOf(name) === index
+      )
+    );
+    for (const project of ordered)
+      expect(project.conversations[0]?.title).toBe("Build");
+    expect(pinnedFirst(groups, [])).toEqual(groups);
   });
 });

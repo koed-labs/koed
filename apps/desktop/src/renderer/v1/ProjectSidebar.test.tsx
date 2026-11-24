@@ -98,6 +98,7 @@ const menuItem = (label: string) =>
     (item) => item.textContent === label
   )!;
 const pinnedSection = () => container.querySelector(".v1-nav-conversations")!;
+const pinSectionText = () => pinnedSection().textContent ?? "";
 const searchInput = () =>
   container.querySelector<HTMLInputElement>(
     'input[aria-label="Find Projects or Conversations"]'
@@ -159,109 +160,90 @@ describe("Project sidebar interactions", () => {
     expect(onProjectSettings).toHaveBeenCalledWith("a");
   });
 
-  it("pins an empty named Project alongside a Conversation, jumps to it, and persists per account/backend scope", async () => {
+  it("pins Projects in the Projects list and Conversations in both lists, per account/backend scope", async () => {
     const data = [
       ...projects,
       {
-        ...projectWithConversations("session:one", "Empty Project", 0),
+        ...projectWithConversations("empty", "Empty Project", 0),
         managed: true
       }
     ];
     const render = async (scope = "backend-a:owner-a") =>
       act(async () => root.render(<Harness data={data} scope={scope} />));
-    const emptyProject = () =>
-      [
-        ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")
-      ].find((element) => element.textContent === "Empty Project")!;
+    const projectNames = () =>
+      [...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")].map(
+        (element) => element.textContent
+      );
+    const pinnedProjects = () =>
+      [...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")]
+        .filter((element) => element.querySelector(".v1-nav-pin-mark"))
+        .map((element) => element.textContent);
     const pinnedTitles = () =>
       [...pinnedSection().querySelectorAll("li")]
-        .filter((row) =>
-          row.querySelector(".v1-nav-pin-mark, .v1-nav-pinned-project")
-        )
+        .filter((row) => row.querySelector(".v1-nav-pin-mark"))
         .map((row) => row.querySelector(".v1-nav-copy > span")?.textContent);
 
     await render();
+    expect(projectNames()).toEqual(["Koed", "Empty Project"]);
     expect(button("Actions for Project Koed")).toBeNull();
     await act(async () => button("Actions for Captured from Claude").click());
     await act(async () => menuItem("Pin").click());
     await act(async () => button("Actions for Project Empty Project")?.click());
-    expect(menuItem("Pin Project")).toBeDefined();
     await act(async () => menuItem("Pin Project").click());
-    expect(pinnedTitles()).toEqual(["Captured from Claude", "Empty Project"]);
+    // A pinned Conversation leads the Conversations list; a pinned Project
+    // leads the Projects list and never joins the Conversations list.
+    expect(pinnedTitles()).toEqual(["Captured from Claude"]);
+    expect(pinSectionText()).not.toContain("Empty Project");
+    expect(projectNames()).toEqual(["Empty Project", "Koed"]);
+    expect(pinnedProjects()).toEqual(["Empty Project"]);
+    expect(
+      container
+        .querySelector(".v1-nav-children .v1-nav-pin-mark")
+        ?.closest("li")?.textContent
+    ).toContain("Captured from Claude");
     expect(
       window.localStorage.getItem("koed:sidebar-pins:backend-a:owner-a")
-    ).toBe('["session:one","project:session:one"]');
-
-    expect(emptyProject().getAttribute("aria-expanded")).toBe("false");
-    await searchFor("Empty Project");
-    expect(searchInput().placeholder).toBe("Find Projects or Conversations…");
-    expect(pinnedTitles()).toEqual(["Empty Project"]);
-    await act(async () =>
-      button("Show Project Empty Project in Projects").click()
-    );
-    expect(searchInput().value).toBe("");
-    expect(pinnedTitles()).toEqual(["Captured from Claude", "Empty Project"]);
-    expect(emptyProject().getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector(".v1-nav-projects")?.textContent).toContain(
-      "No conversations yet"
-    );
-    await vi.waitFor(() => expect(document.activeElement).toBe(emptyProject()));
-    expect(container.querySelector('[data-testid="route"]')?.textContent).toBe(
-      '{"kind":"home"}'
-    );
-    await act(async () =>
-      pinnedSection()
-        .querySelector<HTMLButtonElement>(".v1-nav-conversation")!
-        .click()
-    );
-    expect(
-      container.querySelector('[data-testid="route"]')?.textContent
-    ).toContain('"threadId":"one"');
+    ).toBe('["session:one","project:empty"]');
 
     await render("backend-a:owner-b");
     expect(pinnedTitles()).toEqual([]);
+    expect(projectNames()).toEqual(["Koed", "Empty Project"]);
     await render("backend-b:owner-a");
-    expect(pinnedTitles()).toEqual([]);
+    expect(pinnedProjects()).toEqual([]);
     await act(async () => root.unmount());
     root = createRoot(container);
     await render();
-    expect(pinnedTitles()).toEqual(["Captured from Claude", "Empty Project"]);
+    expect(pinnedTitles()).toEqual(["Captured from Claude"]);
+    expect(projectNames()).toEqual(["Empty Project", "Koed"]);
 
     await act(async () => button("Actions for Project Empty Project").click());
     await act(async () => menuItem("Unpin Project").click());
-    expect(pinnedTitles()).toEqual(["Captured from Claude"]);
-    expect(emptyProject()).toBeDefined();
-    await act(async () => button("Actions for Project Empty Project").click());
-    await act(async () => menuItem("Pin Project").click());
-    await act(async () => button("Unpin Project Empty Project").click());
-    expect(pinnedTitles()).toEqual(["Captured from Claude"]);
+    expect(projectNames()).toEqual(["Koed", "Empty Project"]);
+    expect(pinnedProjects()).toEqual([]);
     expect(
       window.localStorage.getItem("koed:sidebar-pins:backend-a:owner-a")
     ).toBe('["session:one"]');
   });
 
-  it("keeps keyboard focus on the Conversations heading after removing the last pin", async () => {
+  it("orders pinned Conversations first inside their Project", async () => {
     window.localStorage.setItem(
       "koed:sidebar-pins:owner-a",
-      '["project:empty"]'
+      '["session:many-3"]'
     );
     await act(async () =>
       root.render(
-        <Harness
-          data={[
-            { ...projectWithConversations("empty", "Empty", 0), managed: true }
-          ]}
-        />
+        <Harness data={[projectWithConversations("many", "Many", 4)]} />
       )
     );
-    const unpin = button("Unpin Project Empty");
-    unpin.focus();
-    expect(document.activeElement).toBe(unpin);
-    await act(async () => unpin.click());
-    expect(button("Unpin Project Empty")).toBeNull();
-    expect(document.activeElement).toBe(
-      pinnedSection().querySelector(".v1-nav-heading-toggle")
-    );
+    const nested = [
+      ...container.querySelectorAll(".v1-nav-children .v1-nav-copy > span")
+    ].map((title) => title.textContent);
+    expect(nested[0]).toBe("Many conversation 3");
+    expect(nested.slice(1)).toEqual([
+      "Many conversation 1",
+      "Many conversation 2",
+      "Many conversation 4"
+    ]);
   });
 
   it("reveals conversations five at a time per Project and resets on collapse and owner changes", async () => {

@@ -312,6 +312,18 @@
   background: var(--v1-fg);
   box-shadow: 0 0 0 2px var(--v1-rail);
 }
+.v1-nav-kin-client[data-client] {
+  color: #fff;
+}
+.v1-nav-kin-client[data-client="codex"] {
+  background: var(--v1-client-codex);
+}
+.v1-nav-kin-client[data-client="claude"] {
+  background: var(--v1-client-claude);
+}
+.v1-nav-kin-client[data-client="pi"] {
+  background: var(--v1-client-pi);
+}
 .v1-nav-kin-client svg {
   width: 100%;
   height: 100%;
@@ -393,8 +405,7 @@
 .v1-nav-conversation-wrap {
   position: relative;
 }
-.v1-nav-conversation,
-.v1-nav-pinned-project {
+.v1-nav-conversation {
   text-align: left;
   width: 100%;
   height: auto;
@@ -404,12 +415,6 @@
   padding: 9px 8px;
   font-size: 12px;
   translate: none;
-}
-.v1-nav-pinned-project {
-  padding-right: 36px;
-}
-.v1-nav-pinned-project > svg {
-  color: var(--v1-muted);
 }
 .v1-nav-conversation[aria-current] {
   background: var(--v1-accent-soft);
@@ -460,14 +465,23 @@
   fill: currentColor;
   stroke: none;
 }
+/* The same AI Client colours as the Home keycaps and row badges. */
+.v1-nav-client-mark:is(.codex, .claude, .pi) {
+  border-radius: 50%;
+  color: #fff;
+}
+.v1-nav-client-mark:is(.codex, .claude, .pi) svg {
+  width: 11px;
+  height: 11px;
+}
 .v1-nav-client-mark.codex {
-  color: #87baa9;
+  background: var(--v1-client-codex);
 }
 .v1-nav-client-mark.claude {
-  color: #bd8b69;
+  background: var(--v1-client-claude);
 }
 .v1-nav-client-mark.pi {
-  color: var(--v1-fg2);
+  background: var(--v1-client-pi);
 }
 .v1-nav-pin {
   position: absolute;
