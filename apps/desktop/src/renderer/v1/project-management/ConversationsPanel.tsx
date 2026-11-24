@@ -329,7 +329,7 @@ export function Row({
           {locked && !pending && (
             <Lock
               className="v1-pm-row-lock"
-              aria-label="Kept if rules change"
+              aria-label="Kept if Anchors change"
             />
           )}
           {[
@@ -564,15 +564,15 @@ export function ConversationsPanel({
             ? "Review sync conflict"
             : leaving
               ? membership.included
-                ? "Stays through another rule"
-                : "Leaves with this rule"
+                ? "Stays through another Anchor"
+                : "Leaves with this Anchor"
               : rule
                 ? ""
                 : "Added directly"
         }
         tag={
           !leaving && rules.length > 1
-            ? `+${rules.length - 1} rule${rules.length > 2 ? "s" : ""}`
+            ? `+${rules.length - 1} Anchor${rules.length > 2 ? "s" : ""}`
             : undefined
         }
         locked={membership.direct}
@@ -584,8 +584,8 @@ export function ConversationsPanel({
             : membership.included
               ? membership.direct !== directMembership(row.explanation)
                 ? membership.direct
-                  ? "Will be kept if rules change"
-                  : "Will follow the rules only"
+                  ? "Will be kept if Anchors change"
+                  : "Will follow its Anchors only"
                 : undefined
               : rules.length > 0
                 ? "Will be excluded"
@@ -854,7 +854,7 @@ export function ConversationsPanel({
         />
       </div>
       <div className="v1-pm-group-heading">
-        <h3>Rules</h3>
+        <h3>Anchors</h3>
         {unusedRules.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -862,7 +862,7 @@ export function ConversationsPanel({
               render={<Button variant="ghost" size="xs" />}
             >
               <Plus />
-              Add rule
+              Add Anchor
             </DropdownMenuTrigger>
             <DropdownMenuPopup
               className="v1-app v1-project-ui v1-pm-menu v1-pm-rule-menu"
