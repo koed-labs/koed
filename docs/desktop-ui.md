@@ -19,8 +19,13 @@ captured from supported AI Clients, including previously managed Conversations.
 The sidebar provides search, expandable Projects, and navigation history. On
 narrow windows, it opens as a drawer. While services or inventory are loading,
 the sidebar shows that state rather than an empty Conversation list.
-**Conversations** and **Projects** each scroll on their own, and the Projects
-heading stays in view.
+**Projects** lists named Projects and **No project**. Below it, **Anchors** lists
+the Git Anchor and Folder groups of captured Conversations that no named Project
+includes, such as a Conversation excluded from the Project its rule would match.
+Each Anchor expands to its Conversations like a Project. **Conversations**,
+**Projects**, and **Anchors** collapse from their headings. **Conversations**
+scrolls on its own; **Projects** and **Anchors** share a scroll area, and each
+heading stays in view while its rows scroll.
 
 Pins work in two places. Pinning a Conversation keeps it at the top of
 **Conversations**, which lists every other Conversation by most recent

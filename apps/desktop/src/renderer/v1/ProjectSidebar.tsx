@@ -32,9 +32,9 @@ import {
 import {
   ChevronDown,
   ChevronRight,
-  ChevronsDownUp,
   Folder,
   FolderOpen,
+  GitBranch,
   MessageCircle,
   Pin,
   PinOff,
@@ -52,6 +52,7 @@ import { DEFAULT_AGENT_LOOK, projectKinLook } from "./pixelkin/agent-kin.js";
 import {
   conversationList,
   filterSidebar,
+  isAnchorGroup,
   NO_PROJECT_ID,
   pinnedFirst,
   projectPinKey,
@@ -252,6 +253,8 @@ export function ProjectSidebar({
   const [visibleCounts, setVisibleCounts] = useState(new Map<string, number>());
   const initialized = useRef(false);
   const [listOpen, setListOpen] = useState(true);
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [anchorsOpen, setAnchorsOpen] = useState(true);
   const [recentCount, setRecentCount] = useState(RECENT_PER_PAGE);
   const [now, setNow] = useState(Date.now);
   const { pins, toggle, ready, error: pinError } = useSidebarPins(scopeKey);
@@ -311,11 +314,141 @@ export function ProjectSidebar({
       : route.projectId === row.route.projectId &&
         route.threadId === row.route.threadId);
   const list = conversationList(visible, pins);
+  const projectGroups = visible.filter((project) => !isAnchorGroup(project));
+  const anchorGroups = visible.filter(isAnchorGroup);
   // Search covers every Conversation; keep the open one visible otherwise.
   const recent = query.trim()
     ? list.recent
     : list.recent.filter((row, index) => index < recentCount || selected(row));
   const moreRecent = list.recent.length - recent.length;
+  function projectRow(project: SidebarProject) {
+    const pinKey = projectPinKey(project.id);
+    const noProject = project.id === NO_PROJECT_ID;
+    const open = Boolean(query.trim()) || expanded.has(project.id);
+    const limit = visibleCounts.get(project.id) ?? CONVERSATIONS_PER_PAGE;
+    // Search covers the full inventory. Keep an older open conversation
+    // visible without expanding every conversation ahead of it.
+    const shown = query.trim()
+      ? project.conversations
+      : project.conversations.filter(
+          (row, index) => index < limit || selected(row)
+        );
+    const remaining = project.conversations.length - shown.length;
+    return (
+      <SidebarMenuItem
+        key={project.id}
+        data-project-drop={project.managed ? project.id : undefined}
+        className={drag.over === project.id ? "v1-pm-drop-target" : undefined}
+      >
+        <Collapsible.Root
+          open={open}
+          onOpenChange={(next) => {
+            setExpanded((previous) => {
+              const changed = new Set(previous);
+              if (next) changed.add(project.id);
+              else changed.delete(project.id);
+              return changed;
+            });
+            if (!next)
+              setVisibleCounts((previous) => {
+                const changed = new Map(previous);
+                changed.delete(project.id);
+                return changed;
+              });
+          }}
+        >
+          <div
+            className={`v1-pm-project-row ${project.managed || noProject ? "v1-pm-has-menu" : ""}`}
+          >
+            <Collapsible.Trigger
+              render={<SidebarMenuButton className="v1-nav-project" />}
+            >
+              {open ? <ChevronDown /> : <ChevronRight />}
+              {project.managed || noProject ? (
+                <Pixelkin
+                  look={
+                    noProject
+                      ? projectKinLook(NO_PROJECT_ID, noProjectKin.kin)
+                      : projectKinLook(project.id, project.kin)
+                  }
+                  size={30}
+                  className="v1-nav-project-kin"
+                  motion="still"
+                />
+              ) : project.source === "git" ? (
+                <GitBranch />
+              ) : open ? (
+                <FolderOpen />
+              ) : (
+                <Folder />
+              )}
+              <span>
+                {pins.includes(pinKey) && (
+                  <Pin className="v1-nav-pin-mark" aria-label="Pinned" />
+                )}
+                {project.name}
+              </span>
+            </Collapsible.Trigger>
+            {noProject && (
+              <NoProjectActions
+                canEdit={noProjectKin.ready}
+                onKinSettings={() => setEditingNoProjectKin(true)}
+              />
+            )}
+            {project.managed && (
+              <ProjectActions
+                name={project.name}
+                settings={
+                  management && (() => management.onProjectSettings(project.id))
+                }
+                settingsBusy={management?.busy}
+                pinned={pins.includes(pinKey)}
+                canPin={ready}
+                onTogglePin={() => toggle(pinKey, [pinKey])}
+              />
+            )}
+          </div>
+          <Collapsible.Panel>
+            <SidebarMenuSub className="v1-nav-children">
+              {shown.map((row) => conversation(row, true))}
+              {remaining > 0 && (
+                <SidebarMenuSubItem className="v1-nav-load-more-row">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="v1-nav-load-more"
+                    aria-label={`Load more conversations in ${project.name}`}
+                    title={`${remaining} more conversations`}
+                    onClick={(event) => {
+                      const list = event.currentTarget.closest("ul");
+                      setVisibleCounts((previous) =>
+                        new Map(previous).set(
+                          project.id,
+                          limit + CONVERSATIONS_PER_PAGE
+                        )
+                      );
+                      requestAnimationFrame(() => {
+                        list
+                          ?.querySelectorAll<HTMLButtonElement>(
+                            ".v1-nav-conversation"
+                          )
+                          [limit]?.focus();
+                      });
+                    }}
+                  >
+                    <Badge>Load More</Badge>
+                  </Button>
+                </SidebarMenuSubItem>
+              )}
+              {!project.conversations.length && showEmptyStates && (
+                <li className="v1-nav-empty">No conversations yet</li>
+              )}
+            </SidebarMenuSub>
+          </Collapsible.Panel>
+        </Collapsible.Root>
+      </SidebarMenuItem>
+    );
+  }
   function conversation(row: SidebarConversation, nested: boolean) {
     const isPinned = pins.some((pin) => row.aliases.includes(pin));
     const Row = nested ? SidebarMenuSubItem : SidebarMenuItem;
@@ -509,220 +642,98 @@ export function ProjectSidebar({
             </Collapsible.Panel>
           </Collapsible.Root>
         </SidebarGroup>
-        <SidebarGroup className="v1-nav-projects">
-          <div className="v1-nav-heading v1-pm-project-heading">
-            <span>Projects</span>
-            <div>
-              {management && (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label="Manage all Projects"
-                    title="Manage Projects"
-                    disabled={management.busy}
-                    onClick={() => management.onProjectSettings()}
-                  >
-                    <Settings2 />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label="Create Project"
-                    title="Create Project"
-                    disabled={management.busy}
-                    onClick={management.onCreateProject}
-                  >
-                    <Plus />
-                  </Button>
-                </>
-              )}
-              <button
-                type="button"
-                aria-label="Collapse all Projects"
-                title="Collapse all Projects"
-                onClick={() => {
-                  setExpanded(new Set());
-                  setVisibleCounts(new Map());
-                }}
-              >
-                <ChevronsDownUp />
-              </button>
-            </div>
-          </div>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {visible.map((project) => {
-                const pinKey = projectPinKey(project.id);
-                const noProject = project.id === NO_PROJECT_ID;
-                const open = Boolean(query.trim()) || expanded.has(project.id);
-                const limit =
-                  visibleCounts.get(project.id) ?? CONVERSATIONS_PER_PAGE;
-                // Search covers the full inventory. Keep an older open conversation
-                // visible without expanding every conversation ahead of it.
-                const shown = query.trim()
-                  ? project.conversations
-                  : project.conversations.filter(
-                      (row, index) => index < limit || selected(row)
-                    );
-                const remaining = project.conversations.length - shown.length;
-                return (
-                  <SidebarMenuItem
-                    key={project.id}
-                    data-project-drop={project.managed ? project.id : undefined}
-                    className={
-                      drag.over === project.id ? "v1-pm-drop-target" : undefined
-                    }
-                  >
-                    <Collapsible.Root
-                      open={open}
-                      onOpenChange={(next) => {
-                        setExpanded((previous) => {
-                          const changed = new Set(previous);
-                          if (next) changed.add(project.id);
-                          else changed.delete(project.id);
-                          return changed;
-                        });
-                        if (!next)
-                          setVisibleCounts((previous) => {
-                            const changed = new Map(previous);
-                            changed.delete(project.id);
-                            return changed;
-                          });
-                      }}
+        {/* Projects and Anchors share one scroll area below Conversations. */}
+        <div className="v1-nav-tree">
+          <SidebarGroup className="v1-nav-projects">
+            <Collapsible.Root
+              open={projectsOpen}
+              onOpenChange={setProjectsOpen}
+            >
+              <div className="v1-nav-heading v1-nav-section-heading v1-pm-project-heading">
+                <Collapsible.Trigger className="v1-nav-heading-toggle">
+                  <ChevronDown className={projectsOpen ? "" : "closed"} />
+                  <span>Projects</span>
+                </Collapsible.Trigger>
+                {management && (
+                  <div>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Manage all Projects"
+                      title="Manage Projects"
+                      disabled={management.busy}
+                      onClick={() => management.onProjectSettings()}
                     >
-                      <div
-                        className={`v1-pm-project-row ${project.managed || noProject ? "v1-pm-has-menu" : ""}`}
-                      >
-                        <Collapsible.Trigger
-                          render={
-                            <SidebarMenuButton className="v1-nav-project" />
-                          }
-                        >
-                          {open ? <ChevronDown /> : <ChevronRight />}
-                          {project.managed || noProject ? (
-                            <Pixelkin
-                              look={
-                                noProject
-                                  ? projectKinLook(
-                                      NO_PROJECT_ID,
-                                      noProjectKin.kin
-                                    )
-                                  : projectKinLook(project.id, project.kin)
-                              }
-                              size={30}
-                              className="v1-nav-project-kin"
-                              motion="still"
-                            />
-                          ) : open ? (
-                            <FolderOpen />
-                          ) : (
-                            <Folder />
-                          )}
-                          <span>
-                            {pins.includes(pinKey) && (
-                              <Pin
-                                className="v1-nav-pin-mark"
-                                aria-label="Pinned"
-                              />
-                            )}
-                            {project.name}
-                          </span>
-                        </Collapsible.Trigger>
-                        {noProject && (
-                          <NoProjectActions
-                            canEdit={noProjectKin.ready}
-                            onKinSettings={() => setEditingNoProjectKin(true)}
-                          />
-                        )}
-                        {project.managed && (
-                          <ProjectActions
-                            name={project.name}
-                            settings={
-                              management &&
-                              (() => management.onProjectSettings(project.id))
-                            }
-                            settingsBusy={management?.busy}
-                            pinned={pins.includes(pinKey)}
-                            canPin={ready}
-                            onTogglePin={() => toggle(pinKey, [pinKey])}
-                          />
-                        )}
-                      </div>
-                      <Collapsible.Panel>
-                        <SidebarMenuSub className="v1-nav-children">
-                          {shown.map((row) => conversation(row, true))}
-                          {remaining > 0 && (
-                            <SidebarMenuSubItem className="v1-nav-load-more-row">
-                              <Button
-                                variant="ghost"
-                                size="xs"
-                                className="v1-nav-load-more"
-                                aria-label={`Load more conversations in ${project.name}`}
-                                title={`${remaining} more conversations`}
-                                onClick={(event) => {
-                                  const list =
-                                    event.currentTarget.closest("ul");
-                                  setVisibleCounts((previous) =>
-                                    new Map(previous).set(
-                                      project.id,
-                                      limit + CONVERSATIONS_PER_PAGE
-                                    )
-                                  );
-                                  requestAnimationFrame(() => {
-                                    list
-                                      ?.querySelectorAll<HTMLButtonElement>(
-                                        ".v1-nav-conversation"
-                                      )
-                                      [limit]?.focus();
-                                  });
-                                }}
-                              >
-                                <Badge>Load More</Badge>
-                              </Button>
-                            </SidebarMenuSubItem>
-                          )}
-                          {!project.conversations.length && showEmptyStates && (
-                            <li className="v1-nav-empty">
-                              No conversations yet
-                            </li>
-                          )}
-                        </SidebarMenuSub>
-                      </Collapsible.Panel>
-                    </Collapsible.Root>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-          {(servicesStarting || loading) && (
-            <p className="v1-nav-empty" role="status">
-              {servicesStarting
-                ? "Services starting…"
-                : "Loading conversations…"}
-            </p>
+                      <Settings2 />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Create Project"
+                      title="Create Project"
+                      disabled={management.busy}
+                      onClick={management.onCreateProject}
+                    >
+                      <Plus />
+                    </Button>
+                  </div>
+                )}
+              </div>
+              <Collapsible.Panel>
+                <SidebarGroupContent>
+                  <SidebarMenu>{projectGroups.map(projectRow)}</SidebarMenu>
+                </SidebarGroupContent>
+                {(servicesStarting || loading) && (
+                  <p className="v1-nav-empty" role="status">
+                    {servicesStarting
+                      ? "Services starting…"
+                      : "Loading conversations…"}
+                  </p>
+                )}
+                {!visible.length && showEmptyStates && (
+                  <p className="v1-nav-empty">
+                    {query
+                      ? "No matching conversations or Projects"
+                      : "No conversations yet"}
+                  </p>
+                )}
+                {error && (
+                  <p className="v1-nav-empty" role="alert">
+                    {error}
+                    <button type="button" onClick={onRetry}>
+                      Retry
+                    </button>
+                  </p>
+                )}
+                {pinError && (
+                  <p className="v1-nav-empty" role="alert">
+                    {pinError}
+                  </p>
+                )}
+              </Collapsible.Panel>
+            </Collapsible.Root>
+          </SidebarGroup>
+          {anchorGroups.length > 0 && (
+            <SidebarGroup className="v1-nav-anchors">
+              <Collapsible.Root
+                open={anchorsOpen}
+                onOpenChange={setAnchorsOpen}
+              >
+                <div className="v1-nav-heading v1-nav-section-heading">
+                  <Collapsible.Trigger className="v1-nav-heading-toggle">
+                    <ChevronDown className={anchorsOpen ? "" : "closed"} />
+                    <span>Anchors</span>
+                  </Collapsible.Trigger>
+                </div>
+                <Collapsible.Panel>
+                  <SidebarGroupContent>
+                    <SidebarMenu>{anchorGroups.map(projectRow)}</SidebarMenu>
+                  </SidebarGroupContent>
+                </Collapsible.Panel>
+              </Collapsible.Root>
+            </SidebarGroup>
           )}
-          {!visible.length && showEmptyStates && (
-            <p className="v1-nav-empty">
-              {query
-                ? "No matching conversations or Projects"
-                : "No conversations yet"}
-            </p>
-          )}
-          {error && (
-            <p className="v1-nav-empty" role="alert">
-              {error}
-              <button type="button" onClick={onRetry}>
-                Retry
-              </button>
-            </p>
-          )}
-          {pinError && (
-            <p className="v1-nav-empty" role="alert">
-              {pinError}
-            </p>
-          )}
-        </SidebarGroup>
+        </div>
       </SidebarContent>
       {editingNoProjectKin && (
         <NoProjectKinDialog

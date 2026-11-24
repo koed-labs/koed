@@ -457,7 +457,7 @@ label.v1-pm-choice-row:hover {
   display: flex;
   gap: 2px;
 }
-.v1-pm-project-heading button {
+.v1-pm-project-heading > div button {
   display: grid;
   place-items: center;
   width: 24px;
@@ -468,7 +468,7 @@ label.v1-pm-choice-row:hover {
   box-shadow: none;
   color: var(--v1-faint);
 }
-.v1-pm-project-heading button:hover:not(:disabled) {
+.v1-pm-project-heading > div button:hover:not(:disabled) {
   background: var(--v1-surface);
   color: var(--v1-fg);
 }
@@ -1060,4 +1060,10 @@ button.v1-pm-row-action svg {
    own; rows and their tint run edge to edge. */
 .v1-pm-membership-sections .v1-pm-conversation-list {
   scrollbar-gutter: auto;
+}
+/* A Project option shows its Kin beside its name. */
+.v1-pm-select-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }

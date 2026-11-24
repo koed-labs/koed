@@ -38,6 +38,10 @@ export type SidebarConversation = {
 /** The group for captures that belong to no Project. */
 export const NO_PROJECT_ID = "no-project";
 
+/** Git Anchor and Folder groups, which the sidebar lists under Anchors. */
+export const isAnchorGroup = (project: SidebarProject) =>
+  Boolean(project.source);
+
 export type SidebarProject = {
   id: string;
   name: string;
@@ -46,6 +50,8 @@ export type SidebarProject = {
   managed?: boolean;
   /** The Project's saved Kin, when it has one; its look is derived otherwise. */
   kin?: PersonalProjectKin;
+  // An unnamed group of captures sharing a Git Anchor or Folder.
+  source?: "git" | "folder";
 };
 const timestamp = (value: string) => Date.parse(value) || 0;
 const activityOrder = <
@@ -87,7 +93,12 @@ export function buildProjectSidebar(
       latestAt: "",
       conversations: [],
       managed: Boolean(project.namedProject),
-      ...(project.namedProject?.kin ? { kin: project.namedProject.kin } : {})
+      ...(project.namedProject?.kin ? { kin: project.namedProject.kin } : {}),
+      ...(!project.namedProject &&
+        !ungrouped &&
+        (reference.kind === "git" || reference.kind === "folder") && {
+          source: reference.kind
+        })
     };
     for (const thread of project.threads) {
       if (

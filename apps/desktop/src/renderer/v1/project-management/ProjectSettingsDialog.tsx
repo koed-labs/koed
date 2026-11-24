@@ -45,6 +45,7 @@ import { recordingOriginWarning } from "./proposal-text.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
 import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
+import { projectKinLook } from "../pixelkin/agent-kin.js";
 
 const pages = [
   { id: "general", name: "General", Icon: Settings2 },
@@ -336,7 +337,11 @@ export function ProjectSettingsDialog({
           value={active}
           options={named.map((p) => ({
             value: p.id,
-            label: p.id === active ? draft?.name || p.name : p.name
+            label: p.id === active ? draft?.name || p.name : p.name,
+            look:
+              p.id === active && draft
+                ? draft.look
+                : projectKinLook(p.id, p.namedProject?.kin)
           }))}
           onChange={switchProject}
           disabled={busy || !reviewedProjects}

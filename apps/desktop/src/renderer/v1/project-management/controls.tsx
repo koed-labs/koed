@@ -1,3 +1,5 @@
+import { Pixelkin } from "../pixelkin/Pixelkin.js";
+import type { AgentLook } from "../pixelkin/agent-kin.js";
 import type { ReactNode } from "react";
 import {
   Button,
@@ -29,7 +31,8 @@ export function ProjectChoice({
   value: string | null;
   placeholder?: string;
   portalContainer?: HTMLElement | null;
-  options: { value: string; label: string }[];
+  // A Kin look shows that Project's Kin beside its name in the list.
+  options: { value: string; label: string; look?: AgentLook }[];
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
@@ -52,7 +55,19 @@ export function ProjectChoice({
       >
         {options.map((option) => (
           <SelectItem key={option.value} value={option.value}>
-            {option.label}
+            {option.look ? (
+              <span className="v1-pm-select-option">
+                <Pixelkin
+                  look={option.look}
+                  size={20}
+                  className="v1-pm-row-kin"
+                  motion="still"
+                />
+                {option.label}
+              </span>
+            ) : (
+              option.label
+            )}
           </SelectItem>
         ))}
       </SelectPopup>
