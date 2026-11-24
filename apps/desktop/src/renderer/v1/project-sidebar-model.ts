@@ -32,10 +32,9 @@ export type SidebarConversation = {
   managementPending?: boolean;
   // The Project's saved Kin look, so the row's Kin matches Home.
   projectKin?: PersonalProjectKin;
-  // Set when the row belongs to No project, which shares one Kin.
-  noProject?: boolean;
 };
-/** The group for captures that belong to no Project. */
+/** Captures that belong to no Project or Anchor. Home shows them as floor
+ * coins; the sidebar lists them only under Conversations. */
 export const NO_PROJECT_ID = "no-project";
 
 /** Git Anchor and Folder groups, which the sidebar lists under Anchors. */
@@ -71,8 +70,8 @@ export function buildProjectSidebar(
 ): SidebarProject[] {
   const groups = new Map<string, SidebarProject>();
   const capturedExecutions = new Set<string>();
-  // Raw Git/Folder inventory overlaps named Project memberships. Keep every
-  // named membership, and use source groups only for unassigned captures.
+  // Raw Git/Folder inventory overlaps named Project memberships. Anchors list
+  // all their Conversations; No project holds only unassigned captures.
   const assigned = new Set(
     projects
       .filter((project) => project.namedProject)
@@ -103,8 +102,7 @@ export function buildProjectSidebar(
     for (const thread of project.threads) {
       if (
         thread.threadKind === "subagent" ||
-        (!project.namedProject &&
-          assigned.has(personalInventoryConversationKey(thread)))
+        (ungrouped && assigned.has(personalInventoryConversationKey(thread)))
       )
         continue;
       const intent = intents.find(
@@ -145,7 +143,6 @@ export function buildProjectSidebar(
         ...(project.namedProject?.kin && {
           projectKin: project.namedProject.kin
         }),
-        ...(ungrouped && { noProject: true }),
         managementPending: Boolean(
           intent?.presentationProjectId && !intent.projectMembershipConfirmed
         )
@@ -198,8 +195,7 @@ export function buildProjectSidebar(
       latestAt: draft?.thread.latestAt ?? intent.createdAt,
       client: intent.aiClientDriverId,
       route: { kind: "conversation", executionId: intent.executionId },
-      projectName: group.name,
-      ...(id === NO_PROJECT_ID && { noProject: true })
+      projectName: group.name
     });
     groups.set(id, group);
   }

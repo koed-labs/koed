@@ -19,14 +19,13 @@ captured from supported AI Clients, including previously managed Conversations.
 The sidebar provides search, expandable Projects, and navigation history. On
 narrow windows, it opens as a drawer. While services or inventory are loading,
 the sidebar shows that state rather than an empty Conversation list.
-**Projects** lists named Projects and **No project**. Below it, **Anchors** lists
-the Git Anchor and Folder groups of captured Conversations that no named Project
-includes, such as a Conversation excluded from the Project whose Anchor would
-match it.
+**Projects** lists named Projects. Below it, **Anchors** lists every Git Anchor
+and Folder with captured Conversations, including Conversations a named Project
+also includes. Conversations with neither a named Project nor an Anchor appear
+only in **Conversations**.
 Each Anchor expands to its Conversations like a Project. **Conversations**,
-**Projects**, and **Anchors** collapse from their headings. **Conversations**
-scrolls on its own; **Projects** and **Anchors** share a scroll area, and each
-heading stays in view while its rows scroll.
+**Projects**, and **Anchors** collapse from their headings, and each scrolls on
+its own with its heading kept in view.
 
 Pins work in two places. Pinning a Conversation keeps it at the top of
 **Conversations**, which lists every other Conversation by most recent
@@ -54,11 +53,6 @@ In **Project settings → Kin**, choose a body shape, colour, and personality. T
 Kin appears under a spotlight beside the controls. Home labels it with the Project name. Each Project starts with a
 look generated from its ID. Saving a Kin updates Home and syncs the choice to
 paired Personal devices.
-
-**No project** is not a Project, so it has no Project settings. Its menu opens
-**Kin settings**, which edits the one Kin shared by every Conversation without a
-Project. That Kin is saved on this device for the current account and backend;
-it does not sync to paired devices.
 
 Project settings also manages names, Anchors, Conversation membership, and
 Personal Device sync. The **Sync** page appears only when
@@ -148,8 +142,7 @@ appear above Home.
   Home (the sidebar still lists it). Conversations in no Project lie on the
   stage floor as golden coins, newest first and at most 16, in the gaps
   between the front Kin; hovering or focusing one shows its title with its AI
-  Client's logo, and clicking opens it and expands "No project" in the
-  sidebar. A coin can be picked up and thrown: it flies with the flick's speed,
+  Client's logo, and clicking opens it. A coin can be picked up and thrown: it flies with the flick's speed,
   tumbling, bounces off the floor with less height each time and off the
   stage's sides and top, slides to a stop and rests flat where it lands until
   Home is reloaded. With reduced motion a dropped coin lands at once. A held coin

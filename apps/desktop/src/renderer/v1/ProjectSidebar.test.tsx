@@ -225,105 +225,22 @@ describe("Project sidebar interactions", () => {
     ).toBe('["session:one"]');
   });
 
-  it("gives No project one Kin, edited from its Kin-only settings", async () => {
-    const noProject: SidebarProject = {
-      ...projectWithConversations("no-project", "No project", 1),
-      conversations: projectWithConversations(
-        "no-project",
-        "No project",
-        1
-      ).conversations.map((row) => ({ ...row, noProject: true }))
-    };
-    await act(async () =>
-      root.render(<Harness data={[noProject]} scope="backend-a:owner-a" />)
-    );
-    const projectRow = [
-      ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")
-    ].find((element) => element.textContent === "No project")!;
-    expect(projectRow.querySelector(".v1-nav-project-kin")).not.toBeNull();
-
-    await act(async () => button("Actions for No project").click());
-    expect(menuItem("Project settings")).toBeUndefined();
-    await act(async () => menuItem("Kin settings").click());
-    const dialog = document.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain("No project Kin");
-    expect(
-      dialog.querySelector('[aria-label="No project Kin"]')
-    ).not.toBeNull();
-    await act(async () =>
-      [...dialog.querySelectorAll<HTMLButtonElement>("button")]
-        .find((element) => element.textContent === "Save")!
-        .click()
-    );
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    const saved: unknown = JSON.parse(
-      window.localStorage.getItem("koed:no-project-kin:backend-a:owner-a")!
-    );
-    expect(saved).toMatchObject({
-      shape: expect.any(String),
-      colour: expect.any(String),
-      personality: expect.any(String)
-    });
-  });
-
-  it("lists Git Anchor and Folder groups under a collapsible Anchors heading", async () => {
-    const anchor: SidebarProject = {
-      ...projectWithConversations(
-        "repository:koed-ai",
-        "github.com/koed-labs/koed-ai",
-        2
-      ),
-      source: "git"
-    };
-    const folder: SidebarProject = {
-      ...projectWithConversations("folder:scratch", "scratch", 1),
-      source: "folder"
-    };
+  it("lists No project Conversations only under Conversations", async () => {
+    const noProject = projectWithConversations("no-project", "No project", 1);
     const named: SidebarProject = {
       ...projectWithConversations("named", "Koed", 1),
       managed: true
     };
-    await act(async () =>
-      root.render(<Harness data={[named, anchor, folder]} />)
-    );
-    const section = (name: string) =>
-      [...container.querySelectorAll(".v1-nav-project")]
-        .filter((row) =>
-          row.closest(
-            name === "Anchors" ? ".v1-nav-anchors" : ".v1-nav-projects"
-          )
-        )
-        .map((row) => row.textContent);
-    expect(section("Projects")).toEqual(["Koed"]);
-    expect(section("Anchors")).toEqual([
-      "github.com/koed-labs/koed-ai",
-      "scratch"
-    ]);
-    // Anchors expand to their Conversations like Projects.
-    const anchorRow = [
-      ...container.querySelectorAll<HTMLButtonElement>(
-        ".v1-nav-anchors .v1-nav-project"
-      )
-    ][0]!;
-    await act(async () => anchorRow.click());
+    await act(async () => root.render(<Harness data={[named, noProject]} />));
     expect(
-      anchorRow
-        .closest('[data-slot="sidebar-menu-item"]')!
-        .querySelectorAll(".v1-nav-conversation")
-    ).toHaveLength(2);
-
-    const heading = (name: string) =>
-      [
-        ...container.querySelectorAll<HTMLButtonElement>(
-          ".v1-nav-heading-toggle"
-        )
-      ].find((toggle) => toggle.textContent === name)!;
-    await act(async () => heading("Projects").click());
-    expect(section("Projects")).toEqual([]);
-    expect(section("Anchors")).toHaveLength(2);
-    await act(async () => heading("Anchors").click());
-    expect(section("Anchors")).toEqual([]);
-    expect(button("Collapse all Projects")).toBeNull();
+      [...container.querySelectorAll(".v1-nav-project")].map(
+        (row) => row.textContent
+      )
+    ).toEqual(["Koed"]);
+    expect(
+      container.querySelector(".v1-nav-conversations")?.textContent
+    ).toContain("No project conversation 1");
+    expect(button("Actions for No project")).toBeNull();
   });
 
   it("orders pinned Conversations first inside their Project", async () => {

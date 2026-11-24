@@ -73,10 +73,6 @@
   max-width: 440px;
   padding: 20px;
 }
-/* The No project Kin editor needs room for the Project Kin controls. */
-.v1-pm-action:has(.v1-pm-kin-builder) {
-  max-width: 620px;
-}
 .v1-app.v1-pm-settings {
   display: flex;
   width: 760px;
