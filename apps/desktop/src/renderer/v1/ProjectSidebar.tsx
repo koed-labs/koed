@@ -359,14 +359,6 @@ export function ProjectSidebar({
               )}
               {row.title}
             </span>
-            {!nested && (
-              <small>
-                {row.projectName}
-                {row.client
-                  ? ` · ${{ codex: "Codex", claude: "Claude Code", pi: "Pi" }[row.client]}`
-                  : ""}
-              </small>
-            )}
           </span>
           <time
             dateTime={row.latestAt || undefined}
