@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -370,7 +371,7 @@ export function useKinActivity(
   visible = true,
   scopeKey?: string | null
 ) {
-  const { activity, at } = useActivity(bridge, visible, scopeKey);
+  const { activity, at, pending } = useActivity(bridge, visible, scopeKey);
   const recent = activity.state === "running" ? activity.conversations : [];
   const latest = Math.max(
     0,
@@ -385,7 +386,15 @@ export function useKinActivity(
     (activity.state === "running" ? activity.overflowCount : 0) +
     recent.length -
     conversations.length;
-  return { activity, at, recent, recentCapture, conversations, overflow };
+  return {
+    activity,
+    at,
+    pending,
+    recent,
+    recentCapture,
+    conversations,
+    overflow
+  };
 }
 
 export function kinConversationStatus(conversation: Conversation, at: number) {
@@ -550,11 +559,46 @@ export function KinActivityContent({
           ) : null}
         </div>
       ) : null}
-      {showStatus && activity.state !== "running" && (
+      {/* A pending read is not a runtime state; showing it flashes a pill. */}
+      {showStatus && !sample.pending && activity.state !== "running" && (
         <ActivityPill state={activity.state} />
       )}
     </>
   );
+}
+
+// Slide in only once the window can paint and the content has its size, so the
+// entrance animates and the window does not resize mid-slide.
+const entranceFallbackMs = 400;
+
+function useEntrance(visible: boolean, ready: boolean, animate: boolean) {
+  const [shown, setShown] = useState(visible && !animate);
+  useEffect(() => {
+    if (!visible) {
+      setShown(false);
+      return;
+    }
+    if (!animate) {
+      setShown(true);
+      return;
+    }
+    let frame = 0;
+    // Two frames: one to paint the hidden start, one to change from it.
+    const enter = () => {
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => setShown(true));
+      });
+    };
+    const timer = ready
+      ? undefined
+      : window.setTimeout(enter, entranceFallbackMs);
+    if (ready) enter();
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [animate, ready, visible]);
+  return visible && shown;
 }
 
 function OverlayKinContent({
@@ -563,7 +607,8 @@ function OverlayKinContent({
   focused,
   onOpenDesktop,
   openAiModels,
-  openConversation
+  openConversation,
+  onReady
 }: {
   bridge?: KinActivityBridge;
   surface: RefObject<HTMLElement | null>;
@@ -571,8 +616,13 @@ function OverlayKinContent({
   onOpenDesktop?: () => void;
   openAiModels?: () => void;
   openConversation?: (sessionId: string) => void;
+  // Called once the first activity read has settled the content's size.
+  onReady?: () => void;
 }) {
   const sample = useKinActivity(bridge, "desktop");
+  useEffect(() => {
+    if (!sample.pending) onReady?.();
+  }, [onReady, sample.pending]);
   return (
     <>
       <KinActivityContent
@@ -632,6 +682,13 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
   const visible =
     !bridge?.onPresentation || presentation?.placement === "desktop";
   const revision = presentation?.revision;
+  const [readyRevision, setReadyRevision] = useState<number>();
+  const markReady = useCallback(() => setReadyRevision(revision), [revision]);
+  const shown = useEntrance(
+    visible,
+    readyRevision === revision,
+    Boolean(bridge?.onPresentation)
+  );
   const activityBridge = useKinSurfaceActivity(bridge, revision);
   const mainWindowFocused = useMainWindowFocus(bridge);
   const { surface, setInteractive } = useOverlayWindow(bridge, visible);
@@ -653,7 +710,7 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
       ref={surface}
       {...handlers}
       data-fk-placement="desktop"
-      data-visible={visible}
+      data-visible={shown}
       data-dragging={dragging}
       inert={!visible}
     >
@@ -663,6 +720,7 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           bridge={activityBridge}
           surface={surface}
           focused={mainWindowFocused}
+          onReady={markReady}
           openAiModels={
             bridge && revision !== undefined
               ? () => bridge.openAiModels(revision)

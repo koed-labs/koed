@@ -832,6 +832,62 @@ describe("Floating Kin", () => {
     expectKinAwake(kin, false);
   });
 
+  it("reappears without a runtime status while its fresh read is pending", async () => {
+    let present: (presentation: {
+      placement: "desktop" | "sidebar";
+      revision: number;
+    }) => void = () => {};
+    bridge.onPresentation = (listener) => {
+      present = listener;
+      listener({ placement: "desktop", revision: 1 });
+      return () => {};
+    };
+    await render();
+    await act(async () => present({ placement: "sidebar", revision: 2 }));
+    const next = deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+    bridge.activity = vi.fn(() => next.promise);
+    await act(async () => present({ placement: "desktop", revision: 3 }));
+    expect(mount.querySelector('[role="status"]')).toBeNull();
+    await act(async () => next.resolve({ state: "starting" }));
+    expect(mount.querySelector('[role="status"]')?.textContent).toContain(
+      "Local runtime starting"
+    );
+  });
+
+  it("slides in only after its first activity read sizes the content", async () => {
+    let present: (presentation: {
+      placement: "desktop" | "sidebar";
+      revision: number;
+    }) => void = () => {};
+    bridge.onPresentation = (listener) => {
+      present = listener;
+      return () => {};
+    };
+    const first =
+      deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+    bridge.activity = vi.fn(() => first.promise);
+    await render();
+    const surface = mount.querySelector<HTMLElement>("main")!;
+    await act(async () => present({ placement: "desktop", revision: 1 }));
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(surface.dataset.visible).toBe("false");
+
+    await act(async () =>
+      first.resolve({
+        state: "running",
+        conversations: [conversation],
+        overflowCount: 0
+      })
+    );
+    expect(mount.querySelector(".fk-chip")).not.toBeNull();
+    // Two frames: paint the hidden start, then change from it.
+    await act(async () => vi.advanceTimersByTimeAsync(40));
+    expect(surface.dataset.visible).toBe("true");
+
+    await act(async () => present({ placement: "sidebar", revision: 2 }));
+    expect(surface.dataset.visible).toBe("false");
+  });
+
   it("stays awake while it leaves for the sidebar", async () => {
     let present: (presentation: {
       placement: "desktop" | "sidebar";
@@ -927,19 +983,19 @@ describe("Floating Kin", () => {
     expect(mount.querySelector('[role="tooltip"]')).toBeNull();
   });
 
-  it("keeps the same Floating Kin visible before the runtime is ready", async () => {
+  it("shows only the Kin until the first activity read lands", async () => {
     const activity =
       deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
     bridge.activity = vi.fn(() => activity.promise);
     await render();
 
-    const status = mount.querySelector('[role="status"]');
-    expect(status?.textContent).toContain("Local runtime starting");
+    // A pending read is not a runtime state, so no status pill flashes.
+    expect(mount.querySelector('[role="status"]')).toBeNull();
+    expect(mount.textContent).not.toContain("Local runtime starting");
     const avatar = mount.querySelector('[aria-label="Floating Kin avatar"]');
     expect(
       avatar?.querySelector<HTMLElement>(".v1-pixelkin")?.style.width
     ).toBe("88px");
-    expect(status?.querySelector(".v1-pixelkin")).toBeNull();
 
     await act(async () =>
       activity.resolve({
