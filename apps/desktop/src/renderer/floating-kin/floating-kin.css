@@ -462,6 +462,27 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   width: 26px;
   height: 26px;
 }
+/* The Conversation title opens it in Koed Desktop. */
+.fk-header button.fk-title-link {
+  display: inline;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  padding: 0;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+}
+.fk-header button.fk-title-link:hover,
+.fk-header button.fk-title-link:focus-visible {
+  text-decoration-color: currentColor;
+}
 .fk-body {
   max-height: 324px;
   overflow: auto;

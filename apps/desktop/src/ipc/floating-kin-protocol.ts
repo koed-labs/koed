@@ -64,6 +64,7 @@ export type DesktopKinBridge = KinSurfaceBridge & {
   setShellVisible: (visible: boolean) => void;
   confirmPresentation: (revision: number) => void;
   onOpenAiModels: (listener: () => void) => () => void;
+  onOpenConversation: (listener: (sessionId: string) => void) => () => void;
   onPresentation: (listener: (state: KinPresentation) => void) => () => void;
 };
 
@@ -71,6 +72,7 @@ export type FloatingKinBridge = KinSurfaceBridge & {
   completeExit: (revision: number) => void;
   openDesktop: (revision: number) => void;
   openAiModels: (revision: number) => void;
+  openConversation: (revision: number, sessionId: string) => void;
   setInteractive: (interactive: boolean) => void;
   setSize: (size: FloatingKinSize) => void;
   drag: (input: FloatingKinDrag) => void;
@@ -96,5 +98,7 @@ export const floatingKinChannels = {
   openDesktop: "koed:floating-kin:open-desktop",
   openAiModels: "koed:floating-kin:open-ai-models",
   showAiModels: "koed:floating-kin:show-ai-models",
+  openConversation: "koed:floating-kin:open-conversation",
+  showConversation: "koed:floating-kin:show-conversation",
   presentationChanged: "koed:floating-kin:presentation-changed"
 } as const;

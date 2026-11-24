@@ -32,6 +32,8 @@ when the Conversation was last captured and, when available, its title, Project,
 and short excerpts of the latest captured request and reply. A reply captured
 before the latest request is labeled **Previous captured reply**. The preview
 uses no model and does not indicate whether the AI Client is still working.
+Click the Conversation title to open that Conversation in Koed Desktop. From
+the desktop overlay this brings the Koed window forward first.
 Choose **Summarize Conversation** for a brief on the latest captured work.
 **Open last summary** reopens
 the chip’s most recent successful summary, even after moving between the

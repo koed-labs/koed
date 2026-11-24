@@ -39,6 +39,9 @@ type FloatingKinRuntime = {
   ) => Promise<KinReopenedSummary>;
 };
 
+// A captured session id; anything longer is not one.
+const maxSessionIdLength = 512;
+
 const sizeFrom = (value: unknown): FloatingKinSize | null => {
   if (
     !value ||
@@ -168,6 +171,7 @@ export const registerFloatingKinIpc = ({
   completeExit,
   openDesktop,
   openAiModels,
+  openConversation,
   interactive,
   resize,
   drag,
@@ -183,6 +187,7 @@ export const registerFloatingKinIpc = ({
   completeExit: (revision: number) => void;
   openDesktop: () => void;
   openAiModels: () => void;
+  openConversation: (sessionId: string) => void;
   interactive: (value: boolean) => void;
   resize: (size: FloatingKinSize) => void;
   drag: (input: FloatingKinDrag) => void;
@@ -311,6 +316,21 @@ export const registerFloatingKinIpc = ({
     const { placement, revision } = presentation();
     if (placement === "desktop" && value === revision) openAiModels();
   });
+  ipcMain.on(
+    channels.openConversation,
+    (event, value: unknown, sessionId: unknown) => {
+      if (!trusted(event)) return;
+      const { placement, revision } = presentation();
+      if (
+        placement === "desktop" &&
+        value === revision &&
+        typeof sessionId === "string" &&
+        sessionId.length > 0 &&
+        sessionId.length <= maxSessionIdLength
+      )
+        openConversation(sessionId);
+    }
+  );
   ipcMain.on(channels.setInteractive, (event, value: unknown) => {
     if (trusted(event) && typeof value === "boolean") interactive(value);
   });

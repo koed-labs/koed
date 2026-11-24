@@ -16,7 +16,9 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
   const root = createRoot(mount);
   let change: (state: KinPresentation) => void = () => {};
   let showAiModels: () => void = () => {};
+  let showConversation: (sessionId: string) => void = () => {};
   const openAiModels = vi.fn();
+  const openConversation = vi.fn((_sessionId: string) => true);
   const bridge: DesktopKinBridge = {
     onPresentation: (listener) => {
       change = listener;
@@ -25,6 +27,10 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     setShellVisible: vi.fn(),
     onOpenAiModels: (listener) => {
       showAiModels = listener;
+      return () => {};
+    },
+    onOpenConversation: (listener) => {
+      showConversation = listener;
       return () => {};
     },
     confirmPresentation: vi.fn(),
@@ -70,7 +76,13 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     }
   ];
   function Harness({ route }: { route: "home" | "recall" }) {
-    const kin = useDesktopKin(bridge, null, true, openAiModels);
+    const kin = useDesktopKin(
+      bridge,
+      null,
+      true,
+      openAiModels,
+      openConversation
+    );
     return (
       <NavigationShell
         projects={projects}
@@ -141,7 +153,15 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     )!;
     await act(async () => settings.click());
     expect(openAiModels).toHaveBeenCalledTimes(1);
-    settings.focus();
+    const title = document.querySelector<HTMLButtonElement>(".fk-title-link")!;
+    await act(async () => title.click());
+    expect(openConversation).toHaveBeenCalledExactlyOnceWith(sessionId);
+    expect(panel()).toBeNull();
+    await act(async () => marker()!.click());
+    const reopened = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="AI models settings"]'
+    )!;
+    reopened.focus();
     vi.mocked(bridge.activity).mockResolvedValueOnce({
       state: "running",
       conversations: [],
@@ -162,6 +182,8 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     expect(bridge.confirmPresentation).toHaveBeenCalledExactlyOnceWith(2);
     await act(async () => showAiModels());
     expect(openAiModels).toHaveBeenCalledTimes(2);
+    await act(async () => showConversation("session-from-overlay"));
+    expect(openConversation).toHaveBeenLastCalledWith("session-from-overlay");
   } finally {
     await act(async () => root.unmount());
     mount.remove();

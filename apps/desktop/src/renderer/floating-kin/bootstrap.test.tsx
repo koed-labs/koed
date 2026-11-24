@@ -16,6 +16,7 @@ it("boots the Floating Kin hash route without initializing Desktop services", as
     latest: vi.fn(),
     reopen: vi.fn(),
     openAiModels: vi.fn(),
+    openConversation: vi.fn(),
     cancel: vi.fn(),
     completeExit: vi.fn(),
     openDesktop: vi.fn(),
