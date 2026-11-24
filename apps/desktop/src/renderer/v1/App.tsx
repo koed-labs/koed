@@ -1126,8 +1126,9 @@ export function V1App({
             else void loadInventory();
           }}
           management={projectManagement.management}
-          kinDock={kin.dock}
           kinAvatar={kin.avatar}
+          kinLive={kin.live}
+          kinPanel={kin.panel}
         >
           {pendingIntentError && (
             <p role="alert">

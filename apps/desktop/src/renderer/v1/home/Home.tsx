@@ -364,11 +364,12 @@ function Keycaps({
           <span
             className="v1-home-keycap"
             data-client={client.id}
-            aria-hidden="true"
+            role="img"
+            aria-label={client.name}
+            title={client.name}
           >
             <AiClientLogo id={client.id} />
           </span>
-          <strong>{client.name}</strong>
           {progress.has(client.id) ? (
             <span
               className="v1-home-pill"
@@ -1923,7 +1924,8 @@ function IngestionProgress({
   compact = false
 }: {
   ingestion: HomeIngestion;
-  // Under the Projects caption: the bar and the finished line only.
+  // Above the AI Clients on the Projects stage: the bar and the processed
+  // line only.
   compact?: boolean;
 }) {
   const [showSkipped, setShowSkipped] = useState(false);
@@ -1934,12 +1936,6 @@ function IngestionProgress({
     (sum, client) => sum + client.skipped,
     0
   );
-  const lastProgress = ingestion.clients
-    .map((client) => client.lastProgressAt)
-    .filter((value): value is string => Boolean(value))
-    .sort()
-    .at(-1);
-  const now = useNow(30_000);
   const activity = ingestion.clients.flatMap((client) =>
     client.activity ? [client.activity] : []
   );
@@ -1971,8 +1967,8 @@ function IngestionProgress({
         aria-valuenow={percent ?? undefined}
         aria-valuetext={
           total === null
-            ? `${ingestion.finished} conversations finished`
-            : `${ingestion.finished} of ${total} conversations finished`
+            ? `${ingestion.finished} found conversations processed`
+            : `${ingestion.finished} of ${total} found conversations processed`
         }
         className="v1-home-progress-track"
         data-indeterminate={percent === null || undefined}
@@ -1981,8 +1977,8 @@ function IngestionProgress({
       </div>
       <span className="v1-home-progress-label">
         {total === null
-          ? `${ingestion.finished} conversations finished`
-          : `${ingestion.finished} of ${total} conversations finished`}
+          ? `${ingestion.finished} found conversations processed`
+          : `${ingestion.finished} of ${total} found conversations processed`}
         {skipped > 0 ? (
           <>
             {" "}
@@ -2020,9 +2016,6 @@ function IngestionProgress({
             </span>
           </>
         ) : null}
-        {lastProgress
-          ? ` · Last activity ${formatHomeAgo(lastProgress, now)}`
-          : ""}
       </span>
     </div>
   );
@@ -2256,38 +2249,30 @@ export function Home({
         {conversationCoins}
       </section>
     );
-  const total = entries.reduce((sum, entry) => sum + entry.eventCount, 0);
-  const offStage = entries.length - HOME_STAGE_LIMIT;
   return (
     <section className="v1-home" data-mood="projects">
       {warnings}
       <ProjectsStage
         floorCoins={floorCoins}
         keycaps={
-          <Keycaps
-            clients={clients}
-            statusStore={statusStore}
-            {...(view.ingestion ? { ingestion: view.ingestion } : {})}
-          />
+          <>
+            {/* History progress sits above the AI Clients it reads from. */}
+            {view.ingestion && (
+              <div className="v1-home-top-progress">
+                <IngestionProgress ingestion={view.ingestion} compact />
+              </div>
+            )}
+            <Keycaps
+              clients={clients}
+              statusStore={statusStore}
+              {...(view.ingestion ? { ingestion: view.ingestion } : {})}
+            />
+          </>
         }
         entries={entries}
         onOpenProject={onOpenProject}
         {...(onDropConversation ? { onDropConversation } : {})}
-        caption={
-          <>
-            <h1>Your Projects</h1>
-            <p className="v1-home-sub">
-              {entries.length === 1
-                ? "1 Project"
-                : `${entries.length} Projects`}{" "}
-              · {total.toLocaleString()} captured events
-              {offStage > 0 && ` · ${offStage} more in the sidebar`}
-            </p>
-            {view.ingestion && (
-              <IngestionProgress ingestion={view.ingestion} compact />
-            )}
-          </>
-        }
+        caption={null}
       />
       {conversationCoins}
     </section>

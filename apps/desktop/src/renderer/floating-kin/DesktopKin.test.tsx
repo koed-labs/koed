@@ -7,9 +7,10 @@ import type {
   KinPresentation
 } from "../../ipc/floating-kin-protocol.js";
 import { NavigationShell } from "../v1/NavigationShell.js";
+import type { SidebarProject } from "../v1/project-sidebar-model.js";
 import { useDesktopKin } from "./DesktopKin.js";
 
-it("hands off the avatar while keeping captured Conversation controls in the sidebar", async () => {
+it("puts the live Kin on the Home button and opens summaries from Conversation rows", async () => {
   const mount = document.createElement("div");
   document.body.append(mount);
   const root = createRoot(mount);
@@ -48,11 +49,31 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
     cancel: vi.fn(async () => {})
   };
   const noop = () => {};
+  const sessionId = "00000000-0000-4000-8000-000000000001";
+  const projects: SidebarProject[] = [
+    {
+      id: "project",
+      name: "Koed",
+      latestAt: new Date().toISOString(),
+      conversations: [
+        {
+          key: `session:${sessionId}`,
+          aliases: [`session:${sessionId}`],
+          title: "Tracked Conversation",
+          client: "codex",
+          latestAt: new Date().toISOString(),
+          sessionId,
+          route: { kind: "conversation", projectId: "project", threadId: "t" },
+          projectName: "Koed"
+        }
+      ]
+    }
+  ];
   function Harness({ route }: { route: "home" | "recall" }) {
-    const { dock, avatar } = useDesktopKin(bridge, null, true, openAiModels);
+    const kin = useDesktopKin(bridge, null, true, openAiModels);
     return (
       <NavigationShell
-        projects={[]}
+        projects={projects}
         route={{ kind: route }}
         scopeKey={null}
         onSelect={noop}
@@ -63,8 +84,9 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
         canGoBack={false}
         canGoForward={false}
         onRetry={noop}
-        kinDock={dock}
-        kinAvatar={avatar}
+        kinAvatar={kin.avatar}
+        kinLive={kin.live}
+        kinPanel={kin.panel}
       >
         {route}
       </NavigationShell>
@@ -75,50 +97,51 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
     revision = 0,
     sidebarPending = false
   ) => act(async () => change({ placement, revision, sidebarPending }));
+  const home = () =>
+    mount.querySelector<HTMLButtonElement>('[aria-label="Koed, home"]')!;
+  const avatar = () => home().querySelector(".fk-rail-kin");
+  const marker = () =>
+    mount.querySelector<HTMLButtonElement>(
+      ".v1-nav-conversations .fk-row-live"
+    );
+  const panel = () =>
+    document.querySelector('[data-fk-placement="anchored"] .fk-panel');
   try {
     await act(async () => root.render(<Harness route="home" />));
     expect(bridge.setShellVisible).toHaveBeenCalledExactlyOnceWith(true);
     await transition("sidebar", 0, true);
-    const projects = mount.querySelector(
-      '[aria-label="Conversations and Projects"]'
-    )!;
-    const avatar = () =>
-      projects.querySelector(".fk-sidebar-avatar .fk-kin-avatar");
     expect(avatar()).toBeNull();
-    expect(projects.querySelector(".fk-chip")).toBeNull();
+    expect(home().querySelector(".v1-logo")).not.toBeNull();
+    expect(marker()).toBeNull();
     await transition("sidebar");
     expect(
       avatar()?.querySelector(
         '[data-kin-shape="roundedBox"][data-kin-colour="#3083ff"][data-kin-gradient="true"]'
       )
     ).not.toBeNull();
-    const dockedAvatar = avatar();
+    expect(home().querySelector(".v1-logo")).toBeNull();
+    const railAvatar = avatar();
     await act(async () => root.render(<Harness route="recall" />));
-    expect(avatar()).toBe(dockedAvatar);
+    expect(avatar()).toBe(railAvatar);
     expect(bridge.setShellVisible).toHaveBeenCalledExactlyOnceWith(true);
     const toggle = mount.querySelector<HTMLButtonElement>(
       '[aria-label="Toggle navigation"]'
     )!;
     await act(async () => toggle.click());
-    expect(avatar()).toBeNull();
-    expect(mount.querySelectorAll(".fk-kin-avatar")).toHaveLength(1);
-    expect(
-      mount.querySelector(".v1-nav-rail .fk-sidebar-avatar[data-collapsed]")
-    ).not.toBeNull();
+    expect(mount.querySelectorAll(".fk-rail-kin")).toHaveLength(1);
     await act(async () => toggle.click());
-    expect(avatar()).not.toBeNull();
-    const chip = projects.querySelector<HTMLButtonElement>(".fk-chip")!;
-    expect(avatar()?.parentElement?.nextElementSibling?.contains(chip)).toBe(
-      true
+    expect(marker()?.closest("li")?.textContent).toContain(
+      "Tracked Conversation"
     );
-    await act(async () => chip.click());
-    expect(projects.querySelector(".fk-panel")).not.toBeNull();
-    const settings = projects.querySelector<HTMLButtonElement>(
+    await act(async () => marker()!.click());
+    expect(marker()?.getAttribute("aria-expanded")).toBe("true");
+    expect(panel()).not.toBeNull();
+    const settings = document.querySelector<HTMLButtonElement>(
       'button[aria-label="AI models settings"]'
     )!;
     await act(async () => settings.click());
     expect(openAiModels).toHaveBeenCalledTimes(1);
-    chip.focus();
+    settings.focus();
     vi.mocked(bridge.activity).mockResolvedValueOnce({
       state: "running",
       conversations: [],
@@ -127,14 +150,15 @@ it("hands off the avatar while keeping captured Conversation controls in the sid
     await act(async () =>
       document.dispatchEvent(new Event("visibilitychange"))
     );
-    expect(projects.querySelector(".fk-chip")).toBeNull();
-    expect(document.activeElement).toBe(projects.querySelector("input"));
+    expect(marker()).toBeNull();
+    expect(panel()).toBeNull();
+    expect(document.activeElement).toBe(mount.querySelector("input"));
     await transition("sidebar", 1);
-    expect(projects.querySelector(".fk-panel")).toBeNull();
+    expect(panel()).toBeNull();
     expect(avatar()).not.toBeNull();
-    expect(projects.querySelector(".fk-chip")).not.toBeNull();
+    expect(marker()).not.toBeNull();
     await transition("desktop", 2);
-    expect(mount.querySelector(".fk-kin-avatar, .fk-chip")).toBeNull();
+    expect(mount.querySelector(".fk-rail-kin, .fk-row-live")).toBeNull();
     expect(bridge.confirmPresentation).toHaveBeenCalledExactlyOnceWith(2);
     await act(async () => showAiModels());
     expect(openAiModels).toHaveBeenCalledTimes(2);

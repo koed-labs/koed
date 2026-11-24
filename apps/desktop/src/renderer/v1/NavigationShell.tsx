@@ -19,7 +19,11 @@ import {
   Folder,
   Settings
 } from "lucide-react";
-import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
+import {
+  ProjectSidebar,
+  type SidebarLive,
+  type SidebarManagement
+} from "./ProjectSidebar.js";
 import { AccountMenu } from "./account-menu.js";
 import type { AccountDesktopApi } from "@koed-labs/shared/account";
 import {
@@ -57,8 +61,10 @@ type Props = {
   management?: SidebarManagement;
   update?: DesktopUpdateController;
   accountApi?: AccountDesktopApi;
-  kinDock?: (focusFallback: RefObject<HTMLInputElement | null>) => ReactNode;
-  kinAvatar?: (collapsed: boolean) => ReactNode;
+  // The live Chief of Staff Kin takes the logo's place on the Home button.
+  kinAvatar?: ReactNode;
+  kinLive?: SidebarLive;
+  kinPanel?: (focusFallback: RefObject<HTMLInputElement | null>) => ReactNode;
 };
 export function NavigationShell(props: Props) {
   return (
@@ -112,11 +118,12 @@ function ShellContent(props: Props) {
     label: string,
     icon: ReactNode,
     onClick: () => void,
-    active = false
+    active = false,
+    className = ""
   ) => (
     <SidebarMenuItem>
       <SidebarMenuButton
-        className="v1-nav-rail-button"
+        className={`v1-nav-rail-button ${className}`}
         aria-label={label}
         title={label}
         isActive={active}
@@ -135,16 +142,23 @@ function ShellContent(props: Props) {
       >
         <SidebarHeader>
           <SidebarMenu>
-            {railButton(
-              "Koed, home",
-              <KoedLogo color className="v1-logo" />,
-              props.onHome,
-              props.route.kind === "home"
-            )}
+            {props.kinAvatar
+              ? railButton(
+                  "Koed, home",
+                  props.kinAvatar,
+                  props.onHome,
+                  props.route.kind === "home",
+                  "v1-nav-rail-kin"
+                )
+              : railButton(
+                  "Koed, home",
+                  <KoedLogo color className="v1-logo" />,
+                  props.onHome,
+                  props.route.kind === "home"
+                )}
           </SidebarMenu>
         </SidebarHeader>
         <SidebarFooter>
-          {!projectsVisible && props.kinAvatar?.(true)}
           <SidebarMenu>
             {railButton(
               "Recall activity",
@@ -186,10 +200,10 @@ function ShellContent(props: Props) {
           onRetry={props.onRetry}
           reveal={props.revealProject ?? null}
           management={props.management}
+          live={props.kinLive}
         />
         {props.update ? <DesktopUpdateNotice update={props.update} /> : null}
-        {projectsVisible && props.kinAvatar?.(false)}
-        {props.kinDock?.(searchRef)}
+        {projectsVisible && props.kinPanel?.(searchRef)}
       </Sidebar>
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>
         <header className="v1-navigation-bar">

@@ -1,9 +1,11 @@
 import {
+  memo,
   useEffect,
   useId,
   useMemo,
   useRef,
   useState,
+  type ReactNode,
   type RefObject
 } from "react";
 import { createPortal } from "react-dom";
@@ -44,9 +46,11 @@ import {
   X
 } from "lucide-react";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
+import { Pixelkin } from "./pixelkin/Pixelkin.js";
+import { DEFAULT_AGENT_LOOK, projectKinLook } from "./pixelkin/agent-kin.js";
 import {
+  conversationList,
   filterSidebar,
-  pinnedSidebarItems,
   projectPinKey,
   type SidebarConversation,
   type SidebarProject,
@@ -54,11 +58,22 @@ import {
 } from "./project-sidebar-model.js";
 import { useSidebarPins } from "./use-sidebar-pins.js";
 import { useConversationDrag } from "./project-management/use-conversation-drag.js";
-import { Pixelkin } from "./pixelkin/Pixelkin.js";
-import { projectKinLook } from "./pixelkin/agent-kin.js";
 import "./project-management/project-management.css";
 
 const CONVERSATIONS_PER_PAGE = 5;
+const RECENT_PER_PAGE = 20;
+// Load the next page this close (px) to the end of the Conversations list.
+const LOAD_MORE_THRESHOLD = 120;
+
+/**
+ * Live Chief of Staff state for Conversation rows. `marker` returns a control
+ * for a Conversation the Kin is tracking, or null; `status` sums it up beside
+ * the Conversations heading.
+ */
+export type SidebarLive = {
+  marker: (row: SidebarConversation) => ReactNode;
+  status?: ReactNode;
+};
 
 export type SidebarManagement = {
   onCreateProject: () => void;
@@ -173,6 +188,31 @@ export const conversationActivity = (value: string, now: number) => {
         : `${Math.floor(minutes / 1440)}d`;
 };
 
+// The Project's Kin with the AI Client's badge, as on Chief of Staff chips.
+const ConversationKin = memo(function ConversationKin({
+  row
+}: {
+  row: SidebarConversation;
+}) {
+  const projectId = row.route.projectId;
+  return (
+    <span className="v1-nav-kin" aria-hidden="true">
+      <Pixelkin
+        look={
+          projectId
+            ? projectKinLook(projectId, row.projectKin)
+            : DEFAULT_AGENT_LOOK
+        }
+        size={42}
+        motion="still"
+      />
+      <span className="v1-nav-kin-client">
+        {row.client ? <AiClientLogo id={row.client} /> : <MessageCircle />}
+      </span>
+    </span>
+  );
+});
+
 export function ProjectSidebar({
   projects,
   route,
@@ -185,7 +225,8 @@ export function ProjectSidebar({
   error,
   onRetry,
   reveal,
-  management
+  management,
+  live
 }: {
   projects: readonly SidebarProject[];
   route: NavigationRoute;
@@ -201,13 +242,15 @@ export function ProjectSidebar({
   // A new key reveals it again.
   reveal?: { projectId: string; key: number } | null;
   management?: SidebarManagement;
+  live?: SidebarLive;
 }) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [visibleCounts, setVisibleCounts] = useState(new Map<string, number>());
   const initialized = useRef(false);
-  const [pinnedOpen, setPinnedOpen] = useState(true);
-  const pinnedTrigger = useRef<HTMLButtonElement>(null);
+  const [listOpen, setListOpen] = useState(true);
+  const listTrigger = useRef<HTMLButtonElement>(null);
+  const [recentCount, setRecentCount] = useState(RECENT_PER_PAGE);
   const [now, setNow] = useState(Date.now);
   const { pins, toggle, ready, error: pinError } = useSidebarPins(scopeKey);
   const drag = useConversationDrag(
@@ -257,7 +300,6 @@ export function ProjectSidebar({
     () => filterSidebar(projects, query),
     [projects, query]
   );
-  const pinned = pinnedSidebarItems(visible, pins);
   const projectRowPrefix = useId();
   const projectRowId = (projectId: string) =>
     `${projectRowPrefix}-${projectId}`;
@@ -276,15 +318,23 @@ export function ProjectSidebar({
       ? row.route.executionId === route.executionId
       : route.projectId === row.route.projectId &&
         route.threadId === row.route.threadId);
+  const list = conversationList(visible, pins);
+  // Search covers every Conversation; keep the open one visible otherwise.
+  const recent = query.trim()
+    ? list.recent
+    : list.recent.filter((row, index) => index < recentCount || selected(row));
+  const moreRecent = list.recent.length - recent.length;
   function conversation(row: SidebarConversation, nested: boolean) {
     const isPinned = pins.some((pin) => row.aliases.includes(pin));
     const Row = nested ? SidebarMenuSubItem : SidebarMenuItem;
     const RowButton = nested ? SidebarMenuSubButton : SidebarMenuButton;
     const canManage =
       row.sessionId && !row.managementPending && !management?.busy;
+    const marker = live?.marker(row) ?? null;
     return (
       <Row
         className={`v1-nav-conversation-wrap ${drag.ghost?.row.key === row.key ? "v1-pm-dragging" : ""}`}
+        data-live={marker ? true : undefined}
         key={row.key}
       >
         <RowButton
@@ -296,14 +346,27 @@ export function ProjectSidebar({
           title={`${row.title} · ${row.projectName}`}
           onClick={() => onSelect(row.route)}
         >
-          <span
-            className={`v1-nav-client-mark ${row.client ?? ""}`}
-            aria-hidden="true"
-          >
-            {row.client ? <AiClientLogo id={row.client} /> : <MessageCircle />}
-          </span>
+          {nested ? (
+            <span
+              className={`v1-nav-client-mark ${row.client ?? ""}`}
+              aria-hidden="true"
+            >
+              {row.client ? (
+                <AiClientLogo id={row.client} />
+              ) : (
+                <MessageCircle />
+              )}
+            </span>
+          ) : (
+            <ConversationKin row={row} />
+          )}
           <span className="v1-nav-copy">
-            <span>{row.title}</span>
+            <span>
+              {!nested && isPinned && (
+                <Pin className="v1-nav-pin-mark" aria-label="Pinned" />
+              )}
+              {row.title}
+            </span>
             {!nested && (
               <small>
                 {row.projectName}
@@ -322,6 +385,7 @@ export function ProjectSidebar({
             {conversationActivity(row.latestAt, now)}
           </time>
         </RowButton>
+        {marker}
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
@@ -415,42 +479,67 @@ export function ProjectSidebar({
           }
         }}
       >
-        <SidebarGroup className="v1-nav-pinned">
-          <Collapsible.Root open={pinnedOpen} onOpenChange={setPinnedOpen}>
-            <Collapsible.Trigger ref={pinnedTrigger} className="v1-nav-heading">
-              <ChevronDown className={pinnedOpen ? "" : "closed"} />
-              <Pin />
-              <span>Pinned</span>
-              <small>{pinned.length}</small>
-            </Collapsible.Trigger>
+        <SidebarGroup className="v1-nav-conversations">
+          <Collapsible.Root open={listOpen} onOpenChange={setListOpen}>
+            <div className="v1-nav-heading v1-nav-conversations-heading">
+              <Collapsible.Trigger
+                ref={listTrigger}
+                className="v1-nav-heading-toggle"
+              >
+                <ChevronDown className={listOpen ? "" : "closed"} />
+                <span>Conversations</span>
+              </Collapsible.Trigger>
+              {live?.status}
+            </div>
             <Collapsible.Panel>
               <SidebarGroupContent>
-                <SidebarMenu>
-                  {pinned.map((item) =>
-                    item.kind === "conversation" ? (
-                      conversation(item.row, false)
-                    ) : (
-                      <PinnedProject
-                        key={item.key}
-                        project={item.project}
-                        onJump={() => jumpToProject(item.project.id)}
-                        onUnpin={() => {
-                          if (toggle(item.key, [item.key])) {
-                            pinnedTrigger.current?.focus();
-                          }
-                        }}
-                        canUnpin={ready}
-                      />
+                {/* Its own scroll area; nearing the end loads the next page. */}
+                <div
+                  className="v1-nav-conversations-scroll"
+                  onScroll={(event) => {
+                    const area = event.currentTarget;
+                    if (
+                      moreRecent > 0 &&
+                      area.scrollTop + area.clientHeight >=
+                        area.scrollHeight - LOAD_MORE_THRESHOLD
                     )
+                      setRecentCount((count) =>
+                        Math.max(count, recent.length + RECENT_PER_PAGE)
+                      );
+                  }}
+                >
+                  <SidebarMenu>
+                    {list.pinned.map((item) =>
+                      item.kind === "conversation" ? (
+                        conversation(item.row, false)
+                      ) : (
+                        <PinnedProject
+                          key={item.key}
+                          project={item.project}
+                          onJump={() => jumpToProject(item.project.id)}
+                          onUnpin={() => {
+                            if (toggle(item.key, [item.key])) {
+                              listTrigger.current?.focus();
+                            }
+                          }}
+                          canUnpin={ready}
+                        />
+                      )
+                    )}
+                    {recent.map((row) => conversation(row, false))}
+                  </SidebarMenu>
+                  {moreRecent > 0 && (
+                    <p className="v1-nav-empty" role="status">
+                      Loading more…
+                    </p>
                   )}
-                </SidebarMenu>
-                {!pinned.length && (
-                  <p className="v1-nav-empty">
-                    {query && showEmptyStates
-                      ? "No matching pins"
-                      : "Pin Projects or Conversations to keep them here."}
-                  </p>
-                )}
+                </div>
+                {!list.pinned.length &&
+                  !list.recent.length &&
+                  query &&
+                  showEmptyStates && (
+                    <p className="v1-nav-empty">No matching Conversations</p>
+                  )}
               </SidebarGroupContent>
             </Collapsible.Panel>
           </Collapsible.Root>

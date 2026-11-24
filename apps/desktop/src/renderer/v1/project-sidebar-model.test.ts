@@ -3,6 +3,7 @@ import type { DesktopProject } from "../../project-memory-ui.js";
 import type { V1ConversationIntent } from "../../ipc/v1-state-protocol.js";
 import {
   buildProjectSidebar,
+  conversationList,
   filterSidebar,
   pinnedSidebarItems,
   projectPinKey
@@ -236,5 +237,18 @@ describe("Project sidebar inventory", () => {
         "session:Privacy"
       ]).map((item) => item.key)
     ).toEqual(["session:Build", "project:Empty", "session:Privacy"]);
+  });
+  it("lists pinned Conversations first, then the rest once by recency", () => {
+    const groups = buildProjectSidebar(
+      [
+        named("Koed", [thread("Privacy", after), thread("Build", before)]),
+        named("Docs", [thread("Build", before), thread("Notes", before)])
+      ],
+      [],
+      new Map()
+    );
+    const list = conversationList(groups, ["session:Build"]);
+    expect(list.pinned.map((r) => r.title)).toEqual(["Build"]);
+    expect(list.recent.map((r) => r.title)).toEqual(["Privacy", "Notes"]);
   });
 });
