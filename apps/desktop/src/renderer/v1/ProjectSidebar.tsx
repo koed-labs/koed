@@ -8,6 +8,7 @@ import {
   type RefObject
 } from "react";
 import { createPortal } from "react-dom";
+import type { PersonalProjectKin } from "@koed-labs/shared";
 import {
   Badge,
   Button,
@@ -42,6 +43,7 @@ import {
   Ellipsis,
   Plus,
   Settings2,
+  Smile,
   X
 } from "lucide-react";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
@@ -50,6 +52,7 @@ import { DEFAULT_AGENT_LOOK, projectKinLook } from "./pixelkin/agent-kin.js";
 import {
   conversationList,
   filterSidebar,
+  NO_PROJECT_ID,
   pinnedFirst,
   projectPinKey,
   type SidebarConversation,
@@ -57,6 +60,8 @@ import {
   type NavigationRoute
 } from "./project-sidebar-model.js";
 import { useSidebarPins } from "./use-sidebar-pins.js";
+import { useNoProjectKin } from "./use-no-project-kin.js";
+import { NoProjectKinDialog } from "./project-management/NoProjectKinDialog.js";
 import { useConversationDrag } from "./project-management/use-conversation-drag.js";
 import "./project-management/project-management.css";
 
@@ -134,6 +139,41 @@ function ProjectActions({
   );
 }
 
+// No project is not a Project; its only setting is its Kin.
+function NoProjectActions({
+  canEdit,
+  onKinSettings
+}: {
+  canEdit: boolean;
+  onKinSettings: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="v1-pm-row-menu"
+            aria-label="Actions for No project"
+          >
+            <Ellipsis />
+          </Button>
+        }
+      />
+      <DropdownMenuPopup
+        className="v1-app v1-project-ui v1-pm-menu"
+        align="start"
+      >
+        <DropdownMenuItem disabled={!canEdit} onClick={onKinSettings}>
+          <Smile />
+          Kin settings
+        </DropdownMenuItem>
+      </DropdownMenuPopup>
+    </DropdownMenu>
+  );
+}
+
 export const conversationActivity = (value: string, now: number) => {
   const at = Date.parse(value);
   if (!Number.isFinite(at)) return "";
@@ -149,23 +189,27 @@ export const conversationActivity = (value: string, now: number) => {
 
 // The Project's Kin with the AI Client's badge, as on Chief of Staff chips.
 const ConversationKin = memo(function ConversationKin({
-  row
+  row,
+  noProjectKin
 }: {
   row: SidebarConversation;
+  noProjectKin?: PersonalProjectKin;
 }) {
   const projectId = row.route.projectId;
   return (
     <span className="v1-nav-kin" aria-hidden="true">
       <Pixelkin
         look={
-          projectId
-            ? projectKinLook(projectId, row.projectKin)
-            : DEFAULT_AGENT_LOOK
+          row.noProject
+            ? projectKinLook(NO_PROJECT_ID, noProjectKin)
+            : projectId
+              ? projectKinLook(projectId, row.projectKin)
+              : DEFAULT_AGENT_LOOK
         }
         size={42}
         motion="still"
       />
-      <span className="v1-nav-kin-client" data-client={row.client ?? undefined}>
+      <span className="v1-nav-kin-client">
         {row.client ? <AiClientLogo id={row.client} /> : <MessageCircle />}
       </span>
     </span>
@@ -211,6 +255,8 @@ export function ProjectSidebar({
   const [recentCount, setRecentCount] = useState(RECENT_PER_PAGE);
   const [now, setNow] = useState(Date.now);
   const { pins, toggle, ready, error: pinError } = useSidebarPins(scopeKey);
+  const noProjectKin = useNoProjectKin(scopeKey);
+  const [editingNoProjectKin, setEditingNoProjectKin] = useState(false);
   const drag = useConversationDrag(
     management?.busy
       ? undefined
@@ -304,7 +350,7 @@ export function ProjectSidebar({
               )}
             </span>
           ) : (
-            <ConversationKin row={row} />
+            <ConversationKin row={row} noProjectKin={noProjectKin.kin} />
           )}
           <span className="v1-nav-copy">
             <span>
@@ -516,6 +562,7 @@ export function ProjectSidebar({
             <SidebarMenu>
               {visible.map((project) => {
                 const pinKey = projectPinKey(project.id);
+                const noProject = project.id === NO_PROJECT_ID;
                 const open = Boolean(query.trim()) || expanded.has(project.id);
                 const limit =
                   visibleCounts.get(project.id) ?? CONVERSATIONS_PER_PAGE;
@@ -553,7 +600,7 @@ export function ProjectSidebar({
                       }}
                     >
                       <div
-                        className={`v1-pm-project-row ${project.managed ? "v1-pm-has-menu" : ""}`}
+                        className={`v1-pm-project-row ${project.managed || noProject ? "v1-pm-has-menu" : ""}`}
                       >
                         <Collapsible.Trigger
                           render={
@@ -561,9 +608,16 @@ export function ProjectSidebar({
                           }
                         >
                           {open ? <ChevronDown /> : <ChevronRight />}
-                          {project.managed ? (
+                          {project.managed || noProject ? (
                             <Pixelkin
-                              look={projectKinLook(project.id, project.kin)}
+                              look={
+                                noProject
+                                  ? projectKinLook(
+                                      NO_PROJECT_ID,
+                                      noProjectKin.kin
+                                    )
+                                  : projectKinLook(project.id, project.kin)
+                              }
                               size={30}
                               className="v1-nav-project-kin"
                               motion="still"
@@ -583,6 +637,12 @@ export function ProjectSidebar({
                             {project.name}
                           </span>
                         </Collapsible.Trigger>
+                        {noProject && (
+                          <NoProjectActions
+                            canEdit={noProjectKin.ready}
+                            onKinSettings={() => setEditingNoProjectKin(true)}
+                          />
+                        )}
                         {project.managed && (
                           <ProjectActions
                             name={project.name}
@@ -672,6 +732,13 @@ export function ProjectSidebar({
           )}
         </SidebarGroup>
       </SidebarContent>
+      {editingNoProjectKin && (
+        <NoProjectKinDialog
+          kin={noProjectKin.kin}
+          onSave={noProjectKin.save}
+          onClose={() => setEditingNoProjectKin(false)}
+        />
+      )}
       {drag.ghost &&
         createPortal(
           <div

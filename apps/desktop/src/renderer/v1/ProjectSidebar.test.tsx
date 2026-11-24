@@ -225,6 +225,47 @@ describe("Project sidebar interactions", () => {
     ).toBe('["session:one"]');
   });
 
+  it("gives No project one Kin, edited from its Kin-only settings", async () => {
+    const noProject: SidebarProject = {
+      ...projectWithConversations("no-project", "No project", 1),
+      conversations: projectWithConversations(
+        "no-project",
+        "No project",
+        1
+      ).conversations.map((row) => ({ ...row, noProject: true }))
+    };
+    await act(async () =>
+      root.render(<Harness data={[noProject]} scope="backend-a:owner-a" />)
+    );
+    const projectRow = [
+      ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")
+    ].find((element) => element.textContent === "No project")!;
+    expect(projectRow.querySelector(".v1-nav-project-kin")).not.toBeNull();
+
+    await act(async () => button("Actions for No project").click());
+    expect(menuItem("Project settings")).toBeUndefined();
+    await act(async () => menuItem("Kin settings").click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("No project Kin");
+    expect(
+      dialog.querySelector('[aria-label="No project Kin"]')
+    ).not.toBeNull();
+    await act(async () =>
+      [...dialog.querySelectorAll<HTMLButtonElement>("button")]
+        .find((element) => element.textContent === "Save")!
+        .click()
+    );
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    const saved: unknown = JSON.parse(
+      window.localStorage.getItem("koed:no-project-kin:backend-a:owner-a")!
+    );
+    expect(saved).toMatchObject({
+      shape: expect.any(String),
+      colour: expect.any(String),
+      personality: expect.any(String)
+    });
+  });
+
   it("orders pinned Conversations first inside their Project", async () => {
     window.localStorage.setItem(
       "koed:sidebar-pins:owner-a",
