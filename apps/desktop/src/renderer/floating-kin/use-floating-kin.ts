@@ -33,11 +33,20 @@ export function useKinSurfaceActivity(
 const activePollMs = 3_000;
 const quietPollMs = 10_000;
 
+export type KinActivitySample = {
+  activity: FloatingKinActivityState;
+  at: number;
+};
+
+/**
+ * Polls Kin activity. Until the first read for this source lands, it returns
+ * a pending "starting" placeholder that callers should not present as status.
+ */
 export function useActivity(
   bridge: KinActivityBridge | undefined,
   visible = true,
   scopeKey: string | null = null
-) {
+): KinActivitySample & { pending: boolean } {
   const source = useMemo(
     () => ({ bridge, visible, scopeKey }),
     [bridge, visible, scopeKey]
@@ -96,14 +105,16 @@ export function useActivity(
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [source]);
-  return sample?.source === source
-    ? sample
-    : {
-        activity: {
-          state: bridge ? "starting" : "unavailable"
-        } as FloatingKinActivityState,
-        at: 0
-      };
+  if (sample?.source === source)
+    return { activity: sample.activity, at: sample.at, pending: false };
+  const pending = Boolean(bridge && visible);
+  return {
+    activity: {
+      state: bridge ? "starting" : "unavailable"
+    } as FloatingKinActivityState,
+    at: 0,
+    pending
+  };
 }
 
 export function useCaptureWake(deadline: number, sampledAt: number) {
