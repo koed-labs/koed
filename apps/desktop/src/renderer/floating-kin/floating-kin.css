@@ -75,27 +75,30 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   margin: calc((42px - 68px) / 2);
   transform: rotate(-8deg);
 }
-.fk-rail-kin .fk-rail-logo {
+.fk-rail-kin .fk-rest-logo {
   width: 36px;
   height: 36px;
+}
+/* Both the rail Kin and the Floating Kin rest as the Koed logo. */
+.fk-resting .fk-rest-logo {
   opacity: 0;
 }
-.fk-rail-kin[data-phase="logo"] .fk-rail-logo {
+.fk-resting[data-phase="logo"] .fk-rest-logo {
   opacity: 1;
 }
 @media (prefers-reduced-motion: no-preference) {
   /* Waking: the logo fades out as the Kin fades in mid-glance. */
-  .fk-rail-kin[data-phase="arriving"] .v1-pixelkin {
+  .fk-resting[data-phase="arriving"] .v1-pixelkin {
     animation: fk-rail-in 450ms ease-out both;
   }
-  .fk-rail-kin[data-phase="arriving"] .fk-rail-logo {
+  .fk-resting[data-phase="arriving"] .fk-rest-logo {
     animation: fk-rail-logo-out 450ms ease-in forwards;
   }
   /* Resting: the glance holds, then the Kin fades into the logo. */
-  .fk-rail-kin[data-phase="leaving"] .v1-pixelkin {
+  .fk-resting[data-phase="leaving"] .v1-pixelkin {
     animation: fk-rail-out 450ms ease-in 700ms forwards;
   }
-  .fk-rail-kin[data-phase="leaving"] .fk-rail-logo {
+  .fk-resting[data-phase="leaving"] .fk-rest-logo {
     animation: fk-rail-logo-in 450ms ease-out 700ms forwards;
   }
 }
@@ -385,6 +388,13 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 .fk-surface .fk-kin-avatar[data-fk-hit] {
   pointer-events: none;
 }
+.fk-kin-avatar > * {
+  grid-area: 1 / 1;
+}
+.fk-kin-avatar .fk-rest-logo {
+  width: 56px;
+  height: 56px;
+}
 .fk-kin-avatar .v1-pixelkin,
 .fk-kin-avatar::after {
   transform: rotate(-10deg);
@@ -412,13 +422,6 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 .fk-surface [data-fk-handle] > *,
 .fk-chip > :not([data-fk-handle]) {
   pointer-events: none;
-}
-.fk-sleep-mark {
-  position: absolute;
-  inset: 4px 8px auto auto;
-  color: var(--fk-text);
-  text-shadow: 0 0 4px var(--fk-bg);
-  font-weight: 700;
 }
 .fk-panel {
   display: flex;

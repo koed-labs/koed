@@ -130,12 +130,6 @@ export function useCaptureWake(deadline: number, sampledAt: number) {
   return sampledAt < deadline && expiredDeadline !== deadline;
 }
 
-export function useMainWindowFocus(bridge?: FloatingKinBridge) {
-  const [focused, setFocused] = useState(false);
-  useEffect(() => bridge?.onMainWindowFocus(setFocused), [bridge]);
-  return focused;
-}
-
 type SummaryView = {
   request: FloatingKinSummaryRequest;
   result: FloatingKinSummary | null;

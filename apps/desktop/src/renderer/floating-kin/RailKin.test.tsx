@@ -27,7 +27,7 @@ it("glances to the Koed logo when quiet and back to the live Kin on hover", asyn
     await act(async () => vi.advanceTimersByTime(50));
     expect(kin().dataset.phase).toBe("logo");
     expect(pixelkin()).toBeNull();
-    expect(kin().querySelector(".fk-rail-logo")).not.toBeNull();
+    expect(kin().querySelector(".fk-rest-logo")).not.toBeNull();
 
     await act(async () =>
       kin().dispatchEvent(new MouseEvent("mouseover", { bubbles: true }))

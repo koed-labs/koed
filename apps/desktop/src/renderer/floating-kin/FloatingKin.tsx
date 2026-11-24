@@ -29,7 +29,6 @@ import {
   useActivity,
   useCaptureWake,
   useCapturedPreview,
-  useMainWindowFocus,
   useOverlayWindow,
   useSummary,
   useKinSurfaceActivity,
@@ -170,63 +169,86 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
   );
 }
 
+// After the pointer leaves (or the Kin appears), it stays live this long
+// before resting as the Koed logo.
+const restAfterHoverMs = 3_000;
+
+/**
+ * The Floating Kin. Each time it appears, and whenever the pointer leaves, it
+ * stays live for three seconds, then glances up and fades to the Koed logo.
+ * Hovering wakes it again.
+ */
 export function StandaloneKin({
-  active,
+  visible = true,
   placement = "desktop",
   size = 88,
-  wakeOnAppear = false,
   onOpenDesktop
 }: {
-  active: boolean;
+  // While it leaves, the Kin holds its current look instead of changing.
+  visible?: boolean;
   placement?: "desktop" | "sidebar";
   size?: number;
-  // Starts awake, as if hovered, so it never arrives asleep.
-  wakeOnAppear?: boolean;
   onOpenDesktop?: () => void;
 }) {
   const Avatar = onOpenDesktop ? "button" : "div";
-  const wakeTimer = useRef<number | undefined>(undefined);
-  const [recentHover, setRecentHover] = useState(wakeOnAppear);
-  const awake = active || recentHover;
-  const wake = () => {
-    window.clearTimeout(wakeTimer.current);
-    setRecentHover(true);
-    wakeTimer.current = window.setTimeout(() => setRecentHover(false), 60_000);
-  };
-  useEffect(() => {
-    if (wakeOnAppear) wake();
-    return () => window.clearTimeout(wakeTimer.current);
-    // Only on appearing; later wakes come from hover.
+  const [hovered, setHovered] = useState(false);
+  const [lingering, setLingering] = useState(true);
+  const linger = useRef<number | undefined>(undefined);
+  const restSoon = useCallback(() => {
+    window.clearTimeout(linger.current);
+    setLingering(true);
+    linger.current = window.setTimeout(
+      () => setLingering(false),
+      restAfterHoverMs
+    );
   }, []);
+  useEffect(() => {
+    if (visible) restSoon();
+    return () => window.clearTimeout(linger.current);
+  }, [restSoon, visible]);
+  const awake = hovered || lingering;
+  const phase = useRestPhase(awake);
   return (
     <Avatar
-      className="fk-kin-avatar"
+      className="fk-kin-avatar fk-resting"
+      data-phase={phase}
       data-fk-hit
       data-fk-handle
+      // The element stays a button while it leaves, so its look carries on.
       {...(onOpenDesktop
-        ? { type: "button" as const, onClick: onOpenDesktop }
+        ? {
+            type: "button" as const,
+            disabled: !visible,
+            onClick: visible ? onOpenDesktop : undefined
+          }
         : { role: "img" })}
       aria-label={
-        onOpenDesktop
+        onOpenDesktop && visible
           ? "Open Koed Desktop"
           : placement === "desktop"
             ? "Floating Kin avatar"
             : "Chief of Staff"
       }
-      aria-description={awake ? "Awake" : "Sleeping"}
-      onMouseEnter={wake}
+      aria-description={awake ? "Awake" : "Resting"}
+      onMouseEnter={() => {
+        window.clearTimeout(linger.current);
+        setHovered(true);
+      }}
+      onMouseLeave={() => {
+        setHovered(false);
+        if (visible) restSoon();
+      }}
     >
-      <Pixelkin
-        {...chiefOfStaffBrand}
-        size={size}
-        motion={awake ? "unfocused" : "still"}
-        expression={awake ? "happy" : "sleepy"}
-      />
-      {!awake && (
-        <span className="fk-sleep-mark" aria-hidden="true">
-          z
-        </span>
+      {phase !== "logo" && (
+        <Pixelkin
+          {...chiefOfStaffBrand}
+          size={size}
+          motion="unfocused"
+          expression={phase === "live" ? "happy" : "joy"}
+          gaze={phase === "live" ? null : glanceUp}
+        />
       )}
+      <KoedLogo color className="fk-rest-logo" />
     </Avatar>
   );
 }
@@ -261,33 +283,11 @@ export function RailKin({ active }: { active: boolean }) {
   const [lingering, setLingering] = useState(false);
   const linger = useRef<number | undefined>(undefined);
   const awake = active || hovered || lingering;
-  const [phase, setPhase] = useState<"live" | "arriving" | "leaving" | "logo">(
-    awake ? "live" : "logo"
-  );
-  useEffect(() => {
-    if (prefersReducedMotion()) {
-      setPhase(awake ? "live" : "logo");
-      return;
-    }
-    if (awake) {
-      setPhase((current) => (current === "live" ? "live" : "arriving"));
-      const timer = window.setTimeout(
-        () => setPhase("live"),
-        fadeMs + wakeGlanceMs
-      );
-      return () => window.clearTimeout(timer);
-    }
-    setPhase((current) => (current === "logo" ? "logo" : "leaving"));
-    const timer = window.setTimeout(
-      () => setPhase("logo"),
-      restGlanceMs + fadeMs
-    );
-    return () => window.clearTimeout(timer);
-  }, [awake]);
+  const phase = useRestPhase(awake);
   useEffect(() => () => window.clearTimeout(linger.current), []);
   return (
     <span
-      className="fk-rail-kin"
+      className="fk-rail-kin fk-resting"
       data-phase={phase}
       role="img"
       aria-label="Chief of Staff"
@@ -316,9 +316,40 @@ export function RailKin({ active }: { active: boolean }) {
           gaze={phase === "live" ? null : glanceUp}
         />
       )}
-      <KoedLogo color className="fk-rail-logo" />
+      <KoedLogo color className="fk-rest-logo" />
     </span>
   );
+}
+
+/**
+ * Steps a resting Kin between live and the Koed logo: waking fades the logo
+ * out mid-glance, resting holds the glance then fades into the logo.
+ */
+function useRestPhase(awake: boolean) {
+  const [phase, setPhase] = useState<"live" | "arriving" | "leaving" | "logo">(
+    awake ? "live" : "logo"
+  );
+  useEffect(() => {
+    if (prefersReducedMotion()) {
+      setPhase(awake ? "live" : "logo");
+      return;
+    }
+    if (awake) {
+      setPhase((current) => (current === "live" ? "live" : "arriving"));
+      const timer = window.setTimeout(
+        () => setPhase("live"),
+        fadeMs + wakeGlanceMs
+      );
+      return () => window.clearTimeout(timer);
+    }
+    setPhase((current) => (current === "logo" ? "logo" : "leaving"));
+    const timer = window.setTimeout(
+      () => setPhase("logo"),
+      restGlanceMs + fadeMs
+    );
+    return () => window.clearTimeout(timer);
+  }, [awake]);
+  return phase;
 }
 
 function useSelection(
@@ -604,16 +635,12 @@ function useEntrance(visible: boolean, ready: boolean, animate: boolean) {
 function OverlayKinContent({
   bridge,
   surface,
-  focused,
-  onOpenDesktop,
   openAiModels,
   openConversation,
   onReady
 }: {
   bridge?: KinActivityBridge;
   surface: RefObject<HTMLElement | null>;
-  focused: boolean;
-  onOpenDesktop?: () => void;
   openAiModels?: () => void;
   openConversation?: (sessionId: string) => void;
   // Called once the first activity read has settled the content's size.
@@ -632,11 +659,6 @@ function OverlayKinContent({
         showStatus
         openAiModels={openAiModels}
         openConversation={openConversation}
-      />
-      <StandaloneKin
-        active={focused || sample.recentCapture}
-        wakeOnAppear
-        onOpenDesktop={onOpenDesktop}
       />
     </>
   );
@@ -682,6 +704,10 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
   const visible =
     !bridge?.onPresentation || presentation?.placement === "desktop";
   const revision = presentation?.revision;
+  const openDesktop =
+    bridge && revision !== undefined
+      ? () => bridge.openDesktop(revision)
+      : undefined;
   const [readyRevision, setReadyRevision] = useState<number>();
   const markReady = useCallback(() => setReadyRevision(revision), [revision]);
   const shown = useEntrance(
@@ -690,7 +716,6 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
     Boolean(bridge?.onPresentation)
   );
   const activityBridge = useKinSurfaceActivity(bridge, revision);
-  const mainWindowFocused = useMainWindowFocus(bridge);
   const { surface, setInteractive } = useOverlayWindow(bridge, visible);
   useExitCompletion(
     bridge,
@@ -719,7 +744,6 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           key={presentation?.revision}
           bridge={activityBridge}
           surface={surface}
-          focused={mainWindowFocused}
           onReady={markReady}
           openAiModels={
             bridge && revision !== undefined
@@ -731,16 +755,10 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
               ? (sessionId) => bridge.openConversation(revision, sessionId)
               : undefined
           }
-          onOpenDesktop={
-            bridge && revision !== undefined
-              ? () => bridge.openDesktop(revision)
-              : undefined
-          }
         />
-      ) : (
-        // Leaving, it stays awake through the fade instead of dozing off.
-        <StandaloneKin active />
-      )}
+      ) : null}
+      {/* One Kin across appearances, so leaving never restarts its look. */}
+      <StandaloneKin visible={visible} onOpenDesktop={openDesktop} />
     </main>
   );
 }
