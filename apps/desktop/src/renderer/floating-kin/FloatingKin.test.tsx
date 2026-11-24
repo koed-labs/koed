@@ -185,11 +185,20 @@ async function renderQuiet() {
   return mount.querySelector<HTMLElement>(".fk-kin-avatar")!;
 }
 
+// Resting holds the glance, then fades into the logo.
+const restFadeMs = 700 + 450;
+
 function expectKinAwake(kin: HTMLElement, awake: boolean) {
-  expect(kin.querySelector(".fk-sleep-mark") !== null).toBe(!awake);
-  expect(
-    kin.querySelector(".v1-pixelkin")?.getAttribute("data-expression")
-  ).toBe(awake ? "happy" : "sleepy");
+  expect(kin.getAttribute("aria-description")).toBe(
+    awake ? "Awake" : "Resting"
+  );
+  expect(kin.querySelector(".fk-sleep-mark")).toBeNull();
+}
+
+function expectLogo(kin: HTMLElement, logo: boolean) {
+  expect(kin.dataset.phase === "logo").toBe(logo);
+  expect(kin.querySelector(".v1-pixelkin") === null).toBe(logo);
+  expect(kin.querySelector(".fk-rest-logo")).not.toBeNull();
 }
 
 describe("Floating Kin", () => {
@@ -527,7 +536,7 @@ describe("Floating Kin", () => {
     expect(bridge.drag).not.toHaveBeenCalled();
   });
 
-  it("drags the sleeping Kin using absolute coordinates and stays interactive across gaps", async () => {
+  it("drags the resting Kin using absolute coordinates and stays interactive across gaps", async () => {
     const kin = await renderQuiet();
     const capture = vi.spyOn(kin, "setPointerCapture");
     vi.spyOn(document, "elementFromPoint").mockReturnValue(
@@ -823,13 +832,21 @@ describe("Floating Kin", () => {
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
   });
 
-  it("wakes for one minute on appearing, then sleeps", async () => {
+  it("shows the Kin on appearing, then rests as the logo three seconds later", async () => {
     const kin = await renderQuiet();
     expectKinAwake(kin, true);
-    await act(async () => vi.advanceTimersByTimeAsync(59_999));
+    expectLogo(kin, false);
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
     expectKinAwake(kin, true);
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expectKinAwake(kin, false);
+    // It glances up and right with a joy face before fading.
+    expect(kin.dataset.phase).toBe("leaving");
+    expect(
+      kin.querySelector(".v1-pixelkin")?.getAttribute("data-expression")
+    ).toBe("joy");
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
   });
 
   it("reappears without a runtime status while its fresh read is pending", async () => {
@@ -881,14 +898,15 @@ describe("Floating Kin", () => {
     );
     expect(mount.querySelector(".fk-chip")).not.toBeNull();
     // Two frames: paint the hidden start, then change from it.
-    await act(async () => vi.advanceTimersByTimeAsync(40));
+    for (let frame = 0; frame < 4; frame += 1)
+      await act(async () => vi.advanceTimersByTimeAsync(20));
     expect(surface.dataset.visible).toBe("true");
 
     await act(async () => present({ placement: "sidebar", revision: 2 }));
     expect(surface.dataset.visible).toBe("false");
   });
 
-  it("stays awake while it leaves for the sidebar", async () => {
+  it("keeps its look while it leaves for the sidebar", async () => {
     let present: (presentation: {
       placement: "desktop" | "sidebar";
       revision: number;
@@ -899,68 +917,41 @@ describe("Floating Kin", () => {
       listener({ placement: "desktop", revision: 1 });
       return () => {};
     };
-    await renderQuiet();
-    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    const kin = await renderQuiet();
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
     await act(async () =>
       present({ placement: "sidebar", revision: 2, sidebarPending: true })
     );
-    expectKinAwake(mount.querySelector<HTMLElement>(".fk-kin-avatar")!, true);
+    // Same element, still live, and it does not start resting mid-exit.
+    expect(mount.querySelector(".fk-kin-avatar")).toBe(kin);
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expectKinAwake(kin, true);
+    expectLogo(kin, false);
   });
 
-  it("wakes for one minute after hover without showing a quiet message", async () => {
+  it("wakes on hover and rests three seconds after the pointer leaves", async () => {
     const kin = await renderQuiet();
-    await act(async () => vi.advanceTimersByTimeAsync(60_000));
-    expectKinAwake(kin, false);
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
     await mouseOver(kin);
     expectKinAwake(kin, true);
-    expect(kin.getAttribute("aria-description")).toBe("Awake");
+    expect(kin.dataset.phase).toBe("arriving");
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(true);
+    // Hovering keeps it live however long the pointer stays.
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expectKinAwake(kin, true);
+    expect(kin.dataset.phase).toBe("live");
     await mouseOver(mount.querySelector("main")!, kin);
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
-    await act(async () => kin.focus());
     expect(mount.querySelector('[role="tooltip"]')).toBeNull();
     expect(mount.textContent).not.toContain("No recent capture");
-    await act(async () => vi.advanceTimersByTimeAsync(59_999));
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
     expectKinAwake(kin, true);
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expectKinAwake(kin, false);
-    expect(kin.getAttribute("aria-description")).toBe("Sleeping");
-  });
-
-  it("matches the sleep mark to capture freshness even with older Conversation chips", async () => {
-    await render();
-    const kin = mount.querySelector<HTMLElement>(".fk-kin-avatar")!;
-    expectKinAwake(kin, true);
-    const pending =
-      deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
-    vi.mocked(bridge.activity).mockReturnValueOnce(pending.promise);
-    await act(async () => vi.advanceTimersByTimeAsync(47_999));
-    expectKinAwake(kin, true);
-    await act(async () => vi.advanceTimersByTimeAsync(1));
-    expect(mount.querySelector(".fk-chip")).not.toBeNull();
-    // Still inside the minute it wakes for on appearing.
-    expectKinAwake(kin, true);
-    await act(async () => vi.advanceTimersByTimeAsync(12_000));
-    expect(mount.querySelector(".fk-chip")).not.toBeNull();
-    expectKinAwake(kin, false);
-  });
-
-  it("stays awake while the main Desktop window is focused, independently of the hover timer", async () => {
-    const unsubscribe = vi.fn();
-    vi.mocked(bridge.onMainWindowFocus).mockReturnValue(unsubscribe);
-    const kin = await renderQuiet();
-    const notify = vi.mocked(bridge.onMainWindowFocus).mock.calls[0]![0];
-    await act(async () => vi.advanceTimersByTimeAsync(60_000));
-    expectKinAwake(kin, false);
-    await act(async () => notify(true));
-    expectKinAwake(kin, true);
-    await mouseOver(kin);
-    await act(async () => vi.advanceTimersByTimeAsync(60_001));
-    expectKinAwake(kin, true);
-    await act(async () => notify(false));
-    expectKinAwake(kin, false);
-    await act(async () => root.render(null));
-    expect(unsubscribe).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
   });
 
   it("keeps keyboard focus on the avatar when a Conversation chip arrives", async () => {
@@ -968,18 +959,18 @@ describe("Floating Kin", () => {
       listener({ placement: "desktop", revision: 1 });
       return () => {};
     };
-    const sleepingKin = await renderQuiet();
-    expect(sleepingKin).toBeInstanceOf(HTMLButtonElement);
+    const kin = await renderQuiet();
+    expect(kin).toBeInstanceOf(HTMLButtonElement);
     vi.mocked(bridge.activity).mockResolvedValue({
       state: "running",
       conversations: [conversation],
       overflowCount: 0
     });
-    await act(async () => sleepingKin.focus());
-    expect(document.activeElement).toBe(sleepingKin);
+    await act(async () => kin.focus());
+    expect(document.activeElement).toBe(kin);
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
     expect(mount.querySelector(".fk-chip")).not.toBeNull();
-    expect(document.activeElement).toBe(sleepingKin);
+    expect(document.activeElement).toBe(kin);
     expect(mount.querySelector('[role="tooltip"]')).toBeNull();
   });
 
