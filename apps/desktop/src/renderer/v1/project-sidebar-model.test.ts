@@ -238,7 +238,7 @@ describe("Project sidebar inventory", () => {
       ]).map((item) => item.key)
     ).toEqual(["session:Build", "project:Empty", "session:Privacy"]);
   });
-  it("lists pinned Conversations first, then the rest once by recency", () => {
+  it("lists pins first, then the other Conversations once by recency", () => {
     const groups = buildProjectSidebar(
       [
         named("Koed", [thread("Privacy", after), thread("Build", before)]),
@@ -247,8 +247,16 @@ describe("Project sidebar inventory", () => {
       [],
       new Map()
     );
-    const list = conversationList(groups, ["session:Build"]);
-    expect(list.pinned.map((r) => r.title)).toEqual(["Build"]);
+    const docs = groups.find((project) => project.name === "Docs")!;
+    const list = conversationList(groups, [
+      projectPinKey(docs.id),
+      "session:Build"
+    ]);
+    expect(
+      list.pinned.map((item) =>
+        item.kind === "project" ? item.project.name : item.row.title
+      )
+    ).toEqual(["Docs", "Build"]);
     expect(list.recent.map((r) => r.title)).toEqual(["Privacy", "Notes"]);
   });
 });

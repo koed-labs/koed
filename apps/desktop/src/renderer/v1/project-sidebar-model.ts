@@ -3,7 +3,6 @@ import {
   personalInventoryConversationKey,
   personalInventoryReference
 } from "@koed-labs/shared/personal-desktop";
-import type { PersonalProjectKin } from "@koed-labs/shared";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import { sessionSelectionId } from "../../project-memory-ui.js";
 import type { V1ConversationIntent } from "../../ipc/v1-state-protocol.js";
