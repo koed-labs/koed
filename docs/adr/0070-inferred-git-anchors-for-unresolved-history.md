@@ -48,8 +48,11 @@ artifact, import source, native start, deployment, and device it validated.
 The API matches that basis against stored evidence at preview and again at
 apply. Desktop separately rechecks the same basis and the identities of the
 recorded directory, its resolved Git directory, and the common Git directory
-before apply. Only the worktree's own Git directory is subject to the age check. A later User correction replaces the
-inference. Device sync is not required.
+before apply. Desktop also checks that the recorded directory is still the
+same after gathering local evidence, so a replacement during Git lookup does
+not combine the old directory's identity with the new directory's evidence.
+Only the worktree's own Git directory is subject to the Git directory age check.
+A later User correction replaces the inference. Device sync is not required.
 
 The source-context API is owner-authorized, not Desktop-attested. Current
 Desktop-specific credentials do not authorize these routes. The API checks
@@ -59,7 +62,9 @@ manual corrections.
 
 An eligible remote match can still be explicitly reviewed in Project settings
 when the Git directory's age is missing or newer. Desktop warns that it could
-not verify where the Conversation was recorded. Manual approval does not require
+not verify where the Conversation was recorded. The warning is visible at bulk
+Add even when a group is collapsed, and beside Save for staged suggestions.
+Manual approval does not require
 historical Git directory age, but Desktop rechecks the staged remote key, path,
 and checkout identity at preview and again at apply. A missing or replaced
 checkout blocks the save. The API still enforces stored eligibility and the

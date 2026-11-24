@@ -2,6 +2,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   truncateSync,
   statSync,
@@ -483,13 +484,13 @@ describe("Folder hint evidence", () => {
       addRemote(directory, "upstream", upstream);
       addRemote(directory, "custom", custom);
       const { firstConversationAt, now } = timing();
-      const anchor = async (
+      const score = (
         lookupAssociatedSelection?: NonNullable<
           Parameters<typeof hintsForConversation>[2]
         >["lookupAssociatedSelection"],
         cwd = directory
-      ) => {
-        const hints = await hintsForConversation(
+      ) =>
+        hintsForConversation(
           paths,
           conversation({
             recordedCwd: cwd,
@@ -498,10 +499,10 @@ describe("Folder hint evidence", () => {
           }),
           { environment: env, now, lookupAssociatedSelection }
         );
-        return hints?.find(
+      const anchor = async (...args: Parameters<typeof score>) =>
+        (await score(...args))?.find(
           (hint) => hint.tier !== "none" && hint.kind === "repository"
         );
-      };
       const discover = async () => {
         const { project } = await discoverProjectMetadata(paths, {
           cwd: directory
@@ -511,7 +512,7 @@ describe("Folder hint evidence", () => {
           expectedCheckoutId: project!.repository!.checkoutId!
         };
       };
-      return { directory, paths, anchor, discover };
+      return { directory, paths, anchor, discover, score };
     };
 
     it("infers upstream rather than the fork's origin without creating checkout metadata", async () => {
@@ -621,6 +622,42 @@ describe("Folder hint evidence", () => {
         })
       ).toBeUndefined();
     });
+
+    it.each(["replaced", "removed", "edited"])(
+      "rechecks a recorded Git subdirectory %s during remote lookup",
+      async (change) => {
+        const { directory, paths, anchor, discover, score } =
+          await anchorFixture();
+        const nested = resolve(directory, "nested");
+        mkdirSync(nested);
+        await setProjectAssociationLookup(paths, {
+          ...(await discover()),
+          enabled: true
+        });
+        const repositoryKey = normalizeGitRemoteUrl(custom).fingerprint;
+        const lookup = async () => ({
+          associationId: "accepted",
+          selection: {
+            state: "selected" as const,
+            anchorFingerprint: repositoryKey
+          }
+        });
+        const before = await anchor(lookup, nested);
+        expect(before?.repositoryKey).toBe(repositoryKey);
+        expect(typeof before?.gitCheckoutIncarnation).toBe("string");
+        const during = await score(async () => {
+          if (change === "edited")
+            writeFileSync(resolve(nested, "new.txt"), "x");
+          else {
+            renameSync(nested, resolve(directory, "original"));
+            if (change === "replaced") mkdirSync(nested);
+          }
+          return lookup();
+        }, nested);
+        if (change === "edited") expect(during).toContainEqual(before);
+        else expect(during).toBeNull();
+      }
+    );
 
     it.each(["primary", "linked"])(
       "keeps a %s checkout advisory when its Git directory is newer than the source",

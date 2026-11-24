@@ -329,19 +329,17 @@ const gatherCheckout = async (
   deploymentId: string,
   deviceId: string,
   lookupAssociatedSelection?: HintAssociationLookup
-): Promise<
-  Pick<
-    GatheredFolderHintInput,
-    | "directoryStat"
-    | "directoryIncarnation"
-    | "gitDirectoryBirthtimeMs"
-    | "gitCheckoutIncarnation"
-    | "manualGitCheckoutIncarnation"
-    | "currentRemoteFingerprint"
-    | "registry"
-    | "hasContainedTranscriptFile"
-  >
-> => {
+): Promise<Pick<
+  GatheredFolderHintInput,
+  | "directoryStat"
+  | "directoryIncarnation"
+  | "gitDirectoryBirthtimeMs"
+  | "gitCheckoutIncarnation"
+  | "manualGitCheckoutIncarnation"
+  | "currentRemoteFingerprint"
+  | "registry"
+  | "hasContainedTranscriptFile"
+> | null> => {
   const directory = cwd
     ? await stat(cwd, { bigint: true }).catch(() => null)
     : null;
@@ -353,12 +351,36 @@ const gatherCheckout = async (
       hasContainedTranscriptFile: false
     };
   }
-  const directoryIncarnation = checkoutIncarnation(directory);
   const git = await readHintRemoteEvidence(
     paths,
     cwd,
     lookupAssociatedSelection
   );
+  const activityMs = await readActivityMs(
+    cwd,
+    nanosecondsToMs(directory.mtimeNs)
+  );
+  const registry = await lookupRegistry(
+    paths,
+    conversation.ownerUserId,
+    cwd,
+    deploymentId,
+    deviceId
+  );
+  const hasContainedTranscriptFile = await hasContainedFile(
+    cwd,
+    conversation.referencedPaths
+  );
+  // Git's own identities can stay unchanged when only the recorded cwd is replaced.
+  const current = await stat(cwd, { bigint: true }).catch(() => null);
+  if (
+    !current?.isDirectory() ||
+    current.dev !== directory.dev ||
+    current.ino !== directory.ino ||
+    current.birthtimeNs !== directory.birthtimeNs
+  )
+    return null;
+  const directoryIncarnation = checkoutIncarnation(directory);
   return {
     ...(directoryIncarnation ? { directoryIncarnation } : {}),
     ...(git?.gitCheckoutIncarnation
@@ -371,20 +393,11 @@ const gatherCheckout = async (
     directoryStat: {
       isDirectory: true,
       birthtimeMs: birthtimeMs(nanosecondsToMs(directory.birthtimeNs)),
-      activityMs: await readActivityMs(cwd, nanosecondsToMs(directory.mtimeNs))
+      activityMs
     },
     currentRemoteFingerprint: git?.fingerprint ?? null,
-    registry: await lookupRegistry(
-      paths,
-      conversation.ownerUserId,
-      cwd,
-      deploymentId,
-      deviceId
-    ),
-    hasContainedTranscriptFile: await hasContainedFile(
-      cwd,
-      conversation.referencedPaths
-    )
+    registry,
+    hasContainedTranscriptFile
   };
 };
 
@@ -414,6 +427,7 @@ export const gatherFolderHintInput = async (
     device.deviceInstanceId,
     options.lookupAssociatedSelection
   );
+  if (!checkout) return null;
   const input: GatheredFolderHintInput = {
     ...checkout,
     effectiveFolderStatus: effectivePersonalSourceFact(
@@ -481,8 +495,9 @@ export type FolderHintCandidate = Pick<FolderHintResult, "score" | "reasons"> &
  * registered Folder, the main checkout of a linked worktree, then registering
  * the recorded directory as a new Folder. A caller that can use only some of
  * them (a Folder not yet in any Project cannot be shown) takes the first it can.
- * Returns null without a ready device identity; a lone `none` when there is
- * no candidate. Advisory only. */
+ * Returns null without a ready device identity or if the recorded directory
+ * changed during checkout evidence collection; a lone `none` when there is no
+ * candidate. Advisory only. */
 export const hintsForConversation = async (
   paths: KoedServerPaths,
   conversation: FolderHintConversation,
