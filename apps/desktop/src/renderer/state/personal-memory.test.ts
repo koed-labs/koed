@@ -485,6 +485,59 @@ describe("PersonalMemoryStore", () => {
     expect(store.detail(thread(personalMemoryCacheLimit + 7))).toBeNull();
   });
 
+  it("refreshes an open Conversation grouped under a Git Anchor when its capture folder changes", async () => {
+    let onChange: ((change: PersonalDesktopChange) => void) | undefined;
+    const repository = "repository:anchor";
+    // Inventory groups the capture by Git Anchor, but change notices still
+    // name the capture folder and the AI Client's own thread ID.
+    const grouped: PersonalDesktopProjectThread = {
+      ...thread(1, repository),
+      id: "inventory-thread",
+      sourceThreadId: "client-thread",
+      sourceProject: { id: repository, name: "koed", path: null },
+      projectPath: null,
+      capturedCwd: "/work/koed"
+    };
+    const loadEventPage = vi
+      .fn<PersonalDesktopApi["loadEventPage"]>()
+      .mockResolvedValueOnce([event(1)])
+      .mockResolvedValue([event(2)]);
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi.fn(async () => [
+          { ...project([grouped]), id: repository }
+        ]),
+        loadEventPage,
+        subscribe: vi.fn((listener) => {
+          onChange = listener;
+          return () => undefined;
+        })
+      })
+    );
+    await store.loadProjects();
+    await store.loadInitial(grouped);
+
+    onChange?.({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      type: "conversation_events_changed",
+      eventRefs: [
+        {
+          id: "00000000-0000-4000-8000-000000000100",
+          projectId: "/work/koed",
+          sourceTable: "messages",
+          threadId: "client-thread"
+        }
+      ]
+    });
+
+    await vi.waitFor(() => expect(loadEventPage).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(store.detail(grouped)?.events.map(({ id }) => id)).toContain(
+        event(2).id
+      )
+    );
+  });
+
   it("refreshes the affected conversation and its navigation summary", async () => {
     let onChange: ((change: PersonalDesktopChange) => void) | undefined;
     const initialThread = thread(1);
