@@ -85,13 +85,13 @@
   filter: drop-shadow(0 1px 0 rgb(0 0 0 / 0.35));
 }
 .v1-home-keycap[data-client="codex"] {
-  --cap: #2f8f6b;
+  --cap: var(--v1-client-codex);
 }
 .v1-home-keycap[data-client="claude"] {
-  --cap: #d97757;
+  --cap: var(--v1-client-claude);
 }
 .v1-home-keycap[data-client="pi"] {
-  --cap: #4b4fa8;
+  --cap: var(--v1-client-pi);
 }
 .v1-home-keycaps li[data-state="detected"] .v1-home-keycap,
 .v1-home-keycaps li[data-state="unsure"] .v1-home-keycap {

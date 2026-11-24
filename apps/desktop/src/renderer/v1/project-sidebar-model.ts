@@ -243,19 +243,64 @@ export function pinnedSidebarItems(
   });
 }
 
+/** A row's place among the pins, or Infinity when it is not pinned. */
+function pinRank(pins: readonly string[], keys: readonly string[]) {
+  let rank = Infinity;
+  for (const key of keys) {
+    const index = pins.indexOf(key);
+    if (index >= 0 && index < rank) rank = index;
+  }
+  return rank;
+}
+
+function pinnedFirstBy<T>(
+  items: readonly T[],
+  pins: readonly string[],
+  keys: (item: T) => readonly string[]
+): T[] {
+  return items
+    .map((item, index) => ({ item, index, rank: pinRank(pins, keys(item)) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(({ item }) => item);
+}
+
 /**
- * The Conversations list: pinned Projects and Conversations in pin order, then
- * every other Conversation by most recent activity. A Conversation in several
- * Projects appears once.
+ * Pins work in two places. Pinned Projects lead the Projects list, and within
+ * each Project its pinned Conversations come first. Both keep pin order; the
+ * rest keep their own order.
+ */
+export function pinnedFirst(
+  projects: readonly SidebarProject[],
+  pins: readonly string[]
+): SidebarProject[] {
+  if (!pins.length) return [...projects];
+  return pinnedFirstBy(
+    projects.map((project) => ({
+      ...project,
+      conversations: pinnedFirstBy(
+        project.conversations,
+        pins,
+        (row) => row.aliases
+      )
+    })),
+    pins,
+    (project) => (project.managed ? [projectPinKey(project.id)] : [])
+  );
+}
+
+/**
+ * The Conversations list: pinned Conversations in pin order, then every other
+ * Conversation by most recent activity. A Conversation in several Projects
+ * appears once. Pinned Projects stay in the Projects list.
  */
 export function conversationList(
   projects: readonly SidebarProject[],
   pins: readonly string[]
-): { pinned: SidebarPin[]; recent: SidebarConversation[] } {
-  const pinned = pinnedSidebarItems(projects, pins);
-  const seen = new Set(
-    pinned.flatMap((item) => (item.kind === "conversation" ? [item.key] : []))
+): { pinned: SidebarConversation[]; recent: SidebarConversation[] } {
+  const pinned = pinnedSidebarItems(projects, pins).flatMap((item) =>
+    item.kind === "conversation" ? [item.row] : []
   );
+  const seen = new Set(pinned.map((row) => row.key));
   const recent: SidebarConversation[] = [];
   for (const row of projects.flatMap((project) => project.conversations)) {
     if (seen.has(row.key)) continue;

@@ -1,7 +1,6 @@
 import {
   memo,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -51,6 +50,7 @@ import { DEFAULT_AGENT_LOOK, projectKinLook } from "./pixelkin/agent-kin.js";
 import {
   conversationList,
   filterSidebar,
+  pinnedFirst,
   projectPinKey,
   type SidebarConversation,
   type SidebarProject,
@@ -134,47 +134,6 @@ function ProjectActions({
   );
 }
 
-function PinnedProject({
-  project,
-  onJump,
-  onUnpin,
-  canUnpin
-}: {
-  project: SidebarProject;
-  onJump: () => void;
-  onUnpin: () => void;
-  canUnpin: boolean;
-}) {
-  return (
-    <SidebarMenuItem className="v1-pm-project-row">
-      <SidebarMenuButton
-        className="v1-nav-pinned-project"
-        render={<button type="button" />}
-        aria-label={`Show Project ${project.name} in Projects`}
-        title={`Show ${project.name} in Projects`}
-        onClick={onJump}
-      >
-        <Folder aria-hidden="true" />
-        <span className="v1-nav-copy">
-          <span>{project.name}</span>
-          <small>Project</small>
-        </span>
-      </SidebarMenuButton>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        className="v1-pm-row-menu"
-        aria-label={`Unpin Project ${project.name}`}
-        title="Unpin Project"
-        disabled={!canUnpin}
-        onClick={onUnpin}
-      >
-        <PinOff />
-      </Button>
-    </SidebarMenuItem>
-  );
-}
-
 export const conversationActivity = (value: string, now: number) => {
   const at = Date.parse(value);
   if (!Number.isFinite(at)) return "";
@@ -206,7 +165,7 @@ const ConversationKin = memo(function ConversationKin({
         size={42}
         motion="still"
       />
-      <span className="v1-nav-kin-client">
+      <span className="v1-nav-kin-client" data-client={row.client ?? undefined}>
         {row.client ? <AiClientLogo id={row.client} /> : <MessageCircle />}
       </span>
     </span>
@@ -249,7 +208,6 @@ export function ProjectSidebar({
   const [visibleCounts, setVisibleCounts] = useState(new Map<string, number>());
   const initialized = useRef(false);
   const [listOpen, setListOpen] = useState(true);
-  const listTrigger = useRef<HTMLButtonElement>(null);
   const [recentCount, setRecentCount] = useState(RECENT_PER_PAGE);
   const [now, setNow] = useState(Date.now);
   const { pins, toggle, ready, error: pinError } = useSidebarPins(scopeKey);
@@ -297,21 +255,9 @@ export function ProjectSidebar({
     }
   }, [route]);
   const visible = useMemo(
-    () => filterSidebar(projects, query),
-    [projects, query]
+    () => pinnedFirst(filterSidebar(projects, query), pins),
+    [projects, query, pins]
   );
-  const projectRowPrefix = useId();
-  const projectRowId = (projectId: string) =>
-    `${projectRowPrefix}-${projectId}`;
-  function jumpToProject(projectId: string) {
-    setQuery("");
-    setExpanded((previous) => new Set(previous).add(projectId));
-    requestAnimationFrame(() => {
-      const row = document.getElementById(projectRowId(projectId));
-      row?.focus({ preventScroll: true });
-      row?.scrollIntoView({ block: "nearest" });
-    });
-  }
   const selected = (row: SidebarConversation) =>
     route.kind === "conversation" &&
     (route.executionId
@@ -362,7 +308,7 @@ export function ProjectSidebar({
           )}
           <span className="v1-nav-copy">
             <span>
-              {!nested && isPinned && (
+              {isPinned && (
                 <Pin className="v1-nav-pin-mark" aria-label="Pinned" />
               )}
               {row.title}
@@ -482,10 +428,7 @@ export function ProjectSidebar({
         <SidebarGroup className="v1-nav-conversations">
           <Collapsible.Root open={listOpen} onOpenChange={setListOpen}>
             <div className="v1-nav-heading v1-nav-conversations-heading">
-              <Collapsible.Trigger
-                ref={listTrigger}
-                className="v1-nav-heading-toggle"
-              >
+              <Collapsible.Trigger className="v1-nav-heading-toggle">
                 <ChevronDown className={listOpen ? "" : "closed"} />
                 <span>Conversations</span>
               </Collapsible.Trigger>
@@ -509,23 +452,7 @@ export function ProjectSidebar({
                   }}
                 >
                   <SidebarMenu>
-                    {list.pinned.map((item) =>
-                      item.kind === "conversation" ? (
-                        conversation(item.row, false)
-                      ) : (
-                        <PinnedProject
-                          key={item.key}
-                          project={item.project}
-                          onJump={() => jumpToProject(item.project.id)}
-                          onUnpin={() => {
-                            if (toggle(item.key, [item.key])) {
-                              listTrigger.current?.focus();
-                            }
-                          }}
-                          canUnpin={ready}
-                        />
-                      )
-                    )}
+                    {list.pinned.map((row) => conversation(row, false))}
                     {recent.map((row) => conversation(row, false))}
                   </SidebarMenu>
                   {moreRecent > 0 && (
@@ -630,10 +557,7 @@ export function ProjectSidebar({
                       >
                         <Collapsible.Trigger
                           render={
-                            <SidebarMenuButton
-                              id={projectRowId(project.id)}
-                              className="v1-nav-project"
-                            />
+                            <SidebarMenuButton className="v1-nav-project" />
                           }
                         >
                           {open ? <ChevronDown /> : <ChevronRight />}
@@ -649,7 +573,15 @@ export function ProjectSidebar({
                           ) : (
                             <Folder />
                           )}
-                          <span>{project.name}</span>
+                          <span>
+                            {pins.includes(pinKey) && (
+                              <Pin
+                                className="v1-nav-pin-mark"
+                                aria-label="Pinned"
+                              />
+                            )}
+                            {project.name}
+                          </span>
                         </Collapsible.Trigger>
                         {project.managed && (
                           <ProjectActions

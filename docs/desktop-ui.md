@@ -20,14 +20,13 @@ The sidebar provides search, expandable Projects, and navigation history. On
 narrow windows, it opens as a drawer. While services or inventory are loading,
 the sidebar shows that state rather than an empty Conversation list.
 
-**Conversations** lists pinned Projects and Conversations first, in pin
-order, then every other Conversation by most recent activity. From a named
+Pins work in two places. Pinning a Conversation keeps it at the top of
+**Conversations**, which lists every other Conversation by most recent
+activity, and at the top of its Project's Conversations in **Projects**.
+Pinning a named Project keeps it at the top of **Projects**. From a named
 Project's ellipsis menu, choose **Pin Project** or **Unpin Project**; **Project
-settings** is in the same menu. Selecting a pinned Project jumps to and expands
-its row in **Projects**, even if it has no Conversations. You can also unpin it
-directly from **Conversations**. Pinned Conversations still open directly. Pins
-are saved locally for the current account and backend. They do not sync or
-change Project membership or access.
+settings** is in the same menu. Pins are saved locally for the current account
+and backend. They do not sync or change Project membership or access.
 
 Navigation, Settings, and setup use the positive mark in light mode and the
 negative mark in dark mode. The app and Dock use the color mark on an inset
