@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { personalGitLocalImportBasisSchema } from "./personal-folder-hint-contract.js";
+import {
+  personalGitCheckoutIncarnationSchema,
+  personalGitLocalImportBasisSchema
+} from "./personal-folder-hint-contract.js";
 import {
   personalFolderAssignmentSchema,
   personalSourceReferenceSchema,
@@ -292,7 +295,13 @@ export const personalSourceContextCommandSchema = z
         sessionId: z.uuid(),
         correction: personalSourceCorrectionInputSchema,
         expectedScopeKey: sourceContextScopeKey,
-        reviewedDirectory: z.string().min(1).optional()
+        reviewedCheckout: z
+          .object({
+            directory: z.string().min(1).max(4096),
+            incarnation: personalGitCheckoutIncarnationSchema
+          })
+          .strict()
+          .optional()
       })
       .strict(),
     z
@@ -310,11 +319,12 @@ export const personalSourceContextCommandSchema = z
       input.action !== "preview" ||
       !("inferenceIntent" in input.correction) ||
       (!input.correction.localImportBasis &&
-        (input.correction.inferenceIntent !== "assumed-local-import" ||
+        ((input.correction.inferenceIntent !== "assumed-local-import" &&
+          input.correction.inferenceIntent !== "user-confirmed-unknown") ||
           !!input.expectedScopeKey)),
     {
       message:
-        "Assumed-local preview requires scope and obtains import evidence on Desktop"
+        "Assumed-local and unknown-device previews require scope; Desktop obtains import evidence"
     }
   )
   .refine(
@@ -328,10 +338,14 @@ export const personalSourceContextCommandSchema = z
   .refine(
     (input) =>
       input.action !== "preview" ||
-      !!input.reviewedDirectory ===
-        (input.correction.axis === "git" &&
-          input.correction.action === "set" &&
-          input.correction.inferenceIntent === "user-confirmed-unknown"),
+      (input.correction.axis === "git" &&
+      input.correction.action === "set" &&
+      input.correction.inferenceIntent === "assumed-local-import"
+        ? true
+        : !!input.reviewedCheckout ===
+          (input.correction.axis === "git" &&
+            input.correction.action === "set" &&
+            input.correction.inferenceIntent === "user-confirmed-unknown")),
     {
       message: "Unknown recording-device review must bind the reviewed checkout"
     }

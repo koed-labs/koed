@@ -470,10 +470,15 @@ export function useProjectManagement({
                       action: "apply_sources",
                       projectId: project.id,
                       expectedVersion: reviewedVersion,
+                      ...(rejected.length > 0
+                        ? { expectedScopeKey: scopeKey! }
+                        : {}),
                       changes
                     })
                   : undefined;
               check();
+              if (saved && saved.project.projectId !== project.id)
+                throw new Error("Save response belongs to another Project.");
               // Excluded now, so no longer suggested here or in the sidebar.
               if (rejected.length > 0) dismiss(project.id, rejected);
               const status: Notice = { message: "Project settings saved" };
@@ -489,9 +494,8 @@ export function useProjectManagement({
                     (entry) => entry.id === project.id
                   );
                   if (
-                    (saved && saved.project.projectId !== project.id) ||
                     destination?.namedProject?.version !==
-                      (saved?.project.version ?? reviewedVersion)
+                    (saved?.project.version ?? reviewedVersion)
                   )
                     throw new Error(
                       "The destination Project changed. Review the suggestions again."

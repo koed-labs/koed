@@ -274,6 +274,7 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
       recordingDeviceProvenance: "assumed-local-import",
       importAuthority: correctBasis,
       gitInferenceEligibility: true,
+      gitUnknownReviewEligible: true,
       gitRevision: 1
     });
     await expect(preview("recording-device")).rejects.toMatchObject({
@@ -315,6 +316,52 @@ describe.skipIf(!databaseUrl)("Folder hint evidence in PostgreSQL", () => {
       });
     }
     importBasis = correctBasis;
+    const legacyOriginal = { state: "unresolved", reason: "unreliable" };
+    const legacyAssignment = {
+      revision: 1,
+      original: legacyOriginal,
+      correction: { state: "original" }
+    };
+    const {
+      rows: [legacy]
+    } = await pool.query<{ binding_id: string }>(
+      `insert into personal_source_bindings (
+        owner_user_id, local_session_id, source_logical_session_id,
+        originating_deployment_id, originating_device_id, context_version,
+        availability, git_state, folder_state, git_original, git_frontier, git_assignment
+      ) values ($1, $2::uuid, $2::uuid::text, $3, $4, 1, 'available', 'available', 'available',
+        $5, array['git_original'], $6) returning binding_id`,
+      [
+        actor.userId,
+        source.id,
+        correctBasis.deploymentId,
+        correctBasis.deviceId,
+        legacyOriginal,
+        legacyAssignment
+      ]
+    );
+    await pool.query(
+      `insert into personal_source_context_revisions (binding_id, axis, revision_id, replaces, assignment)
+       values ($1, 'git', 'git_original', '{}', $2)`,
+      [legacy!.binding_id, legacyAssignment]
+    );
+    expect(await evidence()).toMatchObject({
+      gitInferenceEligibility: true,
+      gitUnknownReviewEligible: false,
+      importAuthority: correctBasis
+    });
+    await expect(preview("user-confirmed-unknown")).rejects.toMatchObject({
+      statusCode: 409,
+      message: "Conversation is not eligible for Git inference."
+    });
+    await expect(preview("assumed-local-import")).resolves.toHaveProperty(
+      "preview"
+    );
+    await pool.query(
+      "delete from personal_source_bindings where binding_id=$1",
+      [legacy!.binding_id]
+    );
+
     const staleReview = (await preview("assumed-local-import")).preview;
     expect(staleReview.projects).toContainEqual(
       expect.objectContaining({

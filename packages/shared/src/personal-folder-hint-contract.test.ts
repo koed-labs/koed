@@ -92,12 +92,29 @@ it("distinguishes assumed-local inference from explicit unknown-device checkout 
       }
     }).success
   ).toBe(false);
+  const reviewedCheckout = {
+    directory: "/work/x",
+    incarnation: "b".repeat(64)
+  };
   expect(
     personalSourceContextCommandSchema.safeParse({
       ...scoped,
-      reviewedDirectory: "/work/x"
+      reviewedCheckout
+    }).success
+  ).toBe(true);
+  expect(
+    personalSourceContextCommandSchema.safeParse({
+      ...scoped,
+      reviewedCheckout,
+      correction: { ...preview.correction, inferenceIntent: "recording-device" }
     }).success
   ).toBe(false);
+  expect(
+    personalSourceContextCommandSchema.safeParse({
+      ...preview,
+      correction: { ...preview.correction, inferenceIntent: "recording-device" }
+    }).success
+  ).toBe(true);
   const manual = {
     ...preview,
     correction: {
@@ -111,9 +128,23 @@ it("distinguishes assumed-local inference from explicit unknown-device checkout 
   expect(
     personalSourceContextCommandSchema.safeParse({
       ...manual,
-      reviewedDirectory: "/work/x"
+      reviewedCheckout
+    }).success
+  ).toBe(false);
+  expect(
+    personalSourceContextCommandSchema.safeParse({
+      ...manual,
+      expectedScopeKey: scoped.expectedScopeKey,
+      reviewedCheckout
     }).success
   ).toBe(true);
+  expect(
+    personalSourceContextCommandSchema.safeParse({
+      ...manual,
+      expectedScopeKey: scoped.expectedScopeKey,
+      reviewedCheckout: { ...reviewedCheckout, incarnation: "missing" }
+    }).success
+  ).toBe(false);
 });
 
 describe("personalFolderHintsDataSchema", () => {

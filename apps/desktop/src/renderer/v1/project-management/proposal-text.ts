@@ -25,7 +25,7 @@ export function suggestionReason(proposal: FolderProposal): string {
     case "worktree-parent":
       return name ? `Worktree of ${name}` : "Worktree of the main checkout";
     case "repository":
-      return proposal.recordingDeviceUnknown
+      return proposal.manualGitReview
         ? `Git Anchor match · ${unverifiedRecording}`
         : "Git Anchor match";
     default:
@@ -42,7 +42,7 @@ export function proposalLead(proposal: FolderProposal): string {
         proposal.projects.length > 0
           ? `Same Git remote as ${proposalProjectLabel(proposal)}`
           : "Same Git remote";
-      return proposal.recordingDeviceUnknown
+      return proposal.manualGitReview
         ? `${match} · ${unverifiedRecording}`
         : match;
     }

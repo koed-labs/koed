@@ -85,6 +85,7 @@ const inferenceEligible = (allowLegacyBoundImport: boolean) => `(
 )`;
 
 export const personalGitInferenceEligible = inferenceEligible(true);
+export const personalGitUnknownReviewEligible = inferenceEligible(false);
 
 const eligibilityQuery = (eligible: string) => `
   select ${personalGitInferenceLocalImport} as local_import from sessions s
@@ -92,7 +93,7 @@ const eligibilityQuery = (eligible: string) => `
   where s.id = $2 and s.owner_user_id = $1 and ${eligible}`;
 
 export const personalGitInferenceEligibilityQuery = eligibilityQuery(
-  inferenceEligible(false)
+  personalGitUnknownReviewEligible
 );
 const localImportEligibilityQuery = eligibilityQuery(
   personalGitInferenceEligible

@@ -57,11 +57,15 @@ stored evidence and Project eligibility; it cannot verify Desktop filesystem
 checks or recording origin. An authorized owner API client can still make
 manual corrections.
 
-If the assumption cannot be made, eligible suggestions can still be reviewed and
-accepted together in Project settings. These are manual source corrections, not
-attestations: Desktop checks the checkout, and the API enforces stored eligibility
-and the reviewed versions. Known copied history does not qualify for inference.
-Folders are never inferred.
+An eligible remote match can still be explicitly reviewed in Project settings
+when the Git directory's age is missing or newer. Desktop warns that it could
+not verify where the Conversation was recorded. Manual approval does not require
+historical Git directory age, but Desktop rechecks the staged remote key, path,
+and checkout identity at preview and again at apply. A missing or replaced
+checkout blocks the save. The API still enforces stored eligibility and the
+reviewed versions. If a legacy signed import qualifies only with its importing
+Desktop's authority, only that Desktop offers Add. Known copied history does not
+qualify for inference. Folders are never inferred.
 
 ## Consequences
 

@@ -9,7 +9,8 @@ import { findKnownFolderCorrectionReferences } from "./personal-source-correctio
 import {
   personalGitInferenceEvidenceJoins,
   personalGitInferenceEligible,
-  personalGitInferenceLocalImport
+  personalGitInferenceLocalImport,
+  personalGitUnknownReviewEligible
 } from "./personal-git-inference-evidence.js";
 import type { ActorContext } from "./types.js";
 
@@ -29,6 +30,7 @@ type EvidenceRow = {
   known_copy: boolean;
   local_import: PersonalGitLocalImportBasis | null;
   git_eligible: boolean;
+  git_unknown_review_eligible: boolean;
   git_known: boolean;
   git_revision: number;
   source_runtime: string | null;
@@ -53,6 +55,7 @@ export const createPersonalFolderHintEvidenceRepository = (
          native.first_at, provenance.known_copy,
          ${personalGitInferenceLocalImport} as local_import,
          ${personalGitInferenceEligible} as git_eligible,
+         ${personalGitUnknownReviewEligible} as git_unknown_review_eligible,
          case when s.repository_automatic_identity->>'kind' = 'portable_repository'
               then s.repository_automatic_identity->>'key' end as remote,
          coalesce(coalesce(s.repository_override_identity, s.repository_automatic_identity)->>'kind'
@@ -93,6 +96,7 @@ export const createPersonalFolderHintEvidenceRepository = (
             : "unknown",
         ...(row.local_import ? { importAuthority: row.local_import } : {}),
         gitInferenceEligibility: row.git_eligible,
+        gitUnknownReviewEligible: row.git_unknown_review_eligible,
         gitAnchorKnown: row.git_known,
         gitRevision: row.git_revision,
         sourceRuntime: row.source_runtime,

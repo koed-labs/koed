@@ -17,7 +17,7 @@ export async function previewSourceCorrection(
   api: PersonalDesktopApi,
   review: OrganizationReview,
   correction: PersonalSourceCorrectionInput,
-  reviewedDirectory?: string
+  reviewedCheckout?: { directory: string; incarnation: string }
 ): Promise<PersonalSourceCorrectionPreview> {
   const { preview } = await api.manageSourceContext!({
     action: "preview",
@@ -26,7 +26,7 @@ export async function previewSourceCorrection(
     ...(review.expectedScopeKey
       ? { expectedScopeKey: review.expectedScopeKey }
       : {}),
-    ...(reviewedDirectory ? { reviewedDirectory } : {})
+    ...(reviewedCheckout ? { reviewedCheckout } : {})
   });
   if (
     !preview ||

@@ -21,6 +21,7 @@ describe("Folder hint evidence repository", () => {
           remote: "gr_koed",
           known_copy: false,
           git_eligible: false,
+          git_unknown_review_eligible: false,
           git_known: false,
           git_revision: 3,
           source_runtime: "claude-code",
@@ -57,6 +58,7 @@ describe("Folder hint evidence repository", () => {
           capturedOnThisDevice: false,
           recordingDeviceProvenance: "unknown",
           gitInferenceEligibility: false,
+          gitUnknownReviewEligible: false,
           gitAnchorKnown: false,
           gitRevision: 3,
           sourceRuntime: "claude-code",
@@ -80,7 +82,8 @@ describe("Folder hint evidence repository", () => {
           first_at: null,
           remote: null,
           known_copy: true,
-          git_eligible: false
+          git_eligible: false,
+          git_unknown_review_eligible: false
         }
       ]
     }));

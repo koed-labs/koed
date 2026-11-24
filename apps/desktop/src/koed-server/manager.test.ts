@@ -7022,6 +7022,136 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     }
   );
 
+  it.each([
+    "same scope",
+    "switched backend",
+    "backend switched on network retry",
+    "backend switched on credential retry",
+    "owner switched on credential retry"
+  ])(
+    "pins a Project source exclusion to its reviewed scope: %s",
+    async (scenario) => {
+      const koedHome = mkdtempSync(resolve(tmpdir(), "koed-project-scope-"));
+      const credentialDirectory = resolve(koedHome, "config");
+      mkdirSync(credentialDirectory, { recursive: true });
+      writeFileSync(
+        resolve(credentialDirectory, "local-app-credential.json"),
+        JSON.stringify({ apiToken: "local_app_token" })
+      );
+      const reviewedOrigin = "http://127.0.0.1:4170";
+      const otherOrigin = "http://127.0.0.1:4171";
+      const reviewedOwner = "00000000-0000-4000-8000-000000000001";
+      const sessionId = "00000000-0000-4000-8000-000000000002";
+      const projectId = "00000000-0000-4000-8000-000000000003";
+      let origin =
+        scenario === "switched backend" ? otherOrigin : reviewedOrigin;
+      let owner = reviewedOwner;
+      const preflights: string[] = [];
+      const writes: Array<{ origin: string; method?: string; body: unknown }> =
+        [];
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_HOME: koedHome },
+        createCliInvocation: (args) => ({
+          command: "/node",
+          args,
+          env: { KOED_HOME: koedHome }
+        }),
+        existsSync: () => true,
+        execFile: (_command, args, _options, callback) => {
+          callback(
+            null,
+            JSON.stringify(
+              args.includes("status")
+                ? { ok: true, api: { state: "healthy", url: origin } }
+                : { ok: true }
+            ),
+            ""
+          );
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined,
+        personalMemoryFetch: async (input, init) => {
+          const url = new URL(String(input));
+          if (url.pathname === "/v1/managed-conversations/access") {
+            preflights.push(url.origin);
+            return Response.json({ user: { id: owner } });
+          }
+          if (url.pathname !== `/v1/personal/projects/${projectId}/sources`)
+            return Response.json({}, { status: 404 });
+          writes.push({
+            origin: url.origin,
+            method: init?.method,
+            body: JSON.parse(String(init?.body))
+          });
+          if (writes.length === 1 && scenario.endsWith("retry")) {
+            if (scenario.startsWith("owner")) owner = sessionId;
+            else origin = otherOrigin;
+            if (scenario.includes("network"))
+              throw new Error("Connection lost");
+            return Response.json({}, { status: 401 });
+          }
+          return Response.json({
+            project: {
+              projectId,
+              name: "Reviewed Project",
+              version: 2,
+              headRevisionId: projectId,
+              deletedAt: null,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z"
+            },
+            excludedSessionIds: [sessionId]
+          });
+        }
+      });
+      const changes = [{ action: "exclude_session" as const, sessionId }];
+      try {
+        await expect(
+          manager.personalMemory({
+            contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+            operation: "personal.projects.manage",
+            input: {
+              action: "apply_sources",
+              projectId,
+              expectedVersion: 1,
+              expectedScopeKey: v1OwnerScope(reviewedOrigin, reviewedOwner),
+              changes
+            }
+          })
+        ).resolves.toMatchObject(
+          scenario === "same scope"
+            ? { ok: true, data: { excludedSessionIds: [sessionId] } }
+            : { ok: false, error: { code: "conflict", retryable: false } }
+        );
+        expect(preflights).toEqual(
+          scenario === "switched backend"
+            ? [otherOrigin]
+            : scenario.endsWith("retry")
+              ? [
+                  reviewedOrigin,
+                  scenario.startsWith("owner") ? reviewedOrigin : otherOrigin
+                ]
+              : [reviewedOrigin]
+        );
+        expect(writes).toEqual(
+          scenario === "switched backend"
+            ? []
+            : [
+                {
+                  origin: reviewedOrigin,
+                  method: "POST",
+                  body: { expectedVersion: 1, changes }
+                }
+              ]
+        );
+      } finally {
+        rmSync(koedHome, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("scopes managed Conversation drafts and recovery to the authenticated owner and backend", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-drafts-"));
     const credentialDirectory = resolve(koedHome, "config");

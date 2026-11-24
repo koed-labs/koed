@@ -81,7 +81,7 @@ import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 34;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 35;
 export const personalDesktopFolderHintInputSchema =
   personalFolderHintRequestSchema.extend({
     expectedScopeKey: z.string().regex(/^[0-9a-f]{64}$/u)

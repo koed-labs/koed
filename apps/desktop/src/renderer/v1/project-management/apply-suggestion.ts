@@ -22,7 +22,11 @@ async function applyReviewedUnknown(
   destinationProjectId: string,
   check: () => void
 ) {
-  if (proposal.gitRevision !== 1 || !proposal.directory)
+  if (
+    proposal.gitRevision !== 1 ||
+    !proposal.directory ||
+    !proposal.manualGitReview
+  )
     throw new Error("This Git Anchor suggestion is no longer available.");
   const preview = await previewSourceCorrection(
     api,
@@ -32,9 +36,12 @@ async function applyReviewedUnknown(
       action: "set",
       repository: anchor.repository,
       expectedVersion: proposal.gitRevision,
-      inferenceIntent: "user-confirmed-unknown"
+      inferenceIntent: proposal.manualGitReview.intent
     },
-    proposal.directory
+    {
+      directory: proposal.directory,
+      incarnation: proposal.manualGitReview.incarnation
+    }
   );
   check();
   const destination = preview.projects.find(
@@ -116,7 +123,7 @@ async function applySuggestion(
     throw new Error(
       `${axis === "git" ? "Git Anchor" : "Folder"} changed. Review the suggestion again.`
     );
-  if (proposal.kind === "repository" && proposal.recordingDeviceUnknown)
+  if (proposal.kind === "repository" && proposal.manualGitReview)
     return applyReviewedUnknown(
       api,
       review,

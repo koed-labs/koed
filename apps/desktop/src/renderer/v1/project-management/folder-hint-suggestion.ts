@@ -57,7 +57,7 @@ export type FolderProposal = {
       kind: "repository";
       repositoryKey: string;
       gitRevision?: number;
-      recordingDeviceUnknown?: true;
+      manualGitReview?: PersonalFolderHint["manualGitReview"];
     }
 );
 
@@ -80,11 +80,12 @@ export function suggestionApprovalKey(
     sessionId,
     proposal.kind,
     proposal.kind === "repository"
-      ? proposal.recordingDeviceUnknown
+      ? proposal.manualGitReview
         ? [
             proposal.repositoryKey,
             proposal.directory,
-            "unknown-recording-device"
+            proposal.manualGitReview.intent,
+            proposal.manualGitReview.incarnation
           ]
         : proposal.repositoryKey
       : personalFolderScopeId(proposal.folder)
@@ -133,22 +134,14 @@ export function folderProposal(
         const needsHistoricalReview =
           recordingDeviceProvenance === "unknown" ||
           recordingDeviceProvenance === "assumed-local-import";
-        const canReviewHistory =
-          resolve.reviewBatch && gitRevision === 1 && !!hint.directory;
-        const recordingDeviceUnknown =
+        const manualGitReview =
           needsHistoricalReview &&
-          canReviewHistory &&
-          hint.gitInferenceEligibility === true;
-        const advisoryCheckout =
-          canReviewHistory &&
-          hint.gitInferenceEligibility === false &&
-          hint.reasons.some(({ code }) => code === "git-directory-birthtime");
-        if (
-          needsHistoricalReview &&
-          !recordingDeviceUnknown &&
-          !advisoryCheckout
-        )
-          return [];
+          resolve.reviewBatch &&
+          gitRevision === 1 &&
+          hint.directory
+            ? hint.manualGitReview
+            : undefined;
+        if (needsHistoricalReview && !manualGitReview) return [];
         const projects = resolve.repository?.(repositoryKey) ?? [];
         return projects.length
           ? [
@@ -158,9 +151,7 @@ export function folderProposal(
                 kind,
                 repositoryKey,
                 gitRevision,
-                ...(recordingDeviceUnknown
-                  ? { recordingDeviceUnknown: true }
-                  : {}),
+                ...(manualGitReview ? { manualGitReview } : {}),
                 projects
               }
             ]

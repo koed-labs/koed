@@ -93,7 +93,7 @@ const readCheckoutSelection = async (
 const checkoutStat = async (gitDir: string) => {
   const info = await stat(gitDir, { bigint: true }).catch(() => null);
   if (!info?.isDirectory()) return null;
-  const { dev, ino, birthtimeNs } = info;
+  const { dev, ino, birthtimeNs, ctimeNs } = info;
   const birthtimeMs =
     Number(birthtimeNs / 1_000_000n) + Number(birthtimeNs % 1_000_000n) / 1e6;
   return {
@@ -101,12 +101,15 @@ const checkoutStat = async (gitDir: string) => {
       gitDir,
       String(dev),
       String(ino),
-      String(birthtimeNs)
+      String(birthtimeNs),
+      // Without birthtime, ctime pins the current incarnation conservatively.
+      ...(birthtimeNs <= 0n ? [String(ctimeNs)] : [])
     ]),
     // Keep the same marker format as capture for selecting the saved remote.
     marker: JSON.stringify([Number(dev), Number(ino), birthtimeMs]),
     birthtimeMs: birthtimeNs > 0n ? birthtimeMs : null,
-    identifiable: dev >= 0n && ino > 0n && birthtimeNs > 0n
+    identifiable: dev >= 0n && ino > 0n && birthtimeNs > 0n,
+    reviewable: dev >= 0n && ino > 0n && (birthtimeNs > 0n || ctimeNs > 0n)
   };
 };
 
@@ -146,6 +149,7 @@ export const readHintRemoteEvidence = async (
   fingerprint: string;
   gitDirectoryBirthtimeMs: number | null;
   gitCheckoutIncarnation?: string;
+  manualGitCheckoutIncarnation?: string;
 } | null> => {
   const gitPaths = await readHintGit(directory, checkoutPathsArgs);
   const entries = gitPaths?.split("\n");
@@ -205,6 +209,13 @@ export const readHintRemoteEvidence = async (
       ? {
           gitCheckoutIncarnation: JSON.stringify([stamp, commonDirectory.stamp])
         }
-      : {})
+      : gitDirectory.reviewable && commonDirectory?.reviewable
+        ? {
+            manualGitCheckoutIncarnation: JSON.stringify([
+              stamp,
+              commonDirectory.stamp
+            ])
+          }
+        : {})
   };
 };

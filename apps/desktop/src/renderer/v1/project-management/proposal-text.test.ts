@@ -54,7 +54,13 @@ describe("proposal text", () => {
   });
 
   it("discloses unknown recording device on the review row and in details", () => {
-    const unknown = { ...proposal, recordingDeviceUnknown: true as const };
+    const unknown = {
+      ...proposal,
+      manualGitReview: {
+        intent: "assumed-local-import" as const,
+        incarnation: "a".repeat(64)
+      }
+    };
     expect(suggestionReason(unknown)).toContain(
       "Koed couldn’t verify where this was recorded"
     );

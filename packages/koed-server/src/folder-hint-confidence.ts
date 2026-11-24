@@ -485,7 +485,7 @@ export const scoreRepositoryAnchor = (
     { code: "local-directory", outcome: directory ? "agrees" : "rejects" },
     { code: "origin-device", outcome: origin },
     { code: "directory-birthtime", outcome: birthtime },
-    // Git directory age gates guarded inference, not advisory suggestions.
+    // Git directory age gates automatic inference, not manual review.
     {
       code: "git-directory-birthtime",
       outcome: gitBirthtime === "rejects" ? "does-not-agree" : gitBirthtime

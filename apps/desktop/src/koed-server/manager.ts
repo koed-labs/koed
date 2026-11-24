@@ -3089,7 +3089,8 @@ export const createKoedServerManager = ({
     },
     maximumResponseBytes: number,
     expectedScopeKey?: string,
-    requireResponseOwner = false
+    requireResponseOwner = false,
+    retry = true
   ): Promise<Record<string, unknown>> => {
     const perform = async (options?: {
       refreshOrigin?: boolean;
@@ -3130,7 +3131,7 @@ export const createKoedServerManager = ({
         return remote;
       } catch (cause) {
         if (cause instanceof PersonalMemoryBoundaryError) throw cause;
-        if (!options?.refreshOrigin) {
+        if (retry && !options?.refreshOrigin) {
           return perform({ ...options, refreshOrigin: true });
         }
         throw new PersonalMemoryBoundaryError("request_failed", true);
@@ -3141,8 +3142,10 @@ export const createKoedServerManager = ({
     let response = remote.response;
     if (response.status === 401) {
       retainedPersonalApiToken = null;
-      remote = await perform({ refreshOrigin: true, refreshToken: true });
-      response = remote.response;
+      if (retry) {
+        remote = await perform({ refreshOrigin: true, refreshToken: true });
+        response = remote.response;
+      }
     }
     if (!response.ok) {
       const status = response.status;
@@ -3173,13 +3176,15 @@ export const createKoedServerManager = ({
   const repositoryReviewJson = (
     path: string,
     init: RequestInit = { method: "GET" },
-    expectedScopeKey?: string
+    expectedScopeKey?: string,
+    options?: { retry?: boolean }
   ) =>
     authenticatedPersonalMemoryRequest(
       ({ apiOrigin }) => ({ url: new URL(path, apiOrigin), init }),
       2 * 1024 * 1024,
       expectedScopeKey,
-      path === "/v1/personal/sessions/folder-hint-evidence"
+      path === "/v1/personal/sessions/folder-hint-evidence",
+      options?.retry
     );
   const projectSelectionRequest = async (
     path: string,

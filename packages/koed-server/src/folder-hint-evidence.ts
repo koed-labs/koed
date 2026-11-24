@@ -319,6 +319,7 @@ const checkoutIncarnation = ({ dev, ino, birthtimeNs }: BigIntStats) =>
 type GatheredFolderHintInput = FolderHintInput & {
   directoryIncarnation?: string;
   gitCheckoutIncarnation?: string;
+  manualGitCheckoutIncarnation?: string;
 };
 
 const gatherCheckout = async (
@@ -335,6 +336,7 @@ const gatherCheckout = async (
     | "directoryIncarnation"
     | "gitDirectoryBirthtimeMs"
     | "gitCheckoutIncarnation"
+    | "manualGitCheckoutIncarnation"
     | "currentRemoteFingerprint"
     | "registry"
     | "hasContainedTranscriptFile"
@@ -361,6 +363,9 @@ const gatherCheckout = async (
     ...(directoryIncarnation ? { directoryIncarnation } : {}),
     ...(git?.gitCheckoutIncarnation
       ? { gitCheckoutIncarnation: git.gitCheckoutIncarnation }
+      : {}),
+    ...(git?.manualGitCheckoutIncarnation
+      ? { manualGitCheckoutIncarnation: git.manualGitCheckoutIncarnation }
       : {}),
     gitDirectoryBirthtimeMs: git?.gitDirectoryBirthtimeMs ?? null,
     directoryStat: {
@@ -468,6 +473,7 @@ export type FolderHintCandidate = Pick<FolderHintResult, "score" | "reasons"> &
         /** Device-local evidence for Desktop revalidation, not part of the hint contract. */
         directoryIncarnation?: string;
         gitCheckoutIncarnation?: string;
+        manualGitCheckoutIncarnation?: string;
       }
   );
 
@@ -523,6 +529,12 @@ export const hintsForConversation = async (
               : {}),
             ...(input.gitCheckoutIncarnation
               ? { gitCheckoutIncarnation: input.gitCheckoutIncarnation }
+              : {}),
+            ...(input.manualGitCheckoutIncarnation
+              ? {
+                  manualGitCheckoutIncarnation:
+                    input.manualGitCheckoutIncarnation
+                }
               : {})
           }
         ]

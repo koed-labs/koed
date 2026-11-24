@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   acknowledgeRepositoryChange,
@@ -50,7 +51,8 @@ export type ProjectCommandsDeps = {
   personalRequest(
     path: string,
     init?: RequestInit,
-    expectedScopeKey?: string
+    expectedScopeKey?: string,
+    options?: { retry?: boolean }
   ): Promise<Record<string, unknown>>;
   governanceRequest(
     path: string,
@@ -283,6 +285,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       inference?: {
         correction: InferenceCorrection;
         evidence: InferenceEvidence;
+        manual: boolean;
       };
     }
   >();
@@ -346,22 +349,67 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     row.gitRevision === 1 &&
     row.firstConversationAt !== null &&
     Number.isFinite(Date.parse(row.firstConversationAt));
+  const manualGitIntent = (
+    row: HintEvidence,
+    provenance: ReturnType<typeof recordingDeviceProvenance>
+  ):
+    | NonNullable<PersonalFolderHint["manualGitReview"]>["intent"]
+    | undefined => {
+    if (
+      !inferenceEligible(row) ||
+      (provenance !== "unknown" && provenance !== "assumed-local-import")
+    )
+      return undefined;
+    if (row.gitUnknownReviewEligible === true) return "user-confirmed-unknown";
+    if (provenance === "assumed-local-import") return provenance;
+  };
   const inferenceCheckout = (
-    candidate: Extract<FolderHintCandidate, { kind: "repository" }>
+    candidate: Extract<FolderHintCandidate, { kind: "repository" }>,
+    manual = false
   ) => {
-    const { directory, directoryIncarnation, gitCheckoutIncarnation } =
-      candidate;
+    const { directory, directoryIncarnation } = candidate;
+    const gitCheckoutIncarnation =
+      candidate.gitCheckoutIncarnation ??
+      (manual ? candidate.manualGitCheckoutIncarnation : undefined);
     if (
       !directory ||
       !directoryIncarnation ||
       !gitCheckoutIncarnation ||
-      !candidate.reasons.some(
-        ({ code, outcome }) =>
-          code === "git-directory-birthtime" && outcome === "agrees"
-      )
+      (!manual &&
+        !candidate.reasons.some(
+          ({ code, outcome }) =>
+            code === "git-directory-birthtime" && outcome === "agrees"
+        ))
     )
       return undefined;
     return { directory, directoryIncarnation, gitCheckoutIncarnation };
+  };
+  const checkoutIncarnation = (
+    checkout: NonNullable<ReturnType<typeof inferenceCheckout>>
+  ) =>
+    createHash("sha256")
+      .update(
+        JSON.stringify([
+          checkout.directoryIncarnation,
+          checkout.gitCheckoutIncarnation
+        ])
+      )
+      .digest("hex");
+  const manualGitHintFields = (
+    row: HintEvidence,
+    provenance: ReturnType<typeof recordingDeviceProvenance>,
+    candidate: Extract<FolderHintCandidate, { kind: "repository" }>
+  ) => {
+    const intent = manualGitIntent(row, provenance);
+    const checkout = inferenceCheckout(candidate, true);
+    return intent && checkout
+      ? {
+          manualGitReview: {
+            intent,
+            incarnation: checkoutIncarnation(checkout)
+          }
+        }
+      : {};
   };
   const hintConversation = (
     ownerUserId: string,
@@ -453,6 +501,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
                             inferenceEligible(row) &&
                             !!inferenceCheckout(result)
                         }),
+                    ...manualGitHintFields(row, provenance, result),
                     ...(row.gitRevision === undefined
                       ? {}
                       : { gitRevision: row.gitRevision }),
@@ -523,6 +572,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
   const confirmGitInference = async (
     sessionId: string,
     correction: InferenceCorrection,
+    manual: boolean,
     expectedScopeKey?: string
   ): Promise<InferenceEvidence> => {
     const payload = await fetchHintEvidence(
@@ -540,10 +590,8 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       throw staleGitInference();
     const provenance = recordingDeviceProvenance(payload.ownerUserId, row);
     const recordingDevice = correction.inferenceIntent === "recording-device";
-    const matchesIntent =
-      correction.inferenceIntent === "user-confirmed-unknown"
-        ? provenance === "unknown" || provenance === "assumed-local-import"
-        : provenance === correction.inferenceIntent;
+    const intent = manual ? manualGitIntent(row, provenance) : provenance;
+    const matchesIntent = intent === correction.inferenceIntent;
     const importAuthority =
       correction.inferenceIntent === "assumed-local-import"
         ? row.importAuthority
@@ -571,7 +619,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     );
     const candidate = candidates?.[0];
     const checkout =
-      candidate?.kind === "repository" && inferenceCheckout(candidate);
+      candidate?.kind === "repository" && inferenceCheckout(candidate, manual);
     if (
       candidates?.length !== 1 ||
       !candidate ||
@@ -613,19 +661,24 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
       input.correction.inferenceIntent
         ? input.correction
         : undefined;
+    const reviewedCheckout =
+      input.action === "preview" ? input.reviewedCheckout : undefined;
     const freshEvidence = guardedPreview
       ? await confirmGitInference(
           input.sessionId,
           guardedPreview,
+          !!reviewedCheckout,
           expectedScopeKey
         )
       : undefined;
     if (
-      input.action === "preview" &&
-      input.reviewedDirectory !== undefined &&
-      input.reviewedDirectory !== freshEvidence?.directory
+      reviewedCheckout &&
+      (!freshEvidence ||
+        reviewedCheckout.directory !== freshEvidence.directory ||
+        reviewedCheckout.incarnation !== checkoutIncarnation(freshEvidence))
     )
       throw staleGitInference();
+    let guardedApply = false;
     if (input.action === "apply") {
       const review = sourceContextReviews.get(input.reviewId);
       if (
@@ -635,13 +688,18 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         throw new Error(
           "This source context review is unavailable. Review the change again."
         );
-      if (review.expectedScopeKey !== expectedScopeKey)
+      if (
+        review.expectedScopeKey !== expectedScopeKey ||
+        (review.inference?.manual && !expectedScopeKey)
+      )
         throw staleGitInference();
       if (review.inference) {
-        const { correction, evidence } = review.inference;
+        guardedApply = true;
+        const { correction, evidence, manual } = review.inference;
         const current = await confirmGitInference(
           input.sessionId,
           correction,
+          manual,
           expectedScopeKey
         );
         if (
@@ -702,7 +760,9 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
                     expectedVersion: input.expectedVersion
                   })
                 },
-                expectedScopeKey
+                expectedScopeKey,
+                // An explicit retry must go through the checkout guard again.
+                guardedApply ? { retry: false } : undefined
               );
     const result = personalSourceContextCommandResultSchema.parse(payload);
     if (
@@ -762,7 +822,11 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         ...(expectedScopeKey ? { expectedScopeKey } : {}),
         ...(guardedPreview && freshEvidence
           ? {
-              inference: { correction: guardedPreview, evidence: freshEvidence }
+              inference: {
+                correction: guardedPreview,
+                evidence: freshEvidence,
+                manual: !!reviewedCheckout
+              }
             }
           : {})
       });
@@ -855,12 +919,20 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         );
       }
     }
-    const payload = await deps.personalRequest(path, {
+    const request = {
       method,
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
-    });
-    return personalProjectCommandResultSchema.parse(payload);
+    };
+    const scope =
+      input.action === "apply_sources" ? input.expectedScopeKey : undefined;
+    const payload = scope
+      ? await deps.personalRequest(path, request, scope)
+      : await deps.personalRequest(path, request);
+    const result = personalProjectCommandResultSchema.parse(payload);
+    if (scope && result.project.projectId !== projectId)
+      throw new PersonalMemoryBoundaryError("invalid_response", false);
+    return result;
   };
 
   return {

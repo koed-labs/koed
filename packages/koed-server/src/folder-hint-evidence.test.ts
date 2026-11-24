@@ -9,6 +9,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { execFileSync } from "node:child_process";
+import * as fsPromises from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +28,8 @@ import {
   setProjectAssociationLookup,
   setProjectRepositoryAnchor
 } from "./project-metadata.js";
+
+vi.mock("node:fs/promises", { spy: true });
 
 const OWNER = "00000000-0000-4000-8000-000000000001";
 const temporary: string[] = [];
@@ -687,6 +690,52 @@ describe("Folder hint evidence", () => {
         }
       }
     );
+
+    it("provides a manual-only incarnation when Git directory birthtime is unavailable", async () => {
+      const { root, paths, env } = await fixture();
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync(
+        "git",
+        ["remote", "add", "origin", "https://github.com/acme/history.git"],
+        { cwd: root }
+      );
+      const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], {
+        cwd: root,
+        encoding: "utf8"
+      }).trim();
+      const { stat: actualStat } =
+        await vi.importActual<typeof fsPromises>("node:fs/promises");
+      const stat = vi.mocked(fsPromises.stat);
+      stat.mockImplementation(async (path, options) => {
+        const info = await actualStat(path, options);
+        if (path === gitDir && info && "birthtimeNs" in info)
+          info.birthtimeNs = 0n;
+        return info;
+      });
+      try {
+        const start = Date.now() + 1_000;
+        const result = await hintsForConversation(
+          paths,
+          conversation({
+            recordedCwd: root,
+            firstConversationAt: start,
+            allowUnknownRepositoryCandidate: true
+          }),
+          { environment: env, now: () => start + 1_000 }
+        );
+        const hint = result?.find(
+          (hint) => hint.tier !== "none" && hint.kind === "repository"
+        );
+        expect(typeof hint?.manualGitCheckoutIncarnation).toBe("string");
+        expect(hint?.reasons).toContainEqual({
+          code: "git-directory-birthtime",
+          outcome: "unavailable"
+        });
+        expect(hint).not.toHaveProperty("gitCheckoutIncarnation");
+      } finally {
+        stat.mockRestore();
+      }
+    });
 
     it("offers an eligible unknown-device repository only for strict pre-start birthtime", async () => {
       const { root, paths, env } = await fixture();

@@ -77,6 +77,8 @@ export const personalFolderHintEvidenceSchema = z
              * chosen, so no anchor needs suggesting. Absent means unknown. */
             gitAnchorKnown: z.boolean().optional(),
             ...gitInferenceEvidence,
+            /** Eligibility without relying on the importing Desktop's authority. */
+            gitUnknownReviewEligible: z.boolean().optional(),
             /** Exact historical import basis, not proof of the recording device. */
             importAuthority: personalGitLocalImportBasisSchema.optional(),
             /** The AI Client that produced the Conversation, e.g. "claude-code". */
@@ -100,6 +102,10 @@ export const personalFolderHintReasonSchema = z
   })
   .strict();
 
+export const personalGitCheckoutIncarnationSchema = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/u);
+
 /** Advisory only. A hint is never a Folder observation, selection or repair. */
 export const personalFolderHintSchema = z
   .object({
@@ -114,6 +120,14 @@ export const personalFolderHintSchema = z
      * (its portable fingerprint, the same key whatever the protocol). */
     repositoryKey: z.string().min(1).max(256).optional(),
     ...gitInferenceEvidence,
+    /** Desktop-local checkout binding for an explicit historical review. */
+    manualGitReview: z
+      .object({
+        intent: z.enum(["user-confirmed-unknown", "assumed-local-import"]),
+        incarnation: personalGitCheckoutIncarnationSchema
+      })
+      .strict()
+      .optional(),
     /** Source revision at which an actionable Folder hint was scored. */
     folderRevision: z.number().int().positive().safe().optional(),
     score: z.number().int().min(0).max(8),

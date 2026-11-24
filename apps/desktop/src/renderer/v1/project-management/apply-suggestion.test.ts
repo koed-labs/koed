@@ -276,16 +276,29 @@ describe("applySuggestions", () => {
     ]);
   });
 
-  it.each(["valid", "missing intent", "changed Project", "wrong destination"])(
+  it.each([
+    "valid",
+    "importer-only",
+    "checkout gone",
+    "missing intent",
+    "changed Project",
+    "wrong destination"
+  ])(
     "uses only a guarded version-pinned review for an approved unknown device: %s",
     async (scenario) => {
       const f = fixture();
       const staged = stagedGitSuggestion(f.row, 1);
+      const intent =
+        scenario === "importer-only"
+          ? ("assumed-local-import" as const)
+          : ("user-confirmed-unknown" as const);
+      const incarnation = "a".repeat(64);
+      const saved = scenario === "valid" || scenario === "importer-only";
       const row = {
         ...staged,
         proposal: {
           ...staged.proposal,
-          recordingDeviceUnknown: true as const,
+          manualGitReview: { intent, incarnation },
           directory: "/work/checkout"
         }
       };
@@ -294,11 +307,14 @@ describe("applySuggestions", () => {
           if (!preview) throw new Error("Missing preview");
           return { context: preview.after, preview };
         }
+        if (input.action === "preview" && scenario === "checkout gone")
+          throw new Error(
+            "This Git Anchor suggestion no longer matches current evidence."
+          );
         const result = await f.originalManage(input);
         if (input.action === "preview" && result.preview) {
           preview = result.preview;
-          if (scenario !== "missing intent")
-            preview.inferenceIntent = "user-confirmed-unknown";
+          if (scenario !== "missing intent") preview.inferenceIntent = intent;
           if (scenario === "changed Project")
             preview.projects.find((p) => p.projectId === gitProject)!.version++;
         }
@@ -312,24 +328,24 @@ describe("applySuggestions", () => {
         scenario === "wrong destination" ? folderProject : gitProject,
         scope
       );
-      expect(result.done).toBe(scenario === "valid" ? 1 : 0);
+      expect(result.done).toBe(saved ? 1 : 0);
       expect(f.manage).toHaveBeenCalledWith(
         expect.objectContaining({
           action: "preview",
-          reviewedDirectory: "/work/checkout",
+          reviewedCheckout: { directory: "/work/checkout", incarnation },
           correction: expect.objectContaining({
-            inferenceIntent: "user-confirmed-unknown",
+            inferenceIntent: intent,
             expectedVersion: 1,
             repository: expect.objectContaining({ key: "gr_validation_0" })
           })
         })
       );
       expect(f.manage.mock.calls.map(([input]) => input.action)).toEqual(
-        scenario === "valid" ? ["get", "preview", "apply"] : ["get", "preview"]
+        saved ? ["get", "preview", "apply"] : ["get", "preview"]
       );
       expect(
         f.manage.mock.calls.map(([input]) => input.expectedScopeKey)
-      ).toEqual(scenario === "valid" ? [scope, scope, scope] : [scope, scope]);
+      ).toEqual(saved ? [scope, scope, scope] : [scope, scope]);
     }
   );
 

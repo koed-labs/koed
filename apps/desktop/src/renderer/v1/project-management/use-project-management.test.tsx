@@ -11,7 +11,8 @@ import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { useProjectManagement } from "./use-project-management.js";
 
 function settingsScreen(
-  f: ReturnType<typeof createProjectManagementValidationApi>
+  f: ReturnType<typeof createProjectManagementValidationApi>,
+  scopeKey = "settings-test"
 ) {
   const projectId = validationId(2);
   // Deliberately keep the parent inventory fixed. Only the explicit refresh
@@ -20,7 +21,7 @@ function settingsScreen(
   const store = new PersonalMemoryStore(f.api);
   function Screen() {
     const management = useProjectManagement({
-      scopeKey: "settings-test",
+      scopeKey,
       api: f.api,
       store,
       projects,
@@ -286,6 +287,82 @@ it.each(["General", "Conversations"])(
       }
     } finally {
       await ui.cleanup();
+    }
+  }
+);
+
+it.each([
+  { receipt: "matching", scope: "a", error: null },
+  { receipt: "mismatched", scope: "b", error: "another Project" },
+  {
+    receipt: "rejected by main",
+    scope: "c",
+    error: "Local Personal Memory returned an invalid response."
+  }
+])(
+  "handles a scoped suggestion rejection when the receipt is $receipt",
+  async ({ receipt, scope, error }) => {
+    const f = createProjectManagementValidationApi();
+    const projectId = validationId(2);
+    const sessionId = validationId(108);
+    const scopeKey = scope.repeat(64);
+    f.api.folderHints = vi.fn(async () => [
+      {
+        sessionId,
+        kind: "repository" as const,
+        tier: "medium" as const,
+        score: 4,
+        repositoryKey: "gr_validation_0",
+        gitRevision: 1,
+        reasons: []
+      }
+    ]);
+    const manage = vi.spyOn(f.api, "manageProject");
+    const ui = settingsScreen(f, scopeKey);
+    vi.useFakeTimers();
+    try {
+      await ui.open();
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      await ui.click(ui.button(/^Conversations/));
+      await ui.openGroups();
+      await ui.click(ui.rowAction("More for Notes on personal knowledge"));
+      const reject = [
+        ...document.querySelectorAll<HTMLElement>("[role=menuitem]")
+      ].find((item) => item.textContent?.trim() === "Not this one")!;
+      await ui.click(reject);
+      if (receipt === "mismatched") {
+        manage.mockResolvedValueOnce({
+          project: f.projects.get(validationId(1))!.meta
+        });
+      } else if (receipt === "rejected by main") {
+        manage.mockRejectedValueOnce(new Error(error!));
+      }
+      await ui.click(ui.button(/^Save changes$/));
+      expect(manage).toHaveBeenCalledWith({
+        action: "apply_sources",
+        projectId,
+        expectedVersion: 1,
+        expectedScopeKey: scopeKey,
+        changes: [{ action: "exclude_session", sessionId }]
+      });
+      const undo = ui.rowAction("Undo for Notes on personal knowledge");
+      if (error) {
+        expect(ui.button(/^Save changes$/).disabled).toBe(false);
+        expect(undo).not.toBeNull();
+        expect(document.body.textContent).toContain("Will be excluded");
+        expect(document.body.textContent).toContain(error);
+        expect(document.body.textContent).not.toContain(
+          "Project settings saved"
+        );
+      } else {
+        expect(ui.button(/^Save changes$/).disabled).toBe(true);
+        expect(undo).toBeNull();
+        expect(ui.rowAction("More for Notes on personal knowledge")).toBeNull();
+        expect(document.body.textContent).toContain("Project settings saved");
+      }
+    } finally {
+      await ui.cleanup();
+      vi.useRealTimers();
     }
   }
 );

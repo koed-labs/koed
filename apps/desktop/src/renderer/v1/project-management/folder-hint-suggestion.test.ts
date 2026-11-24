@@ -129,14 +129,18 @@ describe("folderProposal", () => {
         directory: "/work/a",
         recordingDeviceProvenance: provenance,
         gitRevision: 1,
-        gitInferenceEligibility: true
+        gitInferenceEligibility: true,
+        manualGitReview: {
+          intent: "user-confirmed-unknown",
+          incarnation: "a".repeat(64)
+        }
       });
       const advisory = { repository: () => [lyons] };
       const batch = { ...advisory, reviewBatch: true };
       const proposal = folderProposal([unknown], batch)!;
       expect(proposal).toMatchObject({
         kind: "repository",
-        recordingDeviceUnknown: true,
+        manualGitReview: unknown.manualGitReview,
         gitRevision: 1
       });
       const changed = folderProposal(
@@ -154,7 +158,7 @@ describe("folderProposal", () => {
       expect(folderProposal([unknown], advisory)).toBeUndefined();
       for (const change of [
         { gitRevision: 2 },
-        { gitInferenceEligibility: false },
+        { manualGitReview: undefined },
         { directory: undefined }
       ])
         expect(
@@ -169,13 +173,13 @@ describe("folderProposal", () => {
         kind: "repository"
       });
       expect(folderProposal([copy], advisory)).not.toHaveProperty(
-        "recordingDeviceUnknown"
+        "manualGitReview"
       );
     }
   );
 
   it.each(["does-not-agree", "unavailable"] as const)(
-    "keeps an assumed-local match advisory when Git directory age is %s",
+    "requires explicit guarded approval when Git directory age is %s",
     (outcome) => {
       const candidate = hint({
         kind: "repository",
@@ -183,15 +187,52 @@ describe("folderProposal", () => {
         gitRevision: 1,
         gitInferenceEligibility: false,
         recordingDeviceProvenance: "assumed-local-import",
+        manualGitReview: {
+          intent: "assumed-local-import",
+          incarnation: "a".repeat(64)
+        },
         directory: "/work/a",
         reasons: [{ code: "git-directory-birthtime", outcome }]
       });
-      const proposal = folderProposal([candidate], {
-        repository: () => [lyons],
-        reviewBatch: true
+      const resolve = { repository: () => [lyons], reviewBatch: true };
+      const proposal = folderProposal([candidate], resolve)!;
+      expect(proposal).toMatchObject({
+        kind: "repository",
+        gitRevision: 1,
+        manualGitReview: candidate.manualGitReview
       });
-      expect(proposal).toMatchObject({ kind: "repository", gitRevision: 1 });
-      expect(proposal).not.toHaveProperty("recordingDeviceUnknown");
+      const changed = folderProposal(
+        [
+          {
+            ...candidate,
+            manualGitReview: {
+              ...candidate.manualGitReview!,
+              incarnation: "b".repeat(64)
+            }
+          }
+        ],
+        resolve
+      )!;
+      expect(
+        suggestionApprovalKey(lyons.id, { sessionId: session, proposal })
+      ).not.toBe(
+        suggestionApprovalKey(lyons.id, {
+          sessionId: session,
+          proposal: changed
+        })
+      );
+      expect(
+        folderProposal(
+          [
+            {
+              ...candidate,
+              recordingDeviceProvenance: "unknown",
+              manualGitReview: undefined
+            }
+          ],
+          resolve
+        )
+      ).toBeUndefined();
     }
   );
 
