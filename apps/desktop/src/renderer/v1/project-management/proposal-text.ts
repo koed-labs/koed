@@ -17,6 +17,17 @@ export function shortPath(path: string, max = 44): string {
 /** A few words on where the suggestion comes from, for the row. */
 const unverifiedRecording = "Koed couldn’t verify where this was recorded";
 
+export function recordingOriginWarning(
+  rows: readonly { proposal: FolderProposal }[]
+): string | undefined {
+  const count = rows.filter(
+    ({ proposal }) => proposal.kind === "repository" && proposal.manualGitReview
+  ).length;
+  return count > 0
+    ? `Recording origin unverified for ${count} Conversation${count === 1 ? "" : "s"}`
+    : undefined;
+}
+
 export function suggestionReason(proposal: FolderProposal): string {
   const name = proposal.directory
     ? folderLabel(proposal.directory).name

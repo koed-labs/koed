@@ -297,6 +297,7 @@ it.each([
       await render(candidate);
       await click(action === "Add" ? add()! : button("Add 2"));
       expect(add()).toBeNull();
+      expect(document.body.textContent).not.toContain("Recording origin");
       await render(replacement);
       expect(add()).not.toBeNull();
       await render(candidate);
@@ -517,6 +518,116 @@ it("distinguishes same-named Folder rule options by path, device, and directory 
       [],
       []
     );
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it("discloses unverified recording origin from collapsed bulk Add through Save changes", async () => {
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const projects = mergeProjectSources(f.inventory(), []);
+  const project = projects.find((p) => p.id === projectId)!;
+  const rule = project.inclusionRules![0]!.target;
+  if (rule.kind !== "repository") throw new Error("Missing Git Anchor fixture");
+  const ordinary = {
+    sessionId: validationId(901),
+    title: "Ordinary suggestion",
+    proposal: {
+      action: "anchor" as const,
+      kind: "repository" as const,
+      repositoryKey: rule.repository.key,
+      gitRevision: 1,
+      tier: "medium" as const,
+      projects: [{ id: projectId, name: project.name }],
+      evidence: []
+    }
+  };
+  const historical = {
+    sessionId: validationId(902),
+    title: "Historical suggestion",
+    proposal: {
+      ...ordinary.proposal,
+      directory: "/code/koed",
+      manualGitReview: {
+        intent: "assumed-local-import" as const,
+        incarnation: "a".repeat(64)
+      }
+    }
+  };
+  const save = vi.fn(async () => projects);
+  const close = vi.fn();
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const click = (el: HTMLElement) => act(async () => el.click());
+  const button = (text: string) =>
+    [...document.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === text
+    )!;
+  const description = (button: HTMLElement) =>
+    document.getElementById(button.getAttribute("aria-describedby") ?? "");
+  const warning = "Recording origin unverified for 1 Conversation";
+  const footer = () => button("Save changes").parentElement;
+  try {
+    await act(async () =>
+      root.render(
+        <ProjectSettingsDialog
+          api={f.api}
+          store={new PersonalMemoryStore(f.api)}
+          projects={projects}
+          projectId={projectId}
+          page="conversations"
+          suggestions={{ rows: [ordinary, historical], loading: false }}
+          onClose={close}
+          onSave={save}
+          onRefresh={vi.fn()}
+          onDelete={vi.fn()}
+        />
+      )
+    );
+    expect(document.body.textContent).not.toContain(historical.title);
+    expect(footer()?.textContent).not.toContain("Recording origin");
+    const add = button("Add 2");
+    const groupWarning = description(add);
+    expect.soft(groupWarning?.parentElement).toBe(add.parentElement);
+    expect.soft(groupWarning?.textContent).toBe(warning);
+    await click(add);
+    expect(document.body.textContent).not.toContain(historical.title);
+    expect(save).not.toHaveBeenCalled();
+    expect.soft(footer()?.textContent).toContain(warning);
+    expect.soft(description(button("Save changes"))?.textContent).toBe(warning);
+    const undo = button("Undo");
+    expect(description(undo)).toBeNull();
+    expect(undo.parentElement?.textContent).not.toContain("Recording origin");
+    await click(undo);
+    expect(description(button("Add 2"))?.textContent).toBe(warning);
+    expect(footer()?.textContent).not.toContain("Recording origin");
+    expect(button("Save changes").disabled).toBe(true);
+
+    await click(button("Add 2"));
+    await openGroups();
+    await click(
+      document.querySelector<HTMLButtonElement>(
+        '[aria-label="Undo for Historical suggestion"]'
+      )!
+    );
+    expect(footer()?.textContent).toContain("1 to add");
+    expect(footer()?.textContent).not.toContain("Recording origin");
+    expect(description(button("Save changes"))).toBeNull();
+    expect(button("Save changes").disabled).toBe(false);
+    await click(button("Add 2"));
+    await click(button("General"));
+    expect.soft(footer()?.textContent).toContain(warning);
+    expect(description(button("Save changes"))?.textContent).toBe(warning);
+    await click(button("Save changes"));
+    expect(save).toHaveBeenCalledExactlyOnceWith(
+      project,
+      [],
+      [ordinary, historical],
+      []
+    );
+    expect(close).toHaveBeenCalledOnce();
   } finally {
     await act(async () => root.unmount());
     container.remove();

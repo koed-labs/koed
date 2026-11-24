@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import {
   Button,
   DropdownMenu,
@@ -45,7 +45,7 @@ import {
   suggestionApprovalKey,
   type FolderProposal
 } from "./folder-hint-suggestion.js";
-import { suggestionReason } from "./proposal-text.js";
+import { recordingOriginWarning, suggestionReason } from "./proposal-text.js";
 import type { SuggestionRow } from "./use-folder-suggestions.js";
 
 export type ConversationFacts = ReadonlyMap<
@@ -506,6 +506,7 @@ export function ConversationsPanel({
 }) {
   // Every group starts closed each time the page opens.
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set());
+  const bulkWarningId = useId();
   const toggle = (key: string) =>
     setOpenGroups((old) => {
       const next = new Set(old);
@@ -757,13 +758,17 @@ export function ConversationsPanel({
   });
 
   const suggestionSection = suggestionGroups(draft, suggested).flatMap(
-    (group) => {
+    (group, index) => {
       const shown = group.rows.filter((row) => matches(row.title));
       if (searching && shown.length === 0) return [];
       const key = `suggested:${group.key}`;
       const open = group.rows.filter((row) => !rejected.has(approvalKey(row)));
       const allAdded =
         open.length > 0 && open.every((row) => accepted.has(approvalKey(row)));
+      const warning = recordingOriginWarning(
+        open.filter((row) => !accepted.has(approvalKey(row)))
+      );
+      const warningId = `${bulkWarningId}-${index}`;
       return [
         <Group
           key={key}
@@ -776,19 +781,27 @@ export function ConversationsPanel({
           onToggle={() => toggle(key)}
           actions={
             open.length > 0 && (
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={busy}
-                aria-label={
-                  allAdded
-                    ? `Undo adding ${group.name}`
-                    : `Add ${open.length} from ${group.name}`
-                }
-                onClick={() => choose(open, allAdded ? undefined : "add")}
-              >
-                {allAdded ? "Undo" : `Add ${open.length}`}
-              </Button>
+              <>
+                {warning && (
+                  <span id={warningId} className="v1-pm-recording-warning">
+                    {warning}
+                  </span>
+                )}
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={busy}
+                  aria-label={
+                    allAdded
+                      ? `Undo adding ${group.name}`
+                      : `Add ${open.length} from ${group.name}`
+                  }
+                  aria-describedby={warning ? warningId : undefined}
+                  onClick={() => choose(open, allAdded ? undefined : "add")}
+                >
+                  {allAdded ? "Undo" : `Add ${open.length}`}
+                </Button>
+              </>
             )
           }
         >

@@ -152,6 +152,12 @@
   font-size: 11px;
   color: var(--muted-foreground);
 }
+.v1-pm-recording-warning {
+  display: block;
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
 .v1-pm-field {
   display: flex;
   flex-direction: column;
@@ -900,6 +906,20 @@ button.v1-pm-row-action svg {
   align-items: center;
   gap: 4px;
   padding-right: 6px;
+}
+.v1-pm-group-head:has(> .v1-pm-recording-warning) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 0;
+  padding-bottom: 4px;
+}
+.v1-pm-group-head:has(> .v1-pm-recording-warning) > .v1-pm-group-toggle {
+  grid-column: 1 / -1;
+}
+.v1-pm-group-head > .v1-pm-recording-warning {
+  justify-self: end;
+  padding-left: 10px;
+  line-height: 1.25;
 }
 .v1-pm-group.is-pending .v1-pm-group-head {
   background: var(--v1-accent-soft);

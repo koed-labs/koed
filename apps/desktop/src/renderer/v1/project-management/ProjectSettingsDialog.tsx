@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Badge, Button, DialogFooter, Input } from "@koed-labs/ui";
 import {
   Check,
@@ -41,6 +41,7 @@ import {
   proposalRevision,
   suggestionApprovalKey
 } from "./folder-hint-suggestion.js";
+import { recordingOriginWarning } from "./proposal-text.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
 import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
@@ -176,6 +177,8 @@ export function ProjectSettingsDialog({
   const validAccepted = new Set(
     acceptedRows.map((row) => stagedApprovalKey(active, row))
   );
+  const saveWarning = recordingOriginWarning(acceptedRows);
+  const saveWarningId = useId();
   const validRejected = stillValid(rejected);
   // Drop stale decisions so changed evidence or removed rules need fresh review.
   if (validAccepted.size !== accepted.size) setAccepted(validAccepted);
@@ -533,11 +536,21 @@ export function ProjectSettingsDialog({
           )}
         </div>
         <DialogFooter className="v1-pm-settings-footer">
-          <span>{dirty ? footerSummary : ""}</span>
+          <span>
+            {dirty ? footerSummary : ""}
+            <span
+              id={saveWarningId}
+              className="v1-pm-recording-warning"
+              role="status"
+            >
+              {saveWarning}
+            </span>
+          </span>
           <Button variant="outline" disabled={busy} onClick={close}>
             Cancel
           </Button>
           <Button
+            aria-describedby={saveWarning ? saveWarningId : undefined}
             disabled={
               !draft || !!editError || !dirty || !draft.name.trim() || busy
             }
