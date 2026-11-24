@@ -11,6 +11,7 @@ import type {
   KinActivityBridge,
   KinPlacement
 } from "../../ipc/floating-kin-protocol.js";
+import { KoedLogo } from "../KoedLogo.js";
 import { Pixelkin } from "../v1/pixelkin/Pixelkin.js";
 import {
   DEFAULT_AGENT_LOOK,
@@ -172,23 +173,30 @@ export function StandaloneKin({
   active,
   placement = "desktop",
   size = 88,
+  wakeOnAppear = false,
   onOpenDesktop
 }: {
   active: boolean;
   placement?: "desktop" | "sidebar";
   size?: number;
+  // Starts awake, as if hovered, so it never arrives asleep.
+  wakeOnAppear?: boolean;
   onOpenDesktop?: () => void;
 }) {
   const Avatar = onOpenDesktop ? "button" : "div";
   const wakeTimer = useRef<number | undefined>(undefined);
-  const [recentHover, setRecentHover] = useState(false);
+  const [recentHover, setRecentHover] = useState(wakeOnAppear);
   const awake = active || recentHover;
   const wake = () => {
     window.clearTimeout(wakeTimer.current);
     setRecentHover(true);
     wakeTimer.current = window.setTimeout(() => setRecentHover(false), 60_000);
   };
-  useEffect(() => () => window.clearTimeout(wakeTimer.current), []);
+  useEffect(() => {
+    if (wakeOnAppear) wake();
+    return () => window.clearTimeout(wakeTimer.current);
+    // Only on appearing; later wakes come from hover.
+  }, []);
   return (
     <Avatar
       className="fk-kin-avatar"
@@ -219,6 +227,96 @@ export function StandaloneKin({
         </span>
       )}
     </Avatar>
+  );
+}
+
+// The rail Kin glances up and right with a happy face, then fades to the logo.
+// Waking runs the same steps in reverse.
+// How long the glance holds before fading: going to rest, and waking.
+const restGlanceMs = 700;
+const wakeGlanceMs = 900;
+const fadeMs = 450;
+// After the pointer leaves, the Kin stays live this long before resting.
+const hoverLingerMs = 5_000;
+const glanceUp = [0.75, 0.65] as const;
+// The Kin's body fills about two thirds of a tightly framed canvas. Drawn at
+// 80% in a 68px canvas, it matches the 36px logo with room for turned arms.
+const railKinSize = 68;
+const railKinFit = 0.8;
+
+function prefersReducedMotion() {
+  return (
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+/**
+ * The Chief of Staff on the Desktop rail. While a capture is recent, or the
+ * pointer is over it, it is the live Kin; otherwise it rests as the Koed logo.
+ */
+export function RailKin({ active }: { active: boolean }) {
+  const [hovered, setHovered] = useState(false);
+  const [lingering, setLingering] = useState(false);
+  const linger = useRef<number | undefined>(undefined);
+  const awake = active || hovered || lingering;
+  const [phase, setPhase] = useState<"live" | "arriving" | "leaving" | "logo">(
+    awake ? "live" : "logo"
+  );
+  useEffect(() => {
+    if (prefersReducedMotion()) {
+      setPhase(awake ? "live" : "logo");
+      return;
+    }
+    if (awake) {
+      setPhase((current) => (current === "live" ? "live" : "arriving"));
+      const timer = window.setTimeout(
+        () => setPhase("live"),
+        fadeMs + wakeGlanceMs
+      );
+      return () => window.clearTimeout(timer);
+    }
+    setPhase((current) => (current === "logo" ? "logo" : "leaving"));
+    const timer = window.setTimeout(
+      () => setPhase("logo"),
+      restGlanceMs + fadeMs
+    );
+    return () => window.clearTimeout(timer);
+  }, [awake]);
+  useEffect(() => () => window.clearTimeout(linger.current), []);
+  return (
+    <span
+      className="fk-rail-kin"
+      data-phase={phase}
+      role="img"
+      aria-label="Chief of Staff"
+      aria-description={awake ? "Awake" : "Resting"}
+      onMouseEnter={() => {
+        window.clearTimeout(linger.current);
+        setLingering(false);
+        setHovered(true);
+      }}
+      onMouseLeave={() => {
+        setHovered(false);
+        setLingering(true);
+        linger.current = window.setTimeout(
+          () => setLingering(false),
+          hoverLingerMs
+        );
+      }}
+    >
+      {phase !== "logo" && (
+        <Pixelkin
+          {...chiefOfStaffBrand}
+          size={railKinSize}
+          fit={railKinFit}
+          motion="unfocused"
+          expression={phase === "live" ? "happy" : "joy"}
+          gaze={phase === "live" ? null : glanceUp}
+        />
+      )}
+      <KoedLogo color className="fk-rail-logo" />
+    </span>
   );
 }
 
@@ -290,23 +388,30 @@ export function useKinActivity(
   return { activity, at, recent, recentCapture, conversations, overflow };
 }
 
-export function KinActivityContent({
+export function kinConversationStatus(conversation: Conversation, at: number) {
+  const seconds = captureSeconds(conversation.lastActivityAt, at);
+  return { age: captureAge(seconds), recent: seconds < recentSeconds };
+}
+
+/**
+ * Selection and summary panel for the Kin's recent Conversations. The
+ * floating dock opens it from chips; the Desktop sidebar opens it from rows.
+ */
+export function useKinSummaryPanel({
   sample,
   bridge,
   surface,
   visible = true,
-  showStatus = false,
   openAiModels
 }: {
   sample: ReturnType<typeof useKinActivity>;
   bridge?: KinActivityBridge;
   surface: RefObject<HTMLElement | null>;
   visible?: boolean;
-  showStatus?: boolean;
   openAiModels?: () => void;
 }) {
-  const { activity, at, recent, conversations, overflow } = sample;
-  const deadlines = visible ? conversations.map(workingDeadline) : [];
+  const { at, recent } = sample;
+  const deadlines = visible ? recent.map(workingDeadline) : [];
   const workingNow = useWorkingClock(deadlines, at);
   const { view, summarize, reopen, cancel, isCancelling } = useSummary(bridge);
   const { selected, close, toggle } = useSelection(
@@ -341,38 +446,73 @@ export function KinActivityContent({
     node?.addEventListener("keydown", onKeyDown);
     return () => node?.removeEventListener("keydown", onKeyDown);
   }, [close, selected, surface, visible]);
+  const panel =
+    visible && selected ? (
+      <FloatingKinPanel
+        conversation={selected}
+        preview={preview}
+        isCancelling={isCancelling}
+        view={staleProjectView ? null : selectedView}
+        age={captureAge(captureSeconds(selected.lastActivityAt, at))}
+        close={close}
+        summarize={() =>
+          void summarize({
+            sessionId: selected.sessionId,
+            action: "conversation"
+          })
+        }
+        cancel={() => void cancel()}
+        openAiModels={openAiModels}
+        openLastSummary={
+          latest
+            ? () =>
+                void reopen(
+                  {
+                    sessionId: selected.sessionId,
+                    projectId: selected.projectId
+                  },
+                  latest
+                )
+            : undefined
+        }
+      />
+    ) : null;
+  return {
+    panel,
+    selected: visible ? selected : undefined,
+    close,
+    toggle,
+    isWorking: (conversation: Conversation) =>
+      workingDeadline(conversation) > workingNow
+  };
+}
+
+export function KinActivityContent({
+  sample,
+  bridge,
+  surface,
+  visible = true,
+  showStatus = false,
+  openAiModels
+}: {
+  sample: ReturnType<typeof useKinActivity>;
+  bridge?: KinActivityBridge;
+  surface: RefObject<HTMLElement | null>;
+  visible?: boolean;
+  showStatus?: boolean;
+  openAiModels?: () => void;
+}) {
+  const { activity, at, conversations, overflow } = sample;
+  const { panel, selected, toggle, isWorking } = useKinSummaryPanel({
+    sample,
+    bridge,
+    surface,
+    visible,
+    openAiModels
+  });
   return (
     <>
-      {visible && selected ? (
-        <FloatingKinPanel
-          conversation={selected}
-          preview={preview}
-          isCancelling={isCancelling}
-          view={staleProjectView ? null : selectedView}
-          age={captureAge(captureSeconds(selected.lastActivityAt, at))}
-          close={close}
-          summarize={() =>
-            void summarize({
-              sessionId: selected.sessionId,
-              action: "conversation"
-            })
-          }
-          cancel={() => void cancel()}
-          openAiModels={openAiModels}
-          openLastSummary={
-            latest
-              ? () =>
-                  void reopen(
-                    {
-                      sessionId: selected.sessionId,
-                      projectId: selected.projectId
-                    },
-                    latest
-                  )
-              : undefined
-          }
-        />
-      ) : null}
+      {panel}
       {conversations.length > 0 || overflow > 0 ? (
         <div
           className="fk-dock"
@@ -384,11 +524,9 @@ export function KinActivityContent({
               key={conversation.sessionId}
               conversation={conversation}
               now={at}
-              working={(deadlines[index] ?? 0) > workingNow}
+              working={isWorking(conversation)}
               index={index}
-              expanded={
-                visible && selected?.sessionId === conversation.sessionId
-              }
+              expanded={selected?.sessionId === conversation.sessionId}
               toggle={(button) => toggle(conversation.sessionId, button)}
             />
           ))}
@@ -434,6 +572,7 @@ function OverlayKinContent({
       />
       <StandaloneKin
         active={focused || sample.recentCapture}
+        wakeOnAppear
         onOpenDesktop={onOpenDesktop}
       />
     </>
@@ -523,7 +662,8 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
           }
         />
       ) : (
-        <StandaloneKin active={false} />
+        // Leaving, it stays awake through the fade instead of dozing off.
+        <StandaloneKin active />
       )}
     </main>
   );

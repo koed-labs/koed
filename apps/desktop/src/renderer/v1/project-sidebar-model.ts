@@ -3,6 +3,7 @@ import {
   personalInventoryConversationKey,
   personalInventoryReference
 } from "@koed-labs/shared/personal-desktop";
+import type { PersonalProjectKin } from "@koed-labs/shared";
 import type { DesktopProject } from "../../project-memory-ui.js";
 import { sessionSelectionId } from "../../project-memory-ui.js";
 import type { V1ConversationIntent } from "../../ipc/v1-state-protocol.js";
@@ -30,6 +31,8 @@ export type SidebarConversation = {
   sessionId?: string;
   sourceProjectId?: string;
   managementPending?: boolean;
+  // The Project's saved Kin look, so the row's Kin matches Home.
+  projectKin?: PersonalProjectKin;
 };
 export type SidebarProject = {
   id: string;
@@ -124,6 +127,9 @@ export function buildProjectSidebar(
         projectName: group.name,
         sessionId: thread.sessionId ?? undefined,
         sourceProjectId: project.namedProject ? project.id : undefined,
+        ...(project.namedProject?.kin && {
+          projectKin: project.namedProject.kin
+        }),
         managementPending: Boolean(
           intent?.presentationProjectId && !intent.projectMembershipConfirmed
         )
@@ -206,7 +212,7 @@ export function filterSidebar(
 
 export const projectPinKey = (projectId: string) => `project:${projectId}`;
 
-type SidebarPin =
+export type SidebarPin =
   | { kind: "project"; key: string; project: SidebarProject }
   | { kind: "conversation"; key: string; row: SidebarConversation };
 
@@ -236,4 +242,26 @@ export function pinnedSidebarItems(
     seen.add(item.key);
     return [item];
   });
+}
+
+/**
+ * The Conversations list: pinned Projects and Conversations in pin order, then
+ * every other Conversation by most recent activity. A Conversation in several
+ * Projects appears once.
+ */
+export function conversationList(
+  projects: readonly SidebarProject[],
+  pins: readonly string[]
+): { pinned: SidebarPin[]; recent: SidebarConversation[] } {
+  const pinned = pinnedSidebarItems(projects, pins);
+  const seen = new Set(
+    pinned.flatMap((item) => (item.kind === "conversation" ? [item.key] : []))
+  );
+  const recent: SidebarConversation[] = [];
+  for (const row of projects.flatMap((project) => project.conversations)) {
+    if (seen.has(row.key)) continue;
+    seen.add(row.key);
+    recent.push(row);
+  }
+  return { pinned, recent: recent.sort(activityOrder) };
 }

@@ -1,59 +1,73 @@
 import {
+  useCallback,
   useLayoutEffect,
   useRef,
   useState,
-  type ReactNode,
   type RefObject
 } from "react";
+import { createPortal } from "react-dom";
 import type {
   DesktopKinBridge,
-  KinPresentation,
-  KinActivityBridge
+  KinPresentation
 } from "../../ipc/floating-kin-protocol.js";
+import type { SidebarLive } from "../v1/ProjectSidebar.js";
+import type { SidebarConversation } from "../v1/project-sidebar-model.js";
 import {
-  KinActivityContent,
-  StandaloneKin,
-  useKinActivity
+  RailKin,
+  kinConversationStatus,
+  useKinActivity,
+  useKinSummaryPanel
 } from "./FloatingKin.js";
+import { clientNames } from "./FloatingKinPanel.js";
 import { useKinSurfaceActivity } from "./use-floating-kin.js";
 
 type FocusFallback = RefObject<HTMLInputElement | null>;
-type RenderDock = (focusFallback: FocusFallback) => ReactNode;
+type Anchor = { top: number; left: number };
 
-function DesktopKinDock({
-  bridge,
-  focusFallback,
-  sample,
-  openAiModels
+const panelGap = 8;
+
+// Beside the opened row, just past the sidebar's right edge.
+function anchorFor(trigger: HTMLElement): Anchor {
+  const row = trigger.closest("li") ?? trigger;
+  const edge =
+    trigger.closest('[data-slot="sidebar-container"]')?.getBoundingClientRect()
+      .right ?? row.getBoundingClientRect().right;
+  return {
+    top: Math.max(panelGap, row.getBoundingClientRect().top - panelGap),
+    left: edge + panelGap
+  };
+}
+
+function AnchoredPanel({
+  panel,
+  anchor,
+  surface,
+  focusFallback
 }: {
-  bridge: KinActivityBridge;
+  panel: React.ReactNode;
+  anchor: Anchor;
+  surface: RefObject<HTMLElement | null>;
   focusFallback: FocusFallback;
-  sample: ReturnType<typeof useKinActivity>;
-  openAiModels?: () => void;
 }) {
-  const surface = useRef<HTMLElement>(null);
   useLayoutEffect(
     () => () => {
       if (surface.current?.contains(document.activeElement))
         focusFallback.current?.focus({ preventScroll: true });
     },
-    [focusFallback]
+    [focusFallback, surface]
   );
-  return (
+  return createPortal(
     <section
       className="fk-surface"
-      data-fk-placement="sidebar"
+      data-fk-placement="anchored"
       aria-label="Chief of Staff activity"
       ref={surface}
       tabIndex={-1}
+      style={{ top: anchor.top, left: anchor.left }}
     >
-      <KinActivityContent
-        sample={sample}
-        bridge={bridge}
-        surface={surface}
-        openAiModels={openAiModels}
-      />
-    </section>
+      {panel}
+    </section>,
+    document.body
   );
 }
 
@@ -82,30 +96,110 @@ export function useDesktopKin(
   const inApp =
     shellVisible && placement === "sidebar" && !presentation?.sidebarPending;
   const sample = useKinActivity(activityBridge, "sidebar", inApp, scopeKey);
-  const dock: RenderDock = (focusFallback) =>
-    inApp &&
-    activityBridge &&
-    (sample.conversations.length || sample.overflow) ? (
-      <DesktopKinDock
+  const surface = useRef<HTMLElement>(null);
+  const summary = useKinSummaryPanel({
+    sample,
+    bridge: activityBridge,
+    surface,
+    visible: inApp && Boolean(activityBridge),
+    openAiModels
+  });
+  const [anchor, setAnchor] = useState<{
+    trigger: HTMLElement;
+    at: Anchor;
+  } | null>(null);
+  // Follow the row when the sidebar scrolls or the window resizes.
+  useLayoutEffect(() => {
+    if (!anchor || !summary.selected) return;
+    const follow = () => {
+      if (anchor.trigger.isConnected)
+        setAnchor({ trigger: anchor.trigger, at: anchorFor(anchor.trigger) });
+    };
+    window.addEventListener("resize", follow);
+    window.addEventListener("scroll", follow, true);
+    return () => {
+      window.removeEventListener("resize", follow);
+      window.removeEventListener("scroll", follow, true);
+    };
+  }, [anchor, summary.selected]);
+  const { toggle, close } = summary;
+  const open = useCallback(
+    (sessionId: string, trigger: HTMLButtonElement) => {
+      setAnchor({ trigger, at: anchorFor(trigger) });
+      toggle(sessionId, trigger);
+    },
+    [toggle]
+  );
+
+  const avatar = inApp ? <RailKin active={sample.recentCapture} /> : null;
+
+  const tracked = new Map(
+    sample.recent.map((conversation) => [conversation.sessionId, conversation])
+  );
+  const working = sample.recent.filter(summary.isWorking).length;
+  const live: SidebarLive | undefined =
+    inApp && activityBridge
+      ? {
+          status:
+            working || sample.recent.length ? (
+              <span className="fk-live-status" role="status">
+                {working
+                  ? `${working} working`
+                  : `${sample.recent.length} active`}
+              </span>
+            ) : null,
+          marker: (row: SidebarConversation) => {
+            const conversation = row.sessionId
+              ? tracked.get(row.sessionId)
+              : undefined;
+            if (!conversation) return null;
+            const { age, recent } = kinConversationStatus(
+              conversation,
+              sample.at
+            );
+            const isWorking = summary.isWorking(conversation);
+            const expanded =
+              summary.selected?.sessionId === conversation.sessionId;
+            return (
+              <button
+                type="button"
+                className="fk-row-live"
+                data-recent={recent || isWorking}
+                aria-expanded={expanded}
+                aria-controls={expanded ? "floating-kin-summary" : undefined}
+                aria-label={`Chief of Staff summary for ${row.title}. ${clientNames[conversation.client]}. ${isWorking ? "Working. " : ""}Captured ${age} ago.`}
+                onClick={(event) =>
+                  open(conversation.sessionId, event.currentTarget)
+                }
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && expanded) {
+                    event.preventDefault();
+                    close();
+                  }
+                }}
+              >
+                <span className="fk-row-dot" aria-hidden="true" />
+                {isWorking ? (
+                  "Working"
+                ) : (
+                  <time dateTime={conversation.lastActivityAt}>{age}</time>
+                )}
+              </button>
+            );
+          }
+        }
+      : undefined;
+
+  const panel = (focusFallback: FocusFallback) =>
+    summary.panel && anchor ? (
+      <AnchoredPanel
         key={JSON.stringify([placement, presentation?.revision, scopeKey])}
-        bridge={activityBridge}
-        sample={sample}
+        panel={summary.panel}
+        anchor={anchor.at}
+        surface={surface}
         focusFallback={focusFallback}
-        openAiModels={openAiModels}
       />
     ) : null;
-  const avatar = (collapsed: boolean) =>
-    inApp ? (
-      <div
-        className="fk-sidebar-avatar"
-        data-collapsed={collapsed || undefined}
-      >
-        <StandaloneKin
-          active={sample.recentCapture}
-          placement="sidebar"
-          size={collapsed ? 42 : 88}
-        />
-      </div>
-    ) : null;
-  return { dock, avatar };
+
+  return { avatar, live, panel };
 }

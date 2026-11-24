@@ -6,15 +6,18 @@ activity. An eligible Pi chip can also show **Working** when the connected Pi
 extension explicitly reports active work. No badge means liveness is unknown,
 not idle or finished. Other AI Clients do not report this status.
 
-Inside Koed, the Chief of Staff sits at the bottom-right of the Projects list,
-above the recent Conversation chips. It stays there as you switch screens. If
-you collapse the Conversations and Projects sidebar, the Kin moves to the
-bottom of the left rail.
+Inside Koed, the Chief of Staff takes the logo's place on the Home button at
+the top of the left rail, so it stays visible as you switch screens and when
+you collapse the Conversations and Projects sidebar. The sidebar's
+**Conversations** list shows pinned Conversations first, then every other
+Conversation by most recent activity. A Conversation the Kin is tracking shows
+its capture age, or **Working**, at the end of its row; click it to open the
+same dialog as a chip, beside the row.
 
 On macOS, turn on **Chief of Staff** under **Settings → General** to let the Kin
 float outside the Koed window. When the window loses focus or closes, the Kin
 and its chips return to the desktop position you last dragged it to in this
-Desktop session. When the window regains focus, the Kin docks in the sidebar
+Desktop session. When the window regains focus, the Kin returns to the rail
 once the overlay finishes sliding out. With reduced motion enabled, the switch
 is immediate. The overlay does not take focus automatically; use
 **Window → Focus Floating Kin** for keyboard access. Click the floating avatar

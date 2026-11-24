@@ -809,8 +809,37 @@ describe("Floating Kin", () => {
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
   });
 
+  it("wakes for one minute on appearing, then sleeps", async () => {
+    const kin = await renderQuiet();
+    expectKinAwake(kin, true);
+    await act(async () => vi.advanceTimersByTimeAsync(59_999));
+    expectKinAwake(kin, true);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expectKinAwake(kin, false);
+  });
+
+  it("stays awake while it leaves for the sidebar", async () => {
+    let present: (presentation: {
+      placement: "desktop" | "sidebar";
+      revision: number;
+      sidebarPending?: boolean;
+    }) => void = () => {};
+    bridge.onPresentation = (listener) => {
+      present = listener;
+      listener({ placement: "desktop", revision: 1 });
+      return () => {};
+    };
+    await renderQuiet();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    await act(async () =>
+      present({ placement: "sidebar", revision: 2, sidebarPending: true })
+    );
+    expectKinAwake(mount.querySelector<HTMLElement>(".fk-kin-avatar")!, true);
+  });
+
   it("wakes for one minute after hover without showing a quiet message", async () => {
     const kin = await renderQuiet();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
     expectKinAwake(kin, false);
     await mouseOver(kin);
     expectKinAwake(kin, true);
@@ -839,6 +868,10 @@ describe("Floating Kin", () => {
     expectKinAwake(kin, true);
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(mount.querySelector(".fk-chip")).not.toBeNull();
+    // Still inside the minute it wakes for on appearing.
+    expectKinAwake(kin, true);
+    await act(async () => vi.advanceTimersByTimeAsync(12_000));
+    expect(mount.querySelector(".fk-chip")).not.toBeNull();
     expectKinAwake(kin, false);
   });
 
@@ -847,6 +880,7 @@ describe("Floating Kin", () => {
     vi.mocked(bridge.onMainWindowFocus).mockReturnValue(unsubscribe);
     const kin = await renderQuiet();
     const notify = vi.mocked(bridge.onMainWindowFocus).mock.calls[0]![0];
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
     expectKinAwake(kin, false);
     await act(async () => notify(true));
     expectKinAwake(kin, true);

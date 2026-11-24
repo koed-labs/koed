@@ -97,7 +97,7 @@ const menuItem = (label: string) =>
   [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
     (item) => item.textContent === label
   )!;
-const pinnedSection = () => container.querySelector(".v1-nav-pinned")!;
+const pinnedSection = () => container.querySelector(".v1-nav-conversations")!;
 const searchInput = () =>
   container.querySelector<HTMLInputElement>(
     'input[aria-label="Find Projects or Conversations"]'
@@ -174,9 +174,11 @@ describe("Project sidebar interactions", () => {
         ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")
       ].find((element) => element.textContent === "Empty Project")!;
     const pinnedTitles = () =>
-      [...pinnedSection().querySelectorAll("li .v1-nav-copy > span")].map(
-        (title) => title.textContent
-      );
+      [...pinnedSection().querySelectorAll("li")]
+        .filter((row) =>
+          row.querySelector(".v1-nav-pin-mark, .v1-nav-pinned-project")
+        )
+        .map((row) => row.querySelector(".v1-nav-copy > span")?.textContent);
 
     await render();
     expect(button("Actions for Project Koed")).toBeNull();
@@ -186,9 +188,6 @@ describe("Project sidebar interactions", () => {
     expect(menuItem("Pin Project")).toBeDefined();
     await act(async () => menuItem("Pin Project").click());
     expect(pinnedTitles()).toEqual(["Captured from Claude", "Empty Project"]);
-    expect(
-      pinnedSection().querySelector(".v1-nav-heading small")?.textContent
-    ).toBe("2");
     expect(
       window.localStorage.getItem("koed:sidebar-pins:backend-a:owner-a")
     ).toBe('["session:one","project:session:one"]');
@@ -241,7 +240,7 @@ describe("Project sidebar interactions", () => {
     ).toBe('["session:one"]');
   });
 
-  it("keeps keyboard focus on the Pinned heading after removing the last pin", async () => {
+  it("keeps keyboard focus on the Conversations heading after removing the last pin", async () => {
     window.localStorage.setItem(
       "koed:sidebar-pins:owner-a",
       '["project:empty"]'
@@ -261,7 +260,7 @@ describe("Project sidebar interactions", () => {
     await act(async () => unpin.click());
     expect(button("Unpin Project Empty")).toBeNull();
     expect(document.activeElement).toBe(
-      pinnedSection().querySelector(".v1-nav-heading")
+      pinnedSection().querySelector(".v1-nav-heading-toggle")
     );
   });
 
@@ -389,39 +388,44 @@ describe("Project sidebar interactions", () => {
     const data = [...projects, second];
     await act(async () => root.render(<Harness data={data} />));
     // Only the first Project starts expanded.
-    expect(container.textContent).not.toContain("Opened from Home");
+    const projectList = () =>
+      container.querySelector(".v1-nav-projects")?.textContent ?? "";
+    expect(projectList()).not.toContain("Opened from Home");
     await act(async () =>
       root.render(
         <Harness data={data} reveal={{ projectId: "second", key: 1 }} />
       )
     );
-    expect(container.textContent).toContain("Opened from Home");
+    expect(projectList()).toContain("Opened from Home");
   });
 
   it("distinguishes service startup, inventory loading and an empty inventory", async () => {
     await act(async () =>
       root.render(<Harness data={[]} inventoryReady={false} />)
     );
-    const pinHint = "Pin Projects or Conversations to keep them here";
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.textContent).toContain(pinHint);
+    expect(container.textContent).toContain("Conversations");
     await act(async () => root.render(<Harness data={[]} servicesStarting />));
     expect(container.textContent).toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.textContent).toContain(pinHint);
+    expect(container.textContent).toContain("Conversations");
     await act(async () => root.render(<Harness data={[]} loading />));
     expect(container.textContent).toContain("Loading conversations…");
     expect(container.textContent).not.toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.textContent).toContain(pinHint);
+    expect(container.textContent).toContain("Conversations");
     await act(async () => root.render(<Harness data={[]} />));
     expect(container.textContent).toContain("No conversations yet");
-    expect(container.textContent).toContain(pinHint);
+    expect(container.textContent).toContain("Conversations");
     await act(async () => root.render(<Harness servicesStarting />));
     expect(container.textContent).toContain("Captured from Claude");
     expect(container.textContent).toContain("Services starting…");
   });
   it("persists pins across remounts, isolates owners, and supports unpinning", async () => {
+    const pinned = () =>
+      [...container.querySelectorAll(".v1-nav-conversations .v1-nav-pin-mark")]
+        .map((mark) => mark.closest("li")?.textContent)
+        .join("|");
     await act(async () => root.render(<Harness />));
     await act(async () => button("Actions for Captured from Claude").click());
     await act(async () =>
@@ -429,32 +433,36 @@ describe("Project sidebar interactions", () => {
         .find((item) => item.textContent === "Pin")!
         .click()
     );
-    expect(container.querySelector(".v1-nav-pinned")?.textContent).toContain(
-      "Captured from Claude"
-    );
+    expect(pinned()).toContain("Captured from Claude");
     await act(async () => root.render(<Harness scope="owner-b" />));
-    expect(
-      container.querySelector(".v1-nav-pinned")?.textContent
-    ).not.toContain("Captured from Claude");
+    expect(pinned()).not.toContain("Captured from Claude");
     await act(async () => root.render(<Harness scope="owner-a" />));
-    expect(container.querySelector(".v1-nav-pinned")?.textContent).toContain(
-      "Captured from Claude"
-    );
+    expect(pinned()).toContain("Captured from Claude");
     await act(async () => root.unmount());
     root = createRoot(container);
     await act(async () => root.render(<Harness />));
-    expect(container.querySelector(".v1-nav-pinned")?.textContent).toContain(
-      "Captured from Claude"
-    );
+    expect(pinned()).toContain("Captured from Claude");
     await act(async () => button("Actions for Captured from Claude").click());
     await act(async () =>
       [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
         .find((item) => item.textContent === "Unpin")!
         .click()
     );
-    expect(
-      container.querySelector(".v1-nav-pinned")?.textContent
-    ).not.toContain("Captured from Claude");
+    expect(pinned()).not.toContain("Captured from Claude");
+  });
+  it("scrolls Conversations on their own and loads more near the end", async () => {
+    await act(async () =>
+      root.render(
+        <Harness data={[projectWithConversations("many", "Many", 30)]} />
+      )
+    );
+    const area = container.querySelector(".v1-nav-conversations-scroll")!;
+    const rows = () => area.querySelectorAll(".v1-nav-conversation").length;
+    expect(rows()).toBe(20);
+    expect(area.textContent).toContain("Loading more…");
+    await act(async () => area.dispatchEvent(new Event("scroll")));
+    expect(rows()).toBe(30);
+    expect(area.textContent).not.toContain("Loading more…");
   });
   it("opens a capture directly, retains selection through ingestion, and supports history", async () => {
     await act(async () => root.render(<Harness />));
