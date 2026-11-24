@@ -419,9 +419,17 @@
   margin-bottom: auto;
 }
 .v1-home-top-progress {
+  position: relative;
+  z-index: 5;
   width: min(560px, 100%);
   margin: 0 auto 20px;
   text-align: center;
+}
+/* At the top of the stage there's no room above, so the skipped
+   explanation opens downward, over the keycaps. */
+.v1-home-top-progress .v1-home-skip-help [role="tooltip"] {
+  top: calc(100% + 8px);
+  bottom: auto;
 }
 .v1-home-top-progress .v1-home-progress {
   margin-top: 0;
