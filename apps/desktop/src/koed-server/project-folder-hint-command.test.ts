@@ -1,6 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
+import { setTimeout } from "node:timers/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ensureDeviceIdentity,
@@ -73,6 +82,7 @@ const gitCandidate = {
     { code: "local-directory", outcome: "agrees" },
     { code: "origin-device", outcome: "unavailable" },
     { code: "directory-birthtime", outcome: "agrees" },
+    { code: "git-directory-birthtime", outcome: "agrees" },
     { code: "directory-remote", outcome: "agrees" }
   ]
 } satisfies NonNullable<
@@ -222,20 +232,65 @@ const assumedLocalPreview = {
 
 const identifiableGitCandidate = {
   ...gitCandidate,
-  directoryIncarnation: "reviewed-incarnation"
+  directoryIncarnation: "reviewed-incarnation",
+  gitCheckoutIncarnation: "reviewed-git-incarnation"
 };
 
-async function setupReplaceableGitReview(root: string, assumedLocal = false) {
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+const createGitCheckout = (cwd: string, remote: string) => {
+  mkdirSync(cwd);
+  git(cwd, "init", "-q");
+  git(cwd, "remote", "add", "origin", remote);
+};
+
+async function setupLinkedCheckout(
+  root: string,
+  directory: string,
+  replacement: string,
+  remote: string
+) {
+  const seed = resolve(root, "seed");
+  createGitCheckout(seed, remote);
+  git(
+    seed,
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.test",
+    "commit",
+    "-qm",
+    "initial",
+    "--allow-empty"
+  );
+  git(seed, "worktree", "add", "--quiet", "--detach", directory);
+  const gitDir = git(directory, "rev-parse", "--absolute-git-dir");
+  const start =
+    Math.ceil(
+      Math.max(statSync(directory).birthtimeMs, statSync(gitDir).birthtimeMs)
+    ) + 1;
+  await setTimeout(25);
+  const commonDir = resolve(root, "common");
+  cpSync(resolve(seed, ".git"), commonDir, { recursive: true });
+  cpSync(commonDir, replacement, { recursive: true });
+  writeFileSync(resolve(gitDir, "commondir"), `${commonDir}\n`);
+  expect(statSync(commonDir).birthtimeMs).toBeGreaterThan(start);
+  return start;
+}
+
+async function setupReplaceableGitReview(
+  root: string,
+  assumedLocal = false,
+  linked = false
+) {
   const directory = resolve(root, "reviewed");
   const replacement = resolve(root, "replacement");
   const remote = "https://github.com/acme/history.git";
-  for (const cwd of [directory, replacement]) {
-    mkdirSync(cwd);
-    execFileSync("git", ["init", "-q"], { cwd });
-    execFileSync("git", ["remote", "add", "origin", remote], { cwd });
-  }
-  // Both checkouts predate the Conversation and have the same Git Anchor.
-  const start = Date.now() + 1_000;
+  if (!linked)
+    for (const cwd of [directory, replacement]) createGitCheckout(cwd, remote);
+  const start = linked
+    ? await setupLinkedCheckout(root, directory, replacement, remote)
+    : Date.now() + 1_000;
   const environment = { NODE_ENV: "test", KOED_HOME: resolve(root, "profile") };
   const paths = resolveKoedServerPaths(environment);
   const identity = await ensureDeviceIdentity(paths, { environment });
@@ -447,6 +502,110 @@ describe("Git inference confirmation", () => {
     }
   );
 
+  it.each([false, true])(
+    "does not apply after same-remote Git metadata replacement (assumed-local: %s)",
+    async (assumedLocal) => {
+      const root = mkdtempSync(
+        resolve(import.meta.dirname, "../../../../scratch/git-review-")
+      );
+      try {
+        const { hints, manage, request, directory, replacement, target } =
+          await setupReplaceableGitReview(root, assumedLocal);
+        await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject(
+          {
+            hints: [
+              expect.objectContaining({
+                kind: "repository",
+                gitInferenceEligibility: true
+              })
+            ]
+          }
+        );
+        const preview = assumedLocal
+          ? assumedLocalPreview
+          : { ...guardedPreview, reviewedDirectory: directory };
+        await manage({
+          ...preview,
+          correction: { ...preview.correction, repository: target }
+        });
+        renameSync(resolve(directory, ".git"), resolve(root, "retired-git"));
+        renameSync(resolve(replacement, ".git"), resolve(directory, ".git"));
+        await expect(
+          manage({
+            sessionId,
+            action: "apply",
+            reviewId: validationId(900),
+            expectedVersion: 1,
+            ...(assumedLocal ? { expectedScopeKey } : {})
+          })
+        ).rejects.toThrow("no longer matches");
+        expect(
+          request.mock.calls.some(([path]) => path.endsWith("/apply"))
+        ).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("rejects a same-remote swap of the linked worktree's common Git directory", async () => {
+    const root = mkdtempSync(
+      resolve(import.meta.dirname, "../../../../scratch/git-review-")
+    );
+    try {
+      const { hints, manage, request, directory, replacement, target } =
+        await setupReplaceableGitReview(root, true, true);
+      const commonDir = git(
+        directory,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir"
+      );
+      const gitDir = git(directory, "rev-parse", "--absolute-git-dir");
+      expect(commonDir).not.toBe(gitDir);
+      const before = statSync(gitDir, { bigint: true });
+      await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+        hints: [
+          {
+            kind: "repository",
+            repositoryKey: target.key,
+            gitInferenceEligibility: true
+          }
+        ]
+      });
+      await manage({
+        ...assumedLocalPreview,
+        correction: { ...assumedLocalPreview.correction, repository: target }
+      });
+      renameSync(commonDir, resolve(root, "retired-common"));
+      renameSync(replacement, commonDir);
+      expect(statSync(gitDir, { bigint: true }).ino).toBe(before.ino);
+      await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+        hints: [
+          {
+            kind: "repository",
+            repositoryKey: target.key,
+            gitInferenceEligibility: true
+          }
+        ]
+      });
+      await expect(
+        manage({
+          sessionId,
+          action: "apply",
+          reviewId: validationId(900),
+          expectedVersion: 1,
+          expectedScopeKey
+        })
+      ).rejects.toThrow("no longer matches");
+      expect(request.mock.calls.some(([path]) => path.endsWith("/apply"))).toBe(
+        false
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not preview an approved checkout that moved to a different directory", async () => {
     const { manage, request } = setupGitReview();
     score.mockResolvedValue([
@@ -456,9 +615,49 @@ describe("Git inference confirmation", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["missing identity", "missing age", "new checkout"])(
+    "keeps an assumed-local Git Anchor advisory with %s",
+    async (problem) => {
+      const { hints, manage, request } = setupGitReview({
+        paths: { koedHome: "/koed-home" } as ProjectCommandsDeps["paths"],
+        importAuthority: { deploymentId: "deployment", deviceId: "device" }
+      });
+      vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+        remoteOperationsAllowed: true,
+        deploymentId: "deployment",
+        deviceInstanceId: "device"
+      } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+      const outcome =
+        problem === "missing age" ? "unavailable" : "does-not-agree";
+      score.mockResolvedValue([
+        problem === "missing identity"
+          ? { ...gitCandidate, directoryIncarnation: "root-only" }
+          : {
+              ...identifiableGitCandidate,
+              reasons: identifiableGitCandidate.reasons.map((reason) =>
+                reason.code === "git-directory-birthtime"
+                  ? { ...reason, outcome }
+                  : reason
+              )
+            }
+      ]);
+      await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+        hints: [{ kind: "repository", gitInferenceEligibility: false }]
+      });
+      await expect(manage(assumedLocalPreview)).rejects.toThrow(
+        "no longer matches"
+      );
+      expect(
+        request.mock.calls.some(([path]) => path.endsWith("/reviews"))
+      ).toBe(false);
+    }
+  );
+
   it("does not preview an otherwise eligible checkout without an incarnation marker", async () => {
     const { manage, request } = setupGitReview();
-    score.mockResolvedValue([gitCandidate]);
+    score.mockResolvedValue([
+      { ...gitCandidate, gitCheckoutIncarnation: "git-only" }
+    ]);
     await expect(manage(guardedPreview)).rejects.toThrow("no longer matches");
     expect(request).toHaveBeenCalledOnce();
   });
@@ -564,6 +763,39 @@ describe("Folder hint confirmation", () => {
 });
 
 describe("Folder hint listing", () => {
+  it("forwards the reviewed scope when saving manual organization", async () => {
+    const fixture = createProjectManagementValidationApi();
+    const edit = {
+      expectedContext: fixture.contexts.get(sessionId)!,
+      reviewedProjects: [{ projectId: validationId(1), expectedVersion: 1 }],
+      memberships: [
+        { projectId: validationId(1), direct: false, excluded: false }
+      ],
+      corrections: []
+    };
+    const expected = await fixture.api.manageSourceContext!({
+      action: "organize",
+      sessionId,
+      edit
+    });
+    const request = vi.fn(async () => expected);
+    const { manageSourceContext } = createProjectCommands({
+      personalRequest: request,
+      lookup: {}
+    } as unknown as ProjectCommandsDeps);
+    await manageSourceContext({
+      action: "organize",
+      sessionId,
+      edit,
+      expectedScopeKey
+    });
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      `/v1/personal/sessions/${sessionId}/organization`,
+      expect.objectContaining({ body: JSON.stringify(edit) }),
+      expectedScopeKey
+    );
+  });
+
   it("only returns Folder candidates with an exact server-known reference", async () => {
     const { hints, request } = setup();
     const unknown = { ...folder, directoryIncarnationId: "registry-only" };
@@ -572,7 +804,7 @@ describe("Folder hint listing", () => {
       { ...candidate, kind: "registered", folder: unknown }
     ]);
     await expect(hints({ sessionIds: [sessionId] })).resolves.toEqual({
-      hints: [{ ...candidate, sessionId }]
+      hints: [{ ...candidate, sessionId, folderRevision: 1 }]
     });
     expect(
       request.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))
@@ -620,7 +852,7 @@ describe("Folder hint listing", () => {
           correction: { state: "original" }
         }
       });
-      score.mockResolvedValue([gitCandidate]);
+      score.mockResolvedValue([identifiableGitCandidate]);
       await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
         hints: [
           {

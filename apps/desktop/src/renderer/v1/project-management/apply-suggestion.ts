@@ -9,6 +9,7 @@ import {
   previewSourceCorrection,
   reviewSourceCorrections
 } from "./correction-review.js";
+import { proposalRevision } from "./folder-hint-suggestion.js";
 import { repositoryTargetFor } from "./repository-project.js";
 import type { SuggestionRow } from "./use-folder-suggestions.js";
 import { projectErrorMessage } from "./use-organization-review.js";
@@ -57,7 +58,8 @@ async function applyReviewedUnknown(
     action: "apply",
     sessionId: review.context.sessionId,
     reviewId: preview.reviewId,
-    expectedVersion: preview.expectedVersion
+    expectedVersion: preview.expectedVersion,
+    expectedScopeKey: review.expectedScopeKey
   });
   check();
   if (
@@ -74,6 +76,7 @@ async function applySuggestion(
   projects: readonly DesktopProject[],
   row: SuggestionRow,
   destinationProjectId: string,
+  expectedScopeKey: string,
   check: () => void
 ): Promise<void> {
   const { proposal, sessionId } = row;
@@ -91,17 +94,28 @@ async function applySuggestion(
     await api.confirmFolderHint({
       sessionId,
       kind: proposal.kind,
-      folder: proposal.folder
+      folder: proposal.folder,
+      expectedScopeKey
     });
     check();
   }
-  const review = await reviewConversationOrganization(api, projects, sessionId);
+  const review = await reviewConversationOrganization(
+    api,
+    projects,
+    sessionId,
+    undefined,
+    expectedScopeKey
+  );
   check();
+  const axis = proposal.kind === "repository" ? "git" : "folder";
+  const expectedVersion = proposalRevision(proposal);
   if (
-    proposal.kind === "repository" &&
-    proposal.gitRevision !== review.context.git.revision
+    expectedVersion !== review.context[axis].revision ||
+    (axis === "folder" && review.context.folder.correction.state !== "original")
   )
-    throw new Error("Git Anchor changed. Review the suggestion again.");
+    throw new Error(
+      `${axis === "git" ? "Git Anchor" : "Folder"} changed. Review the suggestion again.`
+    );
   if (proposal.kind === "repository" && proposal.recordingDeviceUnknown)
     return applyReviewedUnknown(
       api,
@@ -117,13 +131,13 @@ async function applySuggestion(
           axis: "git",
           action: "set",
           repository: anchor!.repository,
-          expectedVersion: proposal.gitRevision!
+          expectedVersion
         }
       : {
           axis: "folder",
           action: "set",
           folder: proposal.folder,
-          expectedVersion: review.context.folder.revision
+          expectedVersion
         }
   ]);
   check();
@@ -139,6 +153,7 @@ async function applySuggestion(
   const result = await api.manageSourceContext({
     action: "organize",
     sessionId,
+    expectedScopeKey,
     edit: organizationEdit(review, [], reviewed.corrections)
   });
   check();
@@ -159,6 +174,7 @@ export async function applySuggestions(
   projects: readonly DesktopProject[],
   rows: readonly SuggestionRow[],
   destinationProjectId: string,
+  expectedScopeKey: string,
   check: () => void = () => {}
 ): Promise<{ done: number; failed: string[] }> {
   const failed: string[] = [];
@@ -166,7 +182,14 @@ export async function applySuggestions(
   for (const row of rows) {
     check();
     try {
-      await applySuggestion(api, projects, row, destinationProjectId, check);
+      await applySuggestion(
+        api,
+        projects,
+        row,
+        destinationProjectId,
+        expectedScopeKey,
+        check
+      );
       done += 1;
     } catch (cause) {
       check();

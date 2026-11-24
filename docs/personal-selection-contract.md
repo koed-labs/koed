@@ -435,6 +435,9 @@ out a worktree parent. Codex and Pi provide no equivalent link.
 The worktree-parent hint suggests the main checkout's registered Folder, capped
 at medium. It requires a same-device Conversation and a known parent birthtime
 strictly earlier than the first Conversation timestamp, regardless of score.
+The current Personal API does not provide independent recording-device evidence
+for this Folder hint, so Desktop does not currently offer it. The local-import
+assumption for Git Anchor inference does not satisfy this Folder requirement.
 Missing, equal, or later birthtime disqualifies the parent. A recorded remote
 mismatch always disqualifies it; a verified Git link or a client-recorded link
 can support a hint without remote agreement. A creation hint applies to an
@@ -483,8 +486,10 @@ identify an `assumed-local-import`: a qualifying initial native Codex artifact
 with a positively ingested historical prefix and no known copy or replica.
 Desktop matches the importing deployment and device, without treating either
 as recording provenance or changing Folder scores. Guarded inference requires
-birthtime strictly before the source-native start and a current portable remote
-that matches an active Project rule. Desktop pins the authenticated backend
+both the recorded directory and its resolved per-worktree Git directory to
+predate the source-native start, and a current portable remote that matches an
+active Project rule. Otherwise eligible matches with missing or newer Git
+directory age evidence stay advisory. Desktop pins the authenticated backend
 and owner and rechecks the exact checkout and import basis. The owner-authorized
 API independently matches that basis at preview and apply; it does not attest
 the checkout or recording origin. See

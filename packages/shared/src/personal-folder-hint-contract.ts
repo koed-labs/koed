@@ -114,6 +114,8 @@ export const personalFolderHintSchema = z
      * (its portable fingerprint, the same key whatever the protocol). */
     repositoryKey: z.string().min(1).max(256).optional(),
     ...gitInferenceEvidence,
+    /** Source revision at which an actionable Folder hint was scored. */
+    folderRevision: z.number().int().positive().safe().optional(),
     score: z.number().int().min(0).max(8),
     folder: personalFolderReferenceSchema.optional(),
     /** The directory a create hint would register, or the directory of the

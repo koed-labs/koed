@@ -39,11 +39,31 @@ export const personalGitInferenceEvidenceJoins = `
 // Rewrite generations and other clients can populate creation time with a
 // fallback. Registration, even origin_local, only proves the importing device.
 // The imported prefix identifies historical ingestion, not where it was recorded.
+export const personalGitHistoricalImportProvenance = `native.imported and native.first_at is not null and not provenance.known_copy`;
+
+// The sentinel alone does not distinguish a historical import from delayed live capture.
+export const personalGitMissingHistoryMarker = `s.repository_automatic_identity @>
+  '{"kind":"unresolved","key":null,"reason":"probe_ambiguous","originatingDeviceId":"historical_unknown_device","checkoutId":null}'::jsonb`;
+
+// Do not choose an importing authority when multiple artifacts qualify.
+export const personalGitInferenceLocalImport = `case
+  when not provenance.known_copy and cardinality(native.local_imports) = 1
+  then native.local_imports[1] end`;
+
+// Previously published originals are immutable. Only the matching local import
+// authority may use the legacy unresolved baseline for this guarded correction.
+const legacyBoundImport = `(
+  ${personalGitMissingHistoryMarker}
+  and b.git_original = '{"state":"unresolved","reason":"unreliable"}'::jsonb
+  and cardinality(b.git_frontier) = 1
+  and b.originating_deployment_id = (${personalGitInferenceLocalImport})->>'deploymentId'
+  and b.originating_device_id = (${personalGitInferenceLocalImport})->>'deviceId'
+)`;
+
 // Preserve actual source pins; the Codex watcher's missing-history sentinel is not one.
-export const personalGitInferenceEligible = `(
-  native.imported and native.first_at is not null and not provenance.known_copy
-  and (s.repository_automatic_identity is null or
-    s.repository_automatic_identity @> '{"kind":"unresolved","key":null,"reason":"probe_ambiguous","originatingDeviceId":"historical_unknown_device","checkoutId":null}'::jsonb)
+const inferenceEligible = (allowLegacyBoundImport: boolean) => `(
+  ${personalGitHistoricalImportProvenance}
+  and (s.repository_automatic_identity is null or ${personalGitMissingHistoryMarker})
   and s.repository_override_identity is null
   and s.repository_assignment_version = 1
   and s.repository_assignment_revision_id is null
@@ -57,26 +77,31 @@ export const personalGitInferenceEligible = `(
     where b.owner_user_id = s.owner_user_id and b.local_session_id = s.id
       and (b.availability = 'pending' or (b.context_version = 1 and (
         b.git_state <> 'available' or b.folder_state = 'conflict'
-        or b.git_original->>'reason' is distinct from 'historical_unresolved'
+        or (b.git_original->>'reason' is distinct from 'historical_unresolved'
+          ${allowLegacyBoundImport ? `and ${legacyBoundImport} is not true` : ""})
         or b.git_assignment->'correction'->>'state' is distinct from 'original'
       )))
   )
 )`;
 
-// Do not choose an importing authority when multiple artifacts qualify.
-export const personalGitInferenceLocalImport = `case
-  when not provenance.known_copy and cardinality(native.local_imports) = 1
-  then native.local_imports[1] end`;
+export const personalGitInferenceEligible = inferenceEligible(true);
 
-export const personalGitInferenceEligibilityQuery = `
+const eligibilityQuery = (eligible: string) => `
   select ${personalGitInferenceLocalImport} as local_import from sessions s
   ${personalGitInferenceEvidenceJoins}
-  where s.id = $2 and s.owner_user_id = $1 and ${personalGitInferenceEligible}`;
+  where s.id = $2 and s.owner_user_id = $1 and ${eligible}`;
+
+export const personalGitInferenceEligibilityQuery = eligibilityQuery(
+  inferenceEligible(false)
+);
+const localImportEligibilityQuery = eligibilityQuery(
+  personalGitInferenceEligible
+);
 
 export const personalGitInferenceLocalImportPreviewQuery = `
-  select 1 from (${personalGitInferenceEligibilityQuery}) eligible
+  select 1 from (${localImportEligibilityQuery}) eligible
   where eligible.local_import = $3::jsonb`;
 
 export const personalGitInferenceLocalImportMatchQuery = `
-  select 1 from (${personalGitInferenceEligibilityQuery}) eligible
+  select 1 from (${localImportEligibilityQuery}) eligible
   where eligible.local_import = $5::jsonb`;

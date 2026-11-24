@@ -5052,16 +5052,18 @@ export const createKoedServerManager = ({
         return projectCommands.manageMembershipSync(request.input);
       case "personal.sources.manage":
         return projectCommands.manageSourceContext(request.input);
-      case "personal.folders.hints": {
+      case "personal.folders.hints":
+      case "personal.folders.hints.confirm": {
         const { expectedScopeKey, ...input } = request.input;
-        return createProjectCommands({
+        const scopedCommands = createProjectCommands({
           ...projectCommandDeps,
-          personalRequest: (path, init) =>
-            repositoryReviewJson(path, init, expectedScopeKey)
-        }).folderHints(input);
+          personalRequest: (path, init, scopeKey) =>
+            repositoryReviewJson(path, init, expectedScopeKey ?? scopeKey)
+        });
+        return request.operation === "personal.folders.hints"
+          ? scopedCommands.folderHints(input)
+          : scopedCommands.confirmFolderHint(input);
       }
-      case "personal.folders.hints.confirm":
-        return projectCommands.confirmFolderHint(request.input);
       case "personal.projects.manage":
         return projectCommands.manage(request.input);
       case "personal.projects.create":

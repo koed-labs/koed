@@ -29,7 +29,10 @@ Koed Desktop records that Git Anchor itself when every one of these holds:
   of a local AI Client artifact, with no known copy or replica. It is not proof
   of the recording device: history can be copied into a local AI Client's files.
   The absence of a sync replica on its own is not evidence of import or origin.
-- The directory existed before a trustworthy source start. Import time and
+- The recorded directory and its resolved Git directory both existed before a
+  trustworthy source start. For a linked worktree this is its own Git directory,
+  not the repository's shared Git directory. Missing or newer checkout-age
+  evidence leaves an otherwise eligible remote match advisory. Import time and
   filesystem creation time of the transcript are not source starts. Currently
   only the native start on the initial primary Codex rollout qualifies.
 - Capture's remote-selection rules resolve the directory to one portable Git Anchor
@@ -43,8 +46,9 @@ and uses an `assumed-local-import` review. Desktop pins the authenticated owner
 and backend for source-context and evidence requests. It submits the exact
 artifact, import source, native start, deployment, and device it validated.
 The API matches that basis against stored evidence at preview and again at
-apply. Desktop separately rechecks the same basis and exact checkout, including
-directory incarnation, before apply. A later User correction replaces the
+apply. Desktop separately rechecks the same basis and the identities of the
+recorded directory, its resolved Git directory, and the common Git directory
+before apply. Only the worktree's own Git directory is subject to the age check. A later User correction replaces the
 inference. Device sync is not required.
 
 The source-context API is owner-authorized, not Desktop-attested. Current

@@ -6811,7 +6811,9 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     "source context",
     "apply receipt",
     "apply owner retry",
-    "apply backend retry"
+    "apply backend retry",
+    "organize owner retry",
+    "organize backend retry"
   ])(
     "binds Folder hints and source context to the expected scope: %s",
     async (change) => {
@@ -6830,11 +6832,12 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       let origin = "http://127.0.0.1:4170";
       const evidenceOrigins: string[] = [];
       const sourceCalls: string[] = [];
+      const organizationOrigins: string[] = [];
       const assignment = {
         revision: 1,
         original: { state: "unresolved", reason: "historical_unresolved" },
         correction: { state: "original" }
-      };
+      } as const;
       const context = {
         sessionId: first,
         logicalSessionId: first,
@@ -6876,6 +6879,12 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           const url = new URL(String(input));
           if (url.pathname === "/v1/managed-conversations/access")
             return Response.json({ user: { id: ownerUserId } });
+          if (url.pathname.endsWith("/organization")) {
+            organizationOrigins.push(url.origin);
+            if (change === "organize owner retry") ownerUserId = second;
+            else origin = "http://127.0.0.1:4171";
+            return Response.json({}, { status: 401 });
+          }
           if (url.pathname.includes("/source-context")) {
             sourceCalls.push(url.pathname);
             if (url.pathname.endsWith("/apply") && change.endsWith("retry")) {
@@ -6905,6 +6914,32 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       });
       try {
         const identity = await manager.v1StateIdentity();
+        if (change.startsWith("organize")) {
+          await expect(
+            manager.personalMemory({
+              contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+              operation: "personal.sources.manage",
+              input: {
+                action: "organize",
+                sessionId: first,
+                expectedScopeKey: v1OwnerScope(
+                  identity.apiOrigin,
+                  identity.ownerUserId
+                ),
+                edit: {
+                  expectedContext: context,
+                  reviewedProjects: [],
+                  memberships: [],
+                  corrections: [
+                    { axis: "git", action: "reset", expectedVersion: 1 }
+                  ]
+                }
+              }
+            })
+          ).resolves.toMatchObject({ ok: false, error: { code: "conflict" } });
+          expect(organizationOrigins).toEqual(["http://127.0.0.1:4170"]);
+          return;
+        }
         if (change === "source context" || change.startsWith("apply")) {
           const expectedScopeKey = v1OwnerScope(
             identity.apiOrigin,

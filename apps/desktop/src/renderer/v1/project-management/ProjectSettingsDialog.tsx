@@ -37,7 +37,10 @@ import {
   projectRules,
   suggestionsForSelectedRules
 } from "./ConversationsPanel.js";
-import { suggestionApprovalKey } from "./folder-hint-suggestion.js";
+import {
+  proposalRevision,
+  suggestionApprovalKey
+} from "./folder-hint-suggestion.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
 import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
@@ -51,10 +54,10 @@ const pages = [
 export type ProjectSettingsPage = (typeof pages)[number]["id"];
 
 function stagedApprovalKey(projectId: string, row: SuggestionRow): string {
-  const key = suggestionApprovalKey(projectId, row);
-  return row.proposal.kind === "repository"
-    ? JSON.stringify([key, row.proposal.gitRevision])
-    : key;
+  return JSON.stringify([
+    suggestionApprovalKey(projectId, row),
+    proposalRevision(row.proposal)
+  ]);
 }
 
 export function ProjectSettingsDialog({
@@ -103,7 +106,7 @@ export function ProjectSettingsDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
-  // Approvals bind the reviewed candidate and Git revision to this Project.
+  // Approvals bind the reviewed candidate and source revision to this Project.
   const [accepted, setAccepted] = useState<ReadonlySet<string>>(new Set());
   // Suggested Conversations turned down; saving excludes them.
   const [rejected, setRejected] = useState<ReadonlySet<string>>(new Set());
@@ -158,8 +161,7 @@ export function ProjectSettingsDialog({
         (row) =>
           row.proposal.projects.some(({ id }) => id === active) &&
           !unavailable.has(row.sessionId) &&
-          (row.proposal.kind !== "repository" ||
-            row.proposal.gitRevision !== undefined)
+          proposalRevision(row.proposal) !== undefined
       )
     );
   }, [suggestions?.rows, active, draft]);

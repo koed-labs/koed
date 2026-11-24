@@ -7,7 +7,8 @@ import {
   hintsForConversation,
   createClientWorktreeLookup,
   setProjectRepositoryAnchor,
-  type KoedServerPaths
+  type KoedServerPaths,
+  type FolderHintCandidate
 } from "@koed-labs/server";
 import {
   repositoryChangeSchema,
@@ -268,6 +269,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
   type InferenceEvidence = {
     directory: string;
     directoryIncarnation: string;
+    gitCheckoutIncarnation: string;
     startedAt: string;
     ownerUserId: string;
     importAuthority?: HintEvidence["importAuthority"];
@@ -344,6 +346,23 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     row.gitRevision === 1 &&
     row.firstConversationAt !== null &&
     Number.isFinite(Date.parse(row.firstConversationAt));
+  const inferenceCheckout = (
+    candidate: Extract<FolderHintCandidate, { kind: "repository" }>
+  ) => {
+    const { directory, directoryIncarnation, gitCheckoutIncarnation } =
+      candidate;
+    if (
+      !directory ||
+      !directoryIncarnation ||
+      !gitCheckoutIncarnation ||
+      !candidate.reasons.some(
+        ({ code, outcome }) =>
+          code === "git-directory-birthtime" && outcome === "agrees"
+      )
+    )
+      return undefined;
+    return { directory, directoryIncarnation, gitCheckoutIncarnation };
+  };
   const hintConversation = (
     ownerUserId: string,
     row: HintEvidence,
@@ -429,7 +448,11 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
                       : { recordingDeviceProvenance: provenance }),
                     ...(row.gitInferenceEligibility === undefined
                       ? {}
-                      : { gitInferenceEligibility: inferenceEligible(row) }),
+                      : {
+                          gitInferenceEligibility:
+                            inferenceEligible(row) &&
+                            !!inferenceCheckout(result)
+                        }),
                     ...(row.gitRevision === undefined
                       ? {}
                       : { gitRevision: row.gitRevision }),
@@ -438,6 +461,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
                 : {
                     kind: result.kind,
                     folder: result.folder,
+                    folderRevision: row.folderAssignment.revision,
                     ...(result.directory ? { directory: result.directory } : {})
                   }),
           reasons: result.reasons.map(({ code, outcome }) => ({
@@ -546,12 +570,13 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         candidate.tier !== "none" && candidate.kind === "repository"
     );
     const candidate = candidates?.[0];
+    const checkout =
+      candidate?.kind === "repository" && inferenceCheckout(candidate);
     if (
       candidates?.length !== 1 ||
       !candidate ||
       candidate.kind !== "repository" ||
-      !candidate.directory ||
-      !candidate.directoryIncarnation ||
+      !checkout ||
       candidate.repositoryKey !== correction.repository.key ||
       candidate.reasons.some(({ outcome }) => outcome === "rejects") ||
       !candidate.reasons.some(
@@ -572,8 +597,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     )
       throw staleGitInference();
     return {
-      directory: candidate.directory,
-      directoryIncarnation: candidate.directoryIncarnation,
+      ...checkout,
       startedAt: row.firstConversationAt,
       ownerUserId: payload.ownerUserId,
       ...(importAuthority ? { importAuthority } : {})
@@ -581,8 +605,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
   };
   const manageSourceContext = async (raw: unknown) => {
     const input = personalSourceContextCommandSchema.parse(raw);
-    const expectedScopeKey =
-      input.action === "organize" ? undefined : input.expectedScopeKey;
+    const { expectedScopeKey } = input;
     const guardedPreview =
       input.action === "preview" &&
       input.correction.axis === "git" &&
@@ -624,6 +647,7 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
         if (
           current.directory !== evidence.directory ||
           current.directoryIncarnation !== evidence.directoryIncarnation ||
+          current.gitCheckoutIncarnation !== evidence.gitCheckoutIncarnation ||
           current.startedAt !== evidence.startedAt ||
           current.ownerUserId !== evidence.ownerUserId ||
           current.importAuthority?.artifactId !==
@@ -649,7 +673,8 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify(input.edit)
-            }
+            },
+            ...(expectedScopeKey ? [expectedScopeKey] : [])
           )
         : input.action === "get"
           ? await deps.personalRequest(base, undefined, expectedScopeKey)

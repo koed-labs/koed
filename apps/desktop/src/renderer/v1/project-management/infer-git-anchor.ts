@@ -88,9 +88,18 @@ export async function recordInferredGitAnchors(
         sessionId,
         ...scope
       });
+      const signedMissingHistory =
+        inferenceIntent === "assumed-local-import" &&
+        context.sync?.availability === "available" &&
+        context.sync.git.state === "available" &&
+        context.sync.git.frontier.length === 1 &&
+        context.sync.folder.state !== "conflict";
       if (
         context.git.original.state !== "unresolved" ||
-        context.git.original.reason !== "historical_unresolved" ||
+        (context.git.original.reason !== "historical_unresolved" &&
+          !(
+            context.git.original.reason === "unreliable" && signedMissingHistory
+          )) ||
         context.git.correction.state !== "original" ||
         context.git.revision !== version
       )

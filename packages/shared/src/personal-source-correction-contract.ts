@@ -282,6 +282,7 @@ export const personalSourceContextCommandSchema = z
       .object({
         action: z.literal("organize"),
         sessionId: z.uuid(),
+        expectedScopeKey: sourceContextScopeKey,
         edit: personalConversationOrganizationInputSchema
       })
       .strict(),

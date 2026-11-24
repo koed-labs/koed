@@ -51,7 +51,10 @@ export function SourceContextDialog(
     scopeKey: string | null;
   }
 ) {
-  const { review, error, setError, busy, apply } = useOrganizationReview(props);
+  const { review, error, setError, busy, apply } = useOrganizationReview(
+    props,
+    props.scopeKey ?? undefined
+  );
   const [axis, setAxis] = useState(props.axis ?? "git");
   const [draft, setDraft] = useState({ git: "current", folder: "current" });
   const [preview, setPreview] = useState<CorrectionReview>();
@@ -61,7 +64,7 @@ export function SourceContextDialog(
     [props.projects]
   );
   const folderUnresolved =
-    !!review &&
+    review?.context.folder.correction.state === "original" &&
     effective<SourceContextFact>(review.context.folder).state !== "known";
   const gitUnresolved =
     !!review &&
@@ -76,7 +79,9 @@ export function SourceContextDialog(
     hints.filter((hint) =>
       hint.kind === "repository"
         ? gitUnresolved
-        : folderUnresolved && !!props.api.confirmFolderHint
+        : folderUnresolved &&
+          !!props.api.confirmFolderHint &&
+          hint.folderRevision === review.context.folder.revision
     ),
     proposalResolvers(props.projects)
   );
@@ -100,7 +105,8 @@ export function SourceContextDialog(
         await props.api.confirmFolderHint!({
           sessionId: props.target.sessionId,
           kind: candidate.kind,
-          folder: candidate.folder
+          folder: candidate.folder,
+          expectedScopeKey: review?.expectedScopeKey
         });
       setAccepted(candidate);
       update(tab, SUGGESTED_SOURCE);
@@ -125,15 +131,21 @@ export function SourceContextDialog(
         if (value === "reset" || value === "unresolved")
           return [{ axis: tab, action: value, expectedVersion }];
         if (value === SUGGESTED_SOURCE && accepted) {
-          if (tab === "folder" && accepted.kind !== "repository")
+          if (tab === "folder" && accepted.kind !== "repository") {
+            if (
+              accepted.folderRevision !== expectedVersion ||
+              !folderUnresolved
+            )
+              throw new Error("Folder changed. Review the suggestion again.");
             return [
               {
                 axis: tab,
                 action: "set",
                 folder: accepted.folder,
-                expectedVersion
+                expectedVersion: accepted.folderRevision
               }
             ];
+          }
           if (tab === "git" && acceptedAnchor)
             return [
               {

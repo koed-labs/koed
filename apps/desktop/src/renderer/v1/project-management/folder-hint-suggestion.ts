@@ -50,6 +50,7 @@ export type FolderProposal = {
       action: "use";
       kind: "registered" | "worktree-parent";
       folder: PersonalFolderReference;
+      folderRevision?: number;
     }
   | {
       action: "anchor";
@@ -59,6 +60,13 @@ export type FolderProposal = {
       recordingDeviceUnknown?: true;
     }
 );
+
+export const proposalRevision = (
+  proposal: FolderProposal
+): number | undefined =>
+  proposal.kind === "repository"
+    ? proposal.gitRevision
+    : proposal.folderRevision;
 
 export const proposalProjectLabel = (proposal: FolderProposal): string =>
   [...new Set(proposal.projects.map(({ name }) => name))].join(", ");
@@ -122,15 +130,23 @@ export function folderProposal(
           (resolve.reviewBatch && recordingDeviceProvenance === "known-copy")
         )
           return [];
-        const recordingDeviceUnknown =
+        const needsHistoricalReview =
           recordingDeviceProvenance === "unknown" ||
           recordingDeviceProvenance === "assumed-local-import";
+        const canReviewHistory =
+          resolve.reviewBatch && gitRevision === 1 && !!hint.directory;
+        const recordingDeviceUnknown =
+          needsHistoricalReview &&
+          canReviewHistory &&
+          hint.gitInferenceEligibility === true;
+        const advisoryCheckout =
+          canReviewHistory &&
+          hint.gitInferenceEligibility === false &&
+          hint.reasons.some(({ code }) => code === "git-directory-birthtime");
         if (
-          recordingDeviceUnknown &&
-          (!resolve.reviewBatch ||
-            hint.gitInferenceEligibility !== true ||
-            gitRevision !== 1 ||
-            !hint.directory)
+          needsHistoricalReview &&
+          !recordingDeviceUnknown &&
+          !advisoryCheckout
         )
           return [];
         const projects = resolve.repository?.(repositoryKey) ?? [];
@@ -157,6 +173,9 @@ export function folderProposal(
               action: "use",
               kind,
               folder: hint.folder,
+              ...(hint.folderRevision === undefined
+                ? {}
+                : { folderRevision: hint.folderRevision }),
               projects: resolve.folder?.(hint.folder) ?? []
             }
           ]

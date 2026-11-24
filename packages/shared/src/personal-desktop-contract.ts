@@ -86,6 +86,13 @@ export const personalDesktopFolderHintInputSchema =
   personalFolderHintRequestSchema.extend({
     expectedScopeKey: z.string().regex(/^[0-9a-f]{64}$/u)
   });
+const personalDesktopFolderHintConfirmInputSchema =
+  personalFolderHintConfirmRequestSchema.extend({
+    expectedScopeKey: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .optional()
+  });
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -791,7 +798,7 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.folders.hints.confirm"),
-      input: personalFolderHintConfirmRequestSchema
+      input: personalDesktopFolderHintConfirmInputSchema
     })
     .strict(),
   z
@@ -1457,7 +1464,7 @@ export interface PersonalDesktopApi {
     input: z.infer<typeof personalDesktopFolderHintInputSchema>
   ) => Promise<z.infer<typeof personalFolderHintsDataSchema>["hints"]>;
   confirmFolderHint?: (
-    input: z.infer<typeof personalFolderHintConfirmRequestSchema>
+    input: z.infer<typeof personalDesktopFolderHintConfirmInputSchema>
   ) => Promise<z.infer<typeof personalFolderHintConfirmDataSchema>>;
   listLocalFolders?: () => Promise<
     z.infer<typeof personalFolderObservationSchema>[]

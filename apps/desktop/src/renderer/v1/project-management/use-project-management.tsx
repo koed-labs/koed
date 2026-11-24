@@ -251,6 +251,7 @@ export function useProjectManagement({
     const result = await api!.manageSourceContext!({
       action: "organize",
       sessionId: target.sessionId,
+      expectedScopeKey: scopeKey!,
       edit
     });
     check();
@@ -500,6 +501,7 @@ export function useProjectManagement({
                     latest,
                     accepted,
                     project.id,
+                    scopeKey!,
                     check
                   );
                   check();

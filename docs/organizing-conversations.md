@@ -52,6 +52,10 @@ server evidence, not for paths or Folders known only to the local registry.
 Reviewing a hint does not register a Folder or write an observation.
 When confirming a Folder hint, Desktop rechecks server evidence and re-scores
 the exact candidate on the device. A changed candidate needs fresh approval.
+Desktop does not currently offer the main checkout’s Folder as a worktree-parent
+suggestion. A Git link or client session record can point to the parent checkout
+but does not establish which device recorded the Conversation.
+
 Guarded historical Git Anchor hints use reviewed source correction and a
 fresh device-side score before preview and apply.
 When saving a Project suggestion, Koed previews whether the correction would
@@ -62,8 +66,10 @@ membership.
 For unresolved historical Conversations never corrected by a User, Koed can
 infer an effective Git Anchor when recording origin is established or the
 history was imported from this device's local AI Client and is not a known
-copy. The checkout must predate a trustworthy source start, and its current
-remote must resolve to a Git Anchor a Project already uses. Koed assumes local
+copy. Both the recorded directory and its own Git directory must predate a
+trustworthy source start, and the current remote must resolve to a Git Anchor a
+Project already uses. A remote match with insufficient checkout-age evidence
+can still be suggested for review. Koed assumes local
 origin for qualifying imports; it does not verify where they were recorded.
 Device sync is not required. When Koed cannot infer an anchor, eligible Project
 suggestions remain available for review. Neither inference nor correction rewrites

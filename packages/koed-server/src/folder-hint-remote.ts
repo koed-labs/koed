@@ -90,10 +90,24 @@ const readCheckoutSelection = async (
   }
 };
 
-const checkoutMarker = async (gitDir: string) => {
-  const info = await stat(gitDir).catch(() => null);
-  // Match the checkout incarnation recorded by capture, not merely its path.
-  return info ? JSON.stringify([info.dev, info.ino, info.birthtimeMs]) : null;
+const checkoutStat = async (gitDir: string) => {
+  const info = await stat(gitDir, { bigint: true }).catch(() => null);
+  if (!info?.isDirectory()) return null;
+  const { dev, ino, birthtimeNs } = info;
+  const birthtimeMs =
+    Number(birthtimeNs / 1_000_000n) + Number(birthtimeNs % 1_000_000n) / 1e6;
+  return {
+    stamp: JSON.stringify([
+      gitDir,
+      String(dev),
+      String(ino),
+      String(birthtimeNs)
+    ]),
+    // Keep the same marker format as capture for selecting the saved remote.
+    marker: JSON.stringify([Number(dev), Number(ino), birthtimeMs]),
+    birthtimeMs: birthtimeNs > 0n ? birthtimeMs : null,
+    identifiable: dev >= 0n && ino > 0n && birthtimeNs > 0n
+  };
 };
 
 const lookupWithDeadline = async (
@@ -115,24 +129,33 @@ const lookupWithDeadline = async (
   }
 };
 
+const checkoutPathsArgs = [
+  "rev-parse",
+  "--path-format=absolute",
+  "--show-toplevel",
+  "--absolute-git-dir",
+  "--git-common-dir"
+];
+
 /** Observe only what portable selection needs; never initialize or lock the metadata store. */
-export const readHintRemoteFingerprint = async (
+export const readHintRemoteEvidence = async (
   paths: KoedServerPaths,
   directory: string,
   lookup?: HintAssociationLookup
-): Promise<string | null> => {
-  const gitPaths = await readHintGit(directory, [
-    "rev-parse",
-    "--path-format=absolute",
-    "--show-toplevel",
-    "--absolute-git-dir",
-    "--git-common-dir"
-  ]);
+): Promise<{
+  fingerprint: string;
+  gitDirectoryBirthtimeMs: number | null;
+  gitCheckoutIncarnation?: string;
+} | null> => {
+  const gitPaths = await readHintGit(directory, checkoutPathsArgs);
   const entries = gitPaths?.split("\n");
   if (entries?.length !== 3 || !entries.every(isAbsolute)) return null;
-  const [root, gitDir] = entries as [string, string, string];
-  const marker = await checkoutMarker(gitDir);
-  if (!marker) return null;
+  const [root, gitDir, commonDir] = entries as [string, string, string];
+  const gitDirectory = await checkoutStat(gitDir);
+  if (!gitDirectory) return null;
+  const commonDirectory =
+    commonDir === gitDir ? gitDirectory : await checkoutStat(commonDir);
+  const { marker, stamp, identifiable, birthtimeMs } = gitDirectory;
   const saved = await readCheckoutSelection(paths, root, marker);
   if (!saved) return null;
   const { checkout, deviceSaltId } = saved;
@@ -167,7 +190,21 @@ export const readHintRemoteFingerprint = async (
     readHintGit(root, args)
   );
   if (validateSelectedRepositoryRemote(selection.remote, urls)) return null;
-  return (await checkoutMarker(gitDir)) === marker
-    ? selection.remote.fingerprint
-    : null;
+  // Recheck both paths and identities: either directory can be repointed or replaced.
+  if (
+    (await readHintGit(directory, checkoutPathsArgs)) !== gitPaths ||
+    (await checkoutStat(gitDir))?.stamp !== stamp ||
+    (commonDir !== gitDir &&
+      (await checkoutStat(commonDir))?.stamp !== commonDirectory?.stamp)
+  )
+    return null;
+  return {
+    fingerprint: selection.remote.fingerprint,
+    gitDirectoryBirthtimeMs: birthtimeMs,
+    ...(identifiable && commonDirectory?.identifiable
+      ? {
+          gitCheckoutIncarnation: JSON.stringify([stamp, commonDirectory.stamp])
+        }
+      : {})
+  };
 };

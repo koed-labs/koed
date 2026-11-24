@@ -37,6 +37,8 @@ export interface FolderHintInput {
   }> | null;
   readonly recordedRemoteFingerprint: string | null;
   readonly currentRemoteFingerprint: string | null;
+  /** Birthtime of Git's per-worktree directory, not its shared common directory. */
+  readonly gitDirectoryBirthtimeMs?: number | null;
   /** The Conversation already has a Git Anchor, so none needs suggesting. */
   readonly gitAnchorKnown?: boolean;
   /**
@@ -71,6 +73,7 @@ type Reason = Readonly<{
     | "local-directory"
     | "origin-device"
     | "directory-birthtime"
+    | "git-directory-birthtime"
     | "git-remote"
     | "live-registry-match"
     | "registry-marker-ambiguous"
@@ -459,6 +462,12 @@ export const scoreRepositoryAnchor = (
         true
       )
     : localBirthtime;
+  const gitBirthtime = assessBirthtime(
+    input.gitDirectoryBirthtimeMs ?? null,
+    input.firstConversationAtMs,
+    input.evaluatedAtMs,
+    true
+  );
   const current = input.currentRemoteFingerprint?.trim() || null;
   // A recorded remote that differs from today's is a conflict, not a gap.
   const recorded = input.recordedRemoteFingerprint?.trim() || null;
@@ -476,6 +485,11 @@ export const scoreRepositoryAnchor = (
     { code: "local-directory", outcome: directory ? "agrees" : "rejects" },
     { code: "origin-device", outcome: origin },
     { code: "directory-birthtime", outcome: birthtime },
+    // Git directory age gates guarded inference, not advisory suggestions.
+    {
+      code: "git-directory-birthtime",
+      outcome: gitBirthtime === "rejects" ? "does-not-agree" : gitBirthtime
+    },
     { code: "directory-remote", outcome: remote },
     { code: "directory-activity", outcome: activity },
     {

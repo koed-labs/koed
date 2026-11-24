@@ -174,6 +174,27 @@ describe("folderProposal", () => {
     }
   );
 
+  it.each(["does-not-agree", "unavailable"] as const)(
+    "keeps an assumed-local match advisory when Git directory age is %s",
+    (outcome) => {
+      const candidate = hint({
+        kind: "repository",
+        repositoryKey: "gr_lyons",
+        gitRevision: 1,
+        gitInferenceEligibility: false,
+        recordingDeviceProvenance: "assumed-local-import",
+        directory: "/work/a",
+        reasons: [{ code: "git-directory-birthtime", outcome }]
+      });
+      const proposal = folderProposal([candidate], {
+        repository: () => [lyons],
+        reviewBatch: true
+      });
+      expect(proposal).toMatchObject({ kind: "repository", gitRevision: 1 });
+      expect(proposal).not.toHaveProperty("recordingDeviceUnknown");
+    }
+  );
+
   it("proposes nothing for tier none, an unusable hint, or no hints", () => {
     expect(
       folderProposal([hint({ tier: "none", folder: undefined })])

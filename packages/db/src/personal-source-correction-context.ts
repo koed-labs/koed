@@ -3,6 +3,11 @@ import {
   readPersonalSourceContextSync
 } from "./personal-source-binding-state.js";
 import { sourceContextViewRevisionId } from "./personal-source-context-projection.js";
+import {
+  personalGitHistoricalImportProvenance,
+  personalGitInferenceEvidenceJoins,
+  personalGitMissingHistoryMarker
+} from "./personal-git-inference-evidence.js";
 import type pg from "pg";
 import {
   personalFolderAssignmentSchema,
@@ -31,6 +36,7 @@ export type PersonalCorrectionSourceRow = {
   repository_override_identity: RepositoryIdentity | null;
   git_revision_id: string | null;
   import_observed_at: Date | null;
+  git_missing_import_history: boolean;
   source_sync?: PersonalSourceContextSync;
   source_body_pending?: boolean;
   source_git_original?: PersonalGitAssignment["original"];
@@ -40,10 +46,20 @@ export const lockPersonalCorrectionSource = async (
   actor: ActorContext,
   sessionId: string
 ) => {
+  // Keep the original recorded by an earlier Git correction stable for review and export.
   const found = await client.query<PersonalCorrectionSourceRow>(
     `select s.id,s.logical_session_id,s.folder_assignment,s.repository_assignment_state,s.repository_assignment_version,s.repository_automatic_identity,s.repository_override_identity,s.import_observed_at,
-    coalesce(s.repository_assignment_revision_id,(select c.revision_id from personal_source_context_changes c where c.owner_user_id=s.owner_user_id and c.logical_session_id=s.logical_session_id and c.axis='git' and c.version=s.repository_assignment_version)) as git_revision_id
-    from sessions s where s.owner_user_id=$1 and s.id=$2 and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null for update of s`,
+    coalesce(s.repository_assignment_revision_id,(select c.revision_id from personal_source_context_changes c where c.owner_user_id=s.owner_user_id and c.logical_session_id=s.logical_session_id and c.axis='git' and c.version=s.repository_assignment_version)) as git_revision_id,
+    case when ${personalGitMissingHistoryMarker} then coalesce((
+      select c.previous #>> '{context,git,original,reason}' = 'historical_unresolved'
+      from personal_source_context_changes c where c.owner_user_id=s.owner_user_id
+        and c.logical_session_id=s.logical_session_id and c.axis='git'
+      order by c.sequence limit 1
+    ), (select ${personalGitHistoricalImportProvenance}
+      from (select 1) candidate ${personalGitInferenceEvidenceJoins}
+    )) else false end as git_missing_import_history
+    from sessions s
+    where s.owner_user_id=$1 and s.id=$2 and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null for update of s`,
     [actor.userId, sessionId]
   );
   const row = found.rows[0];
@@ -91,6 +107,7 @@ export const personalCorrectionContext = (row: PersonalCorrectionSourceRow) => {
             state: "unresolved",
             reason:
               row.repository_assignment_state === "historical_unresolved" ||
+              row.git_missing_import_history ||
               (!row.repository_automatic_identity && row.import_observed_at)
                 ? "historical_unresolved"
                 : row.repository_automatic_identity

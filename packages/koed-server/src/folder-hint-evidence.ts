@@ -35,7 +35,7 @@ import {
 import {
   MAX_GIT_BYTES,
   readHintGit,
-  readHintRemoteFingerprint,
+  readHintRemoteEvidence,
   type HintAssociationLookup
 } from "./folder-hint-remote.js";
 import type { KoedServerPaths } from "./paths.js";
@@ -301,11 +301,9 @@ const gatherWorktree = async (
   return {
     ...origin,
     registry,
-    currentRemoteFingerprint: await readHintRemoteFingerprint(
-      paths,
-      rootPath,
-      lookupAssociatedSelection
-    ),
+    currentRemoteFingerprint:
+      (await readHintRemoteEvidence(paths, rootPath, lookupAssociatedSelection))
+        ?.fingerprint ?? null,
     birthtimeMs: birthtimeMs(mainStat.birthtimeMs)
   };
 };
@@ -320,6 +318,7 @@ const checkoutIncarnation = ({ dev, ino, birthtimeNs }: BigIntStats) =>
 
 type GatheredFolderHintInput = FolderHintInput & {
   directoryIncarnation?: string;
+  gitCheckoutIncarnation?: string;
 };
 
 const gatherCheckout = async (
@@ -334,6 +333,8 @@ const gatherCheckout = async (
     GatheredFolderHintInput,
     | "directoryStat"
     | "directoryIncarnation"
+    | "gitDirectoryBirthtimeMs"
+    | "gitCheckoutIncarnation"
     | "currentRemoteFingerprint"
     | "registry"
     | "hasContainedTranscriptFile"
@@ -351,18 +352,23 @@ const gatherCheckout = async (
     };
   }
   const directoryIncarnation = checkoutIncarnation(directory);
+  const git = await readHintRemoteEvidence(
+    paths,
+    cwd,
+    lookupAssociatedSelection
+  );
   return {
     ...(directoryIncarnation ? { directoryIncarnation } : {}),
+    ...(git?.gitCheckoutIncarnation
+      ? { gitCheckoutIncarnation: git.gitCheckoutIncarnation }
+      : {}),
+    gitDirectoryBirthtimeMs: git?.gitDirectoryBirthtimeMs ?? null,
     directoryStat: {
       isDirectory: true,
       birthtimeMs: birthtimeMs(nanosecondsToMs(directory.birthtimeNs)),
       activityMs: await readActivityMs(cwd, nanosecondsToMs(directory.mtimeNs))
     },
-    currentRemoteFingerprint: await readHintRemoteFingerprint(
-      paths,
-      cwd,
-      lookupAssociatedSelection
-    ),
+    currentRemoteFingerprint: git?.fingerprint ?? null,
     registry: await lookupRegistry(
       paths,
       conversation.ownerUserId,
@@ -461,6 +467,7 @@ export type FolderHintCandidate = Pick<FolderHintResult, "score" | "reasons"> &
         directory?: string;
         /** Device-local evidence for Desktop revalidation, not part of the hint contract. */
         directoryIncarnation?: string;
+        gitCheckoutIncarnation?: string;
       }
   );
 
@@ -513,6 +520,9 @@ export const hintsForConversation = async (
             ...(input.recordedCwd ? { directory: input.recordedCwd } : {}),
             ...(input.directoryIncarnation
               ? { directoryIncarnation: input.directoryIncarnation }
+              : {}),
+            ...(input.gitCheckoutIncarnation
+              ? { gitCheckoutIncarnation: input.gitCheckoutIncarnation }
               : {})
           }
         ]

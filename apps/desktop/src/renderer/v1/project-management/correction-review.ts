@@ -23,6 +23,9 @@ export async function previewSourceCorrection(
     action: "preview",
     sessionId: review.context.sessionId,
     correction,
+    ...(review.expectedScopeKey
+      ? { expectedScopeKey: review.expectedScopeKey }
+      : {}),
     ...(reviewedDirectory ? { reviewedDirectory } : {})
   });
   if (

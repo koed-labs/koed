@@ -14,6 +14,7 @@ import type { SuggestionRow } from "./use-folder-suggestions.js";
 const sessionId = validationId(108);
 const gitProject = validationId(2);
 const folderProject = validationId(3);
+const scope = "a".repeat(64);
 
 function fixture() {
   const f = createProjectManagementValidationApi();
@@ -32,6 +33,7 @@ function fixture() {
       action: "use",
       kind: "worktree-parent",
       folder: folder.folder,
+      folderRevision: 1,
       tier: "medium",
       projects: [{ id: validationId(3), name: "Voice exploration" }],
       evidence: []
@@ -106,7 +108,7 @@ describe("applySuggestions", () => {
       f.manage.mockClear();
 
       expect(
-        await applySuggestions(f.api, f.projects, [staged], gitProject)
+        await applySuggestions(f.api, f.projects, [staged], gitProject, scope)
       ).toMatchObject({
         done: 0,
         failed: [expect.stringContaining("changed")]
@@ -119,13 +121,59 @@ describe("applySuggestions", () => {
     }
   );
 
+  it.each(["unresolved", "set"] as const)(
+    "does not overwrite a newer Folder correction (%s)",
+    async (action) => {
+      const f = fixture();
+      const other = f.contexts.get(validationId(100))!.folder.original;
+      if (other.state !== "known") throw new Error("Missing Folder fixture");
+      const review = await reviewConversationOrganization(
+        f.api,
+        f.projects,
+        sessionId
+      );
+      const changed = await f.originalManage({
+        action: "organize",
+        sessionId,
+        edit: organizationEdit(
+          review,
+          [],
+          [
+            action === "unresolved"
+              ? { axis: "folder", action, expectedVersion: 1 }
+              : {
+                  axis: "folder",
+                  action,
+                  expectedVersion: 1,
+                  folder: other.value.reference
+                }
+          ]
+        )
+      });
+      f.manage.mockClear();
+
+      expect(
+        await applySuggestions(f.api, f.projects, [f.row], folderProject, scope)
+      ).toMatchObject({
+        done: 0,
+        failed: [expect.stringContaining("Folder changed")]
+      });
+      expect(f.manage.mock.calls.map(([input]) => input.action)).toEqual([
+        "get"
+      ]);
+      expect(
+        (await f.originalManage({ action: "get", sessionId })).context.folder
+      ).toEqual(changed.context.folder);
+    }
+  );
+
   it("does not preview or commit when the same-kind Folder changes on re-score", async () => {
     const f = fixture();
     f.confirm.mockRejectedValueOnce(
       new Error("The Folder hint no longer matches.")
     );
     expect(
-      await applySuggestions(f.api, f.projects, [f.row], folderProject)
+      await applySuggestions(f.api, f.projects, [f.row], folderProject, scope)
     ).toMatchObject({
       done: 0,
       failed: [expect.stringContaining("no longer matches")]
@@ -136,7 +184,7 @@ describe("applySuggestions", () => {
   it("does not commit when the version-pinned preview includes only another Project", async () => {
     const f = fixture();
     expect(
-      await applySuggestions(f.api, f.projects, [f.row], gitProject)
+      await applySuggestions(f.api, f.projects, [f.row], gitProject, scope)
     ).toMatchObject({
       done: 0,
       failed: [expect.stringContaining("destination Project")]
@@ -150,12 +198,13 @@ describe("applySuggestions", () => {
   it("uses the exact Folder and version-pinned preview to add through the destination rule", async () => {
     const f = fixture();
     expect(
-      await applySuggestions(f.api, f.projects, [f.row], folderProject)
+      await applySuggestions(f.api, f.projects, [f.row], folderProject, scope)
     ).toEqual({ done: 1, failed: [] });
     expect(f.confirm).toHaveBeenCalledExactlyOnceWith({
       sessionId,
       kind: "worktree-parent",
-      folder: f.folder
+      folder: f.folder,
+      expectedScopeKey: scope
     });
     expect(f.manage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -196,7 +245,8 @@ describe("applySuggestions", () => {
         f.api,
         f.projects,
         [rejected, f.row],
-        folderProject
+        folderProject,
+        scope
       )
     ).toEqual({
       done: 1,
@@ -216,7 +266,7 @@ describe("applySuggestions", () => {
       return result;
     });
     await expect(
-      applySuggestions(f.api, f.projects, [f.row], folderProject, () => {
+      applySuggestions(f.api, f.projects, [f.row], folderProject, scope, () => {
         if (!active) throw new Error("Account or backend changed.");
       })
     ).rejects.toThrow("Account or backend changed.");
@@ -259,7 +309,8 @@ describe("applySuggestions", () => {
         f.api,
         f.projects,
         [row],
-        scenario === "wrong destination" ? folderProject : gitProject
+        scenario === "wrong destination" ? folderProject : gitProject,
+        scope
       );
       expect(result.done).toBe(scenario === "valid" ? 1 : 0);
       expect(f.manage).toHaveBeenCalledWith(
@@ -276,6 +327,9 @@ describe("applySuggestions", () => {
       expect(f.manage.mock.calls.map(([input]) => input.action)).toEqual(
         scenario === "valid" ? ["get", "preview", "apply"] : ["get", "preview"]
       );
+      expect(
+        f.manage.mock.calls.map(([input]) => input.expectedScopeKey)
+      ).toEqual(scenario === "valid" ? [scope, scope, scope] : [scope, scope]);
     }
   );
 
@@ -283,8 +337,18 @@ describe("applySuggestions", () => {
     const f = fixture();
     const row = stagedGitSuggestion(f.row, 1);
     expect(
-      await applySuggestions(f.api, f.projects, [row], gitProject)
+      await applySuggestions(f.api, f.projects, [row], gitProject, scope)
     ).toEqual({ done: 1, failed: [] });
+    expect(
+      f.manage.mock.calls.map(([input]) => [
+        input.action,
+        input.expectedScopeKey
+      ])
+    ).toEqual([
+      ["get", scope],
+      ["preview", scope],
+      ["organize", scope]
+    ]);
     expect(f.confirm).not.toHaveBeenCalled();
     expect(f.manage).toHaveBeenCalledWith(
       expect.objectContaining({

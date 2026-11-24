@@ -61,6 +61,7 @@ const hint = (
   sessionId: id(50),
   tier: "strong",
   score: 6,
+  folderRevision: 1,
   folder: folder.reference,
   reasons: [{ code: "git-remote", outcome: "agrees" }],
   ...overrides
@@ -124,6 +125,17 @@ const button = (label: string) =>
 const accepted = { folder: folder.reference };
 
 describe("SourceContextDialog Folder suggestion", () => {
+  it.each([undefined, 2])(
+    "hides a Folder hint without the reviewed revision (%s)",
+    async (folderRevision) => {
+      const confirm = vi.fn(async () => accepted);
+      await render(
+        vi.fn(async () => [hint({ folderRevision })]),
+        confirm
+      );
+      expect(button("Use")).toBeUndefined();
+    }
+  );
   it("shows one short suggestion and makes it a choice only when the User accepts it", async () => {
     const folderHints = vi.fn(async () => [
       hint({ directory: "/work/koed/api" })
@@ -147,7 +159,8 @@ describe("SourceContextDialog Folder suggestion", () => {
     expect(confirmFolderHint).toHaveBeenCalledWith({
       sessionId: id(50),
       kind: "registered",
-      folder: folder.reference
+      folder: folder.reference,
+      expectedScopeKey: "a".repeat(64)
     });
     expect(button("Review changes")?.hasAttribute("disabled")).toBe(false);
     expect(document.body.textContent).not.toContain("Suggested ");
@@ -170,7 +183,8 @@ describe("SourceContextDialog Folder suggestion", () => {
     expect(confirmFolderHint).toHaveBeenCalledExactlyOnceWith({
       sessionId: id(50),
       kind: "worktree-parent",
-      folder: folder.reference
+      folder: folder.reference,
+      expectedScopeKey: "a".repeat(64)
     });
   });
 
@@ -237,6 +251,7 @@ describe("SourceContextDialog Git Anchor suggestion", () => {
     expect(api.manageSourceContext).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "preview",
+        expectedScopeKey: "a".repeat(64),
         correction: {
           axis: "git",
           action: "set",

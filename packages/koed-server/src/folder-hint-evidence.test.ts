@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+import { setTimeout } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeGitRemoteUrl } from "@koed-labs/shared";
 import { ensureDeviceIdentity } from "./device-identity.js";
@@ -617,6 +618,75 @@ describe("Folder hint evidence", () => {
         })
       ).toBeUndefined();
     });
+
+    it.each(["primary", "linked"])(
+      "keeps a %s checkout advisory when its Git directory is newer than the source",
+      async (kind) => {
+        const { root, paths, env } = await fixture();
+        const remote = "https://github.com/acme/history.git";
+        const main = resolve(root, "main");
+        const directory = resolve(root, "reviewed");
+        mkdirSync(main);
+        mkdirSync(directory);
+        const git = (cwd: string, ...args: string[]) =>
+          execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+        if (kind === "linked") {
+          git(main, "init", "-q");
+          git(main, "remote", "add", "origin", remote);
+          git(
+            main,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.test",
+            "commit",
+            "-qm",
+            "initial",
+            "--allow-empty"
+          );
+        }
+        const start = Date.now() + 2;
+        await setTimeout(25);
+        if (kind === "linked") {
+          git(main, "worktree", "add", "--quiet", "--detach", directory);
+          expect(statSync(resolve(main, ".git")).birthtimeMs).toBeLessThan(
+            start
+          );
+        } else {
+          git(directory, "init", "-q");
+          git(directory, "remote", "add", "origin", remote);
+        }
+        const gitDir = git(directory, "rev-parse", "--absolute-git-dir");
+        const birth = statSync(gitDir).birthtimeMs;
+        expect(statSync(directory).birthtimeMs).toBeLessThan(start);
+        expect(birth).toBeGreaterThan(start);
+        const find = async (firstConversationAt: number) =>
+          (
+            await hintsForConversation(
+              paths,
+              conversation({
+                recordedCwd: directory,
+                firstConversationAt,
+                allowUnknownRepositoryCandidate: true
+              }),
+              { environment: env, now: () => birth + 10_000 }
+            )
+          )?.find((hint) => hint.tier !== "none" && hint.kind === "repository");
+        for (const [time, outcome] of [
+          [start, "does-not-agree"],
+          [birth, "does-not-agree"],
+          [birth + 1, "agrees"]
+        ] as const) {
+          expect(await find(time)).toMatchObject({
+            directory,
+            repositoryKey: normalizeGitRemoteUrl(remote).fingerprint,
+            reasons: expect.arrayContaining([
+              { code: "git-directory-birthtime", outcome }
+            ]) as unknown
+          });
+        }
+      }
+    );
 
     it("offers an eligible unknown-device repository only for strict pre-start birthtime", async () => {
       const { root, paths, env } = await fixture();

@@ -211,9 +211,14 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
   }
 });
 
-it.each(["Add", "Add all"])(
-  "%s does not approve a replacement Folder for the same Conversation and Project",
-  async (action) => {
+it.each([
+  ["Add", "candidate"],
+  ["Add all", "candidate"],
+  ["Add", "revision"],
+  ["Add all", "revision"]
+])(
+  "%s does not approve a changed Folder %s for the same Conversation and Project",
+  async (action, change) => {
     const f = createProjectManagementValidationApi();
     const projectId = validationId(3);
     const alternate = f.contexts.get(validationId(100))!.folder.original;
@@ -236,6 +241,7 @@ it.each(["Add", "Add all"])(
         action: "use" as const,
         kind: "worktree-parent" as const,
         folder: target.folder,
+        folderRevision: 1,
         tier: "medium" as const,
         projects: [{ id: projectId, name: project.name }],
         evidence: []
@@ -245,7 +251,9 @@ it.each(["Add", "Add all"])(
       ...candidate,
       proposal: {
         ...candidate.proposal,
-        folder: alternate.value.reference
+        ...(change === "candidate"
+          ? { folder: alternate.value.reference }
+          : { folderRevision: 2 })
       }
     };
     const unchanged = {
