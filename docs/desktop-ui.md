@@ -47,6 +47,11 @@ Kin appears under a spotlight beside the controls. Home labels it with the Proje
 look generated from its ID. Saving a Kin updates Home and syncs the choice to
 paired Personal devices.
 
+**No project** is not a Project, so it has no Project settings. Its menu opens
+**Kin settings**, which edits the one Kin shared by every Conversation without a
+Project. That Kin is saved on this device for the current account and backend;
+it does not sync to paired devices.
+
 Project settings also manages names, source rules, Conversation membership, and
 Personal Device sync. Sync review remains available when Conversation membership
 cannot be loaded. Settings blocks edits until a complete membership review loads.
