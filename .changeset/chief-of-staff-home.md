@@ -2,4 +2,4 @@
 "@koed-labs/koed": minor
 ---
 
-Dock the Chief of Staff Kin above the recent Conversation chips at the bottom-right of the Projects sidebar. The Kin stays in place across screens and moves to the left rail when the sidebar is collapsed. On macOS, enable desktop floating to send the Kin back to its desktop anchor when the Koed window loses focus or closes. Conversation chips open a captured preview and can show Working when connected Pi explicitly reports activity.
+The live Chief of Staff Kin now sits at the top of the left rail and fades to the Koed logo when quiet; hover to wake it. A Conversations list replaces Pinned, showing pinned Conversations first, then the rest by recency, with live markers that open captured context. Home shows import progress above logo-only AI Client keycaps. Pi Conversations can show Working, and quitting no longer shows an EPIPE error.
