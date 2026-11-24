@@ -114,7 +114,7 @@ describe.skipIf(!databaseUrl)(
           requireRepository: () => repo,
           auth: { authenticate: async () => user },
           rateLimit: { memoryRead: async () => {}, memoryWrite: async () => {} }
-        } as ApiRouteContext);
+        } as unknown as ApiRouteContext);
         const base = `/v1/personal/sessions/${source.id}/source-context`;
         const readGit = async () => {
           const response = await app.inject({ method: "GET", url: base });
