@@ -32,7 +32,12 @@ export type SidebarConversation = {
   managementPending?: boolean;
   // The Project's saved Kin look, so the row's Kin matches Home.
   projectKin?: PersonalProjectKin;
+  // Set when the row belongs to No project, which shares one Kin.
+  noProject?: boolean;
 };
+/** The group for captures that belong to no Project. */
+export const NO_PROJECT_ID = "no-project";
+
 export type SidebarProject = {
   id: string;
   name: string;
@@ -75,7 +80,7 @@ export function buildProjectSidebar(
       !project.namedProject &&
       (project.contextKind === "independent" ||
         reference.kind === "unresolved");
-    const id = ungrouped ? "no-project" : project.id;
+    const id = ungrouped ? NO_PROJECT_ID : project.id;
     const group = groups.get(id) ?? {
       id,
       name: ungrouped ? "No project" : project.name,
@@ -129,6 +134,7 @@ export function buildProjectSidebar(
         ...(project.namedProject?.kin && {
           projectKin: project.namedProject.kin
         }),
+        ...(ungrouped && { noProject: true }),
         managementPending: Boolean(
           intent?.presentationProjectId && !intent.projectMembershipConfirmed
         )
@@ -166,7 +172,7 @@ export function buildProjectSidebar(
     const draft = drafts.get(intent.executionId);
     if (!draft && !capturedExecutions.has(intent.executionId)) continue;
     const project = projects.find((p) => p.id === intent.presentationProjectId);
-    const id = project?.id ?? "no-project";
+    const id = project?.id ?? NO_PROJECT_ID;
     const group = groups.get(id) ?? {
       id,
       name: project?.name ?? "No project",
@@ -181,7 +187,8 @@ export function buildProjectSidebar(
       latestAt: draft?.thread.latestAt ?? intent.createdAt,
       client: intent.aiClientDriverId,
       route: { kind: "conversation", executionId: intent.executionId },
-      projectName: group.name
+      projectName: group.name,
+      ...(id === NO_PROJECT_ID && { noProject: true })
     });
     groups.set(id, group);
   }
