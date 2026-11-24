@@ -72,6 +72,7 @@ it("opens sync conflict review even when a retained exclusion blocks membership 
           onSave={vi.fn()}
           onRefresh={vi.fn()}
           onDelete={vi.fn()}
+          deviceSync
         />
       )
     );
@@ -93,6 +94,42 @@ it("opens sync conflict review even when a retained exclusion blocks membership 
     expect(document.body.textContent).toContain("Project catalog");
     expect(document.body.textContent).toContain("Other name");
     expect(button("Review this choice").disabled).toBe(false);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it("hides the Sync page while Personal Device Sync is off", async () => {
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const projects = mergeProjectSources(f.inventory(), []);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const navigation = () =>
+    [...document.querySelectorAll(".v1-pm-nav-link")].map((link) =>
+      link.textContent?.trim()
+    );
+  try {
+    await act(async () =>
+      root.render(
+        <ProjectSettingsDialog
+          api={f.api}
+          store={new PersonalMemoryStore(f.api)}
+          projects={projects}
+          projectId={projectId}
+          page="sync"
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          onRefresh={vi.fn()}
+          onDelete={vi.fn()}
+        />
+      )
+    );
+    expect(navigation()).toEqual(["General", "Kin", "Conversations"]);
+    expect(document.querySelector(".v1-pm-page-heading")?.textContent).toBe(
+      "General"
+    );
   } finally {
     await act(async () => root.unmount());
     container.remove();

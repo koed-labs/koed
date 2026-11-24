@@ -19,6 +19,8 @@ captured from supported AI Clients, including previously managed Conversations.
 The sidebar provides search, expandable Projects, and navigation history. On
 narrow windows, it opens as a drawer. While services or inventory are loading,
 the sidebar shows that state rather than an empty Conversation list.
+**Conversations** and **Projects** each scroll on their own, and the Projects
+heading stays in view.
 
 Pins work in two places. Pinning a Conversation keeps it at the top of
 **Conversations**, which lists every other Conversation by most recent
@@ -53,7 +55,9 @@ Project. That Kin is saved on this device for the current account and backend;
 it does not sync to paired devices.
 
 Project settings also manages names, source rules, Conversation membership, and
-Personal Device sync. Sync review remains available when Conversation membership
+Personal Device sync. The **Sync** page appears only when
+`KOED_PERSONAL_DEVICE_SYNC_ENABLED` is `true`; Personal Device Sync is off by
+default. Sync review remains available when Conversation membership
 cannot be loaded. Settings blocks edits until a complete membership review loads.
 Saving from the **Conversations** tab keeps Settings open and reloads the saved
 Project so you can continue editing.

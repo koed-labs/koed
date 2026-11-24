@@ -200,11 +200,31 @@
   font-size: 10px;
   opacity: 0.65;
 }
+/* Conversations and Projects each scroll on their own; the sidebar does not. */
 .v1-nav-scroll {
   gap: 0;
+  overflow: hidden;
+  padding: 10px 10px 0;
+}
+.v1-nav-scroll .v1-nav-conversations {
+  flex: none;
+}
+.v1-nav-scroll .v1-nav-projects {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-x: hidden;
-  padding: 10px 10px 28px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  padding-bottom: 28px;
+}
+/* The heading and its actions stay put while Projects scroll. */
+.v1-nav-projects > .v1-pm-project-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--v1-rail);
 }
 .v1-nav-scroll [data-slot="sidebar-group"] {
   padding: 0;
