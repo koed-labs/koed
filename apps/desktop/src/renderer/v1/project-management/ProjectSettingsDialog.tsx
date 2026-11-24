@@ -54,6 +54,11 @@ const pages = [
 ] as const;
 export type ProjectSettingsPage = (typeof pages)[number]["id"];
 
+// Personal Device Sync is opt-in; while it is off there is nothing to review.
+const deviceSyncEnabled = () =>
+  typeof window !== "undefined" &&
+  window.koedDesktop?.featureFlags?.personalDeviceSyncEnabled === true;
+
 function stagedApprovalKey(projectId: string, row: SuggestionRow): string {
   return JSON.stringify([
     suggestionApprovalKey(projectId, row),
@@ -71,7 +76,8 @@ export function ProjectSettingsDialog({
   onClose,
   onSave,
   onRefresh,
-  onDelete
+  onDelete,
+  deviceSync = deviceSyncEnabled()
 }: {
   api: PersonalDesktopApi;
   store: PersonalMemoryStore;
@@ -91,12 +97,19 @@ export function ProjectSettingsDialog({
   ) => Promise<readonly DesktopProject[] | null>;
   onRefresh: () => Promise<readonly DesktopProject[]>;
   onDelete: (project: DesktopProject) => Promise<void>;
+  /** Shows the Sync page; defaults to the Personal Device Sync switch. */
+  deviceSync?: boolean;
 }) {
+  const visiblePages = deviceSync
+    ? pages
+    : pages.filter(({ id }) => id !== "sync");
   const [reviewedProjects, setReviewedProjects] = useState<
     readonly DesktopProject[] | null
   >(projects);
   const [active, setActive] = useState(projectId);
-  const [panel, setPanel] = useState<ProjectSettingsPage>(page);
+  const [panel, setPanel] = useState<ProjectSettingsPage>(
+    page === "sync" && !deviceSync ? "general" : page
+  );
   const livePanel = useRef(panel);
   const showPanel = (next: ProjectSettingsPage) => {
     livePanel.current = next;
@@ -329,7 +342,7 @@ export function ProjectSettingsDialog({
           disabled={busy || !reviewedProjects}
         />
         <div className="v1-pm-settings-links">
-          {pages.map(({ id, name, Icon }) => (
+          {visiblePages.map(({ id, name, Icon }) => (
             <Button
               key={id}
               variant="ghost"
