@@ -160,6 +160,7 @@ and Project-only exclusions. **Add to Project** keeps recorded source context
 and Capture Targets independent. Projects are available directly; no existing-Project
 upgrade or activation step is required. See the
 [Personal selection contract](docs/personal-selection-contract.md).
+For practical steps, see [Organize Conversations without losing the source](docs/organizing-conversations.md).
 
 ## Security
 

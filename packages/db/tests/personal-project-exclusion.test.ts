@@ -171,6 +171,17 @@ describe.skipIf(!databaseUrl)("Project exclusions in PostgreSQL", () => {
         )
       ).project.version
     ).toBe(project.version);
+    // Exclusions are listed without Project sync, and only for the owner.
+    expect(
+      await repo.listPersonalProjectExclusions(actor, project.projectId, {
+        expectedVersion: project.version
+      })
+    ).toEqual({ project, excludedSessionIds: [excluded.id] });
+    await expect(
+      repo.listPersonalProjectExclusions(other, project.projectId, {
+        expectedVersion: project.version
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
   it("retains all reasons, isolates exclusions, and atomically restores only a reviewed current revision", async () => {
     const repo = createMemorySourceRepository(pool, options);

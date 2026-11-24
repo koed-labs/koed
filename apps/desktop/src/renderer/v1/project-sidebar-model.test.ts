@@ -4,7 +4,8 @@ import type { V1ConversationIntent } from "../../ipc/v1-state-protocol.js";
 import {
   buildProjectSidebar,
   filterSidebar,
-  pinnedConversations
+  pinnedSidebarItems,
+  projectPinKey
 } from "./project-sidebar-model.js";
 
 const thread = (id: string, latestAt: string, sourceAiClient = "codex") => ({
@@ -201,9 +202,12 @@ describe("Project sidebar inventory", () => {
       new Map()
     );
     expect(captured[0]!.conversations).toHaveLength(1);
-    expect(pinnedConversations(captured, ["execution:execution"])[0]!.key).toBe(
-      "session:captured"
-    );
+    expect(
+      pinnedSidebarItems(captured, [
+        "execution:execution",
+        "session:captured"
+      ]).map((item) => item.key)
+    ).toEqual(["session:captured"]);
   });
   it("does not match unrelated legacy threads to an intent with no capture ID", () => {
     const legacy = named("project", [
@@ -215,16 +219,22 @@ describe("Project sidebar inventory", () => {
   });
   it("searches titles and Project names and keeps pins in saved order", () => {
     const groups = buildProjectSidebar(
-      [named("Koed", [thread("Privacy", after), thread("Build", before)])],
+      [
+        named("Koed", [thread("Privacy", after), thread("Build", before)]),
+        named("Empty", [])
+      ],
       [],
       new Map()
     );
     expect(filterSidebar(groups, "privacy")[0]!.conversations).toHaveLength(1);
     expect(filterSidebar(groups, "KOED")[0]!.conversations).toHaveLength(2);
     expect(
-      pinnedConversations(groups, ["session:Build", "session:Privacy"]).map(
-        (r) => r.title
-      )
-    ).toEqual(["Build", "Privacy"]);
+      pinnedSidebarItems(groups, [
+        "session:Build",
+        projectPinKey("Empty"),
+        projectPinKey("removed"),
+        "session:Privacy"
+      ]).map((item) => item.key)
+    ).toEqual(["session:Build", "project:Empty", "session:Privacy"]);
   });
 });

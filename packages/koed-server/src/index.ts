@@ -213,10 +213,35 @@ export { resolveRepositoryIdentity } from "./repository-identity.js";
 export {
   observeCaptureFolder,
   pinSourceFolderObservation,
+  readOrSealSourceFolderContext,
   readSourceFolderObservation,
   readCurrentSourceFolderObservation,
   readSourceRepositoryIdentity
 } from "./folder-context.js";
+export {
+  scoreFolderCreation,
+  scoreFolderHint,
+  scoreRepositoryAnchor,
+  scoreWorktreeParentHint
+} from "./folder-hint-confidence.js";
+export type {
+  FolderCreationResult,
+  FolderHintInput,
+  FolderHintResult,
+  FolderWorktreeResult,
+  RepositoryAnchorResult
+} from "./folder-hint-confidence.js";
+export {
+  gatherFolderHintInput,
+  hintForConversation,
+  hintsForConversation
+} from "./folder-hint-evidence.js";
+export { createClientWorktreeLookup } from "./client-worktree-source.js";
+export type { ClientWorktreeLookup } from "./client-worktree-source.js";
+export type {
+  FolderHintCandidate,
+  FolderHintConversation
+} from "./folder-hint-evidence.js";
 
 export {
   listPendingRepositoryChanges,

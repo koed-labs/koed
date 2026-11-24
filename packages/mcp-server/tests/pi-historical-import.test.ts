@@ -3,6 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  ensureDeviceIdentity,
+  resolveKoedServerPaths,
+  readSourceFolderObservation,
+  readSourceRepositoryIdentity,
+  readCurrentSourceFolderObservation
+} from "@koed-labs/server";
 
 import { MemoryApiClient, MemoryApiError } from "../src/index.js";
 import {
@@ -10,6 +17,7 @@ import {
   importNextPiHistoricalBatch,
   registerPiHistoricalTranscriptSource
 } from "../src/pi-historical-import.js";
+import { resolveCaptureFolderObservation } from "../src/capture-repository-context.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -39,7 +47,15 @@ describe("Pi historical transcript registration", () => {
     fs.mkdirSync(sessions, { recursive: true });
     const sourceSessionId = randomUUID();
     const transcriptPath = path.join(sessions, `${sourceSessionId}.jsonl`);
-    const cwd = "/tmp/pi-history";
+    const cwd = path.join(root, "checkout");
+    fs.mkdirSync(cwd);
+    const env = {
+      NODE_ENV: "test",
+      KOED_HOME: path.join(root, "koed"),
+      PI_CODING_AGENT_SESSION_DIR: sessions
+    };
+    const paths = resolveKoedServerPaths(env);
+    await ensureDeviceIdentity(paths, { environment: env });
     const historical = [
       line({ type: "session", version: 3, id: sourceSessionId, cwd }),
       ...Array.from({ length: 4 }, (_, index) =>
@@ -122,10 +138,7 @@ describe("Pi historical transcript registration", () => {
     const registered = await registerPiHistoricalTranscriptSource(
       client,
       { sourceSessionId, transcriptPath, cwd },
-      {
-        KOED_HOME: path.join(root, "koed"),
-        PI_CODING_AGENT_SESSION_DIR: sessions
-      },
+      env,
       {
         frontierOffset: frozenFrontier,
         frontierLine: 5,
@@ -138,6 +151,23 @@ describe("Pi historical transcript registration", () => {
     expect(appendedEnds[0]).toBeLessThan(frozenFrontier);
     expect(registered.registrationFrontierOffset).toBe(frozenFrontier);
     expect(registered.providerCursorOffset).toBe(appendedEnds[0]);
+
+    // Exact historical registration has no live pin and must not wait for one.
+    const key = {
+      sourceKind: "pi" as const,
+      externalSessionId: sourceSessionId
+    };
+    await resolveCaptureFolderObservation({
+      ...key,
+      cwd,
+      env,
+      newConversation: true
+    });
+    expect(readSourceFolderObservation(paths, key)).toBeUndefined();
+    expect(readSourceRepositoryIdentity(paths, key)).toBeUndefined();
+    expect(readCurrentSourceFolderObservation(paths, key)?.normalizedPath).toBe(
+      cwd
+    );
 
     const adapter = createPiHistoricalProviderAdapter({
       client,

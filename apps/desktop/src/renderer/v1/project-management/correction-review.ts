@@ -13,6 +13,45 @@ export type CorrectionReview = {
   projects: { id: string; name: string; before: boolean; after: boolean }[];
 };
 
+export async function previewSourceCorrection(
+  api: PersonalDesktopApi,
+  review: OrganizationReview,
+  correction: PersonalSourceCorrectionInput,
+  reviewedCheckout?: { directory: string; incarnation: string }
+): Promise<PersonalSourceCorrectionPreview> {
+  const { preview } = await api.manageSourceContext!({
+    action: "preview",
+    sessionId: review.context.sessionId,
+    correction,
+    ...(review.expectedScopeKey
+      ? { expectedScopeKey: review.expectedScopeKey }
+      : {}),
+    ...(reviewedCheckout ? { reviewedCheckout } : {})
+  });
+  if (
+    !preview ||
+    preview.axis !== correction.axis ||
+    preview.expectedVersion !== correction.expectedVersion ||
+    preview.inferenceIntent !==
+      ("inferenceIntent" in correction
+        ? correction.inferenceIntent
+        : undefined) ||
+    JSON.stringify(preview.before) !== JSON.stringify(review.context) ||
+    preview.projects.length !== review.projects.length ||
+    review.projects.some(
+      (p) =>
+        !preview.projects.some(
+          (row) =>
+            row.projectId === p.id && row.version === p.namedProject!.version
+        )
+    )
+  )
+    throw new Error(
+      "Source context or Projects changed. Reopen to review the latest state."
+    );
+  return preview;
+}
+
 /** Combine the server's independently reviewed axes. Direct membership and
  * exclusions remain authoritative; neither axis can override the other. */
 export async function reviewSourceCorrections(
@@ -21,31 +60,9 @@ export async function reviewSourceCorrections(
   corrections: PersonalSourceCorrectionInput[]
 ): Promise<CorrectionReview> {
   const previews = await Promise.all(
-    corrections.map(async (correction) => {
-      const result = await api.manageSourceContext!({
-        action: "preview",
-        sessionId: review.context.sessionId,
-        correction
-      });
-      const preview = result.preview;
-      if (
-        !preview ||
-        JSON.stringify(preview.before) !== JSON.stringify(review.context) ||
-        preview.projects.length !== review.projects.length ||
-        review.projects.some(
-          (p) =>
-            !preview.projects.some(
-              (row) =>
-                row.projectId === p.id &&
-                row.version === p.namedProject!.version
-            )
-        )
-      )
-        throw new Error(
-          "Source context or Projects changed. Reopen to review the latest state."
-        );
-      return preview;
-    })
+    corrections.map((correction) =>
+      previewSourceCorrection(api, review, correction)
+    )
   );
   return combineCorrectionPreviews(review, corrections, previews);
 }
@@ -58,6 +75,17 @@ export function combineCorrectionPreviews(
   return {
     corrections,
     projects: review.memberships.map(({ project, explanation }) => {
+      const single =
+        previews.length === 1
+          ? previews[0]!.projects.find((p) => p.projectId === project.id)
+          : undefined;
+      if (single)
+        return {
+          id: project.id,
+          name: project.name,
+          before: single.beforeIncluded,
+          after: single.afterIncluded
+        };
       const reasons = ["session", "repository", "folder"].flatMap((kind) => {
         const preview = previews.find(
           (p) => p.axis === (kind === "repository" ? "git" : kind)

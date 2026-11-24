@@ -8,6 +8,7 @@ import {
   TabsPanel,
   TabsTab
 } from "@koed-labs/ui";
+import { ProposalWhy } from "./ProposalWhy.js";
 import { RefreshCw, Trash2 } from "lucide-react";
 import type { PersonalSourceCorrectionInput } from "@koed-labs/shared";
 import {
@@ -28,11 +29,32 @@ import {
   type OrganizationDialogProps
 } from "./use-organization-review.js";
 import { sourceLabel } from "./source-label.js";
+import {
+  folderProposal,
+  proposalProjectLabel,
+  type FolderProposal
+} from "./folder-hint-suggestion.js";
+import { proposalResolvers } from "./proposal-resolvers.js";
+import { repositoryTargetFor } from "./repository-project.js";
+import {
+  folderLabel,
+  folderLabelText,
+  folderSourceLabel
+} from "./folder-label.js";
+import { useFolderHint } from "./use-folder-hint.js";
+
+const SUGGESTED_SOURCE = "suggested-source";
 
 export function SourceContextDialog(
-  props: OrganizationDialogProps & { axis?: "git" | "folder" }
+  props: OrganizationDialogProps & {
+    axis?: "git" | "folder";
+    scopeKey: string | null;
+  }
 ) {
-  const { review, error, setError, busy, apply } = useOrganizationReview(props);
+  const { review, error, setError, busy, apply } = useOrganizationReview(
+    props,
+    props.scopeKey ?? undefined
+  );
   const [axis, setAxis] = useState(props.axis ?? "git");
   const [draft, setDraft] = useState({ git: "current", folder: "current" });
   const [preview, setPreview] = useState<CorrectionReview>();
@@ -41,6 +63,60 @@ export function SourceContextDialog(
     () => projectTransferSources(props.projects),
     [props.projects]
   );
+  const folderUnresolved =
+    review?.context.folder.correction.state === "original" &&
+    effective<SourceContextFact>(review.context.folder).state !== "known";
+  const gitUnresolved =
+    !!review &&
+    effective<SourceContextFact>(review.context.git).state !== "known";
+  const hints = useFolderHint(
+    props.api,
+    props.target.sessionId,
+    props.scopeKey,
+    folderUnresolved || gitUnresolved
+  );
+  const proposal = folderProposal(
+    hints.filter((hint) =>
+      hint.kind === "repository"
+        ? gitUnresolved
+        : folderUnresolved &&
+          !!props.api.confirmFolderHint &&
+          hint.folderRevision === review.context.folder.revision
+    ),
+    proposalResolvers(props.projects)
+  );
+  const anchorName =
+    proposal?.kind === "repository"
+      ? repositoryTargetFor(props.projects, proposal.repositoryKey)?.repository
+          .anchorDisplay
+      : undefined;
+  const [accepted, setAccepted] = useState<FolderProposal>();
+  const acceptedAnchor =
+    accepted?.kind === "repository"
+      ? repositoryTargetFor(props.projects, accepted.repositoryKey)?.repository
+      : undefined;
+  const [confirming, setConfirming] = useState(false);
+  const acceptProposal = async (candidate: FolderProposal) => {
+    const tab = candidate.kind === "repository" ? "git" : "folder";
+    setConfirming(true);
+    setError("");
+    try {
+      if (candidate.kind !== "repository")
+        await props.api.confirmFolderHint!({
+          sessionId: props.target.sessionId,
+          kind: candidate.kind,
+          folder: candidate.folder,
+          expectedScopeKey: review?.expectedScopeKey
+        });
+      setAccepted(candidate);
+      update(tab, SUGGESTED_SOURCE);
+      setAxis(tab);
+    } catch (cause) {
+      setError(projectErrorMessage(cause));
+    } finally {
+      setConfirming(false);
+    }
+  };
   const update = (tab: "git" | "folder", value: string) => {
     setDraft((old) => ({ ...old, [tab]: value }));
     setPreview(undefined);
@@ -54,6 +130,33 @@ export function SourceContextDialog(
         if (value === "current") return [];
         if (value === "reset" || value === "unresolved")
           return [{ axis: tab, action: value, expectedVersion }];
+        if (value === SUGGESTED_SOURCE && accepted) {
+          if (tab === "folder" && accepted.kind !== "repository") {
+            if (
+              accepted.folderRevision !== expectedVersion ||
+              !folderUnresolved
+            )
+              throw new Error("Folder changed. Review the suggestion again.");
+            return [
+              {
+                axis: tab,
+                action: "set",
+                folder: accepted.folder,
+                expectedVersion: accepted.folderRevision
+              }
+            ];
+          }
+          if (tab === "git" && acceptedAnchor)
+            return [
+              {
+                axis: tab,
+                action: "set",
+                repository: acceptedAnchor,
+                expectedVersion
+              }
+            ];
+          throw new Error("The selected source is no longer available.");
+        }
         const source = [...sources.repositories, ...sources.folders].find(
           (s) => s.id === value
         );
@@ -101,13 +204,48 @@ export function SourceContextDialog(
     <ProjectPopup
       title="Correct source context"
       description={props.target.title}
-      busy={busy || reviewing}
+      busy={busy || reviewing || confirming}
       onClose={props.onClose}
     >
       {!review && !error && <p role="status">Loading…</p>}
       {review && (
         <>
           <SourceContextStatus context={review.context} />
+          {proposal &&
+            draft.git === "current" &&
+            draft.folder === "current" && (
+              <div className="v1-pm-context-suggestion">
+                <span className="v1-pm-context-suggested">
+                  {proposal.projects.length > 0
+                    ? "Suggested Project: "
+                    : "Suggested Folder: "}
+                  <strong>
+                    {proposal.projects.length > 0
+                      ? proposalProjectLabel(proposal)
+                      : proposal.directory
+                        ? folderLabel(proposal.directory).name
+                        : "this Folder"}
+                  </strong>
+                  {proposal.projects.length === 0 &&
+                    proposal.directory &&
+                    folderLabel(proposal.directory).detail && (
+                      <> · {folderLabel(proposal.directory).detail}</>
+                    )}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy || reviewing || confirming}
+                  onClick={() => void acceptProposal(proposal)}
+                >
+                  Use
+                </Button>
+                <ProposalWhy
+                  proposal={proposal}
+                  {...(anchorName ? { anchor: anchorName } : {})}
+                />
+              </div>
+            )}
           <Tabs
             value={axis}
             onValueChange={(value) => setAxis(value as "git" | "folder")}
@@ -145,10 +283,32 @@ export function SourceContextDialog(
                           value: "reset",
                           label: `Original: ${sourceLabel(assignment.original, props.projects)}`
                         },
-                        ...items.map((s) => ({ value: s.id, label: s.detail }))
+                        ...(accepted &&
+                        tab ===
+                          (accepted.kind === "repository" ? "git" : "folder")
+                          ? [
+                              {
+                                value: SUGGESTED_SOURCE,
+                                label:
+                                  accepted.kind === "repository"
+                                    ? (acceptedAnchor?.anchorDisplay ??
+                                      "Suggested Git Anchor")
+                                    : accepted.directory
+                                      ? folderLabelText(accepted.directory)
+                                      : "Suggested Folder"
+                              }
+                            ]
+                          : []),
+                        ...items.map((s) => ({
+                          value: s.id,
+                          label:
+                            tab === "folder"
+                              ? folderSourceLabel(s.detail)
+                              : s.detail
+                        }))
                       ]}
                       onChange={(value) => update(tab, value)}
-                      disabled={busy || reviewing || pending}
+                      disabled={busy || reviewing || confirming || pending}
                     />
                   </div>
                   <div className="v1-pm-context-actions">
@@ -159,6 +319,7 @@ export function SourceContextDialog(
                       disabled={
                         busy ||
                         reviewing ||
+                        confirming ||
                         pending ||
                         draft[tab] === "unresolved" ||
                         (draft[tab] === "current" && current.state !== "known")
@@ -175,6 +336,7 @@ export function SourceContextDialog(
                       disabled={
                         busy ||
                         reviewing ||
+                        confirming ||
                         pending ||
                         draft[tab] === "reset" ||
                         (draft[tab] === "current" &&
@@ -214,7 +376,7 @@ export function SourceContextDialog(
       <DialogFooter>
         <Button
           variant="outline"
-          disabled={busy || reviewing}
+          disabled={busy || reviewing || confirming}
           onClick={props.onClose}
         >
           Cancel
@@ -224,6 +386,7 @@ export function SourceContextDialog(
             !review ||
             busy ||
             reviewing ||
+            confirming ||
             (draft.git === "current" && draft.folder === "current")
           }
           onClick={() => void confirm()}

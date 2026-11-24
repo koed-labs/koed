@@ -1,5 +1,7 @@
-import { readFileSync, statSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { readFileSync, statSync, type BigIntStats } from "node:fs";
+import { stat } from "node:fs/promises";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { inspectDeviceIdentityAtKoedHome } from "./device-identity.js";
@@ -34,38 +36,79 @@ type RegistryDirectory = z.infer<
 >["directories"][number];
 
 /** macOS device numbers describe a mount, not a durable volume identity. */
+const volumeCommandOptions = {
+  encoding: "utf8" as const,
+  timeout: 2_000,
+  maxBuffer: 256 * 1024
+};
+const volumeDevicePath = (output: string): string | undefined => {
+  const filesystem = output.trim().split("\n").at(-1)?.trim().split(/\s+/)[0];
+  return filesystem && /^\/dev\/disk\d+(?:s\d+)*$/.test(filesystem)
+    ? filesystem
+    : undefined;
+};
+const volumeUuid = (plist: string): string | undefined => {
+  const uuid = /<key>VolumeUUID<\/key>\s*<string>([0-9a-f-]+)<\/string>/i.exec(
+    plist
+  )?.[1];
+  return uuid && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(uuid)
+    ? uuid.toLowerCase()
+    : undefined;
+};
 const macVolumeUuid = (path: string): string | undefined => {
   if (process.platform !== "darwin") return undefined;
   try {
-    const options = {
-      encoding: "utf8" as const,
-      timeout: 2_000,
-      maxBuffer: 256 * 1024,
-      stdio: "pipe" as const
-    };
-    const filesystem = execFileSync("/bin/df", ["-P", path], options)
-      .trim()
-      .split("\n")
-      .at(-1)
-      ?.trim()
-      .split(/\s+/)[0];
-    if (!filesystem || !/^\/dev\/disk\d+(?:s\d+)*$/.test(filesystem))
-      return undefined;
-    const plist = execFileSync(
-      "/usr/sbin/diskutil",
-      ["info", "-plist", filesystem],
-      options
+    const options = { ...volumeCommandOptions, stdio: "pipe" as const };
+    const device = volumeDevicePath(
+      execFileSync("/bin/df", ["-P", path], options)
     );
-    const uuid =
-      /<key>VolumeUUID<\/key>\s*<string>([0-9a-f-]+)<\/string>/i.exec(
-        plist
-      )?.[1];
-    return uuid && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(uuid)
-      ? uuid.toLowerCase()
-      : undefined;
+    return (
+      device &&
+      volumeUuid(
+        execFileSync("/usr/sbin/diskutil", ["info", "-plist", device], options)
+      )
+    );
   } catch {
     return undefined;
   }
+};
+
+const run = promisify(execFile);
+const macVolumeUuidAsync = async (
+  path: string
+): Promise<string | undefined> => {
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const options = { ...volumeCommandOptions, killSignal: "SIGKILL" as const };
+    const { stdout } = await run("/bin/df", ["-P", path], options);
+    const device = volumeDevicePath(stdout);
+    if (!device) return undefined;
+    const { stdout: plist } = await run(
+      "/usr/sbin/diskutil",
+      ["info", "-plist", device],
+      options
+    );
+    return volumeUuid(plist);
+  } catch {
+    return undefined;
+  }
+};
+
+const hasDirectoryLifetime = (directory: BigIntStats): boolean =>
+  directory.isDirectory() && directory.ino > 0n && directory.birthtimeNs > 0n;
+
+const directoryMarker = (
+  directory: BigIntStats,
+  volume: string | undefined
+): DirectoryMarker => {
+  const lifetime = [directory.ino.toString(), directory.birthtimeNs.toString()];
+  return {
+    marker: JSON.stringify([
+      volume ? `volume:${volume}` : directory.dev.toString(),
+      ...lifetime
+    ]),
+    deviceMarker: JSON.stringify([directory.dev.toString(), ...lifetime])
+  };
 };
 
 /** The per-read cache avoids repeated disk lookups without retaining a mount's
@@ -75,23 +118,19 @@ export const readPersonalFolderDirectoryMarker = (
   volumes = new Map<bigint, string | undefined>()
 ): DirectoryMarker | undefined => {
   const directory = statSync(path, { bigint: true });
-  if (
-    !directory.isDirectory() ||
-    directory.ino <= 0n ||
-    directory.birthtimeNs <= 0n
-  )
-    return undefined;
+  if (!hasDirectoryLifetime(directory)) return undefined;
   if (!volumes.has(directory.dev))
     volumes.set(directory.dev, macVolumeUuid(path));
-  const volume = volumes.get(directory.dev);
-  const lifetime = [directory.ino.toString(), directory.birthtimeNs.toString()];
-  return {
-    marker: JSON.stringify([
-      volume ? `volume:${volume}` : directory.dev.toString(),
-      ...lifetime
-    ]),
-    deviceMarker: JSON.stringify([directory.dev.toString(), ...lifetime])
-  };
+  return directoryMarker(directory, volumes.get(directory.dev));
+};
+
+/** Same marker as live capture, without blocking the hint caller. */
+export const readPersonalFolderDirectoryMarkerAsync = async (
+  path: string
+): Promise<DirectoryMarker | undefined> => {
+  const directory = await stat(path, { bigint: true });
+  if (!hasDirectoryLifetime(directory)) return undefined;
+  return directoryMarker(directory, await macVolumeUuidAsync(path));
 };
 
 const numericMarkerSchema = z.tuple([

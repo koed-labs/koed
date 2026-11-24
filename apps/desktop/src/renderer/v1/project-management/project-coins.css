@@ -1,0 +1,45 @@
+/* Counting coins, drawn like the Home floor coins. */
+.v1-pm-coin {
+  display: block;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  line-height: 0;
+  pointer-events: none;
+}
+.v1-pm-coin svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.v1-pm-coin-count {
+  filter: drop-shadow(0 0 4px rgb(255 209 102 / 0.4));
+}
+.v1-pm-coin-sparkle {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: v1-pm-coin-twinkle 2.8s ease-in-out infinite;
+}
+.v1-pm-coin-sparkle-small {
+  animation-delay: 1.2s;
+}
+@keyframes v1-pm-coin-twinkle {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.7);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v1-pm-coin-sparkle,
+  .v1-pm-coin-sparkle-small {
+    animation: none;
+    opacity: 0.9;
+  }
+}

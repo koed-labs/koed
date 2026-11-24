@@ -586,7 +586,7 @@ describe("V1App launch integration", () => {
     expect(container.textContent).not.toContain("needs a hand");
     expect(container.textContent).not.toContain("No conversations yet");
     expect(container.textContent).toContain(
-      "Pin conversations to keep them here"
+      "Pin Projects or Conversations to keep them here"
     );
     expect(inventoryLoad.calls).toBe(0);
 
@@ -602,7 +602,7 @@ describe("V1App launch integration", () => {
     expect(container.textContent).toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
     expect(container.textContent).toContain(
-      "Pin conversations to keep them here"
+      "Pin Projects or Conversations to keep them here"
     );
     expect(inventoryLoad.calls).toBe(0);
 

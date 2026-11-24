@@ -391,6 +391,12 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   logical lifespan of **Memory**
 - A **Conversation** retains its original recorded **Git Anchor** and **Folder**
   context until an explicit correction changes its matching assignment
+- Koed records a **Git Anchor** itself only for a **Conversation** whose original
+  **Git Anchor** is unresolved and never corrected, when its recorded directory
+  still exists on the device of confirmed or assumed recording origin, predates
+  the **Conversation**, and has that **Git Anchor's** remote today. A historical
+  import from the device's local **AI Client** history may support assumed, not
+  verified, origin; known copies do not. A **Folder** is never recorded this way
 - **Recall** through a **Git Anchor** or **Folder** does not automatically
   include unrelated members of a named **Project**
 - An **AI Client** produces one or more **Conversations**
