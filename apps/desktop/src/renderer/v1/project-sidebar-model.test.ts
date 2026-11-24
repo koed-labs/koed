@@ -116,6 +116,32 @@ describe("Project sidebar inventory", () => {
       )
     ).toHaveLength(2);
   });
+  it("lists every Conversation under its Anchor, including named members", () => {
+    const koed = named("Koed", [thread("shared", before)]);
+    const anchor = {
+      id: "git",
+      name: "example.test/repo",
+      repository: {
+        kind: "portable_repository",
+        key: "gr_anchor",
+        root: "/checkout",
+        branch: "main",
+        checkoutId: "checkout_one",
+        originatingDeviceId: "device_one",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/repo",
+        reason: "origin"
+      },
+      threads: [thread("shared", before), thread("loose", after)]
+    } as DesktopProject;
+    const groups = buildProjectSidebar([koed, anchor], [], new Map());
+    const git = groups.find((p) => p.id === "git")!;
+    expect(git.source).toBe("git");
+    expect(git.conversations.map((row) => row.title)).toEqual([
+      "loose",
+      "shared"
+    ]);
+  });
   it("keeps a pending selected Project entry while capture awaits membership reconciliation", () => {
     const target = named("project", []);
     const raw = {

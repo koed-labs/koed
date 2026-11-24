@@ -95,7 +95,7 @@ export function useConversationDrag(
       // Drop targets are Projects, which scroll on their own.
       const scroller = event.currentTarget
         .closest<HTMLElement>(".v1-nav-scroll")
-        ?.querySelector<HTMLElement>(".v1-nav-tree");
+        ?.querySelector<HTMLElement>(".v1-nav-projects");
       if (scroller) {
         const bounds = scroller.getBoundingClientRect();
         if (event.clientY < bounds.top + 35) scroller.scrollTop -= 12;

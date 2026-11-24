@@ -12,8 +12,8 @@ _Avoid_: MCP server, model provider, assistant
 **Anchor**:
 A **Git Anchor** or **Folder** that groups Conversations by where they were
 recorded. A named Project includes Conversations through its Anchors as well as
-directly. Captured Conversations that no named Project includes are grouped by
-their Anchor.
+directly. A captured Conversation with a recorded Git Anchor or Folder is also
+grouped under that Anchor.
 _Avoid_: Project rule, source rule, inclusion rule
 
 **Answer Synthesis**:

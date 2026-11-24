@@ -200,7 +200,7 @@
   font-size: 10px;
   opacity: 0.65;
 }
-/* Conversations, and Projects with Anchors, each scroll on their own. */
+/* Conversations, Projects and Anchors each scroll on their own. */
 .v1-nav-scroll {
   gap: 0;
   overflow: hidden;
@@ -209,18 +209,23 @@
 .v1-nav-scroll .v1-nav-conversations {
   flex: none;
 }
-.v1-nav-scroll .v1-nav-tree {
-  flex: 1 1 auto;
+/* Projects and Anchors size to their rows and shrink to share the space. */
+.v1-nav-scroll .v1-nav-projects,
+.v1-nav-scroll .v1-nav-anchors {
+  flex: 0 1 auto;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
+}
+.v1-nav-scroll .v1-nav-anchors:last-child,
+.v1-nav-scroll .v1-nav-projects:last-child {
   padding-bottom: 28px;
 }
 /* Each section heading and its actions stay put while its rows scroll. */
-.v1-nav-tree .v1-nav-section-heading {
+.v1-nav-scroll .v1-nav-section-heading {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -537,6 +542,8 @@
     transition: none;
   }
 }
-.v1-nav-anchors {
+.v1-nav-scroll .v1-nav-anchors {
   margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--v1-hairline);
 }
