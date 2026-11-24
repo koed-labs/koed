@@ -266,6 +266,66 @@ describe("Project sidebar interactions", () => {
     });
   });
 
+  it("lists Git Anchor and Folder groups under a collapsible Anchors heading", async () => {
+    const anchor: SidebarProject = {
+      ...projectWithConversations(
+        "repository:koed-ai",
+        "github.com/koed-labs/koed-ai",
+        2
+      ),
+      source: "git"
+    };
+    const folder: SidebarProject = {
+      ...projectWithConversations("folder:scratch", "scratch", 1),
+      source: "folder"
+    };
+    const named: SidebarProject = {
+      ...projectWithConversations("named", "Koed", 1),
+      managed: true
+    };
+    await act(async () =>
+      root.render(<Harness data={[named, anchor, folder]} />)
+    );
+    const section = (name: string) =>
+      [...container.querySelectorAll(".v1-nav-project")]
+        .filter((row) =>
+          row.closest(
+            name === "Anchors" ? ".v1-nav-anchors" : ".v1-nav-projects"
+          )
+        )
+        .map((row) => row.textContent);
+    expect(section("Projects")).toEqual(["Koed"]);
+    expect(section("Anchors")).toEqual([
+      "github.com/koed-labs/koed-ai",
+      "scratch"
+    ]);
+    // Anchors expand to their Conversations like Projects.
+    const anchorRow = [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        ".v1-nav-anchors .v1-nav-project"
+      )
+    ][0]!;
+    await act(async () => anchorRow.click());
+    expect(
+      anchorRow
+        .closest('[data-slot="sidebar-menu-item"]')!
+        .querySelectorAll(".v1-nav-conversation")
+    ).toHaveLength(2);
+
+    const heading = (name: string) =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          ".v1-nav-heading-toggle"
+        )
+      ].find((toggle) => toggle.textContent === name)!;
+    await act(async () => heading("Projects").click());
+    expect(section("Projects")).toEqual([]);
+    expect(section("Anchors")).toHaveLength(2);
+    await act(async () => heading("Anchors").click());
+    expect(section("Anchors")).toEqual([]);
+    expect(button("Collapse all Projects")).toBeNull();
+  });
+
   it("orders pinned Conversations first inside their Project", async () => {
     window.localStorage.setItem(
       "koed:sidebar-pins:owner-a",
@@ -316,10 +376,6 @@ describe("Project sidebar interactions", () => {
     expect(rows("Alpha")).toHaveLength(12);
     expect(button("Load more conversations in Alpha")).toBeNull();
     await act(async () => projectButton("Alpha").click());
-    await act(async () => projectButton("Alpha").click());
-    expect(rows("Alpha")).toHaveLength(5);
-    await act(async () => button("Load more conversations in Alpha").click());
-    await act(async () => button("Collapse all Projects").click());
     await act(async () => projectButton("Alpha").click());
     expect(rows("Alpha")).toHaveLength(5);
     await act(async () => button("Load more conversations in Alpha").click());
