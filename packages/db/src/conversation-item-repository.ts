@@ -114,6 +114,7 @@ type ConversationItemObservationRow = {
 
 type ExistingConversationItemObservationRow = {
   id: string;
+  session_id: string | null;
   conversation_item_id: string | null;
   canonical_item_key: string | null;
   observation_key: string;
@@ -1747,6 +1748,7 @@ const persistConversationItemObservation = async (input: {
         `
         select
           id,
+          session_id,
           conversation_item_id,
           canonical_item_key,
           observation_key,
@@ -1764,6 +1766,8 @@ const persistConversationItemObservation = async (input: {
     const replay = existing.rows[0];
     if (
       replay &&
+      (input.item.sourceTransport !== "historical_import" ||
+        replay.session_id === input.item.sessionId) &&
       replay.conversation_item_id === input.conversationItemId &&
       replay.canonical_item_key === input.canonicalItemKey &&
       replay.payload_hash === input.payloadHash
@@ -2029,6 +2033,7 @@ export const createConversationItemRepository = (
             `
             select
               id,
+              session_id,
               conversation_item_id,
               canonical_item_key,
               observation_key,
@@ -2045,6 +2050,17 @@ export const createConversationItemRepository = (
           );
         const replay = replayRows.rows[0];
         if (replay) {
+          if (
+            item.sourceTransport === "historical_import" &&
+            replay.session_id !== item.sessionId
+          ) {
+            throw Object.assign(
+              new Error(
+                "Historical observation identity belongs to another Captured Session"
+              ),
+              { statusCode: 409, code: "observation_integrity_conflict" }
+            );
+          }
           const replayPayloadMatches = replay.payload_hash === payloadHash;
           if (item.observationOnly) {
             if (

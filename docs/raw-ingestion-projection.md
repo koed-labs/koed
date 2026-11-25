@@ -687,12 +687,33 @@ Source event time
 (`import_observed_at`), Projection (`projected_at`), and embedding timestamps
 remain separate.
 
-Raw-ingested, projected, embedding-eligible, embedded, semantic-ready, and
-LCM-complete counters/stages are persisted and exposed separately. The terminal
-`completed` import state requires semantic and LCM completion; reaching the
-historical frontier alone reports raw ingestion only. Historical ingestion and
-Projection remain chronological. The processing outbox persists source event
-time and recovers eligible historical Memory Event embedding work newest-first.
+Raw-ingested and projected record counts use observation units, not distinct
+canonical items. A record counts toward Projection progress when its canonical
+item is projected or retained as raw-only, or when the observation was
+intentionally stored without an item as `identity_unresolved`. Several
+observations can therefore complete through one canonical item. The repository
+scopes observations by owning User, the Conversation Source Artifact's Captured
+Session, and the observation's Historical Import Source ID. Embedding and LCM
+progress still count historical Memory Events across the Captured Session so
+LCM finalization cannot bypass another source's pending Embedding.
+
+Both source completion and LCM finalization admission require the historical
+cursor to reach its frozen frontier and no source observation to be waiting on
+Projection. A replay of an acknowledged cursor does not add records. An
+advancing batch can reuse an existing observation identity in the same Captured
+Session without recording a separate observation. A replay from another
+Captured Session is rejected. Observation writes and cursor acknowledgements
+commit together. If the source's terminal count falls short, Projection is
+complete only when the same User and Captured Session have at least one durable
+historical observation and all their historical observations are terminal. This
+does not increase the source's recorded terminal count. Worker reconciliation
+refreshes progress on retry without rewriting observations or cursors.
+
+Embedding and LCM progress remain separate gates. The terminal `completed`
+import state requires semantic and LCM completion; reaching the historical
+frontier alone reports raw ingestion only. Historical ingestion and Projection
+remain chronological. The processing outbox persists source event time and
+recovers eligible historical Memory Event embedding work newest-first.
 KOE-354 owns throughput calibration and semantic-readiness ETA; KOE-355 owns the
 full cost-aware dynamic scheduler and aging/fairness policy.
 
