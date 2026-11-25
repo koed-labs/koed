@@ -205,12 +205,15 @@ const OBSERVATION_PROJECTION_TERMINAL = `
 // Batch observations and cursor acknowledgements commit atomically. An exact
 // identity replay can retain another source's provenance, so a count deficit
 // requires nonempty, entirely terminal history in this owner/session instead.
-const SOURCE_PROJECTION_COMPLETE = `
-  case when source.projected_record_count >= source.raw_ingested_record_count
+const sourceProjectionComplete = (
+  projectedCount: string,
+  sessionColumn: string
+) => `
+  case when ${projectedCount} >= source.raw_ingested_record_count
     then not exists (
       select 1 from conversation_item_observations observation
       ${OBSERVATION_ITEM_JOIN}
-      where ${historicalObservationScope("artifact.session_id")}
+      where ${historicalObservationScope(sessionColumn)}
         and ${SOURCE_OBSERVATION_MATCH}
         and (${OBSERVATION_PROJECTION_TERMINAL}) is not true
     )
@@ -218,7 +221,7 @@ const SOURCE_PROJECTION_COMPLETE = `
       select coalesce(bool_and((${OBSERVATION_PROJECTION_TERMINAL}) is true), false)
       from conversation_item_observations observation
       ${OBSERVATION_ITEM_JOIN}
-      where ${historicalObservationScope("artifact.session_id")}
+      where ${historicalObservationScope(sessionColumn)}
     )
   end
 `;
@@ -256,7 +259,7 @@ const sourceSelect = (): string => {
   source.discovered_record_count, source.imported_record_count,
   source.skipped_record_count, source.malformed_record_count,
   source.raw_ingested_record_count, source.projected_record_count,
-  (${SOURCE_PROJECTION_COMPLETE}) as projection_complete,
+  (${sourceProjectionComplete("source.projected_record_count", "artifact.session_id")}) as projection_complete,
   source.embedding_eligible_event_count, source.embedded_event_count,
   source.embedding_eligible_estimated_token_count,
   source.embedded_measured_token_count,
@@ -701,9 +704,15 @@ const refreshSourceProgress = async (
   client: pg.Pool | pg.PoolClient,
   ownerUserId: string,
   sourceId: string
-): Promise<void> => {
+) => {
   const embedding = currentEmbeddingConfig();
-  await client.query(
+  const result = await client.query<{
+    importing: boolean;
+    projected: boolean;
+    fully_embedded: boolean;
+    lcm_complete: boolean;
+    lcm_pending: boolean;
+  }>(
     `with source_scope as (
        select source.id, source.owner_user_id, artifact.session_id
        from historical_import_sources source
@@ -726,7 +735,7 @@ const refreshSourceProgress = async (
          on ${historicalObservationScope("source.session_id")}
        join memory_event_sources event_source using (conversation_item_id)
      ), progress as (
-       select scope.id,
+       select scope.id, scope.session_id,
          (select count(*)::int from source_observations
           where projection_terminal) as projected_count,
          (select count(*)::int
@@ -912,7 +921,12 @@ const refreshSourceProgress = async (
        newest_embedded_source_time = progress.newest_embedded_source_time,
        lcm_eligible_event_count = progress.lcm_eligible_count,
        lcm_completed_event_count = progress.lcm_completed_count
-     from progress where source.id = progress.id`,
+     from progress where source.id = progress.id
+     returning source.state = 'importing' as importing,
+       (${sourceProjectionComplete("progress.projected_count", "progress.session_id")}) as projected,
+       progress.embedded_count = progress.embedding_eligible_count as fully_embedded,
+       progress.lcm_completed_count = progress.lcm_eligible_count as lcm_complete,
+       progress.lcm_completed_count < progress.lcm_eligible_count as lcm_pending`,
     [
       ownerUserId,
       sourceId,
@@ -921,6 +935,7 @@ const refreshSourceProgress = async (
       embedding.version
     ]
   );
+  return result.rows[0];
 };
 
 const projectPolicyId = (
@@ -1232,16 +1247,18 @@ const transitionSourceRecord = (
   validateTransitionFailure(input);
   return withTransaction(pool, async (client) => {
     await lockImportOwner(client, actor.userId);
-    if (input.state === "completed") {
-      await refreshSourceProgress(client, actor.userId, input.sourceId);
-    }
+    // Projection and downstream counters must describe the same snapshot.
+    const progress =
+      input.state === "completed"
+        ? await refreshSourceProgress(client, actor.userId, input.sourceId)
+        : undefined;
     const source = await requireSourceForUpdate(client, actor, input.sourceId);
     if (
       input.state === "completed" &&
       (!source.rawIngested ||
-        !source.projected ||
-        !source.fullyEmbedded ||
-        !source.lcmComplete)
+        !progress?.projected ||
+        !progress.fully_embedded ||
+        !progress.lcm_complete)
     ) {
       return null;
     }
@@ -1411,28 +1428,8 @@ const listSourcesNeedingLcmFinalization = async (
 > => {
   const candidates = await pool.query<{
     id: string;
-    owner_user_id: string;
-  }>(
-    `select source.id, source.owner_user_id
-       from historical_import_sources source
-       join conversation_source_artifacts artifact
-         on artifact.id = source.artifact_id
-       left join conversation_source_consumer_cursors cursor
-         on cursor.artifact_id = artifact.id
-        and cursor.consumer_kind = 'canonical_historical'
-      where source.state = 'importing'
-        and coalesce(cursor.source_offset, artifact.journal_start_offset)
-          >= artifact.live_start_offset`
-  );
-  await Promise.all(
-    candidates.rows.map((source) =>
-      refreshSourceProgress(pool, source.owner_user_id, source.id)
-    )
-  );
-  const result = await pool.query<{
-    id: string;
-    owner_user_id: string;
     session_id: string;
+    owner_user_id: string;
   }>(
     `select source.id, source.owner_user_id, artifact.session_id
        from historical_import_sources source
@@ -1443,18 +1440,30 @@ const listSourcesNeedingLcmFinalization = async (
         and cursor.consumer_kind = 'canonical_historical'
       where source.state = 'importing'
         and coalesce(cursor.source_offset, artifact.journal_start_offset)
-          >= artifact.live_start_offset
-        and (${SOURCE_PROJECTION_COMPLETE})
-        and source.embedded_event_count =
-          source.embedding_eligible_event_count
-        and source.lcm_completed_event_count <
-          source.lcm_eligible_event_count`
+          >= artifact.live_start_offset`
   );
-  return result.rows.map((source) => ({
-    sourceId: source.id,
-    ownerUserId: source.owner_user_id,
-    sessionId: source.session_id
-  }));
+  const eligible = await Promise.all(
+    candidates.rows.map(async (source) => {
+      const progress = await refreshSourceProgress(
+        pool,
+        source.owner_user_id,
+        source.id
+      );
+      return progress?.importing &&
+        progress.projected &&
+        progress.fully_embedded &&
+        progress.lcm_pending
+        ? [
+            {
+              sourceId: source.id,
+              ownerUserId: source.owner_user_id,
+              sessionId: source.session_id
+            }
+          ]
+        : [];
+    })
+  );
+  return eligible.flat();
 };
 
 const reconcileHistoricalImportCompletion = async (

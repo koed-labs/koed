@@ -708,6 +708,8 @@ complete only when the same User and Captured Session have at least one durable
 historical observation and all their historical observations are terminal. This
 does not increase the source's recorded terminal count. Worker reconciliation
 refreshes progress on retry without rewriting observations or cursors.
+Completion and LCM finalization use Projection, Embedding, and LCM progress
+computed from the same database snapshot.
 
 Embedding and LCM progress remain separate gates. The terminal `completed`
 import state requires semantic and LCM completion; reaching the historical
