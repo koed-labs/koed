@@ -100,7 +100,6 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
         kinLive={kin.live}
         kinPanel={kin.panel}
         kinChips={kin.chips}
-        kinActivity={kin.activity}
       >
         {route}
       </NavigationShell>
@@ -126,7 +125,8 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     await transition("sidebar", 0, true);
     expect(avatar()).toBeNull();
     expect(home().querySelector(".v1-logo")).not.toBeNull();
-    expect(marker()).toBeNull();
+    // Chips stay in the rail while the floating Kin is still leaving.
+    await vi.waitFor(() => expect(chip()).not.toBeNull());
     await transition("sidebar");
     expect(
       avatar()?.querySelector(
@@ -207,9 +207,10 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     expect(avatar()).not.toBeNull();
     expect(marker()).not.toBeNull();
     await transition("desktop", 2);
-    expect(
-      mount.querySelector(".fk-rail-kin, .fk-row-live, .fk-chip")
-    ).toBeNull();
+    // The Kin floats, but its chips and row markers stay in Desktop.
+    expect(mount.querySelector(".fk-rail-kin")).toBeNull();
+    await vi.waitFor(() => expect(chip()).not.toBeNull());
+    expect(marker()).not.toBeNull();
     expect(bridge.confirmPresentation).toHaveBeenCalledExactlyOnceWith(2);
     await act(async () => showAiModels());
     expect(openAiModels).toHaveBeenCalledTimes(2);
@@ -297,7 +298,6 @@ it("counts only Conversations captured within the minute as active", async () =>
         kinLive={kin.live}
         kinPanel={kin.panel}
         kinChips={kin.chips}
-        kinActivity={kin.activity}
       >
         home
       </NavigationShell>
@@ -306,10 +306,9 @@ it("counts only Conversations captured within the minute as active", async () =>
   try {
     await act(async () => root.render(<Harness />));
     await vi.waitFor(() =>
-      expect(mount.querySelector(".fk-live-status")?.textContent).toBe(
-        "1 active"
-      )
+      expect(mount.querySelector(".v1-nav-rail .fk-chip")).not.toBeNull()
     );
+    expect(mount.querySelector(".fk-live-status")).toBeNull();
     const recent = [
       ...mount.querySelectorAll<HTMLElement>(
         '.v1-nav-rail .fk-chip .fk-dot[data-recent="true"]'

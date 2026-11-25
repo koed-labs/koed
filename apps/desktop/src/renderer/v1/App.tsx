@@ -1184,7 +1184,6 @@ export function V1App({
           management={projectManagement.management}
           kinAvatar={kin.avatar}
           kinChips={kin.chips}
-          kinActivity={kin.activity}
           kinLive={kin.live}
           kinPanel={kin.panel}
         >

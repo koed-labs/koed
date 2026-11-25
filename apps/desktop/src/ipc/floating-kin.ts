@@ -236,10 +236,20 @@ export const registerFloatingKinIpc = ({
     assertTrusted(event);
     return mainWindowFocused();
   });
+  // Desktop keeps its rail chips while the Kin floats, so it may read
+  // activity at either placement. The overlay reads only while it owns the Kin.
+  const activityRequestsFor = (event: IpcMainInvokeEvent, revision: unknown) =>
+    desktopTrusted(event)
+      ? presentation().revision === revision
+        ? desktopRequests
+        : null
+      : requestsFor(event, revision);
   ipcMain.handle(
     channels.activity,
     (event, revision: unknown) =>
-      requestsFor(event, revision)?.activity.run() ?? { state: "unavailable" }
+      activityRequestsFor(event, revision)?.activity.run() ?? {
+        state: "unavailable"
+      }
   );
   ipcMain.handle(
     channels.preview,

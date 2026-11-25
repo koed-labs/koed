@@ -119,7 +119,14 @@ export function useDesktopKin(
   const activityBridge = useKinSurfaceActivity(bridge, presentation?.revision);
   const inApp =
     shellVisible && placement === "sidebar" && !presentation?.sidebarPending;
-  const sample = useKinActivity(activityBridge, "sidebar", inApp, scopeKey);
+  // Rail chips and row markers stay while the Kin floats; only the avatar and
+  // the summary panel move with it.
+  const sample = useKinActivity(
+    activityBridge,
+    "sidebar",
+    shellVisible,
+    scopeKey
+  );
   const surface = useRef<HTMLElement>(null);
   const closePanel = useRef<() => void>(() => {});
   const openFromPanel = useCallback(
@@ -166,22 +173,15 @@ export function useDesktopKin(
 
   const avatar = inApp ? <RailKin active={sample.recentCapture} /> : null;
   const chips =
-    inApp && activityBridge ? (
+    shellVisible && activityBridge ? (
       <KinConversationChips sample={sample} {...summary} toggle={open} />
     ) : null;
 
   const tracked = new Map(
     sample.recent.map((conversation) => [conversation.sessionId, conversation])
   );
-  const working = sample.recent.filter(summary.isWorking).length;
-  // "Active" means the same as a row's green dot: captured within the minute.
-  const active = sample.recent.filter(
-    (conversation) =>
-      summary.isWorking(conversation) ||
-      kinConversationStatus(conversation, sample.at).recent
-  ).length;
   const live: SidebarLive | undefined =
-    inApp && activityBridge
+    shellVisible && activityBridge
       ? {
           marker: (row: SidebarConversation) => {
             const conversation = row.sessionId
@@ -240,11 +240,5 @@ export function useDesktopKin(
     );
   };
 
-  const activity =
-    working || active ? (
-      <span className="fk-live-status" role="status">
-        {working ? `${working} working` : `${active} active`}
-      </span>
-    ) : null;
-  return { avatar, chips, activity, live, panel };
+  return { avatar, chips, live, panel };
 }

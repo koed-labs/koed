@@ -380,13 +380,13 @@ describe("Floating Kin", () => {
     expect(
       [...panel.querySelectorAll("button")].map((button) => button.textContent)
     ).toEqual([
-      "Recent Conversation",
+      "Conversation",
       "×",
       "Open last summary",
       "Summarize conversation",
       ""
     ]);
-    await click("Recent Conversation");
+    await click("Conversation");
     expect(bridge.openConversation).toHaveBeenCalledExactlyOnceWith(
       7,
       sessionId
@@ -742,7 +742,7 @@ describe("Floating Kin", () => {
         pending.resolve({ action: "project", result: answered })
       );
       expect(mount.textContent).not.toContain("Read local tests.");
-      expect(mount.textContent).toContain("Recent Conversation");
+      expect(mount.textContent).toContain("Conversation");
 
       const pendingConversation = deferred<FloatingKinSummary>();
       vi.mocked(bridge.summarize).mockReturnValueOnce(

@@ -65,7 +65,6 @@ type Props = {
   // The live Chief of Staff Kin takes the logo's place on the Home button.
   kinAvatar?: ReactNode;
   kinChips?: ReactNode;
-  kinActivity?: ReactNode;
   kinLive?: SidebarLive;
   kinPanel?: (focusFallback: () => void, projectsVisible: boolean) => ReactNode;
 };
@@ -170,10 +169,7 @@ function ShellContent(props: Props) {
           </SidebarMenu>
         </SidebarHeader>
         {props.kinChips && (
-          <div className="fk-rail-activity">
-            {props.kinChips}
-            {props.kinActivity}
-          </div>
+          <div className="fk-rail-activity">{props.kinChips}</div>
         )}
         <SidebarFooter>
           <SidebarMenu>

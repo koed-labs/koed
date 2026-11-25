@@ -185,6 +185,24 @@ it("lets the main renderer see the activity and report shell visibility, but not
   expect(resize).not.toHaveBeenCalled();
 });
 
+it("lets Desktop read activity while the Kin floats, but not preview it", async () => {
+  const { desktopEvent, invokes, preview } = setup("desktop");
+  expect(await invokes.get(channels.activity)?.(desktopEvent, 0)).toEqual({
+    state: "stopped"
+  });
+  expect(await invokes.get(channels.activity)?.(desktopEvent, 1)).toEqual({
+    state: "unavailable"
+  });
+  expect(
+    await invokes.get(channels.preview)?.(
+      desktopEvent,
+      { sessionId: "803c2792-c18b-4484-a699-b33c7d8a7576" },
+      0
+    )
+  ).toBeNull();
+  expect(preview).not.toHaveBeenCalled();
+});
+
 it("accepts a presentation confirmation only for the current revision from Desktop", () => {
   const { event, desktopEvent, sends, presentation, confirmPresentation } =
     setup();

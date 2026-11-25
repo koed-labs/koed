@@ -18,7 +18,8 @@ same dialog as a chip, beside the row.
 On macOS, turn on **Chief of Staff** under **Settings → General** to let the Kin
 float outside the Koed window. When the window loses focus or closes, the Kin
 and its chips return to the desktop position you last dragged it to in this
-Desktop session. When the window regains focus, the Kin returns to the rail
+Desktop session. The rail keeps its chips and sidebar row markers while the
+Kin floats, so they don't fade in and out with it; only the Kin itself moves. When the window regains focus, the Kin returns to the rail
 once the overlay finishes sliding out. With reduced motion enabled, the switch
 is immediate. Each time the floating Kin appears, and whenever the pointer
 leaves it, it stays live for three seconds, then glances up and fades to the
@@ -50,7 +51,9 @@ model, and reasoning effort when available.
 ## Read and synthesis path
 
 1. The active Desktop or overlay renderer asks the main process for activity,
-   a bounded preview, or a fixed summary through its own preload. Neither
+   a bounded preview, or a fixed summary through its own preload. Desktop can
+   read activity at either placement to keep its rail chips; previews and
+   summaries come only from the surface that currently holds the Kin. Neither
    renderer receives API credentials or raw records. The main process reads an authenticated loopback registration
    for the existing Local AI Runtime. While Desktop is starting and the runtime
    hasn’t published its endpoint yet, the Kin shows that it’s starting. The Kin

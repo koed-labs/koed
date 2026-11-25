@@ -8,6 +8,7 @@ import type {
 } from "@koed-labs/shared";
 import { displayConversationTitle } from "@koed-labs/shared/conversation-title";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
+import { previewText } from "./preview-text.js";
 
 export type Conversation = FloatingKinActivity["conversations"][number];
 export const clientNames = {
@@ -100,7 +101,7 @@ function CapturedPreview({
       {request && (
         <section className="fk-copy fk-preview">
           <h3>Last captured request</h3>
-          <p>{request.text}</p>
+          <p>{previewText(request.text)}</p>
         </section>
       )}
       {reply && (
@@ -108,7 +109,7 @@ function CapturedPreview({
           <h3>
             {previous ? "Previous captured reply" : "Last captured reply"}
           </h3>
-          <p>{reply.text}</p>
+          <p>{previewText(reply.text)}</p>
         </section>
       )}
     </>
@@ -129,7 +130,8 @@ export function FloatingKinPanel({
   openConversation
 }: {
   conversation: Conversation;
-  preview: FloatingKinPreview;
+  // undefined while the first preview for this Conversation is loading.
+  preview: FloatingKinPreview | undefined;
   age: string;
   view: {
     request: FloatingKinSummaryRequest;
@@ -170,9 +172,9 @@ export function FloatingKinPanel({
     ? view.request.action === "project"
       ? "Project summary"
       : "Conversation summary"
-    : (displayConversationTitle(preview?.title) ??
-      displayConversationTitle(preview?.request?.text) ??
-      "Recent Conversation");
+    : preview === undefined
+      ? ""
+      : (displayConversationTitle(preview?.title) ?? "Conversation");
   return (
     <section
       className="fk-panel"
@@ -183,8 +185,12 @@ export function FloatingKinPanel({
     >
       <header className="fk-header">
         <div>
-          <h2 id="fk-panel-title" title={title}>
-            {openConversation && !showingSummary ? (
+          <h2
+            id="fk-panel-title"
+            title={title || undefined}
+            aria-busy={title ? undefined : true}
+          >
+            {openConversation && !showingSummary && title ? (
               <button
                 type="button"
                 className="fk-title-link"

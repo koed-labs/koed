@@ -233,7 +233,7 @@ export function useCapturedPreview(
   conversation:
     | { sessionId: string; projectId: string | null; lastActivityAt: string }
     | undefined
-): FloatingKinPreview {
+): FloatingKinPreview | undefined {
   const { sessionId, projectId, lastActivityAt } = conversation ?? {};
   const key = useMemo(
     () => ({ bridge, sessionId, projectId, lastActivityAt }),
@@ -256,7 +256,13 @@ export function useCapturedPreview(
       current = false;
     };
   }, [bridge, key, sessionId]);
-  return sample?.key === key ? sample.value : null;
+  if (!sample || !sessionId) return undefined;
+  if (sample.key === key) return sample.value;
+  // A newer capture refreshes the same Conversation: keep showing the last
+  // preview until the new one arrives instead of flashing a placeholder.
+  return sample.key.bridge === bridge && sample.key.sessionId === sessionId
+    ? sample.value
+    : undefined;
 }
 
 export function useLatestSummary(
