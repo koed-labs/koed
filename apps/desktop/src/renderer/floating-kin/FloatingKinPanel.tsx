@@ -1,12 +1,12 @@
 import { useEffect, useRef } from "react";
 import { Settings } from "lucide-react";
-import {
-  displayConversationTitle,
-  type FloatingKinActivity,
-  type FloatingKinPreview,
-  type FloatingKinSummary,
-  type FloatingKinSummaryRequest
+import type {
+  FloatingKinActivity,
+  FloatingKinPreview,
+  FloatingKinSummary,
+  FloatingKinSummaryRequest
 } from "@koed-labs/shared";
+import { displayConversationTitle } from "@koed-labs/shared/conversation-title";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
 
 export type Conversation = FloatingKinActivity["conversations"][number];

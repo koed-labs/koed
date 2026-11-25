@@ -11,6 +11,10 @@
       "types": "./dist/project-selection-desktop.d.ts",
       "import": "./dist/project-selection-desktop.js"
     },
+    "./conversation-title": {
+      "types": "./dist/conversation-title.d.ts",
+      "import": "./dist/conversation-title.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

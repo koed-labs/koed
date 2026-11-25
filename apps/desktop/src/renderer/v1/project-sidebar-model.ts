@@ -1,7 +1,5 @@
-import {
-  displayConversationTitle,
-  type PersonalProjectKin
-} from "@koed-labs/shared";
+import type { PersonalProjectKin } from "@koed-labs/shared";
+import { displayConversationTitle } from "@koed-labs/shared/conversation-title";
 import {
   personalInventoryConversationKey,
   personalInventoryReference
