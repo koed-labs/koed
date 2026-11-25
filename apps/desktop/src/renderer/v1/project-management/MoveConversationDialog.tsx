@@ -19,7 +19,11 @@ import {
 const Kin = ({ project }: { project?: DesktopProject | undefined }) =>
   project?.namedProject ? (
     <Pixelkin
-      look={projectKinLook(project.id, project.namedProject.kin)}
+      look={projectKinLook(
+        project.id,
+        project.namedProject.kin,
+        project.kinItems
+      )}
       size={18}
       className="v1-pm-row-kin"
       motion="still"

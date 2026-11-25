@@ -22,9 +22,6 @@ Settings and source previews request batches sequentially. A failed batch discar
 partial membership results but keeps the loaded Sync review accessible.
 Contract version 35 carries the reviewed checkout incarnation on manual historical
 Git Anchor previews and the reviewed backend scope on suggestion exclusions.
-Contract version 36 adds optional accessory IDs to Project Kin reads and
-`set_details` writes. A Project Kin saved without accessory IDs loads with an
-empty equipment list.
 Contract version 34 requires `expectedScopeKey` for `personal.folders.hints`.
 Electron main checks the authenticated backend and User before each evidence
 request, including retries, and rejects evidence from a different owner. The

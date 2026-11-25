@@ -47,7 +47,8 @@ and personality. Use **Accessories** to browse and equip items that require no
 server unlock. The preview updates as you equip an item. Items that occupy the
 same slot replace one another. Remove an item from the **Equipped** list.
 Each Project starts with a look generated from its ID. Saving updates the Kin on
-Home and syncs the look to compatible paired Personal devices.
+Home. The body shape, colour, and personality sync to compatible paired Personal
+devices. Accessories stay on this Koed installation.
 
 Project settings also manages names, source rules, Conversation membership, and
 Personal Device sync. Sync review remains available when Conversation membership

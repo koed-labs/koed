@@ -64,20 +64,59 @@ function legacyLook(value: Record<string, unknown>): AgentLook | null {
   return look;
 }
 
+const legacyGlasses: Readonly<Record<string, string>> = {
+  matrix: "matrix_oval",
+  "Circle sunglasses": "matrix_oval",
+  "Square sunglasses": "matrix_square",
+  Aviator: "matrix_aviator",
+  matrix_clear: "circle_eyeglasses",
+  matrix_aviator_clear: "circle_eyeglasses",
+  Eyeglasses: "circle_eyeglasses"
+};
+
 function migrateAccessories(spec: Record<string, unknown>) {
   const { face } = spec;
   if (!record(face) || "items" in face) return spec;
 
   const itemId = (value: unknown) =>
     PixelkinAccessories.find(({ id }) => id === value)?.id;
+  const hat = record(face.hat)
+    ? face.hat.enabled === false
+      ? undefined
+      : face.hat.type
+    : face.hat;
+  const glasses = record(face.glasses) ? face.glasses : undefined;
+  const model = glasses
+    ? glasses.enabled === false
+      ? undefined
+      : glasses.model || glasses.name || glasses.type
+    : face.glasses;
+  const frames =
+    glasses && record(glasses.materials) ? glasses.materials : undefined;
+  const eyewear =
+    itemId(model) ??
+    (typeof model === "string" && Object.hasOwn(legacyGlasses, model)
+      ? legacyGlasses[model]
+      : undefined);
   const halloween = itemId(face.halloween);
   // Halloween replaced all other equipment. Christmas only replaced the hat.
   const items = halloween
     ? [halloween]
-    : [itemId(face.christmas) ?? itemId(face.hat), itemId(face.glasses)].filter(
+    : [itemId(face.christmas) ?? itemId(hat), eyewear].filter(
         (id) => id !== undefined
       );
-  return { ...spec, face: { ...face, items } };
+  return {
+    ...spec,
+    face: {
+      ...face,
+      items,
+      hatHeight:
+        face.hatHeight ??
+        (record(face.hat) ? face.hat.heightOffset : undefined),
+      glassesColor: face.glassesColor ?? frames?.frameColor,
+      glassesTint: face.glassesTint ?? frames?.lensTint
+    }
+  };
 }
 
 // Accepts a Kin, a Create your Kin file or a legacy look; anything else is
@@ -136,18 +175,20 @@ export function withProjectKinAccessories(
 }
 
 export function projectKinSettings(look: AgentLook): PersonalProjectKin {
-  const items = projectKinItems(look.face.items).sort();
   return personalProjectKinSchema.parse({
     shape: look.body.shape,
     colour: look.palette.base,
-    personality: look.face.personality,
-    ...(items.length > 0 && { items })
+    personality: look.face.personality
   });
 }
 
+export const projectKinEquipped = (look: AgentLook) =>
+  projectKinItems(look.face.items).sort();
+
 export function projectKinLook(
   projectId: string,
-  saved?: PersonalProjectKin
+  saved?: PersonalProjectKin,
+  items?: readonly string[]
 ): AgentLook {
   let hash = 2166136261;
   for (const char of projectId)
@@ -163,10 +204,8 @@ export function projectKinLook(
     "palette.base",
     saved?.colour ?? colour?.hex ?? look.palette.base
   );
-  if (saved) {
-    editKin(look, "face.personality", saved.personality);
-    if (saved.items) setProjectKinAccessories(look, saved.items);
-  }
+  if (saved) editKin(look, "face.personality", saved.personality);
+  if (items) setProjectKinAccessories(look, items);
   look.seed = value % 100000;
   return look;
 }

@@ -30,6 +30,10 @@ import { ConversationProjectsDialog } from "./ConversationProjectsDialog.js";
 import { SourceContextDialog } from "./SourceContextDialog.js";
 import { applySuggestions } from "./apply-suggestion.js";
 import {
+  saveLocalProjectKinItems,
+  withLocalProjectKinItems
+} from "./project-kin-preferences.js";
+import {
   inferredGitAnchorKey,
   recordInferredGitAnchors
 } from "./infer-git-anchor.js";
@@ -67,12 +71,14 @@ export function useProjectManagement({
   api,
   store,
   projects,
+  onKinItemsSaved,
   onOrganized
 }: {
   scopeKey: string | null;
   api: PersonalDesktopApi | null;
   store: PersonalMemoryStore | null;
   projects: readonly DesktopProject[];
+  onKinItemsSaved?: () => void;
   onOrganized: (
     sessionId: string,
     projects: readonly DesktopProject[],
@@ -238,7 +244,10 @@ export function useProjectManagement({
       api!.listProjectMetadata?.().catch(() => localCheckouts) ?? localCheckouts
     ]);
     check();
-    return mergeProjectSources(latest, local);
+    return withLocalProjectKinItems(
+      mergeProjectSources(latest, local),
+      scopeKey!
+    );
   };
   const perform = async (
     check: () => void,
@@ -460,7 +469,7 @@ export function useProjectManagement({
             if (scopeIsCurrent()) open(null);
           }}
           onRefresh={() => run(readSettingsInventory)}
-          onSave={(project, changes, accepted, rejected) =>
+          onSave={(project, changes, accepted, rejected, kinItems) =>
             run(async (check) => {
               check();
               const reviewedVersion = project.namedProject!.version;
@@ -479,6 +488,24 @@ export function useProjectManagement({
               check();
               if (saved && saved.project.projectId !== project.id)
                 throw new Error("Save response belongs to another Project.");
+              if (kinItems !== undefined) {
+                try {
+                  saveLocalProjectKinItems(scopeKey!, project.id, kinItems);
+                } catch (cause) {
+                  if (saved) await refresh(check).catch(() => {});
+                  throw new Error(
+                    saved
+                      ? "Project changes saved, but accessories could not be saved on this device."
+                      : "Accessories could not be saved on this device.",
+                    { cause }
+                  );
+                }
+                onKinItemsSaved?.();
+              }
+              if (kinItems !== undefined && !saved && accepted.length === 0) {
+                notice({ message: "Project settings saved" });
+                return withLocalProjectKinItems(projects, scopeKey!);
+              }
               // Excluded now, so no longer suggested here or in the sidebar.
               if (rejected.length > 0) dismiss(project.id, rejected);
               const status: Notice = { message: "Project settings saved" };

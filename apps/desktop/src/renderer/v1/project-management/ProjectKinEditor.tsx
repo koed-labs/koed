@@ -96,6 +96,7 @@ export function ProjectKinEditor({
           ) : (
             <p>No accessories equipped.</p>
           )}
+          {page === "accessories" && <p>Accessories stay on this device.</p>}
         </div>
       </div>
       <div className="v1-pm-kin-controls">

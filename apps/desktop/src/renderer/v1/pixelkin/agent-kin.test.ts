@@ -3,6 +3,7 @@ import {
   DEFAULT_AGENT_LOOK,
   normalizeAgentLook,
   parseAgentLook,
+  projectKinEquipped,
   projectKinLook,
   projectKinSettings,
   sameAgentLook,
@@ -35,6 +36,16 @@ describe("agent Kin", () => {
   it.each([
     [{ hat: "beanie", glasses: "matrix_square" }, ["beanie", "matrix_square"]],
     [
+      { hat: { type: "beanie" }, glasses: { model: "matrix_square" } },
+      ["beanie", "matrix_square"]
+    ],
+    [
+      { hat: { type: "beanie", enabled: false }, glasses: { name: "Aviator" } },
+      ["matrix_aviator"]
+    ],
+    [{ glasses: { type: "matrix", enabled: false } }, []],
+    [{ glasses: { type: "matrix" } }, ["matrix_oval"]],
+    [
       { hat: "beanie", christmas: "santa_hat", glasses: "matrix_square" },
       ["santa_hat", "matrix_square"]
     ],
@@ -57,6 +68,25 @@ describe("agent Kin", () => {
       expect(normalizeAgentLook(draft).face.items).toEqual(items);
     }
   );
+  it("preserves accessory settings from a legacy Kin file", () => {
+    const saved = JSON.parse(serializeAgentLook(DEFAULT_AGENT_LOOK, "Pip"));
+    const look = normalizeAgentLook({
+      ...saved,
+      accessories: {
+        hat: { type: "beanie", heightOffset: 0.2 },
+        glasses: {
+          model: "matrix_square",
+          materials: { frameColor: "#55cca3", lensTint: "amber" }
+        }
+      }
+    });
+    expect(look.face).toMatchObject({
+      items: ["beanie", "matrix_square"],
+      hatHeight: 0.2,
+      glassesColor: "#55cca3",
+      glassesTint: "amber"
+    });
+  });
   it("falls back to the default for unreadable looks", () => {
     for (const value of [
       undefined,
@@ -76,14 +106,18 @@ it("loads and saves only available Project Kin accessories", () => {
   const saved = {
     shape: "roundedBox",
     colour: "#55cca3",
-    personality: "neutral",
-    items: ["cap", "ghost", "beanie", "circle_eyeglasses", "bowler", "unknown"]
+    personality: "neutral"
   } as const;
-  const look = projectKinLook("project", { ...saved, items: [...saved.items] });
+  const look = projectKinLook("project", saved, [
+    "cap",
+    "ghost",
+    "beanie",
+    "circle_eyeglasses",
+    "bowler",
+    "unknown"
+  ]);
   expect(look.face.items).toEqual(["bowler", "circle_eyeglasses"]);
-  expect(projectKinSettings(look)).toEqual({
-    ...saved,
-    items: ["bowler", "circle_eyeglasses"]
-  });
-  expect(projectKinSettings(projectKinLook("project")).items).toBeUndefined();
+  expect(projectKinSettings(look)).toEqual(saved);
+  expect(projectKinEquipped(look)).toEqual(["bowler", "circle_eyeglasses"]);
+  expect(projectKinEquipped(projectKinLook("project"))).toEqual([]);
 });

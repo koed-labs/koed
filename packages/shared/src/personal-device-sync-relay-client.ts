@@ -305,28 +305,18 @@ export class PdsRelayClient {
     const ack = await publish(base);
     // Legacy relays acknowledge only the base view. A new relay returns the
     // nonce that ties the separately signed extension to this exact refresh.
-    if (full.length === base.length || typeof ack.extensionNonce !== "string")
-      return;
-    // Older Kin-aware peers validate the vocabulary of the first extension.
-    const kin = full.filter(
-      (feature) => feature !== "project_kin_accessories_v1"
-    );
-    await publish(kin, ack.extensionNonce);
-    if (ack.kinAccessories === true && full.length !== kin.length)
+    if (full.length !== base.length && typeof ack.extensionNonce === "string")
       await publish(full, ack.extensionNonce);
   }
-  async configurationCapabilities({
-    includeExtended = false,
-    includeKinAccessories = false
-  } = {}): Promise<PdsConfigurationCapabilityRecord[]> {
+  async configurationCapabilities({ includeExtended = false } = {}): Promise<
+    PdsConfigurationCapabilityRecord[]
+  > {
     const response = asRecord(
       await this.request<unknown>(
         "GET",
-        includeKinAccessories
-          ? `${PDS_CONFIGURATION_CAPABILITY_PATH}?extended=1&kinAccessories=1`
-          : includeExtended
-            ? `${PDS_CONFIGURATION_CAPABILITY_PATH}?extended=1`
-            : PDS_CONFIGURATION_CAPABILITY_PATH
+        includeExtended
+          ? `${PDS_CONFIGURATION_CAPABILITY_PATH}?extended=1`
+          : PDS_CONFIGURATION_CAPABILITY_PATH
       )
     );
     if (

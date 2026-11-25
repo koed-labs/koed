@@ -14,6 +14,7 @@ import type { PersonalProjectBatchInput } from "@koed-labs/shared";
 import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
+import { projectKinEquipped, projectKinLook } from "../pixelkin/agent-kin.js";
 import { ProjectSyncDetails } from "../../views/personal/ProjectSyncDetails.js";
 import { ProjectChoice, ProjectError, ProjectPopup } from "./controls.js";
 import {
@@ -86,7 +87,8 @@ export function ProjectSettingsDialog({
     project: DesktopProject,
     changes: PersonalProjectBatchInput["changes"],
     accepted: SuggestionRow[],
-    rejected: SuggestionRow[]
+    rejected: SuggestionRow[],
+    kinItems?: string[]
   ) => Promise<readonly DesktopProject[] | null>;
   onRefresh: () => Promise<readonly DesktopProject[]>;
   onDelete: (project: DesktopProject) => Promise<void>;
@@ -186,8 +188,25 @@ export function ProjectSettingsDialog({
     validRejected.has(suggestionApprovalKey(active, row))
   );
   const changes = draft ? settingsChanges(draft) : [];
+  const equipped = draft && projectKinEquipped(draft.look);
+  const initialItems =
+    draft &&
+    projectKinEquipped(
+      projectKinLook(
+        draft.project.id,
+        draft.project.namedProject?.kin,
+        draft.project.kinItems
+      )
+    );
+  const kinItems =
+    equipped && JSON.stringify(equipped) !== JSON.stringify(initialItems)
+      ? equipped
+      : undefined;
   const dirty =
-    changes.length > 0 || acceptedRows.length > 0 || rejectedRows.length > 0;
+    kinItems !== undefined ||
+    changes.length > 0 ||
+    acceptedRows.length > 0 ||
+    rejectedRows.length > 0;
   // "1 to add · 1 to remove", plus any other edits on the other pages.
   const footerSummary = (() => {
     if (!draft) return "";
@@ -202,7 +221,8 @@ export function ProjectSettingsDialog({
       ...(add > 0 ? [`${add} to add`] : []),
       ...(remove > 0 ? [`${remove} to remove`] : []),
       ...(rejectedRows.length > 0 ? [`${rejectedRows.length} to exclude`] : []),
-      ...(changes.some((c) => !membershipActions.has(c.action)) ||
+      ...(kinItems !== undefined ||
+      changes.some((c) => !membershipActions.has(c.action)) ||
       (add === 0 && remove === 0 && rejectedRows.length === 0)
         ? ["Unsaved changes"]
         : [])
@@ -247,6 +267,8 @@ export function ProjectSettingsDialog({
     }
   };
   const save = async (current: ProjectSettingsDraft) => {
+    const accessoryChange: [] | [string[]] =
+      kinItems === undefined ? [] : [kinItems];
     const refreshed = await onSave(
       current.project,
       [
@@ -257,7 +279,8 @@ export function ProjectSettingsDialog({
         }))
       ],
       acceptedRows,
-      rejectedRows
+      rejectedRows,
+      ...accessoryChange
     );
     if (livePanel.current !== "conversations") {
       onClose();

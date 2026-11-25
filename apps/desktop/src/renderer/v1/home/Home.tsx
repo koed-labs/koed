@@ -788,7 +788,7 @@ function ProjectsStage({
             )}
             <Pixelkin
               presentation="stage"
-              look={projectKinLook(entry.id, entry.kin)}
+              look={projectKinLook(entry.id, entry.kin, entry.kinItems)}
               size={layout.placements[rank]!.size}
               expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
               hopKey={

@@ -115,8 +115,7 @@ describe.skipIf(!originUrl || !receiverUrl)(
         "source_context_v1",
         "project_membership_v1",
         "project_defaults_v1",
-        "project_kin_v1",
-        "project_kin_accessories_v1"
+        "project_kin_v1"
       ]);
 
       const externalSessionId = randomUUID();
@@ -356,34 +355,6 @@ describe.skipIf(!originUrl || !receiverUrl)(
           )
         ).project
       ).toMatchObject({ name: renamed, kin });
-      const currentKin = await originRepo.getPersonalMembershipSyncState(
-        origin,
-        project.projectId
-      );
-      const equippedKin = { ...kin, items: ["beanie", "circle_eyeglasses"] };
-      await originRepo.applyPersonalProjectSources(origin, project.projectId, {
-        expectedVersion: currentKin.project.version,
-        changes: [{ action: "set_details", name: renamed, kin: equippedKin }]
-      });
-      await flush(originConfig);
-      expect(
-        (
-          await receiverRepo.getPersonalMembershipSyncState(
-            receiver,
-            project.projectId
-          )
-        ).project.kin
-      ).toEqual(kin);
-      features.push("project_kin_accessories_v1");
-      await flush(originConfig);
-      expect(
-        (
-          await receiverRepo.getPersonalMembershipSyncState(
-            receiver,
-            project.projectId
-          )
-        ).project.kin
-      ).toEqual(equippedKin);
       expect(
         (await selected(originPool, origin, project.projectId)).rows
       ).toHaveLength(0);
@@ -424,7 +395,7 @@ describe.skipIf(!originUrl || !receiverUrl)(
         receiver,
         project.projectId
       );
-      expect(beforeReplay.project.kin).toEqual(equippedKin);
+      expect(beforeReplay.project.kin).toEqual(kin);
       for (const pkg of allPackets) await deliver(pkg);
       await flush(originConfig);
       await flush(receiverConfig);
