@@ -3,13 +3,15 @@ import type { PersonalProjectKin } from "@koed-labs/shared";
 import {
   KIN_COLOURS,
   KIN_DEFAULTS,
+  PixelkinAccessories,
   clone,
   editKin,
+  kinFileToSpec,
   kinToJson,
   readKin,
   type Kin,
   type KinShape
-} from "./vendor/index.js";
+} from "@koed-labs/kin-engine";
 
 // The agent's look is a Create your Kin character. The profile stores it as
 // that tool's JSON file, so a Kin made in the generator loads unchanged.
@@ -91,11 +93,66 @@ function legacyLook(value: Record<string, unknown>): AgentLook | null {
   return look;
 }
 
+const legacyGlasses: Readonly<Record<string, string>> = {
+  matrix: "matrix_oval",
+  "Circle sunglasses": "matrix_oval",
+  "Square sunglasses": "matrix_square",
+  Aviator: "matrix_aviator",
+  matrix_clear: "circle_eyeglasses",
+  matrix_aviator_clear: "circle_eyeglasses",
+  Eyeglasses: "circle_eyeglasses"
+};
+
+function migrateAccessories(spec: Record<string, unknown>) {
+  const { face } = spec;
+  if (!record(face) || "items" in face) return spec;
+
+  const itemId = (value: unknown) =>
+    PixelkinAccessories.find(({ id }) => id === value)?.id;
+  const hat = record(face.hat)
+    ? face.hat.enabled === false
+      ? undefined
+      : face.hat.type
+    : face.hat;
+  const glasses = record(face.glasses) ? face.glasses : undefined;
+  const model = glasses
+    ? glasses.enabled === false
+      ? undefined
+      : glasses.model || glasses.name || glasses.type
+    : face.glasses;
+  const frames =
+    glasses && record(glasses.materials) ? glasses.materials : undefined;
+  const eyewear =
+    itemId(model) ??
+    (typeof model === "string" && Object.hasOwn(legacyGlasses, model)
+      ? legacyGlasses[model]
+      : undefined);
+  const halloween = itemId(face.halloween);
+  // Halloween replaced all other equipment. Christmas only replaced the hat.
+  const items = halloween
+    ? [halloween]
+    : [itemId(face.christmas) ?? itemId(hat), eyewear].filter(
+        (id) => id !== undefined
+      );
+  return {
+    ...spec,
+    face: {
+      ...face,
+      items,
+      hatHeight:
+        face.hatHeight ??
+        (record(face.hat) ? face.hat.heightOffset : undefined),
+      glassesColor: face.glassesColor ?? frames?.frameColor,
+      glassesTint: face.glassesTint ?? frames?.lensTint
+    }
+  };
+}
+
 function readAgentLook(value: unknown): AgentLook | null {
   if (!record(value)) return null;
   if ("shape" in value && !("body" in value)) return legacyLook(value);
   try {
-    return readKin(value);
+    return readKin(migrateAccessories(kinFileToSpec(value)));
   } catch {
     return null;
   }
@@ -127,6 +184,27 @@ const projectShapes: readonly KinShape[] = [
   "capsule"
 ];
 
+export const PROJECT_KIN_ACCESSORIES = PixelkinAccessories.filter(
+  (item) => item.unlockBit === undefined
+);
+const projectKinItemIds = new Set(PROJECT_KIN_ACCESSORIES.map(({ id }) => id));
+const projectKinItems = (items: readonly string[]) =>
+  items.filter((id) => projectKinItemIds.has(id));
+
+function setProjectKinAccessories(look: AgentLook, items: readonly string[]) {
+  editKin(look, "face.items", projectKinItems(items));
+  // Apply slot rules before sorting so the latest equipped item wins.
+  look.face.items.sort();
+  return look;
+}
+
+export function withProjectKinAccessories(
+  look: AgentLook,
+  items: readonly string[]
+) {
+  return setProjectKinAccessories(clone(look), items);
+}
+
 export function projectKinSettings(look: AgentLook): PersonalProjectKin {
   return personalProjectKinSchema.parse({
     shape: look.body.shape,
@@ -135,9 +213,13 @@ export function projectKinSettings(look: AgentLook): PersonalProjectKin {
   });
 }
 
+export const projectKinEquipped = (look: AgentLook) =>
+  projectKinItems(look.face.items).sort();
+
 export function projectKinLook(
   projectId: string,
-  saved?: PersonalProjectKin
+  saved?: PersonalProjectKin,
+  items?: readonly string[]
 ): AgentLook {
   let hash = 2166136261;
   for (const char of projectId)
@@ -154,6 +236,7 @@ export function projectKinLook(
     saved?.colour ?? colour?.hex ?? look.palette.base
   );
   if (saved) editKin(look, "face.personality", saved.personality);
+  if (items) setProjectKinAccessories(look, items);
   look.seed = value % 100000;
   return look;
 }

@@ -61,6 +61,37 @@ describe("signed configuration capabilities during upgrades", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the existing two views across relays with different upgrade states", async () => {
+    const nonce = "a".repeat(43);
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementationOnce(async (_url, init) => {
+        expect(
+          legacyAdvertisement.parse(JSON.parse(String(init?.body))).features
+        ).toEqual(base);
+        return Response.json({
+          accepted: true,
+          extensionNonce: nonce,
+          kinAccessories: true
+        });
+      })
+      .mockImplementationOnce(async (_url, init) => {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          baseNonce: nonce,
+          features: [...base, "project_kin_v1"]
+        });
+        return Response.json({ accepted: true });
+      })
+      .mockResolvedValue(
+        Response.json({ error: "Unsupported feature" }, { status: 400 })
+      );
+    await client(
+      personalSourceDeviceFixture().origin,
+      fetch
+    ).advertiseConfigurationCapabilities([...base, "project_kin_v1"]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it.skipIf(!process.env.DATABASE_URL)(
     "serves one verifiable view per peer through upgrades, downgrades and reordered refreshes",
     async () => {

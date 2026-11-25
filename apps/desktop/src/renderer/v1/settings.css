@@ -307,6 +307,10 @@
     gap: 11px;
     white-space: normal;
   }
+  .page-link.page-link-plain[data-slot="button"] {
+    border-inline-width: 0;
+    padding-inline: 15px;
+  }
   .group-card .page-link:not(:first-child) {
     border-top-left-radius: 0;
     border-top-right-radius: 0;

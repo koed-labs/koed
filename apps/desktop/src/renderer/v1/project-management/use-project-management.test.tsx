@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
+import { Storage } from "happy-dom";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import {
@@ -9,6 +10,7 @@ import {
 import { mergeProjectSources } from "../../../project-memory-ui.js";
 import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { useProjectManagement } from "./use-project-management.js";
+import { withLocalProjectKinItems } from "./project-kin-preferences.js";
 
 function settingsScreen(
   f: ReturnType<typeof createProjectManagementValidationApi>,
@@ -24,7 +26,7 @@ function settingsScreen(
       scopeKey,
       api: f.api,
       store,
-      projects,
+      projects: withLocalProjectKinItems(projects, scopeKey),
       onOrganized: () => {}
     });
     return (
@@ -82,6 +84,56 @@ const setInput = (input: HTMLInputElement, value: string) =>
     )!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
+
+it("saves and clears accessories on this device without writing Project history", async () => {
+  vi.stubGlobal("localStorage", new Storage());
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const scopeKey = "accessory-test";
+  const manage = vi.spyOn(f.api, "manageProject");
+  const ui = settingsScreen(f, scopeKey);
+  const tile = () =>
+    document.querySelector<HTMLButtonElement>(
+      '.v1-pm-kin-catalogue [aria-label="Beanie"]'
+    )!;
+  const save = async () => ui.click(ui.button(/^Save changes$/));
+  try {
+    await ui.open();
+    await ui.click(ui.button(/^Kin$/));
+    await ui.click(tile());
+    await save();
+    expect(
+      manage.mock.calls.some(([input]) => input.action === "apply_sources")
+    ).toBe(false);
+    expect(f.projects.get(projectId)!.meta.version).toBe(1);
+
+    const inventory = mergeProjectSources(f.inventory(), []);
+    expect(
+      withLocalProjectKinItems(inventory, scopeKey).find(
+        ({ id }) => id === projectId
+      )?.kinItems
+    ).toEqual(["beanie"]);
+    expect(
+      withLocalProjectKinItems(inventory, "another-owner").find(
+        ({ id }) => id === projectId
+      )?.kinItems
+    ).toBeUndefined();
+
+    await ui.open();
+    await ui.click(ui.button(/^Kin$/));
+    expect(tile().getAttribute("aria-pressed")).toBe("true");
+    await ui.click(ui.rowAction("Remove Beanie"));
+    await save();
+    expect(
+      withLocalProjectKinItems(inventory, scopeKey).find(
+        ({ id }) => id === projectId
+      )?.kinItems
+    ).toBeUndefined();
+  } finally {
+    await ui.cleanup();
+    vi.unstubAllGlobals();
+  }
+});
 
 it("keeps Conversations open and uses the refreshed Project version on the next save", async () => {
   const f = createProjectManagementValidationApi();

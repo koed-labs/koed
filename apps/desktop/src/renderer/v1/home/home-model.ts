@@ -311,6 +311,7 @@ export type HomeProjectEntry = {
   id: string;
   name: string;
   kin?: PersonalProjectKin;
+  kinItems?: string[];
   // Stored captured events (messages and tool events) for the Project.
   eventCount: number;
   latestAt: string | null;
@@ -335,6 +336,7 @@ export const homeProjectEntries = (
           id: project.id,
           name: project.name,
           ...(project.namedProject?.kin && { kin: project.namedProject.kin }),
+          ...(project.kinItems && { kinItems: project.kinItems }),
           // A conversation read before its counts arrive has none yet.
           eventCount: conversations.reduce(
             (sum, thread) =>

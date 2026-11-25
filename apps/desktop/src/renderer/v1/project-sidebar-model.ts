@@ -51,6 +51,7 @@ export type SidebarProject = {
   managed?: boolean;
   /** The Project's saved Kin, when it has one; its look is derived otherwise. */
   kin?: PersonalProjectKin;
+  kinItems?: string[];
   // An unnamed group of captures sharing a Git Anchor or Folder.
   source?: "git" | "folder";
 };
@@ -95,6 +96,7 @@ export function buildProjectSidebar(
       conversations: [],
       managed: Boolean(project.namedProject),
       ...(project.namedProject?.kin ? { kin: project.namedProject.kin } : {}),
+      ...(project.kinItems && { kinItems: project.kinItems }),
       ...(!project.namedProject &&
         !ungrouped &&
         (reference.kind === "git" || reference.kind === "folder") && {

@@ -346,7 +346,11 @@ export function ProjectSidebar({
               {open ? <ChevronDown /> : <ChevronRight />}
               {project.managed ? (
                 <Pixelkin
-                  look={projectKinLook(project.id, project.kin)}
+                  look={projectKinLook(
+                    project.id,
+                    project.kin,
+                    project.kinItems
+                  )}
                   size={26}
                   className="v1-nav-project-kin"
                   motion="still"

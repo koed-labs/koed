@@ -14,6 +14,7 @@ import type { PersonalProjectBatchInput } from "@koed-labs/shared";
 import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
+import { projectKinEquipped, projectKinLook } from "../pixelkin/agent-kin.js";
 import { ProjectSyncDetails } from "../../views/personal/ProjectSyncDetails.js";
 import { ProjectChoice, ProjectError, ProjectPopup } from "./controls.js";
 import {
@@ -29,7 +30,7 @@ import {
 } from "./project-settings-model.js";
 import { projectErrorMessage } from "./use-organization-review.js";
 
-import { Pixelkin } from "../pixelkin/Pixelkin.js";
+import { ProjectKinEditor } from "./ProjectKinEditor.js";
 import { SuggestionCoin } from "./ProjectCoins.js";
 import {
   ConversationsPanel,
@@ -44,8 +45,6 @@ import {
 import { recordingOriginWarning } from "./proposal-text.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
 import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
-import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
-import { projectKinLook } from "../pixelkin/agent-kin.js";
 
 const pages = [
   { id: "general", name: "General", Icon: Settings2 },
@@ -94,7 +93,8 @@ export function ProjectSettingsDialog({
     project: DesktopProject,
     changes: PersonalProjectBatchInput["changes"],
     accepted: SuggestionRow[],
-    rejected: SuggestionRow[]
+    rejected: SuggestionRow[],
+    kinItems?: string[]
   ) => Promise<readonly DesktopProject[] | null>;
   onRefresh: () => Promise<readonly DesktopProject[]>;
   onDelete: (project: DesktopProject) => Promise<void>;
@@ -201,8 +201,25 @@ export function ProjectSettingsDialog({
     validRejected.has(suggestionApprovalKey(active, row))
   );
   const changes = draft ? settingsChanges(draft) : [];
+  const equipped = draft && projectKinEquipped(draft.look);
+  const initialItems =
+    draft &&
+    projectKinEquipped(
+      projectKinLook(
+        draft.project.id,
+        draft.project.namedProject?.kin,
+        draft.project.kinItems
+      )
+    );
+  const kinItems =
+    equipped && JSON.stringify(equipped) !== JSON.stringify(initialItems)
+      ? equipped
+      : undefined;
   const dirty =
-    changes.length > 0 || acceptedRows.length > 0 || rejectedRows.length > 0;
+    kinItems !== undefined ||
+    changes.length > 0 ||
+    acceptedRows.length > 0 ||
+    rejectedRows.length > 0;
   // "1 to add · 1 to remove", plus any other edits on the other pages.
   const footerSummary = (() => {
     if (!draft) return "";
@@ -217,7 +234,8 @@ export function ProjectSettingsDialog({
       ...(add > 0 ? [`${add} to add`] : []),
       ...(remove > 0 ? [`${remove} to remove`] : []),
       ...(rejectedRows.length > 0 ? [`${rejectedRows.length} to exclude`] : []),
-      ...(changes.some((c) => !membershipActions.has(c.action)) ||
+      ...(kinItems !== undefined ||
+      changes.some((c) => !membershipActions.has(c.action)) ||
       (add === 0 && remove === 0 && rejectedRows.length === 0)
         ? ["Unsaved changes"]
         : [])
@@ -262,6 +280,8 @@ export function ProjectSettingsDialog({
     }
   };
   const save = async (current: ProjectSettingsDraft) => {
+    const accessoryChange: [] | [string[]] =
+      kinItems === undefined ? [] : [kinItems];
     const refreshed = await onSave(
       current.project,
       [
@@ -272,7 +292,8 @@ export function ProjectSettingsDialog({
         }))
       ],
       acceptedRows,
-      rejectedRows
+      rejectedRows,
+      ...accessoryChange
     );
     if (livePanel.current !== "conversations") {
       onClose();
@@ -341,7 +362,7 @@ export function ProjectSettingsDialog({
             look:
               p.id === active && draft
                 ? draft.look
-                : projectKinLook(p.id, p.namedProject?.kin)
+                : projectKinLook(p.id, p.namedProject?.kin, p.kinItems)
           }))}
           onChange={switchProject}
           disabled={busy || !reviewedProjects}
@@ -390,25 +411,11 @@ export function ProjectSettingsDialog({
             </Button>
           )}
           {draft && !editError && panel === "kin" && (
-            <fieldset
+            <ProjectKinEditor
+              look={draft.look}
               disabled={busy}
-              className="v1-pm-kin-builder"
-              aria-label="Project Kin"
-            >
-              <div
-                className="v1-pm-kin-preview"
-                role="img"
-                aria-label="Kin preview"
-              >
-                <div className="v1-kin-spot" aria-hidden="true" />
-                <Pixelkin look={draft.look} size={142} hopOnChange />
-              </div>
-              <AgentLookPicker
-                look={draft.look}
-                disabled={busy}
-                onChange={(look) => mutate((old) => ({ ...old, look }))}
-              />
-            </fieldset>
+              onChange={(look) => mutate((old) => ({ ...old, look }))}
+            />
           )}
           {draft && !editError && panel === "general" && (
             <>

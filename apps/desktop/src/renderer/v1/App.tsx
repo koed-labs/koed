@@ -48,6 +48,7 @@ import { StoreConversation } from "../views/personal/PersonalMemoryViews.js";
 import { NavigationShell } from "./NavigationShell.js";
 import { RecallActivityPage } from "./RecallActivityPage.js";
 import { useProjectManagement } from "./project-management/use-project-management.js";
+import { withLocalProjectKinItems } from "./project-management/project-kin-preferences.js";
 import { ConversationTags } from "./project-management/ConversationTags.js";
 import {
   buildProjectSidebar,
@@ -590,9 +591,12 @@ export function V1App({
   const projects = useMemo(
     () =>
       scopeKey && inventoryScope === scopeKey
-        ? [...(snapshot?.projectsById.values() ?? [])]
+        ? withLocalProjectKinItems(
+            [...(snapshot?.projectsById.values() ?? [])],
+            scopeKey
+          )
         : [],
-    [snapshot, scopeKey, inventoryScope]
+    [snapshot, scopeKey, inventoryScope, revision]
   );
   const projectForIntent = useCallback(
     (intent: V1ConversationIntent) => {
@@ -1048,6 +1052,7 @@ export function V1App({
     scopeKey,
     api: personalMemoryApi,
     store,
+    onKinItemsSaved: () => setRevision((value) => value + 1),
     projects,
     onOrganized: (sessionId, nextProjects, preferredProjectId) => {
       const selectedRoute = currentRoute.current;

@@ -959,14 +959,13 @@ const bootstrap = async () => {
     },
     getPresentationPreferences: () => ({ ...presentationPreferences }),
     setPresentationPreferences: (value) => {
-      const next = {
-        ...value,
-        floatingKin: value.floatingKin ?? presentationPreferences.floatingKin
-      };
+      const previous = presentationPreferences;
+      const next = { ...previous, ...value };
       writePresentationPreferences(presentationPreferencePath, next);
       presentationPreferences = next;
-      setFloatingKinEnabled(next.floatingKin);
-      configureMenuBar();
+      if (next.floatingKin !== previous.floatingKin)
+        setFloatingKinEnabled(next.floatingKin);
+      if (next.showMenuBar !== previous.showMenuBar) configureMenuBar();
       return { ...next };
     },
     acceleration: server.acceleration,

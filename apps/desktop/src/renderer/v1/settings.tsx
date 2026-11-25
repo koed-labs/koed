@@ -1,4 +1,6 @@
 import { PerformanceSettings } from "./PerformanceSettings.js";
+import { GraphicsSettings } from "./GraphicsSettings.js";
+import { usePresentationPreferences } from "./use-presentation-preferences.js";
 import { useEffect, useRef, useState } from "react";
 import {
   Button,
@@ -87,6 +89,7 @@ export function V1Settings({
     teamCollaborationEnabled
   );
   const { tab, page, setTab } = navigation;
+  const presentation = usePresentationPreferences(presentationPreferences);
   const [serviceBusy, setServiceBusy] = useState<ServiceAction | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
   const [serviceNotice, setServiceNotice] = useState<string | null>(null);
@@ -310,9 +313,10 @@ export function V1Settings({
                   {...{
                     themeStore,
                     launchAtStartup,
-                    presentationPreferences,
+                    presentation,
                     onRestartOnboarding
                   }}
+                  onOpenPage={navigation.openPage}
                 />
                 <SettingsTools
                   api={cliInstall}
@@ -330,6 +334,12 @@ export function V1Settings({
                 />
               )
             ))}
+          {page === "graphics" && (
+            <GraphicsSettings
+              onBack={navigation.back}
+              presentation={presentation}
+            />
+          )}
           {tab === "ai" && (
             <SettingsModels
               focusClient={clientTarget?.id}
