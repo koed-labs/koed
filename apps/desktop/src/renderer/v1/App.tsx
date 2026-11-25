@@ -52,6 +52,7 @@ import {
   sidebarGroups
 } from "./project-sidebar-model.js";
 import { useNavigationHistory } from "./use-navigation-history.js";
+import { openKinConversation as openKinConversationRow } from "./kin-conversation-open.js";
 import {
   acknowledgeLateV1Capture,
   confirmV1ProjectMembership,
@@ -908,34 +909,19 @@ export function V1App({
   };
   // The Chief of Staff opens a captured Conversation by its session id.
   // A Conversation the Kin knows about may be newer than the cached rows
-  // (captured while Desktop was in the background). When its row is missing,
-  // refresh once and report the rows as loading until that refresh lands, so
-  // a held request isn't dropped against stale rows.
-  const kinRefresh = useRef(false);
-  const [kinRefreshing, setKinRefreshing] = useState(false);
+  // (captured while Desktop was in the background). See
+  // openKinConversation for when a miss refreshes the inventory.
   const openKinConversation = useCallback(
-    (sessionId: string, options?: { refresh?: boolean }) => {
-      for (const project of sidebarProjects) {
-        const row = project.conversations.find(
-          (conversation) =>
-            conversation.sessionId === sessionId ||
-            conversation.sourceSessionIds?.includes(sessionId)
-        );
-        if (!row) continue;
-        setRoute({ ...openSidebarConversation(row), sessionId });
-        return true;
-      }
-      if (options?.refresh !== false && !kinRefresh.current) {
-        kinRefresh.current = true;
-        setKinRefreshing(true);
-        void loadInventory({ silent: true }).finally(() => {
-          kinRefresh.current = false;
-          setKinRefreshing(false);
-        });
-      }
-      return false;
-    },
-    [sidebarProjects, loadInventory]
+    (sessionId: string, options?: { refresh?: boolean }) =>
+      openKinConversationRow({
+        sessionId,
+        groups: sidebarProjects,
+        open: (row) => setRoute({ ...openSidebarConversation(row), sessionId }),
+        reading: () => Boolean(store?.current().reading),
+        refresh: () => void loadInventory({ silent: true }),
+        options
+      }),
+    [sidebarProjects, loadInventory, store, setRoute]
   );
   const openProject = (projectId: string) => {
     const latest = sidebarProjects
@@ -1122,7 +1108,6 @@ export function V1App({
       // Rows count as loaded only once the latest read, including silent
       // background refreshes, has finished.
       rowsLoaded:
-        !kinRefreshing &&
         !snapshot?.reading &&
         Boolean(
           snapshot && ((inventoryReady && !snapshot.loading) || snapshot.error)
