@@ -383,7 +383,7 @@ describe("Floating Kin", () => {
       "Recent Conversation",
       "×",
       "Open last summary",
-      "Summarize Conversation",
+      "Summarize conversation",
       ""
     ]);
     await click("Recent Conversation");
@@ -667,7 +667,7 @@ describe("Floating Kin", () => {
   it("renders captured and inferred fields with Koed time and assigned model", async () => {
     await render();
     await click("Captured 12s ago");
-    await click("Summarize Conversation");
+    await click("Summarize conversation");
     expect(bridge.summarize).toHaveBeenCalledWith({
       sessionId,
       action: "conversation"
@@ -748,7 +748,7 @@ describe("Floating Kin", () => {
       vi.mocked(bridge.summarize).mockReturnValueOnce(
         pendingConversation.promise
       );
-      await click("Summarize Conversation");
+      await click("Summarize conversation");
       body.focus();
       await updateProject(nextProjectId);
       expect(mount.textContent).toContain("Conversation summary");
@@ -766,7 +766,7 @@ describe("Floating Kin", () => {
     bridge.summarize = vi.fn(() => summary.promise);
     await render();
     await click("Captured 12s ago");
-    await click("Summarize Conversation");
+    await click("Summarize conversation");
     expect(bridge.summarize).toHaveBeenCalledWith({
       sessionId,
       action: "conversation"
@@ -783,7 +783,7 @@ describe("Floating Kin", () => {
     bridge.summarize = vi.fn(() => summary.promise);
     await render();
     await click("Captured 12s ago");
-    await click("Summarize Conversation");
+    await click("Summarize conversation");
     await click("Cancel");
     expect(mount.textContent).toContain("Cancelling summary");
     expect(

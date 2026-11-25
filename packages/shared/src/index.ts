@@ -2042,4 +2042,5 @@ export { transferredSelectionSharingScopeSchema } from "./selection-sharing-jour
 export * from "./recall-activity.js";
 
 export * from "./account-contract.js";
+export * from "./conversation-title.js";
 export * from "./floating-kin.js";

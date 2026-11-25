@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
 import { Settings } from "lucide-react";
-import type {
-  FloatingKinActivity,
-  FloatingKinPreview,
-  FloatingKinSummary,
-  FloatingKinSummaryRequest
+import {
+  displayConversationTitle,
+  type FloatingKinActivity,
+  type FloatingKinPreview,
+  type FloatingKinSummary,
+  type FloatingKinSummaryRequest
 } from "@koed-labs/shared";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
 
@@ -169,7 +170,9 @@ export function FloatingKinPanel({
     ? view.request.action === "project"
       ? "Project summary"
       : "Conversation summary"
-    : (preview?.title ?? "Recent Conversation");
+    : (displayConversationTitle(preview?.title) ??
+      displayConversationTitle(preview?.request?.text) ??
+      "Recent Conversation");
   return (
     <section
       className="fk-panel"
@@ -193,15 +196,19 @@ export function FloatingKinPanel({
               title
             )}
           </h2>
-          <small>
+          <small className="fk-meta">
             <ClientMark client={conversation.client} />{" "}
-            {clientNames[conversation.client]} · Captured {age} ago
+            {clientNames[conversation.client]}
+            {preview?.projectName && (
+              <>
+                {" · "}
+                <span className="fk-project-name" title={preview.projectName}>
+                  {preview.projectName}
+                </span>
+              </>
+            )}
+            {` · Captured ${age} ago`}
           </small>
-          {preview?.projectName && (
-            <small className="fk-project-name" title={preview.projectName}>
-              {preview.projectName}
-            </small>
-          )}
         </div>
         <button
           type="button"
@@ -258,7 +265,7 @@ export function FloatingKinPanel({
                     summarize();
                   }}
                 >
-                  Summarize Conversation
+                  Summarize conversation
                 </button>
                 {openAiModels ? (
                   <button

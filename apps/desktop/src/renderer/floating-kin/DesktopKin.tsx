@@ -23,7 +23,7 @@ import { clientNames } from "./FloatingKinPanel.js";
 import { useKinSurfaceActivity } from "./use-floating-kin.js";
 
 type FocusFallback = () => void;
-type Anchor = { top: number; left: number };
+type Anchor = { top: number; left: number; pointer: number };
 
 const panelGap = 8;
 
@@ -33,9 +33,13 @@ function anchorFor(trigger: HTMLElement): Anchor {
   const edge =
     trigger.closest('[data-slot="sidebar-container"]')?.getBoundingClientRect()
       .right ?? row.getBoundingClientRect().right;
+  const box = trigger.getBoundingClientRect();
+  const top = Math.max(panelGap, row.getBoundingClientRect().top - panelGap);
   return {
-    top: Math.max(panelGap, row.getBoundingClientRect().top - panelGap),
-    left: edge + panelGap
+    top,
+    left: edge + panelGap,
+    // Points back at the trigger's vertical centre.
+    pointer: box.top + box.height / 2 - top
   };
 }
 
@@ -63,7 +67,13 @@ function AnchoredPanel({
       aria-label="Chief of Staff activity"
       ref={surface}
       tabIndex={-1}
-      style={{ top: anchor.top, left: anchor.left }}
+      style={
+        {
+          top: anchor.top,
+          left: anchor.left,
+          "--fk-pointer-top": `${anchor.pointer}px`
+        } as React.CSSProperties
+      }
     >
       {panel}
     </section>,

@@ -37,7 +37,7 @@ before the latest request is labeled **Previous captured reply**. The preview
 uses no model and does not indicate whether the AI Client is still working.
 Click the Conversation title to open that Conversation in Koed Desktop. From
 the desktop overlay this brings the Koed window forward first.
-Choose **Summarize Conversation** for a brief on the latest captured work.
+Choose **Summarize conversation** for a brief on the latest captured work.
 **Open last summary** reopens
 the chip’s most recent successful summary, even after moving between the
 sidebar and desktop, without using the model again. The settings button in the

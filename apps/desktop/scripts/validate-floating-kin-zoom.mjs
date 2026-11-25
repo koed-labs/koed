@@ -136,7 +136,7 @@ async function assertChipOpensSummary(window) {
     webContents.executeJavaScript(`
     (() => {
       const text = document.querySelector('#floating-kin-summary')?.textContent;
-      return text?.includes('Summarize Conversation') && text.includes('Check build status');
+      return text?.includes('Summarize conversation') && text.includes('Check build status');
     })()
   `)
   );

@@ -1,6 +1,6 @@
 import { createRecallActivityRepository } from "./recall-activity-repository.js";
 import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
-import { personalOwnerIdSchema } from "@koed-labs/shared";
+import { personalOwnerIdSchema, stripHarnessMarkup } from "@koed-labs/shared";
 import {
   createPersonalSelectionConsumerRepository,
   createPersonalInventorySelectionRepository
@@ -3201,11 +3201,7 @@ const deriveProvisionalSessionTitle = (
   ) {
     return null;
   }
-  const cleaned = presented
-    .replace(
-      /<environment_context\b[^>]*>[\s\S]*?<\/environment_context>/gi,
-      " "
-    )
+  const cleaned = stripHarnessMarkup(presented)
     .replace(/<image\b[\s\S]*?<\/image>/gi, " ")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]+)`/g, "$1")

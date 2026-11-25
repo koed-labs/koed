@@ -238,6 +238,11 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   position: absolute;
   inset: 5px 5px auto auto;
 }
+/* Docked Conversations are live; a grey dot there reads as offline. Show the
+   dot only while capture is recent. */
+.fk-rail-activity .fk-dot:not([data-recent="true"]) {
+  display: none;
+}
 .fk-rail-activity .fk-chip:focus-visible {
   outline: 2px solid var(--fk-accent);
   outline-offset: -2px;
@@ -260,7 +265,22 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
     sans-serif;
 }
 .fk-surface[data-fk-placement="anchored"] .fk-panel {
+  position: relative;
   max-height: inherit;
+}
+/* A pointer on the panel's leading edge ties it to the chip or row that
+   opened it. */
+.fk-surface[data-fk-placement="anchored"] .fk-panel::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: clamp(12px, calc(var(--fk-pointer-top, 24px) - 5px), calc(100% - 24px));
+  width: 10px;
+  height: 10px;
+  background: var(--fk-bg);
+  border-left: 1px solid var(--fk-line);
+  border-bottom: 1px solid var(--fk-line);
+  transform: rotate(45deg);
 }
 .fk-surface[data-fk-placement="anchored"] .fk-body {
   max-height: min(420px, 60vh);
@@ -465,6 +485,7 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 10px;
   padding: 10px 13px;
   border-bottom: 1px solid var(--fk-line);
 }
@@ -478,10 +499,14 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   font-size: 12px;
 }
 .fk-header > div {
+  flex: 1;
   min-width: 0;
 }
+/* Title and meta stay on one line each and end in an ellipsis before the
+   close button. */
 .fk-header h2,
-.fk-project-name {
+.fk-meta,
+.fk-header button.fk-title-link {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -497,7 +522,6 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 }
 /* The Conversation title opens it in Koed Desktop. */
 .fk-header button.fk-title-link {
-  display: inline;
   width: auto;
   max-width: 100%;
   height: auto;

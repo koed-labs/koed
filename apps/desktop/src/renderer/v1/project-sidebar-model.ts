@@ -1,4 +1,7 @@
-import type { PersonalProjectKin } from "@koed-labs/shared";
+import {
+  displayConversationTitle,
+  type PersonalProjectKin
+} from "@koed-labs/shared";
 import {
   personalInventoryConversationKey,
   personalInventoryReference
@@ -120,7 +123,7 @@ export function buildProjectSidebar(
         aliases: intent?.executionId
           ? [key, `execution:${intent.executionId}`]
           : [key],
-        title: thread.name || "Conversation",
+        title: displayConversationTitle(thread.name) ?? "Conversation",
         latestAt: thread.latestAt ?? "",
         client:
           thread.sourceAiClient === "claude-code"
