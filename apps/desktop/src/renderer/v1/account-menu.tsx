@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   Avatar,
   AvatarFallback,
   AvatarImage,
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuTrigger,
   DropdownMenuPopup,
   DropdownMenuGroup,
@@ -21,6 +22,10 @@ import type {
 } from "@koed-labs/shared/account";
 import "./account-menu.css";
 import { useAccountState } from "./use-account-state.js";
+import {
+  accountUnlockMask,
+  unlockedItemLabels
+} from "./pixelkin/account-equipment.js";
 
 export function AccountMenu({
   api = window.koedDesktop?.account
@@ -28,6 +33,7 @@ export function AccountMenu({
   api?: AccountDesktopApi;
 }) {
   const { state, accept } = useAccountState(api);
+  const noticeId = useId();
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const actionId = useRef(0);
@@ -53,6 +59,9 @@ export function AccountMenu({
   };
   if (!api || !state || state.status === "unavailable") return null;
   const profile = state.profile;
+  const unlocked = unlockedItemLabels(accountUnlockMask(state));
+  const emailUpdates =
+    state.details?.status === "ready" ? state.details.value.emailUpdates : null;
   const signingIn = state.status === "signing_in";
   const message =
     state.messageCode === "sign_out_complete" ? null : state.message;
@@ -107,6 +116,18 @@ export function AccountMenu({
                 <>
                   <strong>{name}</strong>
                   <span>{profile.email}</span>
+                  {state.details?.status === "ready" && (
+                    <span>
+                      {unlocked.length
+                        ? `Unlocked Kin items: ${unlocked.join(", ")}`
+                        : "Free Kin items available"}
+                    </span>
+                  )}
+                  {state.details?.status === "loading" && (
+                    <p className="v1-account-invitation" role="status">
+                      Loading account profile…
+                    </p>
+                  )}
                 </>
               ) : (
                 <p className="v1-account-invitation">
@@ -116,6 +137,41 @@ export function AccountMenu({
               )}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
+            {emailUpdates && (
+              <>
+                <DropdownMenuCheckboxItem
+                  checked={emailUpdates.subscribed}
+                  aria-describedby={noticeId}
+                  closeOnClick={false}
+                  disabled={working || state.busy}
+                  onCheckedChange={(subscribed) =>
+                    void run(() =>
+                      api.setEmailUpdates({
+                        subscribed,
+                        stateRevision: state.revision
+                      })
+                    )
+                  }
+                >
+                  Email updates
+                </DropdownMenuCheckboxItem>
+                <p id={noticeId} className="v1-account-menu-note">
+                  {emailUpdates.noticeText} {emailUpdates.email}
+                </p>
+                <DropdownMenuSeparator />
+              </>
+            )}
+            {(state.details?.status === "ready" ||
+              state.details?.status === "unavailable") && (
+              <DropdownMenuItem
+                onClick={() => void run(() => api.refreshProfile())}
+                disabled={working || state.busy}
+              >
+                {state.details.status === "unavailable"
+                  ? "Retry account profile"
+                  : "Refresh account profile"}
+              </DropdownMenuItem>
+            )}
             {signingIn ? (
               <DropdownMenuItem
                 onClick={() => void run(() => api!.cancelSignIn())}

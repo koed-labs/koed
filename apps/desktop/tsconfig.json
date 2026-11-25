@@ -30,5 +30,9 @@
     { "path": "../../packages/shared" },
     { "path": "../../packages/ui" }
   ],
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/renderer/v1/pixelkin/kin-catalog.json"
+  ]
 }

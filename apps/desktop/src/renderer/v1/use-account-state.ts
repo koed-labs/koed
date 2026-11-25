@@ -5,7 +5,10 @@ import type {
 } from "@koed-labs/shared/account";
 
 /** Main's unavailable state hides the sidebar account badge; no provider calls. */
-export function useAccountState(api: AccountDesktopApi | undefined) {
+export function useAccountState(
+  api: AccountDesktopApi | undefined,
+  recoverOnReconnect = true
+) {
   const [snapshot, setSnapshot] = useState<{
     api: AccountDesktopApi | undefined;
     state: AccountState | null;
@@ -44,9 +47,10 @@ export function useAccountState(api: AccountDesktopApi | undefined) {
     const retry = () => {
       if (
         !active ||
+        !window.navigator.onLine ||
         !latest ||
         latest.status !== "signed_in" ||
-        !latest.stale ||
+        (!latest.stale && latest.details?.status !== "unavailable") ||
         !latest.profile
       )
         return;
@@ -91,20 +95,29 @@ export function useAccountState(api: AccountDesktopApi | undefined) {
         .catch(() => undefined);
     };
     const recover = () => read(true);
+    const disconnect = () =>
+      void api
+        .reportProfileOffline()
+        .then(receive)
+        .catch(() => undefined);
     const unsubscribe = api.onStateChanged(receive);
-    // Initial availability reads remain local. Only a cached signed-in account
-    // can request a throttled refresh after focus or connectivity returns.
+    // Initial reads stay local. Recover only a signed-in profile that needs it.
     read();
-    window.addEventListener("focus", recover);
-    window.addEventListener("online", recover);
+    if (recoverOnReconnect) {
+      if (!window.navigator.onLine) disconnect();
+      window.addEventListener("offline", disconnect);
+      window.addEventListener("focus", recover);
+      window.addEventListener("online", recover);
+    }
     return () => {
       active = false;
       clearTimeout(retryTimer);
       unsubscribe();
+      window.removeEventListener("offline", disconnect);
       window.removeEventListener("focus", recover);
       window.removeEventListener("online", recover);
     };
-  }, [api, accept]);
+  }, [api, accept, recoverOnReconnect]);
   const current = snapshot.api === api ? snapshot : null;
   return {
     state: api ? (current?.state ?? null) : null,

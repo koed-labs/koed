@@ -96,6 +96,169 @@ describe("optional account lifecycle", () => {
       /sensitive|secret-code|sealed/
     );
   });
+  it("loads only the signed-in profile and lets the User retry an unavailable account API", async () => {
+    const profileApiOrigin = "https://account.example.test";
+    const { controller, fetch, credentials } = fixture({
+      ...config,
+      profileApiOrigin
+    });
+    const details = {
+      userId: profile.id,
+      emailUpdates: {
+        email: profile.email,
+        subscribed: false,
+        revision: 0,
+        noticeVersion: "fixture-v1",
+        noticeText: "Synthetic consent check."
+      },
+      kin: { unlockMask: "0x0", catalogVersion: "1.1.0" }
+    };
+    const snapshots: unknown[] = [];
+    controller.subscribe((state) => snapshots.push(state));
+    fetch
+      .mockResolvedValueOnce(Response.json({ ...details, userId: "user_2" }))
+      .mockResolvedValueOnce(Response.json(details));
+
+    await controller.command({ operation: "signIn", screen: "sign-in" });
+    await controller.callback(
+      config.callbackUri + "?code=secret-code&state=sealed"
+    );
+    expect(controller.current()).toMatchObject({
+      status: "signed_in",
+      profile,
+      details: { status: "unavailable" }
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("/v1/account/profile", profileApiOrigin),
+      expect.objectContaining({
+        headers: { Authorization: `Bearer ${credentials.accessToken}` },
+        redirect: "error"
+      })
+    );
+    expect(
+      await controller.command({ operation: "refreshProfile" })
+    ).toMatchObject({
+      status: "signed_in",
+      details: { status: "ready", value: details }
+    });
+    expect(JSON.stringify(snapshots)).not.toMatch(
+      /sensitive|secret-code|sealed|user_2/
+    );
+  });
+  it("requires a new profile read after going offline and ignores late account data", async () => {
+    const { controller, fetch, runtime, credentials } = fixture({
+      ...config,
+      profileApiOrigin: "https://account.example.test"
+    });
+    const profileDetails = (userId: string, unlockMask: string) => ({
+      userId,
+      emailUpdates: {
+        email: "fixture@example.test",
+        subscribed: false,
+        revision: 0,
+        noticeVersion: "fixture-v1",
+        noticeText: "Synthetic consent check."
+      },
+      kin: { unlockMask, catalogVersion: "1.1.0" }
+    });
+    const first = profileDetails(profile.id, "0x1");
+    fetch.mockResolvedValueOnce(Response.json(first));
+    await controller.command({ operation: "signIn", screen: "sign-in" });
+    await controller.callback(config.callbackUri + "?code=first&state=proof");
+
+    let finishSave!: (response: Response) => void;
+    let saveStarted!: () => void;
+    const saving = new Promise<void>((resolve) => {
+      saveStarted = resolve;
+    });
+    fetch.mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          finishSave = resolve;
+          saveStarted();
+        })
+    );
+    const save = controller.command({
+      operation: "setEmailUpdates",
+      subscribed: true,
+      stateRevision: controller.current().revision
+    });
+    await saving;
+    expect(fetch).toHaveBeenLastCalledWith(
+      new URL("https://account.example.test/v1/account/email-updates"),
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          subscribed: true,
+          expectedRevision: 0,
+          email: first.emailUpdates.email,
+          noticeVersion: first.emailUpdates.noticeVersion
+        })
+      })
+    );
+    await controller.command({ operation: "reportProfileOffline" });
+    expect(controller.current().details).toEqual({ status: "unavailable" });
+    finishSave(
+      Response.json({ ...first.emailUpdates, subscribed: true, revision: 1 })
+    );
+    await save;
+    expect(controller.current()).toMatchObject({
+      busy: false,
+      details: { status: "unavailable" }
+    });
+    await controller.command({
+      operation: "setEmailUpdates",
+      subscribed: true,
+      stateRevision: controller.current().revision
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    const afterReconnect = profileDetails(profile.id, "0x0");
+    fetch.mockResolvedValueOnce(Response.json(afterReconnect));
+    expect(
+      await controller.command({ operation: "refreshProfile" })
+    ).toMatchObject({
+      details: { status: "ready", value: afterReconnect }
+    });
+
+    let finishOldRead!: (response: Response) => void;
+    let oldReadStarted!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      oldReadStarted = resolve;
+    });
+    fetch.mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          finishOldRead = resolve;
+          oldReadStarted();
+        })
+    );
+    const oldRead = controller.command({ operation: "refreshProfile" });
+    await reading;
+    await controller.command({ operation: "signOut" });
+    expect(controller.current().details).toBeUndefined();
+    await controller.command({ operation: "reportProfileOffline" });
+    await controller.command({ operation: "signIn", screen: "sign-in" });
+    const second = profileDetails("user_other", "0x0");
+    vi.mocked(runtime.callback).mockResolvedValueOnce({
+      ...credentials,
+      user: { ...credentials.user, id: second.userId }
+    });
+    vi.mocked(runtime.profile).mockReturnValueOnce({
+      ...profile,
+      id: second.userId
+    });
+    fetch.mockResolvedValueOnce(Response.json(second));
+    const signIn = controller.callback(
+      config.callbackUri + "?code=second&state=proof"
+    );
+    finishOldRead(Response.json(first));
+    await Promise.all([oldRead, signIn]);
+    expect(controller.current()).toMatchObject({
+      profile: { id: second.userId },
+      details: { status: "ready", value: second }
+    });
+  });
   it("restores a stale signed-in profile offline and recovers without restarting", async () => {
     const { controller, runtime, credentials } = fixture();
     vi.mocked(runtime.getProfile).mockResolvedValue(profile);

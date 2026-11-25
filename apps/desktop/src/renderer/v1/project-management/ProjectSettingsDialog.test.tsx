@@ -2,6 +2,10 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import type {
+  AccountDesktopApi,
+  AccountState
+} from "@koed-labs/shared/account";
 import {
   createProjectManagementValidationApi,
   validationId
@@ -11,6 +15,148 @@ import { PersonalMemoryStore } from "../../state/personal-memory.js";
 import { projectKinLook } from "../pixelkin/agent-kin.js";
 import { homeProjectEntries } from "../home/home-model.js";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog.js";
+
+it("equips Cap for the granted User and retains an already saved Cap after revocation", async () => {
+  const f = createProjectManagementValidationApi();
+  const store = new PersonalMemoryStore(f.api);
+  const { projectId } = await f.api.createProject!({ name: "Hat fixture" });
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const snapshot = (
+    id: string,
+    unlockMask: string,
+    revision: number
+  ): AccountState => ({
+    status: "signed_in",
+    stale: false,
+    busy: false,
+    message: null,
+    revision,
+    profile: {
+      id,
+      displayName: null,
+      email: "fixture@example.test",
+      emailVerified: true
+    },
+    details: {
+      status: "ready",
+      value: {
+        userId: id,
+        kin: { unlockMask, catalogVersion: "1.1.0" },
+        emailUpdates: {
+          email: "fixture@example.test",
+          subscribed: false,
+          revision: 0,
+          noticeVersion: "fixture-v1",
+          noticeText: "Synthetic check."
+        }
+      }
+    }
+  });
+  let state = snapshot("user_first", "0x1", 0);
+  const listeners = new Set<(value: AccountState) => void>();
+  const publish = async (value: AccountState) =>
+    act(async () => {
+      state = value;
+      for (const listener of listeners) listener(state);
+    });
+  const getState = async () => state;
+  const account: AccountDesktopApi = {
+    getState,
+    signIn: getState,
+    signOut: getState,
+    cancelSignIn: getState,
+    refreshProfile: getState,
+    reportProfileOffline: getState,
+    setEmailUpdates: getState,
+    onStateChanged(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    }
+  };
+  const originalDesktop = window.koedDesktop;
+  window.koedDesktop = {
+    ...originalDesktop,
+    invoke: async () => {
+      throw new Error("Unexpected Desktop IPC call");
+    },
+    account
+  };
+  const button = (text: string) =>
+    [...document.querySelectorAll("button")].find(
+      (node) => node.textContent?.trim() === text
+    );
+  const save = vi.fn<Parameters<typeof ProjectSettingsDialog>[0]["onSave"]>(
+    async (project, changes) => {
+      await f.api.manageProject!({
+        action: "apply_sources",
+        projectId,
+        expectedVersion: project.namedProject!.version,
+        changes
+      });
+    }
+  );
+  async function open(key: string) {
+    const projects = mergeProjectSources(await f.api.listProjects(), []);
+    await act(async () =>
+      root.render(
+        <ProjectSettingsDialog
+          key={key}
+          api={f.api}
+          store={store}
+          projects={projects}
+          projectId={projectId}
+          page="kin"
+          onClose={vi.fn()}
+          onSave={save}
+          onDelete={vi.fn()}
+        />
+      )
+    );
+  }
+
+  try {
+    await open("first");
+    await act(async () => button("Cap")!.click());
+    expect(button("Save changes")?.disabled).toBe(false);
+    await publish({
+      ...state,
+      revision: 1,
+      details: { status: "unavailable" }
+    });
+    expect(button("Cap")).toBeUndefined();
+    expect(button("Beanie")).toBeDefined();
+    expect(button("Save changes")?.disabled).toBe(true);
+    expect(save).not.toHaveBeenCalled();
+
+    await publish(snapshot("user_first", "0x1", 2));
+    await act(async () => button("Save changes")!.click());
+    expect(save).toHaveBeenCalledWith(expect.anything(), [
+      expect.objectContaining({
+        action: "set_details",
+        kin: expect.objectContaining({ hat: "cap" })
+      })
+    ]);
+    const saved = (await f.api.listProjects()).find(
+      ({ id }) => id === projectId
+    )?.namedProject?.kin;
+    expect(projectKinLook(projectId, saved).face.hat).toBe("cap");
+
+    await publish(snapshot("user_second", "0x0", 3));
+    await open("second");
+    expect(button("Cap")).toBeUndefined();
+    expect(button("Beanie")).toBeDefined();
+    expect(button("Save changes")?.disabled).toBe(true);
+    await act(async () => button("Beanie")!.click());
+    expect(button("Save changes")?.disabled).toBe(false);
+  } finally {
+    window.koedDesktop = originalDesktop;
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
 
 it("opens sync conflict review even when a retained exclusion blocks membership inspection", async () => {
   const f = createProjectManagementValidationApi();

@@ -44,7 +44,8 @@ To enable sign-in in a source build:
 5. Complete the staging WorkOS configuration below.
 6. Restart Desktop with `pnpm desktop:start`.
 
-Desktop imports only these five public values from the root file.
+Desktop imports these five public values and the optional account API origin
+from the root file.
 For a different source environment file, set `KOED_ENV_PATH` before starting Desktop.
 Missing or unreadable environment files do not block local startup.
 
@@ -136,6 +137,18 @@ The forwarder does not authenticate the User or grant access.
 The renderer, the process that displays the interface, receives only account status and read-only profile fields.
 Tokens, callback URLs, PKCE material, and provider error payloads stay outside renderer state and support exports.
 Team and device credentials remain under separate `koed-server` control.
+
+The optional account API provides email preferences and Kin unlocks. In a
+source build, set `DESKTOP_ACCOUNT_PROFILE_API_ORIGIN` to the account API
+origin. A loopback HTTP origin can serve local fixtures. For a packaged
+build, supply an HTTPS origin as `KOED_ACCOUNT_PROFILE_API_ORIGIN` at build
+time. Desktop keeps its existing sign-in mode. Electron main sends the
+WorkOS access token and returns the account fields to the account menu.
+Use that menu to set email updates for the displayed address. Desktop shows
+the saved preference after the API confirms it. Use Project settings to
+equip a Kin item that the account unlocks. If the API is unavailable, retry
+from the account menu. Free items stay available and saved Kins retain their
+appearance.
 
 Electron `safeStorage` encrypts the session, cached profile, sign-in attempt, and installation secret.
 Its asynchronous APIs use the operating system credential service.

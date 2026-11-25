@@ -47,6 +47,8 @@ function fixture(initial = signedOut) {
       publish({ ...signedOut, revision: state.revision })
     ),
     refreshProfile: vi.fn(async () => state),
+    reportProfileOffline: vi.fn(async () => state),
+    setEmailUpdates: vi.fn(async () => state),
     onStateChanged: vi.fn((listener) => {
       listeners.add(listener);
       return () => {
@@ -83,6 +85,65 @@ const item = (label: string) =>
   )!;
 
 describe("rail account menu", () => {
+  it("shows the confirmed email preference and changes it only after the save returns", async () => {
+    const details = {
+      userId: signedIn.profile!.id,
+      emailUpdates: {
+        email: "updates@example.test",
+        subscribed: false,
+        revision: 0,
+        noticeVersion: "fixture-v1",
+        noticeText: "Send me synthetic product updates."
+      },
+      kin: { unlockMask: "0x0", catalogVersion: "1.1.0" }
+    };
+    const { api, publish } = fixture({
+      ...signedIn,
+      details: { status: "ready", value: details }
+    });
+    let confirm!: (state: AccountState) => void;
+    vi.mocked(api.setEmailUpdates).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          confirm = resolve;
+        })
+    );
+    await render(api);
+    await open();
+    const preference = document.querySelector<HTMLElement>(
+      '[role="menuitemcheckbox"]'
+    )!;
+    expect(preference.getAttribute("aria-checked")).toBe("false");
+    expect(
+      document.getElementById(preference.getAttribute("aria-describedby")!)
+        ?.textContent
+    ).toContain(details.emailUpdates.email);
+    await act(async () => preference.click());
+    expect(api.setEmailUpdates).toHaveBeenCalledWith({
+      subscribed: true,
+      stateRevision: signedIn.revision
+    });
+    expect(preference.getAttribute("aria-checked")).toBe("false");
+    await act(async () =>
+      confirm(
+        publish({
+          details: {
+            status: "ready",
+            value: {
+              ...details,
+              emailUpdates: {
+                ...details.emailUpdates,
+                subscribed: true,
+                revision: 1
+              }
+            }
+          }
+        })
+      )
+    );
+    expect(preference.getAttribute("aria-checked")).toBe("true");
+  });
+
   it("stays hidden until availability resolves and while main disables accounts", async () => {
     const f = fixture({ ...signedOut, status: "unavailable" });
     let resolveRead!: (value: AccountState) => void;

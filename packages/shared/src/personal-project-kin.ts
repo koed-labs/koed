@@ -6,6 +6,7 @@ export const personalProjectKinSchema = z
   .object({
     shape: z.enum(["sphere", "cube", "roundedBox", "capsule"]),
     colour: z.string().regex(/^#[0-9a-f]{6}$/),
+    hat: z.enum(["cap", "beanie", "bowler"]).optional(),
     personality: z.enum([
       "neutral",
       "sleepy",

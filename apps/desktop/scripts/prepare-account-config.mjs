@@ -54,6 +54,14 @@ export function desktopAccountBuildConfig({
     config.forwarderUrl =
       (environment.KOED_ACCOUNT_FORWARDER_URL?.trim() || undefined) ??
       (release ? undefined : source.forwarderUrl);
+  const profileApiOrigin =
+    (environment.KOED_ACCOUNT_PROFILE_API_ORIGIN?.trim() || undefined) ??
+    (release ? undefined : source.profileApiOrigin);
+  if (profileApiOrigin) {
+    if (!profileApiOrigin.startsWith("https://"))
+      throw new Error("Packaged Desktop profiles require an HTTPS API origin.");
+    config.profileApiOrigin = profileApiOrigin;
+  }
   if (release && config.environment !== "production")
     throw new Error(
       "Account-enabled releases require KOED_ACCOUNT_ENVIRONMENT=production."

@@ -100,7 +100,8 @@ export function projectKinSettings(look: AgentLook): PersonalProjectKin {
   return personalProjectKinSchema.parse({
     shape: look.body.shape,
     colour: look.palette.base,
-    personality: look.face.personality
+    personality: look.face.personality,
+    ...(look.face.hat === "none" ? {} : { hat: look.face.hat })
   });
 }
 
@@ -123,6 +124,7 @@ export function projectKinLook(
     saved?.colour ?? colour?.hex ?? look.palette.base
   );
   if (saved) editKin(look, "face.personality", saved.personality);
+  if (saved?.hat) editKin(look, "face.hat", saved.hat);
   look.seed = value % 100000;
   return look;
 }

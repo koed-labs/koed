@@ -1,0 +1,79 @@
+{
+  "source": "93bfa522a2b8cf2803cc85b6594519b6f6bdb139",
+  "version": "1.1.0",
+  "items": [
+    {
+      "id": "cap",
+      "label": "Cap",
+      "unlockBit": 0
+    },
+    {
+      "id": "beanie",
+      "label": "Beanie"
+    },
+    {
+      "id": "bowler",
+      "label": "Classic bowler hat"
+    },
+    {
+      "id": "matrix_oval",
+      "label": "Circle sunglasses"
+    },
+    {
+      "id": "circle_eyeglasses",
+      "label": "Circle eyeglasses"
+    },
+    {
+      "id": "matrix_square",
+      "label": "Square sunglasses"
+    },
+    {
+      "id": "square_eyeglasses",
+      "label": "Square eyeglasses"
+    },
+    {
+      "id": "matrix_aviator",
+      "label": "Aviator"
+    },
+    {
+      "id": "santa_hat",
+      "label": "Santa hat",
+      "unlockBit": 1
+    },
+    {
+      "id": "elf_hat",
+      "label": "Elf hat",
+      "unlockBit": 2
+    },
+    {
+      "id": "reindeer_antlers",
+      "label": "Reindeer antlers",
+      "unlockBit": 3
+    },
+    {
+      "id": "ghost",
+      "label": "Ghost sheet",
+      "unlockBit": 4
+    },
+    {
+      "id": "skull",
+      "label": "Skull mask",
+      "unlockBit": 5
+    },
+    {
+      "id": "pumpkin",
+      "label": "Pumpkin mask",
+      "unlockBit": 6
+    },
+    {
+      "id": "devil_horns",
+      "label": "Devil horns",
+      "unlockBit": 7
+    },
+    {
+      "id": "cowboy_hat",
+      "label": "Cowboy hat",
+      "unlockBit": 8
+    }
+  ]
+}

@@ -23,6 +23,22 @@ const accountForwarderUrlSchema = z
     }
   });
 
+export const accountProfileApiOriginSchema = z
+  .string()
+  .max(2048)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      const loopback = url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+      return (
+        (value === url.origin || value === `${url.origin}/`) &&
+        (url.protocol === "https:" || (url.protocol === "http:" && loopback))
+      );
+    } catch {
+      return false;
+    }
+  });
+
 /** Only public OAuth settings may cross the build/runtime configuration boundary. */
 export const publicAccountConfigSchema = z
   .object({
@@ -34,7 +50,8 @@ export const publicAccountConfigSchema = z
       .optional(),
     environment: z.string().trim().min(1).max(100).optional(),
     loginMode: z.enum(["direct", "forwarder"]).optional(),
-    forwarderUrl: accountForwarderUrlSchema.optional()
+    forwarderUrl: accountForwarderUrlSchema.optional(),
+    profileApiOrigin: accountProfileApiOriginSchema.optional()
   })
   .strict();
 export type PublicAccountConfig = z.infer<typeof publicAccountConfigSchema>;
@@ -44,6 +61,7 @@ export interface AccountConfig {
   loginMode: "direct" | "forwarder";
   redirectUri: string;
   callbackUri: string;
+  profileApiOrigin?: string;
 }
 export function resolveAccountConfig(
   environment: Readonly<Record<string, string | undefined>>
@@ -75,12 +93,18 @@ export function resolveAccountConfig(
   const redirectUri =
     loginMode === "forwarder" ? value.data.forwarderUrl : callbackUri;
   if (!redirectUri) return null;
+  const profileApi = accountProfileApiOriginSchema.safeParse(
+    environment.KOED_ACCOUNT_PROFILE_API_ORIGIN?.trim()
+  );
   return {
     clientId,
     environment: namespace,
     loginMode,
     callbackUri,
-    redirectUri
+    redirectUri,
+    ...(profileApi.success
+      ? { profileApiOrigin: new URL(profileApi.data).origin }
+      : {})
   };
 }
 
@@ -126,9 +150,33 @@ export const accountMessageCodeSchema = z.enum([
   "sign_out_failed",
   "browser_sign_out_failed",
   "sign_in_expired",
-  "sign_in_failed"
+  "sign_in_failed",
+  "email_updates_unconfirmed"
 ]);
 export type AccountMessageCode = z.infer<typeof accountMessageCodeSchema>;
+export const emailUpdatesPreferenceSchema = z
+  .object({
+    email: z.string().email(),
+    subscribed: z.boolean(),
+    revision: z.number().int().nonnegative(),
+    noticeVersion: z.string().min(1).max(100),
+    noticeText: z.string().min(1).max(1000)
+  })
+  .strict();
+export const accountDetailsSchema = z
+  .object({
+    userId: accountProfileSchema.shape.id,
+    emailUpdates: emailUpdatesPreferenceSchema,
+    kin: z
+      .object({
+        unlockMask: z.string().regex(/^0x[0-9a-f]+$/),
+        catalogVersion: z.string().min(1).max(100)
+      })
+      .strict()
+  })
+  .strict();
+export type AccountDetails = z.infer<typeof accountDetailsSchema>;
+
 export const accountStateSchema = z
   .object({
     status: z.enum([
@@ -140,6 +188,15 @@ export const accountStateSchema = z
       "reauthentication_required"
     ]),
     profile: accountProfileSchema.nullable(),
+    details: z
+      .discriminatedUnion("status", [
+        z.object({ status: z.literal("loading") }).strict(),
+        z.object({ status: z.literal("unavailable") }).strict(),
+        z
+          .object({ status: z.literal("ready"), value: accountDetailsSchema })
+          .strict()
+      ])
+      .optional(),
     stale: z.boolean(),
     busy: z.boolean(),
     message: z.string().max(300).nullable(),
@@ -157,6 +214,14 @@ export const accountCommandSchema = z.discriminatedUnion("operation", [
     .strict(),
   z.object({ operation: z.literal("cancelSignIn") }).strict(),
   z.object({ operation: z.literal("refreshProfile") }).strict(),
+  z.object({ operation: z.literal("reportProfileOffline") }).strict(),
+  z
+    .object({
+      operation: z.literal("setEmailUpdates"),
+      subscribed: z.boolean(),
+      stateRevision: z.number().int().nonnegative()
+    })
+    .strict(),
   z.object({ operation: z.literal("signOut") }).strict()
 ]);
 export type AccountProfile = z.infer<typeof accountProfileSchema>;
@@ -167,6 +232,11 @@ export interface AccountDesktopApi {
   signIn(input: { screen: "sign-in" | "sign-up" }): Promise<AccountState>;
   cancelSignIn(): Promise<AccountState>;
   refreshProfile(): Promise<AccountState>;
+  reportProfileOffline(): Promise<AccountState>;
+  setEmailUpdates(input: {
+    subscribed: boolean;
+    stateRevision: number;
+  }): Promise<AccountState>;
   signOut(): Promise<AccountState>;
   onStateChanged(listener: (state: AccountState) => void): () => void;
 }

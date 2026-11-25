@@ -35,6 +35,11 @@ import { projectErrorMessage } from "./use-organization-review.js";
 
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
 import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
+import {
+  accountUnlockMask,
+  canEquipHat
+} from "../pixelkin/account-equipment.js";
+import { useAccountState } from "../use-account-state.js";
 
 const pages = [
   { id: "general", name: "General", Icon: Settings2 },
@@ -67,6 +72,9 @@ export function ProjectSettingsDialog({
   ) => Promise<void>;
   onDelete: (project: DesktopProject) => Promise<void>;
 }) {
+  const account = window.koedDesktop?.account;
+  const { state: accountState } = useAccountState(account, false);
+  const unlockMask = accountUnlockMask(accountState);
   const [initialProjects] = useState(projects);
   const [active, setActive] = useState(projectId);
   const [panel, setPanel] = useState<ProjectSettingsPage>(page);
@@ -101,6 +109,10 @@ export function ProjectSettingsDialog({
     };
   }, [active, api, initialProjects]);
   const changes = draft ? settingsChanges(draft) : [];
+  const hat = draft?.look.face.hat ?? "none";
+  const savedHat = draft?.project.namedProject?.kin?.hat ?? "none";
+  const newGatedHat = hat !== savedHat && !canEquipHat(hat, "0x0");
+  const unavailableHat = newGatedHat && !canEquipHat(hat, unlockMask);
   const dirty = changes.length > 0;
   const editError =
     draft?.inspectionError ??
@@ -215,6 +227,7 @@ export function ProjectSettingsDialog({
               <AgentLookPicker
                 look={draft.look}
                 disabled={busy}
+                unlockMask={unlockMask}
                 onChange={(look) => mutate((old) => ({ ...old, look }))}
               />
             </fieldset>
@@ -491,16 +504,40 @@ export function ProjectSettingsDialog({
           )}
         </div>
         <DialogFooter className="v1-pm-settings-footer">
-          <span>{dirty ? "Unsaved changes" : ""}</span>
+          <span>
+            {unavailableHat
+              ? "Choose an available hat before saving"
+              : dirty
+                ? "Unsaved changes"
+                : ""}
+          </span>
           <Button variant="outline" disabled={busy} onClick={close}>
             Cancel
           </Button>
           <Button
             disabled={
-              !draft || !!editError || !dirty || !draft.name.trim() || busy
+              !draft ||
+              !!editError ||
+              !dirty ||
+              !draft.name.trim() ||
+              busy ||
+              unavailableHat
             }
             onClick={() =>
-              draft && void run(() => onSave(draft.project, changes))
+              draft &&
+              void run(async () => {
+                if (
+                  newGatedHat &&
+                  !canEquipHat(
+                    hat,
+                    accountUnlockMask(await account?.getState())
+                  )
+                ) {
+                  setError("Choose an available hat before saving.");
+                  return;
+                }
+                await onSave(draft.project, changes);
+              })
             }
           >
             {busy ? "Saving…" : "Save changes"}
