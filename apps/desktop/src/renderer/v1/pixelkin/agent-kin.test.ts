@@ -4,19 +4,23 @@ import {
   chiefOfStaffAppearance,
   normalizeAgentLook,
   parseAgentLook,
+  projectKinEquipped,
+  projectKinLook,
+  projectKinSettings,
   sameAgentLook,
   serializeAgentLook
 } from "./agent-kin.js";
-import { PixelkinAccessories, editKin, clone } from "./vendor/index.js";
+import { editKin, clone } from "@koed-labs/kin-engine";
 
 describe("agent Kin", () => {
   it("saves a Create your Kin file that reads back the same", () => {
-    const look = editKin(clone(DEFAULT_AGENT_LOOK), "face.hat", "beanie");
+    const look = editKin(clone(DEFAULT_AGENT_LOOK), "face.items", ["beanie"]);
     const saved = serializeAgentLook(look, " Pip ");
     expect(JSON.parse(saved)).toMatchObject({
       schema: "pixelkin",
       version: 1,
-      name: "Pip"
+      name: "Pip",
+      accessories: { items: ["beanie"] }
     });
     expect(sameAgentLook(parseAgentLook(saved), look)).toBe(true);
   });
@@ -28,7 +32,61 @@ describe("agent Kin", () => {
     expect(look.body.height).toBe(1.9);
     expect(look.body.width).toBeLessThan(look.body.height);
     expect(look.palette.base).toBe("#55cca3");
-    expect(PixelkinAccessories.getHat(look.face.hat)).toBeUndefined();
+    expect(look.face.items).toEqual([]);
+  });
+  it.each([
+    [{ hat: "beanie", glasses: "matrix_square" }, ["beanie", "matrix_square"]],
+    [
+      { hat: { type: "beanie" }, glasses: { model: "matrix_square" } },
+      ["beanie", "matrix_square"]
+    ],
+    [
+      { hat: { type: "beanie", enabled: false }, glasses: { name: "Aviator" } },
+      ["matrix_aviator"]
+    ],
+    [{ glasses: { type: "matrix", enabled: false } }, []],
+    [{ glasses: { type: "matrix" } }, ["matrix_oval"]],
+    [
+      { hat: "beanie", christmas: "santa_hat", glasses: "matrix_square" },
+      ["santa_hat", "matrix_square"]
+    ],
+    [
+      { halloween: "ghost", christmas: "santa_hat", glasses: "matrix_square" },
+      ["ghost"]
+    ]
+  ])(
+    "migrates legacy equipment in saved looks and drafts (%j)",
+    (old, items) => {
+      const saved = JSON.parse(serializeAgentLook(DEFAULT_AGENT_LOOK, "Pip"));
+      const look = normalizeAgentLook({
+        ...saved,
+        accessories: { ...old, hatHeight: 0.2 }
+      });
+      expect(look.face.items).toEqual(items);
+      expect(look.face.hatHeight).toBe(0.2);
+      const { items: _items, ...face } = DEFAULT_AGENT_LOOK.face;
+      const draft = { ...DEFAULT_AGENT_LOOK, face: { ...face, ...old } };
+      expect(normalizeAgentLook(draft).face.items).toEqual(items);
+    }
+  );
+  it("preserves accessory settings from a legacy Kin file", () => {
+    const saved = JSON.parse(serializeAgentLook(DEFAULT_AGENT_LOOK, "Pip"));
+    const look = normalizeAgentLook({
+      ...saved,
+      accessories: {
+        hat: { type: "beanie", heightOffset: 0.2 },
+        glasses: {
+          model: "matrix_square",
+          materials: { frameColor: "#55cca3", lensTint: "amber" }
+        }
+      }
+    });
+    expect(look.face).toMatchObject({
+      items: ["beanie", "matrix_square"],
+      hatHeight: 0.2,
+      glassesColor: "#55cca3",
+      glassesTint: "amber"
+    });
   });
   it("falls back to the default for unreadable looks", () => {
     for (const value of [
@@ -56,4 +114,24 @@ describe("agent Kin", () => {
     const look = editKin(clone(DEFAULT_AGENT_LOOK), "body.shape", "sphere");
     expect(sameAgentLook(normalizeAgentLook(clone(look)), look)).toBe(true);
   });
+});
+
+it("loads and saves only available Project Kin accessories", () => {
+  const saved = {
+    shape: "roundedBox",
+    colour: "#55cca3",
+    personality: "neutral"
+  } as const;
+  const look = projectKinLook("project", saved, [
+    "cap",
+    "ghost",
+    "beanie",
+    "circle_eyeglasses",
+    "bowler",
+    "unknown"
+  ]);
+  expect(look.face.items).toEqual(["bowler", "circle_eyeglasses"]);
+  expect(projectKinSettings(look)).toEqual(saved);
+  expect(projectKinEquipped(look)).toEqual(["bowler", "circle_eyeglasses"]);
+  expect(projectKinEquipped(projectKinLook("project"))).toEqual([]);
 });

@@ -153,22 +153,28 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
     document.querySelector<HTMLButtonElement>(
       '[role="combobox"][aria-label="Personality"]'
     )!;
+  let savedItems: string[] | undefined;
+  const readProjects = async () =>
+    mergeProjectSources(await f.api.listProjects(), []).map((project) =>
+      project.id === projectId ? { ...project, kinItems: savedItems } : project
+    );
   const save = vi
     .fn<Parameters<typeof ProjectSettingsDialog>[0]["onSave"]>(
-      async (project, changes) => {
+      async (project, changes, _accepted, _rejected, kinItems) => {
         await f.api.manageProject!({
           action: "apply_sources",
           projectId,
           expectedVersion: project.namedProject!.version,
           changes
         });
-        return mergeProjectSources(await f.api.listProjects(), []);
+        savedItems = kinItems;
+        return readProjects();
       }
     )
     .mockRejectedValueOnce(new Error("Save failed"));
   const close = vi.fn();
   const open = async () => {
-    const projects = mergeProjectSources(await f.api.listProjects(), []);
+    const projects = await readProjects();
     await act(async () =>
       root.render(
         <ProjectSettingsDialog
@@ -197,6 +203,7 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
       preview().querySelector(".v1-pixelkin")!.getAttribute("data-kin-colour")
     ).toBe(initial.palette.base);
     const shape = initial.body.shape === "sphere" ? "Cube" : "Sphere";
+    await click(button("Appearance"));
     await click(button(shape));
     await click(button("Cancel"));
     await click(button("Discard changes"));
@@ -205,6 +212,31 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
     await act(async () => root.render(null));
     await open();
     expect(button("Save changes").disabled).toBe(true);
+    const accessoryNames = () =>
+      [...document.querySelectorAll(".v1-pm-kin-catalogue button")].map(
+        (tile) => tile.getAttribute("aria-label")
+      );
+    const tile = (label: string) =>
+      document.querySelector<HTMLButtonElement>(
+        `.v1-pm-kin-catalogue button[aria-label="${label}"]`
+      )!;
+    expect(accessoryNames()).toEqual(["Beanie", "Classic bowler hat"]);
+    await click(tile("Beanie"));
+    await click(tile("Classic bowler hat"));
+    expect(tile("Beanie").getAttribute("aria-pressed")).toBe("false");
+    expect(tile("Classic bowler hat").getAttribute("aria-pressed")).toBe(
+      "true"
+    );
+    await click(button("Eyewear"));
+    expect(accessoryNames()).toEqual([
+      "Circle sunglasses",
+      "Circle eyeglasses",
+      "Square sunglasses",
+      "Square eyeglasses",
+      "Aviator"
+    ]);
+    await click(tile("Circle eyeglasses"));
+    await click(button("Appearance"));
     await click(button(shape));
     await click(swatch());
     await click(personality());
@@ -223,10 +255,19 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
       colour: "#55cca3",
       personality: "curious"
     };
+    const kinItems = ["bowler", "circle_eyeglasses"];
     expect(f.projects.get(projectId)!.meta.kin).toEqual(kin);
+    expect(savedItems).toEqual(kinItems);
     await act(async () => root.render(null));
     await open();
     expect(button("Save changes").disabled).toBe(true);
+    expect(
+      document.querySelector('[aria-label="Remove Classic bowler hat"]')
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[aria-label="Remove Circle eyeglasses"]')
+    ).not.toBeNull();
+    await click(button("Appearance"));
     expect(button(shape).getAttribute("aria-pressed")).toBe("true");
     expect(swatch().getAttribute("aria-pressed")).toBe("true");
     expect(personality().textContent).toContain("Curious");
@@ -238,10 +279,8 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
       sessionId: validationId(100)
     });
     expect(
-      homeProjectEntries(
-        mergeProjectSources(await f.api.listProjects(), [])
-      ).find((p) => p.id === projectId)?.kin
-    ).toEqual(kin);
+      homeProjectEntries(await readProjects()).find((p) => p.id === projectId)
+    ).toMatchObject({ kin, kinItems });
   } finally {
     await act(async () => root.unmount());
     container.remove();

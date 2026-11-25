@@ -19,7 +19,11 @@ import {
 const Kin = ({ project }: { project?: DesktopProject | undefined }) =>
   project?.namedProject ? (
     <Pixelkin
-      look={projectKinLook(project.id, project.namedProject.kin)}
+      look={projectKinLook(
+        project.id,
+        project.namedProject.kin,
+        project.kinItems
+      )}
       size={32}
       className="v1-pm-row-kin"
       motion="still"
@@ -72,7 +76,7 @@ export function MoveConversationDialog(
                 .map((p) => ({
                   value: p.id,
                   label: p.name,
-                  look: projectKinLook(p.id, p.namedProject?.kin)
+                  look: projectKinLook(p.id, p.namedProject?.kin, p.kinItems)
                 }))}
               onChange={setDestination}
               disabled={busy}

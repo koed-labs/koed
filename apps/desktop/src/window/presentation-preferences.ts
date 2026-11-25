@@ -1,20 +1,14 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import {
+  defaultPresentationPreferences,
+  kinResolutions,
+  type PresentationPreferences
+} from "../ipc/presentation-preferences-protocol.js";
 
-export type PresentationPreferences = {
-  graphicsAcceleration: boolean;
-  showMenuBar: boolean;
-  floatingKin?: boolean;
-};
-export const defaultPresentationPreferences: Required<PresentationPreferences> =
-  {
-    graphicsAcceleration: true,
-    showMenuBar: true,
-    floatingKin: false
-  };
 export function readPresentationPreferences(
   path: string
-): Required<PresentationPreferences> {
+): PresentationPreferences {
   try {
     const value = JSON.parse(
       readFileSync(path, "utf8")
@@ -26,7 +20,11 @@ export function readPresentationPreferences(
           : true,
       showMenuBar:
         typeof value.showMenuBar === "boolean" ? value.showMenuBar : true,
-      floatingKin: value.floatingKin === true
+      floatingKin: value.floatingKin === true,
+      kinResolution:
+        kinResolutions.find(
+          (resolution) => resolution === value.kinResolution
+        ) ?? defaultPresentationPreferences.kinResolution
     };
   } catch {
     return { ...defaultPresentationPreferences };

@@ -97,6 +97,22 @@ The [installation guide](docs/optional-privacy-installation.md) defines compatib
 - [ ] Recover the overlay automatically after its renderer fails, without
       reopening during Quit Desktop or starting a stopped Local AI Runtime.
 
+## Project Kin accessory sync
+
+Keep accessory saves device-local while `KOED_PERSONAL_DEVICE_SYNC_ENABLED`
+is off. Qualify sync with the flag enabled before general rollout.
+
+- [ ] Sync equipped accessories as a separate signed, encrypted Project
+      preference. Send additions and removals once the relay and all active
+      paired devices support them. Retry accessory requests independently so
+      Project renames and deletions continue during a mixed-version rollout.
+- [ ] Ship a rollback-compatible release before enabling new storage writes.
+      Verify that the previous release can start and read the same database
+      after an accessory save.
+- [ ] Import a device's saved outfit when the Project has no synced outfit.
+      Let the User choose if devices already have different outfits. Test
+      import, removal, retries, and rename and delete sync with an older peer.
+
 ## Desktop Preferences design
 
 - [ ] Restart services after a Privacy rollback compare-and-swap conflict

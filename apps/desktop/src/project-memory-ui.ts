@@ -40,6 +40,7 @@ export type DesktopThreadGroup = {
 export type DesktopProjectGroup = {
   ownerUserId?: string;
   namedProject?: import("@koed-labs/shared").PersonalNamedProject;
+  kinItems?: string[];
   projectReference?: import("@koed-labs/shared").PersonalProjectReference;
   inclusionRules?: import("@koed-labs/shared").PersonalProjectRule[];
   directInclusions?: import("@koed-labs/shared").PersonalDirectMembership[];

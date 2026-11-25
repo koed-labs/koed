@@ -18,30 +18,39 @@ it("persists window preferences independently of backend acceleration", () => {
   expect(readPresentationPreferences(file)).toEqual({
     graphicsAcceleration: true,
     showMenuBar: true,
-    floatingKin: false
+    floatingKin: false,
+    kinResolution: "max"
   });
-  writePresentationPreferences(file, {
-    graphicsAcceleration: false,
-    showMenuBar: false
-  });
+  writeFileSync(
+    file,
+    JSON.stringify({ graphicsAcceleration: false, showMenuBar: false })
+  );
   expect(readPresentationPreferences(file)).toEqual({
     graphicsAcceleration: false,
     showMenuBar: false,
-    floatingKin: false
+    floatingKin: false,
+    kinResolution: "max"
   });
   writePresentationPreferences(file, {
     graphicsAcceleration: true,
     showMenuBar: true,
-    floatingKin: true
+    floatingKin: true,
+    kinResolution: "balanced"
   });
   expect(readPresentationPreferences(file).floatingKin).toBe(true);
+  expect(readPresentationPreferences(file).kinResolution).toBe("balanced");
   expect(statSync(file).mode & 0o077).toBe(0);
-  writeFileSync(file, JSON.stringify({ floatingKin: "true" }));
+  writeFileSync(
+    file,
+    JSON.stringify({ floatingKin: "true", kinResolution: 160 })
+  );
   expect(readPresentationPreferences(file).floatingKin).toBe(false);
+  expect(readPresentationPreferences(file).kinResolution).toBe("max");
   writeFileSync(file, "invalid");
   expect(readPresentationPreferences(file)).toEqual({
     graphicsAcceleration: true,
     showMenuBar: true,
-    floatingKin: false
+    floatingKin: false,
+    kinResolution: "max"
   });
 });

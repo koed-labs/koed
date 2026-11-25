@@ -3,7 +3,7 @@
   flex: none;
   image-rendering: pixelated;
 }
-.v1-pixelkin[data-presentation="stage"] {
+.v1-pixelkin[data-presentation="stage"][data-kin-resolution="max"] {
   image-rendering: auto;
 }
 /* Shown when WebGL2 is unavailable, so the agent still has a body and face. */

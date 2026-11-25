@@ -3,6 +3,11 @@ import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { desktopFeatureFlagsFromEnvironment } from "../../ipc/desktop-feature-flags.js";
+import { defaultPresentationPreferences } from "../../ipc/presentation-preferences-protocol.js";
+import {
+  currentKinResolution,
+  setKinResolution
+} from "../state/kin-resolution.js";
 import type {
   DesktopStatusStore,
   StatusSnapshot
@@ -56,6 +61,7 @@ describe("V1Settings", () => {
     vi.useRealTimers();
     mount.remove();
     delete window.koedDesktop;
+    setKinResolution("max");
   });
   const render = async (
     initialTab: "general" | "agent" | "ai" | "services" = "general",
@@ -108,7 +114,7 @@ describe("V1Settings", () => {
     expect(themeStore.set).toHaveBeenCalledWith("light");
   });
 
-  it("uses presentation preferences for window graphics and menu bar", async () => {
+  it("opens Graphics from General and saves independent window preferences", async () => {
     const launch = {
       get: vi.fn(async () => ({
         enabled: false,
@@ -121,11 +127,11 @@ describe("V1Settings", () => {
         supported: true
       }))
     };
-    let preferences = { graphicsAcceleration: true, showMenuBar: false };
+    let preferences = { ...defaultPresentationPreferences, showMenuBar: false };
     const presentation = {
       get: vi.fn(async () => preferences),
-      set: vi.fn(async (value: typeof preferences) => {
-        preferences = value;
+      set: vi.fn(async (value: Partial<typeof preferences>) => {
+        preferences = { ...preferences, ...value };
         return preferences;
       })
     };
@@ -138,11 +144,7 @@ describe("V1Settings", () => {
     const deviceSection = [...container.querySelectorAll("section")].find(
       (section) => section.querySelector("h3")?.textContent === "On this device"
     )!;
-    for (const label of [
-      "Open Koed at login",
-      "Graphics acceleration",
-      "Show Koed in the menu bar"
-    ]) {
+    for (const label of ["Open Koed at login", "Show Koed in the menu bar"]) {
       const controls = container.querySelectorAll(
         `[role="switch"][aria-label="${label}"]`
       );
@@ -159,24 +161,16 @@ describe("V1Settings", () => {
     const login = container.querySelector(
       '[role="switch"][aria-label="Open Koed at login"]'
     ) as HTMLButtonElement;
-    const gpu = container.querySelector(
-      '[role="switch"][aria-label="Graphics acceleration"]'
-    ) as HTMLButtonElement;
+    const gpuSelector = '[role="switch"][aria-label="Graphics acceleration"]';
+    expect(container.querySelector(gpuSelector)).toBeNull();
     const menu = container.querySelector(
       '[role="switch"][aria-label="Show Koed in the menu bar"]'
     ) as HTMLButtonElement;
-    expect(gpu.getAttribute("aria-checked")).toBe("true");
     expect(menu.getAttribute("aria-checked")).toBe("false");
     await act(async () => login.click());
     expect(launch.set).toHaveBeenCalledWith(true);
-    await act(async () => gpu.click());
-    expect(presentation.set).toHaveBeenCalledWith({
-      graphicsAcceleration: false,
-      showMenuBar: false
-    });
     await act(async () => menu.click());
     expect(presentation.set).toHaveBeenCalledWith({
-      graphicsAcceleration: false,
       showMenuBar: true
     });
     await act(async () =>
@@ -185,6 +179,47 @@ describe("V1Settings", () => {
         .click()
     );
     expect(restart).toHaveBeenCalledOnce();
+    const graphics = deviceSection.querySelector<HTMLButtonElement>(
+      '[data-settings-page="graphics"]'
+    )!;
+    expect(graphics.querySelector(".link-icon")).toBeNull();
+    await act(async () => graphics.click());
+    expect(container.querySelector(".page-heading h2")?.textContent).toBe(
+      "Graphics"
+    );
+    expect(
+      container.querySelector('[aria-label="Back to General"]')
+    ).toBeTruthy();
+    const slider = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Kin resolution"]'
+    )!;
+    expect(slider.value).toBe("2");
+    await act(async () =>
+      slider.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowLeft",
+          bubbles: true
+        })
+      )
+    );
+    expect(presentation.set).toHaveBeenLastCalledWith({
+      kinResolution: "balanced"
+    });
+    expect(slider.value).toBe("1");
+    expect(currentKinResolution()).toBe("balanced");
+    const gpu = container.querySelector<HTMLButtonElement>(gpuSelector)!;
+    expect(gpu.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain(
+      "Takes effect after restarting Koed."
+    );
+    await act(async () => gpu.click());
+    expect(presentation.set).toHaveBeenLastCalledWith({
+      graphicsAcceleration: false
+    });
+    expect(preferences).toMatchObject({
+      showMenuBar: true,
+      kinResolution: "balanced"
+    });
   });
   it.each([
     ["MacIntel", true],
@@ -195,12 +230,16 @@ describe("V1Settings", () => {
       const platformGetter = vi
         .spyOn(navigator, "platform", "get")
         .mockReturnValue(platform);
-      const defaults = { graphicsAcceleration: true, showMenuBar: false };
+      const defaults = {
+        ...defaultPresentationPreferences,
+        showMenuBar: false
+      };
       const presentation = {
         get: vi.fn(async () => defaults),
-        set: vi.fn(
-          async (value: typeof defaults & { floatingKin?: boolean }) => value
-        )
+        set: vi.fn(async (value: Partial<typeof defaults>) => ({
+          ...defaults,
+          ...value
+        }))
       };
       try {
         await render("general", { presentationPreferences: presentation });
@@ -211,16 +250,19 @@ describe("V1Settings", () => {
           expect(toggle).toBeNull();
           return;
         }
+        expect(
+          container
+            .querySelector('[data-settings-page="graphics"]')
+            ?.previousElementSibling?.contains(toggle)
+        ).toBe(true);
         expect(toggle?.getAttribute("aria-checked")).toBe("false");
         await act(async () => toggle?.click());
         expect(presentation.set).toHaveBeenCalledWith({
-          ...defaults,
           floatingKin: true
         });
         expect(toggle?.getAttribute("aria-checked")).toBe("true");
         await act(async () => toggle?.click());
         expect(presentation.set).toHaveBeenLastCalledWith({
-          ...defaults,
           floatingKin: false
         });
       } finally {
@@ -229,17 +271,17 @@ describe("V1Settings", () => {
     }
   );
 
-  it("keeps the displayed window preference when saving fails", async () => {
+  it("restores the saved graphics preferences when a write fails", async () => {
     const presentation = {
-      get: vi.fn(async () => ({
-        graphicsAcceleration: true,
-        showMenuBar: true
-      })),
+      get: vi.fn(async () => defaultPresentationPreferences),
       set: vi.fn(async () => {
         throw new Error("unavailable");
       })
     };
-    await render("general", { presentationPreferences: presentation });
+    await render("general", {
+      initialPage: "graphics",
+      presentationPreferences: presentation
+    });
     const gpu = container.querySelector(
       '[role="switch"][aria-label="Graphics acceleration"]'
     ) as HTMLButtonElement;
@@ -248,6 +290,67 @@ describe("V1Settings", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "could not be changed"
     );
+    const slider = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Kin resolution"]'
+    )!;
+    await act(async () =>
+      slider.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowLeft",
+          bubbles: true
+        })
+      )
+    );
+    expect(presentation.set).toHaveBeenLastCalledWith({
+      kinResolution: "balanced"
+    });
+    expect(slider.value).toBe("2");
+    expect(currentKinResolution()).toBe("max");
+  });
+
+  it("keeps the latest Kin selection while an earlier save is pending", async () => {
+    let preferences = { ...defaultPresentationPreferences };
+    let completeFirst!: () => void;
+    const firstWrite = new Promise<void>((resolve) => {
+      completeFirst = resolve;
+    });
+    const save = (patch: Partial<typeof preferences>) => {
+      preferences = { ...preferences, ...patch };
+      return preferences;
+    };
+    const presentation = {
+      get: vi.fn(async () => preferences),
+      set: vi
+        .fn(async (patch: Partial<typeof preferences>) => save(patch))
+        .mockImplementationOnce(async (patch) => {
+          await firstWrite;
+          return save(patch);
+        })
+    };
+    await render("general", {
+      initialPage: "graphics",
+      presentationPreferences: presentation
+    });
+    const slider = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Kin resolution"]'
+    )!;
+    const press = (key: string) =>
+      act(async () => {
+        slider.dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true })
+        );
+      });
+    await press("ArrowLeft");
+    expect(slider.value).toBe("1");
+    await press("ArrowRight");
+    expect(slider.value).toBe("2");
+    expect(presentation.set).toHaveBeenCalledExactlyOnceWith({
+      kinResolution: "balanced"
+    });
+    await act(async () => completeFirst());
+    expect(presentation.set).toHaveBeenLastCalledWith({ kinResolution: "max" });
+    expect(slider.value).toBe("2");
+    expect(currentKinResolution()).toBe("max");
   });
   it("shows a single memory model for synthesis-capable clients and hides Conversation defaults", async () => {
     const assignment = {
