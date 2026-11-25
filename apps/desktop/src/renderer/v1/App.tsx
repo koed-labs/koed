@@ -1119,8 +1119,11 @@ export function V1App({
     openKinConversation,
     {
       route,
+      // Rows count as loaded only once the latest read, including silent
+      // background refreshes, has finished.
       rowsLoaded:
         !kinRefreshing &&
+        !snapshot?.reading &&
         Boolean(
           snapshot && ((inventoryReady && !snapshot.loading) || snapshot.error)
         )

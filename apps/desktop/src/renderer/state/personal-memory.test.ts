@@ -113,6 +113,30 @@ describe("PersonalMemoryStore", () => {
     expect(store.current().error).toBeNull();
   });
 
+  it("reports reading until the latest inventory read finishes, silent reads included", async () => {
+    const fixture = createProjectSourceFixture();
+    const reads: Array<(groups: typeof fixture.groups) => void> = [];
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: () =>
+          new Promise<typeof fixture.groups>((resolve) => {
+            reads.push(resolve);
+          })
+      })
+    );
+    expect(store.current().reading ?? false).toBe(false);
+    const first = store.loadProjects({ silent: true });
+    expect(store.current().reading).toBe(true);
+    // A newer background read supersedes the first one.
+    const second = store.loadProjects({ silent: true });
+    reads[0]!(fixture.groups);
+    await first;
+    expect(store.current().reading).toBe(true);
+    reads[1]!(fixture.groups);
+    await second;
+    expect(store.current().reading).toBe(false);
+  });
+
   it("retains the Project catalog when native first-launch preparation is rejected", async () => {
     const fixture = createProjectSourceFixture();
     const store = new PersonalMemoryStore(

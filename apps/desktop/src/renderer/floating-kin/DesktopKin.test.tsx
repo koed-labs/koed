@@ -304,13 +304,25 @@ it("opens a Conversation requested while Desktop is still loading once its row a
     await render(["c"], chosen, true);
     expect(opened).toEqual(["a", "c"]);
 
+    // A read still in flight never starts the wait, however long it takes.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await render(["c"], chosen, false);
+      await act(async () => showConversation("slow"));
+      await act(async () => vi.advanceTimersByTime(15_000));
+      await render(["c", "slow"], chosen, true);
+      expect(opened).toEqual(["a", "c", "slow"]);
+    } finally {
+      vi.useRealTimers();
+    }
+
     // Rows that stay loaded without it for a while drop it.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       await act(async () => showConversation("d"));
       await act(async () => vi.advanceTimersByTime(10_000));
       await render(["c", "d"], chosen, true);
-      expect(opened).toEqual(["a", "c"]);
+      expect(opened).toEqual(["a", "c", "slow"]);
     } finally {
       vi.useRealTimers();
     }
@@ -1095,6 +1107,146 @@ it("drops an older title click once its preview is replaced, leaving the newer p
     );
     expect(opened).toEqual([]);
     expect(markerFor("Other row").getAttribute("aria-expanded")).toBe("true");
+    expect(
+      document.querySelector('[data-fk-placement="anchored"]')
+    ).not.toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    mount.remove();
+  }
+});
+
+it("drops a title click once its preview closes, even if the same Conversation reopens", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const root = createRoot(mount);
+  const sessionId = "00000000-0000-4000-8000-0000000000b1";
+  const other = "00000000-0000-4000-8000-0000000000b2";
+  const bridge = {
+    onPresentation: (listener: (state: KinPresentation) => void) => {
+      listener({ placement: "sidebar", revision: 0 });
+      return () => {};
+    },
+    setShellVisible: vi.fn(),
+    onOpenAiModels: () => () => {},
+    onOpenConversation: () => () => {},
+    confirmPresentation: vi.fn(),
+    activity: vi.fn(async () => ({
+      state: "running" as const,
+      overflowCount: 0,
+      conversations: [sessionId, other].map((id) => ({
+        sessionId: id,
+        client: "codex" as const,
+        lastActivityAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        projectId: null
+      }))
+    })),
+    summarize: vi.fn(async () => ({ status: "unavailable" as const })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
+    cancel: vi.fn(async () => {})
+  } as unknown as DesktopKinBridge;
+  const projects: SidebarProject[] = [
+    {
+      id: "project",
+      name: "Koed",
+      latestAt: new Date().toISOString(),
+      conversations: [
+        {
+          key: `session:${sessionId}`,
+          aliases: [`session:${sessionId}`],
+          title: "Modal row",
+          client: "codex",
+          latestAt: new Date().toISOString(),
+          sessionId,
+          route: { kind: "conversation", projectId: "project", threadId: "t" },
+          projectName: "Koed"
+        },
+        {
+          key: `session:${other}`,
+          aliases: [`session:${other}`],
+          title: "Other row",
+          client: "codex",
+          latestAt: new Date().toISOString(),
+          sessionId: other,
+          route: { kind: "conversation", projectId: "project", threadId: "t" },
+          projectName: "Koed"
+        }
+      ]
+    }
+  ];
+  const noop = () => {};
+  const opened: string[] = [];
+  function Harness({ rows, route }: { rows: string[]; route: object }) {
+    const open = useCallback(
+      (id: string) => {
+        if (!rows.includes(id)) return false;
+        opened.push(id);
+        return true;
+      },
+      [rows]
+    );
+    const kin = useDesktopKin(bridge, null, true, undefined, open, {
+      route,
+      rowsLoaded: true
+    });
+    return (
+      <div>
+        <NavigationShell
+          projects={projects}
+          route={{ kind: "home" }}
+          scopeKey={null}
+          onSelect={noop}
+          onHome={noop}
+          onSettings={noop}
+          onBack={noop}
+          onForward={noop}
+          canGoBack={false}
+          canGoForward={false}
+          onRetry={noop}
+          kinAvatar={kin.avatar}
+          kinLive={kin.live}
+          kinPanel={kin.panel}
+          kinChips={kin.chips}
+        >
+          home
+        </NavigationShell>
+      </div>
+    );
+  }
+  try {
+    const home = { kind: "home" };
+    await act(async () => root.render(<Harness rows={[]} route={home} />));
+    const marker = () =>
+      mount.querySelector<HTMLButtonElement>(".v1-nav-projects .fk-row-live");
+    await vi.waitFor(() => expect(marker()).not.toBeNull());
+    await act(async () => marker()!.click());
+    const markerFor = (title: string) =>
+      [...mount.querySelectorAll<HTMLButtonElement>(".fk-row-live")].find(
+        (marker) => marker.getAttribute("aria-label")?.includes(title)
+      )!;
+    const title = () =>
+      document.querySelector<HTMLButtonElement>(".fk-title-link");
+    await vi.waitFor(() => expect(markerFor("Other row")).toBeDefined());
+    // A's preview is already open; its title is clicked before A's row exists.
+    expect(markerFor("Modal row").getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() => expect(title()).not.toBeNull());
+    await act(async () => title()!.click());
+    // A's preview closes, then A opens again.
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Close summary"]')!
+        .click()
+    );
+    await act(async () => markerFor("Modal row").click());
+    expect(markerFor("Modal row").getAttribute("aria-expanded")).toBe("true");
+    // A's row arrives: the old click doesn't navigate or close the new preview.
+    await act(async () =>
+      root.render(<Harness rows={[sessionId]} route={home} />)
+    );
+    expect(opened).toEqual([]);
+    expect(markerFor("Modal row").getAttribute("aria-expanded")).toBe("true");
     expect(
       document.querySelector('[data-fk-placement="anchored"]')
     ).not.toBeNull();

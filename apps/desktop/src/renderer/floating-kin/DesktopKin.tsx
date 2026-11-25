@@ -163,17 +163,19 @@ export function useDesktopKin(
   const [pendingOpen, setPendingOpen] = useState<{
     sessionId: string;
     route: unknown;
-    // A title click in a docked panel belongs to that panel: closing or
-    // replacing it cancels the request, and success closes only it.
-    fromPanel?: string;
+    // A title click in a docked panel belongs to that opening of the panel:
+    // closing, replacing or reopening it cancels the request, and success
+    // closes only it.
+    fromPanel?: number;
   } | null>(null);
   const route = navigation?.route;
   const rowsLoaded = navigation?.rowsLoaded ?? true;
   const latestRoute = useRef(route);
   latestRoute.current = route;
   const closePanel = useRef<() => void>(() => {});
-  // The docked panel's open Conversation, read by the pending-open effect.
-  const selectedSession = useRef<string | undefined>(undefined);
+  // Counts openings of the docked panel. Closing it, or opening another or
+  // the same Conversation again, starts a new opening.
+  const panelOpening = useRef(0);
   useLayoutEffect(() => {
     if (openConversation)
       return bridge?.onOpenConversation((sessionId) => {
@@ -191,8 +193,8 @@ export function useDesktopKin(
       return;
     }
     if (
-      pendingOpen.fromPanel &&
-      selectedSession.current !== pendingOpen.fromPanel
+      pendingOpen.fromPanel !== undefined &&
+      panelOpening.current !== pendingOpen.fromPanel
     ) {
       setPendingOpen(null);
       return;
@@ -243,7 +245,7 @@ export function useDesktopKin(
         setPendingOpen({
           sessionId,
           route: latestRoute.current,
-          fromPanel: selectedSession.current
+          fromPanel: panelOpening.current
         });
     },
     [openConversation]
@@ -257,7 +259,16 @@ export function useDesktopKin(
     openConversation: openConversation ? openFromPanel : undefined
   });
   closePanel.current = summary.close;
-  selectedSession.current = summary.selected?.sessionId;
+  const selectedId = summary.selected?.sessionId;
+  useLayoutEffect(() => {
+    panelOpening.current++;
+    setPendingOpen((pending) =>
+      pending?.fromPanel !== undefined &&
+      pending.fromPanel !== panelOpening.current
+        ? null
+        : pending
+    );
+  }, [selectedId]);
   const [anchor, setAnchor] = useState<{
     trigger: HTMLElement;
     at: Anchor;
