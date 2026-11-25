@@ -914,7 +914,7 @@ export function V1App({
   const kinRefresh = useRef(false);
   const [kinRefreshing, setKinRefreshing] = useState(false);
   const openKinConversation = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, options?: { refresh?: boolean }) => {
       for (const project of sidebarProjects) {
         const row = project.conversations.find(
           (conversation) =>
@@ -925,7 +925,7 @@ export function V1App({
         setRoute({ ...openSidebarConversation(row), sessionId });
         return true;
       }
-      if (!kinRefresh.current) {
+      if (options?.refresh !== false && !kinRefresh.current) {
         kinRefresh.current = true;
         setKinRefreshing(true);
         void loadInventory({ silent: true }).finally(() => {

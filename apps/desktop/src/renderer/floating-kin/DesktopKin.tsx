@@ -138,7 +138,12 @@ export function useDesktopKin(
   openAiModels?: () => void,
   // Opens a captured Conversation by its session id; false when Desktop
   // has no row for it.
-  openConversation?: (sessionId: string) => boolean,
+  // `refresh: false` checks the current rows only. Desktop may refresh its
+  // inventory once when a request first misses; retries must not.
+  openConversation?: (
+    sessionId: string,
+    options?: { refresh?: boolean }
+  ) => boolean,
   // Lets a request to open a Conversation wait for its row. Any change of
   // `route` (the User choosing somewhere else) cancels it; otherwise it is
   // dropped only after the rows have stayed loaded without it for a while.
@@ -158,14 +163,17 @@ export function useDesktopKin(
   const [pendingOpen, setPendingOpen] = useState<{
     sessionId: string;
     route: unknown;
-    // Close the docked panel once it opens (a title click in the panel).
-    closesPanel?: boolean;
+    // A title click in a docked panel belongs to that panel: closing or
+    // replacing it cancels the request, and success closes only it.
+    fromPanel?: string;
   } | null>(null);
   const route = navigation?.route;
   const rowsLoaded = navigation?.rowsLoaded ?? true;
   const latestRoute = useRef(route);
   latestRoute.current = route;
   const closePanel = useRef<() => void>(() => {});
+  // The docked panel's open Conversation, read by the pending-open effect.
+  const selectedSession = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     if (openConversation)
       return bridge?.onOpenConversation((sessionId) => {
@@ -182,9 +190,16 @@ export function useDesktopKin(
       setPendingOpen(null);
       return;
     }
-    if (openConversation(pendingOpen.sessionId)) {
+    if (
+      pendingOpen.fromPanel &&
+      selectedSession.current !== pendingOpen.fromPanel
+    ) {
       setPendingOpen(null);
-      if (pendingOpen.closesPanel) closePanel.current();
+      return;
+    }
+    if (openConversation(pendingOpen.sessionId, { refresh: false })) {
+      setPendingOpen(null);
+      if (pendingOpen.fromPanel) closePanel.current();
       return;
     }
     // Reads can finish without the newest rows (another refresh may still be
@@ -228,7 +243,7 @@ export function useDesktopKin(
         setPendingOpen({
           sessionId,
           route: latestRoute.current,
-          closesPanel: true
+          fromPanel: selectedSession.current
         });
     },
     [openConversation]
@@ -242,6 +257,7 @@ export function useDesktopKin(
     openConversation: openConversation ? openFromPanel : undefined
   });
   closePanel.current = summary.close;
+  selectedSession.current = summary.selected?.sessionId;
   const [anchor, setAnchor] = useState<{
     trigger: HTMLElement;
     at: Anchor;

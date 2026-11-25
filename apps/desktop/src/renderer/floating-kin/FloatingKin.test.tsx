@@ -438,6 +438,27 @@ describe("Floating Kin", () => {
     expect(status.classList.contains("fk-visually-hidden")).toBe(false);
   });
 
+  it("closes only the panel on Escape, without reaching an enclosing modal", async () => {
+    await render();
+    await click("Conversation 1");
+    const panel = mount.querySelector('[role="dialog"]')!;
+    const outer = vi.fn();
+    document.addEventListener("keydown", outer);
+    try {
+      await act(async () => {
+        panel
+          .querySelector("button")!
+          .dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+          );
+      });
+    } finally {
+      document.removeEventListener("keydown", outer);
+    }
+    expect(mount.querySelector('[role="dialog"]')).toBeNull();
+    expect(outer).not.toHaveBeenCalled();
+  });
+
   it("reopens the last summary above the generate actions and links to AI models", async () => {
     bridge.onPresentation = (listener) => {
       listener({ placement: "desktop", revision: 7 });

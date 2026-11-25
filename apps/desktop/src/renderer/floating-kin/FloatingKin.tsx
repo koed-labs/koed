@@ -525,6 +525,9 @@ export function useKinSummaryPanel({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
+      // The panel may sit inside the modal sidebar: Escape closes only the
+      // panel, as its Close button does.
+      event.stopPropagation();
       close();
     };
     node?.addEventListener("keydown", onKeyDown);
