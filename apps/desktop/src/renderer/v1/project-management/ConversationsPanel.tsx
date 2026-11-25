@@ -306,7 +306,7 @@ export function Row({
   latestAt?: string | undefined;
   now?: number;
   detail: string;
-  /** A short note beside the detail, such as "+1 rule". */
+  /** A short note beside the detail, such as "+1 Anchor". */
   tag?: string | undefined;
   /** Kept in the Project even if its rules change. */
   locked?: boolean;

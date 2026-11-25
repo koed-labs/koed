@@ -991,7 +991,7 @@ button.v1-pm-row-action svg {
   color: var(--muted-foreground);
   font-size: 12px;
 }
-/* "+1 rule": the Conversation is listed once, under its first rule. */
+/* "+1 Anchor": the Conversation is listed once, under its first Anchor. */
 .v1-pm-row-tag {
   flex: none;
   padding: 1px 6px;
@@ -1052,6 +1052,11 @@ button.v1-pm-row-action svg {
    own; rows and their tint run edge to edge. */
 .v1-pm-membership-sections .v1-pm-conversation-list {
   scrollbar-gutter: auto;
+}
+/* The chosen Project is marked like a selected Conversation. */
+.v1-pm-select [data-slot="select-item"][data-selected] {
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
 }
 /* A Project option shows its Kin beside its name. */
 .v1-pm-select-option {

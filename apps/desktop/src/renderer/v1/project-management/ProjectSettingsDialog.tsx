@@ -434,12 +434,12 @@ export function ProjectSettingsDialog({
                   Conversations
                 </Badge>
                 <Badge>
-                  {projectRules(draft).length} rule
+                  {projectRules(draft).length} Anchor
                   {projectRules(draft).length === 1 ? "" : "s"}
                 </Badge>
               </div>
               <div className="v1-pm-setting-row">
-                <span>Folders and Git Anchors</span>
+                <span>Anchors</span>
                 <Button
                   variant="ghost"
                   size="sm"

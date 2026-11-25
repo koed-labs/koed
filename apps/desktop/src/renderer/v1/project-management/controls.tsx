@@ -36,6 +36,23 @@ export function ProjectChoice({
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
+  // With Kins, the list marks the chosen Project like a selected Conversation
+  // instead of with a tick, and the closed picker shows its Kin too.
+  const withKins = options.some((option) => option.look);
+  const optionContent = (option: (typeof options)[number]) =>
+    option.look ? (
+      <span className="v1-pm-select-option">
+        <Pixelkin
+          look={option.look}
+          size={20}
+          className="v1-pm-row-kin"
+          motion="still"
+        />
+        {option.label}
+      </span>
+    ) : (
+      option.label
+    );
   return (
     <Select
       value={value}
@@ -46,7 +63,16 @@ export function ProjectChoice({
       disabled={disabled}
     >
       <SelectTrigger aria-label={label}>
-        <SelectValue placeholder={placeholder} />
+        {withKins ? (
+          <SelectValue placeholder={placeholder}>
+            {(current: string | null) => {
+              const option = options.find((item) => item.value === current);
+              return option ? optionContent(option) : (placeholder ?? null);
+            }}
+          </SelectValue>
+        ) : (
+          <SelectValue placeholder={placeholder} />
+        )}
       </SelectTrigger>
       <SelectPopup
         className="v1-app v1-project-ui v1-pm-select"
@@ -54,20 +80,12 @@ export function ProjectChoice({
         alignItemWithTrigger={false}
       >
         {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {option.look ? (
-              <span className="v1-pm-select-option">
-                <Pixelkin
-                  look={option.look}
-                  size={20}
-                  className="v1-pm-row-kin"
-                  motion="still"
-                />
-                {option.label}
-              </span>
-            ) : (
-              option.label
-            )}
+          <SelectItem
+            key={option.value}
+            value={option.value}
+            hideIndicator={withKins}
+          >
+            {optionContent(option)}
           </SelectItem>
         ))}
       </SelectPopup>
