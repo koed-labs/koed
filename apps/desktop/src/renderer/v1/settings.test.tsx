@@ -578,7 +578,10 @@ describe("V1Settings", () => {
       if (teamCollaborationEnabled !== undefined) {
         window.koedDesktop = {
           invoke: vi.fn(),
-          featureFlags: { teamCollaborationEnabled }
+          featureFlags: {
+            teamCollaborationEnabled,
+            personalDeviceSyncEnabled: false
+          }
         };
       }
       await render("general", { initialPage: "privacy" });

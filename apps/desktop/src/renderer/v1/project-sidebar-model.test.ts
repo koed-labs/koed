@@ -4,8 +4,12 @@ import type { V1ConversationIntent } from "../../ipc/v1-state-protocol.js";
 import {
   buildProjectSidebar,
   filterSidebar,
+  namedMemberships,
+  pinnedFirst,
   pinnedSidebarItems,
-  projectPinKey
+  projectPinKey,
+  resolveConversationByKey,
+  sidebarGroups
 } from "./project-sidebar-model.js";
 
 const thread = (id: string, latestAt: string, sourceAiClient = "codex") => ({
@@ -113,6 +117,32 @@ describe("Project sidebar inventory", () => {
         p.conversations.some((row) => row.title === "shared")
       )
     ).toHaveLength(2);
+  });
+  it("lists every Conversation under its Anchor, including named members", () => {
+    const koed = named("Koed", [thread("shared", before)]);
+    const anchor = {
+      id: "git",
+      name: "example.test/repo",
+      repository: {
+        kind: "portable_repository",
+        key: "gr_anchor",
+        root: "/checkout",
+        branch: "main",
+        checkoutId: "checkout_one",
+        originatingDeviceId: "device_one",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/repo",
+        reason: "origin"
+      },
+      threads: [thread("shared", before), thread("loose", after)]
+    } as DesktopProject;
+    const groups = buildProjectSidebar([koed, anchor], [], new Map());
+    const git = groups.find((p) => p.id === "git")!;
+    expect(git.source).toBe("git");
+    expect(git.conversations.map((row) => row.title)).toEqual([
+      "loose",
+      "shared"
+    ]);
   });
   it("keeps a pending selected Project entry while capture awaits membership reconciliation", () => {
     const target = named("project", []);
@@ -236,5 +266,101 @@ describe("Project sidebar inventory", () => {
         "session:Privacy"
       ]).map((item) => item.key)
     ).toEqual(["session:Build", "project:Empty", "session:Privacy"]);
+  });
+  it("keeps No anchor separate from Home and does not infer it during partial inventory", () => {
+    const groups = buildProjectSidebar(
+      [
+        named("Koed", [
+          thread("only-named", before),
+          thread("anchored", before)
+        ]),
+        named("Docs", [thread("only-named", before)]),
+        {
+          id: "raw",
+          name: "Raw",
+          threads: [thread("loose", after)]
+        } as DesktopProject
+      ],
+      [],
+      new Map()
+    );
+    const shared = groups
+      .find((group) => group.id === "Koed")!
+      .conversations.find((row) => row.key === "session:anchored")!;
+    groups.push({
+      id: "git",
+      name: "Git",
+      source: "git",
+      latestAt: before,
+      conversations: [shared]
+    });
+    expect(
+      sidebarGroups(groups, false).some((group) => group.id === "no-anchor")
+    ).toBe(false);
+    const noAnchor = sidebarGroups(groups).find(
+      (group) => group.id === "no-anchor"
+    )!;
+    expect(noAnchor.conversations.map((row) => row.key)).toEqual([
+      "session:loose",
+      "session:only-named"
+    ]);
+    expect(noAnchor.conversations.every((row) => !row.sourceProjectId)).toBe(
+      true
+    );
+    expect(
+      groups
+        .find((group) => group.id === "no-project")
+        ?.conversations.map((row) => row.key)
+    ).toEqual(["session:loose"]);
+    expect(namedMemberships(groups).get("session:only-named")).toEqual(
+      new Set(["Docs", "Koed"])
+    );
+    expect(namedMemberships(groups).get("session:anchored")).toEqual(
+      new Set(["Koed"])
+    );
+  });
+  it("resolves a Conversation independently of Project ordering and bare thread IDs", () => {
+    const shared = { ...thread("shared", before), id: "provider-thread" };
+    const other = { ...thread("other", after), id: "provider-thread" };
+    const project = named("Project", [shared, other]);
+    const raw = {
+      id: "raw",
+      name: "Raw",
+      threads: [other, shared]
+    } as DesktopProject;
+    expect(resolveConversationByKey([project, raw], "session:shared")).toEqual({
+      project: raw,
+      thread: shared
+    });
+    expect(resolveConversationByKey([raw, project], "session:shared")).toEqual({
+      project: raw,
+      thread: shared
+    });
+    expect(
+      resolveConversationByKey([project], "session:unknown")
+    ).toBeUndefined();
+  });
+  it("puts pinned Projects first, and pinned Conversations first in each Project", () => {
+    const groups = buildProjectSidebar(
+      [
+        named("Koed", [thread("Privacy", after), thread("Build", before)]),
+        named("Docs", [thread("Notes", after), thread("Build", before)])
+      ],
+      [],
+      new Map()
+    ).map((project) => ({ ...project, managed: true }));
+    const docs = groups.find((project) => project.name === "Docs")!;
+    const ordered = pinnedFirst(groups, [
+      "session:Build",
+      projectPinKey(docs.id)
+    ]);
+    expect(ordered.map((project) => project.name)).toEqual(
+      ["Docs", ...groups.map((project) => project.name)].filter(
+        (name, index, names) => names.indexOf(name) === index
+      )
+    );
+    for (const project of ordered)
+      expect(project.conversations[0]?.title).toBe("Build");
+    expect(pinnedFirst(groups, [])).toEqual(groups);
   });
 });

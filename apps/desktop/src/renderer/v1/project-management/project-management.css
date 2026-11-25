@@ -330,9 +330,14 @@ label.v1-pm-choice-row:hover {
 .v1-pm-move-path {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 500;
+}
+.v1-pm-move-path > svg {
+  flex: none;
   color: var(--muted-foreground);
-  font-size: 11px;
 }
 .v1-pm-move-path span {
   min-width: 0;
@@ -448,7 +453,7 @@ label.v1-pm-choice-row:hover {
   display: flex;
   gap: 2px;
 }
-.v1-pm-project-heading button {
+.v1-pm-project-heading > div button {
   display: grid;
   place-items: center;
   width: 24px;
@@ -459,16 +464,12 @@ label.v1-pm-choice-row:hover {
   box-shadow: none;
   color: var(--v1-faint);
 }
-.v1-pm-project-heading button:hover:not(:disabled) {
+.v1-pm-project-heading > div button:hover:not(:disabled) {
   background: var(--v1-surface);
   color: var(--v1-fg);
 }
 .v1-pm-project-row {
   position: relative;
-}
-/* A Project row shows its settings menu at all times. */
-.v1-pm-project-row .v1-pm-row-menu {
-  opacity: 1;
 }
 .v1-pm-row-menu {
   position: absolute;
@@ -500,7 +501,7 @@ label.v1-pm-choice-row:hover {
   flex: 0 0 24px;
   text-align: center;
 }
-.v1-nav-conversation-wrap:is(:hover, :focus-within) time,
+.v1-nav-conversation-wrap:is(:hover, :focus-within) .v1-nav-conversation time,
 .v1-pm-has-menu:is(:hover, :focus-within) .v1-nav-project > small {
   visibility: hidden;
 }
@@ -990,7 +991,7 @@ button.v1-pm-row-action svg {
   color: var(--muted-foreground);
   font-size: 12px;
 }
-/* "+1 rule": the Conversation is listed once, under its first rule. */
+/* "+1 Anchor": the Conversation is listed once, under its first Anchor. */
 .v1-pm-row-tag {
   flex: none;
   padding: 1px 6px;
@@ -1051,4 +1052,15 @@ button.v1-pm-row-action svg {
    own; rows and their tint run edge to edge. */
 .v1-pm-membership-sections .v1-pm-conversation-list {
   scrollbar-gutter: auto;
+}
+/* The chosen Project is marked like a selected Conversation. */
+.v1-pm-select [data-slot="select-item"][data-selected] {
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
+}
+/* A Project option shows its Kin beside its name. */
+.v1-pm-select-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }

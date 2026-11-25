@@ -23,7 +23,9 @@ export function Pixelkin({
   hopKey,
   spin = null,
   presentation = "avatar",
-  motion = "focused"
+  motion = "focused",
+  gaze = null,
+  fit = 1
 }: {
   presentation?: "avatar" | "stage";
   motion?: "focused" | "unfocused" | "still";
@@ -34,7 +36,20 @@ export function Pixelkin({
   className?: string;
   hopOnChange?: boolean;
   // Holds one expression instead of the personality's changing moods.
-  expression?: "neutral" | "surprised" | "happy" | "sad" | "sleepy" | null;
+  expression?:
+    | "neutral"
+    | "surprised"
+    | "happy"
+    | "joy"
+    | "sad"
+    | "sleepy"
+    | null;
+  // Holds the gaze on a direction (x right, y up, each -1..1) instead of
+  // following the pointer.
+  gaze?: readonly [number, number] | null;
+  // Below 1 leaves margin in the canvas, so a Kin turning to the pointer
+  // keeps its arms in frame.
+  fit?: number;
   // Each change makes the Kin hop once.
   hopKey?: number;
   // Turned by dragging; the caller feeds it pointer events.
@@ -87,6 +102,20 @@ export function Pixelkin({
     const actor = actorRef.current;
     if (actor) actor.spin = spin;
   }, [spin, engine, motion]);
+  useEffect(() => {
+    const actor = actorRef.current;
+    if (!actor) return;
+    actor.fit = fit;
+    wakePixelkins();
+  }, [fit, engine, motion]);
+  const [gazeX, gazeY] = gaze ?? [];
+  useEffect(() => {
+    const actor = actorRef.current;
+    if (!actor) return;
+    actor.fixedGaze =
+      gazeX === undefined || gazeY === undefined ? null : [gazeX, gazeY];
+    wakePixelkins();
+  }, [gazeX, gazeY, engine, motion]);
   const firstHop = useRef(hopKey);
   useEffect(() => {
     const actor = actorRef.current;

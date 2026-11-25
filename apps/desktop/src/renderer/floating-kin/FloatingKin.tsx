@@ -1,18 +1,23 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  type KeyboardEvent,
   type RefObject
 } from "react";
-import type { FloatingKinBridge } from "../../ipc/floating-kin-protocol.js";
+import type {
+  FloatingKinBridge,
+  KinActivityBridge,
+  KinPlacement
+} from "../../ipc/floating-kin-protocol.js";
+import { KoedLogo } from "../KoedLogo.js";
 import { Pixelkin } from "../v1/pixelkin/Pixelkin.js";
 import {
   DEFAULT_AGENT_LOOK,
-  projectKinLook,
-  type AgentLook
+  chiefOfStaffBrand,
+  projectKinLook
 } from "../v1/pixelkin/agent-kin.js";
 import {
   ClientMark,
@@ -23,9 +28,11 @@ import {
 import {
   useActivity,
   useCaptureWake,
-  useMainWindowFocus,
+  useCapturedPreview,
   useOverlayWindow,
-  useSummary
+  useSummary,
+  useKinSurfaceActivity,
+  useLatestSummary
 } from "./use-floating-kin.js";
 import { useKinInteraction } from "./use-kin-interaction.js";
 import "./floating-kin.css";
@@ -34,20 +41,6 @@ export type { FloatingKinBridge } from "../../ipc/floating-kin-protocol.js";
 
 const chipLimit = 3;
 const recentSeconds = 60;
-const floatingKinLook: AgentLook = {
-  ...DEFAULT_AGENT_LOOK,
-  body: {
-    ...DEFAULT_AGENT_LOOK.body,
-    shape: "roundedBox",
-    width: 2,
-    height: 2,
-    depth: 0.9,
-    arms: true
-  },
-  face: { ...DEFAULT_AGENT_LOOK.face, personality: "joyful" },
-  palette: { base: "#3083ff", grayscale: false, gradient: true }
-};
-const floatingKinGradientTop = "#e8d31a";
 const states = {
   stopped: [
     "Local runtime stopped",
@@ -74,6 +67,49 @@ function captureAge(seconds: number) {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
+/**
+ * What a chip or row shows in its status slot: a live dot while the
+ * Conversation's turn looks underway, otherwise the capture age.
+ */
+export function KinLiveStatus({
+  working,
+  seconds,
+  lastActivityAt
+}: {
+  working: boolean;
+  seconds: number;
+  lastActivityAt: string;
+}) {
+  if (working) return <span className="fk-dot" data-live="true" />;
+  return <time dateTime={lastActivityAt}>{captureAge(seconds)}</time>;
+}
+
+function workingDeadline(conversation: Conversation) {
+  return conversation.client === "pi" && conversation.workingUntil
+    ? Date.parse(conversation.workingUntil)
+    : 0;
+}
+
+function useWorkingClock(deadlines: number[], sampledAt: number) {
+  const [check, setCheck] = useState<{ sampledAt: number; at: number }>();
+  const now = check?.sampledAt === sampledAt ? check.at : sampledAt;
+  const next = Math.min(...deadlines.filter((deadline) => deadline > now));
+  // Expire visible leases even when the activity read never settles.
+  useEffect(() => {
+    if (!Number.isFinite(next)) return;
+    let timer: number | undefined;
+    const expire = () => {
+      const time = Date.now();
+      if (time >= next) setCheck({ sampledAt, at: time });
+      else
+        timer = window.setTimeout(expire, Math.min(next - time, 2_147_483_647));
+    };
+    expire();
+    return () => window.clearTimeout(timer);
+  }, [next, sampledAt]);
+  return now;
+}
+
 const ChipKin = memo(function ChipKin({
   projectId,
   animate
@@ -94,12 +130,14 @@ function CaptureChip({
   conversation,
   index,
   now,
+  working,
   expanded,
   toggle
 }: {
   conversation: Conversation;
   index: number;
   now: number;
+  working: boolean;
   expanded: boolean;
   toggle: (trigger: HTMLButtonElement) => void;
 }) {
@@ -110,23 +148,34 @@ function CaptureChip({
     <button
       type="button"
       className="fk-chip"
+      data-client={conversation.client}
       data-fk-hit
       aria-expanded={expanded}
       aria-controls={expanded ? "floating-kin-summary" : undefined}
-      aria-label={`${clientNames[conversation.client]} Conversation ${index + 1}. Captured ${age} ago.`}
+      aria-label={`${clientNames[conversation.client]} Conversation ${index + 1}. ${working ? "Working. " : ""}Captured ${age} ago.`}
+      title={`${clientNames[conversation.client]} · ${working ? "Working" : `Captured ${age} ago`}`}
       onClick={(event) => toggle(event.currentTarget)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && expanded) {
+          event.preventDefault();
+          toggle(event.currentTarget);
+        }
+      }}
     >
       <span className="fk-avatar" data-fk-handle>
         <ChipKin
           projectId={conversation.projectId}
-          animate={recent && index === 0}
+          animate={(recent || working) && index === 0}
         />
         <ClientMark client={conversation.client} />
       </span>
-      <span className="fk-dot" data-recent={recent} aria-hidden="true" />
-      <time dateTime={conversation.lastActivityAt} aria-hidden="true">
-        {age}
-      </time>
+      <span className="fk-chip-label" aria-hidden="true">
+        <KinLiveStatus
+          working={working}
+          seconds={seconds}
+          lastActivityAt={conversation.lastActivityAt}
+        />
+      </span>
     </button>
   );
 }
@@ -143,81 +192,230 @@ function ActivityPill({ state }: { state: keyof typeof states }) {
   );
 }
 
-function StandaloneKin({
-  hasChips,
-  active
+// After the pointer leaves (or the Kin appears), it stays live this long
+// before resting as the Koed logo.
+const restAfterHoverMs = 3_000;
+
+/**
+ * The Floating Kin. Each time it appears, and whenever the pointer leaves, it
+ * stays live for three seconds, then glances up and fades to the Koed logo.
+ * Hovering wakes it again.
+ */
+export function StandaloneKin({
+  visible = true,
+  placement = "desktop",
+  size = 88,
+  wake = false,
+  onOpenDesktop
 }: {
-  hasChips: boolean;
-  active: boolean;
+  // While it leaves, the Kin holds its current look instead of changing.
+  visible?: boolean;
+  // Hovering something that belongs to the Kin, such as its chips.
+  wake?: boolean;
+  placement?: "desktop" | "sidebar";
+  size?: number;
+  onOpenDesktop?: () => void;
 }) {
-  const avatar = useRef<HTMLDivElement>(null);
-  const wakeTimer = useRef<number | undefined>(undefined);
-  const [recentHover, setRecentHover] = useState(false);
-  const awake = active || recentHover;
-  const wake = () => {
-    window.clearTimeout(wakeTimer.current);
-    setRecentHover(true);
-    wakeTimer.current = window.setTimeout(() => setRecentHover(false), 60_000);
-  };
-  useEffect(() => () => window.clearTimeout(wakeTimer.current), []);
+  const Avatar = onOpenDesktop ? "button" : "div";
+  const [hovered, setHovered] = useState(false);
+  const [lingering, setLingering] = useState(true);
+  const linger = useRef<number | undefined>(undefined);
+  const restSoon = useCallback(() => {
+    window.clearTimeout(linger.current);
+    setLingering(true);
+    linger.current = window.setTimeout(
+      () => setLingering(false),
+      restAfterHoverMs
+    );
+  }, []);
   useEffect(() => {
-    const element = avatar.current;
-    if (!hasChips || !element || document.activeElement !== element) return;
-    element
-      .closest("main")
-      ?.querySelector<HTMLButtonElement>(".fk-chip")
-      ?.focus();
-  }, [hasChips]);
+    if (visible) restSoon();
+    return () => window.clearTimeout(linger.current);
+  }, [restSoon, visible]);
+  // Leaving a chip rests the Kin three seconds later, as leaving the Kin does.
+  const woken = useRef(wake);
+  useEffect(() => {
+    if (wake) window.clearTimeout(linger.current);
+    else if (woken.current && visible) restSoon();
+    woken.current = wake;
+  }, [restSoon, visible, wake]);
+  const awake = hovered || wake || lingering;
+  const phase = useRestPhase(awake);
   return (
-    <div
-      className="fk-kin-avatar"
-      ref={avatar}
+    <Avatar
+      className="fk-kin-avatar fk-resting"
+      data-phase={phase}
       data-fk-hit
       data-fk-handle
-      role="img"
-      aria-label="Floating Kin avatar"
-      aria-description={awake ? "Awake" : "Sleeping"}
-      tabIndex={hasChips ? -1 : 0}
-      onMouseEnter={wake}
+      // The element stays a button while it leaves, so its look carries on.
+      {...(onOpenDesktop
+        ? {
+            type: "button" as const,
+            disabled: !visible,
+            onClick: visible ? onOpenDesktop : undefined
+          }
+        : { role: "img" })}
+      aria-label={
+        onOpenDesktop && visible
+          ? "Open Koed Desktop"
+          : placement === "desktop"
+            ? "Floating Kin avatar"
+            : "Chief of Staff"
+      }
+      aria-description={awake ? "Awake" : "Resting"}
+      onMouseEnter={() => {
+        window.clearTimeout(linger.current);
+        setHovered(true);
+      }}
+      onMouseLeave={() => {
+        setHovered(false);
+        if (visible) restSoon();
+      }}
     >
-      <Pixelkin
-        look={floatingKinLook}
-        gradientTop={floatingKinGradientTop}
-        size={88}
-        motion={awake ? "unfocused" : "still"}
-        expression={awake ? "happy" : "sleepy"}
-      />
-      {!awake && (
-        <span className="fk-sleep-mark" aria-hidden="true">
-          z
-        </span>
+      {phase !== "logo" && (
+        <Pixelkin
+          {...chiefOfStaffBrand}
+          size={size}
+          motion="unfocused"
+          expression={phase === "live" ? "happy" : "joy"}
+          gaze={phase === "live" ? null : glanceUp}
+        />
       )}
-    </div>
+      <KoedLogo color className="fk-rest-logo" />
+    </Avatar>
   );
+}
+
+// The rail Kin glances up and right with a happy face, then fades to the logo.
+// Waking runs the same steps in reverse.
+// How long the glance holds before fading: going to rest, and waking.
+const restGlanceMs = 700;
+const wakeGlanceMs = 900;
+const fadeMs = 450;
+// After the pointer leaves, the Kin stays live this long before resting.
+const hoverLingerMs = 5_000;
+const glanceUp = [0.75, 0.65] as const;
+// The Kin's body fills about two thirds of a tightly framed canvas. Drawn at
+// 80% in a 68px canvas, it matches the 36px logo with room for turned arms.
+const railKinSize = 68;
+const railKinFit = 0.8;
+
+function prefersReducedMotion() {
+  return (
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+/**
+ * The Chief of Staff on the Desktop rail. While a capture is recent, or the
+ * pointer is over it, it is the live Kin; otherwise it rests as the Koed logo.
+ */
+export function RailKin({ active }: { active: boolean }) {
+  const [hovered, setHovered] = useState(false);
+  const [lingering, setLingering] = useState(false);
+  const linger = useRef<number | undefined>(undefined);
+  const awake = active || hovered || lingering;
+  const phase = useRestPhase(awake);
+  useEffect(() => () => window.clearTimeout(linger.current), []);
+  return (
+    <span
+      className="fk-rail-kin fk-resting"
+      data-phase={phase}
+      role="img"
+      aria-label="Chief of Staff"
+      aria-description={awake ? "Awake" : "Resting"}
+      onMouseEnter={() => {
+        window.clearTimeout(linger.current);
+        setLingering(false);
+        setHovered(true);
+      }}
+      onMouseLeave={() => {
+        setHovered(false);
+        setLingering(true);
+        linger.current = window.setTimeout(
+          () => setLingering(false),
+          hoverLingerMs
+        );
+      }}
+    >
+      {phase !== "logo" && (
+        <Pixelkin
+          {...chiefOfStaffBrand}
+          size={railKinSize}
+          fit={railKinFit}
+          motion="unfocused"
+          expression={phase === "live" ? "happy" : "joy"}
+          gaze={phase === "live" ? null : glanceUp}
+        />
+      )}
+      <KoedLogo color className="fk-rest-logo" />
+    </span>
+  );
+}
+
+/**
+ * Steps a resting Kin between live and the Koed logo: waking fades the logo
+ * out mid-glance, resting holds the glance then fades into the logo.
+ */
+function useRestPhase(awake: boolean) {
+  const [phase, setPhase] = useState<"live" | "arriving" | "leaving" | "logo">(
+    awake ? "live" : "logo"
+  );
+  useEffect(() => {
+    if (prefersReducedMotion()) {
+      setPhase(awake ? "live" : "logo");
+      return;
+    }
+    if (awake) {
+      setPhase((current) => (current === "live" ? "live" : "arriving"));
+      const timer = window.setTimeout(
+        () => setPhase("live"),
+        fadeMs + wakeGlanceMs
+      );
+      return () => window.clearTimeout(timer);
+    }
+    setPhase((current) => (current === "logo" ? "logo" : "leaving"));
+    const timer = window.setTimeout(
+      () => setPhase("logo"),
+      restGlanceMs + fadeMs
+    );
+    return () => window.clearTimeout(timer);
+  }, [awake]);
+  return phase;
 }
 
 function useSelection(
   conversations: Conversation[],
   cancel: (dismiss: boolean) => Promise<void>,
-  surface: RefObject<HTMLElement | null>
+  surface: RefObject<HTMLElement | null>,
+  visible: boolean
 ) {
   const [selection, setSelection] = useState<string | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const selected = conversations.find(
     ({ sessionId }) => sessionId === selection
   );
+  useLayoutEffect(() => {
+    if (visible || !selection) return;
+    setSelection(null);
+    void cancel(true);
+  }, [cancel, selection, visible]);
   useEffect(() => {
-    if (!selection || selected) return;
+    if (!visible || !selection || selected) return;
     setSelection(null);
     void cancel(true);
     (
       surface.current?.querySelector<HTMLButtonElement>(".fk-chip") ??
       surface.current
     )?.focus();
-  }, [cancel, selected, selection, surface]);
-  const close = () => {
+  }, [cancel, selected, selection, surface, visible]);
+  const dismiss = () => {
     setSelection(null);
     void cancel(true);
+  };
+  const close = () => {
+    dismiss();
     if (trigger.current?.isConnected) trigger.current.focus();
     else
       (
@@ -231,19 +429,16 @@ function useSelection(
     void cancel(true);
     setSelection(sessionId);
   };
-  return { selected, close, toggle };
+  return { selected, close, dismiss, toggle };
 }
 
-export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
-  const { activity, at } = useActivity(bridge);
-  const mainWindowFocused = useMainWindowFocus(bridge);
-  const { view, summarize, cancel, isCancelling } = useSummary(bridge);
-  const { surface, setInteractive } = useOverlayWindow(bridge);
-  const { dragging, handlers } = useKinInteraction(
-    bridge,
-    surface,
-    setInteractive
-  );
+export function useKinActivity(
+  bridge: KinActivityBridge | undefined,
+  placement: KinPlacement,
+  visible = true,
+  scopeKey?: string | null
+) {
+  const { activity, at, pending } = useActivity(bridge, visible, scopeKey);
   const recent = activity.state === "running" ? activity.conversations : [];
   const latest = Math.max(
     0,
@@ -258,21 +453,378 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
     (activity.state === "running" ? activity.overflowCount : 0) +
     recent.length -
     conversations.length;
-  const { selected, close, toggle } = useSelection(recent, cancel, surface);
+  return {
+    activity,
+    at,
+    pending,
+    recent,
+    recentCapture,
+    conversations,
+    overflow
+  };
+}
+
+export function kinConversationStatus(conversation: Conversation, at: number) {
+  const seconds = captureSeconds(conversation.lastActivityAt, at);
+  return {
+    age: captureAge(seconds),
+    recent: seconds < recentSeconds,
+    seconds
+  };
+}
+
+/**
+ * Selection and summary panel for the Kin's recent Conversations. The
+ * floating dock opens it from chips; the Desktop sidebar opens it from rows.
+ */
+export function useKinSummaryPanel({
+  sample,
+  bridge,
+  surface,
+  visible = true,
+  openAiModels,
+  openConversation
+}: {
+  sample: ReturnType<typeof useKinActivity>;
+  bridge?: KinActivityBridge;
+  surface: RefObject<HTMLElement | null>;
+  visible?: boolean;
+  openAiModels?: () => void;
+  openConversation?: (sessionId: string) => void;
+}) {
+  const { at, recent } = sample;
+  // Track Pi leases even while this surface's panel is hidden: docked rows
+  // and chips stay on screen through a Kin handoff and must still expire.
+  const deadlines = recent.map(workingDeadline);
+  const workingNow = useWorkingClock(deadlines, at);
+  const { view, summarize, reopen, cancel, isCancelling } = useSummary(bridge);
+  const { selected, close, dismiss, toggle } = useSelection(
+    recent,
+    cancel,
+    surface,
+    visible
+  );
+  const preview = useCapturedPreview(bridge, visible ? selected : undefined);
   const selectedView =
     view?.request.sessionId === selected?.sessionId ? view : null;
   const staleProjectView =
     selectedView?.request.action === "project" &&
     selectedView.request.projectId !== selected?.projectId;
+  const latest = useLatestSummary(
+    bridge,
+    visible ? selected?.sessionId : undefined,
+    selected?.projectId ?? null,
+    staleProjectView ? undefined : selectedView?.result
+  );
   useLayoutEffect(() => {
     if (staleProjectView) void cancel(true);
   }, [cancel, staleProjectView]);
-  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === "Escape" && selected) {
+  useEffect(() => {
+    if (!selected || !visible) return;
+    const node = surface.current;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
       event.preventDefault();
+      // The panel may sit inside the modal sidebar: Escape closes only the
+      // panel, as its Close button does.
+      event.stopPropagation();
       close();
-    }
+    };
+    node?.addEventListener("keydown", onKeyDown);
+    return () => node?.removeEventListener("keydown", onKeyDown);
+  }, [close, selected, surface, visible]);
+  const panel =
+    visible && selected ? (
+      <FloatingKinPanel
+        conversation={selected}
+        preview={preview}
+        isCancelling={isCancelling}
+        view={staleProjectView ? null : selectedView}
+        age={captureAge(captureSeconds(selected.lastActivityAt, at))}
+        close={close}
+        summarize={() =>
+          void summarize({
+            sessionId: selected.sessionId,
+            action: "conversation"
+          })
+        }
+        cancel={() => void cancel()}
+        openAiModels={openAiModels}
+        openConversation={
+          openConversation
+            ? () => openConversation(selected.sessionId)
+            : undefined
+        }
+        openLastSummary={
+          latest
+            ? () =>
+                void reopen(
+                  {
+                    sessionId: selected.sessionId,
+                    projectId: selected.projectId
+                  },
+                  latest
+                )
+            : undefined
+        }
+      />
+    ) : null;
+  return {
+    panel,
+    selected: visible ? selected : undefined,
+    close,
+    dismiss,
+    toggle,
+    // Pi counts only its extension's unexpired report; other clients are a
+    // best guess from the captured turn (see floatingKinTurnSql).
+    isWorking: (conversation: Conversation) =>
+      conversation.client === "pi"
+        ? workingDeadline(conversation) > workingNow
+        : conversation.turn === "active"
   };
+}
+
+export function KinActivityContent({
+  sample,
+  bridge,
+  surface,
+  visible = true,
+  showStatus = false,
+  openAiModels,
+  openConversation
+}: {
+  sample: ReturnType<typeof useKinActivity>;
+  bridge?: KinActivityBridge;
+  surface: RefObject<HTMLElement | null>;
+  visible?: boolean;
+  showStatus?: boolean;
+  openAiModels?: () => void;
+  openConversation?: (sessionId: string) => void;
+}) {
+  const { activity } = sample;
+  const summary = useKinSummaryPanel({
+    sample,
+    bridge,
+    surface,
+    visible,
+    openAiModels,
+    openConversation
+  });
+  return (
+    <>
+      {summary.panel}
+      <KinConversationChips sample={sample} {...summary} />
+      {/* A pending read is not a runtime state; showing it flashes a pill. */}
+      {showStatus && !sample.pending && activity.state !== "running" && (
+        <ActivityPill state={activity.state} />
+      )}
+    </>
+  );
+}
+
+export function KinConversationChips({
+  sample,
+  selected,
+  toggle,
+  isWorking
+}: Pick<
+  ReturnType<typeof useKinSummaryPanel>,
+  "selected" | "toggle" | "isWorking"
+> & {
+  sample: ReturnType<typeof useKinActivity>;
+}) {
+  const { at, conversations, overflow } = sample;
+  if (!conversations.length && !overflow) return null;
+  return (
+    <div
+      className="fk-dock"
+      role="group"
+      aria-label="Recently captured Conversations"
+    >
+      {conversations.map((conversation, index) => (
+        <CaptureChip
+          key={conversation.sessionId}
+          conversation={conversation}
+          now={at}
+          working={isWorking(conversation)}
+          index={index}
+          expanded={selected?.sessionId === conversation.sessionId}
+          toggle={(button) => toggle(conversation.sessionId, button)}
+        />
+      ))}
+      {overflow > 0 && (
+        <span
+          className="fk-overflow"
+          aria-label={`${overflow} more Conversations`}
+        >
+          +{overflow}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// True while the pointer is over a Conversation chip in the overlay.
+function useChipHover(
+  surface: RefObject<HTMLElement | null>,
+  visible: boolean
+) {
+  const [hovered, setHovered] = useState(false);
+  useEffect(() => {
+    const node = surface.current;
+    if (!node || !visible) {
+      setHovered(false);
+      return;
+    }
+    const onChip = (target: EventTarget | null) =>
+      target instanceof Element && target.closest(".fk-chip") !== null;
+    const over = (event: MouseEvent) => {
+      if (onChip(event.target)) setHovered(true);
+    };
+    const out = (event: MouseEvent) => {
+      if (onChip(event.target) && !onChip(event.relatedTarget))
+        setHovered(false);
+    };
+    node.addEventListener("mouseover", over);
+    node.addEventListener("mouseout", out);
+    return () => {
+      node.removeEventListener("mouseover", over);
+      node.removeEventListener("mouseout", out);
+    };
+  }, [surface, visible]);
+  return hovered;
+}
+
+// Slide in only once the window can paint and the content has its size, so the
+// entrance animates and the window does not resize mid-slide.
+const entranceFallbackMs = 400;
+
+function useEntrance(visible: boolean, ready: boolean, animate: boolean) {
+  const [shown, setShown] = useState(visible && !animate);
+  useEffect(() => {
+    if (!visible) {
+      setShown(false);
+      return;
+    }
+    if (!animate) {
+      setShown(true);
+      return;
+    }
+    let frame = 0;
+    // Two frames: one to paint the hidden start, one to change from it.
+    const enter = () => {
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => setShown(true));
+      });
+    };
+    const timer = ready
+      ? undefined
+      : window.setTimeout(enter, entranceFallbackMs);
+    if (ready) enter();
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [animate, ready, visible]);
+  return visible && shown;
+}
+
+function OverlayKinContent({
+  bridge,
+  surface,
+  openAiModels,
+  openConversation,
+  onReady
+}: {
+  bridge?: KinActivityBridge;
+  surface: RefObject<HTMLElement | null>;
+  openAiModels?: () => void;
+  openConversation?: (sessionId: string) => void;
+  // Called once the first activity read has settled the content's size.
+  onReady?: () => void;
+}) {
+  const sample = useKinActivity(bridge, "desktop");
+  useEffect(() => {
+    if (!sample.pending) onReady?.();
+  }, [onReady, sample.pending]);
+  return (
+    <>
+      <KinActivityContent
+        sample={sample}
+        bridge={bridge}
+        surface={surface}
+        showStatus
+        openAiModels={openAiModels}
+        openConversation={openConversation}
+      />
+    </>
+  );
+}
+
+function useExitCompletion(
+  bridge: FloatingKinBridge | undefined,
+  surface: RefObject<HTMLElement | null>,
+  revision: number | undefined
+) {
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!bridge || !element || revision === undefined) return;
+    // Resolve the committed visibility style before inspecting its transitions.
+    void window.getComputedStyle(element).opacity;
+    const transitions =
+      element
+        .getAnimations?.()
+        .filter(
+          (animation) =>
+            "transitionProperty" in animation &&
+            (animation.transitionProperty === "opacity" ||
+              animation.transitionProperty === "transform")
+        ) ?? [];
+    let current = true;
+    void Promise.all(transitions.map((animation) => animation.finished)).then(
+      () => {
+        if (current) bridge.completeExit(revision);
+      },
+      () => undefined // A cancelled transition is not a completed exit.
+    );
+    return () => {
+      current = false;
+    };
+  }, [bridge, surface, revision]);
+}
+
+export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
+  const [presentation, setPresentation] = useState<
+    import("../../ipc/floating-kin-protocol.js").KinPresentation | null
+  >(null);
+  useEffect(() => bridge?.onPresentation?.(setPresentation), [bridge]);
+  const visible =
+    !bridge?.onPresentation || presentation?.placement === "desktop";
+  const revision = presentation?.revision;
+  const openDesktop =
+    bridge && revision !== undefined
+      ? () => bridge.openDesktop(revision)
+      : undefined;
+  const [readyRevision, setReadyRevision] = useState<number>();
+  const markReady = useCallback(() => setReadyRevision(revision), [revision]);
+  const shown = useEntrance(
+    visible,
+    readyRevision === revision,
+    Boolean(bridge?.onPresentation)
+  );
+  const activityBridge = useKinSurfaceActivity(bridge, revision);
+  const { surface, setInteractive } = useOverlayWindow(bridge, visible);
+  const chipHovered = useChipHover(surface, visible);
+  useExitCompletion(
+    bridge,
+    surface,
+    presentation?.sidebarPending ? presentation.revision : undefined
+  );
+  const { dragging, handlers } = useKinInteraction(
+    visible ? bridge : undefined,
+    surface,
+    setInteractive
+  );
   return (
     <main
       className="fk-surface"
@@ -280,56 +832,34 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
       tabIndex={-1}
       ref={surface}
       {...handlers}
+      data-fk-placement="desktop"
+      data-visible={shown}
       data-dragging={dragging}
-      onKeyDown={onKeyDown}
+      inert={!visible}
     >
-      {selected ? (
-        <FloatingKinPanel
-          conversation={selected}
-          isCancelling={isCancelling}
-          view={staleProjectView ? null : selectedView}
-          age={captureAge(captureSeconds(selected.lastActivityAt, at))}
-          close={close}
-          summarize={(action) => {
-            const { sessionId, projectId } = selected;
-            if (action === "conversation")
-              void summarize({ sessionId, action });
-            else if (projectId)
-              void summarize({ sessionId, action, projectId });
-          }}
-          cancel={() => void cancel()}
+      {visible ? (
+        <OverlayKinContent
+          key={presentation?.revision}
+          bridge={activityBridge}
+          surface={surface}
+          onReady={markReady}
+          openAiModels={
+            bridge && revision !== undefined
+              ? () => bridge.openAiModels(revision)
+              : undefined
+          }
+          openConversation={
+            bridge && revision !== undefined
+              ? (sessionId) => bridge.openConversation(revision, sessionId)
+              : undefined
+          }
         />
       ) : null}
-      {conversations.length > 0 || overflow > 0 ? (
-        <div
-          className="fk-dock"
-          role="group"
-          aria-label="Recently captured Conversations"
-        >
-          {conversations.map((conversation, index) => (
-            <CaptureChip
-              key={conversation.sessionId}
-              conversation={conversation}
-              now={at}
-              index={index}
-              expanded={selected?.sessionId === conversation.sessionId}
-              toggle={(button) => toggle(conversation.sessionId, button)}
-            />
-          ))}
-          {overflow ? (
-            <span
-              className="fk-overflow"
-              aria-label={`${overflow} more Conversations`}
-            >
-              +{overflow}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-      {activity.state !== "running" && <ActivityPill state={activity.state} />}
+      {/* One Kin across appearances, so leaving never restarts its look. */}
       <StandaloneKin
-        hasChips={conversations.length > 0}
-        active={mainWindowFocused || recentCapture}
+        visible={visible}
+        wake={chipHovered}
+        onOpenDesktop={openDesktop}
       />
     </main>
   );

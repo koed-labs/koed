@@ -11,7 +11,11 @@ import {
 import http from "node:http";
 import path from "node:path";
 import {
+  floatingKinPreviewRequestSchema,
   floatingKinSummaryRequestSchema,
+  floatingKinSummaryTargetSchema,
+  type FloatingKinSummaryLatest,
+  isLoopbackHostname,
   personalDesktopAskSubmitInputSchema,
   watchKoedLocalWork
 } from "@koed-labs/shared";
@@ -32,6 +36,7 @@ import { createClaudeHistoricalProviderAdapter } from "./claude-historical-impor
 import { startClaudeTranscriptWatcher } from "./claude-transcript-watcher.js";
 import { createPiHistoricalProviderAdapter } from "./pi-historical-import.js";
 import { startPiTranscriptWatcher } from "./pi-transcript-watcher.js";
+import { PiKinLiveness, piKinSignalSchema } from "./pi-kin-liveness.js";
 import {
   startAiClientCapabilityPublisher,
   type AiClientCapabilityPublisherHandle
@@ -77,6 +82,7 @@ import {
 } from "./answer-admission.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
 import { summarizeFloatingKin } from "./floating-kin.js";
+import { FloatingKinHistory } from "./floating-kin-history.js";
 import {
   MemoryAnswerTaskScheduler,
   type MemoryAnswerTaskExecutionContext
@@ -287,7 +293,7 @@ const readJsonBody = async (
 const json = (
   response: http.ServerResponse,
   statusCode: number,
-  body: Record<string, unknown>
+  body: Record<string, unknown> | null
 ): void => {
   const encoded = Buffer.from(JSON.stringify(body));
   response.writeHead(statusCode, {
@@ -659,6 +665,60 @@ export const startDefaultLocalAiRuntimeServices = async (
   }
 };
 
+const piKinArtifact = z.object({
+  artifact: z.object({ sessionId: z.string().uuid() })
+});
+const piKinPolicy = z.object({
+  policy: z.object({
+    captureState: z.literal("enabled"),
+    visibility: z.literal("personal"),
+    paused: z.literal(false)
+  })
+});
+
+const createPiKinLiveness = (
+  apiClient: MemoryApiClient,
+  environment: NodeJS.ProcessEnv,
+  koedHome: string,
+  runtimeAuthorization: string
+) => {
+  const url = URL.canParse(apiClient.config.apiUrl)
+    ? new URL(apiClient.config.apiUrl)
+    : null;
+  const enabled = Boolean(
+    url &&
+    isLoopbackHostname(url.hostname) &&
+    ["http:", "https:"].includes(url.protocol) &&
+    apiClient.config.apiToken &&
+    !apiClient.config.authorizationProvider &&
+    environment.MEMORY_PI_TRANSCRIPT_WATCHER_ENABLED?.trim().toLowerCase() !==
+      "false"
+  );
+  return new PiKinLiveness({
+    connectionRevision: () => {
+      if (!enabled) return undefined;
+      const pi = readAiClientConnections(koedHome)?.clients.pi;
+      return pi?.connected ? pi.revision : undefined;
+    },
+    resolveSession: async (externalSessionId, signal) => {
+      const match = piKinArtifact.safeParse(
+        await apiClient.lookupConversationSourceArtifact(
+          { sourceKind: "pi", externalSessionId },
+          { signal, runtimeAuthorization }
+        )
+      );
+      return match.data?.artifact.sessionId;
+    },
+    allowsPersonalStatus: async (sessionId, signal) =>
+      piKinPolicy.safeParse(
+        await apiClient.getEffectiveCapturePolicy(
+          { sessionId },
+          { signal, runtimeAuthorization }
+        )
+      ).success
+  });
+};
+
 export const startLocalAiRuntime = async ({
   environment = process.env,
   config = defaultConfig(environment),
@@ -733,6 +793,17 @@ export const startLocalAiRuntime = async ({
     : null;
   const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;
   const activeRequests = new Set<AbortController>();
+  const piKin = createPiKinLiveness(
+    apiClient,
+    environment,
+    koedHome,
+    authorization
+  );
+  const floatingKinHistory = new FloatingKinHistory(
+    apiClient,
+    answerAdmission,
+    authorization
+  );
 
   const server = http.createServer((request, response) => {
     void (async () => {
@@ -763,6 +834,19 @@ export const startLocalAiRuntime = async ({
             .parse(await readJsonBody(request));
           await resolveCaptureFolderObservation({ ...input, env: environment });
           json(response, 200, { ok: true });
+          return;
+        }
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/capture/pi-liveness"
+        ) {
+          const input = piKinSignalSchema.parse(await readJsonBody(request));
+          const signal = AbortSignal.any([
+            requestAbort.signal,
+            AbortSignal.timeout(2_000)
+          ]);
+          await piKin.update(input, signal);
+          if (!requestAbort.signal.aborted) json(response, 200, { ok: true });
           return;
         }
         if (request.method === "GET" && requestUrl.pathname === "/ready") {
@@ -820,6 +904,30 @@ export const startLocalAiRuntime = async ({
         }
         if (
           request.method === "POST" &&
+          (requestUrl.pathname === "/v1/desktop/floating-kin/summary/latest" ||
+            requestUrl.pathname === "/v1/desktop/floating-kin/summary/open")
+        ) {
+          const target = floatingKinSummaryTargetSchema.parse(
+            await readJsonBody(request)
+          );
+          const opened = await floatingKinHistory.open(
+            target,
+            requestAbort.signal
+          );
+          const metadata: FloatingKinSummaryLatest = {
+            action: opened?.action ?? null
+          };
+          if (!requestAbort.signal.aborted) {
+            json(
+              response,
+              200,
+              requestUrl.pathname.endsWith("/latest") ? metadata : opened
+            );
+          }
+          return;
+        }
+        if (
+          request.method === "POST" &&
           requestUrl.pathname === "/v1/desktop/floating-kin/summary"
         ) {
           const input = floatingKinSummaryRequestSchema.parse(
@@ -831,9 +939,38 @@ export const startLocalAiRuntime = async ({
             environment,
             input,
             authorization,
-            requestAbort.signal
+            requestAbort.signal,
+            floatingKinHistory
           );
           if (!requestAbort.signal.aborted) json(response, 200, summary);
+          return;
+        }
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/desktop/floating-kin/preview"
+        ) {
+          const input = floatingKinPreviewRequestSchema.parse(
+            await readJsonBody(request)
+          );
+          const signal = AbortSignal.any([
+            requestAbort.signal,
+            AbortSignal.timeout(5_000)
+          ]);
+          try {
+            const preview = await apiClient.readFloatingKinPreview(
+              input,
+              authorization,
+              signal
+            );
+            signal.throwIfAborted();
+            json(response, 200, preview);
+          } catch {
+            if (!requestAbort.signal.aborted) {
+              json(response, 503, {
+                error: "Floating Kin preview is unavailable"
+              });
+            }
+          }
           return;
         }
         if (
@@ -850,7 +987,11 @@ export const startLocalAiRuntime = async ({
               signal
             );
             signal.throwIfAborted();
-            json(response, 200, activity);
+            const decorated = await piKin.decorate(
+              activity,
+              AbortSignal.any([signal, AbortSignal.timeout(1_000)])
+            );
+            if (!requestAbort.signal.aborted) json(response, 200, decorated);
           } catch {
             if (!requestAbort.signal.aborted) {
               json(response, 503, {
@@ -1008,6 +1149,7 @@ export const startLocalAiRuntime = async ({
         if (closed) return;
         closed = true;
         removeOwnedRegistration(registrationPath);
+        floatingKinHistory.close();
         for (const controller of activeRequests) {
           controller.abort(new Error("Koed local AI runtime is shutting down"));
         }
@@ -1021,6 +1163,7 @@ export const startLocalAiRuntime = async ({
       }
     };
   } catch (error) {
+    floatingKinHistory.close();
     if (server.listening) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

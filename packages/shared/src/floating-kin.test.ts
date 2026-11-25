@@ -3,9 +3,39 @@ import {
   floatingKinActivitySchema,
   floatingKinEvidenceRequestSchema,
   floatingKinEvidenceSchema,
+  floatingKinPreviewRequestSchema,
+  floatingKinPreviewSchema,
   floatingKinSummaryRequestSchema,
   floatingKinSummarySchema
 } from "./floating-kin.js";
+
+it("accepts only bounded captured preview fields", () => {
+  const input = { sessionId: "82fa4d3b-3409-4cb2-84db-c4eac3a76bca" };
+  expect(floatingKinPreviewRequestSchema.parse(input)).toEqual(input);
+  expect(
+    floatingKinPreviewRequestSchema.safeParse({ ...input, owner: "other" })
+      .success
+  ).toBe(false);
+  expect(
+    floatingKinPreviewRequestSchema.safeParse({ sessionId: "bad" }).success
+  ).toBe(false);
+  expect(floatingKinPreviewSchema.parse(null)).toBeNull();
+  const preview = {
+    title: null,
+    projectName: "Project",
+    reply: null,
+    request: { text: "x".repeat(240), occurredAt: "2026-01-01T12:00:00.000Z" }
+  };
+  expect(floatingKinPreviewSchema.parse(preview)).toEqual(preview);
+  for (const bad of [
+    { ...preview, raw: {} },
+    { ...preview, title: "t".repeat(1000) },
+    { ...preview, request: { ...preview.request, text: "x".repeat(241) } },
+    { ...preview, request: { ...preview.request, occurredAt: "yesterday" } },
+    { ...preview, request: { ...preview.request, id: input.sessionId } }
+  ])
+    expect(floatingKinPreviewSchema.safeParse(bad).success).toBe(false);
+});
 
 const sessionId = "f7a5ecbb-8fcd-465c-b02a-0dfcf1eb2437";
 const occurredAt = "2026-11-18T15:01:00.000Z";

@@ -182,7 +182,7 @@ Supported mode fields:
   secret provider, the Worker does not start local sync work, and the API starts
   without a Personal Device Sync authority or source context. An invalid value
   stops the API and Worker at startup. Koed Desktop does not show device
-  pairing. Existing Personal Device Groups and stored data are not changed, but
+  pairing or the Project settings **Sync** page. Existing Personal Device Groups and stored data are not changed, but
   they do not sync until the switch is `true` for the supervisor, API and
   Worker. Restart them after changing the value. Desktop passes its own
   environment to the services and CLI commands it runs, so set the variable for

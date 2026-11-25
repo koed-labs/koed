@@ -1,10 +1,14 @@
 import { useEffect, useRef } from "react";
+import { Settings } from "lucide-react";
 import type {
   FloatingKinActivity,
+  FloatingKinPreview,
   FloatingKinSummary,
   FloatingKinSummaryRequest
 } from "@koed-labs/shared";
+import { displayConversationTitle } from "@koed-labs/shared/conversation-title";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
+import { previewText } from "./preview-text.js";
 
 export type Conversation = FloatingKinActivity["conversations"][number];
 export const clientNames = {
@@ -82,25 +86,66 @@ function Answer({
   );
 }
 
+function CapturedPreview({
+  preview
+}: {
+  preview: NonNullable<FloatingKinPreview>;
+}) {
+  const { request, reply } = preview;
+  const previous =
+    request &&
+    reply &&
+    Date.parse(reply.occurredAt) < Date.parse(request.occurredAt);
+  return (
+    <>
+      {request && (
+        <section className="fk-copy fk-preview">
+          <h3>Last captured request</h3>
+          <p>{previewText(request.text)}</p>
+        </section>
+      )}
+      {reply && (
+        <section className="fk-copy fk-preview">
+          <h3>
+            {previous ? "Previous captured reply" : "Last captured reply"}
+          </h3>
+          <p>{previewText(reply.text)}</p>
+        </section>
+      )}
+    </>
+  );
+}
+
 export function FloatingKinPanel({
   conversation,
+  preview,
   age,
   view,
   isCancelling,
   close,
   summarize,
-  cancel
+  cancel,
+  openLastSummary,
+  openAiModels,
+  openConversation
 }: {
   conversation: Conversation;
+  // undefined while the first preview for this Conversation is loading.
+  preview: FloatingKinPreview | undefined;
   age: string;
   view: {
     request: FloatingKinSummaryRequest;
     result: FloatingKinSummary | null;
+    reopening?: boolean;
   } | null;
   isCancelling: boolean;
   close: () => void;
-  summarize: (action: FloatingKinSummaryRequest["action"]) => void;
+  summarize: () => void;
   cancel: () => void;
+  openLastSummary?: () => void;
+  openAiModels?: () => void;
+  // Opens this Conversation in Koed Desktop.
+  openConversation?: () => void;
 }) {
   const closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -111,18 +156,27 @@ export function FloatingKinPanel({
   const status = isCancelling
     ? "Cancelling summary…"
     : working
-      ? "Summarizing captured work…"
+      ? view.reopening
+        ? "Opening last summary…"
+        : "Summarizing captured work…"
       : result?.status === "answered"
         ? "Summary ready."
         : result
-          ? failures[result.status]
+          ? view?.reopening && result.status === "unavailable"
+            ? "Last summary is no longer available."
+            : failures[result.status]
           : "";
-  const title =
-    view?.request.action === "project"
+  const showingSummary =
+    view && (working || isCancelling || result?.status === "answered");
+  // The first preview for this Conversation hasn't arrived yet.
+  const loading = !showingSummary && preview === undefined;
+  const title = showingSummary
+    ? view.request.action === "project"
       ? "Project summary"
-      : view
-        ? "Conversation summary"
-        : "Recent Conversation";
+      : "Conversation summary"
+    : preview === undefined
+      ? ""
+      : (displayConversationTitle(preview?.title) ?? "Conversation");
   return (
     <section
       className="fk-panel"
@@ -133,10 +187,37 @@ export function FloatingKinPanel({
     >
       <header className="fk-header">
         <div>
-          <h2 id="fk-panel-title">{title}</h2>
-          <small>
+          <h2
+            id="fk-panel-title"
+            title={title || undefined}
+            aria-busy={loading || undefined}
+          >
+            {loading ? (
+              <span className="fk-skeleton fk-skeleton-title" aria-hidden />
+            ) : openConversation && !showingSummary && title ? (
+              <button
+                type="button"
+                className="fk-title-link"
+                onClick={openConversation}
+              >
+                {title}
+              </button>
+            ) : (
+              title
+            )}
+          </h2>
+          <small className="fk-meta">
             <ClientMark client={conversation.client} />{" "}
-            {clientNames[conversation.client]} · Captured {age} ago
+            {clientNames[conversation.client]}
+            {preview?.projectName && (
+              <>
+                {" · "}
+                <span className="fk-project-name" title={preview.projectName}>
+                  {preview.projectName}
+                </span>
+              </>
+            )}
+            {` · Captured ${age} ago`}
           </small>
         </div>
         <button
@@ -148,11 +229,32 @@ export function FloatingKinPanel({
           ×
         </button>
       </header>
-      <div className="fk-body" tabIndex={0} aria-label="Summary content">
+      <div
+        className="fk-body"
+        tabIndex={0}
+        aria-label={
+          showingSummary ? "Summary content" : "Captured Conversation context"
+        }
+      >
         <div className="fk-body-content">
-          <p role="status" className="fk-note">
-            {status}
+          {/* An action's own message (an error, say) outranks the loading
+              note, which only screen readers hear. */}
+          <p
+            role="status"
+            className={
+              loading && !status ? "fk-note fk-visually-hidden" : "fk-note"
+            }
+          >
+            {status || (loading ? "Loading captured context…" : "")}
           </p>
+          {loading && (
+            <div className="fk-copy fk-preview-loading" aria-hidden>
+              <span className="fk-skeleton" style={{ width: "38%" }} />
+              <span className="fk-skeleton" style={{ width: "92%" }} />
+              <span className="fk-skeleton" style={{ width: "64%" }} />
+            </div>
+          )}
+          {!showingSummary && preview && <CapturedPreview preview={preview} />}
           {result?.status === "answered" ? <Answer result={result} /> : null}
           {working ? (
             <button
@@ -165,35 +267,44 @@ export function FloatingKinPanel({
               Cancel
             </button>
           ) : (
-            <div className="fk-actions">
-              <button
-                type="button"
-                disabled={isCancelling}
-                onClick={() => {
-                  closeButton.current?.focus();
-                  summarize("conversation");
-                }}
-              >
-                Summarize Conversation
-              </button>
-              <button
-                type="button"
-                disabled={isCancelling || !conversation.projectId}
-                onClick={() => {
-                  closeButton.current?.focus();
-                  summarize("project");
-                }}
-              >
-                Summarize Project
-              </button>
-            </div>
+            <>
+              {openLastSummary && result?.status !== "answered" ? (
+                <button
+                  type="button"
+                  disabled={isCancelling}
+                  onClick={() => {
+                    closeButton.current?.focus();
+                    openLastSummary();
+                  }}
+                >
+                  Open last summary
+                </button>
+              ) : null}
+              <div className="fk-actions">
+                <button
+                  type="button"
+                  disabled={isCancelling}
+                  onClick={() => {
+                    closeButton.current?.focus();
+                    summarize();
+                  }}
+                >
+                  Summarize conversation
+                </button>
+                {openAiModels ? (
+                  <button
+                    type="button"
+                    className="fk-settings-button"
+                    aria-label="AI models settings"
+                    title="AI models settings"
+                    onClick={openAiModels}
+                  >
+                    <Settings aria-hidden="true" size={16} />
+                  </button>
+                ) : null}
+              </div>
+            </>
           )}
-          {!view ? (
-            <p className="fk-note">
-              Uses your assigned AI Client and its subscription. Shows captured
-              work, not live activity.
-            </p>
-          ) : null}
         </div>
       </div>
     </section>

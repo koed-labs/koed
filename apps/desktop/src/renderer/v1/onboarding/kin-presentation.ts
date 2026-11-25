@@ -1,14 +1,11 @@
+import { chiefOfStaffBrand } from "../pixelkin/agent-kin.js";
 import { KIN_DEFAULTS } from "../pixelkin/vendor/index.js";
 // The nine Kin from the homepage crowd. Keep each silhouette, material and
 // face together so other scenes can use the same characters.
 const specs = [
   {
-    shape: "roundedBox",
-    width: 1.72,
-    height: 1.9,
-    depth: 1.42,
-    roundness: 0.3,
-    palette: "#6238f2"
+    ...chiefOfStaffBrand.look.body,
+    palette: chiefOfStaffBrand.look.palette.base
   },
   {
     shape: "sphere",
@@ -90,7 +87,12 @@ export const onboardingSkins = specs.map((spec, index) => ({
   browThickness: index === 0 ? 1.2 : 0,
   gradient: [0, 1, 3, 7].includes(index),
   gradientReverse: index === 3,
-  gradientComplement: index === 1 ? "#a58aff" : undefined,
+  gradientComplement:
+    index === 0
+      ? chiefOfStaffBrand.gradientTop
+      : index === 1
+        ? "#a58aff"
+        : undefined,
   glitter: [0, 2, 7].includes(index) ? 0.5 : 0,
   faceStyle: [
     1 + Math.sin(index * 1.7) * 0.08,

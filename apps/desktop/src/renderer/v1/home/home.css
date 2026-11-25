@@ -34,7 +34,7 @@
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 32px;
-  min-height: 136px;
+  min-height: 117px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -48,33 +48,50 @@
   gap: 8px;
   font-size: 13px;
 }
-.v1-home-keycaps strong span {
-  font-weight: 400;
-  color: var(--v1-muted);
-}
+/* Drawn like a Kin: a soft cube lit from above, with a dark outline and
+   a dithered grain. The ledge along the bottom is the cube's front face, so
+   the logo sits centred on the top face above it. */
 .v1-home-keycap {
-  width: 64px;
-  height: 48px;
+  --cap: var(--v1-surface);
+  --ledge: 7px;
+  position: relative;
+  width: 60px;
+  height: 54px;
+  box-sizing: border-box;
   display: grid;
   place-items: center;
-  border-radius: 12px;
+  padding-bottom: var(--ledge);
+  border-radius: 16px;
   color: #fff;
-  background: var(--v1-surface);
-  box-shadow: inset 0 -6px 0 rgb(0 0 0 / 0.3);
+  background:
+    repeating-conic-gradient(rgb(0 0 0 / 0.16) 0 25%, transparent 0 50%) 0 0 /
+      2px 2px,
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--cap), #fff 22%),
+      var(--cap) 55%,
+      color-mix(in srgb, var(--cap), #000 12%)
+    );
+  box-shadow:
+    inset 0 calc(-1 * var(--ledge)) 0 color-mix(in srgb, var(--cap), #000 38%),
+    inset 0 2px 0 rgb(255 255 255 / 0.22),
+    0 0 0 2px rgb(0 0 0 / 0.7);
+  image-rendering: pixelated;
 }
 .v1-home-keycap svg {
   width: 24px;
   height: 24px;
   fill: currentColor;
+  filter: drop-shadow(0 1px 0 rgb(0 0 0 / 0.35));
 }
 .v1-home-keycap[data-client="codex"] {
-  background: #2f8f6b;
+  --cap: var(--v1-client-codex);
 }
 .v1-home-keycap[data-client="claude"] {
-  background: #d97757;
+  --cap: var(--v1-client-claude);
 }
 .v1-home-keycap[data-client="pi"] {
-  background: #4b4fa8;
+  --cap: var(--v1-client-pi);
 }
 .v1-home-keycaps li[data-state="detected"] .v1-home-keycap,
 .v1-home-keycaps li[data-state="unsure"] .v1-home-keycap {
@@ -82,8 +99,10 @@
 }
 .v1-home-keycaps li[data-state="attention"] .v1-home-keycap {
   box-shadow:
-    inset 0 -6px 0 rgb(0 0 0 / 0.3),
-    0 0 0 3px var(--v1-heat-3);
+    inset 0 calc(-1 * var(--ledge)) 0 color-mix(in srgb, var(--cap), #000 38%),
+    inset 0 2px 0 rgb(255 255 255 / 0.22),
+    0 0 0 2px rgb(0 0 0 / 0.7),
+    0 0 0 5px var(--v1-heat-3);
 }
 .v1-home-pill {
   padding: 3px 10px;
@@ -398,6 +417,26 @@
   flex: none;
   width: 100%;
   margin-bottom: auto;
+}
+.v1-home-top-progress {
+  position: relative;
+  z-index: 5;
+  width: min(560px, 100%);
+  margin: 0 auto 20px;
+  text-align: center;
+}
+/* At the top of the stage there's no room above, so the skipped
+   explanation opens downward, over the keycaps. */
+.v1-home-top-progress .v1-home-skip-help [role="tooltip"] {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+.v1-home-top-progress .v1-home-progress {
+  margin-top: 0;
+}
+/* The processed line reads above the bar. */
+.v1-home-top-progress .v1-home-progress-track {
+  order: 1;
 }
 .v1-home-caption[data-wide] {
   width: min(600px, 100%);

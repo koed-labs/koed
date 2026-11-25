@@ -859,6 +859,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/memory/floating-kin/preview",
+    "api_token",
+    "personal_memory",
+    "Read a bounded recent captured Conversation preview with Local AI Runtime proof.",
+    "none",
+    "implemented",
+    ["local_personal"]
+  ),
+  route(
+    "POST",
     "/v1/memory/floating-kin/evidence",
     "api_token",
     "personal_memory",

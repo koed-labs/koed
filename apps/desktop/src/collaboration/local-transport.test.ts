@@ -19,12 +19,23 @@ const requestId = "768ae5ae-fcbe-4e17-9d83-14a97d5f92a6";
 
 class FakeBrokerChild extends EventEmitter {
   killed = false;
+  connected = true;
+  // Like a broker whose pipe has closed: Node reports EPIPE for each write,
+  // to the callback when given and otherwise as an "error" event.
+  brokenPipe = false;
   sent: DesktopCollaborationBrokerParentMessage[] = [];
 
-  send(message: unknown): boolean {
+  send(message: unknown, callback?: (error: Error | null) => void): boolean {
+    if (this.brokenPipe) {
+      const error = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      if (callback) process.nextTick(callback, error);
+      else process.nextTick(() => this.emit("error", error));
+      return false;
+    }
     this.sent.push(
       desktopCollaborationBrokerParentMessageSchema.parse(message)
     );
+    if (callback) process.nextTick(callback, null);
     return true;
   }
 
@@ -129,6 +140,37 @@ describe("Desktop collaboration broker transport", () => {
     expect(sent.type).toBe("command");
     expect(sent.command).toEqual(command);
     expect(JSON.stringify(sent)).not.toContain("desktop-local-secret-sentinel");
+  });
+
+  it.each([
+    ["has closed its pipe", { brokenPipe: true, connected: true }],
+    ["has disconnected", { brokenPipe: true, connected: false }]
+  ])("stops without crashing when the broker %s", async (_case, state) => {
+    const child = new FakeBrokerChild();
+    const transport = createCollaborationLocalTransport({
+      openExternal: vi.fn(async () => undefined),
+      spawnBroker: (sessionToken) => {
+        queueMicrotask(() => {
+          child.emit("message", ready(sessionToken));
+        });
+        return child as never;
+      }
+    });
+    // Two renderer owners, so stopping releases each before shutting down.
+    for (const owner of ["renderer-1", "renderer-2"])
+      transport.request(command, context(owner)).catch(() => undefined);
+    await waitFor(() => child.sent.length === 2);
+    Object.assign(child, state);
+    const uncaught = vi.fn();
+    process.on("uncaughtException", uncaught);
+    try {
+      await transport.stop();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      process.off("uncaughtException", uncaught);
+    }
+    expect(uncaught).not.toHaveBeenCalled();
+    expect(child.killed).toBe(true);
   });
 
   it("releases owner state when the renderer lifecycle aborts", async () => {

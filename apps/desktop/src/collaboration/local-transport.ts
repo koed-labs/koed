@@ -30,7 +30,7 @@ export interface CollaborationTransportContext {
 
 type ChildProcessWithIpc = ChildProcess & {
   connected?: boolean;
-  send: (message: unknown) => boolean;
+  send: (message: unknown, callback?: (error: Error | null) => void) => boolean;
 };
 
 interface CollaborationBrokerChild {
@@ -289,7 +289,9 @@ export const createCollaborationLocalTransport = (
         restartBroker(safeError("temporarily_unavailable"));
       }
     });
-    child.once("error", () => {
+    // Every write to a broker whose pipe has closed reports EPIPE here, so
+    // keep listening: an unhandled one crashes Desktop's main process.
+    child.on("error", () => {
       clearTimeout(handshakeTimer);
       if (broker?.sessionToken === sessionToken) {
         restartBroker(safeError("temporarily_unavailable"));
@@ -380,6 +382,15 @@ export const createCollaborationLocalTransport = (
   const stop = async () => {
     const current = broker;
     if (!current) return;
+    // A broker that already went away (for example, killed along with a
+    // terminal's process group) has nothing left to release or shut down.
+    if (current.child.connected === false) {
+      broker = null;
+      // With no broker, this releases each owner without sending.
+      for (const ownerId of [...ownerEmitters.keys()]) stopOwner(ownerId);
+      current.child.kill("SIGTERM");
+      return;
+    }
     for (const ownerId of [...ownerEmitters.keys()]) {
       stopOwner(ownerId);
     }
@@ -392,7 +403,9 @@ export const createCollaborationLocalTransport = (
         type: "shutdown",
         envelopeId
       });
-      current.child.send(message);
+      current.child.send(message, (error) => {
+        if (error) current.child.kill("SIGTERM");
+      });
     } catch {
       broker = null;
       current.child.kill("SIGTERM");

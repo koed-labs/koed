@@ -20,12 +20,12 @@ const Kin = ({ project }: { project?: DesktopProject | undefined }) =>
   project?.namedProject ? (
     <Pixelkin
       look={projectKinLook(project.id, project.namedProject.kin)}
-      size={18}
+      size={32}
       className="v1-pm-row-kin"
       motion="still"
     />
   ) : (
-    <Folder size={14} />
+    <Folder size={20} />
   );
 
 export function MoveConversationDialog(
@@ -58,7 +58,7 @@ export function MoveConversationDialog(
           <div className="v1-pm-move-path">
             <Kin project={source} />
             <span>{source?.name ?? "Without a Project"}</span>
-            <ChevronRight size={14} />
+            <ChevronRight size={18} />
             {target && <Kin project={target.project} />}
             <span>{target?.project.name ?? "Select a Project"}</span>
           </div>
@@ -69,7 +69,11 @@ export function MoveConversationDialog(
               value={destination}
               options={review.projects
                 .filter((p) => p.id !== source?.id)
-                .map((p) => ({ value: p.id, label: p.name }))}
+                .map((p) => ({
+                  value: p.id,
+                  label: p.name,
+                  look: projectKinLook(p.id, p.namedProject?.kin)
+                }))}
               onChange={setDestination}
               disabled={busy}
             />

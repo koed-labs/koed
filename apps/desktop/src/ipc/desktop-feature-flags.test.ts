@@ -18,4 +18,20 @@ describe("Desktop feature flags", () => {
       ).toBe(expected);
     }
   );
+
+  it.each([
+    [{}, false],
+    [{ KOED_PERSONAL_DEVICE_SYNC_ENABLED: "" }, false],
+    [{ KOED_PERSONAL_DEVICE_SYNC_ENABLED: "false" }, false],
+    [{ KOED_PERSONAL_DEVICE_SYNC_ENABLED: "yes" }, false],
+    [{ KOED_PERSONAL_DEVICE_SYNC_ENABLED: "true" }, true]
+  ] as const)(
+    "shows Personal Device Sync only when it is exactly enabled",
+    (environment, expected) => {
+      expect(
+        desktopFeatureFlagsFromEnvironment(environment)
+          .personalDeviceSyncEnabled
+      ).toBe(expected);
+    }
+  );
 });

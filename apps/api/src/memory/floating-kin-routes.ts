@@ -6,6 +6,8 @@ import {
   floatingKinActivitySchema,
   floatingKinEvidenceRequestSchema,
   floatingKinEvidenceSchema,
+  floatingKinPreviewRequestSchema,
+  floatingKinPreviewSchema,
   isLoopbackHostname
 } from "@koed-labs/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -106,6 +108,27 @@ export const registerFloatingKinRoutes = (
         await context
           .requireRepository()
           .getFloatingKinActivity({ userId: user.id })
+      );
+    }
+  );
+  app.post(
+    "/v1/memory/floating-kin/preview",
+    options,
+    async (request, reply) => {
+      reply.header("cache-control", "no-store");
+      const user = await context.auth.authenticateApiToken(request);
+      if (
+        context.auth.authenticatedCredentialKind(request) !== "api_token" ||
+        !(await isLocalRuntimeRequest(request, context))
+      )
+        return reply
+          .code(403)
+          .send({ error: "Local AI Runtime and Personal API Token required" });
+      const input = floatingKinPreviewRequestSchema.parse(request.body);
+      return floatingKinPreviewSchema.parse(
+        await context
+          .requireRepository()
+          .getFloatingKinPreview({ userId: user.id }, input)
       );
     }
   );

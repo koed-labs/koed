@@ -45,6 +45,7 @@ import { recordingOriginWarning } from "./proposal-text.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
 import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
 import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
+import { projectKinLook } from "../pixelkin/agent-kin.js";
 
 const pages = [
   { id: "general", name: "General", Icon: Settings2 },
@@ -53,6 +54,11 @@ const pages = [
   { id: "sync", name: "Sync", Icon: RefreshCw }
 ] as const;
 export type ProjectSettingsPage = (typeof pages)[number]["id"];
+
+// Personal Device Sync is opt-in; while it is off there is nothing to review.
+const deviceSyncEnabled = () =>
+  typeof window !== "undefined" &&
+  window.koedDesktop?.featureFlags?.personalDeviceSyncEnabled === true;
 
 function stagedApprovalKey(projectId: string, row: SuggestionRow): string {
   return JSON.stringify([
@@ -71,7 +77,8 @@ export function ProjectSettingsDialog({
   onClose,
   onSave,
   onRefresh,
-  onDelete
+  onDelete,
+  deviceSync = deviceSyncEnabled()
 }: {
   api: PersonalDesktopApi;
   store: PersonalMemoryStore;
@@ -91,12 +98,19 @@ export function ProjectSettingsDialog({
   ) => Promise<readonly DesktopProject[] | null>;
   onRefresh: () => Promise<readonly DesktopProject[]>;
   onDelete: (project: DesktopProject) => Promise<void>;
+  /** Shows the Sync page; defaults to the Personal Device Sync switch. */
+  deviceSync?: boolean;
 }) {
+  const visiblePages = deviceSync
+    ? pages
+    : pages.filter(({ id }) => id !== "sync");
   const [reviewedProjects, setReviewedProjects] = useState<
     readonly DesktopProject[] | null
   >(projects);
   const [active, setActive] = useState(projectId);
-  const [panel, setPanel] = useState<ProjectSettingsPage>(page);
+  const [panel, setPanel] = useState<ProjectSettingsPage>(
+    page === "sync" && !deviceSync ? "general" : page
+  );
   const livePanel = useRef(panel);
   const showPanel = (next: ProjectSettingsPage) => {
     livePanel.current = next;
@@ -323,13 +337,17 @@ export function ProjectSettingsDialog({
           value={active}
           options={named.map((p) => ({
             value: p.id,
-            label: p.id === active ? draft?.name || p.name : p.name
+            label: p.id === active ? draft?.name || p.name : p.name,
+            look:
+              p.id === active && draft
+                ? draft.look
+                : projectKinLook(p.id, p.namedProject?.kin)
           }))}
           onChange={switchProject}
           disabled={busy || !reviewedProjects}
         />
         <div className="v1-pm-settings-links">
-          {pages.map(({ id, name, Icon }) => (
+          {visiblePages.map(({ id, name, Icon }) => (
             <Button
               key={id}
               variant="ghost"
@@ -416,12 +434,12 @@ export function ProjectSettingsDialog({
                   Conversations
                 </Badge>
                 <Badge>
-                  {projectRules(draft).length} rule
+                  {projectRules(draft).length} Anchor
                   {projectRules(draft).length === 1 ? "" : "s"}
                 </Badge>
               </div>
               <div className="v1-pm-setting-row">
-                <span>Folders and Git Anchors</span>
+                <span>Anchors</span>
                 <Button
                   variant="ghost"
                   size="sm"

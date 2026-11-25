@@ -1,5 +1,5 @@
 import { KoedLogo } from "../KoedLogo.js";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
   Sidebar,
   SidebarProvider,
@@ -19,7 +19,11 @@ import {
   Folder,
   Settings
 } from "lucide-react";
-import { ProjectSidebar, type SidebarManagement } from "./ProjectSidebar.js";
+import {
+  ProjectSidebar,
+  type SidebarLive,
+  type SidebarManagement
+} from "./ProjectSidebar.js";
 import { AccountMenu } from "./account-menu.js";
 import type { AccountDesktopApi } from "@koed-labs/shared/account";
 import {
@@ -52,11 +56,17 @@ type Props = {
   loading?: boolean;
   servicesStarting?: boolean;
   inventoryReady?: boolean;
+  anchorInventoryReady?: boolean;
   error?: string | null;
   onRetry: () => void;
   management?: SidebarManagement;
   update?: DesktopUpdateController;
   accountApi?: AccountDesktopApi;
+  // The live Chief of Staff Kin takes the logo's place on the Home button.
+  kinAvatar?: ReactNode;
+  kinChips?: ReactNode;
+  kinLive?: SidebarLive;
+  kinPanel?: (focusFallback: () => void, projectsVisible: boolean) => ReactNode;
 };
 export function NavigationShell(props: Props) {
   return (
@@ -69,9 +79,18 @@ export function NavigationShell(props: Props) {
   );
 }
 function ShellContent(props: Props) {
-  const { isMobile, setOpen, setOpenMobile } = useSidebar();
+  const { isMobile, open, openMobile, setOpen, setOpenMobile } = useSidebar();
+  const projectsVisible = isMobile ? openMobile : open;
   const searchRef = useRef<HTMLInputElement>(null);
   const mainRef = useRef<HTMLElement>(null);
+  const projectsVisibleRef = useRef(projectsVisible);
+  projectsVisibleRef.current = projectsVisible;
+  const focusKinFallback = useCallback(() => {
+    const target = projectsVisibleRef.current
+      ? searchRef.current
+      : mainRef.current;
+    target?.focus({ preventScroll: true });
+  }, []);
   const routeKey = JSON.stringify(props.route);
   useEffect(() => {
     setOpenMobile(false);
@@ -109,11 +128,12 @@ function ShellContent(props: Props) {
     label: string,
     icon: ReactNode,
     onClick: () => void,
-    active = false
+    active = false,
+    className = ""
   ) => (
     <SidebarMenuItem>
       <SidebarMenuButton
-        className="v1-nav-rail-button"
+        className={`v1-nav-rail-button ${className}`}
         aria-label={label}
         title={label}
         isActive={active}
@@ -132,14 +152,25 @@ function ShellContent(props: Props) {
       >
         <SidebarHeader>
           <SidebarMenu>
-            {railButton(
-              "Koed, home",
-              <KoedLogo color className="v1-logo" />,
-              props.onHome,
-              props.route.kind === "home"
-            )}
+            {props.kinAvatar
+              ? railButton(
+                  "Koed, home",
+                  props.kinAvatar,
+                  props.onHome,
+                  props.route.kind === "home",
+                  "v1-nav-rail-kin"
+                )
+              : railButton(
+                  "Koed, home",
+                  <KoedLogo color className="v1-logo" />,
+                  props.onHome,
+                  props.route.kind === "home"
+                )}
           </SidebarMenu>
         </SidebarHeader>
+        {props.kinChips && (
+          <div className="fk-rail-activity">{props.kinChips}</div>
+        )}
         <SidebarFooter>
           <SidebarMenu>
             {railButton(
@@ -163,7 +194,7 @@ function ShellContent(props: Props) {
       <Sidebar
         collapsible="offcanvas"
         className="v1-app v1-navigation-sidebar"
-        aria-label="Conversations and Projects"
+        aria-label="Projects and Anchors"
       >
         <ProjectSidebar
           key={props.scopeKey}
@@ -178,13 +209,16 @@ function ShellContent(props: Props) {
           loading={props.loading}
           servicesStarting={props.servicesStarting}
           inventoryReady={props.inventoryReady}
+          anchorInventoryReady={props.anchorInventoryReady}
           error={props.error}
           onRetry={props.onRetry}
           reveal={props.revealProject ?? null}
           management={props.management}
+          live={props.kinLive}
         />
         {props.update ? <DesktopUpdateNotice update={props.update} /> : null}
       </Sidebar>
+      {props.kinPanel?.(focusKinFallback, projectsVisible)}
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>
         <header className="v1-navigation-bar">
           <SidebarTrigger

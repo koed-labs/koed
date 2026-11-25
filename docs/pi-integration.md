@@ -186,6 +186,21 @@ Watcher:
 
 Pi `--no-session` sessions have no source artifact and cannot be captured automatically. Extension reports warning instead of healthy capture.
 
+### Floating Kin status
+
+On Pi versions that emit `agent_start` and `agent_settled`, the Koed extension
+reports a **Working** signal to the authenticated Local AI Runtime on loopback.
+It renews the signal every five seconds during work and clears it on settlement
+or session shutdown. If Pi exits unexpectedly, the last signal expires after
+15 seconds. Koed shows the badge only on an existing recent Personal
+Conversation chip while Pi is connected and its Capture Policy allows it. No
+badge is not an idle signal. Run Pi setup again and restart Pi to load an
+updated Koed extension.
+
+The signal contains only a session identifier, a publisher identifier, and
+lifecycle timing and state. It is not persisted or sent to a remote backend.
+This does not change the Transcript Watcher, Projection, or response streaming.
+
 ### Projection
 
 Adapter tuple:
