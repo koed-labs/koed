@@ -168,6 +168,8 @@ export function FloatingKinPanel({
           : "";
   const showingSummary =
     view && (working || isCancelling || result?.status === "answered");
+  // The first preview for this Conversation hasn't arrived yet.
+  const loading = !showingSummary && preview === undefined;
   const title = showingSummary
     ? view.request.action === "project"
       ? "Project summary"
@@ -188,9 +190,11 @@ export function FloatingKinPanel({
           <h2
             id="fk-panel-title"
             title={title || undefined}
-            aria-busy={title ? undefined : true}
+            aria-busy={loading || undefined}
           >
-            {openConversation && !showingSummary && title ? (
+            {loading ? (
+              <span className="fk-skeleton fk-skeleton-title" aria-hidden />
+            ) : openConversation && !showingSummary && title ? (
               <button
                 type="button"
                 className="fk-title-link"
@@ -233,9 +237,19 @@ export function FloatingKinPanel({
         }
       >
         <div className="fk-body-content">
-          <p role="status" className="fk-note">
-            {status}
+          <p
+            role="status"
+            className={loading ? "fk-note fk-visually-hidden" : "fk-note"}
+          >
+            {loading ? "Loading captured context…" : status}
           </p>
+          {loading && (
+            <div className="fk-copy fk-preview-loading" aria-hidden>
+              <span className="fk-skeleton" style={{ width: "38%" }} />
+              <span className="fk-skeleton" style={{ width: "92%" }} />
+              <span className="fk-skeleton" style={{ width: "64%" }} />
+            </div>
+          )}
           {!showingSummary && preview && <CapturedPreview preview={preview} />}
           {result?.status === "answered" ? <Answer result={result} /> : null}
           {working ? (

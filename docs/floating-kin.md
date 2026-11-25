@@ -28,7 +28,8 @@ including when the Projects and Anchors sidebar is collapsed. The floating
 overlay keeps its chips above the Kin. A Conversation in exactly one named
 Project uses that Project's Kin; one in zero or several uses the neutral Kin.
 Anchors don't supply a Kin. A Conversation the Kin is tracking also shows the live
-dot or its capture age at the end of its sidebar row; click it to open the
+dot or its capture age at the end of its sidebar row (hovering the row shows its
+Actions button there instead, as with a row's time); click it to open the
 same dialog as a chip, beside the row.
 
 On macOS, turn on **Chief of Staff** under **Settings → General** to let the Kin

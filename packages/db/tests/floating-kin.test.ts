@@ -319,10 +319,23 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
       { type: "message", role: "assistant", secondsAgo: 60 },
       { type: "message", role: "developer", secondsAgo: 1 }
     ]);
+    // Renaming or rolling back a finished thread isn't a new turn.
+    const codexRenamed = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 90 },
+      { type: "task_complete", secondsAgo: 60 },
+      { type: "thread_name_updated", secondsAgo: 1 }
+    ]);
+    const codexRolledBack = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 90 },
+      { type: "task_complete", secondsAgo: 60 },
+      { type: "thread_rolled_back", secondsAgo: 1 }
+    ]);
     expect(await turnsFor()).toEqual({
       [codexToolSearch]: "active",
       [codexFreshReply]: "active",
-      [codexQuietReply]: "idle"
+      [codexQuietReply]: "idle",
+      [codexRenamed]: "idle",
+      [codexRolledBack]: "idle"
     });
   });
 

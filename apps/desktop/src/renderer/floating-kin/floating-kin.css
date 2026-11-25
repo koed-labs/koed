@@ -150,13 +150,25 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   display: none;
 }
 .v1-nav-conversation-wrap[data-live] .v1-nav-conversation {
-  padding-right: 92px;
+  padding-right: 64px;
 }
-/* The marker keeps one place, clear of the row's Actions button, so hovering
-   the row never moves it under the pointer. */
+.v1-nav-conversation-wrap:is(:hover, :focus-within)
+  .fk-row-live:not(:focus-visible) {
+  visibility: hidden;
+}
+.v1-nav-conversation-wrap:has(.fk-row-live:focus-visible) .v1-pm-row-menu {
+  opacity: 0;
+}
+@media (hover: none) {
+  .fk-row-live {
+    visibility: hidden;
+  }
+}
+/* The marker sits where a row's time would. Like the time, it gives way to
+   the row's Actions button on hover; keyboard focus keeps it reachable. */
 .fk-row-live {
   position: absolute;
-  right: 34px;
+  right: 6px;
   top: 50%;
   translate: 0 -50%;
   display: flex;
@@ -235,6 +247,47 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 .fk-surface[data-fk-placement="anchored"] .fk-panel {
   position: relative;
   max-height: inherit;
+}
+/* Placeholder lines while the first preview loads. */
+.fk-skeleton {
+  display: block;
+  height: 0.8em;
+  border-radius: 4px;
+  background: var(--fk-subtle);
+}
+.fk-skeleton-title {
+  width: 60%;
+  height: 1em;
+  margin-block: 0.2em;
+}
+.fk-preview-loading {
+  display: grid;
+  gap: 7px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .fk-skeleton {
+    animation: fk-skeleton-pulse 1.2s ease-in-out infinite alternate;
+  }
+}
+@keyframes fk-skeleton-pulse {
+  to {
+    opacity: 0.45;
+  }
+}
+.fk-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* In the modal sidebar sheet the panel spans the sheet, over its rows. */
+.fk-surface[data-fk-in-modal] .fk-panel {
+  width: 100%;
+}
+.fk-surface[data-fk-in-modal] .fk-panel::before {
+  display: none;
 }
 /* A pointer on the panel's leading edge ties it to the chip or row that
    opened it. */

@@ -907,6 +907,12 @@ export function V1App({
       : Promise.resolve(false);
   };
   // The Chief of Staff opens a captured Conversation by its session id.
+  // A Conversation the Kin knows about may be newer than the cached rows
+  // (captured while Desktop was in the background). When its row is missing,
+  // refresh once and report the rows as loading until that refresh lands, so
+  // a held request isn't dropped against stale rows.
+  const kinRefresh = useRef(false);
+  const [kinRefreshing, setKinRefreshing] = useState(false);
   const openKinConversation = useCallback(
     (sessionId: string) => {
       for (const project of sidebarProjects) {
@@ -919,9 +925,17 @@ export function V1App({
         setRoute({ ...openSidebarConversation(row), sessionId });
         return true;
       }
+      if (!kinRefresh.current) {
+        kinRefresh.current = true;
+        setKinRefreshing(true);
+        void loadInventory({ silent: true }).finally(() => {
+          kinRefresh.current = false;
+          setKinRefreshing(false);
+        });
+      }
       return false;
     },
-    [sidebarProjects]
+    [sidebarProjects, loadInventory]
   );
   const openProject = (projectId: string) => {
     const latest = sidebarProjects
@@ -1105,9 +1119,11 @@ export function V1App({
     openKinConversation,
     {
       route,
-      rowsLoaded: Boolean(
-        snapshot && ((inventoryReady && !snapshot.loading) || snapshot.error)
-      )
+      rowsLoaded:
+        !kinRefreshing &&
+        Boolean(
+          snapshot && ((inventoryReady && !snapshot.loading) || snapshot.error)
+        )
     }
   );
   if (!profile)

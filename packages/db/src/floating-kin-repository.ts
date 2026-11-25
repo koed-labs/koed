@@ -84,9 +84,10 @@ const floatingKinRecentItemSql = `
 // writes many native event types, so every Codex item counts as work except
 // bookkeeping records and developer or system messages.
 export const floatingKinTurnQuietSeconds = 30;
+// Thread renames and rollbacks change the thread, not the turn.
 const codexBookkeepingEvents = `('token_count','token_usage_record','world_state',
   'session_meta','turn_context','thread_settings_applied',
-  'inter_agent_communication_metadata')`;
+  'inter_agent_communication_metadata','thread_name_updated','thread_rolled_back')`;
 const codexMessageRoleSql = `ci.raw_json->'payload'->>'role'`;
 export const floatingKinTurnActiveMinutes = 10;
 const floatingKinTurnSql = (owner: string) => `

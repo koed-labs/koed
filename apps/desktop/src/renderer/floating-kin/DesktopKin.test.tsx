@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, useCallback } from "react";
+import { act, useCallback, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import type {
@@ -303,6 +303,82 @@ it("opens a Conversation requested while Desktop is still loading once its row a
     await render([], chosen, true);
     await render(["c"], chosen, true);
     expect(opened).toEqual(["a"]);
+  } finally {
+    await act(async () => root.unmount());
+    mount.remove();
+  }
+});
+
+it("keeps a request for a newly captured Conversation through the refresh it starts", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const root = createRoot(mount);
+  let showConversation: (sessionId: string) => void = () => {};
+  const bridge = {
+    onPresentation: (listener: (state: KinPresentation) => void) => {
+      listener({ placement: "sidebar", revision: 0 });
+      return () => {};
+    },
+    setShellVisible: vi.fn(),
+    onOpenAiModels: () => () => {},
+    onOpenConversation: (listener: (sessionId: string) => void) => {
+      showConversation = listener;
+      return () => {};
+    },
+    confirmPresentation: vi.fn(),
+    activity: vi.fn(async () => ({
+      state: "running" as const,
+      overflowCount: 0,
+      conversations: []
+    })),
+    summarize: vi.fn(async () => ({ status: "unavailable" as const })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
+    cancel: vi.fn(async () => {})
+  } as unknown as DesktopKinBridge;
+  const opened: string[] = [];
+  let finishRefresh: (rows: string[]) => void = () => {};
+  // Mirrors App: a miss starts a refresh, and rows count as loading until
+  // the refresh lands.
+  function Harness({ route }: { route: object }) {
+    const [rows, setRows] = useState<string[]>([]);
+    const [refreshing, setRefreshing] = useState(false);
+    finishRefresh = (next) => {
+      setRows(next);
+      setRefreshing(false);
+    };
+    const open = useCallback(
+      (sessionId: string) => {
+        if (rows.includes(sessionId)) {
+          opened.push(sessionId);
+          return true;
+        }
+        setRefreshing(true);
+        return false;
+      },
+      [rows]
+    );
+    useDesktopKin(bridge, null, true, undefined, open, {
+      route,
+      rowsLoaded: !refreshing
+    });
+    return null;
+  }
+  const home = { kind: "home" };
+  try {
+    await act(async () => root.render(<Harness route={home} />));
+    await act(async () => showConversation("new"));
+    expect(opened).toEqual([]);
+    await act(async () => finishRefresh(["new"]));
+    expect(opened).toEqual(["new"]);
+
+    // Choosing somewhere else during the refresh still cancels it.
+    await act(async () => showConversation("later"));
+    const chosen = { kind: "recall" };
+    await act(async () => root.render(<Harness route={chosen} />));
+    await act(async () => finishRefresh(["new", "later"]));
+    expect(opened).toEqual(["new"]);
   } finally {
     await act(async () => root.unmount());
     mount.remove();
@@ -645,6 +721,109 @@ it("opens a row's panel inside the modal sidebar so it can take clicks and focus
     const panel = document.querySelector('[data-fk-placement="anchored"]');
     expect(panel).not.toBeNull();
     expect(panel!.closest('[data-testid="modal"]')).not.toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    mount.remove();
+  }
+});
+
+it("closes a row's panel on a press outside it, but not inside", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const root = createRoot(mount);
+  const sessionId = "00000000-0000-4000-8000-0000000000b1";
+  const bridge = {
+    onPresentation: (listener: (state: KinPresentation) => void) => {
+      listener({ placement: "sidebar", revision: 0 });
+      return () => {};
+    },
+    setShellVisible: vi.fn(),
+    onOpenAiModels: () => () => {},
+    onOpenConversation: () => () => {},
+    confirmPresentation: vi.fn(),
+    activity: vi.fn(async () => ({
+      state: "running" as const,
+      overflowCount: 0,
+      conversations: [
+        {
+          sessionId,
+          client: "codex" as const,
+          lastActivityAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          projectId: null
+        }
+      ]
+    })),
+    summarize: vi.fn(async () => ({ status: "unavailable" as const })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
+    cancel: vi.fn(async () => {})
+  } as unknown as DesktopKinBridge;
+  const projects: SidebarProject[] = [
+    {
+      id: "project",
+      name: "Koed",
+      latestAt: new Date().toISOString(),
+      conversations: [
+        {
+          key: `session:${sessionId}`,
+          aliases: [`session:${sessionId}`],
+          title: "Modal row",
+          client: "codex",
+          latestAt: new Date().toISOString(),
+          sessionId,
+          route: { kind: "conversation", projectId: "project", threadId: "t" },
+          projectName: "Koed"
+        }
+      ]
+    }
+  ];
+  const noop = () => {};
+  function Harness() {
+    const kin = useDesktopKin(bridge, null, true);
+    return (
+      <div>
+        <NavigationShell
+          projects={projects}
+          route={{ kind: "home" }}
+          scopeKey={null}
+          onSelect={noop}
+          onHome={noop}
+          onSettings={noop}
+          onBack={noop}
+          onForward={noop}
+          canGoBack={false}
+          canGoForward={false}
+          onRetry={noop}
+          kinAvatar={kin.avatar}
+          kinLive={kin.live}
+          kinPanel={kin.panel}
+          kinChips={kin.chips}
+        >
+          home
+        </NavigationShell>
+      </div>
+    );
+  }
+  try {
+    await act(async () => root.render(<Harness />));
+    const marker = () =>
+      mount.querySelector<HTMLButtonElement>(".v1-nav-projects .fk-row-live");
+    await vi.waitFor(() => expect(marker()).not.toBeNull());
+    await act(async () => marker()!.click());
+    const panel = () =>
+      document.querySelector('[data-fk-placement="anchored"]');
+    expect(panel()).not.toBeNull();
+    const press = (target: Element) =>
+      act(async () => {
+        target.dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true })
+        );
+      });
+    await press(panel()!.querySelector("button")!);
+    expect(panel()).not.toBeNull();
+    await press(document.body);
+    expect(panel()).toBeNull();
   } finally {
     await act(async () => root.unmount());
     mount.remove();

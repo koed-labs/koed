@@ -35,6 +35,7 @@ type Anchor = {
 };
 
 const panelGap = 8;
+const modalInset = 8;
 
 // Beside the chip or row that opened the panel.
 function anchorFor(trigger: HTMLElement): Anchor {
@@ -94,19 +95,26 @@ function AnchoredPanel({
   }, [surface]);
   const top = fitPanelTop(anchor.top, height, window.innerHeight);
   // Inside the modal sidebar, fixed positioning is relative to its popup
-  // (it is transformed), so convert from window coordinates.
-  const origin = anchor.modal?.getBoundingClientRect() ?? { top: 0, left: 0 };
+  // (it is transformed), so convert from window coordinates. The sheet clips
+  // anything beyond its edge, so the panel spans the sheet instead of opening
+  // beside the row.
+  const sheet = anchor.modal?.getBoundingClientRect();
+  const origin = sheet ?? { top: 0, left: 0 };
   return createPortal(
     <section
       className="fk-surface"
       data-fk-placement="anchored"
+      data-fk-in-modal={sheet ? true : undefined}
       aria-label="Chief of Staff activity"
       ref={surface}
       tabIndex={-1}
       style={
         {
           top: top - origin.top,
-          left: anchor.left - origin.left,
+          left: sheet ? modalInset : anchor.left - origin.left,
+          ...(sheet
+            ? { width: Math.max(0, sheet.width - 2 * modalInset) }
+            : {}),
           "--fk-pointer-top": `${anchor.pointer + anchor.top - top}px`
         } as React.CSSProperties
       }
@@ -142,36 +150,34 @@ export function useDesktopKin(
   useLayoutEffect(() => {
     if (openAiModels) return bridge?.onOpenAiModels(openAiModels);
   }, [bridge, openAiModels]);
-  // A request from the overlay can arrive while Desktop is still loading its
-  // rows. Hold it, and retry whenever the rows change, until it opens, the
-  // rows finish loading without it, or the User goes somewhere else.
-  const pendingOpen = useRef<{ sessionId: string; route: unknown } | null>(
-    null
-  );
+  // A request from the overlay can arrive before Desktop has the row: while
+  // it is still loading, or before a refresh brings in a newly captured
+  // Conversation. Hold it, and retry whenever the rows change, until it
+  // opens, loading settles without it, or the User goes somewhere else.
+  const [pendingOpen, setPendingOpen] = useState<{
+    sessionId: string;
+    route: unknown;
+  } | null>(null);
   const route = navigation?.route;
   const rowsLoaded = navigation?.rowsLoaded ?? true;
-  const latestNavigation = useRef({ route, rowsLoaded });
-  latestNavigation.current = { route, rowsLoaded };
+  const latestRoute = useRef(route);
+  latestRoute.current = route;
   useLayoutEffect(() => {
     if (openConversation)
       return bridge?.onOpenConversation((sessionId) => {
-        const current = latestNavigation.current;
-        pendingOpen.current =
-          openConversation(sessionId) || current.rowsLoaded
+        setPendingOpen(
+          openConversation(sessionId)
             ? null
-            : { sessionId, route: current.route };
+            : { sessionId, route: latestRoute.current }
+        );
       });
   }, [bridge, openConversation]);
   useEffect(() => {
-    const pending = pendingOpen.current;
-    if (!pending || !openConversation) return;
-    if (pending.route !== route) {
-      pendingOpen.current = null;
-      return;
-    }
-    if (openConversation(pending.sessionId) || rowsLoaded)
-      pendingOpen.current = null;
-  }, [openConversation, route, rowsLoaded]);
+    if (!pendingOpen || !openConversation) return;
+    if (pendingOpen.route !== route) setPendingOpen(null);
+    else if (openConversation(pendingOpen.sessionId) || rowsLoaded)
+      setPendingOpen(null);
+  }, [openConversation, pendingOpen, route, rowsLoaded]);
   useLayoutEffect(() => {
     bridge?.setShellVisible(shellVisible);
   }, [bridge, shellVisible]);
@@ -227,6 +233,24 @@ export function useDesktopKin(
     };
   }, [anchor, summary.selected]);
   const { toggle, close } = summary;
+  // A pointer press outside the open panel (and its trigger) closes it.
+  const dismissPanel = summary.dismiss;
+  useEffect(() => {
+    if (!summary.selected || !anchor) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        !(target instanceof Node) ||
+        surface.current?.contains(target) ||
+        anchor.trigger.contains(target)
+      )
+        return;
+      dismissPanel();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () =>
+      document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [anchor, dismissPanel, summary.selected]);
   // A click while the Kin is still moving back to the sidebar is queued and
   // replayed once the sidebar holds it, instead of being silently dropped.
   const queuedOpen = useRef<{

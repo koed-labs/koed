@@ -1,6 +1,8 @@
 /** Browser-only validation entry; never imported by the packaged application. */
 import { useMemo, useState } from "react";
 import { NavigationShell } from "./renderer/v1/NavigationShell.js";
+import { useDesktopKin } from "./renderer/floating-kin/DesktopKin.js";
+import type { DesktopKinBridge } from "./ipc/floating-kin-protocol.js";
 import type { AccountDesktopApi } from "@koed-labs/shared/account";
 import {
   buildProjectSidebar,
@@ -30,6 +32,53 @@ const thread = (
   invalidatedCount: 0,
   sample: ""
 });
+// `?kin=1` docks a tracked Conversation under the Kin so Electron checks can
+// click its sidebar marker and panel. Summaries never resolve; the count of
+// requests shows whether a click reached the Summarize button.
+declare global {
+  interface Window {
+    __kinSummaryRequests?: number;
+  }
+}
+const kinEnabled = new URLSearchParams(location.search).has("kin");
+const kinBridge: DesktopKinBridge = {
+  onPresentation: (listener) => {
+    listener({ placement: "sidebar", revision: 0 });
+    return () => {};
+  },
+  setShellVisible: () => {},
+  onOpenAiModels: () => () => {},
+  onOpenConversation: () => () => {},
+  confirmPresentation: () => {},
+  activity: async () => ({
+    state: "running",
+    overflowCount: 0,
+    conversations: [
+      {
+        sessionId: "bundle",
+        client: "codex",
+        projectId: "koed",
+        lastActivityAt: new Date(Date.now() - 5 * 60_000).toISOString()
+      }
+    ]
+  }),
+  preview: async () => ({
+    title: "And this bundling would be considered safe",
+    projectName: "koed",
+    request: {
+      text: "Is the bundled runtime safe to ship?",
+      occurredAt: new Date().toISOString()
+    },
+    reply: null
+  }),
+  summarize: () => {
+    window.__kinSummaryRequests = (window.__kinSummaryRequests ?? 0) + 1;
+    return new Promise(() => {});
+  },
+  latest: async () => ({ action: null }),
+  reopen: async () => null,
+  cancel: async () => {}
+};
 const fixtures = [
   {
     id: "koed",
@@ -86,6 +135,7 @@ export function SidebarValidation({
   const [light, setLight] = useState(false);
   const [notice, setNotice] = useState("");
   const navigation = useNavigationHistory(scope);
+  const kin = useDesktopKin(kinEnabled ? kinBridge : undefined, scope, true);
   const groups = buildProjectSidebar(source, [], new Map());
   const route = navigation.route;
   const origin =
@@ -173,6 +223,10 @@ export function SidebarValidation({
         canGoBack={navigation.canGoBack}
         canGoForward={navigation.canGoForward}
         onRetry={() => {}}
+        kinAvatar={kin.avatar}
+        kinChips={kin.chips}
+        kinLive={kin.live}
+        kinPanel={kin.panel}
       >
         {current ? (
           <ValidationConversation

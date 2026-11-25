@@ -415,7 +415,12 @@ describe("Floating Kin", () => {
     vi.mocked(bridge.preview).mockReturnValueOnce(fresh.promise);
     await click("Conversation 1");
     expect(mount.textContent).not.toContain("Old request in A");
+    // A clean loading state while the fresh read is pending.
+    expect(mount.querySelector(".fk-preview-loading")).not.toBeNull();
+    expect(mount.querySelector("#fk-panel-title .fk-skeleton")).not.toBeNull();
+    expect(mount.textContent).toContain("Loading captured context…");
     await act(async () => fresh.resolve(null));
+    expect(mount.querySelector(".fk-preview-loading")).toBeNull();
     expect(mount.textContent).not.toContain("Old request in A");
   });
 
