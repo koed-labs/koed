@@ -365,6 +365,144 @@ describe("V1Settings", () => {
       "Memory Model saved for all four tasks."
     );
   });
+  it("keeps signed-out Claude connected without offering Repair for sign-in", async () => {
+    const writeText = vi.fn(async () => undefined);
+    window.koedDesktop = {
+      clipboard: { writeText }
+    } as unknown as typeof window.koedDesktop;
+    snapshot = {
+      ...snapshot,
+      status: {
+        claudeCode: {
+          configured: true,
+          state: "needs_attention",
+          details: { captureConfigured: true, mcpConfigured: true }
+        },
+        aiClients: {
+          claude: {
+            installed: { state: "healthy" },
+            authentication: "unauthenticated",
+            capabilities: []
+          }
+        }
+      } as never
+    };
+    run.mockResolvedValue({ ok: false });
+    await render("ai");
+    const row = container.querySelector('.client-row[data-client="claude"]')!;
+    expect(row.querySelector('[data-slot="badge"]')?.textContent).toBe(
+      "Connected"
+    );
+    expect(row.textContent).toContain(
+      "Recall through Claude Code is unavailable"
+    );
+    expect(row.textContent).toContain("MCP installed");
+    expect(row.textContent).toContain(
+      "Claude Desktop sign-in doesn’t sign in the CLI"
+    );
+    const click = async (label: string) =>
+      act(async () => {
+        [...row.querySelectorAll("button")]
+          .find(
+            (button) =>
+              button.textContent === label ||
+              button.getAttribute("aria-label") === label
+          )!
+          .click();
+      });
+    await click("Copy command");
+    expect(writeText).toHaveBeenCalledWith("claude auth login");
+    await click("Check again");
+    expect(run).toHaveBeenCalledWith("check_claude");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await click("Claude Code actions");
+    expect(container.textContent).not.toContain("Repair integration");
+  });
+
+  it("shows a fault for partial Claude integration even if not fully configured", async () => {
+    snapshot = {
+      ...snapshot,
+      status: {
+        claudeCode: {
+          configured: false,
+          detected: true,
+          state: "not_configured",
+          message:
+            "Claude Code's Koed MCP or Capture Hook configuration is incomplete.",
+          details: { captureConfigured: false, mcpConfigured: true }
+        }
+      } as never
+    };
+    await render("ai");
+    const row = container.querySelector('.client-row[data-client="claude"]')!;
+    expect(row.querySelector('[data-slot="badge"]')?.textContent).toBe(
+      "Needs attention"
+    );
+    expect(row.textContent).toContain("configuration is incomplete");
+  });
+
+  it.each(["missing model", "stale", "not ready", "partial catalog"])(
+    "retains a saved model (%s)",
+    async (state) => {
+      const fixture = memoryModelFixture(() => ["codex", "claude"]);
+      const initial = (await fixture.list()).readModel;
+      const readModel = {
+        ...initial,
+        settings: [
+          {
+            flowKey: "mcp_memory_answer" as const,
+            provider: "claude" as const,
+            aiClientInstanceId: "claude.default",
+            model: state === "not ready" ? "haiku" : "retired-model",
+            reasoningEffort: "medium",
+            timeoutMs: 120000,
+            maxAttempts: 2,
+            createdAt: "",
+            updatedAt: ""
+          }
+        ],
+        capabilitySnapshots: initial.capabilitySnapshots.map((capability) => ({
+          ...capability,
+          stale: state === "stale",
+          ...(state === "partial catalog" ? { modelCatalogPartial: true } : {}),
+          ...(state === "not ready" &&
+          capability.instanceId === "claude.default"
+            ? {
+                localSynthesis: {
+                  support: "supported" as const,
+                  readiness: "not_ready" as const
+                }
+              }
+            : {})
+        }))
+      };
+      const api = {
+        ...fixture,
+        set: vi.fn(),
+        reset: vi.fn(),
+        list: vi.fn(async () => ({ operation: "list" as const, readModel })),
+        refresh: vi.fn(async () => ({
+          operation: "refresh" as const,
+          readModel
+        })),
+        setMemoryModel: vi.fn(fixture.setMemoryModel)
+      };
+      await render("ai", { localAiClients: api });
+      const model = container.querySelector('[aria-label="Memory Model"]')!;
+      const savedModel = readModel.settings[0]!.model;
+      expect(model.textContent).toContain(
+        `Saved: Claude Code · ${savedModel} · medium`
+      );
+      if (state === "stale" || state === "partial catalog")
+        expect(model.querySelector('[role="alert"]')).toBeNull();
+      else
+        expect(model.querySelector('[role="alert"]')?.textContent).toContain(
+          savedModel
+        );
+      expect(api.setMemoryModel).not.toHaveBeenCalled();
+    }
+  );
+
   it("opens General for an old Your agent navigation entry", async () => {
     await render("agent");
     const selected = container.querySelector(

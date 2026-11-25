@@ -1040,6 +1040,13 @@ describe("Home", () => {
     const entries = [entry("koed", "2026-11-03T11:00:00Z")];
     for (const view of [reading(2), projectReading(2)]) {
       await render({ entries, view, showStageHost: false });
+      if (view.kind === "projects") {
+        await act(async () =>
+          container
+            .querySelector<HTMLButtonElement>(".v1-home-top-progress button")!
+            .focus()
+        );
+      }
       expect(
         container.querySelector('.v1-home-progress [role="progressbar"]')
       ).not.toBeNull();
@@ -1400,22 +1407,43 @@ describe("Home", () => {
         ingestion: view.kind === "ingesting" ? view.ingestion : undefined
       }
     });
+    const chip = container.querySelector<HTMLButtonElement>(
+      ".v1-home-top-progress button"
+    )!;
+    const bar = () => container.querySelector('[role="progressbar"]');
+    expect(bar()).toBeNull();
+    const keycap = container.querySelector(".v1-home-keycap")!;
+    expect(
+      container.querySelector(".v1-home-keycaps .v1-home-pill")
+    ).toBeNull();
+    expect(
+      keycap.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    await act(async () =>
+      chip.dispatchEvent(
+        new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })
+      )
+    );
+    expect(bar()).not.toBeNull();
+    await act(async () =>
+      chip.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse" })
+      )
+    );
+    expect(bar()).toBeNull();
+    await act(async () => chip.focus());
+    expect(bar()).not.toBeNull();
+    await act(async () => chip.click());
+    await act(async () => chip.blur());
     expect(container.textContent).toContain(
       "3 of 10 found conversations processed"
     );
-    // The bar sits above the AI Client keycaps.
-    const top = container.querySelector(".v1-home-stage-top")!;
-    expect(
-      top.firstElementChild?.querySelector('[role="progressbar"]')
-    ).not.toBeNull();
-    expect(
-      top.querySelector(".v1-home-top-progress + .v1-home-keycaps")
-    ).not.toBeNull();
-    expect(
-      [...container.querySelectorAll(".v1-home-pill")].map(
-        (pill) => pill.textContent
+    await act(async () =>
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
       )
-    ).toEqual(["3 of 10 finished"]);
+    );
+    expect(bar()).toBeNull();
     expect(container.querySelector("[data-coin-target]")).not.toBeNull();
   });
 
@@ -1572,6 +1600,7 @@ describe("Home", () => {
           id: "codex",
           name: "Codex",
           state: "attention",
+          repairable: true,
           label:
             "Codex Koed integration points at a different Local AI Runtime.",
           version: null

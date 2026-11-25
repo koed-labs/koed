@@ -92,6 +92,7 @@ const snapshotSchema = z
     ]),
     healthState: z.enum(["healthy", "unavailable", "incompatible", "error"]),
     models: z.array(modelSchema),
+    modelCatalogPartial: z.boolean().optional(),
     localSynthesis: capabilityDescriptorSchema,
     managedConversationStart: capabilityDescriptorSchema.optional(),
     managedConversationResume: capabilityDescriptorSchema.optional(),
