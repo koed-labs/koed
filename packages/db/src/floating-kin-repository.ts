@@ -66,6 +66,52 @@ const floatingKinRecentItemSql = `
   and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
 `;
 
+// Guess whether a Conversation's turn is underway from its latest captured
+// signal. Turn-end markers come from transcripts (Codex task_complete) and
+// hooks (Claude Code turn_completed); Pi terminal blocks are tagged with
+// semanticControl. Codex doesn't always record task_complete, so an assistant
+// reply that has been quiet for a while also counts as finished. Work with no
+// end marker counts as active only while it is fresh; otherwise the turn is
+// unknown and the chip falls back to its capture age.
+export const floatingKinTurnQuietSeconds = 30;
+export const floatingKinTurnActiveMinutes = 10;
+const floatingKinTurnSql = (owner: string) => `
+  select case
+    when sig.kind='end' then 'idle'
+    when sig.kind='reply'
+      and sig.event_time <= now() - interval '${floatingKinTurnQuietSeconds} seconds' then 'idle'
+    when sig.event_time > now() - interval '${floatingKinTurnActiveMinutes} minutes' then 'active'
+  end turn
+  from (
+    select ci.event_time, case
+      when ci.source_event_type in ('task_complete','turn_aborted','turn_completed')
+        or ci.metadata->>'semanticControl'='turn_completed' then 'end'
+      when ci.source_event_type in ('agent_message','assistant_message')
+        or (ci.metadata->>'canonicalConversationItemKind'='message'
+          and ci.metadata->>'canonicalConversationItemActor' in ('agent','assistant')
+          and coalesce(ci.raw_json->'payload'->>'role', 'assistant') <> 'user') then 'reply'
+      else 'work'
+    end kind
+    from conversation_items ci
+    where ci.session_id=recent.session_id and ci.owner_user_id=${owner}
+      and ci.visibility='personal' and ci.import_observed_at is null
+      and ci.personal_deleted_at is null and ci.memory_excluded_at is null
+      and ci.event_time is not null and ci.event_time <= now()
+      and ci.event_time > now() - interval '30 minutes'
+      and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
+      and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
+      and (
+        ci.source_event_type in ('task_complete','turn_aborted','turn_completed','task_started',
+          'user_message','agent_message','assistant_message','tool_call','tool_result','agent_reasoning')
+        or ci.metadata->>'semanticControl'='turn_completed'
+        or ci.metadata->>'canonicalConversationItemKind' in
+          ('message','tool_call','tool_result','reasoning','reasoning_summary')
+      )
+    order by ci.event_time desc, ci.source_sequence desc nulls last, ci.id desc
+    limit 1
+  ) sig
+`;
+
 export const floatingKinOwnerSelection = (actor: ActorContext) =>
   JSON.stringify({ ownerUserId: actor.userId, searchDomain: "global" });
 
@@ -84,6 +130,7 @@ export const getFloatingKinActivity = async (
     client: FloatingKinActivity["conversations"][number]["client"];
     activity_at: Date;
     total: string;
+    turn: "active" | "idle" | null;
   }>(
     `with latest as (
     select s.id session_id, max(ci.event_time) activity_at
@@ -95,20 +142,22 @@ export const getFloatingKinActivity = async (
     select *, count(*) over () total from latest
     order by activity_at desc, session_id limit $4
   )
-  select recent.*, project.project_id,
+  select recent.*, project.project_id, turn.turn,
     case when s.source_runtime='codex-cli' then 'codex' else s.source_runtime::text end client
   from recent join sessions s on s.id=recent.session_id
   cross join lateral (${floatingKinProjectLookupSql}) project
+  left join lateral (${floatingKinTurnSql("$1")}) turn on true
   order by recent.activity_at desc, recent.session_id`,
     [actor.userId, floatingKinOwnerSelection(actor), adapters, displayLimit]
   );
   return {
     conversations: result.rows.map(
-      ({ session_id, project_id, client, activity_at }) => ({
+      ({ session_id, project_id, client, activity_at, turn }) => ({
         sessionId: session_id,
         projectId: project_id,
         client,
-        lastActivityAt: activity_at.toISOString()
+        lastActivityAt: activity_at.toISOString(),
+        ...(turn ? { turn } : {})
       })
     ),
     overflowCount: Math.max(

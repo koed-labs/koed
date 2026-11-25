@@ -15,6 +15,7 @@ import type { SidebarConversation } from "../v1/project-sidebar-model.js";
 import {
   KinConversationChips,
   RailKin,
+  KinLiveStatus,
   kinConversationStatus,
   useKinActivity,
   useKinSummaryPanel
@@ -188,7 +189,7 @@ export function useDesktopKin(
               ? tracked.get(row.sessionId)
               : undefined;
             if (!conversation) return null;
-            const { age, recent } = kinConversationStatus(
+            const { age, recent, seconds } = kinConversationStatus(
               conversation,
               sample.at
             );
@@ -199,7 +200,10 @@ export function useDesktopKin(
               <button
                 type="button"
                 className="fk-row-live"
-                data-recent={recent || isWorking}
+                data-working={isWorking || undefined}
+                // Nothing to show in the first minute of an idle turn; the
+                // marker stays focusable so the panel keeps its anchor.
+                data-empty={(!isWorking && recent) || undefined}
                 aria-expanded={expanded}
                 aria-controls={expanded ? "floating-kin-summary" : undefined}
                 aria-label={`Chief of Staff summary for ${row.title}. ${clientNames[conversation.client]}. ${isWorking ? "Working. " : ""}Captured ${age} ago.`}
@@ -213,12 +217,11 @@ export function useDesktopKin(
                   }
                 }}
               >
-                <span className="fk-row-dot" aria-hidden="true" />
-                {isWorking ? (
-                  "Working"
-                ) : (
-                  <time dateTime={conversation.lastActivityAt}>{age}</time>
-                )}
+                <KinLiveStatus
+                  working={isWorking}
+                  seconds={seconds}
+                  lastActivityAt={conversation.lastActivityAt}
+                />
               </button>
             );
           }

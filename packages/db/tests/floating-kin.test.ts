@@ -126,7 +126,9 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         sessionId: session.id,
         projectId: null,
         client: index === 0 ? "claude-code" : "codex",
-        lastActivityAt: timestamp(6 - index)
+        lastActivityAt: timestamp(6 - index),
+        // A fresh request with no reply yet looks like a turn underway.
+        turn: "active"
       })),
       overflowCount: 1
     });
@@ -161,6 +163,95 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect(raw.items.map(({ kind, text }) => [kind, text])).toEqual([
       ["conversation_item", "secret"]
     ]);
+  });
+
+  it("guesses whether each Conversation's turn is underway from its latest captured signal", async () => {
+    const repo = createMemorySourceRepository(pool!);
+    const owner = await repo.createUser({
+      email: `kin-${randomUUID()}@example.test`
+    });
+    const actor = { userId: owner.id };
+    const ago = (seconds: number) =>
+      new Date(Date.now() - seconds * 1000).toISOString();
+    const conversation = async (
+      runtime: "codex-cli" | "claude-code",
+      items: Array<{
+        type: string;
+        secondsAgo: number;
+        adapter?: string;
+        transport?: "transcript" | "hook";
+      }>
+    ) => {
+      const claude = runtime === "claude-code";
+      const externalSessionId = randomUUID();
+      const session = await repo.createCapturedSession(actor, {
+        externalSessionId,
+        sourceRuntime: runtime,
+        captureMethod: "api"
+      });
+      await repo.createConversationItems(actor, {
+        items: items.map(({ type, secondsAgo, adapter, transport }, index) => ({
+          sessionId: session.id,
+          externalSessionId,
+          externalTurnId: "turn",
+          sourceSequence: index + 1,
+          externalItemId: `item-${index}`,
+          sourceKind: claude ? "claude-code" : "codex",
+          sourceAdapterVersion:
+            adapter ??
+            (claude ? "claude-code-transcript-v1" : "codex-transcript-v1"),
+          sourceTransport: transport ?? "transcript",
+          sourceRecordType: claude ? "session_message" : "event_msg",
+          sourceEventType: type,
+          eventTime: ago(secondsAgo),
+          rawJson: { type: "event_msg", payload: { type } },
+          rawText: type.endsWith("message") ? "text" : undefined,
+          sourceHash: randomUUID(),
+          idempotencyKey: randomUUID(),
+          metadata: {}
+        }))
+      });
+      return session.id;
+    };
+    const finished = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 90 },
+      { type: "agent_message", secondsAgo: 80 },
+      { type: "task_complete", secondsAgo: 79 }
+    ]);
+    const quietReply = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 120 },
+      { type: "agent_message", secondsAgo: 60 }
+    ]);
+    const working = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 70 },
+      { type: "task_started", secondsAgo: 69 },
+      { type: "agent_message", secondsAgo: 5 }
+    ]);
+    const stale = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 20 * 60 }
+    ]);
+    const claudeDone = await conversation("claude-code", [
+      { type: "user_message", secondsAgo: 50 },
+      { type: "agent_message", secondsAgo: 10 },
+      {
+        type: "turn_completed",
+        secondsAgo: 9,
+        adapter: "claude-code-hook-signal-v1",
+        transport: "hook"
+      }
+    ]);
+    const turns = Object.fromEntries(
+      (await repo.getFloatingKinActivity(actor)).conversations.map(
+        ({ sessionId, turn }) => [sessionId, turn ?? "unknown"]
+      )
+    );
+    expect(turns).toEqual({
+      [finished]: "idle",
+      [quietReply]: "idle",
+      [working]: "active",
+      [stale]: "unknown",
+      [claudeDone]: "idle"
+    });
   });
 
   const claudeTurn = async () => {

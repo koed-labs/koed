@@ -221,7 +221,7 @@ describe("Floating Kin", () => {
     await render();
 
     const chip = mount.querySelector(".fk-chip")!;
-    expect(chip.textContent).toContain("Working");
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
     expect(chip.getAttribute("aria-label")).toContain("Working");
     await click("Pi Conversation 1");
     const panel = mount.querySelector('[role="dialog"]')!;
@@ -233,9 +233,9 @@ describe("Floating Kin", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(activity).toHaveBeenCalledTimes(2);
     await act(async () => vi.advanceTimersByTimeAsync(1_999));
-    expect(chip.textContent).toContain("Working");
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
     await act(async () => vi.advanceTimersByTimeAsync(1));
-    expect(chip.textContent).not.toContain("Working");
+    expect(chip.querySelector(".fk-dot")).toBeNull();
     expect(chip.getAttribute("aria-label")).toBe(
       "Pi Conversation 1. Captured 12s ago."
     );
@@ -255,9 +255,9 @@ describe("Floating Kin", () => {
     });
     await render();
     const chip = mount.querySelector(".fk-chip")!;
-    expect(chip.textContent).toContain("Working");
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
     await act(async () => vi.advanceTimersByTimeAsync(500));
-    expect(chip.textContent).not.toContain("Working");
+    expect(chip.querySelector(".fk-dot")).toBeNull();
 
     vi.setSystemTime(new Date("2026-11-18T12:00:10.000Z"));
     vi.mocked(bridge.activity).mockResolvedValue({
@@ -268,9 +268,9 @@ describe("Floating Kin", () => {
       overflowCount: 0
     });
     await act(async () => vi.advanceTimersByTimeAsync(2_500));
-    expect(chip.textContent).toContain("Working");
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
     await act(async () => vi.advanceTimersByTimeAsync(500));
-    expect(chip.textContent).not.toContain("Working");
+    expect(chip.querySelector(".fk-dot")).toBeNull();
   });
 
   it.each([
@@ -294,7 +294,9 @@ describe("Floating Kin", () => {
       await render();
 
       const chip = mount.querySelector(".fk-chip")!;
-      expect(chip.textContent).toBe("12s");
+      // Nothing replaces the age in an idle turn's first minute.
+      expect(chip.textContent).toBe("");
+      expect(chip.querySelector(".fk-dot")).toBeNull();
       expect(chip.getAttribute("aria-label")).toBe(
         `${name} Conversation 1. Captured 12s ago.`
       );
@@ -646,6 +648,30 @@ describe("Floating Kin", () => {
       expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
     }
   );
+  it("shows the live dot for a turn captured as underway, and the age once it's idle", async () => {
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [{ ...conversation, client: "codex", turn: "active" }],
+      overflowCount: 0
+    });
+    await render();
+    const chip = mount.querySelector(".fk-chip")!;
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
+    expect(chip.textContent).toBe("");
+    expect(chip.getAttribute("aria-label")).toBe(
+      "Codex Conversation 1. Working. Captured 12s ago."
+    );
+
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [{ ...conversation, client: "codex", turn: "idle" }],
+      overflowCount: 0
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(chip.querySelector(".fk-dot")).toBeNull();
+    expect(chip.textContent).toMatch(/^1m$/);
+  });
+
   it("caps recent capture chips and includes local and remote overflow", async () => {
     bridge.activity = vi.fn(async () => ({
       state: "running" as const,
@@ -658,7 +684,6 @@ describe("Floating Kin", () => {
     await render();
     expect(mount.querySelectorAll("button[aria-expanded]")).toHaveLength(3);
     expect(mount.textContent).toContain("+3");
-    expect(mount.textContent).toContain("12s");
     expect(
       mount.querySelector('button[aria-label*="Captured 12s ago"]')
     ).not.toBeNull();

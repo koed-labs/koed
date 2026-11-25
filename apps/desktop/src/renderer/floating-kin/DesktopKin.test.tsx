@@ -206,10 +206,12 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     expect(panel()).toBeNull();
     expect(avatar()).not.toBeNull();
     expect(marker()).not.toBeNull();
+    // The Kin floats, but its chips and row markers stay in Desktop, even
+    // before the new revision's first activity read returns.
+    vi.mocked(bridge.activity).mockReturnValueOnce(new Promise(() => {}));
     await transition("desktop", 2);
-    // The Kin floats, but its chips and row markers stay in Desktop.
     expect(mount.querySelector(".fk-rail-kin")).toBeNull();
-    await vi.waitFor(() => expect(chip()).not.toBeNull());
+    expect(chip()).not.toBeNull();
     expect(marker()).not.toBeNull();
     expect(bridge.confirmPresentation).toHaveBeenCalledExactlyOnceWith(2);
     await act(async () => showAiModels());
@@ -222,17 +224,23 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
   }
 });
 
-it("counts only Conversations captured within the minute as active", async () => {
+it("shows the live dot for an active turn, nothing in an idle turn's first minute, otherwise the age", async () => {
   const mount = document.createElement("div");
   document.body.append(mount);
   const root = createRoot(mount);
   const fresh = "00000000-0000-4000-8000-000000000001";
   const older = "00000000-0000-4000-8000-000000000002";
-  const capture = (sessionId: string, ageMs: number) => ({
+  const busy = "00000000-0000-4000-8000-000000000003";
+  const capture = (
+    sessionId: string,
+    ageMs: number,
+    turn?: "active" | "idle"
+  ) => ({
     sessionId,
     client: "codex" as const,
     lastActivityAt: new Date(Date.now() - ageMs).toISOString(),
-    projectId: null
+    projectId: null,
+    ...(turn ? { turn } : {})
   });
   const bridge: DesktopKinBridge = {
     onPresentation: (listener) => {
@@ -246,7 +254,11 @@ it("counts only Conversations captured within the minute as active", async () =>
     activity: vi.fn<DesktopKinBridge["activity"]>(async () => ({
       state: "running",
       overflowCount: 0,
-      conversations: [capture(fresh, 5_000), capture(older, 5 * 60_000)]
+      conversations: [
+        capture(fresh, 5_000, "idle"),
+        capture(busy, 2 * 60_000, "active"),
+        capture(older, 5 * 60_000)
+      ]
     })),
     summarize: vi.fn<DesktopKinBridge["summarize"]>(async () => ({
       status: "unavailable"
@@ -309,12 +321,13 @@ it("counts only Conversations captured within the minute as active", async () =>
       expect(mount.querySelector(".v1-nav-rail .fk-chip")).not.toBeNull()
     );
     expect(mount.querySelector(".fk-live-status")).toBeNull();
-    const recent = [
-      ...mount.querySelectorAll<HTMLElement>(
-        '.v1-nav-rail .fk-chip .fk-dot[data-recent="true"]'
-      )
+    const labels = [
+      ...mount.querySelectorAll<HTMLElement>(".v1-nav-rail .fk-chip-label")
     ];
-    expect(recent).toHaveLength(1);
+    expect(labels.map((label) => label.textContent)).toEqual(["", "", "5m"]);
+    expect(
+      labels.map((label) => label.querySelector(".fk-dot") !== null)
+    ).toEqual([false, true, false]);
   } finally {
     await act(async () => root.unmount());
     mount.remove();

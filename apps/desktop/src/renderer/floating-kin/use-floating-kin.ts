@@ -107,6 +107,19 @@ export function useActivity(
   }, [source]);
   if (sample?.source === source)
     return { activity: sample.activity, at: sample.at, pending: false };
+  // A Kin handoff gives the same surface a new bridge for the new revision.
+  // Keep showing the last sample for the same scope until the next poll lands,
+  // so docked chips don't blink out while the Kin moves (or stay gone while the
+  // window is covered and polling waits).
+  if (
+    sample &&
+    bridge &&
+    visible &&
+    sample.source.bridge &&
+    sample.source.visible &&
+    sample.source.scopeKey === scopeKey
+  )
+    return { activity: sample.activity, at: sample.at, pending: false };
   const pending = Boolean(bridge && visible);
   return {
     activity: {

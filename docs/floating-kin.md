@@ -2,17 +2,30 @@
 
 The Chief of Staff Kin shows recent captured Personal Conversations. Capture
 can lag or miss activity, and imported history does not count as recent
-activity. An eligible Pi chip can also show **Working** when the connected Pi
-extension explicitly reports active work. No badge means liveness is unknown,
-not idle or finished. Other AI Clients do not report this status.
+activity.
+
+Each chip and tracked sidebar row shows a pulsing green dot while its
+Conversation's turn looks underway, in place of the capture age. Pi reports this
+explicitly through the connected Pi extension. For Codex and Claude Code it is a
+best guess from the latest captured item:
+
+- A turn-end marker (Codex `task_complete` or `turn_aborted`, the Claude Code
+  Stop hook) or an assistant reply that has been quiet for 30 seconds means
+  the turn finished.
+- A request, tool call or result, reasoning, or a fresh reply means it is
+  underway, but only while something was captured in the last 10 minutes.
+
+Within the first minute of a finished turn the chip shows nothing; after that
+it shows the capture age. When capture can't tell, the chip shows the age too,
+which doesn't mean the Conversation is idle or finished.
 
 Inside Koed, the Chief of Staff takes the logo's place on the Home button at
 the top of the left rail. The live Conversation chips sit directly below it,
 including when the Projects and Anchors sidebar is collapsed. The floating
 overlay keeps its chips above the Kin. A Conversation in exactly one named
 Project uses that Project's Kin; one in zero or several uses the neutral Kin.
-Anchors don't supply a Kin. A Conversation the Kin is tracking also shows its
-capture age, or **Working**, at the end of its sidebar row; click it to open the
+Anchors don't supply a Kin. A Conversation the Kin is tracking also shows the live
+dot or its capture age at the end of its sidebar row; click it to open the
 same dialog as a chip, beside the row.
 
 On macOS, turn on **Chief of Staff** under **Settings → General** to let the Kin
@@ -65,7 +78,8 @@ model, and reasoning effort when available.
    those reads. Preview reads use the same authorization. Desktop polls a bounded feed of captured messages from the last
    30 minutes, ordered by captured activity time. Replay and imports do not
    create a fresh activity signal. The activity feed contains only Conversation,
-   Project, AI Client, and time metadata. The runtime can add a short-lived Pi
+   Project, AI Client, time and turn-state metadata; the turn state is derived
+   from captured item types and turn markers, never from message text. The runtime can add a short-lived Pi
    status to already eligible chips. It matches the authenticated owner's Pi
    Conversation and rechecks its Personal Capture Policy and connection. This
    does not create, reorder, or keep a chip in the feed. Opening a chip makes a separate

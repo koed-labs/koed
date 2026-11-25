@@ -11,7 +11,10 @@ const conversation = z
     projectId: projectId.nullable(),
     client,
     lastActivityAt: capturedAt,
-    workingUntil: capturedAt.optional()
+    workingUntil: capturedAt.optional(),
+    // Best guess from captured items: "active" while a turn looks underway,
+    // "idle" once it looks finished. Absent when capture can't tell.
+    turn: z.enum(["active", "idle"]).optional()
   })
   .strict();
 

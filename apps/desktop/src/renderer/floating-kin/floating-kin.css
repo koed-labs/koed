@@ -185,32 +185,15 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 .v1-nav-conversation-wrap:is(:hover, :focus-within) .fk-row-live {
   right: 34px;
 }
-.fk-row-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--v1-faint);
+.fk-row-live .fk-dot {
+  --fk-green: var(--fk-live);
 }
-.fk-row-live[data-recent="true"] {
-  color: var(--fk-live);
-  font-weight: 600;
+/* An idle turn in its first minute shows nothing until hovered or open. */
+.fk-row-live[data-empty]:not(:hover, :focus-visible, [aria-expanded="true"]) {
+  opacity: 0;
 }
-.fk-row-live[data-recent="true"] .fk-row-dot {
-  background: var(--fk-live);
-}
-@media (prefers-reduced-motion: no-preference) {
-  .fk-row-live[data-recent="true"] .fk-row-dot {
-    animation: fk-pulse-row 1.8s infinite;
-  }
-}
-@keyframes fk-pulse-row {
-  from {
-    box-shadow: 0 0 0 0 var(--fk-live);
-  }
-  80%,
-  to {
-    box-shadow: 0 0 0 5px transparent;
-  }
+.fk-row-live[data-empty] {
+  min-width: 24px;
 }
 .fk-rail-activity {
   overflow: auto;
@@ -231,17 +214,14 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   gap: 2px;
   cursor: pointer;
 }
-.fk-rail-activity .fk-chip[data-client="pi"] .fk-chip-label {
-  inline-size: auto;
+/* The label line keeps its height when it has nothing to show. */
+.fk-rail-activity .fk-chip-label {
+  display: grid;
+  place-items: center;
+  min-height: 1.45em;
 }
-.fk-rail-activity .fk-dot {
-  position: absolute;
-  inset: 5px 5px auto auto;
-}
-/* Docked Conversations are live; a grey dot there reads as offline. Show the
-   dot only while capture is recent. */
-.fk-rail-activity .fk-dot:not([data-recent="true"]) {
-  display: none;
+.fk-rail-activity .fk-chip {
+  --fk-green: var(--fk-live);
 }
 .fk-rail-activity .fk-chip:focus-visible {
   outline: 2px solid var(--fk-accent);
@@ -344,14 +324,11 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   min-height: 42px;
   font-variant-numeric: tabular-nums;
 }
-/* Keep the hit area stable when a Pi lease appears or expires. */
-.fk-chip[data-client="pi"] .fk-chip-label {
-  inline-size: 4em;
-  text-align: start;
+.fk-chip-label:empty {
+  display: none;
 }
-.fk-working {
-  font-size: 0.9em;
-  font-weight: 600;
+.fk-rail-activity .fk-chip-label:empty {
+  display: grid;
 }
 .fk-chip:hover,
 .fk-chip[aria-expanded="true"] {
@@ -389,18 +366,16 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   background: var(--fk-text);
   box-shadow: 0 0 0 2px var(--fk-bg);
 }
+/* The live dot takes the capture age's place while a turn looks underway. */
 .fk-dot {
+  display: inline-block;
   width: 7px;
   height: 7px;
-  margin-left: 2px;
   border-radius: 50%;
-  background: var(--fk-muted);
-}
-.fk-dot[data-recent="true"] {
   background: var(--fk-green);
 }
 @media (prefers-reduced-motion: no-preference) {
-  .fk-dot[data-recent="true"] {
+  .fk-dot {
     animation: fk-pulse 1.8s infinite;
   }
 }

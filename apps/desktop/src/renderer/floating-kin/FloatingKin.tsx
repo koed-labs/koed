@@ -67,6 +67,25 @@ function captureAge(seconds: number) {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
+/**
+ * What a chip or row shows where its capture age would go: a live dot while
+ * the Conversation's turn looks underway, nothing within the first minute,
+ * otherwise the capture age.
+ */
+export function KinLiveStatus({
+  working,
+  seconds,
+  lastActivityAt
+}: {
+  working: boolean;
+  seconds: number;
+  lastActivityAt: string;
+}) {
+  if (working) return <span className="fk-dot" data-live="true" />;
+  if (seconds < recentSeconds) return null;
+  return <time dateTime={lastActivityAt}>{captureAge(seconds)}</time>;
+}
+
 function workingDeadline(conversation: Conversation) {
   return conversation.client === "pi" && conversation.workingUntil
     ? Date.parse(conversation.workingUntil)
@@ -148,17 +167,16 @@ function CaptureChip({
       <span className="fk-avatar" data-fk-handle>
         <ChipKin
           projectId={conversation.projectId}
-          animate={recent && index === 0}
+          animate={(recent || working) && index === 0}
         />
         <ClientMark client={conversation.client} />
       </span>
-      <span className="fk-dot" data-recent={recent} aria-hidden="true" />
       <span className="fk-chip-label" aria-hidden="true">
-        {working ? (
-          <span className="fk-working">Working</span>
-        ) : (
-          <time dateTime={conversation.lastActivityAt}>{age}</time>
-        )}
+        <KinLiveStatus
+          working={working}
+          seconds={seconds}
+          lastActivityAt={conversation.lastActivityAt}
+        />
       </span>
     </button>
   );
@@ -450,7 +468,11 @@ export function useKinActivity(
 
 export function kinConversationStatus(conversation: Conversation, at: number) {
   const seconds = captureSeconds(conversation.lastActivityAt, at);
-  return { age: captureAge(seconds), recent: seconds < recentSeconds };
+  return {
+    age: captureAge(seconds),
+    recent: seconds < recentSeconds,
+    seconds
+  };
 }
 
 /**
@@ -550,7 +572,10 @@ export function useKinSummaryPanel({
     close,
     dismiss,
     toggle,
+    // Pi reports Working explicitly; other clients are a best guess from the
+    // captured turn (see floatingKinTurnSql).
     isWorking: (conversation: Conversation) =>
+      conversation.turn === "active" ||
       workingDeadline(conversation) > workingNow
   };
 }
