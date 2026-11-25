@@ -23,9 +23,13 @@ the sidebar shows that state rather than an empty Conversation list.
 and Folder with captured Conversations, including Conversations a named Project
 also includes. Conversations with neither a named Project nor an Anchor appear
 only in **Conversations**.
-Each Anchor expands to its Conversations like a Project. **Conversations**,
-**Projects**, and **Anchors** collapse from their headings, and each scrolls on
-its own with its heading kept in view.
+Each Anchor expands to its Conversations like a Project, and only one Project
+or Anchor is open at a time. An open Project or Anchor shows five Conversations
+and a **Load More** button; the Projects and Anchors lists themselves load more
+rows as they scroll. **Conversations**, **Projects**, and **Anchors** collapse
+from their headings; **Anchors** starts collapsed. Each scrolls on its own with
+its heading kept in view. The open Conversation is highlighted in the list it
+was opened from, and its copy in the other list is marked more quietly.
 
 Pins work in two places. Pinning a Conversation keeps it at the top of
 **Conversations**, which lists every other Conversation by most recent

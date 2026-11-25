@@ -217,7 +217,6 @@
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
   scrollbar-width: thin;
 }
 .v1-nav-scroll .v1-nav-anchors:last-child,
@@ -299,6 +298,8 @@
   color: var(--v1-fg);
 }
 .v1-nav-conversations-scroll {
+  /* Keeps the selected row's highlight clear of the scrollbar. */
+  padding-right: 6px;
   max-height: min(240px, 32vh);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -308,9 +309,9 @@
    Client badge overlaps its corner. */
 .v1-nav-kin {
   position: relative;
-  flex: 0 0 36px;
-  width: 36px;
-  height: 36px;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -320,7 +321,7 @@
   /* The Kin's canvas is a little larger than its circle; an overflowing grid
      item aligns to the start edge, so equal negative margins keep it centred.
      Matches the size in ProjectSidebar.tsx. */
-  margin: calc((36px - 42px) / 2);
+  margin: calc((30px - 35px) / 2);
 }
 .v1-nav-kin-client {
   position: absolute;
@@ -328,10 +329,10 @@
   bottom: -3px;
   display: grid;
   place-items: center;
-  /* A 13.5px logo inside 2px padding. */
+  /* An 11px logo inside 2px padding. */
   box-sizing: border-box;
-  width: 17.5px;
-  height: 17.5px;
+  width: 15px;
+  height: 15px;
   padding: 2px;
   border-radius: 50%;
   color: var(--v1-bg);
@@ -344,6 +345,8 @@
   fill: currentColor;
 }
 .v1-nav-pin-mark {
+  /* Base styles make icons blocks; the mark sits inline before the title. */
+  display: inline-block;
   width: 11px;
   height: 11px;
   margin-right: 4px;
@@ -355,7 +358,7 @@
 }
 .v1-nav-project {
   text-align: left;
-  height: 52px;
+  height: 40px;
   border-radius: 9px;
   gap: 7px;
   /* Room on the right for actions beside the row. */
@@ -423,10 +426,10 @@
   text-align: left;
   width: 100%;
   height: auto;
-  min-height: 40px;
+  min-height: 36px;
   border-radius: 9px;
   gap: 7px;
-  padding: 9px 8px;
+  padding: 6px 8px;
   font-size: 12px;
   translate: none;
 }
@@ -544,6 +547,15 @@
 }
 .v1-nav-scroll .v1-nav-anchors {
   margin-top: 10px;
-  padding-top: 10px;
   border-top: 1px solid var(--v1-hairline);
+}
+/* The space above the heading is part of the opaque sticky heading, so rows
+   scrolling past never show above it. */
+.v1-nav-anchors .v1-nav-section-heading {
+  box-sizing: content-box;
+  padding-top: 10px;
+}
+/* The same open Conversation in the other list: a quiet echo of the selection. */
+.v1-nav-conversation[data-also-open] {
+  color: var(--v1-accent-text);
 }

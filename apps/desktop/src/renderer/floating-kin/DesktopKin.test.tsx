@@ -189,3 +189,102 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     mount.remove();
   }
 });
+
+it("counts only Conversations captured within the minute as active", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const root = createRoot(mount);
+  const fresh = "00000000-0000-4000-8000-000000000001";
+  const older = "00000000-0000-4000-8000-000000000002";
+  const capture = (sessionId: string, ageMs: number) => ({
+    sessionId,
+    client: "codex" as const,
+    lastActivityAt: new Date(Date.now() - ageMs).toISOString(),
+    projectId: null
+  });
+  const bridge: DesktopKinBridge = {
+    onPresentation: (listener) => {
+      listener({ placement: "sidebar", revision: 0 });
+      return () => {};
+    },
+    setShellVisible: vi.fn(),
+    onOpenAiModels: () => () => {},
+    onOpenConversation: () => () => {},
+    confirmPresentation: vi.fn(),
+    activity: vi.fn<DesktopKinBridge["activity"]>(async () => ({
+      state: "running",
+      overflowCount: 0,
+      conversations: [capture(fresh, 5_000), capture(older, 5 * 60_000)]
+    })),
+    summarize: vi.fn<DesktopKinBridge["summarize"]>(async () => ({
+      status: "unavailable"
+    })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
+    cancel: vi.fn(async () => {})
+  };
+  const row = (sessionId: string, title: string) => ({
+    key: `session:${sessionId}`,
+    aliases: [`session:${sessionId}`],
+    title,
+    client: "codex" as const,
+    latestAt: new Date().toISOString(),
+    sessionId,
+    route: {
+      kind: "conversation" as const,
+      projectId: "project",
+      threadId: sessionId
+    },
+    projectName: "Koed"
+  });
+  const projects: SidebarProject[] = [
+    {
+      id: "project",
+      name: "Koed",
+      latestAt: new Date().toISOString(),
+      conversations: [row(fresh, "Fresh"), row(older, "Older")]
+    }
+  ];
+  const noop = () => {};
+  function Harness() {
+    const kin = useDesktopKin(bridge, null, true);
+    return (
+      <NavigationShell
+        projects={projects}
+        route={{ kind: "home" }}
+        scopeKey={null}
+        onSelect={noop}
+        onHome={noop}
+        onSettings={noop}
+        onBack={noop}
+        onForward={noop}
+        canGoBack={false}
+        canGoForward={false}
+        onRetry={noop}
+        kinAvatar={kin.avatar}
+        kinLive={kin.live}
+        kinPanel={kin.panel}
+      >
+        home
+      </NavigationShell>
+    );
+  }
+  try {
+    await act(async () => root.render(<Harness />));
+    await vi.waitFor(() =>
+      expect(mount.querySelector(".fk-live-status")?.textContent).toBe(
+        "1 active"
+      )
+    );
+    const recent = [
+      ...mount.querySelectorAll<HTMLElement>(
+        '.v1-nav-conversations .fk-row-live[data-recent="true"]'
+      )
+    ];
+    expect(recent).toHaveLength(1);
+  } finally {
+    await act(async () => root.unmount());
+    mount.remove();
+  }
+});
