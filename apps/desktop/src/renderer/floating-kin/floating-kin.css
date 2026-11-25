@@ -150,11 +150,13 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   display: none;
 }
 .v1-nav-conversation-wrap[data-live] .v1-nav-conversation {
-  padding-right: 72px;
+  padding-right: 92px;
 }
+/* The marker keeps one place, clear of the row's Actions button, so hovering
+   the row never moves it under the pointer. */
 .fk-row-live {
   position: absolute;
-  right: 6px;
+  right: 34px;
   top: 50%;
   translate: 0 -50%;
   display: flex;
@@ -181,9 +183,6 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 .fk-row-live:focus-visible {
   outline: 2px solid var(--v1-accent);
   outline-offset: 1px;
-}
-.v1-nav-conversation-wrap:is(:hover, :focus-within) .fk-row-live {
-  right: 34px;
 }
 .fk-row-live .fk-dot {
   --fk-green: var(--fk-live);

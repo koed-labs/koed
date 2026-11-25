@@ -368,6 +368,30 @@ describe("Floating Kin", () => {
     expect(bridge.summarize).not.toHaveBeenCalled();
   });
 
+  it("doesn't show a closed panel's old excerpt while a reopened panel reads again", async () => {
+    vi.mocked(bridge.preview).mockResolvedValueOnce({
+      title: "Old title",
+      projectName: null,
+      request: { text: "Old request", occurredAt: asOf },
+      reply: null
+    });
+    await render();
+    await click("Conversation 1");
+    expect(mount.textContent).toContain("Old request");
+    await click("Close summary");
+    const fresh = deferred<Awaited<ReturnType<FloatingKinBridge["preview"]>>>();
+    vi.mocked(bridge.preview).mockReturnValueOnce(fresh.promise);
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    await click("Conversation 1");
+    expect(mount.textContent).not.toContain("Old request");
+    expect(mount.textContent).not.toContain("Old title");
+    await act(async () => fresh.resolve(null));
+    expect(mount.textContent).not.toContain("Old request");
+    expect(mount.querySelector("#fk-panel-title")?.textContent).toBe(
+      "Conversation"
+    );
+  });
+
   it("reopens the last summary above the generate actions and links to AI models", async () => {
     bridge.onPresentation = (listener) => {
       listener({ placement: "desktop", revision: 7 });

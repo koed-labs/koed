@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from "react";
+import { act, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import type {
@@ -8,7 +8,7 @@ import type {
 } from "../../ipc/floating-kin-protocol.js";
 import { NavigationShell } from "../v1/NavigationShell.js";
 import type { SidebarProject } from "../v1/project-sidebar-model.js";
-import { useDesktopKin } from "./DesktopKin.js";
+import { fitPanelTop, useDesktopKin } from "./DesktopKin.js";
 
 it("puts the live Kin on the Home button and opens summaries from Conversation rows", async () => {
   const mount = document.createElement("div");
@@ -224,6 +224,67 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
   }
 });
 
+it("opens a Conversation requested while Desktop is still loading once its row appears", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const root = createRoot(mount);
+  let showConversation: (sessionId: string) => void = () => {};
+  const bridge = {
+    onPresentation: (listener: (state: KinPresentation) => void) => {
+      listener({ placement: "sidebar", revision: 0 });
+      return () => {};
+    },
+    setShellVisible: vi.fn(),
+    onOpenAiModels: () => () => {},
+    onOpenConversation: (listener: (sessionId: string) => void) => {
+      showConversation = listener;
+      return () => {};
+    },
+    confirmPresentation: vi.fn(),
+    activity: vi.fn(async () => ({
+      state: "running" as const,
+      overflowCount: 0,
+      conversations: []
+    })),
+    summarize: vi.fn(async () => ({ status: "unavailable" as const })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
+    cancel: vi.fn(async () => {})
+  } as unknown as DesktopKinBridge;
+  const opened: string[] = [];
+  function Harness({ rows }: { rows: string[] }) {
+    const open = useCallback(
+      (sessionId: string) => {
+        if (!rows.includes(sessionId)) return false;
+        opened.push(sessionId);
+        return true;
+      },
+      [rows]
+    );
+    useDesktopKin(bridge, null, true, undefined, open);
+    return null;
+  }
+  try {
+    await act(async () => root.render(<Harness rows={[]} />));
+    await act(async () => showConversation("loading-session"));
+    expect(opened).toEqual([]);
+    await act(async () => root.render(<Harness rows={["other"]} />));
+    expect(opened).toEqual([]);
+    await act(async () =>
+      root.render(<Harness rows={["other", "loading-session"]} />)
+    );
+    expect(opened).toEqual(["loading-session"]);
+    await act(async () =>
+      root.render(<Harness rows={["loading-session", "again"]} />)
+    );
+    expect(opened).toEqual(["loading-session"]);
+  } finally {
+    await act(async () => root.unmount());
+    mount.remove();
+  }
+});
+
 it("shows the live dot for an active turn and the capture age otherwise", async () => {
   const mount = document.createElement("div");
   document.body.append(mount);
@@ -287,7 +348,15 @@ it("shows the live dot for an active turn and the capture age otherwise", async 
       id: "project",
       name: "Koed",
       latestAt: new Date().toISOString(),
-      conversations: [row(fresh, "Fresh"), row(older, "Older")]
+      conversations: [
+        row(fresh, "Fresh"),
+        row(older, "Older"),
+        // A combined row whose active session isn't its representative one.
+        {
+          ...row("00000000-0000-4000-8000-0000000000aa", "Combined"),
+          sourceSessionIds: ["00000000-0000-4000-8000-0000000000aa", busy]
+        }
+      ]
     }
   ];
   const noop = () => {};
@@ -328,8 +397,139 @@ it("shows the live dot for an active turn and the capture age otherwise", async 
     expect(
       labels.map((label) => label.querySelector(".fk-dot") !== null)
     ).toEqual([false, true, false]);
+    const markerFor = (title: string) =>
+      [...mount.querySelectorAll<HTMLElement>(".fk-row-live")].find((marker) =>
+        marker.getAttribute("aria-label")?.includes(title)
+      );
+    const combined = markerFor("Combined");
+    expect(combined).toBeDefined();
+    expect(combined!.querySelector(".fk-dot")).not.toBeNull();
   } finally {
     await act(async () => root.unmount());
     mount.remove();
   }
+});
+
+it("uses only an unexpired Pi report, and expires it while the Kin floats", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const root = createRoot(mount);
+  const fresh = "00000000-0000-4000-8000-000000000001";
+  const older = "00000000-0000-4000-8000-000000000002";
+  const busy = "00000000-0000-4000-8000-000000000003";
+  const capture = (
+    sessionId: string,
+    ageMs: number,
+    turn?: "active" | "idle"
+  ) => ({
+    sessionId,
+    client: "pi" as const,
+    lastActivityAt: new Date(Date.now() - ageMs).toISOString(),
+    projectId: null,
+    ...(turn ? { turn } : {})
+  });
+  const bridge: DesktopKinBridge = {
+    onPresentation: (listener) => {
+      listener({ placement: "desktop", revision: 0 });
+      return () => {};
+    },
+    setShellVisible: vi.fn(),
+    onOpenAiModels: () => () => {},
+    onOpenConversation: () => () => {},
+    confirmPresentation: vi.fn(),
+    activity: vi.fn<DesktopKinBridge["activity"]>(async () => ({
+      state: "running",
+      overflowCount: 0,
+      conversations: [
+        // A guessed turn alone never shows Pi as working.
+        capture(fresh, 5_000, "active"),
+        {
+          ...capture(busy, 2 * 60_000),
+          workingUntil: new Date(Date.now() + 400).toISOString()
+        }
+      ]
+    })),
+    summarize: vi.fn<DesktopKinBridge["summarize"]>(async () => ({
+      status: "unavailable"
+    })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
+    cancel: vi.fn(async () => {})
+  };
+  const row = (sessionId: string, title: string) => ({
+    key: `session:${sessionId}`,
+    aliases: [`session:${sessionId}`],
+    title,
+    client: "codex" as const,
+    latestAt: new Date().toISOString(),
+    sessionId,
+    route: {
+      kind: "conversation" as const,
+      projectId: "project",
+      threadId: sessionId
+    },
+    projectName: "Koed"
+  });
+  const projects: SidebarProject[] = [
+    {
+      id: "project",
+      name: "Koed",
+      latestAt: new Date().toISOString(),
+      conversations: [row(fresh, "Fresh"), row(older, "Older")]
+    }
+  ];
+  const noop = () => {};
+  function Harness() {
+    const kin = useDesktopKin(bridge, null, true);
+    return (
+      <NavigationShell
+        projects={projects}
+        route={{ kind: "home" }}
+        scopeKey={null}
+        onSelect={noop}
+        onHome={noop}
+        onSettings={noop}
+        onBack={noop}
+        onForward={noop}
+        canGoBack={false}
+        canGoForward={false}
+        onRetry={noop}
+        kinAvatar={kin.avatar}
+        kinLive={kin.live}
+        kinPanel={kin.panel}
+        kinChips={kin.chips}
+      >
+        home
+      </NavigationShell>
+    );
+  }
+  try {
+    await act(async () => root.render(<Harness />));
+    await vi.waitFor(() =>
+      expect(mount.querySelector(".v1-nav-rail .fk-chip")).not.toBeNull()
+    );
+    const dots = () =>
+      [
+        ...mount.querySelectorAll<HTMLElement>(".v1-nav-rail .fk-chip-label")
+      ].map((label) => label.querySelector(".fk-dot") !== null);
+    expect(dots()).toEqual([false, true]);
+    // No new activity read lands, but the lease still expires.
+    vi.mocked(bridge.activity).mockReturnValue(new Promise(() => {}));
+    await vi.waitFor(() => expect(dots()).toEqual([false, false]), {
+      timeout: 2_000
+    });
+  } finally {
+    await act(async () => root.unmount());
+    mount.remove();
+  }
+});
+
+it("moves a panel opened near the bottom up so its actions stay in the window", () => {
+  // A 640px window, a row near the bottom and a 300px panel.
+  expect(fitPanelTop(560, 300, 640)).toBe(332);
+  // Room below: the panel stays level with its row.
+  expect(fitPanelTop(120, 300, 640)).toBe(120);
+  // Taller than the window: pinned to the top margin and scrolled inside.
+  expect(fitPanelTop(560, 900, 640)).toBe(8);
 });

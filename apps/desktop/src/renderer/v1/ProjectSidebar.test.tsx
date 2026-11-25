@@ -344,6 +344,126 @@ describe("Project sidebar interactions", () => {
     );
   });
 
+  it("drags a Conversation out of the Project it was dragged from, even with other memberships", async () => {
+    const onDrop = vi.fn(async () => true);
+    const management: SidebarManagement = {
+      onCreateProject: () => {},
+      onProjectSettings: () => {},
+      onConversationAction: () => {},
+      onDrop
+    };
+    const inProject = (id: string, name: string) => {
+      const project = {
+        ...projectWithConversations("a", "Alpha", 1),
+        managed: true
+      };
+      return {
+        ...project,
+        id,
+        name,
+        conversations: project.conversations.map((row) => ({
+          ...row,
+          sessionId: "a-1",
+          sourceProjectId: id
+        }))
+      };
+    };
+    const c = { ...projectWithConversations("c", "Gamma", 1), managed: true };
+    await act(async () =>
+      root.render(
+        <Harness
+          data={[inProject("a", "Alpha"), inProject("b", "Beta"), c]}
+          management={management}
+        />
+      )
+    );
+    const row = [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        ".v1-nav-projects .v1-nav-conversation"
+      )
+    ].find((element) => element.closest('[data-project-drop="a"]'))!;
+    expect(row).toBeDefined();
+    const dropTarget = container.querySelector('[data-project-drop="c"]')!;
+    const elementFromPoint = vi
+      .spyOn(document, "elementFromPoint")
+      .mockReturnValue(dropTarget);
+    row.setPointerCapture = () => {};
+    const pointer = (type: string, x: number) =>
+      new PointerEvent(type, {
+        bubbles: true,
+        button: 0,
+        pointerId: 1,
+        pointerType: "mouse",
+        clientX: x,
+        clientY: 10
+      });
+    try {
+      await act(async () => {
+        row.dispatchEvent(pointer("pointerdown", 10));
+        row.dispatchEvent(pointer("pointermove", 40));
+        row.dispatchEvent(pointer("pointerup", 40));
+      });
+    } finally {
+      elementFromPoint.mockRestore();
+    }
+    expect(onDrop).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ sessionId: "a-1", sourceProjectId: "a" }),
+      "c"
+    );
+  });
+
+  it("keeps loading Projects as the list end comes into view, even when the first page fits", async () => {
+    const observers: Array<{
+      callback: IntersectionObserverCallback;
+      target?: Element;
+    }> = [];
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        entry: { callback: IntersectionObserverCallback; target?: Element };
+        constructor(callback: IntersectionObserverCallback) {
+          this.entry = { callback };
+          observers.push(this.entry);
+        }
+        observe(target: Element) {
+          this.entry.target = target;
+        }
+        disconnect() {
+          this.entry.target = undefined;
+        }
+      }
+    );
+    const showEnd = () =>
+      act(async () => {
+        for (const { callback, target } of observers)
+          if (target?.isConnected)
+            callback(
+              [{ isIntersecting: true, target } as IntersectionObserverEntry],
+              {} as IntersectionObserver
+            );
+      });
+    try {
+      const many = Array.from({ length: 31 }, (_, index) => ({
+        ...projectWithConversations(`p${index}`, `Project ${index + 1}`, 1),
+        managed: true
+      }));
+      await act(async () => root.render(<Harness data={many} />));
+      const groups = () =>
+        container.querySelectorAll(".v1-nav-projects [data-project-drop]")
+          .length;
+      expect(groups()).toBe(15);
+      expect(button("Load more Projects")).toBeNull();
+      await showEnd();
+      expect(groups()).toBe(30);
+      // The sentinel is still in view on a short list, so it loads again.
+      await showEnd();
+      expect(groups()).toBe(31);
+      expect(container.textContent).not.toContain("Loading more");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("lists Git Anchor and Folder groups under a collapsible Anchors heading", async () => {
     const anchor: SidebarProject = {
       ...projectWithConversations(

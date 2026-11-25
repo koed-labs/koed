@@ -3182,7 +3182,7 @@ const normalizeSessionTitle = (value: unknown): string | null => {
   return normalized ? normalized.slice(0, 120) : null;
 };
 
-const deriveProvisionalSessionTitle = (
+export const deriveProvisionalSessionTitle = (
   actor: MemoryActor,
   content: string,
   metadata: Record<string, unknown> | undefined
@@ -3190,7 +3190,9 @@ const deriveProvisionalSessionTitle = (
   if (actor !== "user") {
     return null;
   }
-  const presented = presentMemoryText(content, {
+  // Strip AI Client context before presentation shortens the text, so a long
+  // injected block can't crowd out the User's words.
+  const presented = presentMemoryText(stripHarnessMarkup(content), {
     project_name: getStringField(metadata ?? {}, "projectName"),
     project_path: getStringField(metadata ?? {}, "projectPath")
   });

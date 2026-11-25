@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -27,6 +28,7 @@ type FocusFallback = () => void;
 type Anchor = { top: number; left: number; pointer: number };
 
 const panelGap = 8;
+const pendingOpenMs = 30_000;
 
 // Beside the chip or row that opened the panel.
 function anchorFor(trigger: HTMLElement): Anchor {
@@ -42,6 +44,15 @@ function anchorFor(trigger: HTMLElement): Anchor {
     // Points back at the trigger's vertical centre.
     pointer: box.top + box.height / 2 - top
   };
+}
+
+/** The panel's top edge, moved up as needed to keep it inside the window. */
+export function fitPanelTop(
+  anchorTop: number,
+  height: number,
+  viewport: number
+) {
+  return Math.max(panelGap, Math.min(anchorTop, viewport - height - panelGap));
 }
 
 function AnchoredPanel({
@@ -61,6 +72,20 @@ function AnchoredPanel({
     },
     [focusFallback, surface]
   );
+  // Keep the whole panel inside the window: a row near the bottom shifts the
+  // panel up (and its pointer down) rather than pushing actions off screen.
+  const [height, setHeight] = useState(0);
+  useLayoutEffect(() => {
+    const node = surface.current;
+    if (!node) return;
+    const measure = () => setHeight(node.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [surface]);
+  const top = fitPanelTop(anchor.top, height, window.innerHeight);
   return createPortal(
     <section
       className="fk-surface"
@@ -70,9 +95,9 @@ function AnchoredPanel({
       tabIndex={-1}
       style={
         {
-          top: anchor.top,
+          top,
           left: anchor.left,
-          "--fk-pointer-top": `${anchor.pointer}px`
+          "--fk-pointer-top": `${anchor.pointer + anchor.top - top}px`
         } as React.CSSProperties
       }
     >
@@ -103,12 +128,23 @@ export function useDesktopKin(
   useLayoutEffect(() => {
     if (openAiModels) return bridge?.onOpenAiModels(openAiModels);
   }, [bridge, openAiModels]);
+  // A request from the overlay can arrive while Desktop is still loading its
+  // rows. Hold it briefly and retry whenever the rows change.
+  const pendingOpen = useRef<{ sessionId: string; until: number } | null>(null);
   useLayoutEffect(() => {
     if (openConversation)
       return bridge?.onOpenConversation((sessionId) => {
-        openConversation(sessionId);
+        pendingOpen.current = openConversation(sessionId)
+          ? null
+          : { sessionId, until: Date.now() + pendingOpenMs };
       });
   }, [bridge, openConversation]);
+  useEffect(() => {
+    const pending = pendingOpen.current;
+    if (!pending || !openConversation) return;
+    if (Date.now() > pending.until || openConversation(pending.sessionId))
+      pendingOpen.current = null;
+  }, [openConversation]);
   useLayoutEffect(() => {
     bridge?.setShellVisible(shellVisible);
   }, [bridge, shellVisible]);
@@ -185,9 +221,23 @@ export function useDesktopKin(
     shellVisible && activityBridge
       ? {
           marker: (row: SidebarConversation) => {
-            const conversation = row.sessionId
-              ? tracked.get(row.sessionId)
-              : undefined;
+            // A row can combine several sessions; any of them may be the
+            // live one. Show the most recently active.
+            const conversation = [
+              row.sessionId,
+              ...(row.sourceSessionIds ?? [])
+            ]
+              .map((id) => (id ? tracked.get(id) : undefined))
+              .reduce<(typeof sample.recent)[number] | undefined>(
+                (latest, candidate) =>
+                  candidate &&
+                  (!latest ||
+                    Date.parse(candidate.lastActivityAt) >
+                      Date.parse(latest.lastActivityAt))
+                    ? candidate
+                    : latest,
+                undefined
+              );
             if (!conversation) return null;
             const { age, seconds } = kinConversationStatus(
               conversation,

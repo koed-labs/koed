@@ -58,6 +58,13 @@ const floatingKinLiveItemSql = (
       and a->>'sourceRuntime'=s.source_runtime::text)
 `;
 
+// Claude Code child agents write their own transcripts into the same session.
+// Only the main transcript speaks for the User's request and the main turn.
+const floatingKinMainTranscriptSql = `(ci.source_kind <> 'claude-code' or (
+  starts_with(ci.external_item_id, 'main:')
+  and coalesce(ci.metadata->>'sourceComponentId', 'main')='main'
+))`;
+
 const floatingKinRecentItemSql = `
   ci.event_time > now() - interval '30 minutes'
   and ci.observed_at > now() - interval '30 minutes'
@@ -66,13 +73,14 @@ const floatingKinRecentItemSql = `
   and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
 `;
 
-// Guess whether a Conversation's turn is underway from its latest captured
-// signal. Turn-end markers come from transcripts (Codex task_complete) and
-// hooks (Claude Code turn_completed); Pi terminal blocks are tagged with
-// semanticControl. Codex doesn't always record task_complete, so an assistant
-// reply that has been quiet for a while also counts as finished. Work with no
-// end marker counts as active only while it is fresh; otherwise the turn is
-// unknown and the chip falls back to its capture age.
+// Guess whether a Codex or Claude Code turn is underway from its latest
+// captured signal. Pi is left out: only its extension's live report counts.
+// Turn-end markers come from transcripts (Codex task_complete) and hooks
+// (Claude Code turn_completed). Codex doesn't always record task_complete, so
+// an assistant reply that has been quiet for a while also counts as finished.
+// Work with no end marker counts as active only while it is fresh; otherwise
+// the turn is unknown and the chip falls back to its capture age. Claude child
+// agents run inside the main turn, so their events never reopen it.
 export const floatingKinTurnQuietSeconds = 30;
 export const floatingKinTurnActiveMinutes = 10;
 const floatingKinTurnSql = (owner: string) => `
@@ -100,9 +108,19 @@ const floatingKinTurnSql = (owner: string) => `
       and ci.event_time > now() - interval '30 minutes'
       and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
       and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
+      and (ci.source_kind <> 'claude-code' or (
+        coalesce(ci.metadata->>'sourceComponentId', 'main')='main'
+        and ci.raw_json->>'parentAgentId' is null
+        and ci.raw_json->>'parentToolUseId' is null
+      ))
       and (
         ci.source_event_type in ('task_complete','turn_aborted','turn_completed','task_started',
-          'user_message','agent_message','assistant_message','tool_call','tool_result','agent_reasoning')
+          'user_message','agent_message','assistant_message','tool_call','tool_result','agent_reasoning',
+          -- Codex native response items and tool events.
+          'reasoning','function_call','function_call_output','custom_tool_call',
+          'custom_tool_call_output','local_shell_call','web_search_call',
+          'exec_command_begin','exec_command_end','patch_apply_begin','patch_apply_end',
+          'mcp_tool_call_begin','mcp_tool_call_end')
         or ci.metadata->>'semanticControl'='turn_completed'
         or ci.metadata->>'canonicalConversationItemKind' in
           ('message','tool_call','tool_result','reasoning','reasoning_summary')
@@ -142,7 +160,8 @@ export const getFloatingKinActivity = async (
     select *, count(*) over () total from latest
     order by activity_at desc, session_id limit $4
   )
-  select recent.*, project.project_id, turn.turn,
+  select recent.*, project.project_id,
+    case when s.source_runtime::text <> 'pi' then turn.turn end turn,
     case when s.source_runtime='codex-cli' then 'codex' else s.source_runtime::text end client
   from recent join sessions s on s.id=recent.session_id
   cross join lateral (${floatingKinProjectLookupSql}) project
@@ -238,10 +257,7 @@ export const readFloatingKinRawRows = <Row extends pg.QueryResultRow>(
     and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
     and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
     and (${conversationMessageSql} or (ci.source_kind='claude-code' and ci.source_record_type='session_message'))
-    and (ci.source_kind <> 'claude-code' or (
-      starts_with(ci.external_item_id, 'main:')
-      and coalesce(ci.metadata->>'sourceComponentId', 'main')='main'
-    ))
+    and ${floatingKinMainTranscriptSql}
     and (case when $7::uuid is not null then exists (
       select 1 from conversation_items target where target.id=$7
         and target.owner_user_id=ci.owner_user_id and target.session_id=ci.session_id
@@ -334,6 +350,7 @@ export const readFloatingKinProjectedPreview = async (
         and m.source_hash='message:' || ci.source_hash and m.source_event_time=ci.event_time
       where s.id=$4 and ${floatingKinLiveItemSql("$1", "$2", "$3")}
         and ${floatingKinRecentItemSql} and ci.projection_status='projected'
+        and ${floatingKinMainTranscriptSql}
         and m.role::text=roles.role and m.invalidated_at is null and m.recall_eligible
         and m.presentation_mode <> 'hidden' and m.presentation_renderer='message'
         and exists (

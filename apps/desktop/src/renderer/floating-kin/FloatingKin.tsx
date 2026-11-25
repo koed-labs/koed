@@ -493,7 +493,9 @@ export function useKinSummaryPanel({
   openConversation?: (sessionId: string) => void;
 }) {
   const { at, recent } = sample;
-  const deadlines = visible ? recent.map(workingDeadline) : [];
+  // Track Pi leases even while this surface's panel is hidden: docked rows
+  // and chips stay on screen through a Kin handoff and must still expire.
+  const deadlines = recent.map(workingDeadline);
   const workingNow = useWorkingClock(deadlines, at);
   const { view, summarize, reopen, cancel, isCancelling } = useSummary(bridge);
   const { selected, close, dismiss, toggle } = useSelection(
@@ -570,11 +572,12 @@ export function useKinSummaryPanel({
     close,
     dismiss,
     toggle,
-    // Pi reports Working explicitly; other clients are a best guess from the
-    // captured turn (see floatingKinTurnSql).
+    // Pi counts only its extension's unexpired report; other clients are a
+    // best guess from the captured turn (see floatingKinTurnSql).
     isWorking: (conversation: Conversation) =>
-      conversation.turn === "active" ||
-      workingDeadline(conversation) > workingNow
+      conversation.client === "pi"
+        ? workingDeadline(conversation) > workingNow
+        : conversation.turn === "active"
   };
 }
 

@@ -26,7 +26,8 @@ Folder, whether or not they belong to a named Project.
 Each Anchor expands to its Conversations like a Project. Outside search, only
 one Project or Anchor is open at a time. An open group shows five Conversations
 and a **Load More** button; the Projects and Anchors lists themselves load more
-rows as they scroll. **Projects** and **Anchors** collapse from their headings;
+groups as their end comes into view, including when the first page fits without
+scrolling. **Projects** and **Anchors** collapse from their headings;
 **Anchors** starts collapsed. Each scrolls on its own with its heading kept in
 view. Opening a Conversation from another group doesn't change which
 Conversation is open: the clicked group sets the breadcrumb and primary

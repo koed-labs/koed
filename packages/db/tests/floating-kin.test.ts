@@ -170,19 +170,21 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     const owner = await repo.createUser({
       email: `kin-${randomUUID()}@example.test`
     });
-    const actor = { userId: owner.id };
+    let actor = { userId: owner.id };
     const ago = (seconds: number) =>
       new Date(Date.now() - seconds * 1000).toISOString();
     const conversation = async (
-      runtime: "codex-cli" | "claude-code",
+      runtime: "codex-cli" | "claude-code" | "pi",
       items: Array<{
         type: string;
         secondsAgo: number;
         adapter?: string;
         transport?: "transcript" | "hook";
+        component?: string;
       }>
     ) => {
       const claude = runtime === "claude-code";
+      const pi = runtime === "pi";
       const externalSessionId = randomUUID();
       const session = await repo.createCapturedSession(actor, {
         externalSessionId,
@@ -190,26 +192,32 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         captureMethod: "api"
       });
       await repo.createConversationItems(actor, {
-        items: items.map(({ type, secondsAgo, adapter, transport }, index) => ({
-          sessionId: session.id,
-          externalSessionId,
-          externalTurnId: "turn",
-          sourceSequence: index + 1,
-          externalItemId: `item-${index}`,
-          sourceKind: claude ? "claude-code" : "codex",
-          sourceAdapterVersion:
-            adapter ??
-            (claude ? "claude-code-transcript-v1" : "codex-transcript-v1"),
-          sourceTransport: transport ?? "transcript",
-          sourceRecordType: claude ? "session_message" : "event_msg",
-          sourceEventType: type,
-          eventTime: ago(secondsAgo),
-          rawJson: { type: "event_msg", payload: { type } },
-          rawText: type.endsWith("message") ? "text" : undefined,
-          sourceHash: randomUUID(),
-          idempotencyKey: randomUUID(),
-          metadata: {}
-        }))
+        items: items.map(
+          ({ type, secondsAgo, adapter, transport, component }, index) => ({
+            sessionId: session.id,
+            externalSessionId,
+            externalTurnId: "turn",
+            sourceSequence: index + 1,
+            externalItemId: `item-${index}`,
+            sourceKind: claude ? "claude-code" : pi ? "pi" : "codex",
+            sourceAdapterVersion:
+              adapter ??
+              (claude
+                ? "claude-code-transcript-v1"
+                : pi
+                  ? "pi-session-v1"
+                  : "codex-transcript-v1"),
+            sourceTransport: transport ?? "transcript",
+            sourceRecordType: claude ? "session_message" : "event_msg",
+            sourceEventType: type,
+            eventTime: ago(secondsAgo),
+            rawJson: { type: "event_msg", payload: { type } },
+            rawText: type.endsWith("message") ? "text" : undefined,
+            sourceHash: randomUUID(),
+            idempotencyKey: randomUUID(),
+            metadata: component ? { sourceComponentId: component } : {}
+          })
+        )
       });
       return session.id;
     };
@@ -240,17 +248,49 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         transport: "hook"
       }
     ]);
-    const turns = Object.fromEntries(
-      (await repo.getFloatingKinActivity(actor)).conversations.map(
-        ({ sessionId, turn }) => [sessionId, turn ?? "unknown"]
-      )
-    );
-    expect(turns).toEqual({
+    const turnsFor = async () =>
+      Object.fromEntries(
+        (await repo.getFloatingKinActivity(actor)).conversations.map(
+          ({ sessionId, turn }) => [sessionId, turn ?? "unknown"]
+        )
+      );
+    expect(await turnsFor()).toEqual({
       [finished]: "idle",
       [quietReply]: "idle",
       [working]: "active",
       [stale]: "unknown",
       [claudeDone]: "idle"
+    });
+    // The feed shows at most five Conversations, so check the rest separately.
+    const second = await repo.createUser({
+      email: `kin-${randomUUID()}@example.test`
+    });
+    actor = { userId: second.id };
+    // Codex native tool output counts as work in the current turn.
+    const codexTool = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 12 * 60 },
+      { type: "function_call_output", secondsAgo: 1 }
+    ]);
+    // A Claude child agent's events after the main Stop don't reopen it.
+    const claudeChildAfterStop = await conversation("claude-code", [
+      { type: "user_message", secondsAgo: 40 },
+      { type: "agent_message", secondsAgo: 20 },
+      {
+        type: "turn_completed",
+        secondsAgo: 19,
+        adapter: "claude-code-hook-signal-v1",
+        transport: "hook"
+      },
+      { type: "tool_result", secondsAgo: 5, component: "subagent.fixture" }
+    ]);
+    // Pi is never guessed: only its extension's live report counts.
+    const piRequest = await conversation("pi", [
+      { type: "user_message", secondsAgo: 5 }
+    ]);
+    expect(await turnsFor()).toEqual({
+      [codexTool]: "active",
+      [claudeChildAfterStop]: "idle",
+      [piRequest]: "unknown"
     });
   });
 
@@ -354,6 +394,8 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
       add,
       preview: () =>
         repo.getFloatingKinPreview(actor, { sessionId: session.id }),
+      project: () =>
+        repo.projectPendingConversationItems(actor, { limit: 100 }),
       read: (evidenceIds?: string[]) =>
         repo.getFloatingKinEvidence(actor, { ...input, evidenceIds })
     };
@@ -471,6 +513,41 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect((await read([prompt!.id, child!.id, update!.id])).items).toEqual(
       items
     );
+  });
+
+  it("keeps a projected child agent's prompt out of the main request", async () => {
+    const { add, preview, project } = await claudeTurn();
+    await add({ age: 5000 });
+    await add({
+      role: "assistant",
+      message: "main-reply",
+      sequence: 1100,
+      age: 4500,
+      content: [{ type: "text", text: "main reply" }]
+    });
+    await add({ completion: true, age: 4000 });
+    await add({
+      component: "subagent.fixture",
+      turn: "child-turn",
+      sequence: 1200,
+      age: 3000,
+      content: [{ type: "text", text: "child prompt" }]
+    });
+    await add({
+      component: "subagent.fixture",
+      turn: "child-turn",
+      role: "assistant",
+      message: "child-reply",
+      sequence: 1300,
+      age: 2500,
+      content: [{ type: "text", text: "child reply" }]
+    });
+    await add({ completion: true, turn: "child-turn", age: 2000 });
+    await project();
+    expect(await preview()).toMatchObject({
+      request: { text: "first" },
+      reply: { text: "main reply" }
+    });
   });
 
   it("falls back when Claude rows do not prove the initiating message is complete", async () => {

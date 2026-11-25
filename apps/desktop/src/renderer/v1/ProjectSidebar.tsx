@@ -144,6 +144,31 @@ export const conversationActivity = (value: string, now: number) => {
         : `${Math.floor(minutes / 1440)}d`;
 };
 
+/**
+ * End of an infinitely scrolling Projects or Anchors list. It loads the next
+ * page whenever it comes into view, including when the first page is short
+ * enough that the list never scrolls.
+ */
+function LoadMoreSentinel({ onVisible }: { onVisible: () => void }) {
+  const node = useRef<HTMLParagraphElement>(null);
+  const latest = useRef(onVisible);
+  latest.current = onVisible;
+  useEffect(() => {
+    const element = node.current;
+    if (!element || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) latest.current();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <p className="v1-nav-empty" role="status" ref={node}>
+      Loading more…
+    </p>
+  );
+}
+
 export function ProjectSidebar({
   projects,
   route,
@@ -394,9 +419,12 @@ export function ProjectSidebar({
     const projectIds = new Set(
       row.aliases.flatMap((alias) => [...(memberships.get(alias) ?? [])])
     );
+    // "Move to Project" replaces a single named membership.
     const moveSource = projectIds.size === 1 ? [...projectIds][0] : undefined;
+    // A drag moves the row out of the Project it was dragged from, even when
+    // the Conversation is in other Projects too; from an Anchor it only adds.
     const dragRow =
-      row.sourceProjectId === moveSource
+      row.sourceProjectId && projectIds.has(row.sourceProjectId)
         ? row
         : { ...row, sourceProjectId: undefined };
     const canManage =
@@ -590,9 +618,16 @@ export function ProjectSidebar({
               <SidebarGroupContent>
                 <SidebarMenu>{shownProjects.map(projectRow)}</SidebarMenu>
                 {shownProjects.length < projectGroups.length && (
-                  <p className="v1-nav-empty" role="status">
-                    Loading more…
-                  </p>
+                  <LoadMoreSentinel
+                    // Re-observe after each page: a list that still fits
+                    // keeps its sentinel in view without a new change event.
+                    key={shownProjects.length}
+                    onVisible={() =>
+                      setProjectCount((count) =>
+                        Math.max(count, shownProjects.length + GROUPS_PER_PAGE)
+                      )
+                    }
+                  />
                 )}
               </SidebarGroupContent>
               {(servicesStarting || loading) && (
@@ -650,9 +685,14 @@ export function ProjectSidebar({
                 <SidebarGroupContent>
                   <SidebarMenu>{shownAnchors.map(projectRow)}</SidebarMenu>
                   {shownAnchors.length < anchorGroups.length && (
-                    <p className="v1-nav-empty" role="status">
-                      Loading more…
-                    </p>
+                    <LoadMoreSentinel
+                      key={shownAnchors.length}
+                      onVisible={() =>
+                        setAnchorCount((count) =>
+                          Math.max(count, shownAnchors.length + GROUPS_PER_PAGE)
+                        )
+                      }
+                    />
                   )}
                 </SidebarGroupContent>
               </Collapsible.Panel>

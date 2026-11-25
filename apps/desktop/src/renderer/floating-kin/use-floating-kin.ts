@@ -257,7 +257,13 @@ export function useCapturedPreview(
     value: FloatingKinPreview;
   }>();
   useEffect(() => {
-    if (!bridge || !sessionId) return;
+    // Closing the panel forgets its preview, so reopening waits for a fresh,
+    // still-eligible read instead of showing the old excerpt.
+    if (!sessionId) {
+      setSample(undefined);
+      return;
+    }
+    if (!bridge) return;
     let current = true;
     void bridge
       .preview({ sessionId })
@@ -271,7 +277,7 @@ export function useCapturedPreview(
   }, [bridge, key, sessionId]);
   if (!sample || !sessionId) return undefined;
   if (sample.key === key) return sample.value;
-  // A newer capture refreshes the same Conversation: keep showing the last
+  // A newer capture refreshes the same open panel: keep showing the last
   // preview until the new one arrives instead of flashing a placeholder.
   return sample.key.bridge === bridge && sample.key.sessionId === sessionId
     ? sample.value

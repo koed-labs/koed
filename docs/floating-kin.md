@@ -5,15 +5,17 @@ can lag or miss activity, and imported history does not count as recent
 activity.
 
 Each chip and tracked sidebar row shows a pulsing green dot while its
-Conversation's turn looks underway, in place of the capture age. Pi reports this
-explicitly through the connected Pi extension. For Codex and Claude Code it is a
-best guess from the latest captured item:
+Conversation's turn looks underway, in place of the capture age. For Pi, only
+an unexpired report from the connected Pi extension shows the dot. For Codex
+and Claude Code it is a best guess from the latest captured item in the main
+transcript (Claude Code child agents never reopen a finished turn):
 
 - A turn-end marker (Codex `task_complete` or `turn_aborted`, the Claude Code
   Stop hook) or an assistant reply that has been quiet for 30 seconds means
   the turn finished.
-- A request, tool call or result, reasoning, or a fresh reply means it is
-  underway, but only while something was captured in the last 10 minutes.
+- A request, tool call or result (including Codex native tool events),
+  reasoning, or a fresh reply means it is underway, but only while something
+  was captured in the last 10 minutes.
 
 Once the dot goes, the capture age takes its place. When capture can't tell,
 the chip shows the age too, which doesn't mean the Conversation is idle or
