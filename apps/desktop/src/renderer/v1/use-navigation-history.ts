@@ -16,11 +16,22 @@ export function useNavigationHistory(scope: string | null) {
           previous.scope === scope
             ? previous
             : { scope, entries: [home], index: 0 };
+        const active = current.entries[current.index];
+        if (JSON.stringify(active) === JSON.stringify(route)) return current;
         if (
-          JSON.stringify(current.entries[current.index]) ===
-          JSON.stringify(route)
-        )
-          return current;
+          active?.kind === "conversation" &&
+          route.kind === "conversation" &&
+          ((route.conversationKey &&
+            route.conversationKey === active.conversationKey) ||
+            (route.executionId && route.executionId === active.executionId))
+        ) {
+          return {
+            ...current,
+            entries: current.entries.map((entry, index) =>
+              index === current.index ? route : entry
+            )
+          };
+        }
         const entries = [
           ...current.entries.slice(0, current.index + 1),
           route

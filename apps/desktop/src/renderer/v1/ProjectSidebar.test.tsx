@@ -97,8 +97,6 @@ const menuItem = (label: string) =>
   [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
     (item) => item.textContent === label
   )!;
-const pinnedSection = () => container.querySelector(".v1-nav-conversations")!;
-const pinSectionText = () => pinnedSection().textContent ?? "";
 const searchInput = () =>
   container.querySelector<HTMLInputElement>(
     'input[aria-label="Find Projects or Conversations"]'
@@ -160,7 +158,7 @@ describe("Project sidebar interactions", () => {
     expect(onProjectSettings).toHaveBeenCalledWith("a");
   });
 
-  it("pins Projects in the Projects list and Conversations in both lists, per account/backend scope", async () => {
+  it("pins Projects and nested Conversations per account/backend scope", async () => {
     const data = [
       ...projects,
       {
@@ -179,7 +177,7 @@ describe("Project sidebar interactions", () => {
         .filter((element) => element.querySelector(".v1-nav-pin-mark"))
         .map((element) => element.textContent);
     const pinnedTitles = () =>
-      [...pinnedSection().querySelectorAll("li")]
+      [...container.querySelectorAll(".v1-nav-projects .v1-nav-children li")]
         .filter((row) => row.querySelector(".v1-nav-pin-mark"))
         .map((row) => row.querySelector(".v1-nav-copy > span")?.textContent);
 
@@ -190,10 +188,7 @@ describe("Project sidebar interactions", () => {
     await act(async () => menuItem("Pin").click());
     await act(async () => button("Actions for Project Empty Project")?.click());
     await act(async () => menuItem("Pin Project").click());
-    // A pinned Conversation leads the Conversations list; a pinned Project
-    // leads the Projects list and never joins the Conversations list.
     expect(pinnedTitles()).toEqual(["Captured from Claude"]);
-    expect(pinSectionText()).not.toContain("Empty Project");
     expect(projectNames()).toEqual(["Empty Project", "Koed"]);
     expect(pinnedProjects()).toEqual(["Empty Project"]);
     expect(
@@ -225,46 +220,128 @@ describe("Project sidebar interactions", () => {
     ).toBe('["session:one"]');
   });
 
-  it("lists No project Conversations only under Conversations", async () => {
+  it("lists Conversations without a Git Anchor or Folder under No anchor", async () => {
     const noProject = projectWithConversations("no-project", "No project", 1);
     const named: SidebarProject = {
       ...projectWithConversations("named", "Koed", 1),
       managed: true
     };
-    await act(async () => root.render(<Harness data={[named, noProject]} />));
-    expect(
-      [...container.querySelectorAll(".v1-nav-project")].map(
-        (row) => row.textContent
-      )
-    ).toEqual(["Koed"]);
-    expect(
-      container.querySelector(".v1-nav-conversations")?.textContent
-    ).toContain("No project conversation 1");
-    expect(button("Actions for No project")).toBeNull();
+    const anchor: SidebarProject = {
+      ...projectWithConversations("repository:koed", "Koed repo", 1),
+      source: "git"
+    };
+    await act(async () =>
+      root.render(<Harness data={[named, noProject, anchor]} />)
+    );
+    const open = async (label: string) => {
+      const trigger = [
+        ...container.querySelectorAll<HTMLButtonElement>("button")
+      ].find((item) => item.textContent === label);
+      expect(trigger).toBeDefined();
+      await act(async () => trigger!.click());
+    };
+    expect(container.querySelector(".v1-nav-conversations")).toBeNull();
+    await open("Anchors");
+    await open("No anchor");
+    const anchors = container.querySelector(".v1-nav-anchors");
+    expect(anchors?.textContent).toContain("No project conversation 1");
+    expect(anchors?.textContent).toContain("Koed conversation 1");
+    expect(anchors?.textContent).not.toContain("Koed repo conversation 1");
+    expect(button("Actions for No anchor")).toBeNull();
   });
 
-  it("highlights the open Conversation in the list it was opened from", async () => {
+  it("opens one Conversation across Project and Anchor copies without a duplicate history stop", async () => {
+    const project = {
+      ...projectWithConversations("a", "Alpha", 1),
+      managed: true
+    };
+    const anchor = projectWithConversations("git", "Repo", 1);
     await act(async () =>
       root.render(
-        <Harness data={[projectWithConversations("a", "Alpha", 2)]} />
+        <Harness
+          data={[
+            project,
+            {
+              ...anchor,
+              source: "git",
+              conversations: [
+                {
+                  ...anchor.conversations[0]!,
+                  key: "session:a-1",
+                  aliases: ["session:a-1"],
+                  title: "Alpha conversation 1"
+                }
+              ]
+            }
+          ]}
+        />
       )
     );
-    const copies = () => ({
-      list: container.querySelector<HTMLButtonElement>(
-        ".v1-nav-conversations .v1-nav-conversation"
-      )!,
-      tree: container.querySelector<HTMLButtonElement>(
-        ".v1-nav-projects .v1-nav-children .v1-nav-conversation"
-      )!
+    await searchFor("Alpha conversation");
+    const inProject = () =>
+      container.querySelector<HTMLButtonElement>(
+        ".v1-nav-projects .v1-nav-conversation"
+      )!;
+    const inAnchor = () =>
+      container.querySelector<HTMLButtonElement>(
+        ".v1-nav-anchors .v1-nav-conversation"
+      )!;
+    const route = () =>
+      JSON.parse(
+        container.querySelector('[data-testid="route"]')!.textContent!
+      );
+    await act(async () => inProject().click());
+    expect(inProject().getAttribute("aria-current")).toBe("page");
+    expect(inAnchor().hasAttribute("data-also-open")).toBe(true);
+    expect(route()).toMatchObject({
+      conversationKey: "session:a-1",
+      originGroupId: "a"
     });
-    await act(async () => copies().list.click());
-    expect(copies().list.getAttribute("aria-current")).toBe("page");
-    expect(copies().tree.getAttribute("aria-current")).toBeNull();
-    expect(copies().tree.hasAttribute("data-also-open")).toBe(true);
-    await act(async () => copies().tree.click());
-    expect(copies().tree.getAttribute("aria-current")).toBe("page");
-    expect(copies().list.hasAttribute("data-also-open")).toBe(true);
+    await act(async () => inAnchor().click());
+    expect(inAnchor().getAttribute("aria-current")).toBe("page");
+    expect(inProject().hasAttribute("data-also-open")).toBe(true);
+    expect(route()).toMatchObject({
+      conversationKey: "session:a-1",
+      originGroupId: "git"
+    });
     expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    await act(async () => button("Go back").click());
+    expect(route()).toEqual({ kind: "home" });
+  });
+
+  it("offers memberships first and only offers Move for a single named membership", async () => {
+    const onConversationAction = vi.fn();
+    const management: SidebarManagement = {
+      onCreateProject: () => {},
+      onProjectSettings: () => {},
+      onConversationAction,
+      onDrop: async () => true
+    };
+    const a = { ...projectWithConversations("a", "Alpha", 1), managed: true };
+    a.conversations[0]!.sessionId = "a-1";
+    const b = { ...a, id: "b", name: "Beta" };
+    await act(async () =>
+      root.render(<Harness data={[a, b]} management={management} />)
+    );
+    await act(async () => button("Actions for Alpha conversation 1").click());
+    expect(document.querySelector('[role="menuitem"]')?.textContent).toBe(
+      "Project memberships"
+    );
+    expect(menuItem("Move to Project")).toBeUndefined();
+    await act(async () => menuItem("Project memberships").click());
+    expect(onConversationAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: "a-1" }),
+      "membership"
+    );
+    await act(async () =>
+      root.render(<Harness data={[a]} management={management} />)
+    );
+    await act(async () => button("Actions for Alpha conversation 1").click());
+    await act(async () => menuItem("Move to Project").click());
+    expect(onConversationAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sourceProjectId: "a" }),
+      "move"
+    );
   });
 
   it("lists Git Anchor and Folder groups under a collapsible Anchors heading", async () => {
@@ -308,7 +385,8 @@ describe("Project sidebar interactions", () => {
     expect(section("Projects")).toEqual(["Koed"]);
     expect(section("Anchors")).toEqual([
       "github.com/koed-labs/koed-ai",
-      "scratch"
+      "scratch",
+      "No anchor"
     ]);
     // Anchors expand to their Conversations like Projects.
     const anchorRow = [
@@ -325,7 +403,7 @@ describe("Project sidebar interactions", () => {
 
     await act(async () => heading("Projects").click());
     expect(section("Projects")).toEqual([]);
-    expect(section("Anchors")).toHaveLength(2);
+    expect(section("Anchors")).toHaveLength(3);
     await act(async () => heading("Anchors").click());
     expect(section("Anchors")).toEqual([]);
     expect(button("Collapse all Projects")).toBeNull();
@@ -363,9 +441,12 @@ describe("Project sidebar interactions", () => {
       ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-heading-toggle")
     ].find((toggle) => toggle.textContent === "Anchors")!;
     await act(async () => anchorsHeading.click());
-    expect(count(".v1-nav-anchors")).toBe(15);
+    expect(count(".v1-nav-anchors")).toBe(16);
+    expect(container.querySelector(".v1-nav-anchors")?.textContent).toContain(
+      "No anchor"
+    );
     await scrollToEnd(".v1-nav-anchors");
-    expect(count(".v1-nav-anchors")).toBe(18);
+    expect(count(".v1-nav-anchors")).toBe(19);
   });
 
   it("orders pinned Conversations first inside their Project", async () => {
@@ -433,12 +514,11 @@ describe("Project sidebar interactions", () => {
     const data = [projectWithConversations("a", "Alpha", 12)];
     await act(async () => root.render(<Harness data={data} />));
     await searchFor("conversation 12");
-    expect(
-      container.querySelectorAll(".v1-nav-children .v1-nav-conversation")
-    ).toHaveLength(1);
-    const older = container.querySelector<HTMLButtonElement>(
-      ".v1-nav-children .v1-nav-conversation"
-    )!;
+    const matches = container.querySelectorAll<HTMLButtonElement>(
+      ".v1-nav-projects .v1-nav-children .v1-nav-conversation"
+    );
+    expect(matches).toHaveLength(1);
+    const older = matches[0]!;
     expect(older.textContent).toContain("Alpha conversation 12");
     await act(async () => older.click());
     await act(async () => button("Clear search").click());
@@ -529,26 +609,26 @@ describe("Project sidebar interactions", () => {
       root.render(<Harness data={[]} inventoryReady={false} />)
     );
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.textContent).toContain("Conversations");
+    expect(container.textContent).toContain("Projects");
     await act(async () => root.render(<Harness data={[]} servicesStarting />));
     expect(container.textContent).toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.textContent).toContain("Conversations");
+    expect(container.textContent).toContain("Projects");
     await act(async () => root.render(<Harness data={[]} loading />));
     expect(container.textContent).toContain("Loading conversations…");
     expect(container.textContent).not.toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.textContent).toContain("Conversations");
+    expect(container.textContent).toContain("Projects");
     await act(async () => root.render(<Harness data={[]} />));
     expect(container.textContent).toContain("No conversations yet");
-    expect(container.textContent).toContain("Conversations");
+    expect(container.textContent).toContain("Projects");
     await act(async () => root.render(<Harness servicesStarting />));
     expect(container.textContent).toContain("Captured from Claude");
     expect(container.textContent).toContain("Services starting…");
   });
   it("persists pins across remounts, isolates owners, and supports unpinning", async () => {
     const pinned = () =>
-      [...container.querySelectorAll(".v1-nav-conversations .v1-nav-pin-mark")]
+      [...container.querySelectorAll(".v1-nav-projects .v1-nav-pin-mark")]
         .map((mark) => mark.closest("li")?.textContent)
         .join("|");
     await act(async () => root.render(<Harness />));
@@ -575,20 +655,6 @@ describe("Project sidebar interactions", () => {
     );
     expect(pinned()).not.toContain("Captured from Claude");
   });
-  it("scrolls Conversations on their own and loads more near the end", async () => {
-    await act(async () =>
-      root.render(
-        <Harness data={[projectWithConversations("many", "Many", 30)]} />
-      )
-    );
-    const area = container.querySelector(".v1-nav-conversations-scroll")!;
-    const rows = () => area.querySelectorAll(".v1-nav-conversation").length;
-    expect(rows()).toBe(20);
-    expect(area.textContent).toContain("Loading more…");
-    await act(async () => area.dispatchEvent(new Event("scroll")));
-    expect(rows()).toBe(30);
-    expect(area.textContent).not.toContain("Loading more…");
-  });
   it("opens a capture directly, retains selection through ingestion, and supports history", async () => {
     await act(async () => root.render(<Harness />));
     await act(async () =>
@@ -598,7 +664,7 @@ describe("Project sidebar interactions", () => {
     );
     expect(
       container.querySelector('[data-testid="route"]')?.textContent
-    ).toContain('"threadId":"one"');
+    ).toContain('"conversationKey":"session:one"');
     await act(async () =>
       root.render(
         <Harness
@@ -616,7 +682,7 @@ describe("Project sidebar interactions", () => {
     await act(async () => button("Go forward").click());
     expect(
       container.querySelector('[data-testid="route"]')?.textContent
-    ).toContain('"threadId":"one"');
+    ).toContain('"conversationKey":"session:one"');
     await act(async () => root.render(<Harness scope="owner-b" />));
     expect(container.querySelector('[data-testid="route"]')?.textContent).toBe(
       '{"kind":"home"}'

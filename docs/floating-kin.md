@@ -7,11 +7,12 @@ extension explicitly reports active work. No badge means liveness is unknown,
 not idle or finished. Other AI Clients do not report this status.
 
 Inside Koed, the Chief of Staff takes the logo's place on the Home button at
-the top of the left rail, so it stays visible as you switch screens and when
-you collapse the Conversations and Projects sidebar. The sidebar's
-**Conversations** list shows pinned Conversations first, then every other
-Conversation by most recent activity. A Conversation the Kin is tracking shows
-its capture age, or **Working**, at the end of its row; click it to open the
+the top of the left rail. The live Conversation chips sit directly below it,
+including when the Projects and Anchors sidebar is collapsed. The floating
+overlay keeps its chips above the Kin. A Conversation in exactly one named
+Project uses that Project's Kin; one in zero or several uses the neutral Kin.
+Anchors don't supply a Kin. A Conversation the Kin is tracking also shows its
+capture age, or **Working**, at the end of its sidebar row; click it to open the
 same dialog as a chip, beside the row.
 
 On macOS, turn on **Chief of Staff** under **Settings → General** to let the Kin

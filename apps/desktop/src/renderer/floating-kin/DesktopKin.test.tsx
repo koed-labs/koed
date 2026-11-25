@@ -99,6 +99,8 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
         kinAvatar={kin.avatar}
         kinLive={kin.live}
         kinPanel={kin.panel}
+        kinChips={kin.chips}
+        kinActivity={kin.activity}
       >
         {route}
       </NavigationShell>
@@ -113,9 +115,9 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     mount.querySelector<HTMLButtonElement>('[aria-label="Koed, home"]')!;
   const avatar = () => home().querySelector(".fk-rail-kin");
   const marker = () =>
-    mount.querySelector<HTMLButtonElement>(
-      ".v1-nav-conversations .fk-row-live"
-    );
+    mount.querySelector<HTMLButtonElement>(".v1-nav-projects .fk-row-live");
+  const chip = () =>
+    mount.querySelector<HTMLButtonElement>(".v1-nav-rail .fk-chip");
   const panel = () =>
     document.querySelector('[data-fk-placement="anchored"] .fk-panel');
   try {
@@ -132,6 +134,10 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
       )
     ).not.toBeNull();
     expect(home().querySelector(".v1-logo")).toBeNull();
+    expect(chip()?.getAttribute("aria-label")).toMatch(/^Codex Conversation 1/);
+    expect(
+      home().compareDocumentPosition(chip()!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
     const railAvatar = avatar();
     await act(async () => root.render(<Harness route="recall" />));
     expect(avatar()).toBe(railAvatar);
@@ -141,6 +147,11 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     )!;
     await act(async () => toggle.click());
     expect(mount.querySelectorAll(".fk-rail-kin")).toHaveLength(1);
+    await act(async () => chip()!.click());
+    expect(chip()?.getAttribute("aria-expanded")).toBe("true");
+    expect(panel()).not.toBeNull();
+    await act(async () => chip()!.click());
+    expect(panel()).toBeNull();
     await act(async () => toggle.click());
     expect(marker()?.closest("li")?.textContent).toContain(
       "Tracked Conversation"
@@ -148,6 +159,24 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     await act(async () => marker()!.click());
     expect(marker()?.getAttribute("aria-expanded")).toBe("true");
     expect(panel()).not.toBeNull();
+    panel()
+      ?.querySelector<HTMLButtonElement>(
+        'button[aria-label="AI models settings"]'
+      )
+      ?.focus();
+    await act(async () => toggle.click());
+    expect(panel()).toBeNull();
+    expect(chip()?.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(
+      mount.querySelector(".v1-navigation-main")
+    );
+    await act(async () => chip()!.click());
+    expect(panel()).not.toBeNull();
+    await act(async () => toggle.click());
+    expect(panel()).not.toBeNull();
+    await act(async () => toggle.click());
+    expect(panel()).not.toBeNull();
+    await act(async () => toggle.click());
     const settings = document.querySelector<HTMLButtonElement>(
       'button[aria-label="AI models settings"]'
     )!;
@@ -178,7 +207,9 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
     expect(avatar()).not.toBeNull();
     expect(marker()).not.toBeNull();
     await transition("desktop", 2);
-    expect(mount.querySelector(".fk-rail-kin, .fk-row-live")).toBeNull();
+    expect(
+      mount.querySelector(".fk-rail-kin, .fk-row-live, .fk-chip")
+    ).toBeNull();
     expect(bridge.confirmPresentation).toHaveBeenCalledExactlyOnceWith(2);
     await act(async () => showAiModels());
     expect(openAiModels).toHaveBeenCalledTimes(2);
@@ -265,6 +296,8 @@ it("counts only Conversations captured within the minute as active", async () =>
         kinAvatar={kin.avatar}
         kinLive={kin.live}
         kinPanel={kin.panel}
+        kinChips={kin.chips}
+        kinActivity={kin.activity}
       >
         home
       </NavigationShell>
@@ -279,7 +312,7 @@ it("counts only Conversations captured within the minute as active", async () =>
     );
     const recent = [
       ...mount.querySelectorAll<HTMLElement>(
-        '.v1-nav-conversations .fk-row-live[data-recent="true"]'
+        '.v1-nav-rail .fk-chip .fk-dot[data-recent="true"]'
       )
     ];
     expect(recent).toHaveLength(1);

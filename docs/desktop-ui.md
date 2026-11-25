@@ -21,20 +21,19 @@ narrow windows, it opens as a drawer. While services or inventory are loading,
 the sidebar shows that state rather than an empty Conversation list.
 **Projects** lists named Projects. Below it, **Anchors** lists every Git Anchor
 and Folder with captured Conversations, including Conversations a named Project
-also includes. Conversations with neither a named Project nor an Anchor appear
-only in **Conversations**.
-Each Anchor expands to its Conversations like a Project, and only one Project
-or Anchor is open at a time. An open Project or Anchor shows five Conversations
+also includes. **No anchor** lists Conversations that have no Git Anchor or
+Folder, whether or not they belong to a named Project.
+Each Anchor expands to its Conversations like a Project. Outside search, only
+one Project or Anchor is open at a time. An open group shows five Conversations
 and a **Load More** button; the Projects and Anchors lists themselves load more
-rows as they scroll. **Conversations**, **Projects**, and **Anchors** collapse
-from their headings; **Anchors** starts collapsed. Each scrolls on its own with
-its heading kept in view. The open Conversation is highlighted in the list it
-was opened from, and its copy in the other list is marked more quietly.
+rows as they scroll. **Projects** and **Anchors** collapse from their headings;
+**Anchors** starts collapsed. Each scrolls on its own with its heading kept in
+view. Opening a Conversation from another group doesn't change which
+Conversation is open: the clicked group sets the breadcrumb and primary
+highlight, and other visible copies are marked more quietly.
 
-Pins work in two places. Pinning a Conversation keeps it at the top of
-**Conversations**, which lists every other Conversation by most recent
-activity, and at the top of its Project's Conversations in **Projects**.
-Pinning a named Project keeps it at the top of **Projects**. From a named
+Pinning a Conversation puts it first within its Projects and Anchors. Pinning
+a named Project keeps it at the top of **Projects**. From a named
 Project's ellipsis menu, choose **Pin Project** or **Unpin Project**; **Project
 settings** is in the same menu. Pins are saved locally for the current account
 and backend. They do not sync or change Project membership or access.

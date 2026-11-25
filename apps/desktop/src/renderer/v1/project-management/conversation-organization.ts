@@ -111,6 +111,19 @@ export function organizationEdit(
   };
 }
 
+export function requireSoleMembership(
+  review: OrganizationReview,
+  sourceId: string
+) {
+  const included = review.memberships.filter(
+    (membership) => membership.explanation.included
+  );
+  if (included.length !== 1 || included[0]?.project.id !== sourceId)
+    throw new Error(
+      "Project memberships changed. Use Project memberships to review them."
+    );
+}
+
 export function moveConversationEdit(
   review: OrganizationReview,
   from: string | undefined,

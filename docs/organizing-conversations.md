@@ -29,6 +29,11 @@ counts as original evidence and when it stays unresolved.
   can belong to several named Projects, but Projects do not nest. An exclusion
   overrides every inclusion reason in that Project only.
 
+Use **Project memberships** to manage the named Projects that include a
+Conversation. When it belongs to exactly one named Project, **Move to Project**
+can replace that membership. In the sidebar, **No anchor** is a view for
+Conversations with no Git Anchor or Folder, not an Anchor you can assign.
+
 **Add to Project** changes membership without changing source context.
 **Correct source context** previews a change to the effective Folder or Git
 Anchor used for matching while retaining the original and preserving direct

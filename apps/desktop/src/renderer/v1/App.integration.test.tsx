@@ -585,7 +585,7 @@ describe("V1App launch integration", () => {
     expect(container.textContent).toContain("Making room for your Projects");
     expect(container.textContent).not.toContain("needs a hand");
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.querySelector(".v1-nav-conversations")).not.toBeNull();
+    expect(container.querySelector(".v1-nav-projects")).not.toBeNull();
     expect(inventoryLoad.calls).toBe(0);
 
     // The window opens before runtime startup. Its first lifecycle event must
@@ -599,7 +599,7 @@ describe("V1App launch integration", () => {
     });
     expect(container.textContent).toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.querySelector(".v1-nav-conversations")).not.toBeNull();
+    expect(container.querySelector(".v1-nav-projects")).not.toBeNull();
     expect(inventoryLoad.calls).toBe(0);
 
     // A running supervisor is not yet a ready API. Readiness may change

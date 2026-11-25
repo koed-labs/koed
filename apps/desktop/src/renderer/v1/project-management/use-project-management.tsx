@@ -18,6 +18,7 @@ import {
   excludedMembership,
   inverseOrganizationEdit,
   moveConversationEdit,
+  requireSoleMembership,
   reviewConversationOrganization
 } from "./conversation-organization.js";
 import { CreateProjectDialog } from "./CreateProjectDialog.js";
@@ -228,7 +229,7 @@ export function useProjectManagement({
         preferredProjectId
       );
   };
-  const readSettingsInventory = async (check: () => void) => {
+  const readLatestProjectInventory = async (check: () => void) => {
     check();
     const { localCheckouts } = store!.current().inventory;
     // A concurrent store refresh can supersede ours and leave its published
@@ -239,6 +240,23 @@ export function useProjectManagement({
     ]);
     check();
     return mergeProjectSources(latest, local);
+  };
+  const reviewMove = async (
+    check: () => void,
+    sessionId: string,
+    sourceId: string
+  ) => {
+    const latest = await readLatestProjectInventory(check);
+    const review = await reviewConversationOrganization(
+      api!,
+      latest,
+      sessionId,
+      undefined,
+      scopeKey!
+    );
+    check();
+    requireSoleMembership(review, sourceId);
+    return review;
   };
   const perform = async (
     check: () => void,
@@ -307,15 +325,14 @@ export function useProjectManagement({
     };
     let moved = false;
     return run(async (check) => {
-      const review = await reviewConversationOrganization(
-        api!,
-        projects,
-        target.sessionId,
-        [
-          ...(target.sourceProjectId ? [target.sourceProjectId] : []),
-          destinationId
-        ]
-      );
+      const review = target.sourceProjectId
+        ? await reviewMove(check, target.sessionId, target.sourceProjectId)
+        : await reviewConversationOrganization(
+            api!,
+            projects,
+            target.sessionId,
+            [destinationId]
+          );
       check();
       const destination = review.memberships.find(
         (m) => m.project.id === destinationId
@@ -377,9 +394,15 @@ export function useProjectManagement({
             edit: PersonalConversationOrganizationInput,
             preferredProjectId?: string
           ) =>
-            run((check) =>
-              perform(check, modal.target, edit, preferredProjectId)
-            )
+            run(async (check) => {
+              if (modal.kind === "move" && modal.target.sourceProjectId)
+                await reviewMove(
+                  check,
+                  modal.target.sessionId,
+                  modal.target.sourceProjectId
+                );
+              await perform(check, modal.target, edit, preferredProjectId);
+            })
         }
       : null;
   const undo = async () => {
@@ -459,7 +482,7 @@ export function useProjectManagement({
           onClose={() => {
             if (scopeIsCurrent()) open(null);
           }}
-          onRefresh={() => run(readSettingsInventory)}
+          onRefresh={() => run(readLatestProjectInventory)}
           onSave={(project, changes, accepted, rejected) =>
             run(async (check) => {
               check();
@@ -533,7 +556,7 @@ export function useProjectManagement({
               };
               await refresh(check).catch(reportRefreshError);
               try {
-                return await readSettingsInventory(check);
+                return await readLatestProjectInventory(check);
               } catch (cause) {
                 reportRefreshError(cause);
                 return null;

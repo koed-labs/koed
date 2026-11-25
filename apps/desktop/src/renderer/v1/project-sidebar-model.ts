@@ -10,6 +10,8 @@ import type { ManagedConversationDraft } from "../state/use-managed-conversation
 
 export type ConversationRoute = {
   kind: "conversation";
+  conversationKey?: string;
+  originGroupId?: string;
   projectId?: string;
   threadId?: string;
   executionId?: string;
@@ -28,18 +30,17 @@ export type SidebarConversation = {
   route: ConversationRoute;
   projectName: string;
   sessionId?: string;
+  sourceSessionIds?: readonly string[];
   sourceProjectId?: string;
   managementPending?: boolean;
-  // The Project's saved Kin look, so the row's Kin matches Home.
-  projectKin?: PersonalProjectKin;
 };
-/** Captures that belong to no Project or Anchor. Home shows them as floor
- * coins; the sidebar lists them only under Conversations. */
+/** Captures that belong to no Project or Anchor. Home shows them as floor coins. */
 export const NO_PROJECT_ID = "no-project";
+export const NO_ANCHOR_ID = "no-anchor";
 
 /** Git Anchor and Folder groups, which the sidebar lists under Anchors. */
 export const isAnchorGroup = (project: SidebarProject) =>
-  Boolean(project.source);
+  Boolean(project.source) || project.id === NO_ANCHOR_ID;
 
 export type SidebarProject = {
   id: string;
@@ -139,10 +140,10 @@ export function buildProjectSidebar(
         },
         projectName: group.name,
         sessionId: thread.sessionId ?? undefined,
+        sourceSessionIds: thread.sourceReferences?.flatMap((ref) =>
+          ref.sessionId ? [ref.sessionId] : []
+        ),
         sourceProjectId: project.namedProject ? project.id : undefined,
-        ...(project.namedProject?.kin && {
-          projectKin: project.namedProject.kin
-        }),
         managementPending: Boolean(
           intent?.presentationProjectId && !intent.projectMembershipConfirmed
         )
@@ -206,6 +207,129 @@ export function buildProjectSidebar(
       return group;
     })
     .sort(activityOrder);
+}
+
+/** No anchor is a sidebar view, not a Project or a source context. */
+export function sidebarGroups(
+  projects: readonly SidebarProject[],
+  anchorInventoryReady = true
+): SidebarProject[] {
+  const anchored = new Set(
+    projects
+      .filter((group) => group.source)
+      .flatMap((group) => group.conversations.flatMap((row) => row.aliases))
+  );
+  const withoutAnchor: SidebarConversation[] = [];
+  const groupName = anchorInventoryReady ? "No anchor" : "Source pending";
+  const seen = new Set(anchored);
+  const rows = projects
+    .flatMap((group) => group.conversations)
+    .sort(
+      (a, b) =>
+        Number(Boolean(b.sessionId)) - Number(Boolean(a.sessionId)) ||
+        activityOrder(a, b)
+    );
+  for (const row of rows) {
+    const alreadyListed = row.aliases.some((alias) => seen.has(alias));
+    for (const alias of row.aliases) seen.add(alias);
+    if (!alreadyListed && (anchorInventoryReady || !row.route.threadId))
+      withoutAnchor.push({
+        ...row,
+        projectName: groupName,
+        sourceProjectId: undefined
+      });
+  }
+  const groups = projects.filter((group) => group.id !== NO_PROJECT_ID);
+  if (!withoutAnchor.length) return groups;
+  withoutAnchor.sort(activityOrder);
+  return [
+    ...groups,
+    {
+      id: NO_ANCHOR_ID,
+      name: groupName,
+      latestAt: withoutAnchor[0]!.latestAt,
+      conversations: withoutAnchor
+    }
+  ];
+}
+
+export function namedMemberships(projects: readonly SidebarProject[]) {
+  const memberships = new Map<string, Set<string>>();
+  for (const project of projects) {
+    if (!project.managed) continue;
+    for (const row of project.conversations) {
+      if (row.managementPending || !row.sessionId) continue;
+      for (const alias of row.aliases) {
+        const ids = memberships.get(alias) ?? new Set<string>();
+        ids.add(project.id);
+        memberships.set(alias, ids);
+      }
+    }
+  }
+  return memberships;
+}
+
+export function openSidebarConversation(
+  row: SidebarConversation,
+  originGroupId?: string
+): ConversationRoute {
+  return {
+    kind: "conversation",
+    conversationKey: row.key,
+    executionId: row.route.executionId,
+    sessionId: row.sessionId,
+    originGroupId
+  };
+}
+
+export function matchesSidebarConversation(
+  route: ConversationRoute,
+  row: SidebarConversation
+): boolean {
+  if (route.conversationKey && row.aliases.includes(route.conversationKey))
+    return true;
+  if (route.executionId && row.route.executionId === route.executionId)
+    return true;
+  if (
+    route.sessionId &&
+    (row.sessionId === route.sessionId ||
+      row.sourceSessionIds?.includes(route.sessionId))
+  )
+    return true;
+  return Boolean(
+    !route.conversationKey &&
+    route.threadId &&
+    row.route.threadId === route.threadId &&
+    row.route.projectId === route.projectId
+  );
+}
+
+export function resolveConversationByKey(
+  projects: readonly DesktopProject[],
+  key: string
+) {
+  let match:
+    | { project: DesktopProject; thread: DesktopProject["threads"][number] }
+    | undefined;
+  for (const project of projects) {
+    const thread = project.threads.find(
+      (item) =>
+        item.threadKind !== "subagent" &&
+        personalInventoryConversationKey(item) === key
+    );
+    if (!thread) continue;
+    // Prefer the source inventory to membership views. Break ties without
+    // depending on activity or the clicked group.
+    if (
+      !match ||
+      Number(Boolean(project.namedProject)) <
+        Number(Boolean(match.project.namedProject)) ||
+      (Boolean(project.namedProject) === Boolean(match.project.namedProject) &&
+        project.id < match.project.id)
+    )
+      match = { project, thread };
+  }
+  return match;
 }
 
 export function filterSidebar(
@@ -300,26 +424,4 @@ export function pinnedFirst(
     pins,
     (project) => (project.managed ? [projectPinKey(project.id)] : [])
   );
-}
-
-/**
- * The Conversations list: pinned Conversations in pin order, then every other
- * Conversation by most recent activity. A Conversation in several Projects
- * appears once. Pinned Projects stay in the Projects list.
- */
-export function conversationList(
-  projects: readonly SidebarProject[],
-  pins: readonly string[]
-): { pinned: SidebarConversation[]; recent: SidebarConversation[] } {
-  const pinned = pinnedSidebarItems(projects, pins).flatMap((item) =>
-    item.kind === "conversation" ? [item.row] : []
-  );
-  const seen = new Set(pinned.map((row) => row.key));
-  const recent: SidebarConversation[] = [];
-  for (const row of projects.flatMap((project) => project.conversations)) {
-    if (seen.has(row.key)) continue;
-    seen.add(row.key);
-    recent.push(row);
-  }
-  return { pinned, recent: recent.sort(activityOrder) };
 }

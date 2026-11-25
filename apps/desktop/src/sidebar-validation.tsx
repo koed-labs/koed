@@ -2,7 +2,11 @@
 import { useMemo, useState } from "react";
 import { NavigationShell } from "./renderer/v1/NavigationShell.js";
 import type { AccountDesktopApi } from "@koed-labs/shared/account";
-import { buildProjectSidebar } from "./renderer/v1/project-sidebar-model.js";
+import {
+  buildProjectSidebar,
+  matchesSidebarConversation,
+  sidebarGroups
+} from "./renderer/v1/project-sidebar-model.js";
 import { useNavigationHistory } from "./renderer/v1/use-navigation-history.js";
 import { V1ConversationSurface } from "./renderer/v1/runtime.js";
 import type { DesktopConversationEvent } from "./desktop-conversation.js";
@@ -83,13 +87,18 @@ export function SidebarValidation({
   const [notice, setNotice] = useState("");
   const navigation = useNavigationHistory(scope);
   const groups = buildProjectSidebar(source, [], new Map());
-  const current = groups
-    .flatMap((p) => p.conversations)
-    .find(
-      (row) =>
-        navigation.route.kind === "conversation" &&
-        navigation.route.threadId === row.route.threadId
-    );
+  const route = navigation.route;
+  const origin =
+    route.kind === "conversation"
+      ? sidebarGroups(groups).find((group) => group.id === route.originGroupId)
+      : undefined;
+  const current =
+    route.kind === "conversation"
+      ? (
+          origin?.conversations ??
+          groups.flatMap((group) => group.conversations)
+        ).find((row) => matchesSidebarConversation(route, row))
+      : undefined;
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <header

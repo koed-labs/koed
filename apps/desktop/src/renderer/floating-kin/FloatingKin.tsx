@@ -136,7 +136,14 @@ function CaptureChip({
       aria-expanded={expanded}
       aria-controls={expanded ? "floating-kin-summary" : undefined}
       aria-label={`${clientNames[conversation.client]} Conversation ${index + 1}. ${working ? "Working. " : ""}Captured ${age} ago.`}
+      title={`${clientNames[conversation.client]} · ${working ? "Working" : `Captured ${age} ago`}`}
       onClick={(event) => toggle(event.currentTarget)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && expanded) {
+          event.preventDefault();
+          toggle(event.currentTarget);
+        }
+      }}
     >
       <span className="fk-avatar" data-fk-handle>
         <ChipKin
@@ -387,9 +394,12 @@ function useSelection(
       surface.current
     )?.focus();
   }, [cancel, selected, selection, surface, visible]);
-  const close = () => {
+  const dismiss = () => {
     setSelection(null);
     void cancel(true);
+  };
+  const close = () => {
+    dismiss();
     if (trigger.current?.isConnected) trigger.current.focus();
     else
       (
@@ -403,7 +413,7 @@ function useSelection(
     void cancel(true);
     setSelection(sessionId);
   };
-  return { selected, close, toggle };
+  return { selected, close, dismiss, toggle };
 }
 
 export function useKinActivity(
@@ -466,7 +476,7 @@ export function useKinSummaryPanel({
   const deadlines = visible ? recent.map(workingDeadline) : [];
   const workingNow = useWorkingClock(deadlines, at);
   const { view, summarize, reopen, cancel, isCancelling } = useSummary(bridge);
-  const { selected, close, toggle } = useSelection(
+  const { selected, close, dismiss, toggle } = useSelection(
     recent,
     cancel,
     surface,
@@ -538,6 +548,7 @@ export function useKinSummaryPanel({
     panel,
     selected: visible ? selected : undefined,
     close,
+    dismiss,
     toggle,
     isWorking: (conversation: Conversation) =>
       workingDeadline(conversation) > workingNow
@@ -561,8 +572,8 @@ export function KinActivityContent({
   openAiModels?: () => void;
   openConversation?: (sessionId: string) => void;
 }) {
-  const { activity, at, conversations, overflow } = sample;
-  const { panel, selected, toggle, isWorking } = useKinSummaryPanel({
+  const { activity } = sample;
+  const summary = useKinSummaryPanel({
     sample,
     bridge,
     surface,
@@ -572,39 +583,55 @@ export function KinActivityContent({
   });
   return (
     <>
-      {panel}
-      {conversations.length > 0 || overflow > 0 ? (
-        <div
-          className="fk-dock"
-          role="group"
-          aria-label="Recently captured Conversations"
-        >
-          {conversations.map((conversation, index) => (
-            <CaptureChip
-              key={conversation.sessionId}
-              conversation={conversation}
-              now={at}
-              working={isWorking(conversation)}
-              index={index}
-              expanded={selected?.sessionId === conversation.sessionId}
-              toggle={(button) => toggle(conversation.sessionId, button)}
-            />
-          ))}
-          {overflow ? (
-            <span
-              className="fk-overflow"
-              aria-label={`${overflow} more Conversations`}
-            >
-              +{overflow}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+      {summary.panel}
+      <KinConversationChips sample={sample} {...summary} />
       {/* A pending read is not a runtime state; showing it flashes a pill. */}
       {showStatus && !sample.pending && activity.state !== "running" && (
         <ActivityPill state={activity.state} />
       )}
     </>
+  );
+}
+
+export function KinConversationChips({
+  sample,
+  selected,
+  toggle,
+  isWorking
+}: Pick<
+  ReturnType<typeof useKinSummaryPanel>,
+  "selected" | "toggle" | "isWorking"
+> & {
+  sample: ReturnType<typeof useKinActivity>;
+}) {
+  const { at, conversations, overflow } = sample;
+  if (!conversations.length && !overflow) return null;
+  return (
+    <div
+      className="fk-dock"
+      role="group"
+      aria-label="Recently captured Conversations"
+    >
+      {conversations.map((conversation, index) => (
+        <CaptureChip
+          key={conversation.sessionId}
+          conversation={conversation}
+          now={at}
+          working={isWorking(conversation)}
+          index={index}
+          expanded={selected?.sessionId === conversation.sessionId}
+          toggle={(button) => toggle(conversation.sessionId, button)}
+        />
+      ))}
+      {overflow > 0 && (
+        <span
+          className="fk-overflow"
+          aria-label={`${overflow} more Conversations`}
+        >
+          +{overflow}
+        </span>
+      )}
+    </div>
   );
 }
 

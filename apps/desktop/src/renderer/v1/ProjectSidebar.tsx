@@ -1,5 +1,4 @@
 import {
-  memo,
   useEffect,
   useMemo,
   useRef,
@@ -46,14 +45,17 @@ import {
 } from "lucide-react";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
 import { Pixelkin } from "./pixelkin/Pixelkin.js";
-import { DEFAULT_AGENT_LOOK, projectKinLook } from "./pixelkin/agent-kin.js";
+import { projectKinLook } from "./pixelkin/agent-kin.js";
 import {
-  conversationList,
   filterSidebar,
   isAnchorGroup,
-  NO_PROJECT_ID,
+  matchesSidebarConversation,
+  namedMemberships,
+  NO_ANCHOR_ID,
+  openSidebarConversation,
   pinnedFirst,
   projectPinKey,
+  sidebarGroups,
   type SidebarConversation,
   type SidebarProject,
   type NavigationRoute
@@ -63,20 +65,11 @@ import { useConversationDrag } from "./project-management/use-conversation-drag.
 import "./project-management/project-management.css";
 
 const CONVERSATIONS_PER_PAGE = 5;
-const RECENT_PER_PAGE = 20;
-// Projects and Anchors load this many rows at a time as their lists scroll.
 const GROUPS_PER_PAGE = 15;
-// Load the next page this close (px) to the end of the Conversations list.
 const LOAD_MORE_THRESHOLD = 120;
 
-/**
- * Live Chief of Staff state for Conversation rows. `marker` returns a control
- * for a Conversation the Kin is tracking, or null; `status` sums it up beside
- * the Conversations heading.
- */
 export type SidebarLive = {
   marker: (row: SidebarConversation) => ReactNode;
-  status?: ReactNode;
 };
 
 export type SidebarManagement = {
@@ -151,31 +144,6 @@ export const conversationActivity = (value: string, now: number) => {
         : `${Math.floor(minutes / 1440)}d`;
 };
 
-// The Project's Kin with the AI Client's badge, as on Chief of Staff chips.
-const ConversationKin = memo(function ConversationKin({
-  row
-}: {
-  row: SidebarConversation;
-}) {
-  const projectId = row.route.projectId;
-  return (
-    <span className="v1-nav-kin" aria-hidden="true">
-      <Pixelkin
-        look={
-          projectId
-            ? projectKinLook(projectId, row.projectKin)
-            : DEFAULT_AGENT_LOOK
-        }
-        size={35}
-        motion="still"
-      />
-      <span className="v1-nav-kin-client">
-        {row.client ? <AiClientLogo id={row.client} /> : <MessageCircle />}
-      </span>
-    </span>
-  );
-});
-
 export function ProjectSidebar({
   projects,
   route,
@@ -185,6 +153,7 @@ export function ProjectSidebar({
   loading,
   servicesStarting,
   inventoryReady = true,
+  anchorInventoryReady = true,
   error,
   onRetry,
   reveal,
@@ -199,6 +168,7 @@ export function ProjectSidebar({
   loading?: boolean;
   servicesStarting?: boolean;
   inventoryReady?: boolean;
+  anchorInventoryReady?: boolean;
   error?: string | null;
   onRetry: () => void;
   // A Project to expand, such as one whose conversation Home just opened.
@@ -211,14 +181,10 @@ export function ProjectSidebar({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [visibleCounts, setVisibleCounts] = useState(new Map<string, number>());
   const initialized = useRef(false);
-  const [listOpen, setListOpen] = useState(true);
-  const [openedFrom, setOpenedFrom] = useState<"list" | "tree">("list");
   const [projectsOpen, setProjectsOpen] = useState(true);
-  // Anchors start collapsed; Conversations and Projects start open.
   const [anchorsOpen, setAnchorsOpen] = useState(false);
   const [projectCount, setProjectCount] = useState(GROUPS_PER_PAGE);
   const [anchorCount, setAnchorCount] = useState(GROUPS_PER_PAGE);
-  const [recentCount, setRecentCount] = useState(RECENT_PER_PAGE);
   const [now, setNow] = useState(Date.now);
   const { pins, toggle, ready, error: pinError } = useSidebarPins(scopeKey);
   const drag = useConversationDrag(
@@ -233,16 +199,18 @@ export function ProjectSidebar({
     const interval = setInterval(() => setNow(Date.now()), 60000);
     return () => clearInterval(interval);
   }, []);
+  const groups = useMemo(
+    () => sidebarGroups(projects, anchorInventoryReady),
+    [projects, anchorInventoryReady]
+  );
+  const memberships = useMemo(() => namedMemberships(projects), [projects]);
   useEffect(() => {
-    // Open the first row under Projects; Anchors start collapsed.
-    const first = projects.find(
-      (project) => !isAnchorGroup(project) && project.id !== NO_PROJECT_ID
-    );
+    const first = groups.find((group) => !isAnchorGroup(group));
     if (!initialized.current && first) {
       initialized.current = true;
       setExpanded(new Set([first.id]));
     }
-  }, [projects]);
+  }, [groups]);
   // Expanding the Project shows the open conversation's highlight. A hidden
   // sidebar stays hidden; when it is showing, the row is scrolled into view.
   useEffect(() => {
@@ -259,34 +227,41 @@ export function ProjectSidebar({
     });
     return () => cancelAnimationFrame(frame);
   }, [reveal]);
-  useEffect(() => {
-    if (route.kind === "conversation" && route.projectId) {
-      const id = route.projectId;
-      setExpanded(new Set([id]));
-    }
-  }, [route]);
-  const visible = useMemo(
-    () => pinnedFirst(filterSidebar(projects, query), pins),
-    [projects, query, pins]
-  );
   const selected = (row: SidebarConversation) =>
-    route.kind === "conversation" &&
-    (route.executionId
-      ? row.route.executionId === route.executionId
-      : route.projectId === row.route.projectId &&
-        route.threadId === row.route.threadId);
-  const list = conversationList(visible, pins);
-  // No project only feeds the Conversations list and Home's floor coins.
-  const projectGroups = visible.filter(
-    (project) => !isAnchorGroup(project) && project.id !== NO_PROJECT_ID
+    route.kind === "conversation" && matchesSidebarConversation(route, row);
+  const matchingGroups = groups.filter((group) =>
+    group.conversations.some(selected)
   );
+  const originId =
+    route.kind === "conversation"
+      ? (route.originGroupId ?? route.projectId)
+      : undefined;
+  const primaryGroup =
+    matchingGroups.find((group) => group.id === originId) ?? matchingGroups[0];
+  const primaryGroupId = primaryGroup?.id;
+  const primaryRowKey = primaryGroup?.conversations.find(selected)?.key;
+  const primaryIsAnchor =
+    primaryGroup !== undefined && isAnchorGroup(primaryGroup);
+  useEffect(() => {
+    if (!primaryGroupId) return;
+    setExpanded(new Set([primaryGroupId]));
+    if (primaryIsAnchor) setAnchorsOpen(true);
+    else setProjectsOpen(true);
+  }, [route, primaryGroupId, primaryIsAnchor]);
+  const visible = useMemo(
+    () => pinnedFirst(filterSidebar(groups, query), pins),
+    [groups, query, pins]
+  );
+  const searching = Boolean(query.trim());
+  const projectGroups = visible.filter((group) => !isAnchorGroup(group));
   const anchorGroups = visible.filter(isAnchorGroup);
-  // Keep the open group listed even when it lies beyond the loaded page.
+  // Keep the open group and the No anchor fallback accessible on every page.
   const page = (groups: SidebarProject[], count: number) =>
     query.trim()
       ? groups
       : groups.filter(
-          (group, index) => index < count || expanded.has(group.id)
+          (group, index) =>
+            index < count || group.id === NO_ANCHOR_ID || expanded.has(group.id)
         );
   const shownProjects = page(projectGroups, projectCount);
   const shownAnchors = page(anchorGroups, anchorCount);
@@ -301,11 +276,6 @@ export function ProjectSidebar({
       )
         grow(shown + GROUPS_PER_PAGE);
     };
-  // Search covers every Conversation; keep the open one visible otherwise.
-  const recent = query.trim()
-    ? list.recent
-    : list.recent.filter((row, index) => index < recentCount || selected(row));
-  const moreRecent = list.recent.length - recent.length;
   function projectRow(project: SidebarProject) {
     const pinKey = projectPinKey(project.id);
     const open = Boolean(query.trim()) || expanded.has(project.id);
@@ -379,7 +349,7 @@ export function ProjectSidebar({
           </div>
           <Collapsible.Panel>
             <SidebarMenuSub className="v1-nav-children">
-              {shown.map((row) => conversation(row, true))}
+              {shown.map((row) => conversation(row, project.id))}
               {remaining > 0 && (
                 <SidebarMenuSubItem className="v1-nav-load-more-row">
                   <Button
@@ -418,50 +388,42 @@ export function ProjectSidebar({
       </SidebarMenuItem>
     );
   }
-  function conversation(row: SidebarConversation, nested: boolean) {
-    // The open Conversation is highlighted in the list it was opened from;
-    // its copies elsewhere get a quieter echo.
-    const primary =
-      selected(row) && (nested ? openedFrom === "tree" : openedFrom === "list");
+  function conversation(row: SidebarConversation, groupId: string) {
+    const primary = groupId === primaryGroupId && row.key === primaryRowKey;
     const isPinned = pins.some((pin) => row.aliases.includes(pin));
-    const Row = nested ? SidebarMenuSubItem : SidebarMenuItem;
-    const RowButton = nested ? SidebarMenuSubButton : SidebarMenuButton;
+    const projectIds = new Set(
+      row.aliases.flatMap((alias) => [...(memberships.get(alias) ?? [])])
+    );
+    const moveSource = projectIds.size === 1 ? [...projectIds][0] : undefined;
+    const dragRow =
+      row.sourceProjectId === moveSource
+        ? row
+        : { ...row, sourceProjectId: undefined };
     const canManage =
       row.sessionId && !row.managementPending && !management?.busy;
     const marker = live?.marker(row) ?? null;
     return (
-      <Row
+      <SidebarMenuSubItem
         className={`v1-nav-conversation-wrap ${drag.ghost?.row.key === row.key ? "v1-pm-dragging" : ""}`}
         data-live={marker ? true : undefined}
         key={row.key}
       >
-        <RowButton
-          {...drag.handlers(row)}
+        <SidebarMenuSubButton
+          {...drag.handlers(dragRow)}
           render={<button type="button" />}
           className="v1-nav-conversation"
           isActive={primary}
           aria-current={primary ? "page" : undefined}
           data-also-open={selected(row) && !primary ? true : undefined}
           title={`${row.title} · ${row.projectName}`}
-          onClick={() => {
-            setOpenedFrom(nested ? "tree" : "list");
-            onSelect(row.route);
-          }}
+          onClick={() => onSelect(openSidebarConversation(row, groupId))}
         >
-          {nested ? (
-            <span
-              className={`v1-nav-client-mark ${row.client ?? ""}`}
-              aria-hidden="true"
-            >
-              {row.client ? (
-                <AiClientLogo id={row.client} />
-              ) : (
-                <MessageCircle />
-              )}
-            </span>
-          ) : (
-            <ConversationKin row={row} />
-          )}
+          <span
+            className={`v1-nav-client-mark ${row.client ?? ""}`}
+            aria-hidden="true"
+          >
+            {row.client ? <AiClientLogo id={row.client} /> : <MessageCircle />}
+          </span>
           <span className="v1-nav-copy">
             <span>
               {isPinned && (
@@ -478,7 +440,7 @@ export function ProjectSidebar({
           >
             {conversationActivity(row.latestAt, now)}
           </time>
-        </RowButton>
+        </SidebarMenuSubButton>
         {marker}
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -501,13 +463,6 @@ export function ProjectSidebar({
               <>
                 <DropdownMenuItem
                   disabled={!canManage}
-                  onClick={() => management.onConversationAction(row, "move")}
-                >
-                  <ArrowRight />
-                  Move to Project
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={!canManage}
                   onClick={() =>
                     management.onConversationAction(row, "membership")
                   }
@@ -515,6 +470,20 @@ export function ProjectSidebar({
                   <Folder />
                   Project memberships
                 </DropdownMenuItem>
+                {moveSource && (
+                  <DropdownMenuItem
+                    disabled={!canManage}
+                    onClick={() =>
+                      management.onConversationAction(
+                        { ...row, sourceProjectId: moveSource },
+                        "move"
+                      )
+                    }
+                  >
+                    <ArrowRight />
+                    Move to Project
+                  </DropdownMenuItem>
+                )}
               </>
             )}
             <DropdownMenuItem
@@ -535,7 +504,7 @@ export function ProjectSidebar({
             )}
           </DropdownMenuPopup>
         </DropdownMenu>
-      </Row>
+      </SidebarMenuSubItem>
     );
   }
   return (
@@ -573,52 +542,6 @@ export function ProjectSidebar({
           }
         }}
       >
-        <SidebarGroup className="v1-nav-conversations">
-          <Collapsible.Root open={listOpen} onOpenChange={setListOpen}>
-            <div className="v1-nav-heading v1-nav-conversations-heading">
-              <Collapsible.Trigger className="v1-nav-heading-toggle">
-                <ChevronDown className={listOpen ? "" : "closed"} />
-                <span>Conversations</span>
-              </Collapsible.Trigger>
-              {live?.status}
-            </div>
-            <Collapsible.Panel>
-              <SidebarGroupContent>
-                {/* Its own scroll area; nearing the end loads the next page. */}
-                <div
-                  className="v1-nav-conversations-scroll"
-                  onScroll={(event) => {
-                    const area = event.currentTarget;
-                    if (
-                      moreRecent > 0 &&
-                      area.scrollTop + area.clientHeight >=
-                        area.scrollHeight - LOAD_MORE_THRESHOLD
-                    )
-                      setRecentCount((count) =>
-                        Math.max(count, recent.length + RECENT_PER_PAGE)
-                      );
-                  }}
-                >
-                  <SidebarMenu>
-                    {list.pinned.map((row) => conversation(row, false))}
-                    {recent.map((row) => conversation(row, false))}
-                  </SidebarMenu>
-                  {moreRecent > 0 && (
-                    <p className="v1-nav-empty" role="status">
-                      Loading more…
-                    </p>
-                  )}
-                </div>
-                {!list.pinned.length &&
-                  !list.recent.length &&
-                  query &&
-                  showEmptyStates && (
-                    <p className="v1-nav-empty">No matching Conversations</p>
-                  )}
-              </SidebarGroupContent>
-            </Collapsible.Panel>
-          </Collapsible.Root>
-        </SidebarGroup>
         <SidebarGroup
           className="v1-nav-projects"
           onScroll={loadMoreGroups(
@@ -627,10 +550,15 @@ export function ProjectSidebar({
             (next) => setProjectCount((count) => Math.max(count, next))
           )}
         >
-          <Collapsible.Root open={projectsOpen} onOpenChange={setProjectsOpen}>
+          <Collapsible.Root
+            open={projectsOpen || searching}
+            onOpenChange={setProjectsOpen}
+          >
             <div className="v1-nav-heading v1-nav-section-heading v1-pm-project-heading">
               <Collapsible.Trigger className="v1-nav-heading-toggle">
-                <ChevronDown className={projectsOpen ? "" : "closed"} />
+                <ChevronDown
+                  className={projectsOpen || searching ? "" : "closed"}
+                />
                 <span>Projects</span>
               </Collapsible.Trigger>
               {management && (
@@ -706,10 +634,15 @@ export function ProjectSidebar({
               (next) => setAnchorCount((count) => Math.max(count, next))
             )}
           >
-            <Collapsible.Root open={anchorsOpen} onOpenChange={setAnchorsOpen}>
+            <Collapsible.Root
+              open={anchorsOpen || searching}
+              onOpenChange={setAnchorsOpen}
+            >
               <div className="v1-nav-heading v1-nav-section-heading">
                 <Collapsible.Trigger className="v1-nav-heading-toggle">
-                  <ChevronDown className={anchorsOpen ? "" : "closed"} />
+                  <ChevronDown
+                    className={anchorsOpen || searching ? "" : "closed"}
+                  />
                   <span>Anchors</span>
                 </Collapsible.Trigger>
               </div>

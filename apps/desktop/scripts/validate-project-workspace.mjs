@@ -38,7 +38,6 @@ const inspectWorkspace = async (window) =>
       titleTextOverflow: title && getComputedStyle(title).textOverflow,
       previewTextOverflow: preview && getComputedStyle(preview).textOverflow,
       sourceAiClient: row?.textContent.includes('Codex CLI') ?? false,
-      conversationsHeadingVisible: Boolean(document.querySelector('.v1-nav-conversations')),
       inactiveToggleVisible: document.body.textContent.includes('Inactive'),
       presentationActionCount: document.querySelectorAll('.personal-session-actions').length,
       sessionListOverflow: Boolean(list && list.scrollWidth > list.clientWidth),
@@ -626,7 +625,6 @@ const run = async () => {
     assert.equal(wide.titleTextOverflow, "clip");
     assert.equal(wide.previewTextOverflow, "clip");
     assert.equal(wide.sourceAiClient, false);
-    assert.equal(wide.conversationsHeadingVisible, true);
     assert.equal(wide.inactiveToggleVisible, true);
     assert.equal(wide.presentationActionCount, 4);
     const actionMenuState = await window.webContents.executeJavaScript(`(() => {

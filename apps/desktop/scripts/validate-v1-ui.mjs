@@ -30,6 +30,16 @@ const run = async () => {
     evaluate(
       "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))"
     );
+  const click = async (selector, label) => {
+    const clicked = await evaluate(`(() => {
+      const button = [...document.querySelectorAll(${JSON.stringify(selector)})]
+        .find((candidate) => candidate.textContent.includes(${JSON.stringify(label)}));
+      button?.click();
+      return !!button;
+    })()`);
+    assert.ok(clicked, `${label} is present in ${selector}`);
+    await paint();
+  };
   const capture = async (name) => {
     await paint();
     await writeFile(
@@ -60,6 +70,25 @@ const run = async () => {
       "document.documentElement.classList.remove('light');document.documentElement.classList.add('dark')"
     );
     await capture("model-picker-dark");
+    await window.loadFile(page, { query: { sidebar: "1" } });
+    await paint();
+    assert.equal(
+      await evaluate("!!document.querySelector('.v1-nav-projects')"),
+      true
+    );
+    assert.equal(
+      await evaluate("!!document.querySelector('.v1-nav-conversations')"),
+      false
+    );
+    await click(".v1-nav-anchors .v1-nav-heading-toggle", "Anchors");
+    await click(".v1-nav-anchors .v1-nav-project", "No anchor");
+    await click(".v1-nav-anchors .v1-nav-load-more", "Load More");
+    await click(".v1-nav-anchors .v1-nav-conversation", "The second notebook");
+    assert.equal(
+      await evaluate(`document.querySelector('.v1-nav-anchors [aria-current="page"]')
+      ?.textContent.includes('The second notebook')`),
+      true
+    );
     await window.loadFile(page, { query: { onboarding: "1" } });
     await paint();
     assert.ok(await evaluate("!!document.querySelector('.lp-workspace')"));
