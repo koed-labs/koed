@@ -2146,10 +2146,48 @@ async function lookupHistoricalActivity(
   }
 }
 
+const automaticCaptureReadiness = (
+  name: string,
+  profile: KoedServerComponentStatus,
+  profileConfigured: boolean,
+  watcher: KoedServerComponentStatus,
+  hook?: KoedServerComponentStatus
+): AiClientCapabilityDescriptor => {
+  const descriptor = (
+    readiness: "ready" | "not_ready" | "unauthenticated" | "unknown",
+    message: string
+  ) =>
+    capabilityDescriptor("automatic_capture", "supported", readiness, message);
+  if (profileConfigured && profile.details?.captureConnected === false)
+    return descriptor(
+      "not_ready",
+      `${name} is set up, but Koed is not reading its conversations until you connect it.`
+    );
+  if (profileConfigured && hook && hook.state !== "healthy") {
+    const confirmed =
+      hook.state === "needs_attention" &&
+      Array.isArray(hook.details?.missingEvents);
+    return descriptor(
+      confirmed ? "not_ready" : "unknown",
+      hook.message ?? "Supported Capture Hook status could not be verified."
+    );
+  }
+  if (profileConfigured || profile.details?.captureConfigured === true)
+    return descriptor(
+      readinessForState(watcher.state),
+      watcher.message ?? "Automatic capture profile check completed."
+    );
+  return descriptor(
+    readinessForState(profile.state) === "unknown" ? "unknown" : "not_ready",
+    profile.message ?? "Automatic capture profile is not configured."
+  );
+};
+
 export const inspectAiClientReadiness = (input: {
   codex: KoedServerStatus["codex"];
   claudeCode: KoedServerStatus["claudeCode"];
   pi: KoedServerStatus["pi"];
+  captureHook?: KoedServerComponentStatus;
   codexTranscriptWatcher: KoedServerComponentStatus;
   claudeTranscriptWatcher: KoedServerComponentStatus;
   piTranscriptWatcher?: KoedServerComponentStatus;
@@ -2208,13 +2246,6 @@ export const inspectAiClientReadiness = (input: {
             : details.authenticationState === "unknown"
               ? "unknown"
               : (snapshot?.authenticationState ?? "unknown");
-      const captureProfileConfigured =
-        profileConfigured || details.captureConfigured === true;
-      const captureFallback = captureProfileConfigured
-        ? readinessForState(capture.state)
-        : profileReady === "unknown"
-          ? "unknown"
-          : "not_ready";
       const mcpFallback =
         profileAuthentication === "unauthenticated"
           ? "unauthenticated"
@@ -2245,11 +2276,12 @@ export const inspectAiClientReadiness = (input: {
               ]
             }
           : descriptor;
-      const captureDescriptor = capabilityDescriptor(
-        "automatic_capture",
-        "supported",
-        captureFallback,
-        capture.message ?? "Automatic capture profile check completed."
+      const captureDescriptor = automaticCaptureReadiness(
+        displayName,
+        profile,
+        profileConfigured,
+        capture,
+        driverId === "codex" ? input.captureHook : undefined
       );
       const discoveredMcpDescriptor =
         descriptorFor(snapshot, "mcp_recall") ??
@@ -2287,41 +2319,14 @@ export const inspectAiClientReadiness = (input: {
         descriptorFor(snapshot, "local_synthesis"),
         profileAuthentication
       );
-      if (
-        profileConfigured &&
-        (input.localAiClientInstances || input.capabilityReadModel) &&
-        !(
-          input.localAiClientInstances ?? input.capabilityReadModel!.instances
-        ).some(
-          (instance) =>
-            instance.driverId === driverId &&
-            instance.instanceId ===
-              (snapshot?.instanceId ??
-                input.instanceId ??
-                `${driverId}.default`) &&
-            instance.enabled !== false
-        )
-      ) {
-        synthesisDescriptor.readiness = "not_ready";
-        synthesisDescriptor.diagnostics = [
-          ...synthesisDescriptor.diagnostics,
-          {
-            code: "instance_not_registered",
-            message: `${displayName} must be registered with Koed. Repair the integration to enable capability discovery.`,
-            severity: "warning"
-          }
-        ];
-      }
-      if (profileConfigured && input.localAiClientRegistryError) {
-        synthesisDescriptor.readiness = "not_ready";
-        synthesisDescriptor.diagnostics = [
-          ...synthesisDescriptor.diagnostics,
-          {
-            code: "local_registry_unreadable",
-            message: input.localAiClientRegistryError,
-            severity: "warning"
-          }
-        ];
+      const instanceId =
+        snapshot?.instanceId ?? input.instanceId ?? `${driverId}.default`;
+      if (profileConfigured) {
+        applyLocalRegistrationReadiness(
+          synthesisDescriptor,
+          { driverId, instanceId, displayName },
+          input
+        );
       }
       const managedCapabilityIds = [
         "managed_conversation_start",
@@ -2382,7 +2387,7 @@ export const inspectAiClientReadiness = (input: {
         driverId,
         {
           driverId,
-          instanceId: snapshot?.instanceId ?? `${driverId}.default`,
+          instanceId,
           displayName: snapshot
             ? (input.capabilityReadModel?.instances.find(
                 (instance) => instance.instanceId === snapshot.instanceId
@@ -2406,6 +2411,63 @@ export const inspectAiClientReadiness = (input: {
     })
   );
 };
+
+function applyLocalRegistrationReadiness(
+  descriptor: AiClientCapabilityDescriptor,
+  target: Pick<
+    KoedAiClientReadiness,
+    "driverId" | "instanceId" | "displayName"
+  >,
+  input: Parameters<typeof inspectAiClientReadiness>[0]
+): void {
+  const { driverId, instanceId, displayName } = target;
+  const {
+    localAiClientInstances,
+    capabilityReadModel,
+    localAiClientRegistryError
+  } = input;
+  const instances = localAiClientInstances ?? capabilityReadModel?.instances;
+  const registration = instances?.find(
+    (instance) => instance.instanceId === instanceId
+  );
+  const diagnostic = localAiClientRegistryError
+    ? { code: "local_registry_unreadable", message: localAiClientRegistryError }
+    : registration && registration.driverId !== driverId
+      ? {
+          code: "local_registration_conflict",
+          message: `${displayName}’s saved instance ID is registered to another AI Client.`
+        }
+      : registration?.enabled === false
+        ? {
+            code: "local_registration_disabled",
+            message: `${displayName} is disabled in the AI Client registry.`
+          }
+        : instances && !registration
+          ? {
+              code: localAiClientInstances
+                ? "local_registration_missing"
+                : "instance_not_registered",
+              message: `${displayName} is not registered with Koed.`
+            }
+          : null;
+  if (!diagnostic) return;
+  descriptor.readiness = "not_ready";
+  descriptor.diagnostics = [
+    ...descriptor.diagnostics,
+    { ...diagnostic, severity: "warning" },
+    // Older onboarding selectors use this signal to invoke default Repair.
+    ...(diagnostic.code === "local_registration_missing" &&
+    instanceId === `${driverId}.default`
+      ? [
+          {
+            ...diagnostic,
+            code: "instance_not_registered",
+            severity: "warning" as const
+          }
+        ]
+      : [])
+  ];
+}
 
 /**
  * Build readiness keyed by persisted instance id. `inspectAiClientReadiness`
@@ -3404,6 +3466,7 @@ export const collectKoedServerStatus = async (
     codex: codexStatus,
     claudeCode: claudeCodeStatus,
     pi: piStatus,
+    captureHook,
     codexTranscriptWatcher,
     claudeTranscriptWatcher,
     piTranscriptWatcher,

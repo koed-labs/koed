@@ -251,9 +251,15 @@ describe("V1App launch integration", () => {
     vi.useRealTimers();
   });
 
-  it.each([false, true])(
-    "opens AI models from a signed-out Claude square and restores focus (saved: %s)",
-    async (saved) => {
+  it.each([
+    "signed out",
+    "signed out with saved model",
+    "missing registration"
+  ])(
+    "opens AI models from a Claude square and restores focus (%s)",
+    async (scenario) => {
+      const saved = scenario !== "signed out";
+      const missingRegistration = scenario === "missing registration";
       const fixture = memoryModelFixture(() => ["claude"]);
       const initial = (await fixture.list()).readModel;
       const readModel = {
@@ -283,15 +289,25 @@ describe("V1App launch integration", () => {
         claudeCode: {
           configured: true,
           detected: true,
-          state: "needs_attention",
+          state: missingRegistration ? "healthy" : "needs_attention",
           details: { captureConfigured: true, mcpConfigured: true }
         },
         aiClients: {
           claude: {
+            driverId: "claude",
             instanceId: "claude.default",
             installed: { state: "healthy" },
-            authentication: "unauthenticated",
-            capabilities: [],
+            authentication: missingRegistration
+              ? "authenticated"
+              : "unauthenticated",
+            capabilities: missingRegistration
+              ? [
+                  {
+                    id: "local_synthesis",
+                    diagnostics: [{ code: "local_registration_missing" }]
+                  }
+                ]
+              : [],
             snapshotState: "current"
           }
         }
@@ -358,7 +374,7 @@ describe("V1App launch integration", () => {
           "Saved: Claude Code · haiku · medium"
         );
         expect(model.querySelector('[role="alert"]')?.textContent).toContain(
-          "claude auth login"
+          missingRegistration ? "no longer registered" : "claude auth login"
         );
       } else expect(model.querySelector('[role="alert"]')).toBeNull();
       await act(async () =>

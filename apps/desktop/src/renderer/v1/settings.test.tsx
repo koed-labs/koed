@@ -522,6 +522,294 @@ describe("V1Settings", () => {
     expect(container.textContent).not.toContain("Repair integration");
   });
 
+  const clickButton = async (label: string) => {
+    await act(async () => {
+      const button = [
+        ...container.querySelectorAll<HTMLButtonElement>("button")
+      ].find(
+        (item) =>
+          item.textContent === label ||
+          item.getAttribute("aria-label") === label
+      );
+      expect(button).toBeDefined();
+      button!.click();
+    });
+  };
+
+  const confirmRepair = async (id: string, label: string) => {
+    const item = [
+      ...container.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ].find((entry) => entry.textContent === "Repair integration");
+    expect(item).toBeDefined();
+    await act(async () => item!.click());
+    expect(
+      container.querySelector('.v1-settings-confirm[role="dialog"]')
+        ?.textContent
+    ).toContain(`Repair ${label}?`);
+    expect(run).not.toHaveBeenCalled();
+    await clickButton("Repair");
+    expect(run).toHaveBeenCalledWith(`repair_${id}`, {
+      operatorConsented: true
+    });
+  };
+
+  it.each([
+    ["claude", "claudeCode", "Claude Code", "consent"],
+    ["pi", "pi", "Pi", "consent"],
+    ["codex", "codex", "Codex", "hook"],
+    ["codex", "codex", "Codex", "unknown"],
+    ["codex", "codex", "Codex", "signed out"]
+  ] as const)(
+    "distinguishes %s capture state %s (%s, %s)",
+    async (id, key, label, fault) => {
+      snapshot = {
+        ...snapshot,
+        status: {
+          [key]: {
+            configured: true,
+            state: "healthy",
+            details: {
+              captureConfigured: true,
+              mcpConfigured: true,
+              packageRegistered: true,
+              captureConnected: fault !== "consent",
+              authenticated: false
+            }
+          },
+          captureHook:
+            fault === "hook"
+              ? {
+                  state: "needs_attention",
+                  message: "Hook ownership invalid",
+                  details: { missingEvents: [] }
+                }
+              : fault === "unknown"
+                ? {
+                    state: "needs_attention",
+                    details: { kind: "inspection_error" }
+                  }
+                : { state: "healthy" },
+          aiClients: {
+            [id]: {
+              installed: { state: "healthy" },
+              capabilities: [
+                {
+                  id: "automatic_capture",
+                  support: "supported",
+                  readiness: "ready",
+                  diagnostics: []
+                }
+              ]
+            }
+          }
+        } as never
+      };
+      await render("ai");
+      const repairable = fault === "consent" || fault === "hook";
+      const row = container.querySelector(`[data-client="${id}"]`)!;
+      expect(row.querySelector('[data-slot="badge"]')?.textContent).toBe(
+        repairable ? "Needs attention" : "Connected"
+      );
+      expect(row.textContent?.includes("Capture ready")).toBe(
+        fault === "signed out"
+      );
+      await clickButton(`${label} actions`);
+      if (repairable) await confirmRepair(id, label);
+      else expect(container.textContent).not.toContain("Repair integration");
+    }
+  );
+
+  it.each([true, undefined, false])(
+    "shows Check failure and rereads unless discovery failed (%s)",
+    async (refreshed) => {
+      snapshot = {
+        ...snapshot,
+        status: {
+          claudeCode: {
+            configured: true,
+            state: "healthy",
+            details: { authenticated: false }
+          }
+        } as never
+      };
+      const fixture = memoryModelFixture(() => ["claude"]);
+      const list = vi.fn(fixture.list);
+      run.mockResolvedValueOnce({
+        ok: false,
+        message: "Required AI Client capabilities are not ready: mcp_recall.",
+        ...(refreshed === undefined ? {} : { capabilityRefresh: { refreshed } })
+      });
+      await render("ai", {
+        localAiClients: { ...fixture, list, set: vi.fn(), reset: vi.fn() }
+      });
+      const reads = list.mock.calls.length;
+      await clickButton("Check again");
+      expect(container.querySelector('[role="status"]')?.textContent).toContain(
+        "mcp_recall"
+      );
+      expect(list).toHaveBeenCalledTimes(reads + (refreshed === false ? 0 : 1));
+      await clickButton("Check again");
+      expect(container.textContent).not.toContain("mcp_recall");
+    }
+  );
+
+  it.each([
+    [
+      "missing default",
+      "claude.default",
+      "claude",
+      "local_registration_missing",
+      true,
+      true
+    ],
+    [
+      "missing Pi default with catalog pending",
+      "pi.default",
+      "pi",
+      "local_registration_missing",
+      true,
+      true
+    ],
+    [
+      "missing custom",
+      "claude.custom",
+      "claude",
+      "local_registration_missing",
+      true,
+      false
+    ],
+    [
+      "disabled",
+      "claude.default",
+      "claude",
+      "local_registration_disabled",
+      true,
+      false
+    ],
+    [
+      "unreadable",
+      "claude.default",
+      "claude",
+      "local_registry_unreadable",
+      true,
+      false
+    ],
+    [
+      "conflicting",
+      "claude.default",
+      "claude",
+      "local_registration_conflict",
+      true,
+      false
+    ],
+    [
+      "legacy ambiguous",
+      "claude.default",
+      "claude",
+      "instance_not_registered",
+      true,
+      false
+    ],
+    [
+      "different instance",
+      "claude.other",
+      "claude",
+      "local_registration_missing",
+      false,
+      false
+    ],
+    [
+      "different provider",
+      "claude.default",
+      "codex",
+      "local_registration_missing",
+      false,
+      false
+    ]
+  ] as const)(
+    "handles a fresh saved model with %s registration",
+    async (scenario, instanceId, driverId, code, warning, repair) => {
+      const provider = driverId === "pi" ? "pi" : "claude";
+      const label = provider === "pi" ? "Pi" : "Claude Code";
+      const savedId =
+        scenario === "missing custom" ? "claude.custom" : `${provider}.default`;
+      const profile = {
+        configured: true,
+        ...(provider === "pi"
+          ? { state: "starting", details: { packageRegistered: true } }
+          : { state: "healthy" })
+      };
+      const instance = {
+        driverId,
+        instanceId,
+        installed: { state: "healthy" },
+        profile,
+        authentication: "authenticated",
+        snapshotState: "current",
+        capabilities: [
+          {
+            id: "local_synthesis",
+            diagnostics: [
+              { code, severity: "warning", message: "Local registration issue" }
+            ]
+          }
+        ]
+      };
+      snapshot = {
+        ...snapshot,
+        status: {
+          [provider === "pi" ? "pi" : "claudeCode"]: profile,
+          aiClients: {
+            [provider]:
+              scenario === "missing default"
+                ? { ...instance, instanceId: "claude.other" }
+                : instance
+          },
+          ...(scenario === "missing default"
+            ? { aiClientInstances: { [instanceId]: instance } }
+            : {})
+        } as never
+      };
+      const fixture = memoryModelFixture(() => [provider]);
+      const { readModel } = await fixture.list();
+      readModel.instances[0]!.instanceId = savedId;
+      readModel.capabilitySnapshots[0]!.instanceId = savedId;
+      readModel.settings = [
+        {
+          flowKey: "mcp_memory_answer",
+          provider,
+          aiClientInstanceId: savedId,
+          model: readModel.capabilitySnapshots[0]!.models[0]!.id,
+          reasoningEffort: "medium",
+          timeoutMs: 120000,
+          maxAttempts: 2,
+          createdAt: "",
+          updatedAt: ""
+        }
+      ];
+      await render("ai", {
+        localAiClients: {
+          ...fixture,
+          list: async () => ({ operation: "list", readModel }),
+          refresh: async () => ({ operation: "refresh", readModel }),
+          set: vi.fn(),
+          reset: vi.fn()
+        }
+      });
+      const row = container.querySelector(`[data-client="${provider}"]`)!;
+      expect(row.querySelector('[data-slot="badge"]')?.textContent).toBe(
+        "Connected"
+      );
+      expect(!!row.querySelector(".client-model-note")).toBe(warning);
+      expect(
+        !!container.querySelector('[aria-label="Memory Model"] [role="alert"]')
+      ).toBe(warning);
+      await clickButton(`${label} actions`);
+      if (repair) await confirmRepair(provider, label);
+      else expect(container.textContent).not.toContain("Repair integration");
+    }
+  );
+
   it("shows a fault for partial Claude integration even if not fully configured", async () => {
     snapshot = {
       ...snapshot,

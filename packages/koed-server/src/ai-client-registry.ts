@@ -317,11 +317,20 @@ export const registerExplicitAiClient = (input: {
   const target = registryPath(input.environment);
   const root = readRegistry(target);
   const instanceId = `${input.driverId}.default`;
+  const existing = root.instances.find(
+    (entry) => entry.instanceId === instanceId
+  );
+  if (existing && existing.driverId !== input.driverId) {
+    throw new Error(
+      `AI Client instance ${instanceId} belongs to another driver.`
+    );
+  }
   const entry: RegistryEntry = {
     instanceId,
     driverId: input.driverId,
     displayName: input.displayName,
     executablePath,
+    ...(existing?.enabled === false ? { enabled: false } : {}),
     ...(input.configHome && existsSync(input.configHome)
       ? { configHome: resolve(input.configHome) }
       : {})

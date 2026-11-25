@@ -874,9 +874,18 @@ describe("status state aggregation", () => {
       ).toBe(configured);
     }
   );
-  it.each([true, false])(
-    "uses local registration even when the backend retains a published instance (registered: %s)",
-    (registered) => {
+  it.each([
+    ["registered", undefined],
+    ["missing", "local_registration_missing"],
+    ["missing custom", "local_registration_missing"],
+    ["disabled", "local_registration_disabled"],
+    ["conflict", "local_registration_conflict"],
+    ["unreadable", "local_registry_unreadable"]
+  ])(
+    "distinguishes %s local registration from a retained backend instance",
+    (registration, expectedDiagnostic) => {
+      const instanceId =
+        registration === "missing custom" ? "claude.custom" : "claude.default";
       const component = (
         state: "healthy" | "needs_attention" | "not_configured"
       ) => ({
@@ -903,28 +912,101 @@ describe("status state aggregation", () => {
         capabilityReadModel: {
           instances: [
             {
-              instanceId: "claude.default",
+              instanceId,
               driverId: "claude",
               displayName: "Claude Code"
             }
           ],
           capabilitySnapshots: []
         },
-        localAiClientInstances: registered
-          ? [{ instanceId: "claude.default", driverId: "claude" }]
-          : [],
+        instanceId,
+        localAiClientInstances:
+          registration === "unreadable"
+            ? undefined
+            : registration.startsWith("missing")
+              ? []
+              : [
+                  {
+                    instanceId,
+                    driverId: registration === "conflict" ? "codex" : "claude",
+                    enabled: registration !== "disabled"
+                  }
+                ],
+        localAiClientRegistryError:
+          registration === "unreadable"
+            ? "Registry could not be read"
+            : undefined,
         now: "2026-01-01T00:00:00.000Z"
       });
 
       const synthesis = clients.claude!.capabilities.find(
         (capability) => capability.id === "local_synthesis"
       );
-      expect(synthesis?.readiness).toBe(registered ? "unknown" : "not_ready");
+      expect(synthesis?.readiness).toBe(
+        expectedDiagnostic ? "not_ready" : "unknown"
+      );
+      expect(
+        synthesis?.diagnostics
+          .map(({ code }) => code)
+          .filter((code) => code.startsWith("local_registr"))
+      ).toEqual(expectedDiagnostic ? [expectedDiagnostic] : []);
       expect(
         synthesis?.diagnostics.some(
           (diagnostic) => diagnostic.code === "instance_not_registered"
         )
-      ).toBe(!registered);
+      ).toBe(registration === "missing");
+    }
+  );
+
+  it.each([
+    ["codex", "hook"],
+    ["codex", "consent"],
+    ["claude", "consent"],
+    ["pi", "consent"],
+    ["codex", "unknown"]
+  ] as const)(
+    "reports %s capture with %s independently of watcher health",
+    (id, fault) => {
+      const profile = {
+        ...healthy("Profile configured", {
+          captureConnected: fault !== "consent"
+        }),
+        configured: true,
+        detected: true
+      };
+      const watcher = healthy("Watcher is running");
+      const input = {
+        codex: profile,
+        claudeCode: profile,
+        pi: profile,
+        captureHook:
+          fault === "hook"
+            ? {
+                state: "needs_attention" as const,
+                message: "Hook ownership invalid",
+                details: { missingEvents: [] }
+              }
+            : {
+                state: "needs_attention" as const,
+                details: { kind: "inspection_error" }
+              },
+        codexTranscriptWatcher: watcher,
+        claudeTranscriptWatcher: watcher,
+        piTranscriptWatcher: watcher,
+        mcpServer: healthy(),
+        localAiRuntime: healthy(),
+        now: "2026-01-01T00:01:00.000Z"
+      };
+      const capture = inspectAiClientReadiness(input)[id]?.capabilities.find(
+        ({ id }) => id === "automatic_capture"
+      );
+      expect(capture?.readiness).toBe(
+        fault === "unknown" ? "unknown" : "not_ready"
+      );
+      expect(capture?.diagnostics[0]?.message).not.toContain(
+        "Watcher is running"
+      );
+      expect(watcher.state).toBe("healthy");
     }
   );
 

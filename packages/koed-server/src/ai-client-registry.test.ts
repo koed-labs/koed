@@ -165,6 +165,63 @@ describe("AI Client instance registry", () => {
     });
   });
 
+  it("does not replace a default registration owned by another driver", () => {
+    const registry = resolve(home(), "instances.json");
+    const previous = JSON.stringify({
+      version: 1,
+      instances: [
+        {
+          instanceId: "codex.default",
+          driverId: "pi",
+          displayName: "Pi",
+          executablePath: "/bin/sh"
+        }
+      ]
+    });
+    writeFileSync(registry, previous);
+
+    expect(() =>
+      registerExplicitAiClient({
+        environment: { KOED_AI_CLIENT_INSTANCE_REGISTRY: registry },
+        driverId: "codex",
+        executablePath: "/bin/sh",
+        displayName: "Codex"
+      })
+    ).toThrow("AI Client instance codex.default belongs to another driver.");
+    expect(readFileSync(registry, "utf8")).toBe(previous);
+  });
+
+  it("preserves an explicitly disabled registration when refreshing it", () => {
+    const registry = resolve(home(), "instances.json");
+    writeFileSync(
+      registry,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex",
+            executablePath: "/bin/sh",
+            enabled: false
+          }
+        ]
+      })
+    );
+
+    expect(
+      registerExplicitAiClient({
+        environment: { KOED_AI_CLIENT_INSTANCE_REGISTRY: registry },
+        driverId: "codex",
+        executablePath: "/bin/sh",
+        displayName: "Codex"
+      })
+    ).toBe(true);
+    expect(JSON.parse(readFileSync(registry, "utf8"))).toMatchObject({
+      instances: [{ instanceId: "codex.default", enabled: false }]
+    });
+  });
+
   it("validates absolute and PATH executable candidates identically", () => {
     const koedHome = home();
     const bin = resolve(koedHome, "bin");

@@ -34,6 +34,10 @@ export const clientIntegrationStatus = (
       ? status?.claudeCode
       : status?.pi;
 
+const captureHookFault = (hook: KoedServerStatus["captureHook"] | undefined) =>
+  hook?.state === "needs_attention" &&
+  Array.isArray(hook.details?.missingEvents);
+
 const captureProblem = (
   id: ClientId,
   status: KoedServerStatus
@@ -77,7 +81,16 @@ export function aiClientHealth(
     details?.authenticationState === "unauthenticated" ||
     (readiness?.snapshotState !== "stale" &&
       readiness?.authentication === "unauthenticated");
-  const capture = status && configured ? captureProblem(id, status) : null;
+  const hook = id === "codex" ? status?.captureHook : undefined;
+  const hookFault = configured && captureHookFault(hook);
+  const missingConsent = configured && details?.captureConnected === false;
+  const capture = missingConsent
+    ? "Koed is not reading conversations from this AI Client until you connect it."
+    : hookFault
+      ? (hook?.message ?? "Supported Capture Hook configuration is incomplete.")
+      : status && configured
+        ? captureProblem(id, status)
+        : null;
   const profileReady =
     integration?.state === "healthy" ||
     (details?.captureConfigured === true && details?.mcpConfigured === true) ||
@@ -89,6 +102,7 @@ export function aiClientHealth(
   const unknown =
     !status ||
     details?.inspectionState === "unknown" ||
+    details?.kind === "inspection_error" ||
     integration?.state === "starting";
   const partialProfile =
     id === "claude" &&
@@ -97,11 +111,13 @@ export function aiClientHealth(
       (details?.mcpConfigured === false &&
         details?.captureConfigured === true));
   const repairable =
-    !unknown &&
-    !profileReady &&
-    (integration?.state === "needs_attention" ||
-      ((configured || partialProfile) &&
-        integration?.state === "not_configured"));
+    missingConsent ||
+    hookFault ||
+    (!unknown &&
+      !profileReady &&
+      (integration?.state === "needs_attention" ||
+        ((configured || partialProfile) &&
+          integration?.state === "not_configured")));
   const needsAttention = repairable || capture !== null;
   const connected =
     configured && !needsAttention && profileReady && !detectionUnknown;
@@ -114,7 +130,9 @@ export function aiClientHealth(
     unknown: unknown || (configured && !connected && !needsAttention),
     signedOut,
     captureReady:
-      !capture && (details?.captureConfigured === true || profileReady),
+      !capture &&
+      (!hook || hook.state === "healthy") &&
+      (details?.captureConfigured === true || profileReady),
     mcpInstalled: details?.mcpConfigured === true || profileReady,
     description:
       capture ??
@@ -201,6 +219,63 @@ export function clientModelLimitation(
   return null;
 }
 
+function localRegistrationProblem(
+  status: KoedServerStatus | null,
+  provider: ClientId,
+  instanceId: string,
+  disabled: boolean
+) {
+  const matches = (row: { driverId: string; instanceId: string } | undefined) =>
+    row?.driverId === provider && row.instanceId === instanceId;
+  const instance = status?.aiClientInstances?.[instanceId];
+  const profile = status?.aiClients?.[provider];
+  const readiness = matches(instance)
+    ? instance
+    : matches(profile)
+      ? profile
+      : undefined;
+  const diagnostics = readiness?.capabilities.find(
+    ({ id }) => id === "local_synthesis"
+  )?.diagnostics;
+  const has = (code: string) =>
+    diagnostics?.some((diagnostic) => diagnostic.code === code);
+  if (has("local_registration_conflict"))
+    return {
+      reason:
+        "The saved instance ID is registered to another AI Client. Choose another AI Client.",
+      repairable: false
+    };
+  if (has("local_registry_unreadable"))
+    return {
+      reason: "Koed couldn’t read the local AI Client registry. Check again.",
+      repairable: false
+    };
+  if (
+    has("local_registration_disabled") ||
+    (disabled && has("local_registration_missing"))
+  )
+    return {
+      reason: "The saved AI Client is disabled. Choose another AI Client.",
+      repairable: false
+    };
+  if (has("local_registration_missing")) {
+    const repairable = instanceId === `${provider}.default`;
+    return {
+      reason: repairable
+        ? "The saved AI Client is no longer registered on this device. Repair the integration or choose another AI Client."
+        : "The saved AI Client instance is no longer registered on this device. Choose another AI Client.",
+      repairable
+    };
+  }
+  if (has("instance_not_registered"))
+    return {
+      reason:
+        "The saved AI Client registration is unavailable. Check again or choose another AI Client.",
+      repairable: false
+    };
+  return null;
+}
+
 export function savedMemoryModelProblems(
   read: LocalAiClientReadModel | null,
   status: KoedServerStatus | null
@@ -217,18 +292,26 @@ export function savedMemoryModelProblems(
     );
     const snapshot = freshCapability(read, aiClientInstanceId);
     const instance = read.instances.find(
-      (item) => item.instanceId === aiClientInstanceId
+      (item) =>
+        item.instanceId === aiClientInstanceId && item.driverId === provider
     );
     const catalogReady =
-      instance?.driverId === provider &&
+      instance &&
       snapshot?.healthState === "healthy" &&
       !snapshot.modelCatalogPartial &&
       snapshot.authenticationState === "authenticated" &&
       snapshot.localSynthesis?.support === "supported" &&
       snapshot.localSynthesis.readiness === "ready";
+    const registration = localRegistrationProblem(
+      status,
+      provider,
+      aiClientInstanceId,
+      instance?.enabled === false
+    );
     const reason =
+      registration?.reason ??
       limitation ??
-      (!instance || instance.driverId !== provider
+      (!instance
         ? "The saved AI Client is no longer available. Choose another AI Client."
         : catalogReady &&
             !snapshot.models.some(
@@ -240,6 +323,8 @@ export function savedMemoryModelProblems(
             )
           ? "The saved model or reasoning level is no longer offered. Choose a different model or reasoning level."
           : null);
-    return reason ? [{ provider, model, reasoningEffort, reason }] : [];
+    return reason
+      ? [{ provider, model, reasoningEffort, reason, registration }]
+      : [];
   });
 }

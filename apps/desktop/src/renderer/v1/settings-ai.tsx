@@ -67,14 +67,17 @@ export function SettingsModels({
     setNotice(null);
     try {
       const result = await statusStore.run<{
+        ok?: boolean;
         message?: string;
         capabilityRefresh?: { refreshed?: boolean };
       }>(`check_${id}`);
-      if (result?.capabilityRefresh?.refreshed === false) {
+      const discoveryFailed = result?.capabilityRefresh?.refreshed === false;
+      if (result?.ok === false || discoveryFailed) {
         setNotice(
-          result.message ?? "Couldn’t check AI Client capabilities. Try again."
+          result?.message ?? "Couldn’t check AI Client capabilities. Try again."
         );
-      } else picker.reread();
+      }
+      if (!discoveryFailed) picker.reread();
     } catch (cause) {
       setActionError(errorText(cause));
     }
@@ -116,10 +119,22 @@ export function SettingsModels({
       <Group title="AI Clients">
         {clients.map(({ id, label }) => {
           const health = aiClientHealth(id, snapshot.status);
+          const registration = problems.find(
+            (problem) => problem.provider === id && problem.registration
+          )?.registration;
           const limitation =
+            registration?.reason ??
             clientModelLimitation(id, picker.confirmedRead, snapshot.status) ??
             problems.find(({ provider }) => provider === id)?.reason;
+          const repairable =
+            health.repairable ||
+            (health.configured &&
+              problems.some(
+                (problem) =>
+                  problem.provider === id && problem.registration?.repairable
+              ));
           const login =
+            !registration &&
             id === "claude" &&
             clientSignedOut(id, picker.confirmedRead, snapshot.status);
           const change = (action: Mutation) =>
@@ -173,7 +188,7 @@ export function SettingsModels({
                   Connect
                 </Button>
               )}
-              {health.needsAttention && !health.repairable && (
+              {health.needsAttention && !repairable && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -200,7 +215,7 @@ export function SettingsModels({
                   <DropdownMenuItem onClick={() => void runCheck(id)}>
                     Check again
                   </DropdownMenuItem>
-                  {health.repairable && (
+                  {repairable && (
                     <DropdownMenuItem onClick={() => change("Repair")}>
                       Repair integration
                     </DropdownMenuItem>

@@ -52,7 +52,10 @@ that client’s row focused. A row shows **Connected** when its Capture and MCP
 setup is intact. Memory Model limitations are noted separately. For example,
 Claude Code can have MCP installed while Recall through its CLI is unavailable
 until you sign in. Copy `claude auth login`, run it in your terminal, then
-select **Check again**. Repair is for integration configuration faults.
+select **Check again**. Check shows readiness failures even if model discovery
+succeeds. Missing capture consent or a confirmed Codex Capture Hook configuration
+fault can be resolved with **Repair integration**, which asks for consent before
+making changes.
 
 During onboarding, you choose a Memory Model after connecting your AI Clients.
 This client, model, and reasoning level apply to Memory Answer synthesis, LCM
@@ -65,7 +68,9 @@ When earlier assignments differ, Settings asks you to choose a shared model.
 Opening Settings preserves the existing assignments, even when a saved choice
 can no longer run. A confirmed failure is shown in the Memory Model section
 and on the matching Home square; unconfirmed availability does not trigger a
-warning. Koed does not switch models automatically. Each task keeps its own
+warning. A confirmed missing local registration for the saved default AI Client
+also offers **Repair integration** without changing the **Connected** badge.
+Koed does not switch models automatically. Each task keeps its own
 execution timeout and retry limit when you save.
 
 ## Services
