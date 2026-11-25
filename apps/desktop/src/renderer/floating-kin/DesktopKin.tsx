@@ -155,15 +155,19 @@ export function useDesktopKin(
     sample.recent.map((conversation) => [conversation.sessionId, conversation])
   );
   const working = sample.recent.filter(summary.isWorking).length;
+  // "Active" means the same as a row's green dot: captured within the minute.
+  const active = sample.recent.filter(
+    (conversation) =>
+      summary.isWorking(conversation) ||
+      kinConversationStatus(conversation, sample.at).recent
+  ).length;
   const live: SidebarLive | undefined =
     inApp && activityBridge
       ? {
           status:
-            working || sample.recent.length ? (
+            working || active ? (
               <span className="fk-live-status" role="status">
-                {working
-                  ? `${working} working`
-                  : `${sample.recent.length} active`}
+                {working ? `${working} working` : `${active} active`}
               </span>
             ) : null,
           marker: (row: SidebarConversation) => {

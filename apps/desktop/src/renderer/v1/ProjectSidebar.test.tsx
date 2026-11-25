@@ -243,6 +243,131 @@ describe("Project sidebar interactions", () => {
     expect(button("Actions for No project")).toBeNull();
   });
 
+  it("highlights the open Conversation in the list it was opened from", async () => {
+    await act(async () =>
+      root.render(
+        <Harness data={[projectWithConversations("a", "Alpha", 2)]} />
+      )
+    );
+    const copies = () => ({
+      list: container.querySelector<HTMLButtonElement>(
+        ".v1-nav-conversations .v1-nav-conversation"
+      )!,
+      tree: container.querySelector<HTMLButtonElement>(
+        ".v1-nav-projects .v1-nav-children .v1-nav-conversation"
+      )!
+    });
+    await act(async () => copies().list.click());
+    expect(copies().list.getAttribute("aria-current")).toBe("page");
+    expect(copies().tree.getAttribute("aria-current")).toBeNull();
+    expect(copies().tree.hasAttribute("data-also-open")).toBe(true);
+    await act(async () => copies().tree.click());
+    expect(copies().tree.getAttribute("aria-current")).toBe("page");
+    expect(copies().list.hasAttribute("data-also-open")).toBe(true);
+    expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+  });
+
+  it("lists Git Anchor and Folder groups under a collapsible Anchors heading", async () => {
+    const anchor: SidebarProject = {
+      ...projectWithConversations(
+        "repository:koed-ai",
+        "github.com/koed-labs/koed-ai",
+        2
+      ),
+      source: "git"
+    };
+    const folder: SidebarProject = {
+      ...projectWithConversations("folder:scratch", "scratch", 1),
+      source: "folder"
+    };
+    const named: SidebarProject = {
+      ...projectWithConversations("named", "Koed", 1),
+      managed: true
+    };
+    await act(async () =>
+      root.render(<Harness data={[named, anchor, folder]} />)
+    );
+    const heading = (name: string) =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          ".v1-nav-heading-toggle"
+        )
+      ].find((toggle) => toggle.textContent === name)!;
+    expect(
+      container.querySelectorAll(".v1-nav-anchors .v1-nav-project")
+    ).toHaveLength(0);
+    await act(async () => heading("Anchors").click());
+    const section = (name: string) =>
+      [...container.querySelectorAll(".v1-nav-project")]
+        .filter((row) =>
+          row.closest(
+            name === "Anchors" ? ".v1-nav-anchors" : ".v1-nav-projects"
+          )
+        )
+        .map((row) => row.textContent);
+    expect(section("Projects")).toEqual(["Koed"]);
+    expect(section("Anchors")).toEqual([
+      "github.com/koed-labs/koed-ai",
+      "scratch"
+    ]);
+    // Anchors expand to their Conversations like Projects.
+    const anchorRow = [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        ".v1-nav-anchors .v1-nav-project"
+      )
+    ][0]!;
+    await act(async () => anchorRow.click());
+    expect(
+      anchorRow
+        .closest('[data-slot="sidebar-menu-item"]')!
+        .querySelectorAll(".v1-nav-conversation")
+    ).toHaveLength(2);
+
+    await act(async () => heading("Projects").click());
+    expect(section("Projects")).toEqual([]);
+    expect(section("Anchors")).toHaveLength(2);
+    await act(async () => heading("Anchors").click());
+    expect(section("Anchors")).toEqual([]);
+    expect(button("Collapse all Projects")).toBeNull();
+  });
+
+  it("starts with Anchors collapsed and loads more Projects and Anchors as they scroll", async () => {
+    const named = Array.from({ length: 20 }, (_, index) => ({
+      ...projectWithConversations(`p${index}`, `Project ${index}`, 1),
+      managed: true
+    }));
+    const anchors = Array.from({ length: 18 }, (_, index) => ({
+      ...projectWithConversations(`a${index}`, `anchor-${index}`, 1),
+      source: "folder" as const
+    }));
+    await act(async () =>
+      root.render(<Harness data={[...named, ...anchors]} />)
+    );
+    const count = (section: string) =>
+      container.querySelectorAll(`${section} .v1-nav-project`).length;
+    expect(count(".v1-nav-projects")).toBe(15);
+    expect(count(".v1-nav-anchors")).toBe(0);
+    const scrollToEnd = (section: string) =>
+      act(async () => {
+        const area = container.querySelector<HTMLElement>(section)!;
+        Object.defineProperties(area, {
+          scrollHeight: { configurable: true, value: 1_000 },
+          clientHeight: { configurable: true, value: 300 },
+          scrollTop: { configurable: true, writable: true, value: 700 }
+        });
+        area.dispatchEvent(new Event("scroll", { bubbles: true }));
+      });
+    await scrollToEnd(".v1-nav-projects");
+    expect(count(".v1-nav-projects")).toBe(20);
+    const anchorsHeading = [
+      ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-heading-toggle")
+    ].find((toggle) => toggle.textContent === "Anchors")!;
+    await act(async () => anchorsHeading.click());
+    expect(count(".v1-nav-anchors")).toBe(15);
+    await scrollToEnd(".v1-nav-anchors");
+    expect(count(".v1-nav-anchors")).toBe(18);
+  });
+
   it("orders pinned Conversations first inside their Project", async () => {
     window.localStorage.setItem(
       "koed:sidebar-pins:owner-a",
@@ -264,7 +389,7 @@ describe("Project sidebar interactions", () => {
     ]);
   });
 
-  it("reveals conversations five at a time per Project and resets on collapse and owner changes", async () => {
+  it("opens one Project at a time, reveals five Conversations at a time, and resets on collapse and owner changes", async () => {
     const data = [
       projectWithConversations("a", "Alpha", 12),
       projectWithConversations("b", "Beta", 7)
@@ -285,10 +410,14 @@ describe("Project sidebar interactions", () => {
       )?.textContent
     ).toContain("Load More");
     await act(async () => projectButton("Beta").click());
+    // Opening one Project closes the one that was open.
+    expect(rows("Alpha")).toHaveLength(0);
     expect(rows("Beta")).toHaveLength(5);
+    await act(async () => projectButton("Alpha").click());
+    expect(rows("Beta")).toHaveLength(0);
+    expect(rows("Alpha")).toHaveLength(5);
     await act(async () => button("Load more conversations in Alpha").click());
     expect(rows("Alpha")).toHaveLength(10);
-    expect(rows("Beta")).toHaveLength(5);
     await act(async () => button("Load more conversations in Alpha").click());
     expect(rows("Alpha")).toHaveLength(12);
     expect(button("Load more conversations in Alpha")).toBeNull();
