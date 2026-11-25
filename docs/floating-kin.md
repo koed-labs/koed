@@ -21,7 +21,7 @@ Desktop session. When the window regains focus, the Kin returns to the rail
 once the overlay finishes sliding out. With reduced motion enabled, the switch
 is immediate. Each time the floating Kin appears, and whenever the pointer
 leaves it, it stays live for three seconds, then glances up and fades to the
-Koed logo. Hover to wake it. The overlay does not take focus automatically; use
+Koed logo. Hover it, or one of its Conversation chips, to wake it. The overlay does not take focus automatically; use
 **Window → Focus Floating Kin** for keyboard access. Click the floating avatar
 itself to open or focus Koed Desktop, or drag it to move the overlay. Clicks
 around the Kin and its controls pass through. The overlay stays at 100% page

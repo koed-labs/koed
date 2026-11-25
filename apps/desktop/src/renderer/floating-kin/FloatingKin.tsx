@@ -182,10 +182,13 @@ export function StandaloneKin({
   visible = true,
   placement = "desktop",
   size = 88,
+  wake = false,
   onOpenDesktop
 }: {
   // While it leaves, the Kin holds its current look instead of changing.
   visible?: boolean;
+  // Hovering something that belongs to the Kin, such as its chips.
+  wake?: boolean;
   placement?: "desktop" | "sidebar";
   size?: number;
   onOpenDesktop?: () => void;
@@ -206,7 +209,14 @@ export function StandaloneKin({
     if (visible) restSoon();
     return () => window.clearTimeout(linger.current);
   }, [restSoon, visible]);
-  const awake = hovered || lingering;
+  // Leaving a chip rests the Kin three seconds later, as leaving the Kin does.
+  const woken = useRef(wake);
+  useEffect(() => {
+    if (wake) window.clearTimeout(linger.current);
+    else if (woken.current && visible) restSoon();
+    woken.current = wake;
+  }, [restSoon, visible, wake]);
+  const awake = hovered || wake || lingering;
   const phase = useRestPhase(awake);
   return (
     <Avatar
@@ -598,6 +608,37 @@ export function KinActivityContent({
   );
 }
 
+// True while the pointer is over a Conversation chip in the overlay.
+function useChipHover(
+  surface: RefObject<HTMLElement | null>,
+  visible: boolean
+) {
+  const [hovered, setHovered] = useState(false);
+  useEffect(() => {
+    const node = surface.current;
+    if (!node || !visible) {
+      setHovered(false);
+      return;
+    }
+    const onChip = (target: EventTarget | null) =>
+      target instanceof Element && target.closest(".fk-chip") !== null;
+    const over = (event: MouseEvent) => {
+      if (onChip(event.target)) setHovered(true);
+    };
+    const out = (event: MouseEvent) => {
+      if (onChip(event.target) && !onChip(event.relatedTarget))
+        setHovered(false);
+    };
+    node.addEventListener("mouseover", over);
+    node.addEventListener("mouseout", out);
+    return () => {
+      node.removeEventListener("mouseover", over);
+      node.removeEventListener("mouseout", out);
+    };
+  }, [surface, visible]);
+  return hovered;
+}
+
 // Slide in only once the window can paint and the content has its size, so the
 // entrance animates and the window does not resize mid-slide.
 const entranceFallbackMs = 400;
@@ -717,6 +758,7 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
   );
   const activityBridge = useKinSurfaceActivity(bridge, revision);
   const { surface, setInteractive } = useOverlayWindow(bridge, visible);
+  const chipHovered = useChipHover(surface, visible);
   useExitCompletion(
     bridge,
     surface,
@@ -758,7 +800,11 @@ export function FloatingKin({ bridge }: { bridge?: FloatingKinBridge }) {
         />
       ) : null}
       {/* One Kin across appearances, so leaving never restarts its look. */}
-      <StandaloneKin visible={visible} onOpenDesktop={openDesktop} />
+      <StandaloneKin
+        visible={visible}
+        wake={chipHovered}
+        onOpenDesktop={openDesktop}
+      />
     </main>
   );
 }
