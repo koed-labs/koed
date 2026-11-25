@@ -237,11 +237,15 @@ export function FloatingKinPanel({
         }
       >
         <div className="fk-body-content">
+          {/* An action's own message (an error, say) outranks the loading
+              note, which only screen readers hear. */}
           <p
             role="status"
-            className={loading ? "fk-note fk-visually-hidden" : "fk-note"}
+            className={
+              loading && !status ? "fk-note fk-visually-hidden" : "fk-note"
+            }
           >
-            {loading ? "Loading captured context…" : status}
+            {status || (loading ? "Loading captured context…" : "")}
           </p>
           {loading && (
             <div className="fk-copy fk-preview-loading" aria-hidden>

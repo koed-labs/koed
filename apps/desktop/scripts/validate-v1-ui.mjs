@@ -179,12 +179,20 @@ const run = async () => {
       `!!document.querySelector('[data-mobile="true"] .fk-row-live')`,
       "the Kin marker in the modal sidebar"
     );
-    // The marker gives way to Actions under the pointer, so open its panel
-    // with a direct click; the pointer check below is for Summarize.
-    await evaluate(
-      `document.querySelector('[data-mobile="true"] .fk-row-live').click()`
+    // Open the panel the way a pointer user does: the row's Actions menu,
+    // then Show captured context.
+    await evaluate(`document
+      .querySelector('[data-mobile="true"] .v1-nav-conversation-wrap[data-live] .v1-pm-row-menu')
+      .setAttribute('data-validation-actions', '')`);
+    await pointerClick("[data-validation-actions]");
+    await waitFor(
+      `[...document.querySelectorAll('[role="menuitem"]')].some((item) => item.textContent.includes('Show captured context'))`,
+      "Show captured context in the row's Actions"
     );
-    await paint();
+    await evaluate(`[...document.querySelectorAll('[role="menuitem"]')]
+      .find((item) => item.textContent.includes('Show captured context'))
+      .setAttribute('data-validation-show', '')`);
+    await pointerClick("[data-validation-show]");
     await waitFor(
       `[...document.querySelectorAll('[data-mobile="true"] [data-fk-placement="anchored"] button')].some((b) => b.textContent.includes('Summarize conversation'))`,
       "the Summarize button inside the modal sidebar"

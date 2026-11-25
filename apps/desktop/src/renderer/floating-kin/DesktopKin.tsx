@@ -36,6 +36,7 @@ type Anchor = {
 
 const panelGap = 8;
 const modalInset = 8;
+const pendingSettleMs = 10_000;
 
 // Beside the chip or row that opened the panel.
 function anchorFor(trigger: HTMLElement): Anchor {
@@ -138,9 +139,9 @@ export function useDesktopKin(
   // Opens a captured Conversation by its session id; false when Desktop
   // has no row for it.
   openConversation?: (sessionId: string) => boolean,
-  // Lets an overlay request made while Desktop loads wait for its row. Any
-  // change of `route` (the User choosing somewhere else) cancels it, and so
-  // does `rowsLoaded` turning true without a row for it.
+  // Lets a request to open a Conversation wait for its row. Any change of
+  // `route` (the User choosing somewhere else) cancels it; otherwise it is
+  // dropped only after the rows have stayed loaded without it for a while.
   navigation?: { route: unknown; rowsLoaded: boolean }
 ) {
   const [presentation, setPresentation] = useState<KinPresentation | null>(
@@ -157,11 +158,14 @@ export function useDesktopKin(
   const [pendingOpen, setPendingOpen] = useState<{
     sessionId: string;
     route: unknown;
+    // Close the docked panel once it opens (a title click in the panel).
+    closesPanel?: boolean;
   } | null>(null);
   const route = navigation?.route;
   const rowsLoaded = navigation?.rowsLoaded ?? true;
   const latestRoute = useRef(route);
   latestRoute.current = route;
+  const closePanel = useRef<() => void>(() => {});
   useLayoutEffect(() => {
     if (openConversation)
       return bridge?.onOpenConversation((sessionId) => {
@@ -174,9 +178,25 @@ export function useDesktopKin(
   }, [bridge, openConversation]);
   useEffect(() => {
     if (!pendingOpen || !openConversation) return;
-    if (pendingOpen.route !== route) setPendingOpen(null);
-    else if (openConversation(pendingOpen.sessionId) || rowsLoaded)
+    if (pendingOpen.route !== route) {
       setPendingOpen(null);
+      return;
+    }
+    if (openConversation(pendingOpen.sessionId)) {
+      setPendingOpen(null);
+      if (pendingOpen.closesPanel) closePanel.current();
+      return;
+    }
+    // Reads can finish without the newest rows (another refresh may still be
+    // on its way), so give the rows time to settle before giving up. Any
+    // change to the rows re-runs this and restarts the wait.
+    if (!rowsLoaded) return;
+    const timer = window.setTimeout(
+      () =>
+        setPendingOpen((current) => (current === pendingOpen ? null : current)),
+      pendingSettleMs
+    );
+    return () => window.clearTimeout(timer);
   }, [openConversation, pendingOpen, route, rowsLoaded]);
   useLayoutEffect(() => {
     bridge?.setShellVisible(shellVisible);
@@ -198,10 +218,18 @@ export function useDesktopKin(
     scopeKey
   );
   const surface = useRef<HTMLElement>(null);
-  const closePanel = useRef<() => void>(() => {});
   const openFromPanel = useCallback(
     (sessionId: string) => {
-      if (openConversation?.(sessionId)) closePanel.current();
+      if (!openConversation) return;
+      if (openConversation(sessionId)) {
+        setPendingOpen(null);
+        closePanel.current();
+      } else
+        setPendingOpen({
+          sessionId,
+          route: latestRoute.current,
+          closesPanel: true
+        });
     },
     [openConversation]
   );
@@ -285,27 +313,35 @@ export function useDesktopKin(
   const tracked = new Map(
     sample.recent.map((conversation) => [conversation.sessionId, conversation])
   );
+  // A row can combine several sessions; any of them may be the live one.
+  // Use the most recently active.
+  const trackedFor = (row: SidebarConversation) =>
+    [row.sessionId, ...(row.sourceSessionIds ?? [])]
+      .map((id) => (id ? tracked.get(id) : undefined))
+      .reduce<(typeof sample.recent)[number] | undefined>(
+        (latest, candidate) =>
+          candidate &&
+          (!latest ||
+            Date.parse(candidate.lastActivityAt) >
+              Date.parse(latest.lastActivityAt))
+            ? candidate
+            : latest,
+        undefined
+      );
   const live: SidebarLive | undefined =
     shellVisible && activityBridge
       ? {
+          // The row's Actions menu opens the same panel, anchored on the row's
+          // marker, since hovering the row swaps the marker for Actions.
+          preview: (row: SidebarConversation) => {
+            const conversation = trackedFor(row);
+            return conversation
+              ? (anchor: HTMLButtonElement) =>
+                  open(conversation.sessionId, anchor)
+              : null;
+          },
           marker: (row: SidebarConversation) => {
-            // A row can combine several sessions; any of them may be the
-            // live one. Show the most recently active.
-            const conversation = [
-              row.sessionId,
-              ...(row.sourceSessionIds ?? [])
-            ]
-              .map((id) => (id ? tracked.get(id) : undefined))
-              .reduce<(typeof sample.recent)[number] | undefined>(
-                (latest, candidate) =>
-                  candidate &&
-                  (!latest ||
-                    Date.parse(candidate.lastActivityAt) >
-                      Date.parse(latest.lastActivityAt))
-                    ? candidate
-                    : latest,
-                undefined
-              );
+            const conversation = trackedFor(row);
             if (!conversation) return null;
             const { age, seconds } = kinConversationStatus(
               conversation,

@@ -424,6 +424,20 @@ describe("Floating Kin", () => {
     expect(mount.textContent).not.toContain("Old request in A");
   });
 
+  it("shows a summary's error instead of the loading note while the preview loads", async () => {
+    vi.mocked(bridge.preview).mockReturnValueOnce(new Promise(() => {}));
+    vi.mocked(bridge.summarize).mockResolvedValueOnce({
+      status: "client_unavailable"
+    });
+    await render();
+    await click("Conversation 1");
+    expect(mount.textContent).toContain("Loading captured context…");
+    await click("Summarize conversation");
+    const status = mount.querySelector('[role="dialog"] [role="status"]')!;
+    expect(status.textContent).toContain("require a ready Codex or Pi");
+    expect(status.classList.contains("fk-visually-hidden")).toBe(false);
+  });
+
   it("reopens the last summary above the generate actions and links to AI models", async () => {
     bridge.onPresentation = (listener) => {
       listener({ placement: "desktop", revision: 7 });

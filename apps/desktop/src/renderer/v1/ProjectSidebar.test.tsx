@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NavigationShell } from "./NavigationShell.js";
 import { useNavigationHistory } from "./use-navigation-history.js";
 import type { SidebarProject } from "./project-sidebar-model.js";
-import type { SidebarManagement } from "./ProjectSidebar.js";
+import type { SidebarLive, SidebarManagement } from "./ProjectSidebar.js";
 
 const projects: SidebarProject[] = [
   {
@@ -55,9 +55,11 @@ function Harness({
   servicesStarting = false,
   loading = false,
   inventoryReady = true,
-  management
+  management,
+  live
 }: {
   management?: SidebarManagement;
+  live?: SidebarLive;
   scope?: string;
   data?: SidebarProject[];
   reveal?: { projectId: string; key: number } | null;
@@ -84,6 +86,7 @@ function Harness({
       canGoForward={navigation.canGoForward}
       onRetry={() => {}}
       {...(management ? { management } : {})}
+      {...(live ? { kinLive: live } : {})}
     >
       <p data-testid="route">{JSON.stringify(navigation.route)}</p>
     </NavigationShell>
@@ -462,6 +465,37 @@ describe("Project sidebar interactions", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("offers Show captured context in a tracked row's Actions, anchored on its marker", async () => {
+    const opened: Element[] = [];
+    const live: SidebarLive = {
+      marker: (row) =>
+        row.key === "session:a-1" ? (
+          <button type="button" className="fk-row-live">
+            live
+          </button>
+        ) : null,
+      preview: (row) =>
+        row.key === "session:a-1" ? (anchor) => opened.push(anchor) : null
+    };
+    await act(async () =>
+      root.render(
+        <Harness
+          data={[projectWithConversations("a", "Alpha", 2)]}
+          live={live}
+        />
+      )
+    );
+    await act(async () => button("Actions for Alpha conversation 2").click());
+    expect(menuItem("Show captured context")).toBeUndefined();
+    await act(async () => button("Actions for Alpha conversation 1").click());
+    await act(async () => menuItem("Show captured context")!.click());
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.classList.contains("fk-row-live")).toBe(true);
+    expect(
+      opened[0]!.closest(".v1-nav-conversation-wrap")?.textContent
+    ).toContain("Alpha conversation 1");
   });
 
   it("lists Git Anchor and Folder groups under a collapsible Anchors heading", async () => {

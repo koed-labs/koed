@@ -39,6 +39,7 @@ import {
   Search,
   ArrowRight,
   Ellipsis,
+  MessageSquareText,
   Plus,
   Settings2,
   X
@@ -70,6 +71,11 @@ const LOAD_MORE_THRESHOLD = 120;
 
 export type SidebarLive = {
   marker: (row: SidebarConversation) => ReactNode;
+  // Opens the row's captured-context panel, anchored on its marker; null when
+  // the Kin isn't tracking the row.
+  preview?: (
+    row: SidebarConversation
+  ) => ((anchor: HTMLButtonElement) => void) | null;
 };
 
 export type SidebarManagement = {
@@ -430,10 +436,12 @@ export function ProjectSidebar({
     const canManage =
       row.sessionId && !row.managementPending && !management?.busy;
     const marker = live?.marker(row) ?? null;
+    const showPreview = live?.preview?.(row) ?? null;
     return (
       <SidebarMenuSubItem
         className={`v1-nav-conversation-wrap ${drag.ghost?.row.key === row.key ? "v1-pm-dragging" : ""}`}
         data-live={marker ? true : undefined}
+        data-row-key={`${groupId}:${row.key}`}
         key={row.key}
       >
         <SidebarMenuSubButton
@@ -487,6 +495,19 @@ export function ProjectSidebar({
             className="v1-app v1-project-ui v1-pm-menu"
             align="start"
           >
+            {showPreview && (
+              <DropdownMenuItem
+                onClick={() => {
+                  const anchor = document.querySelector<HTMLButtonElement>(
+                    `[data-row-key=${JSON.stringify(`${groupId}:${row.key}`)}] .fk-row-live`
+                  );
+                  if (anchor) showPreview(anchor);
+                }}
+              >
+                <MessageSquareText />
+                Show captured context
+              </DropdownMenuItem>
+            )}
             {management && (
               <>
                 <DropdownMenuItem
