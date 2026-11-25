@@ -13,6 +13,7 @@ import type {
 import type { SidebarLive } from "../v1/ProjectSidebar.js";
 import type { SidebarConversation } from "../v1/project-sidebar-model.js";
 import {
+  KinConversationChips,
   RailKin,
   kinConversationStatus,
   useKinActivity,
@@ -21,12 +22,12 @@ import {
 import { clientNames } from "./FloatingKinPanel.js";
 import { useKinSurfaceActivity } from "./use-floating-kin.js";
 
-type FocusFallback = RefObject<HTMLInputElement | null>;
+type FocusFallback = () => void;
 type Anchor = { top: number; left: number };
 
 const panelGap = 8;
 
-// Beside the opened row, just past the sidebar's right edge.
+// Beside the chip or row that opened the panel.
 function anchorFor(trigger: HTMLElement): Anchor {
   const row = trigger.closest("li") ?? trigger;
   const edge =
@@ -51,8 +52,7 @@ function AnchoredPanel({
 }) {
   useLayoutEffect(
     () => () => {
-      if (surface.current?.contains(document.activeElement))
-        focusFallback.current?.focus({ preventScroll: true });
+      if (surface.current?.contains(document.activeElement)) focusFallback();
     },
     [focusFallback, surface]
   );
@@ -69,6 +69,11 @@ function AnchoredPanel({
     </section>,
     document.body
   );
+}
+
+function DismissHiddenPanel({ dismiss }: { dismiss: () => void }) {
+  useLayoutEffect(dismiss, [dismiss]);
+  return null;
 }
 
 export function useDesktopKin(
@@ -150,6 +155,10 @@ export function useDesktopKin(
   );
 
   const avatar = inApp ? <RailKin active={sample.recentCapture} /> : null;
+  const chips =
+    inApp && activityBridge ? (
+      <KinConversationChips sample={sample} {...summary} toggle={open} />
+    ) : null;
 
   const tracked = new Map(
     sample.recent.map((conversation) => [conversation.sessionId, conversation])
@@ -164,12 +173,6 @@ export function useDesktopKin(
   const live: SidebarLive | undefined =
     inApp && activityBridge
       ? {
-          status:
-            working || active ? (
-              <span className="fk-live-status" role="status">
-                {working ? `${working} working` : `${active} active`}
-              </span>
-            ) : null,
           marker: (row: SidebarConversation) => {
             const conversation = row.sessionId
               ? tracked.get(row.sessionId)
@@ -212,8 +215,11 @@ export function useDesktopKin(
         }
       : undefined;
 
-  const panel = (focusFallback: FocusFallback) =>
-    summary.panel && anchor ? (
+  const panel = (focusFallback: FocusFallback, projectsVisible: boolean) => {
+    if (!summary.panel || !anchor) return null;
+    if (!projectsVisible && !anchor.trigger.closest(".v1-nav-rail"))
+      return <DismissHiddenPanel dismiss={summary.dismiss} />;
+    return (
       <AnchoredPanel
         key={JSON.stringify([placement, presentation?.revision, scopeKey])}
         panel={summary.panel}
@@ -221,7 +227,14 @@ export function useDesktopKin(
         surface={surface}
         focusFallback={focusFallback}
       />
-    ) : null;
+    );
+  };
 
-  return { avatar, live, panel };
+  const activity =
+    working || active ? (
+      <span className="fk-live-status" role="status">
+        {working ? `${working} working` : `${active} active`}
+      </span>
+    ) : null;
+  return { avatar, chips, activity, live, panel };
 }

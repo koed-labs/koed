@@ -43,7 +43,14 @@ import { NavigationShell } from "./NavigationShell.js";
 import { RecallActivityPage } from "./RecallActivityPage.js";
 import { useProjectManagement } from "./project-management/use-project-management.js";
 import { ConversationTags } from "./project-management/ConversationTags.js";
-import { buildProjectSidebar } from "./project-sidebar-model.js";
+import {
+  buildProjectSidebar,
+  matchesSidebarConversation,
+  NO_ANCHOR_ID,
+  openSidebarConversation,
+  resolveConversationByKey,
+  sidebarGroups
+} from "./project-sidebar-model.js";
 import { useNavigationHistory } from "./use-navigation-history.js";
 import {
   acknowledgeLateV1Capture,
@@ -884,9 +891,9 @@ export function V1App({
       .find((project) => project.id === "no-project")
       ?.conversations.find((item) => item.key === key);
     if (!conversation) return;
-    setRoute(conversation.route);
+    setRoute(openSidebarConversation(conversation, NO_ANCHOR_ID));
     setRevealProject((previous) => ({
-      projectId: "no-project",
+      projectId: NO_ANCHOR_ID,
       key: (previous?.key ?? 0) + 1
     }));
   };
@@ -904,14 +911,12 @@ export function V1App({
     (sessionId: string) => {
       for (const project of sidebarProjects) {
         const row = project.conversations.find(
-          (conversation) => conversation.sessionId === sessionId
+          (conversation) =>
+            conversation.sessionId === sessionId ||
+            conversation.sourceSessionIds?.includes(sessionId)
         );
         if (!row) continue;
-        setRoute(row.route);
-        setRevealProject((previous) => ({
-          projectId: project.id,
-          key: (previous?.key ?? 0) + 1
-        }));
+        setRoute({ ...openSidebarConversation(row), sessionId });
         return true;
       }
       return false;
@@ -931,7 +936,7 @@ export function V1App({
         null
       );
     if (!latest) return;
-    setRoute(latest.route);
+    setRoute(openSidebarConversation(latest, projectId));
     setRevealProject((previous) => ({
       projectId,
       key: (previous?.key ?? 0) + 1
@@ -945,44 +950,73 @@ export function V1App({
   const selectedDraft = selectedExecution
     ? (lifecycle.drafts.get(selectedExecution) ?? null)
     : null;
+  const canonicalConversation =
+    route.kind === "conversation" && route.conversationKey
+      ? resolveConversationByKey(projects, route.conversationKey)
+      : undefined;
   const routeProject =
-    route.kind === "conversation" && route.projectId
+    route.kind === "conversation" && !route.conversationKey && route.projectId
       ? projects.find((project) => project.id === route.projectId)
       : undefined;
+  const targetSessionId =
+    route.kind === "conversation"
+      ? (route.sessionId ?? selectedIntent?.capturedSessionId)
+      : undefined;
   const matchesConversation = (thread: DesktopProject["threads"][number]) =>
-    route.kind === "conversation" &&
     Boolean(
-      (route.threadId && thread.id === route.threadId) ||
-      (route.sessionId &&
-        (thread.sessionId === route.sessionId ||
-          thread.sourceReferences?.some(
-            (ref) => ref.sessionId === route.sessionId
-          ))) ||
-      (selectedIntent?.capturedSessionId &&
-        thread.sessionId === selectedIntent.capturedSessionId)
+      targetSessionId &&
+      thread.threadKind !== "subagent" &&
+      (thread.sessionId === targetSessionId ||
+        thread.sourceReferences?.some(
+          (ref) => ref.sessionId === targetSessionId
+        ))
     );
-  const capturedProject = routeProject?.threads.some(matchesConversation)
-    ? routeProject
-    : [...projects]
-        .sort((a, b) => Number(!!b.namedProject) - Number(!!a.namedProject))
-        .find((p) => p.threads.some(matchesConversation));
+  const legacyThread =
+    !targetSessionId && route.kind === "conversation" && routeProject
+      ? routeProject.threads.find((thread) => thread.id === route.threadId)
+      : undefined;
+  const capturedProject =
+    canonicalConversation?.project ??
+    (legacyThread || routeProject?.threads.some(matchesConversation)
+      ? routeProject
+      : [...projects]
+          .sort(
+            (a, b) =>
+              Number(!!b.namedProject) - Number(!!a.namedProject) ||
+              a.id.localeCompare(b.id)
+          )
+          .find((p) => p.threads.some(matchesConversation)));
   const conversationProject =
     capturedProject ??
     (selectedIntent ? projectForIntent(selectedIntent) : null);
-  const conversationThread = conversationProject
-    ? (conversationProject.threads.find((thread) =>
-        route.kind === "conversation" && route.threadId
-          ? thread.id === route.threadId
-          : Boolean(
-              selectedExecution &&
-              (thread.sessionId === selectedIntent?.capturedSessionId ||
-                sessionSelectionId(thread) === selectedExecution)
+  const conversationThread =
+    canonicalConversation?.thread ??
+    legacyThread ??
+    conversationProject?.threads.find(matchesConversation) ??
+    selectedDraft?.thread ??
+    null;
+  const originId =
+    route.kind === "conversation"
+      ? (route.originGroupId ?? route.projectId)
+      : undefined;
+  const conversationOrigin =
+    route.kind === "conversation" && originId
+      ? (originId === NO_ANCHOR_ID
+          ? sidebarGroups(sidebarProjects, verifiedPhase === "full")
+          : sidebarProjects
+        ).find(
+          (group) =>
+            group.id === originId &&
+            group.conversations.some((row) =>
+              matchesSidebarConversation(route, row)
             )
-      ) ??
-      conversationProject.threads.find(matchesConversation) ??
-      selectedDraft?.thread ??
-      null)
-    : null;
+        )
+      : undefined;
+  const conversationCrumb =
+    conversationOrigin?.name ??
+    (route.kind === "conversation" && !route.conversationKey
+      ? conversationProject?.name
+      : undefined);
   const conversationRouteId =
     selectedExecution ??
     (conversationThread ? sessionSelectionId(conversationThread) : "");
@@ -999,6 +1033,7 @@ export function V1App({
       const selectedRoute = currentRoute.current;
       if (
         selectedRoute.kind !== "conversation" ||
+        selectedRoute.conversationKey ||
         currentSession.current !== sessionId
       )
         return;
@@ -1122,7 +1157,7 @@ export function V1App({
                 ? "Recall activity"
                 : (conversationThread?.name ?? "Conversation")
           }
-          projectName={conversationProject?.name}
+          projectName={conversationCrumb}
           onSelect={setRoute}
           onHome={() => {
             setSelectedProjectId(null);
@@ -1139,6 +1174,7 @@ export function V1App({
           loading={inventoryLoading}
           servicesStarting={servicesStarting}
           inventoryReady={inventoryReady}
+          anchorInventoryReady={verifiedPhase === "full"}
           error={serviceError ?? snapshot?.error}
           onRetry={() => {
             if (serviceError || status?.api.state !== "healthy")
@@ -1147,6 +1183,8 @@ export function V1App({
           }}
           management={projectManagement.management}
           kinAvatar={kin.avatar}
+          kinChips={kin.chips}
+          kinActivity={kin.activity}
           kinLive={kin.live}
           kinPanel={kin.panel}
         >
@@ -1181,8 +1219,8 @@ export function V1App({
                   projects={projects}
                   thread={conversationThread}
                   sourceProjectId={
-                    conversationProject.namedProject
-                      ? conversationProject.id
+                    conversationOrigin?.managed
+                      ? conversationOrigin.id
                       : undefined
                   }
                   revision={snapshot?.revision ?? 0}
