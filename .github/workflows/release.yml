@@ -44,7 +44,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
           run_install: false
@@ -190,7 +190,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
           run_install: false
@@ -225,7 +225,7 @@ jobs:
             node scripts/component-runtime-compatibility-smoke.mjs --release-dir "$RUNNER_TEMP/koed-component-release" --variant cuda
           fi
       - name: Upload frozen component outputs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-frozen-components-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/koed-components/${{ matrix.platform }}-${{ matrix.arch }}
@@ -243,7 +243,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
           run_install: false
@@ -255,7 +255,7 @@ jobs:
       - name: Build catalog validators
         run: pnpm install --frozen-lockfile && pnpm build
       - name: Download all frozen target outputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: koed-frozen-components-*
           path: release-components
@@ -265,7 +265,7 @@ jobs:
           node scripts/component-manifest-catalog.mjs release-components release-components/component-manifest-hashes.json "${{ needs.release.outputs.version }}"
           node scripts/verify-frozen-component-assets.mjs release-components release-components/component-manifest-hashes.json "${{ needs.release.outputs.version }}"
       - name: Upload catalog and frozen assets together
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-component-catalog
           path: release-components
@@ -322,7 +322,7 @@ jobs:
           echo "catalog=$(jq -c . release-native/native-runtime-catalog.json)" >> "$GITHUB_OUTPUT"
           rm release-native/native-runtime-catalog.json
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-linux-native-packages
           path: release-native/
@@ -353,7 +353,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
           run_install: false
@@ -385,7 +385,7 @@ jobs:
           echo "sha256=${digest}" >> "${GITHUB_OUTPUT}"
       - name: Upload private frozen native payload
         id: freeze-upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-private-frozen-macos-native-runtime
           path: |
@@ -410,7 +410,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
           run_install: false
@@ -421,7 +421,7 @@ jobs:
       - run: pnpm install --frozen-lockfile && pnpm build
       - &download-frozen-macos
         name: Download frozen macOS native runtime
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.frozen-macos-native-runtime.outputs.artifact_id }}
           path: frozen-macos
@@ -449,7 +449,7 @@ jobs:
         run: |
           node scripts/native-runtime/stage-macos-core.mjs --source-dir "${RUNNER_TEMP}/koed-native-runtime-release/koed-runtime" --out-dir scratch/macos-core --version "${{ needs.release.outputs.version }}" --frozen-inventory-sha256 "${FROZEN_INVENTORY_SHA256}"
       - name: Download Linux native packages
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: koed-linux-native-packages
           path: release-native
@@ -462,7 +462,7 @@ jobs:
           node scripts/native-runtime/assemble-release-catalog.mjs "$VERSION" scratch/macos-core release-native
           echo "catalog=$(jq -c . release-native/native-runtime-catalog.json)" >> "$GITHUB_OUTPUT"
       - name: Upload macOS native release assets
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-macos-native-packages
           path: |
@@ -505,7 +505,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
           run_install: false
@@ -520,7 +520,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Download complete frozen catalog and assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: koed-component-catalog
           path: release-components
@@ -618,7 +618,7 @@ jobs:
             --out "${RUNNER_TEMP}/privacy-qualification-reports/${stage}.json"
 
       - name: Retain native Privacy qualification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-privacy-qualification-${{ matrix.platform }}
           path: ${{ runner.temp }}/privacy-qualification-reports/
@@ -668,7 +668,7 @@ jobs:
             >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload standalone koed-server assets to workflow
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-server-app-runtime-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-artifacts/koed-server-app-runtime-${{ matrix.platform }}-${{ matrix.arch }}
@@ -703,7 +703,7 @@ jobs:
           node-version: 24.13.1
 
       - name: Download standalone koed-server assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: koed-server-app-runtime-*
           path: release-artifacts
@@ -723,7 +723,7 @@ jobs:
         run: node scripts/render-server-installer.mjs "${{ needs.release.outputs.version }}" install-koed-server.sh
 
       - name: Retain reviewed release metadata
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-release-metadata
           path: |
@@ -766,7 +766,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
           run_install: false
@@ -782,7 +782,7 @@ jobs:
           pnpm --filter @koed-labs/shared build
           node apps/desktop/scripts/prepare-account-config.mjs --release
       - name: Download frozen catalog
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: koed-component-catalog
           path: release-components
@@ -790,7 +790,7 @@ jobs:
       # add-on stays a separate release asset, installed with
       # `koed runtime install --provider release --with-cuda`.
       - name: Download Linux native packages
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: koed-linux-native-packages
           path: release-native
@@ -858,7 +858,7 @@ jobs:
           node ../../scripts/desktop-release-checksum.mjs verify-linux release "${version}"
       - name: Upload Linux Desktop smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-linux-desktop-release-smoke-diagnostics
           path: ${{ runner.temp }}/koed-linux-smoke-diagnostics
@@ -878,7 +878,7 @@ jobs:
           node scripts/desktop-release-checksum.mjs size-linux apps/desktop/release "${{ needs.release.outputs.version }}"
           du -h apps/desktop/release/linux-unpacked/resources/* "apps/desktop/release/Koed-${{ needs.release.outputs.version }}-x86_64.AppImage" | tee -a "${GITHUB_STEP_SUMMARY}"
       - name: Retain final Linux Desktop bytes
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-desktop-linux-final-assets
           path: |
@@ -925,7 +925,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
           run_install: false
@@ -944,7 +944,7 @@ jobs:
           node apps/desktop/scripts/prepare-account-config.mjs --release
 
       - name: Download complete frozen catalog and assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: koed-component-catalog
           path: release-components
@@ -1011,7 +1011,7 @@ jobs:
 
       - name: Upload packaged Desktop smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-desktop-release-smoke-diagnostics-${{ needs.release.outputs.tag }}
           path: ${{ runner.temp }}/koed-desktop-smoke-diagnostics
@@ -1052,7 +1052,7 @@ jobs:
 
       # #428 must retain this upload AFTER final signing/notarization/sealing.
       - name: Retain final Desktop bytes for independent candidate verification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-desktop-final-assets
           path: |
@@ -1090,18 +1090,18 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24.14.0
       - run: pnpm install --frozen-lockfile && pnpm --filter @koed-labs/server build
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: koed-component-catalog
           path: release-components
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: koed-privacy-qualification-*
           path: scratch/privacy-qualification
@@ -1115,7 +1115,7 @@ jobs:
             scratch/privacy-qualification/macos.json \
             scratch/privacy-qualification/linux-cpu.json \
             > scratch/privacy-qualification/verified-release-evidence.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: koed-privacy-release-evidence
           path: scratch/privacy-qualification/
@@ -1148,7 +1148,7 @@ jobs:
       identity_sha256: ${{ steps.identity.outputs.sha256 }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
@@ -1168,7 +1168,7 @@ jobs:
           ids="$(jq -r '[.artifacts[] | select(.name == "koed-component-catalog" or .name == "koed-server-app-runtime-linux-x64" or .name == "koed-server-app-runtime-macos-arm64" or .name == "koed-desktop-final-assets" or .name == "koed-desktop-linux-final-assets" or .name == "koed-linux-native-packages" or .name == "koed-macos-native-packages" or .name == "koed-release-metadata") | .id] | join(",")' scratch/build-artifacts.json)"
           test -n "${ids}"
           echo "ids=${ids}" >> "${GITHUB_OUTPUT}"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ steps.sources.outputs.ids }}
           path: scratch/reviewed-build-outputs
@@ -1178,7 +1178,7 @@ jobs:
           set -euo pipefail
           digest="$(node scripts/reviewed-build-identity.mjs scratch/reviewed-build-outputs scratch/build-artifacts.json scratch/reviewed-build.json '${{ needs.release.outputs.version }}')"
           echo "sha256=${digest}" >> "${GITHUB_OUTPUT}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         id: identity-upload
         with:
           name: koed-reviewed-release-identity
@@ -1202,14 +1202,14 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24.13.1
       - run: pnpm install --frozen-lockfile && pnpm --filter @koed-labs/server build
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.reviewed-release-identity.outputs.artifact_id }}
           path: scratch/expected-build
@@ -1264,10 +1264,10 @@ jobs:
           test "${NPM_AUTHORIZED}" = "true" || { echo "npm trusted publishing authorization is not configured." >&2; exit 1; }
           node scripts/release-approval.mjs
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 11.1.2
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.reviewed-release-identity.outputs.artifact_id }}
           path: scratch/expected-build
