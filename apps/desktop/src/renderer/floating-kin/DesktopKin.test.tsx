@@ -224,7 +224,7 @@ it("puts the live Kin on the Home button and opens summaries from Conversation r
   }
 });
 
-it("shows the live dot for an active turn, nothing in an idle turn's first minute, otherwise the age", async () => {
+it("shows the live dot for an active turn and the capture age otherwise", async () => {
   const mount = document.createElement("div");
   document.body.append(mount);
   const root = createRoot(mount);
@@ -324,7 +324,7 @@ it("shows the live dot for an active turn, nothing in an idle turn's first minut
     const labels = [
       ...mount.querySelectorAll<HTMLElement>(".v1-nav-rail .fk-chip-label")
     ];
-    expect(labels.map((label) => label.textContent)).toEqual(["", "", "5m"]);
+    expect(labels.map((label) => label.textContent)).toEqual(["5s", "", "5m"]);
     expect(
       labels.map((label) => label.querySelector(".fk-dot") !== null)
     ).toEqual([false, true, false]);

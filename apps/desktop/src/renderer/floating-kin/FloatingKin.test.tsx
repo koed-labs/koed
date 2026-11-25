@@ -294,8 +294,7 @@ describe("Floating Kin", () => {
       await render();
 
       const chip = mount.querySelector(".fk-chip")!;
-      // Nothing replaces the age in an idle turn's first minute.
-      expect(chip.textContent).toBe("");
+      expect(chip.textContent).toBe("12s");
       expect(chip.querySelector(".fk-dot")).toBeNull();
       expect(chip.getAttribute("aria-label")).toBe(
         `${name} Conversation 1. Captured 12s ago.`
@@ -684,6 +683,7 @@ describe("Floating Kin", () => {
     await render();
     expect(mount.querySelectorAll("button[aria-expanded]")).toHaveLength(3);
     expect(mount.textContent).toContain("+3");
+    expect(mount.textContent).toContain("12s");
     expect(
       mount.querySelector('button[aria-label*="Captured 12s ago"]')
     ).not.toBeNull();

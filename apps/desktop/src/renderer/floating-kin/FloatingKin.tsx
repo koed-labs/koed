@@ -68,9 +68,8 @@ function captureAge(seconds: number) {
 }
 
 /**
- * What a chip or row shows where its capture age would go: a live dot while
- * the Conversation's turn looks underway, nothing within the first minute,
- * otherwise the capture age.
+ * What a chip or row shows in its status slot: a live dot while the
+ * Conversation's turn looks underway, otherwise the capture age.
  */
 export function KinLiveStatus({
   working,
@@ -82,7 +81,6 @@ export function KinLiveStatus({
   lastActivityAt: string;
 }) {
   if (working) return <span className="fk-dot" data-live="true" />;
-  if (seconds < recentSeconds) return null;
   return <time dateTime={lastActivityAt}>{captureAge(seconds)}</time>;
 }
 

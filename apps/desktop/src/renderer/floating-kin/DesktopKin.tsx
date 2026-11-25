@@ -189,7 +189,7 @@ export function useDesktopKin(
               ? tracked.get(row.sessionId)
               : undefined;
             if (!conversation) return null;
-            const { age, recent, seconds } = kinConversationStatus(
+            const { age, seconds } = kinConversationStatus(
               conversation,
               sample.at
             );
@@ -201,9 +201,6 @@ export function useDesktopKin(
                 type="button"
                 className="fk-row-live"
                 data-working={isWorking || undefined}
-                // Nothing to show in the first minute of an idle turn; the
-                // marker stays focusable so the panel keeps its anchor.
-                data-empty={(!isWorking && recent) || undefined}
                 aria-expanded={expanded}
                 aria-controls={expanded ? "floating-kin-summary" : undefined}
                 aria-label={`Chief of Staff summary for ${row.title}. ${clientNames[conversation.client]}. ${isWorking ? "Working. " : ""}Captured ${age} ago.`}

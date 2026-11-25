@@ -188,13 +188,6 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 .fk-row-live .fk-dot {
   --fk-green: var(--fk-live);
 }
-/* An idle turn in its first minute shows nothing until hovered or open. */
-.fk-row-live[data-empty]:not(:hover, :focus-visible, [aria-expanded="true"]) {
-  opacity: 0;
-}
-.fk-row-live[data-empty] {
-  min-width: 24px;
-}
 .fk-rail-activity {
   overflow: auto;
   scrollbar-width: none;
@@ -214,7 +207,7 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
   gap: 2px;
   cursor: pointer;
 }
-/* The label line keeps its height when it has nothing to show. */
+/* The label line keeps its height whether it shows the dot or the age. */
 .fk-rail-activity .fk-chip-label {
   display: grid;
   place-items: center;
@@ -323,12 +316,6 @@ body:has(.fk-surface[data-fk-placement="desktop"]) {
 .fk-chip {
   min-height: 42px;
   font-variant-numeric: tabular-nums;
-}
-.fk-chip-label:empty {
-  display: none;
-}
-.fk-rail-activity .fk-chip-label:empty {
-  display: grid;
 }
 .fk-chip:hover,
 .fk-chip[aria-expanded="true"] {

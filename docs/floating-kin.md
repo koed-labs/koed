@@ -15,9 +15,9 @@ best guess from the latest captured item:
 - A request, tool call or result, reasoning, or a fresh reply means it is
   underway, but only while something was captured in the last 10 minutes.
 
-Within the first minute of a finished turn the chip shows nothing; after that
-it shows the capture age. When capture can't tell, the chip shows the age too,
-which doesn't mean the Conversation is idle or finished.
+Once the dot goes, the capture age takes its place. When capture can't tell,
+the chip shows the age too, which doesn't mean the Conversation is idle or
+finished.
 
 Inside Koed, the Chief of Staff takes the logo's place on the Home button at
 the top of the left rail. The live Conversation chips sit directly below it,
