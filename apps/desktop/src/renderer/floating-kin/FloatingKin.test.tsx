@@ -906,6 +906,32 @@ describe("Floating Kin", () => {
     expect(surface.dataset.visible).toBe("false");
   });
 
+  it("wakes from the logo while a Conversation chip is hovered", async () => {
+    bridge.activity = vi.fn(async () => ({
+      state: "running" as const,
+      conversations: [conversation],
+      overflowCount: 0
+    }));
+    await render();
+    const kin = mount.querySelector<HTMLElement>(".fk-kin-avatar")!;
+    const chip = mount.querySelector<HTMLElement>(".fk-chip")!;
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
+    await mouseOver(chip);
+    expectKinAwake(kin, true);
+    expect(kin.dataset.phase).toBe("arriving");
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expectKinAwake(kin, true);
+    await mouseOver(mount.querySelector("main")!, chip);
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
+    expectKinAwake(kin, true);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expectKinAwake(kin, false);
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
+  });
+
   it("keeps its look while it leaves for the sidebar", async () => {
     let present: (presentation: {
       placement: "desktop" | "sidebar";

@@ -213,7 +213,8 @@
 .v1-nav-scroll .v1-nav-projects,
 .v1-nav-scroll .v1-nav-anchors {
   flex: 0 1 auto;
-  min-height: 0;
+  /* Shrinking stops at the heading, so a section never clips its title. */
+  min-height: 32px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -548,6 +549,8 @@
 .v1-nav-scroll .v1-nav-anchors {
   margin-top: 10px;
   border-top: 1px solid var(--v1-hairline);
+  /* Its heading carries 10px of space above it. */
+  min-height: 43px;
 }
 /* The space above the heading is part of the opaque sticky heading, so rows
    scrolling past never show above it. */
