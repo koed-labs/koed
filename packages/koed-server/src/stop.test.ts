@@ -77,6 +77,9 @@ const writeRuntimeGeneration = (
   );
 };
 
+const spawnOk = () =>
+  ({ status: 0, stdout: "", stderr: "", pid: 1, output: [] }) as never;
+
 const runtime = (
   overrides: Partial<KoedServerRuntimeState> = {}
 ): KoedServerRuntimeState => ({
@@ -690,6 +693,84 @@ describe("stopKoedServer", () => {
       command: "/env/bin/pg_ctl",
       args: ["stop", "-D", dataDir, "-m", "fast"]
     });
+  });
+
+  it("requests graceful shutdown when the profile was broken after startup", () => {
+    const koedHome = makeHome();
+    const envPath = resolve(koedHome, "profile.env");
+    writeFileSync(
+      envPath,
+      ["KOED_DEPENDENCY_MODE=external", "UNRELATED='unfinished", ""].join("\n")
+    );
+    writeRuntime(
+      koedHome,
+      runtime({ dependencyMode: "external", processes: {}, services: [] })
+    );
+    writeSupervisorLock(koedHome, 100);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+    const identityChecks: number[] = [];
+    let live = true;
+
+    const result = stopKoedServer({
+      environment: {
+        KOED_HOME: koedHome,
+        KOED_REPO_ROOT: koedHome,
+        KOED_ENV_PATH: envPath
+      },
+      resolveProcessIdentity: (pid) => {
+        identityChecks.push(pid);
+        return "test-supervisor";
+      },
+      kill: (pid, signal) => {
+        signals.push([pid, signal]);
+        live = false;
+      },
+      checkPid: (pid) => pid === 100 && live,
+      waitForExitMs: 0,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(true);
+    expect(identityChecks).toContain(100);
+    expect(signals).toEqual([[100, "SIGTERM"]]);
+  });
+
+  it("reports a broken profile from the native Postgres fallback without aborting stop", () => {
+    const koedHome = makeHome();
+    const dataDir = resolve(koedHome, "data", "postgres");
+    const envPath = resolve(koedHome, "local.env");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(resolve(dataDir, "PG_VERSION"), "17");
+    writeFileSync(envPath, "UNRELATED='unfinished\n");
+    writeRuntime(
+      koedHome,
+      runtime({ services: ["postgres-native", "api", "worker"] })
+    );
+    const calls: string[] = [];
+
+    const result = stopKoedServer({
+      environment: {
+        KOED_HOME: koedHome,
+        KOED_ENV_PATH: envPath,
+        KOED_REPO_ROOT: koedHome
+      },
+      existsSync: (path) =>
+        String(path).endsWith("koed-server.json") ||
+        String(path).endsWith("PG_VERSION"),
+      kill: () => undefined,
+      checkPid: () => false,
+      spawnSync: (command) => {
+        calls.push(command);
+        return spawnOk();
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContainEqual({
+      target: "postgres-native",
+      error: `${envPath}:1: unterminated quoted value for UNRELATED`
+    });
+    expect(calls).toEqual([]);
   });
 
   it("stops native Embedding Service by recorded PID", () => {

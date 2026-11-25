@@ -5,6 +5,7 @@ import {
   recallActivityDetailInputSchema,
   personalDesktopChangeSchema,
   personalDesktopLocalFolderPrepareInputSchema,
+  personalDesktopFolderHintInputSchema,
   personalDesktopProjectCreateInputSchema,
   personalProjectCommandSchema,
   personalMembershipSyncCommandSchema,
@@ -153,6 +154,34 @@ export const createPersonalMemoryPreloadApi = (
       if (result.operation !== "personal.folders.local.prepare")
         throw new Error("Invalid prepared Folder result.");
       return result.data.folder;
+    },
+    folderHints: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["folderHints"]>>[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.folders.hints",
+          input: personalDesktopFolderHintInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.folders.hints")
+        throw new Error("Invalid Folder hint result.");
+      return result.data.hints;
+    },
+    confirmFolderHint: async (
+      value: Parameters<NonNullable<PersonalDesktopApi["confirmFolderHint"]>>[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.folders.hints.confirm",
+          input: value
+        })
+      );
+      if (result.operation !== "personal.folders.hints.confirm")
+        throw new Error("Invalid Folder confirmation result.");
+      return result.data;
     },
     manageMembershipSync: async (
       value: Parameters<

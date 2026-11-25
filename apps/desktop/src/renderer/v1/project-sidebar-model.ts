@@ -1,3 +1,4 @@
+import type { PersonalProjectKin } from "@koed-labs/shared";
 import {
   personalInventoryConversationKey,
   personalInventoryReference
@@ -36,6 +37,8 @@ export type SidebarProject = {
   latestAt: string;
   conversations: SidebarConversation[];
   managed?: boolean;
+  /** The Project's saved Kin, when it has one; its look is derived otherwise. */
+  kin?: PersonalProjectKin;
 };
 const timestamp = (value: string) => Date.parse(value) || 0;
 const activityOrder = <
@@ -76,7 +79,8 @@ export function buildProjectSidebar(
       name: ungrouped ? "No project" : project.name,
       latestAt: "",
       conversations: [],
-      managed: Boolean(project.namedProject)
+      managed: Boolean(project.namedProject),
+      ...(project.namedProject?.kin ? { kin: project.namedProject.kin } : {})
     };
     for (const thread of project.threads) {
       if (
@@ -200,16 +204,36 @@ export function filterSidebar(
   });
 }
 
-export function pinnedConversations(
+export const projectPinKey = (projectId: string) => `project:${projectId}`;
+
+type SidebarPin =
+  | { kind: "project"; key: string; project: SidebarProject }
+  | { kind: "conversation"; key: string; row: SidebarConversation };
+
+export function pinnedSidebarItems(
   projects: readonly SidebarProject[],
   pins: readonly string[]
-): SidebarConversation[] {
-  const rows = projects.flatMap((p) => p.conversations);
+): SidebarPin[] {
+  if (!pins.length) return [];
+  const byAlias = new Map<string, SidebarPin>();
+  for (const project of projects) {
+    if (project.managed) {
+      const key = projectPinKey(project.id);
+      byAlias.set(key, { kind: "project", key, project });
+    }
+    for (const row of project.conversations) {
+      for (const alias of row.aliases) {
+        if (!byAlias.has(alias)) {
+          byAlias.set(alias, { kind: "conversation", key: row.key, row });
+        }
+      }
+    }
+  }
   const seen = new Set<string>();
   return pins.flatMap((pin) => {
-    const row = rows.find((candidate) => candidate.aliases.includes(pin));
-    if (!row || seen.has(row.key)) return [];
-    seen.add(row.key);
-    return [row];
+    const item = byAlias.get(pin);
+    if (!item || seen.has(item.key)) return [];
+    seen.add(item.key);
+    return [item];
   });
 }

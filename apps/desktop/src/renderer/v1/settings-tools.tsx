@@ -31,15 +31,20 @@ function useInstaller(api?: DesktopApi["cliInstall"]) {
 }
 export function SettingsTools({
   api,
-  onOpen
+  onOpen,
+  teamCollaborationEnabled
 }: {
   api?: DesktopApi["cliInstall"];
   onOpen: (page: Detail) => void;
+  teamCollaborationEnabled: boolean;
 }) {
   const { state } = useInstaller(api);
+  const tools: InstallTool[] = teamCollaborationEnabled
+    ? ["privacy", "cli"]
+    : ["cli"];
   return (
     <Group title="Optional tools">
-      {(["privacy", "cli"] as const).map((tool) => {
+      {tools.map((tool) => {
         const job = state?.[tool];
         const note = job?.checking
           ? "Checking…"

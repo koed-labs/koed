@@ -29,7 +29,10 @@ describe("App Desktop IPC wiring", () => {
   });
 
   it("starts the solo interface without enabling the hidden Team interface", () => {
-    const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+    const source = readFileSync(
+      new URL("./desktop-root.tsx", import.meta.url),
+      "utf8"
+    );
 
     expect(source).toContain('import { V1App as App } from "./v1/App.js"');
     expect(source).not.toContain("teamCollaborationEnabled=");

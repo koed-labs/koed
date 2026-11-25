@@ -51,6 +51,10 @@ export default defineConfig({
         replacement: `${root}packages/shared/src/resource-profiles.ts`
       },
       {
+        find: "@koed-labs/shared/env-file",
+        replacement: `${root}packages/shared/src/env-file.ts`
+      },
+      {
         find: "@koed-labs/shared/private-network",
         replacement: `${root}packages/shared/src/private-network.ts`
       },

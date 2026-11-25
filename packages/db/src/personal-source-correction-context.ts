@@ -3,14 +3,21 @@ import {
   readPersonalSourceContextSync
 } from "./personal-source-binding-state.js";
 import { sourceContextViewRevisionId } from "./personal-source-context-projection.js";
+import {
+  personalGitHistoricalImportProvenance,
+  personalGitInferenceEvidenceJoins,
+  personalGitMissingHistoryMarker
+} from "./personal-git-inference-evidence.js";
 import type pg from "pg";
 import {
   personalFolderAssignmentSchema,
   personalFolderContextSchema,
+  personalFolderReferenceSchema,
   personalGitContextSchema,
   personalSourceContextStateSchema,
   repositoryScopeId,
   type PersonalFolderAssignment,
+  type PersonalFolderReference,
   type PersonalGitAssignment,
   type PersonalSourceContextSync,
   personalGitAssignmentSchema,
@@ -29,6 +36,7 @@ export type PersonalCorrectionSourceRow = {
   repository_override_identity: RepositoryIdentity | null;
   git_revision_id: string | null;
   import_observed_at: Date | null;
+  git_missing_import_history: boolean;
   source_sync?: PersonalSourceContextSync;
   source_body_pending?: boolean;
   source_git_original?: PersonalGitAssignment["original"];
@@ -38,10 +46,20 @@ export const lockPersonalCorrectionSource = async (
   actor: ActorContext,
   sessionId: string
 ) => {
+  // Keep the original recorded by an earlier Git correction stable for review and export.
   const found = await client.query<PersonalCorrectionSourceRow>(
     `select s.id,s.logical_session_id,s.folder_assignment,s.repository_assignment_state,s.repository_assignment_version,s.repository_automatic_identity,s.repository_override_identity,s.import_observed_at,
-    coalesce(s.repository_assignment_revision_id,(select c.revision_id from personal_source_context_changes c where c.owner_user_id=s.owner_user_id and c.logical_session_id=s.logical_session_id and c.axis='git' and c.version=s.repository_assignment_version)) as git_revision_id
-    from sessions s where s.owner_user_id=$1 and s.id=$2 and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null for update of s`,
+    coalesce(s.repository_assignment_revision_id,(select c.revision_id from personal_source_context_changes c where c.owner_user_id=s.owner_user_id and c.logical_session_id=s.logical_session_id and c.axis='git' and c.version=s.repository_assignment_version)) as git_revision_id,
+    case when ${personalGitMissingHistoryMarker} then coalesce((
+      select c.previous #>> '{context,git,original,reason}' = 'historical_unresolved'
+      from personal_source_context_changes c where c.owner_user_id=s.owner_user_id
+        and c.logical_session_id=s.logical_session_id and c.axis='git'
+      order by c.sequence limit 1
+    ), (select ${personalGitHistoricalImportProvenance}
+      from (select 1) candidate ${personalGitInferenceEvidenceJoins}
+    )) else false end as git_missing_import_history
+    from sessions s
+    where s.owner_user_id=$1 and s.id=$2 and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null for update of s`,
     [actor.userId, sessionId]
   );
   const row = found.rows[0];
@@ -89,6 +107,7 @@ export const personalCorrectionContext = (row: PersonalCorrectionSourceRow) => {
             state: "unresolved",
             reason:
               row.repository_assignment_state === "historical_unresolved" ||
+              row.git_missing_import_history ||
               (!row.repository_automatic_identity && row.import_observed_at)
                 ? "historical_unresolved"
                 : row.repository_automatic_identity
@@ -134,6 +153,43 @@ const unavailable = () =>
     ),
     { statusCode: 404 }
   );
+// Shared by advisory hint eligibility and the authoritative correction preview.
+const folderCorrectionTargets = `
+  select fact.value->'value' as context from sessions s
+  cross join lateral(values(s.folder_assignment->'original'),(s.folder_assignment->'correction'->'value')) fact(value)
+  where s.owner_user_id=$1 and s.visibility='personal' and s.personal_deleted_at is null and fact.value->>'state'='known'
+    and fact.value->'value'->'reference'=any($2::jsonb[])
+  union all
+  select jsonb_build_object('reference',o.observation->'identity'||jsonb_build_object('ownerUserId',o.owner_user_id),'normalizedPath',o.observation->'normalizedPath','capturedPath',o.observation->'capturedPath')
+  from session_folder_observations o join sessions s on s.id=o.session_id
+  where o.owner_user_id=$1 and s.owner_user_id=$1 and s.visibility='personal' and s.personal_deleted_at is null
+    and (o.observation->'identity'||jsonb_build_object('ownerUserId',o.owner_user_id))=any($2::jsonb[])
+  union all
+  select fact.value->'value' as context from personal_source_context_revisions r
+  join personal_source_bindings b on b.binding_id=r.binding_id join sessions s on s.id=b.local_session_id
+  cross join lateral(values(r.assignment->'original'),(r.assignment->'correction'->'value')) fact(value)
+  where b.owner_user_id=$1 and s.owner_user_id=$1 and s.invalidated_at is null and s.personal_deleted_at is null and r.axis='folder' and fact.value->>'state'='known'
+    and fact.value->'value'->'reference'=any($2::jsonb[])`;
+
+export const findKnownFolderCorrectionReferences = async (
+  pool: pg.Pool,
+  ownerUserId: string,
+  proposedFolders: readonly PersonalFolderReference[]
+) => {
+  const proposed = proposedFolders.flatMap((folder) =>
+    folder.ownerUserId === ownerUserId ? [JSON.stringify(folder)] : []
+  );
+  if (!proposed.length) return [];
+  const result = await pool.query<{ reference: unknown }>(
+    `select distinct context->'reference' as reference
+     from (${folderCorrectionTargets}) targets`,
+    [ownerUserId, proposed]
+  );
+  return result.rows.map(({ reference }) =>
+    personalFolderReferenceSchema.parse(reference)
+  );
+};
+
 /** Resolve a selected identity from owned recorded facts, never caller display paths. */
 export const personalCorrectionPatch = async (
   client: pg.PoolClient,
@@ -198,15 +254,8 @@ export const personalCorrectionPatch = async (
           statusCode: 403
         });
       const target = await client.query<{ context: unknown }>(
-        `select fact.value->'value' as context from sessions s
-        cross join lateral(values(s.folder_assignment->'original'),(s.folder_assignment->'correction'->'value')) fact(value)
-        where s.owner_user_id=$1 and s.visibility='personal' and s.personal_deleted_at is null and fact.value->>'state'='known' and fact.value->'value'->'reference'=$2::jsonb
-        union all select jsonb_build_object('reference',o.observation->'identity'||jsonb_build_object('ownerUserId',o.owner_user_id),'normalizedPath',o.observation->'normalizedPath','capturedPath',o.observation->'capturedPath')
-        from session_folder_observations o join sessions s on s.id=o.session_id where o.owner_user_id=$1 and s.owner_user_id=$1 and s.visibility='personal' and s.personal_deleted_at is null and (o.observation->'identity'||jsonb_build_object('ownerUserId',o.owner_user_id))=$2::jsonb union all select fact.value->'value' as context from personal_source_context_revisions r
-        join personal_source_bindings b on b.binding_id=r.binding_id join sessions s on s.id=b.local_session_id
-        cross join lateral(values(r.assignment->'original'),(r.assignment->'correction'->'value')) fact(value)
-        where b.owner_user_id=$1 and s.owner_user_id=$1 and s.invalidated_at is null and s.personal_deleted_at is null and r.axis='folder' and fact.value->>'state'='known' and fact.value->'value'->'reference'=$2::jsonb limit 1`,
-        [actor.userId, input.folder]
+        `select context from (${folderCorrectionTargets}) targets limit 1`,
+        [actor.userId, [JSON.stringify(input.folder)]]
       );
       if (!target.rows[0]) throw unavailable();
       value = {

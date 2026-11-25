@@ -11,6 +11,7 @@ import {
 import http from "node:http";
 import path from "node:path";
 import {
+  floatingKinSummaryRequestSchema,
   personalDesktopAskSubmitInputSchema,
   watchKoedLocalWork
 } from "@koed-labs/shared";
@@ -75,6 +76,7 @@ import {
   BlockingAnswerAdmission
 } from "./answer-admission.js";
 import { MemoryToolExecutor } from "./memory-tool-executor.js";
+import { summarizeFloatingKin } from "./floating-kin.js";
 import {
   MemoryAnswerTaskScheduler,
   type MemoryAnswerTaskExecutionContext
@@ -814,6 +816,48 @@ export const startLocalAiRuntime = async ({
                 }
               : {})
           });
+          return;
+        }
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/desktop/floating-kin/summary"
+        ) {
+          const input = floatingKinSummaryRequestSchema.parse(
+            await readJsonBody(request)
+          );
+          const summary = await summarizeFloatingKin(
+            apiClient,
+            answerAdmission,
+            environment,
+            input,
+            authorization,
+            requestAbort.signal
+          );
+          if (!requestAbort.signal.aborted) json(response, 200, summary);
+          return;
+        }
+        if (
+          request.method === "GET" &&
+          requestUrl.pathname === "/v1/desktop/floating-kin/activity"
+        ) {
+          const signal = AbortSignal.any([
+            requestAbort.signal,
+            AbortSignal.timeout(5_000)
+          ]);
+          try {
+            const activity = await apiClient.readFloatingKinActivity(
+              authorization,
+              signal
+            );
+            signal.throwIfAborted();
+            json(response, 200, activity);
+          } catch {
+            if (!requestAbort.signal.aborted) {
+              json(response, 503, {
+                error: "Floating Kin activity is unavailable"
+              });
+            }
+          }
           return;
         }
         if (

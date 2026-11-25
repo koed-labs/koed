@@ -30,6 +30,10 @@ const execFileFor = (repo: string) =>
       "rev-parse --show-toplevel": repo,
       "remote -v":
         "origin\thttps://token:secret@github.com/koed-labs/koed.git (fetch)\norigin\thttps://token:secret@github.com/koed-labs/koed.git (push)",
+      "remote get-url --all -- origin":
+        "https://token:secret@github.com/koed-labs/koed.git",
+      "remote get-url --push --all -- origin":
+        "https://token:secret@github.com/koed-labs/koed.git",
       "branch --show-current": "feature/koe-219",
       "rev-parse HEAD": "abcdef1234567890",
       "rev-parse --git-common-dir": ".git",
@@ -221,7 +225,8 @@ describe("Project metadata discovery", () => {
     fs.mkdirSync(repo, { recursive: true });
     fs.mkdirSync(path.join(repo, ".git"));
     const paths = pathsFor(directory);
-    let remoteOutput = "origin\thttps://github.com/koed-labs/koed.git (fetch)";
+    let remoteUrl = "https://github.com/koed-labs/koed.git";
+    let fetchUrlsAvailable = true;
     const execFile = ((
       _file: string,
       args: readonly string[],
@@ -231,7 +236,9 @@ describe("Project metadata discovery", () => {
       const command = args.slice(2).join(" ");
       const responses: Record<string, string> = {
         "rev-parse --show-toplevel": repo,
-        "remote -v": remoteOutput,
+        "remote -v": `origin\t${remoteUrl} (fetch)`,
+        "remote get-url --all -- origin": fetchUrlsAvailable ? remoteUrl : "",
+        "remote get-url --push --all -- origin": remoteUrl,
         "branch --show-current": "main",
         "rev-parse HEAD": "abcdef1234567890",
         "rev-parse --git-common-dir": ".git",
@@ -242,7 +249,7 @@ describe("Project metadata discovery", () => {
     const deps = { execFile, randomId: () => "device-salt" };
 
     const first = await discoverProjectMetadata(paths, { cwd: repo }, deps);
-    remoteOutput = "origin\thttps://github.com/alice/koed.git (fetch)";
+    remoteUrl = "https://github.com/alice/koed.git";
     const second = await discoverProjectMetadata(paths, { cwd: repo }, deps);
 
     expect(second.project?.localProjectId).toBe(first.project?.localProjectId);
@@ -254,6 +261,18 @@ describe("Project metadata discovery", () => {
       first.project?.repository?.key
     );
     expect(second.project?.git).not.toHaveProperty("remoteAliases");
+
+    fetchUrlsAvailable = false;
+    const incomplete = await discoverProjectMetadata(
+      paths,
+      { cwd: repo },
+      deps
+    );
+    expect(incomplete.project?.repository).toMatchObject({
+      kind: "unresolved",
+      reason: "probe_failed",
+      key: null
+    });
   });
 
   it("shares the selected repository identity across distinct worktree checkouts", async () => {
@@ -277,6 +296,10 @@ describe("Project metadata discovery", () => {
       const responses: Record<string, string> = {
         "rev-parse --show-toplevel": target,
         "remote -v": "origin\thttps://github.com/koed-labs/koed.git (fetch)",
+        "remote get-url --all -- origin":
+          "https://github.com/koed-labs/koed.git",
+        "remote get-url --push --all -- origin":
+          "https://github.com/koed-labs/koed.git",
         "branch --show-current": "main",
         "rev-parse HEAD": "abcdef1234567890",
         "rev-parse --git-common-dir":
@@ -304,6 +327,7 @@ describe("Project metadata discovery", () => {
     expect(worktreeProject.project?.localProjectId).not.toBe(
       mainProject.project?.localProjectId
     );
+    expect(mainProject.project?.repository?.kind).toBe("portable_repository");
     expect(worktreeProject.project?.repository?.key).toBe(
       mainProject.project?.repository?.key
     );

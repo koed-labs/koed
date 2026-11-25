@@ -9,7 +9,8 @@ import {
   callLocalRuntimeTool,
   piRuntimeCallerContext,
   recordCaptureFolderContext,
-  createRuntimeTaskPort
+  createRuntimeTaskPort,
+  piSessionStartIsNewConversation
 } from "../runtime-client.mjs";
 import {
   isMemoryAnswerTaskId,
@@ -354,16 +355,11 @@ export default function koedExtension(pi) {
     sessionController?.abort();
     sessionController = new AbortController();
     try {
-      // Resumed or unrecognized history cannot acquire today's directory identity.
-      const entries = ctx.sessionManager.getEntries?.();
       await recordCaptureFolderContext(koedHome, {
         sourceKind: "pi",
         externalSessionId: ctx.sessionManager.getSessionId(),
         cwd: ctx.cwd,
-        newConversation:
-          event.reason === "new" &&
-          Array.isArray(entries) &&
-          !entries.some((entry) => entry.type === "message")
+        newConversation: piSessionStartIsNewConversation(event.reason)
       });
     } catch {
       /* Missing source-time provenance remains unresolved. */

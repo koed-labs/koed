@@ -143,6 +143,7 @@ function GeneralSection({
   launchAtStartup,
   cliInstall,
   onThemeChange,
+  teamCollaborationEnabled,
   theme
 }: Pick<
   PreferencesViewProps,
@@ -150,6 +151,7 @@ function GeneralSection({
   | "launchAtStartup"
   | "cliInstall"
   | "onThemeChange"
+  | "teamCollaborationEnabled"
   | "theme"
 >) {
   return (
@@ -170,7 +172,10 @@ function GeneralSection({
           <HardwareAccelerationSetting api={hardwareAcceleration} />
         </div>
       </section>
-      <CliInstallSettingsSection api={cliInstall} />
+      <CliInstallSettingsSection
+        api={cliInstall}
+        tools={teamCollaborationEnabled ? ["privacy", "cli"] : ["cli"]}
+      />
     </div>
   );
 }
@@ -1237,6 +1242,7 @@ export function PreferencesView({
               launchAtStartup={launchAtStartup}
               cliInstall={cliInstall}
               onThemeChange={onThemeChange}
+              teamCollaborationEnabled={teamCollaborationEnabled}
               theme={theme}
             />
           ) : null}

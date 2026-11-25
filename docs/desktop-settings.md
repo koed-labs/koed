@@ -8,9 +8,12 @@ General lists Appearance, On this device, and Optional tools, in that order.
 Appearance selects System, Light, or Dark. Device preferences include opening
 Koed at login, menu-bar visibility, and graphics acceleration when supported.
 Run setup again remains available when the installation supports it.
+On macOS, **Chief of Staff** is off by default. Turn it on to show Floating Kin
+and see [recent captured activity](floating-kin.md) without opening the main window.
 
-Optional tools contains Privacy Filter and Command line. Select either card to
-open its setup page in the right-hand settings pane. The parent-labelled back
+Optional tools always includes Command line. Privacy Filter appears when Desktop
+starts with `KOED_TEAM_COLLABORATION_ENABLED=true`. Select a card to open its
+setup page in the right-hand settings pane. The parent-labelled back
 button returns to General. Escape also goes back one level; Escape on the
 General overview closes settings.
 

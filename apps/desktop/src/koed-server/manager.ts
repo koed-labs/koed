@@ -13,6 +13,7 @@ import { modelProgressReader, type ModelProgress } from "./model-progress.js";
 import { createAccelerationController } from "./acceleration-controller.js";
 import { createOperationReceipt } from "./operation-receipt.js";
 import { selectDesktopRuntimeProvider } from "./runtime-provider.js";
+import { desktopTeamCollaborationValue } from "../ipc/desktop-feature-flags.js";
 import {
   accelerationChoiceSchema,
   accelerationInstallProgressSchema
@@ -36,7 +37,11 @@ import {
   loadNamedPersonalInventory,
   personalProjectsData
 } from "./personal-inventory.js";
-import { createProjectCommands } from "./project-commands.js";
+import { v1OwnerScope } from "../v1-state.js";
+import {
+  createProjectCommands,
+  type ProjectCommandsDeps
+} from "./project-commands.js";
 import { projectSelectionLookupResponseSchema } from "@koed-labs/shared/project-selection";
 import { createPrivacyInstallBridge } from "./privacy-install.js";
 import {
@@ -1557,10 +1562,8 @@ export const createKoedEnvironment = (
       ? {
           KOED_RUNTIME_MODE: valueOr("KOED_RUNTIME_MODE", "local-personal"),
           KOED_DEPENDENCY_MODE: dependencyMode,
-          KOED_TEAM_COLLABORATION_ENABLED: valueOr(
-            "KOED_TEAM_COLLABORATION_ENABLED",
-            "false"
-          ),
+          KOED_TEAM_COLLABORATION_ENABLED:
+            desktopTeamCollaborationValue(environment),
           WORK_QUEUE_BACKEND: valueOr("WORK_QUEUE_BACKEND", "local"),
           ...(options.packagedDesktop
             ? { KOED_PACKAGED_DESKTOP: valueOr("KOED_PACKAGED_DESKTOP", "1") }
@@ -3170,12 +3173,51 @@ export const createKoedServerManager = ({
     });
   };
 
+  const personalIdentityPath = "/v1/managed-conversations/access";
+  const fetchPersonalMemoryWithToken = (
+    apiToken: string,
+    url: URL,
+    init: RequestInit,
+    maxBytes: number
+  ) =>
+    fetchBoundedJsonObject(
+      personalMemoryFetch,
+      url,
+      {
+        ...init,
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${apiToken}`,
+          ...init.headers
+        }
+      },
+      { timeoutMs: 30_000, maxBytes }
+    );
+
+  const requirePersonalScope = (
+    expected: string,
+    origin: string,
+    owner: unknown
+  ) => {
+    if (
+      typeof owner !== "string" ||
+      !owner ||
+      owner.length > 512 ||
+      v1OwnerScope(origin, owner) !== expected
+    )
+      throw new PersonalMemoryBoundaryError("conflict", false);
+  };
+
   const authenticatedPersonalMemoryRequest = async (
     request: (access: { apiOrigin: string; apiToken: string }) => {
       url: URL;
       init: RequestInit;
     },
-    maximumResponseBytes: number
+    maximumResponseBytes: number,
+    expectedScopeKey?: string,
+    requireResponseOwner = false,
+    retry = true
   ): Promise<Record<string, unknown>> => {
     const perform = async (options?: {
       refreshOrigin?: boolean;
@@ -3184,22 +3226,39 @@ export const createKoedServerManager = ({
       const access = await personalMemoryAccess(options);
       const exactRequest = request(access);
       try {
-        return await fetchBoundedJsonObject(
-          personalMemoryFetch,
+        if (expectedScopeKey) {
+          // Verify the same origin and token used for this attempt, including retries.
+          const identity = await fetchPersonalMemoryWithToken(
+            access.apiToken,
+            new URL(personalIdentityPath, access.apiOrigin),
+            { method: "GET" },
+            64 * 1_024
+          );
+          if (!identity.response.ok) return identity;
+          requirePersonalScope(
+            expectedScopeKey,
+            access.apiOrigin,
+            objectValue(identity.payload.user)?.id
+          );
+        }
+        const remote = await fetchPersonalMemoryWithToken(
+          access.apiToken,
           exactRequest.url,
-          {
-            ...exactRequest.init,
-            redirect: "error",
-            headers: {
-              accept: "application/json",
-              authorization: `Bearer ${access.apiToken}`,
-              ...exactRequest.init.headers
-            }
-          },
-          { timeoutMs: 30_000, maxBytes: maximumResponseBytes }
+          exactRequest.init,
+          maximumResponseBytes
         );
-      } catch {
-        if (!options?.refreshOrigin) {
+        // Evidence carries an owner; source-context responses do not. Writes only
+        // use the preflight, so an ownerless receipt cannot fail after commit.
+        if (expectedScopeKey && requireResponseOwner && remote.response.ok)
+          requirePersonalScope(
+            expectedScopeKey,
+            access.apiOrigin,
+            remote.payload.ownerUserId
+          );
+        return remote;
+      } catch (cause) {
+        if (cause instanceof PersonalMemoryBoundaryError) throw cause;
+        if (retry && !options?.refreshOrigin) {
           return perform({ ...options, refreshOrigin: true });
         }
         throw new PersonalMemoryBoundaryError("request_failed", true);
@@ -3210,8 +3269,10 @@ export const createKoedServerManager = ({
     let response = remote.response;
     if (response.status === 401) {
       retainedPersonalApiToken = null;
-      remote = await perform({ refreshOrigin: true, refreshToken: true });
-      response = remote.response;
+      if (retry) {
+        remote = await perform({ refreshOrigin: true, refreshToken: true });
+        response = remote.response;
+      }
     }
     if (!response.ok) {
       const status = response.status;
@@ -3241,11 +3302,16 @@ export const createKoedServerManager = ({
 
   const repositoryReviewJson = (
     path: string,
-    init: RequestInit = { method: "GET" }
+    init: RequestInit = { method: "GET" },
+    expectedScopeKey?: string,
+    options?: { retry?: boolean }
   ) =>
     authenticatedPersonalMemoryRequest(
       ({ apiOrigin }) => ({ url: new URL(path, apiOrigin), init }),
-      2 * 1024 * 1024
+      2 * 1024 * 1024,
+      expectedScopeKey,
+      path === "/v1/personal/sessions/folder-hint-evidence",
+      options?.retry
     );
   const projectSelectionRequest = async (
     path: string,
@@ -3275,7 +3341,7 @@ export const createKoedServerManager = ({
       );
     return payload;
   };
-  const projectCommands = createProjectCommands({
+  const projectCommandDeps: ProjectCommandsDeps = {
     paths: resolveKoedServerPaths(environment),
     personalRequest: repositoryReviewJson,
     governanceRequest: projectSelectionRequest,
@@ -3289,7 +3355,8 @@ export const createKoedServerManager = ({
     listProjects: () => listPersonalProjects(),
     localProjects: () => localProjectMetadataData(environment).projects,
     requireAccess: () => personalMemoryAccess()
-  });
+  };
+  const projectCommands = createProjectCommands(projectCommandDeps);
 
   const requestPersonalInventory = (path: string) =>
     authenticatedPersonalMemoryRequest(
@@ -5117,6 +5184,18 @@ export const createKoedServerManager = ({
         return projectCommands.manageMembershipSync(request.input);
       case "personal.sources.manage":
         return projectCommands.manageSourceContext(request.input);
+      case "personal.folders.hints":
+      case "personal.folders.hints.confirm": {
+        const { expectedScopeKey, ...input } = request.input;
+        const scopedCommands = createProjectCommands({
+          ...projectCommandDeps,
+          personalRequest: (path, init, scopeKey) =>
+            repositoryReviewJson(path, init, expectedScopeKey ?? scopeKey)
+        });
+        return request.operation === "personal.folders.hints"
+          ? scopedCommands.folderHints(input)
+          : scopedCommands.confirmFolderHint(input);
+      }
       case "personal.projects.manage":
         return projectCommands.manage(request.input);
       case "personal.projects.create":
@@ -7066,21 +7145,22 @@ export const createKoedServerManager = ({
     },
     managedConversation,
     v1StateIdentity: async () => {
-      const [access, identity] = await Promise.all([
-        personalMemoryAccess(),
-        authenticatedPersonalMemoryRequest(
-          ({ apiOrigin }) => ({
-            url: new URL("/v1/managed-conversations/access", apiOrigin),
+      let origin = "";
+      const identity = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => {
+          origin = apiOrigin;
+          return {
+            url: new URL(personalIdentityPath, apiOrigin),
             init: { method: "GET" }
-          }),
-          64 * 1_024
-        )
-      ]);
+          };
+        },
+        64 * 1_024
+      );
       const user = objectValue(identity.user);
       if (typeof user?.id !== "string" || !user.id) {
         throw new PersonalMemoryBoundaryError("invalid_response", false);
       }
-      return { apiOrigin: access.apiOrigin, ownerUserId: user.id };
+      return { apiOrigin: origin, ownerUserId: user.id };
     },
     managedProject,
     discoverProject: (cwd) =>

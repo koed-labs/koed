@@ -37,7 +37,9 @@ function InstallSettings({
 }: SettingsProps & { api: CliInstallApi }) {
   const store = getInstallSetupStore(api);
   const state = useSyncExternalStore(store.subscribe, store.snapshot);
-  const [tool, setTool] = useState<InstallTool | null>(null);
+  const [requestedTool, setTool] = useState<InstallTool | null>(null);
+  const tool =
+    requestedTool && tools.includes(requestedTool) ? requestedTool : null;
   const selected = state[tool ?? "privacy"];
   useEffect(() => {
     void store.refresh();

@@ -7,6 +7,20 @@ import {
   type PersonalFolderObservation
 } from "@koed-labs/shared";
 
+/** Stable identity of one Folder observation on one Conversation. */
+export const folderObservationHash = (
+  observed: PersonalFolderObservation
+): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify({
+        identity: observed.identity,
+        normalizedPath: observed.normalizedPath,
+        capturedPath: observed.capturedPath
+      })
+    )
+    .digest("hex");
+
 /** Pin once, even when a logical Conversation gets a new physical Session row. */
 export const recordFolderObservation = async (
   client: pg.PoolClient,
@@ -73,14 +87,7 @@ export const recordFolderObservation = async (
     current ? personalFolderObservationSchema.parse(current) : undefined
   ]) {
     if (!observed) continue;
-    const evidence = {
-      identity: observed.identity,
-      normalizedPath: observed.normalizedPath,
-      capturedPath: observed.capturedPath
-    };
-    const hash = createHash("sha256")
-      .update(JSON.stringify(evidence))
-      .digest("hex");
+    const hash = folderObservationHash(observed);
     await client.query(
       `insert into session_folder_observations (session_id,owner_user_id,observation_hash,observation)
      values ($1,$2,$3,$4) on conflict (session_id,observation_hash) do nothing`,

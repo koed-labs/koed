@@ -3,7 +3,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/koed-logo-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/koed-logo.svg">
-  <img alt="Koed" src="docs/assets/koed-logo.svg" width="190" height="60">
+  <img alt="Koed" src="docs/assets/koed-logo.svg" width="186" height="60">
 </picture>
 
 ### Solve it once. Remember it for good.
@@ -160,6 +160,7 @@ and Project-only exclusions. **Add to Project** keeps recorded source context
 and Capture Targets independent. Projects are available directly; no existing-Project
 upgrade or activation step is required. See the
 [Personal selection contract](docs/personal-selection-contract.md).
+For practical steps, see [Organize Conversations without losing the source](docs/organizing-conversations.md).
 
 ## Security
 

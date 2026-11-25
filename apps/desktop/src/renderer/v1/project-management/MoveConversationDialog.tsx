@@ -1,10 +1,9 @@
-import { useEffect, useState } from "react";
-import { Badge, Button, Checkbox, DialogFooter } from "@koed-labs/ui";
-import { ChevronRight, CircleAlert, Folder, GitFork } from "lucide-react";
-import {
-  effective,
-  type SourceContextFact
-} from "../../views/personal/SourceContextCompare.js";
+import { useState } from "react";
+import { Button, DialogFooter } from "@koed-labs/ui";
+import { ChevronRight, CircleAlert, Folder } from "lucide-react";
+import type { DesktopProject } from "../../../project-memory-ui.js";
+import { Pixelkin } from "../pixelkin/Pixelkin.js";
+import { projectKinLook } from "../pixelkin/agent-kin.js";
 import { ProjectChoice, ProjectError, ProjectPopup } from "./controls.js";
 import {
   excludedMembership,
@@ -12,15 +11,22 @@ import {
   unresolvedMembership
 } from "./conversation-organization.js";
 import {
-  reviewSourceCorrections,
-  type CorrectionReview
-} from "./correction-review.js";
-import {
   projectErrorMessage,
   useOrganizationReview,
   type OrganizationDialogProps
 } from "./use-organization-review.js";
-import { sourceLabel } from "./source-label.js";
+
+const Kin = ({ project }: { project?: DesktopProject | undefined }) =>
+  project?.namedProject ? (
+    <Pixelkin
+      look={projectKinLook(project.id, project.namedProject.kin)}
+      size={18}
+      className="v1-pm-row-kin"
+      motion="still"
+    />
+  ) : (
+    <Folder size={14} />
+  );
 
 export function MoveConversationDialog(
   props: OrganizationDialogProps & { destinationId?: string }
@@ -33,51 +39,12 @@ export function MoveConversationDialog(
       )?.id ??
       ""
   );
-  const [keep, setKeep] = useState({ git: true, folder: true });
-  const [impact, setImpact] = useState<CorrectionReview>();
-  const [reviewing, setReviewing] = useState(false);
-  const [previewError, setPreviewError] = useState("");
   const source = review?.projects.find(
     (p) => p.id === props.target.sourceProjectId
   );
   const target = review?.memberships.find((p) => p.project.id === destination);
   const restore = !!target && excludedMembership(target.explanation);
   const blocked = !!target && unresolvedMembership(target.explanation);
-  useEffect(() => {
-    setImpact(undefined);
-    setPreviewError("");
-    if (!review) return;
-    const corrections = (["git", "folder"] as const)
-      .filter((axis) => !keep[axis])
-      .map((axis) => ({
-        axis,
-        action: "unresolved" as const,
-        expectedVersion: review.context[axis].revision
-      }));
-    if (!corrections.length) {
-      setReviewing(false);
-      return;
-    }
-    let current = true;
-    setReviewing(true);
-    void reviewSourceCorrections(props.api, review, corrections)
-      .then((result) => {
-        if (current) setImpact(result);
-      })
-      .catch((cause) => {
-        if (current) setPreviewError(projectErrorMessage(cause));
-      })
-      .finally(() => {
-        if (current) setReviewing(false);
-      });
-    return () => {
-      current = false;
-    };
-  }, [props.api, review, keep]);
-  const lost =
-    impact?.projects.filter(
-      (p) => p.before && !p.after && p.id !== source?.id && p.id !== destination
-    ) ?? [];
   return (
     <ProjectPopup
       title="Move Conversation"
@@ -89,9 +56,10 @@ export function MoveConversationDialog(
       {review && (
         <div className="v1-pm-form-stack">
           <div className="v1-pm-move-path">
-            <Folder size={14} />
+            <Kin project={source} />
             <span>{source?.name ?? "Without a Project"}</span>
             <ChevronRight size={14} />
+            {target && <Kin project={target.project} />}
             <span>{target?.project.name ?? "Select a Project"}</span>
           </div>
           <div className="v1-pm-field">
@@ -114,59 +82,15 @@ export function MoveConversationDialog(
                 : "Previously excluded"}
             </div>
           )}
-          <fieldset className="v1-pm-move-tags" disabled={busy}>
-            <legend>Keep source tags</legend>
-            <div className="v1-pm-list">
-              {(["folder", "git"] as const).map((axis) => {
-                const fact = effective<SourceContextFact>(review.context[axis]);
-                const label = axis === "folder" ? "Folder" : "Git Anchor";
-                const Icon = axis === "folder" ? Folder : GitFork;
-                return (
-                  <label className="v1-pm-choice-row" key={axis}>
-                    <Checkbox
-                      aria-label={`Keep ${label} tag`}
-                      checked={fact.state === "known" && keep[axis]}
-                      disabled={busy || fact.state !== "known"}
-                      onCheckedChange={(checked) =>
-                        setKeep((prev) => ({ ...prev, [axis]: checked }))
-                      }
-                    />
-                    <Icon />
-                    <span className="v1-pm-row-copy">
-                      <b>{label}</b>
-                      <small>
-                        {fact.state === "known"
-                          ? sourceLabel(fact, props.projects)
-                          : "None"}
-                      </small>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </fieldset>
-          {reviewing && <p role="status">Reviewing source changes…</p>}
-          {lost.length > 0 && (
-            <div className="v1-pm-impact">
-              <span>Also leaves</span>
-              {lost.map((p) => (
-                <Badge variant="outline" key={p.id}>
-                  {p.name}
-                </Badge>
-              ))}
-            </div>
-          )}
         </div>
       )}
-      <ProjectError error={error || previewError} />
+      <ProjectError error={error} />
       <DialogFooter>
         <Button variant="outline" disabled={busy} onClick={props.onClose}>
           Cancel
         </Button>
         <Button
-          disabled={
-            !review || !target || blocked || busy || reviewing || !!previewError
-          }
+          disabled={!review || !target || blocked || busy}
           onClick={() => {
             if (!review) return;
             try {
@@ -174,7 +98,7 @@ export function MoveConversationDialog(
                 review,
                 props.target.sourceProjectId,
                 destination,
-                { restore, removeGit: !keep.git, removeFolder: !keep.folder }
+                { restore }
               );
               if (edit) void apply(edit, destination);
               else props.onClose();

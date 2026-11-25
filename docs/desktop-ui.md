@@ -15,11 +15,18 @@ For an installation affected by an older failed Codex verification record,
 rerunning the final local verification refreshes that record.
 
 The sidebar shows the current User's Project inventory, including Conversations
-captured from supported AI Clients, including previously managed Conversations. Search, pinned
-Conversations, expandable Projects, and navigation history share the same
-Conversation pane. On narrow windows, the sidebar opens as a drawer. While
-services or inventory are loading, the sidebar shows that state rather than an
-empty Conversation list.
+captured from supported AI Clients, including previously managed Conversations.
+The sidebar provides search, expandable Projects, and navigation history. On
+narrow windows, it opens as a drawer. While services or inventory are loading,
+the sidebar shows that state rather than an empty Conversation list.
+
+**Pinned** holds both named Projects and Conversations. From a named Project's
+ellipsis menu, choose **Pin Project** or **Unpin Project**; **Project settings**
+is in the same menu. Selecting a pinned Project jumps to and expands its row in
+**Projects**, even if it has no Conversations. You can also unpin it directly
+from **Pinned**. Pinned Conversations still open directly. Pins are saved locally
+for the current account and backend. They do not sync or change Project
+membership or access.
 
 Navigation, Settings, and setup use the positive mark in light mode and the
 negative mark in dark mode. The app and Dock use the color mark on an inset
@@ -43,6 +50,8 @@ paired Personal devices.
 Project settings also manages names, source rules, Conversation membership, and
 Personal Device sync. Sync review remains available when Conversation membership
 cannot be loaded. Settings blocks edits until a complete membership review loads.
+Saving from the **Conversations** tab keeps Settings open and reloads the saved
+Project so you can continue editing.
 Dragging a Conversation to a Project moves its membership
 from the source Project to the destination; other named memberships remain.
 Folder and Git Anchor references stay intact unless the User explicitly removes

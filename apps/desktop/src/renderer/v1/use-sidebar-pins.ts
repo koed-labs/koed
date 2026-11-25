@@ -30,7 +30,7 @@ export function useSidebarPins(scopeKey: string | null) {
   const pins = state.scope === scopeKey ? state.pins : [];
   const toggle = useCallback(
     (key: string, aliases: readonly string[]) => {
-      if (!scopeKey || state.scope !== scopeKey) return;
+      if (!scopeKey || state.scope !== scopeKey) return false;
       const next = state.pins.some((id) => aliases.includes(id))
         ? state.pins.filter((id) => !aliases.includes(id))
         : [...state.pins, key];
@@ -41,8 +41,10 @@ export function useSidebarPins(scopeKey: string | null) {
         );
         setState({ scope: scopeKey, pins: next });
         setError(null);
+        return true;
       } catch {
         setError("Your pin could not be saved. Please try again.");
+        return false;
       }
     },
     [scopeKey, state]

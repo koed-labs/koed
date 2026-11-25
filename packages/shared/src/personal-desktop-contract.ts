@@ -64,13 +64,35 @@ export {
   personalProjectCommandSchema,
   personalProjectCommandResultSchema
 } from "./personal-project-contract.js";
+import {
+  personalFolderHintConfirmDataSchema,
+  personalFolderHintConfirmRequestSchema,
+  personalFolderHintRequestSchema,
+  personalFolderHintsDataSchema
+} from "./personal-folder-hint-contract.js";
+export {
+  PERSONAL_FOLDER_HINT_BATCH_SIZE,
+  personalFolderHintConfirmRequestSchema,
+  personalFolderHintRequestSchema
+} from "./personal-folder-hint-contract.js";
 import { z } from "zod";
 export { personalProjectKinSchema } from "./personal-project-kin.js";
 import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 29;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 35;
+export const personalDesktopFolderHintInputSchema =
+  personalFolderHintRequestSchema.extend({
+    expectedScopeKey: z.string().regex(/^[0-9a-f]{64}$/u)
+  });
+const personalDesktopFolderHintConfirmInputSchema =
+  personalFolderHintConfirmRequestSchema.extend({
+    expectedScopeKey: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .optional()
+  });
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -768,6 +790,20 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.folders.hints"),
+      input: personalDesktopFolderHintInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.folders.hints.confirm"),
+      input: personalDesktopFolderHintConfirmInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.projects.sync"),
       input: personalMembershipSyncCommandSchema
     })
@@ -1061,6 +1097,24 @@ export const personalDesktopResultSchema = z.union([
     })
     .strict(),
   failedResult("personal.folders.local.prepare"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.folders.hints"),
+      ok: z.literal(true),
+      data: personalFolderHintsDataSchema
+    })
+    .strict(),
+  failedResult("personal.folders.hints"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.folders.hints.confirm"),
+      ok: z.literal(true),
+      data: personalFolderHintConfirmDataSchema
+    })
+    .strict(),
+  failedResult("personal.folders.hints.confirm"),
   z
     .object({
       ...resultBase,
@@ -1406,6 +1460,12 @@ export interface PersonalDesktopApi {
   listProjects: () => Promise<PersonalDesktopProject[]>;
   listNamedProjects?: () => Promise<PersonalDesktopProject[]>;
   projectStatus?: () => Promise<{ reconciliationPending: boolean }>;
+  folderHints?: (
+    input: z.infer<typeof personalDesktopFolderHintInputSchema>
+  ) => Promise<z.infer<typeof personalFolderHintsDataSchema>["hints"]>;
+  confirmFolderHint?: (
+    input: z.infer<typeof personalDesktopFolderHintConfirmInputSchema>
+  ) => Promise<z.infer<typeof personalFolderHintConfirmDataSchema>>;
   listLocalFolders?: () => Promise<
     z.infer<typeof personalFolderObservationSchema>[]
   >;

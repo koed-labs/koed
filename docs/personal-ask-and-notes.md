@@ -228,6 +228,10 @@ access without changing the Personal Note, its Memory Event, or Personal Ask.
 
 ## Desktop and runtime boundary
 
+[Floating Kin](floating-kin.md) does not use Desktop Ask or create an Ask thread.
+It uses a separate, read-only runtime route for its fixed Conversation and
+Project summaries.
+
 The renderer uses Personal Desktop contract version 7. It can request fixed
 Ask list, detail, and submit operations. It can request fixed Note create,
 list, detail, title-rename, and body-update operations. Note creation and body

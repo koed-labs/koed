@@ -117,6 +117,12 @@ The selected repository identity used to associate Conversations across matching
 clones and worktrees. It grants no Team or Workspace Access.
 _Avoid_: Project membership, all remote aliases, sharing permission
 
+**Kin**:
+A Koed companion that represents a Project or helps a User make sense of recent
+captured work. It reflects what Koed has captured, not what an AI Client is
+currently doing, and does not control a Conversation.
+_Avoid_: Live agent monitor, Conversation owner
+
 **Koed**:
 The Apache-2.0-licensed Koed distribution for operator-managed memory
 infrastructure.
@@ -385,6 +391,12 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   logical lifespan of **Memory**
 - A **Conversation** retains its original recorded **Git Anchor** and **Folder**
   context until an explicit correction changes its matching assignment
+- Koed records a **Git Anchor** itself only for a **Conversation** whose original
+  **Git Anchor** is unresolved and never corrected, when its recorded directory
+  still exists on the device of confirmed or assumed recording origin, predates
+  the **Conversation**, and has that **Git Anchor's** remote today. A historical
+  import from the device's local **AI Client** history may support assumed, not
+  verified, origin; known copies do not. A **Folder** is never recorded this way
 - **Recall** through a **Git Anchor** or **Folder** does not automatically
   include unrelated members of a named **Project**
 - An **AI Client** produces one or more **Conversations**

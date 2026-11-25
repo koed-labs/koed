@@ -64,7 +64,8 @@ const requiredCapabilityForFlow: Record<
 
 const capabilityIsReady = (
   snapshot: AssignedSnapshot,
-  flowKey: LocalMemoryAgentFlowKey
+  flowKey: LocalMemoryAgentFlowKey,
+  recheckAuthentication: boolean
 ): boolean => {
   const descriptors = snapshot.capabilities.descriptors;
   if (!descriptors || typeof descriptors !== "object") return false;
@@ -73,7 +74,11 @@ const capabilityIsReady = (
   const descriptor = (descriptors as Record<string, unknown>)[capabilityId];
   if (!descriptor || typeof descriptor !== "object") return false;
   const value = descriptor as Record<string, unknown>;
-  return value.support === "supported" && value.readiness === "ready";
+  return (
+    value.support === "supported" &&
+    (value.readiness === "ready" ||
+      (recheckAuthentication && value.readiness === "not_ready"))
+  );
 };
 
 const validateInstance = (
@@ -102,7 +107,8 @@ const validateSnapshot = (
   setting: LocalMemoryAgentSettingRecord,
   instances: AssignedInstance[],
   snapshots: AssignedSnapshot[],
-  now: number
+  now: number,
+  verifyNativeCodexAuth: boolean
 ): AssignedSnapshot => {
   const snapshot = snapshots.find(
     (candidate) => candidate.instanceId === setting.aiClientInstanceId
@@ -123,15 +129,20 @@ const validateSnapshot = (
       `AI Client instance "${setting.aiClientInstanceId}" capability snapshot is stale or unavailable`
     );
   }
+  // The legacy Codex probe uses a temporary profile and may miss Keychain sign-in.
+  const recheckAuthentication =
+    verifyNativeCodexAuth &&
+    setting.provider === "codex" &&
+    snapshot.authenticationState === "unauthenticated";
   if (
     snapshot.healthState !== "healthy" ||
-    snapshot.authenticationState !== "authenticated"
+    (snapshot.authenticationState !== "authenticated" && !recheckAuthentication)
   ) {
     blocked(
       `AI Client instance "${setting.aiClientInstanceId}" is not healthy and authenticated`
     );
   }
-  if (!capabilityIsReady(snapshot, setting.flowKey)) {
+  if (!capabilityIsReady(snapshot, setting.flowKey, recheckAuthentication)) {
     const capabilityId =
       aiClientCapabilityIds[requiredCapabilityForFlow[setting.flowKey]];
     blocked(
@@ -165,11 +176,18 @@ const validateAssignment = (
   setting: LocalMemoryAgentSettingRecord,
   instances: AssignedInstance[],
   snapshots: AssignedSnapshot[],
-  now = Date.now()
-): void => {
+  verifyNativeCodexAuth: boolean
+): AssignedSnapshot => {
   validateInstance(setting, instances);
-  const snapshot = validateSnapshot(setting, instances, snapshots, now);
+  const snapshot = validateSnapshot(
+    setting,
+    instances,
+    snapshots,
+    Date.now(),
+    verifyNativeCodexAuth
+  );
   validateModel(setting, snapshot);
+  return snapshot;
 };
 
 export const resolveLocalMemoryAgentConfig = async <T>(input: {
@@ -178,8 +196,13 @@ export const resolveLocalMemoryAgentConfig = async <T>(input: {
     "listLocalMemoryAgentSettings" | "listAiClientInstances"
   >;
   flowKey: LocalMemoryAgentFlowKey;
+  /** The caller must verify account access in the configured Codex profile before running. */
+  verifyNativeCodexAuth?: true;
   fallback: () => T;
-  fromSetting: (setting: LocalMemoryAgentSettingRecord) => T;
+  fromSetting: (
+    setting: LocalMemoryAgentSettingRecord,
+    snapshot: AssignedSnapshot
+  ) => T;
 }): Promise<T> => {
   let settings: { settings: LocalMemoryAgentSettingRecord[] };
   try {
@@ -203,6 +226,11 @@ export const resolveLocalMemoryAgentConfig = async <T>(input: {
       { cause: error }
     );
   }
-  validateAssignment(setting, current.instances, current.capabilitySnapshots);
-  return input.fromSetting(setting);
+  const snapshot = validateAssignment(
+    setting,
+    current.instances,
+    current.capabilitySnapshots,
+    input.verifyNativeCodexAuth === true
+  );
+  return input.fromSetting(setting, snapshot);
 };

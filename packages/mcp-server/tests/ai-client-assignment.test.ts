@@ -72,6 +72,21 @@ const clientFor = (
 });
 
 describe("AI Client assignment revalidation", () => {
+  it("passes the validated capability snapshot to the assigned config factory", async () => {
+    const client = clientFor("claude");
+    const current = await client.listAiClientInstances();
+    client.listAiClientInstances.mockResolvedValue(current);
+
+    await expect(
+      resolveLocalMemoryAgentConfig({
+        client,
+        flowKey: "mcp_memory_answer",
+        fallback: () => null,
+        fromSetting: (_setting, snapshot) => snapshot
+      })
+    ).resolves.toBe(current.capabilitySnapshots[0]);
+  });
+
   it("validates a native Codex model ID when the capability also has a qualified full ID", async () => {
     const client = clientFor("codex");
     const settings = await client.listLocalMemoryAgentSettings();

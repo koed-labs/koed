@@ -1,0 +1,1198 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
+import { resolve } from "node:path";
+import { setTimeout } from "node:timers/promises";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ensureDeviceIdentity,
+  hintsForConversation,
+  resolveKoedServerPaths
+} from "@koed-labs/server";
+import {
+  inspectDeviceIdentityAtKoedHome,
+  normalizeGitRemoteUrl,
+  PERSONAL_DESKTOP_CONTRACT_VERSION,
+  type PersonalDesktopRequest
+} from "@koed-labs/shared";
+import { v1OwnerScope } from "../v1-state.js";
+import { createKoedServerManager } from "./manager.js";
+import {
+  createProjectCommands,
+  type ProjectCommandsDeps
+} from "./project-commands.js";
+import {
+  createProjectManagementValidationApi,
+  validationId,
+  validationOwner
+} from "../project-management-validation-api.js";
+
+vi.mock("@koed-labs/server", async (original) => ({
+  ...(await original<typeof import("@koed-labs/server")>()),
+  hintsForConversation: vi.fn()
+}));
+
+vi.mock("@koed-labs/shared", async (original) => ({
+  ...(await original<typeof import("@koed-labs/shared")>()),
+  inspectDeviceIdentityAtKoedHome: vi.fn()
+}));
+
+const sessionId = validationId(108);
+const folder = {
+  ownerUserId: validationOwner,
+  folderId: "same-id",
+  originatingDeploymentId: "deployment",
+  originatingDeviceId: "device",
+  originatingProfileId: "profile",
+  directoryIncarnationId: "reviewed"
+};
+const input = { sessionId, kind: "worktree-parent", folder };
+const candidate = {
+  tier: "medium",
+  kind: "worktree-parent",
+  folder,
+  score: 4,
+  reasons: []
+} satisfies NonNullable<
+  Awaited<ReturnType<typeof hintsForConversation>>
+>[number];
+const score = vi.mocked(hintsForConversation);
+const repository = {
+  kind: "portable_repository",
+  key: "remote",
+  root: "/work/branch",
+  branch: null,
+  reason: "origin",
+  checkoutId: null,
+  originatingDeviceId: "device",
+  selectedRemote: "origin",
+  anchorDisplay: "example.test/owner/repo"
+} as const;
+const gitCandidate = {
+  tier: "medium",
+  kind: "repository",
+  directory: "/work/branch",
+  repositoryKey: repository.key,
+  score: 4,
+  reasons: [
+    { code: "recorded-cwd", outcome: "agrees" },
+    { code: "local-directory", outcome: "agrees" },
+    { code: "origin-device", outcome: "unavailable" },
+    { code: "directory-birthtime", outcome: "agrees" },
+    { code: "git-directory-birthtime", outcome: "agrees" },
+    { code: "directory-remote", outcome: "agrees" }
+  ]
+} satisfies NonNullable<
+  Awaited<ReturnType<typeof hintsForConversation>>
+>[number];
+
+function setup(
+  knownFolders = [folder],
+  evidence: Record<string, unknown> = {}
+) {
+  const { contexts } = createProjectManagementValidationApi();
+  const request = vi.fn(async (_path: string, init?: RequestInit) => ({
+    ...(JSON.parse(String(init?.body)).proposedFolders ? { knownFolders } : {}),
+    ownerUserId: validationOwner,
+    evidence: [
+      {
+        sessionId,
+        folderAssignment: contexts.get(sessionId)!.folder,
+        recordedCwd: "/work/branch",
+        firstConversationAt: null,
+        recordedRemoteFingerprint: null,
+        capturedOnThisDevice: true,
+        gitRevision: 3,
+        ...evidence
+      }
+    ]
+  }));
+  const commands = createProjectCommands({
+    personalRequest: request,
+    paths: { koedHome: "/koed-home" },
+    lookup: {}
+  } as unknown as ProjectCommandsDeps);
+  return {
+    request,
+    confirm: commands.confirmFolderHint,
+    hints: commands.folderHints
+  };
+}
+
+function setupGitReview({
+  target = repository,
+  startedAt = "2024-01-01T00:00:00.000Z",
+  paths,
+  importAuthority,
+  recordingDevice = false,
+  gitUnknownReviewEligible = !importAuthority && !recordingDevice
+}: {
+  target?: { key: string; root: string };
+  startedAt?: string;
+  paths?: ProjectCommandsDeps["paths"];
+  importAuthority?: { deploymentId: string; deviceId: string };
+  recordingDevice?: boolean;
+  gitUnknownReviewEligible?: boolean;
+} = {}) {
+  const fixture = createProjectManagementValidationApi();
+  const context = fixture.contexts.get(sessionId)!;
+  const evidence = {
+    sessionId,
+    folderAssignment: recordingDevice
+      ? {
+          ...context.folder,
+          original: {
+            state: "known",
+            value: {
+              reference: folder,
+              normalizedPath: target.root,
+              capturedPath: target.root
+            }
+          }
+        }
+      : context.folder,
+    recordedCwd: target.root,
+    firstConversationAt: startedAt,
+    recordedRemoteFingerprint: null,
+    capturedOnThisDevice: false,
+    gitInferenceEligibility: true,
+    gitUnknownReviewEligible,
+    recordingDeviceProvenance: recordingDevice
+      ? "recording-device"
+      : importAuthority
+        ? "assumed-local-import"
+        : "unknown",
+    importAuthority: importAuthority && {
+      ...importAuthority,
+      artifactId: validationId(910),
+      importSourceId: validationId(911),
+      startedAt
+    },
+    gitRevision: 1
+  };
+  const request = vi.fn(
+    async (path: string, _init?: RequestInit, _scope?: string) => {
+      if (path.endsWith("/folder-hint-evidence")) {
+        return { ownerUserId: validationOwner, evidence: [evidence] };
+      }
+      return {
+        context,
+        preview: {
+          reviewId: validationId(900),
+          axis: "git",
+          expectedVersion: 1,
+          before: context,
+          after: {
+            ...context,
+            git: {
+              ...context.git,
+              correction: {
+                state: "corrected",
+                value: { state: "known", value: { ...repository, ...target } },
+                revisionId: validationId(901)
+              },
+              revision: 2
+            }
+          },
+          projects: [],
+          inferenceIntent: recordingDevice
+            ? "recording-device"
+            : importAuthority
+              ? "assumed-local-import"
+              : "user-confirmed-unknown"
+        }
+      };
+    }
+  );
+  const commands = () =>
+    createProjectCommands({
+      personalRequest: request,
+      paths,
+      lookup: vi.fn()
+    } as unknown as ProjectCommandsDeps);
+  return {
+    evidence,
+    request,
+    manage: commands().manageSourceContext,
+    hints: commands().folderHints,
+    restart: () => commands().manageSourceContext
+  };
+}
+
+beforeEach(() => {
+  score.mockReset();
+  vi.mocked(inspectDeviceIdentityAtKoedHome).mockReset();
+});
+
+const identifiableGitCandidate = {
+  ...gitCandidate,
+  directoryIncarnation: "reviewed-incarnation",
+  gitCheckoutIncarnation: "reviewed-git-incarnation"
+};
+
+const expectedScopeKey = "a".repeat(64);
+const guardedPreview = {
+  expectedScopeKey,
+  reviewedCheckout: {
+    directory: "/work/branch",
+    incarnation: createHash("sha256")
+      .update(
+        JSON.stringify([
+          identifiableGitCandidate.directoryIncarnation,
+          identifiableGitCandidate.gitCheckoutIncarnation
+        ])
+      )
+      .digest("hex")
+  },
+  sessionId,
+  action: "preview",
+  correction: {
+    axis: "git",
+    action: "set",
+    repository,
+    expectedVersion: 1,
+    inferenceIntent: "user-confirmed-unknown"
+  }
+} as const;
+
+const assumedLocalPreview = {
+  expectedScopeKey,
+  sessionId,
+  action: "preview",
+  correction: {
+    ...guardedPreview.correction,
+    inferenceIntent: "assumed-local-import"
+  }
+};
+
+async function reviewedCheckout(
+  hints: ReturnType<typeof setupGitReview>["hints"]
+) {
+  const { hints: candidates } = await hints({ sessionIds: [sessionId] });
+  const hint = candidates.find(({ manualGitReview }) => manualGitReview);
+  if (!hint?.directory || !hint.manualGitReview)
+    throw new Error("Expected a manual Git review with a directory");
+  return {
+    directory: hint.directory,
+    incarnation: hint.manualGitReview.incarnation
+  };
+}
+
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+const createGitCheckout = (cwd: string, remote: string) => {
+  mkdirSync(cwd);
+  git(cwd, "init", "-q");
+  git(cwd, "remote", "add", "origin", remote);
+};
+
+async function setupLinkedCheckout(
+  root: string,
+  directory: string,
+  replacement: string,
+  remote: string
+) {
+  const seed = resolve(root, "seed");
+  createGitCheckout(seed, remote);
+  git(
+    seed,
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.test",
+    "commit",
+    "-qm",
+    "initial",
+    "--allow-empty"
+  );
+  git(seed, "worktree", "add", "--quiet", "--detach", directory);
+  const gitDir = git(directory, "rev-parse", "--absolute-git-dir");
+  const start =
+    Math.ceil(
+      Math.max(statSync(directory).birthtimeMs, statSync(gitDir).birthtimeMs)
+    ) + 1;
+  await setTimeout(25);
+  const commonDir = resolve(root, "common");
+  cpSync(resolve(seed, ".git"), commonDir, { recursive: true });
+  cpSync(commonDir, replacement, { recursive: true });
+  writeFileSync(resolve(gitDir, "commondir"), `${commonDir}\n`);
+  expect(statSync(commonDir).birthtimeMs).toBeGreaterThan(start);
+  return start;
+}
+
+async function setupReplaceableGitReview(
+  root: string,
+  assumedLocal = false,
+  linked = false
+) {
+  const directory = resolve(root, "reviewed");
+  const replacement = resolve(root, "replacement");
+  const remote = "https://github.com/acme/history.git";
+  if (!linked)
+    for (const cwd of [directory, replacement]) createGitCheckout(cwd, remote);
+  const start = linked
+    ? await setupLinkedCheckout(root, directory, replacement, remote)
+    : Date.now() + 1_000;
+  const environment = { NODE_ENV: "test", KOED_HOME: resolve(root, "profile") };
+  const paths = resolveKoedServerPaths(environment);
+  const identity = await ensureDeviceIdentity(paths, { environment });
+  const importAuthority = assumedLocal
+    ? {
+        deploymentId: identity.deploymentId!,
+        deviceId: identity.deviceInstanceId!
+      }
+    : undefined;
+  if (assumedLocal)
+    vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue(identity);
+  const target = {
+    ...repository,
+    root: directory,
+    key: normalizeGitRemoteUrl(remote).fingerprint!
+  };
+  const { hintsForConversation: realScore } =
+    await vi.importActual<typeof import("@koed-labs/server")>(
+      "@koed-labs/server"
+    );
+  score.mockImplementation((paths, conversation, options) =>
+    realScore(paths, conversation, {
+      ...options,
+      environment,
+      now: () => start + 1_000
+    })
+  );
+  return {
+    ...setupGitReview({
+      target,
+      startedAt: new Date(start).toISOString(),
+      paths,
+      importAuthority
+    }),
+    directory,
+    replacement,
+    target
+  };
+}
+
+async function setupGuardedApplyThroughManager(
+  root: string,
+  failFirstApply: () => Response
+) {
+  const checkout = await setupReplaceableGitReview(root);
+  const koedHome = resolve(root, "profile");
+  const origin = "http://127.0.0.1:4170";
+  mkdirSync(resolve(koedHome, "config"), { recursive: true });
+  writeFileSync(
+    resolve(koedHome, "config/local-app-credential.json"),
+    JSON.stringify({ apiToken: "local_app_token" })
+  );
+  let applyAttempts = 0;
+  const manager = createKoedServerManager({
+    repoRoot: "/repo",
+    cliPath: "/repo/cli.js",
+    environment: { KOED_HOME: koedHome },
+    createCliInvocation: (args) => ({
+      command: "/node",
+      args,
+      env: { KOED_HOME: koedHome }
+    }),
+    existsSync: () => true,
+    execFile: (_command, _args, _options, callback) =>
+      callback(
+        null,
+        JSON.stringify({ ok: true, api: { state: "healthy", url: origin } }),
+        ""
+      ),
+    spawn: () => {
+      throw new Error("Unexpected server spawn");
+    },
+    openExternal: async () => undefined,
+    personalMemoryFetch: async (input, init) => {
+      const { pathname } = new URL(String(input));
+      if (pathname === "/v1/managed-conversations/access")
+        return Response.json({ user: { id: validationOwner } });
+      if (pathname.endsWith("/apply") && ++applyAttempts === 1) {
+        renameSync(checkout.directory, resolve(root, "retired"));
+        renameSync(checkout.replacement, checkout.directory);
+        return failFirstApply();
+      }
+      return Response.json(await checkout.request(pathname, init));
+    }
+  });
+  type Input = Extract<
+    PersonalDesktopRequest,
+    { operation: "personal.sources.manage" }
+  >["input"];
+  const command = (input: Input) =>
+    manager.personalMemory({
+      contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+      operation: "personal.sources.manage",
+      input: {
+        ...input,
+        expectedScopeKey: v1OwnerScope(origin, validationOwner)
+      }
+    });
+  return { ...checkout, command, applyAttempts: () => applyAttempts };
+}
+
+describe("Git inference confirmation", () => {
+  it.each(["transport error", "401"])(
+    "never replays a guarded Git apply after a %s replaces the checkout",
+    async (failure) => {
+      const parent = resolve(import.meta.dirname, "../../../../scratch");
+      mkdirSync(parent, { recursive: true });
+      const root = mkdtempSync(resolve(parent, "git-review-retry-"));
+      try {
+        const { applyAttempts, command, hints, target } =
+          await setupGuardedApplyThroughManager(root, () => {
+            if (failure === "401") return Response.json({}, { status: 401 });
+            throw new TypeError("fetch failed");
+          });
+        await expect(
+          command({
+            ...guardedPreview,
+            correction: { ...guardedPreview.correction, repository: target },
+            reviewedCheckout: await reviewedCheckout(hints)
+          })
+        ).resolves.toMatchObject({ ok: true });
+        const apply = () =>
+          command({
+            action: "apply",
+            sessionId,
+            reviewId: validationId(900),
+            expectedVersion: 1
+          });
+        await expect(apply()).resolves.toMatchObject(
+          failure === "401"
+            ? { ok: false, error: { code: "not_ready" } }
+            : { ok: false, error: { code: "request_failed" } }
+        );
+        expect(applyAttempts()).toBe(1);
+        await expect(apply()).resolves.toMatchObject({ ok: false });
+        expect(applyAttempts()).toBe(1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+  it("binds the assumed-local import to both current Desktop authority IDs", async () => {
+    const importAuthority = { deploymentId: "deployment", deviceId: "device" };
+    const { evidence, hints, manage, request } = setupGitReview({
+      paths: { koedHome: "/koed-home" } as ProjectCommandsDeps["paths"],
+      importAuthority
+    });
+    const identity = (deploymentId: string, deviceInstanceId: string) => {
+      vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+        remoteOperationsAllowed: true,
+        deploymentId,
+        deviceInstanceId
+      } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+    };
+    score.mockResolvedValue([identifiableGitCandidate]);
+    identity("deployment", "other-device");
+    const elsewhere = await hints({ sessionIds: [sessionId] });
+    expect(elsewhere.hints[0]).toMatchObject({
+      recordingDeviceProvenance: "unknown"
+    });
+    expect(elsewhere.hints[0]).not.toHaveProperty("manualGitReview");
+    await expect(manage(assumedLocalPreview)).rejects.toThrow(
+      "no longer matches"
+    );
+    identity("deployment", "device");
+    await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+      hints: [
+        {
+          recordingDeviceProvenance: "assumed-local-import",
+          manualGitReview: {
+            intent: "assumed-local-import",
+            incarnation: expect.any(String)
+          }
+        }
+      ]
+    });
+    expect(score.mock.lastCall?.[1]).toMatchObject({ originDeviceId: null });
+    await manage(assumedLocalPreview);
+    const scopedCalls = request.mock.calls.slice(-2);
+    expect(
+      scopedCalls.map(([path, , scope]) => [path.split("/").at(-1), scope])
+    ).toEqual([
+      ["folder-hint-evidence", expectedScopeKey],
+      ["reviews", expectedScopeKey]
+    ]);
+    expect(JSON.parse(scopedCalls[1]![1]!.body as string)).toMatchObject({
+      localImportBasis: evidence.importAuthority
+    });
+    identity("other-deployment", "device");
+    await expect(
+      manage({
+        sessionId,
+        action: "apply",
+        reviewId: validationId(900),
+        expectedVersion: 1,
+        expectedScopeKey
+      })
+    ).rejects.toThrow("no longer matches");
+    expect(request.mock.calls.some(([path]) => path.endsWith("/apply"))).toBe(
+      false
+    );
+  });
+
+  it.each([
+    "missing scope",
+    "different scope",
+    "artifactId",
+    "importSourceId",
+    "startedAt",
+    "unchanged"
+  ])(
+    "requires the reviewed scope and import basis at apply: %s",
+    async (change) => {
+      const { evidence, manage, request } = setupGitReview({
+        paths: { koedHome: "/koed-home" } as ProjectCommandsDeps["paths"],
+        importAuthority: { deploymentId: "deployment", deviceId: "device" }
+      });
+      vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+        remoteOperationsAllowed: true,
+        deploymentId: "deployment",
+        deviceInstanceId: "device"
+      } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+      score.mockResolvedValue([identifiableGitCandidate]);
+      await manage(assumedLocalPreview);
+      if (
+        change === "artifactId" ||
+        change === "importSourceId" ||
+        change === "startedAt"
+      )
+        evidence.importAuthority![change] =
+          change === "startedAt"
+            ? "2024-01-01T00:00:00.000001Z"
+            : validationId(912);
+      const apply = manage({
+        action: "apply",
+        sessionId,
+        reviewId: validationId(900),
+        expectedVersion: 1,
+        expectedScopeKey:
+          change === "missing scope"
+            ? undefined
+            : change === "different scope"
+              ? "b".repeat(64)
+              : expectedScopeKey
+      });
+      const applyCalls = () =>
+        request.mock.calls.filter(([path]) => path.endsWith("/apply"));
+      if (change === "unchanged") {
+        await apply;
+        expect(
+          request.mock.calls.slice(-2).map(([, , scope]) => scope)
+        ).toEqual([expectedScopeKey, expectedScopeKey]);
+        expect(applyCalls()).toHaveLength(1);
+      } else {
+        await expect(apply).rejects.toThrow("no longer matches");
+        expect(applyCalls()).toHaveLength(0);
+      }
+    }
+  );
+
+  it.each([{ repositoryKey: "changed" }, { directory: "/other/checkout" }])(
+    "rechecks the exact repository against current evidence again at apply: %j",
+    async (changed) => {
+      const { manage, request } = setupGitReview();
+      score
+        .mockResolvedValueOnce([identifiableGitCandidate])
+        .mockResolvedValueOnce([{ ...identifiableGitCandidate, ...changed }]);
+      await expect(manage(guardedPreview)).resolves.toMatchObject({
+        preview: { reviewId: validationId(900) }
+      });
+      await expect(
+        manage({
+          sessionId,
+          action: "apply",
+          reviewId: validationId(900),
+          expectedVersion: 1,
+          expectedScopeKey
+        })
+      ).rejects.toThrow("no longer matches");
+      expect(score).toHaveBeenCalledTimes(2);
+      expect(request.mock.calls.some(([path]) => path.endsWith("/apply"))).toBe(
+        false
+      );
+    }
+  );
+
+  it.each([false, true])(
+    "does not apply after a different checkout takes the reviewed path (assumed-local: %s)",
+    async (assumedLocal) => {
+      const parent = resolve(import.meta.dirname, "../../../../scratch");
+      mkdirSync(parent, { recursive: true });
+      const root = mkdtempSync(resolve(parent, "git-review-"));
+      try {
+        const { hints, manage, request, directory, replacement, target } =
+          await setupReplaceableGitReview(root, assumedLocal);
+        const preview = assumedLocal
+          ? assumedLocalPreview
+          : {
+              ...guardedPreview,
+              reviewedCheckout: await reviewedCheckout(hints)
+            };
+        await manage({
+          ...preview,
+          correction: { ...preview.correction, repository: target }
+        });
+        renameSync(directory, resolve(root, "retired"));
+        renameSync(replacement, directory);
+        await expect(
+          manage({
+            sessionId,
+            action: "apply",
+            reviewId: validationId(900),
+            expectedVersion: 1,
+            expectedScopeKey
+          })
+        ).rejects.toThrow("no longer matches");
+        expect(
+          request.mock.calls.some(([path]) => path.endsWith("/apply"))
+        ).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([false, true])(
+    "does not apply after same-remote Git metadata replacement (assumed-local: %s)",
+    async (assumedLocal) => {
+      const root = mkdtempSync(
+        resolve(import.meta.dirname, "../../../../scratch/git-review-")
+      );
+      try {
+        const { hints, manage, request, directory, replacement, target } =
+          await setupReplaceableGitReview(root, assumedLocal);
+        await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject(
+          {
+            hints: [
+              expect.objectContaining({
+                kind: "repository",
+                gitInferenceEligibility: true
+              })
+            ]
+          }
+        );
+        const preview = assumedLocal
+          ? assumedLocalPreview
+          : {
+              ...guardedPreview,
+              reviewedCheckout: await reviewedCheckout(hints)
+            };
+        await manage({
+          ...preview,
+          correction: { ...preview.correction, repository: target }
+        });
+        renameSync(resolve(directory, ".git"), resolve(root, "retired-git"));
+        renameSync(resolve(replacement, ".git"), resolve(directory, ".git"));
+        await expect(
+          manage({
+            sessionId,
+            action: "apply",
+            reviewId: validationId(900),
+            expectedVersion: 1,
+            expectedScopeKey
+          })
+        ).rejects.toThrow("no longer matches");
+        expect(
+          request.mock.calls.some(([path]) => path.endsWith("/apply"))
+        ).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("rejects a same-remote swap of the linked worktree's common Git directory", async () => {
+    const root = mkdtempSync(
+      resolve(import.meta.dirname, "../../../../scratch/git-review-")
+    );
+    try {
+      const { hints, manage, request, directory, replacement, target } =
+        await setupReplaceableGitReview(root, true, true);
+      const commonDir = git(
+        directory,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir"
+      );
+      const gitDir = git(directory, "rev-parse", "--absolute-git-dir");
+      expect(commonDir).not.toBe(gitDir);
+      const before = statSync(gitDir, { bigint: true });
+      await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+        hints: [
+          {
+            kind: "repository",
+            repositoryKey: target.key,
+            gitInferenceEligibility: true
+          }
+        ]
+      });
+      await manage({
+        ...assumedLocalPreview,
+        correction: { ...assumedLocalPreview.correction, repository: target }
+      });
+      renameSync(commonDir, resolve(root, "retired-common"));
+      renameSync(replacement, commonDir);
+      expect(statSync(gitDir, { bigint: true }).ino).toBe(before.ino);
+      await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+        hints: [
+          {
+            kind: "repository",
+            repositoryKey: target.key,
+            gitInferenceEligibility: true
+          }
+        ]
+      });
+      await expect(
+        manage({
+          sessionId,
+          action: "apply",
+          reviewId: validationId(900),
+          expectedVersion: 1,
+          expectedScopeKey
+        })
+      ).rejects.toThrow("no longer matches");
+      expect(request.mock.calls.some(([path]) => path.endsWith("/apply"))).toBe(
+        false
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not preview an approved checkout that moved to a different directory", async () => {
+    const { manage, request } = setupGitReview();
+    score.mockResolvedValue([
+      { ...identifiableGitCandidate, directory: "/different/checkout" }
+    ]);
+    await expect(manage(guardedPreview)).rejects.toThrow("no longer matches");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["missing identity", "missing age", "new checkout"])(
+    "keeps automatic inference strict for an assumed-local Git Anchor with %s",
+    async (problem) => {
+      const { hints, manage, request } = setupGitReview({
+        paths: { koedHome: "/koed-home" } as ProjectCommandsDeps["paths"],
+        importAuthority: { deploymentId: "deployment", deviceId: "device" }
+      });
+      vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+        remoteOperationsAllowed: true,
+        deploymentId: "deployment",
+        deviceInstanceId: "device"
+      } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+      const outcome =
+        problem === "missing age" ? "unavailable" : "does-not-agree";
+      score.mockResolvedValue([
+        problem === "missing identity"
+          ? { ...gitCandidate, directoryIncarnation: "root-only" }
+          : {
+              ...identifiableGitCandidate,
+              reasons: identifiableGitCandidate.reasons.map((reason) =>
+                reason.code === "git-directory-birthtime"
+                  ? { ...reason, outcome }
+                  : reason
+              )
+            }
+      ]);
+      const [hint] = (await hints({ sessionIds: [sessionId] })).hints;
+      expect(hint).toMatchObject({
+        kind: "repository",
+        gitInferenceEligibility: false
+      });
+      await expect(manage(assumedLocalPreview)).rejects.toThrow(
+        "no longer matches"
+      );
+      expect(
+        request.mock.calls.some(([path]) => path.endsWith("/reviews"))
+      ).toBe(false);
+      if (problem === "missing identity") {
+        expect(hint?.manualGitReview).toBeUndefined();
+        return;
+      }
+      expect(hint?.manualGitReview?.intent).toBe("assumed-local-import");
+      await expect(
+        manage({
+          ...assumedLocalPreview,
+          reviewedCheckout: {
+            directory: hint!.directory,
+            incarnation: hint!.manualGitReview!.incarnation
+          }
+        })
+      ).resolves.toHaveProperty("preview");
+    }
+  );
+
+  it.each([
+    "disappeared",
+    "replaced before preview",
+    "replaced before apply",
+    "unchanged"
+  ])(
+    "rechecks an explicitly reviewed checkout without historic Git age: %s",
+    async (change) => {
+      const { hints, manage, request } = setupGitReview();
+      const candidate = {
+        ...identifiableGitCandidate,
+        gitCheckoutIncarnation: undefined,
+        manualGitCheckoutIncarnation: "no-birthtime-incarnation",
+        reasons: identifiableGitCandidate.reasons.map((reason) =>
+          reason.code === "git-directory-birthtime"
+            ? { ...reason, outcome: "unavailable" as const }
+            : reason
+        )
+      };
+      score.mockResolvedValue([candidate]);
+      const [hint] = (await hints({ sessionIds: [sessionId] })).hints;
+      expect(hint).toMatchObject({
+        gitInferenceEligibility: false,
+        manualGitReview: {
+          intent: "user-confirmed-unknown",
+          incarnation: expect.any(String)
+        }
+      });
+      const preview = {
+        ...guardedPreview,
+        reviewedCheckout: {
+          directory: hint!.directory,
+          incarnation: hint!.manualGitReview!.incarnation
+        }
+      };
+      const replacement = {
+        ...candidate,
+        manualGitCheckoutIncarnation: "replacement"
+      };
+      if (change === "disappeared" || change === "replaced before preview") {
+        score.mockResolvedValue(change === "disappeared" ? [] : [replacement]);
+        await expect(manage(preview)).rejects.toThrow("no longer matches");
+        expect(
+          request.mock.calls.some(([path]) => path.endsWith("/reviews"))
+        ).toBe(false);
+        return;
+      }
+      await manage(preview);
+      if (change === "replaced before apply")
+        score.mockResolvedValue([replacement]);
+      const apply = manage({
+        action: "apply",
+        sessionId,
+        reviewId: validationId(900),
+        expectedVersion: 1,
+        expectedScopeKey
+      });
+      if (change === "unchanged") await apply;
+      else await expect(apply).rejects.toThrow("no longer matches");
+      expect(request.mock.calls.some(([path]) => path.endsWith("/apply"))).toBe(
+        change === "unchanged"
+      );
+    }
+  );
+
+  it("does not preview an otherwise eligible checkout without an incarnation marker", async () => {
+    const { manage, request } = setupGitReview();
+    score.mockResolvedValue([
+      { ...gitCandidate, gitCheckoutIncarnation: "git-only" }
+    ]);
+    await expect(manage(guardedPreview)).rejects.toThrow("no longer matches");
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("keeps automatic recording-device inference usable without manual review scope", async () => {
+    vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+      remoteOperationsAllowed: true,
+      deploymentId: folder.originatingDeploymentId,
+      deviceInstanceId: folder.originatingDeviceId
+    } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+    const { manage, request } = setupGitReview({
+      recordingDevice: true,
+      paths: resolveKoedServerPaths({ KOED_HOME: "/koed-home" })
+    });
+    score.mockResolvedValue([
+      {
+        ...identifiableGitCandidate,
+        reasons: identifiableGitCandidate.reasons.map((reason) =>
+          reason.code === "origin-device"
+            ? { ...reason, outcome: "agrees" }
+            : reason
+        )
+      }
+    ]);
+    await expect(
+      manage({
+        sessionId,
+        action: "preview",
+        correction: {
+          ...guardedPreview.correction,
+          inferenceIntent: "recording-device"
+        }
+      })
+    ).resolves.toHaveProperty("preview.inferenceIntent", "recording-device");
+    await manage({
+      action: "apply",
+      sessionId,
+      reviewId: validationId(900),
+      expectedVersion: 1
+    });
+    expect(request.mock.calls.map(([path]) => path.split("/").at(-1))).toEqual([
+      "folder-hint-evidence",
+      "reviews",
+      "folder-hint-evidence",
+      "apply"
+    ]);
+  });
+
+  it("rejects unscoped manual preview before requesting evidence", async () => {
+    const { manage, request } = setupGitReview();
+    score.mockResolvedValue([identifiableGitCandidate]);
+    await expect(
+      manage({ ...guardedPreview, expectedScopeKey: undefined })
+    ).rejects.toThrow();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("forwards a guarded manual apply only with the reviewed scope and fresh evidence", async () => {
+    const { manage, request } = setupGitReview();
+    score.mockResolvedValue([identifiableGitCandidate]);
+    await manage(guardedPreview);
+    const apply = (scope?: string) =>
+      manage({
+        sessionId,
+        action: "apply",
+        reviewId: validationId(900),
+        expectedVersion: 1,
+        expectedScopeKey: scope
+      });
+    await expect(apply()).rejects.toThrow("no longer matches");
+    await expect(apply("b".repeat(64))).rejects.toThrow("no longer matches");
+    await apply(expectedScopeKey);
+    expect(score).toHaveBeenCalledTimes(2);
+    expect(
+      request.mock.calls.map(([path, , scope]) => [
+        path.split("/").at(-1),
+        scope
+      ])
+    ).toEqual([
+      ["folder-hint-evidence", expectedScopeKey],
+      ["reviews", expectedScopeKey],
+      ["folder-hint-evidence", expectedScopeKey],
+      ["apply", expectedScopeKey]
+    ]);
+    expect(score.mock.calls[0]?.[1]).toMatchObject({
+      originDeviceId: null,
+      allowUnknownRepositoryCandidate: true
+    });
+  });
+
+  it("does not forward a persisted review without a local preview receipt", async () => {
+    const { manage, restart, request } = setupGitReview();
+    score.mockResolvedValue([identifiableGitCandidate]);
+    await manage(guardedPreview);
+    await expect(
+      restart()({
+        sessionId,
+        action: "apply",
+        reviewId: validationId(900),
+        expectedVersion: 1
+      })
+    ).rejects.toThrow("review is unavailable");
+    expect(request.mock.calls.some(([path]) => path.endsWith("/apply"))).toBe(
+      false
+    );
+  });
+
+  it.each(["known-copy", undefined])(
+    "rejects %s provenance before preview",
+    async (provenance) => {
+      const { evidence, manage, request } = setupGitReview();
+      Object.assign(evidence, { recordingDeviceProvenance: provenance });
+      await expect(manage(guardedPreview)).rejects.toThrow("no longer matches");
+      expect(request).toHaveBeenCalledOnce();
+      expect(score).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe("Folder hint confirmation", () => {
+  it("rejects a fresh same-kind candidate with a different directory incarnation", async () => {
+    const { confirm, request } = setup();
+    score.mockResolvedValue([
+      {
+        ...candidate,
+        reasons: [],
+        folder: { ...folder, directoryIncarnationId: "replacement" }
+      }
+    ]);
+    await expect(confirm(input)).rejects.toThrow("no longer matches");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(score).toHaveBeenCalledOnce();
+  });
+
+  it("rejects another kind even when its full Folder reference matches", async () => {
+    const { confirm } = setup();
+    score.mockResolvedValue([
+      { ...candidate, reasons: [], kind: "registered" }
+    ]);
+    await expect(confirm(input)).rejects.toThrow("no longer matches");
+  });
+
+  it("rejects an exact local candidate with no matching server reference", async () => {
+    const { confirm } = setup([
+      { ...folder, directoryIncarnationId: "replacement" }
+    ]);
+    score.mockResolvedValue([candidate]);
+    await expect(confirm(input)).rejects.toThrow("not recorded on the server");
+  });
+
+  it("confirms the exact reference without calling any write endpoint", async () => {
+    const { confirm, request } = setup();
+    score.mockResolvedValue([{ ...candidate, reasons: [] }]);
+    await expect(confirm(input)).resolves.toEqual({ folder });
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      "/v1/personal/sessions/folder-hint-evidence",
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionIds: [sessionId],
+          proposedFolders: [folder]
+        })
+      }),
+      undefined
+    );
+  });
+});
+
+describe("Folder hint listing", () => {
+  it("forwards the reviewed scope when saving manual organization", async () => {
+    const fixture = createProjectManagementValidationApi();
+    const edit = {
+      expectedContext: fixture.contexts.get(sessionId)!,
+      reviewedProjects: [{ projectId: validationId(1), expectedVersion: 1 }],
+      memberships: [
+        { projectId: validationId(1), direct: false, excluded: false }
+      ],
+      corrections: []
+    };
+    const expected = await fixture.api.manageSourceContext!({
+      action: "organize",
+      sessionId,
+      edit
+    });
+    const request = vi.fn(async () => expected);
+    const { manageSourceContext } = createProjectCommands({
+      personalRequest: request,
+      lookup: {}
+    } as unknown as ProjectCommandsDeps);
+    await manageSourceContext({
+      action: "organize",
+      sessionId,
+      edit,
+      expectedScopeKey
+    });
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      `/v1/personal/sessions/${sessionId}/organization`,
+      expect.objectContaining({ body: JSON.stringify(edit) }),
+      expectedScopeKey
+    );
+  });
+
+  it("only returns Folder candidates with an exact server-known reference", async () => {
+    const { hints, request } = setup();
+    const unknown = { ...folder, directoryIncarnationId: "registry-only" };
+    score.mockResolvedValue([
+      candidate,
+      { ...candidate, kind: "registered", folder: unknown }
+    ]);
+    await expect(hints({ sessionIds: [sessionId] })).resolves.toEqual({
+      hints: [{ ...candidate, sessionId, folderRevision: 1 }]
+    });
+    expect(
+      request.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))
+    ).toEqual([
+      { sessionIds: [sessionId] },
+      { sessionIds: [sessionId], proposedFolders: [folder, unknown] }
+    ]);
+  });
+
+  it("does not tell the local scorer that legacy replica absence proves recording device", async () => {
+    const { hints } = setup();
+    score.mockResolvedValue([candidate]);
+    await hints({ sessionIds: [sessionId] });
+    const conversation = score.mock.calls[0]?.[1];
+    expect(conversation?.capturedOnThisDevice).not.toBe(true);
+    expect(conversation?.originDeviceId).toBeNull();
+  });
+
+  it.each([
+    ["deployment", "recording-device"],
+    ["foreign-deployment", "known-copy"]
+  ])(
+    "binds declared recording provenance to the original Folder and current deployment %s",
+    async (deploymentId, provenance) => {
+      vi.mocked(inspectDeviceIdentityAtKoedHome).mockReturnValue({
+        remoteOperationsAllowed: true,
+        deploymentId,
+        deviceInstanceId: folder.originatingDeviceId
+      } as ReturnType<typeof inspectDeviceIdentityAtKoedHome>);
+      const { hints } = setup([folder], {
+        recordingDeviceProvenance: "recording-device",
+        gitInferenceEligibility: true,
+        gitRevision: 1,
+        firstConversationAt: "2024-01-01T00:00:00.000Z",
+        folderAssignment: {
+          revision: 1,
+          original: {
+            state: "known",
+            value: {
+              reference: folder,
+              normalizedPath: "/work/branch",
+              capturedPath: "/work/branch"
+            }
+          },
+          correction: { state: "original" }
+        }
+      });
+      score.mockResolvedValue([identifiableGitCandidate]);
+      await expect(hints({ sessionIds: [sessionId] })).resolves.toMatchObject({
+        hints: [
+          {
+            recordingDeviceProvenance: provenance,
+            gitInferenceEligibility: true
+          }
+        ]
+      });
+      expect(score.mock.calls[0]?.[1].originDeviceId).toBe(
+        provenance === "recording-device" ? "device" : null
+      );
+    }
+  );
+
+  it("returns the scored Git revision without requesting Folder eligibility", async () => {
+    const { hints, request } = setup();
+    const anchor = {
+      tier: "medium",
+      kind: "repository",
+      repositoryKey: "remote",
+      score: 4,
+      reasons: []
+    } as const;
+    score.mockResolvedValue([
+      { ...anchor, reasons: [], directoryIncarnation: "local-only" }
+    ]);
+    await expect(hints({ sessionIds: [sessionId] })).resolves.toEqual({
+      hints: [{ ...anchor, sessionId, gitRevision: 3 }]
+    });
+    expect(request).toHaveBeenCalledOnce();
+  });
+});

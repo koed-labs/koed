@@ -5,6 +5,7 @@ import {
   personalOwnerIdSchema,
   personalProjectAddSessionSchema,
   personalProjectExplainSessionsSchema,
+  personalProjectVersionSchema,
   personalProjectAddBackSchema,
   personalProjectExclusionSchema,
   personalMembershipExclusionSyncSchema,
@@ -127,6 +128,41 @@ export const createPersonalProjectExclusionRepository = (
 ) => {
   const transact = personalMembershipTransactionRunner(pool, transaction);
   return {
+    /** The Conversations currently excluded from a Project, by their newest
+     * available session. */
+    async listPersonalProjectExclusions(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: { expectedVersion: number }
+    ) {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        { expectedVersion } = personalProjectVersionSchema.parse(raw);
+      return transact(
+        actor,
+        async (client) => {
+          const project = await lockPersonalNamedProject(
+            client,
+            actor,
+            projectId,
+            expectedVersion
+          );
+          const rows = await client.query<{ id: string }>(
+            `select distinct on (x.logical_session_id) s.id
+             from personal_project_exclusions x
+             join sessions s on s.owner_user_id=x.owner_user_id and s.logical_session_id=x.logical_session_id
+             where x.owner_user_id=$1 and x.project_id=$2 and x.cleared_at is null
+               and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null
+             order by x.logical_session_id, s.created_at desc, s.id`,
+            [actor.userId, projectId]
+          );
+          return {
+            project: mapPersonalNamedProject(project),
+            excludedSessionIds: rows.rows.map((row) => row.id)
+          };
+        },
+        { notify: false }
+      );
+    },
     async explainPersonalProjectSessions(
       actor: ActorContext,
       rawProjectId: string,

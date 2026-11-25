@@ -34,6 +34,8 @@ describe("Project settings and organization integration", () => {
     f.api.manageProject = vi.fn<
       NonNullable<PersonalDesktopApi["manageProject"]>
     >(async (input) => {
+      if (input.action === "list_exclusions")
+        return { project: project.namedProject!, excludedSessionIds: [] };
       if (++requests > 1000) throw new Error("429 Too Many Requests");
       peak = Math.max(peak, ++active);
       await Promise.resolve();
@@ -78,6 +80,8 @@ describe("Project settings and organization integration", () => {
     }));
     let calls = 0;
     f.api.manageProject = async (input) => {
+      if (input.action === "list_exclusions")
+        return { project: project.namedProject!, excludedSessionIds: [] };
       if (input.action !== "explain_sessions")
         throw new Error("Unexpected action");
       return {

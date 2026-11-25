@@ -6,7 +6,8 @@ describe("Desktop feature flags", () => {
     [{}, false],
     [{ KOED_TEAM_COLLABORATION_ENABLED: "false" }, false],
     [{ KOED_TEAM_COLLABORATION_ENABLED: "1" }, false],
-    [{ KOED_TEAM_COLLABORATION_ENABLED: " true " }, false],
+    [{ KOED_TEAM_COLLABORATION_ENABLED: " " }, false],
+    [{ KOED_TEAM_COLLABORATION_ENABLED: " true " }, true],
     [{ KOED_DEVELOPER_TEAM_BACKEND_ENABLED: "true" }, false],
     [{ KOED_TEAM_COLLABORATION_ENABLED: "true" }, true]
   ] as const)(

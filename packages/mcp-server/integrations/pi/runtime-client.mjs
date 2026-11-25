@@ -94,6 +94,10 @@ const request = async (
   return result;
 };
 
+/** Generic startup can reopen history, even when no messages exist. */
+export const piSessionStartIsNewConversation = (reason) =>
+  reason === "new" || reason === "fork";
+
 export const recordCaptureFolderContext = (koedHome, input) =>
   request(
     koedHome,

@@ -97,6 +97,7 @@ import {
   registerMemoryAnswerTaskRoutes,
   registerQuestionRoutes,
   registerRecallActivityRoutes,
+  registerFloatingKinRoutes,
   registerRawConversationRoutes,
   registerRecallRoutes,
   shouldIgnoreGraphStreamPayload,
@@ -351,6 +352,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             "req.query.request",
             "request.query.request",
             "req.headers.authorization",
+            'req.headers["x-koed-local-runtime-authorization"]',
+            'request.headers["x-koed-local-runtime-authorization"]',
             "req.headers.cookie",
             "res.headers.set-cookie",
             "request.headers.authorization",
@@ -2063,6 +2066,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerLocalAgentSettingsRoutes(app, routeContext);
   registerQuestionRoutes(app, routeContext);
   registerRecallActivityRoutes(app, routeContext);
+  registerFloatingKinRoutes(app, routeContext);
   registerMemoryAnswerTaskRoutes(app, routeContext);
   registerLcmRoutes(app, routeContext);
   registerGraphRoutes(app, routeContext);

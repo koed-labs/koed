@@ -18,6 +18,13 @@
   background: var(--v1-kin);
   box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.55);
 }
+.v1-pixelkin-fallback[data-kin-gradient]::before {
+  background: linear-gradient(
+    32deg,
+    var(--v1-kin) 10%,
+    var(--v1-kin-gradient-top) 90%
+  );
+}
 .v1-pixelkin-fallback[data-kin-shape="roundedBox"]::before {
   border-radius: 26%;
 }
@@ -52,6 +59,11 @@
   border-radius: 999px;
   background: #05070a;
   transform: translateX(-50%);
+}
+.v1-pixelkin-fallback[data-expression="sleepy"] i {
+  top: 45%;
+  height: 5%;
+  background: #05070a;
 }
 .v1-pixelkin-fallback[data-expression="surprised"] i {
   top: 32%;

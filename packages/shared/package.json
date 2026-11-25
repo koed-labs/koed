@@ -118,6 +118,10 @@
     "./account": {
       "types": "./dist/account-contract.d.ts",
       "import": "./dist/account-contract.js"
+    },
+    "./env-file": {
+      "types": "./dist/env-file.d.ts",
+      "import": "./dist/env-file.js"
     }
   },
   "files": [

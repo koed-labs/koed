@@ -1,5 +1,30 @@
 # @koed/koed-server
 
+## 1.3.0
+
+### Minor Changes
+
+- ae704ab: Suggest a Folder or Project for Conversations with no Folder, and record a Git Anchor automatically when the evidence proves it. Project settings › Conversations now groups Conversations by Folder and Git Anchor rule, with Added directly last and suggestions grouped by the rule they would join; nothing changes until you save. Project memberships and Move Conversation use the same rows, and sidebar Project rows show their Kin and a settings menu instead of counts.
+
+### Patch Changes
+
+- 736ce74: Use the environment file selected by `KOED_ENV_PATH` for the API, Worker, and
+  Embedding Service, and read it with the same rules as Koed Server. Keep values
+  already set in the process environment. `koed start --daemon` and
+  `koed restart` now resolve a relative path from the directory where you run
+  them.
+
+## 1.2.0
+
+### Minor Changes
+
+- 1ac1461: Add optional WorkOS sign-in from the Desktop account menu with profile pictures, encrypted sessions, cancellation, and browser sign-out. Recover cached sessions after outages. Keep source accounts disabled by default, with root .env opt-in. Validate and bundle fixed account configuration during packaging. Use one session SDK, async OS encryption, and V2 icons. Local Personal Memory remains available without an account. No remote Koed backend or bundled WorkOS API key is required.
+
+### Patch Changes
+
+- f08fa99: Show Privacy Filter under Optional tools in Desktop Settings only when Team collaboration is enabled.
+- 3130215: Show Projects sooner when Desktop opens. Desktop loads Projects as soon as the local service is ready and runs its full health checks in the background.
+
 ## 1.1.0
 
 ### Minor Changes

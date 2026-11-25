@@ -2,6 +2,7 @@
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { desktopFeatureFlagsFromEnvironment } from "../../ipc/desktop-feature-flags.js";
 import type {
   DesktopStatusStore,
   StatusSnapshot
@@ -185,6 +186,49 @@ describe("V1Settings", () => {
     );
     expect(restart).toHaveBeenCalledOnce();
   });
+  it.each([
+    ["MacIntel", true],
+    ["Linux x86_64", false]
+  ] as const)(
+    "only offers the Chief of Staff switch on macOS (%s)",
+    async (platform, supported) => {
+      const platformGetter = vi
+        .spyOn(navigator, "platform", "get")
+        .mockReturnValue(platform);
+      const defaults = { graphicsAcceleration: true, showMenuBar: false };
+      const presentation = {
+        get: vi.fn(async () => defaults),
+        set: vi.fn(
+          async (value: typeof defaults & { floatingKin?: boolean }) => value
+        )
+      };
+      try {
+        await render("general", { presentationPreferences: presentation });
+        const toggle = container.querySelector<HTMLButtonElement>(
+          '[role="switch"][aria-label="Chief of Staff"]'
+        );
+        if (!supported) {
+          expect(toggle).toBeNull();
+          return;
+        }
+        expect(toggle?.getAttribute("aria-checked")).toBe("false");
+        await act(async () => toggle?.click());
+        expect(presentation.set).toHaveBeenCalledWith({
+          ...defaults,
+          floatingKin: true
+        });
+        expect(toggle?.getAttribute("aria-checked")).toBe("true");
+        await act(async () => toggle?.click());
+        expect(presentation.set).toHaveBeenLastCalledWith({
+          ...defaults,
+          floatingKin: false
+        });
+      } finally {
+        platformGetter.mockRestore();
+      }
+    }
+  );
+
   it("keeps the displayed window preference when saving fails", async () => {
     const presentation = {
       get: vi.fn(async () => ({
@@ -528,6 +572,50 @@ describe("V1Settings", () => {
       "Stop failed"
     );
   });
+  it.each([undefined, false])(
+    "hides Privacy Filter when the Team collaboration flag is %s",
+    async (teamCollaborationEnabled) => {
+      if (teamCollaborationEnabled !== undefined) {
+        window.koedDesktop = {
+          invoke: vi.fn(),
+          featureFlags: { teamCollaborationEnabled }
+        };
+      }
+      await render("general", { initialPage: "privacy" });
+      expect(container.textContent).not.toContain("Privacy Filter");
+      expect(container.querySelector(".page-heading h2")?.textContent).toBe(
+        "General"
+      );
+      expect(
+        container.querySelector('[data-settings-page="cli"]')
+      ).toBeTruthy();
+    }
+  );
+
+  it.each(["true", " true "])(
+    "opens Privacy Filter from Optional tools when the launch flag is %j",
+    async (value) => {
+      window.koedDesktop = {
+        invoke: vi.fn(),
+        featureFlags: desktopFeatureFlagsFromEnvironment({
+          KOED_TEAM_COLLABORATION_ENABLED: value
+        })
+      };
+      await render();
+      const card = container.querySelector<HTMLButtonElement>(
+        '[data-settings-page="privacy"]'
+      );
+      expect(card).not.toBeNull();
+      expect(
+        container.querySelector('[data-settings-page="cli"]')
+      ).toBeTruthy();
+      await act(async () => card?.click());
+      expect(container.querySelector(".page-heading h2")?.textContent).toBe(
+        "Privacy Filter"
+      );
+    }
+  );
+
   it("opens command line as a nested page and returns to General on Escape", async () => {
     await render("general", { initialPage: "cli" });
     expect(container.querySelector(".page-heading .back")?.textContent).toBe(

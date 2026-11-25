@@ -48,7 +48,13 @@ describe("SettingsTools", () => {
       const root = createRoot(container);
       const open = () =>
         act(async () => {
-          root.render(<SettingsTools api={api} onOpen={vi.fn()} />);
+          root.render(
+            <SettingsTools
+              api={api}
+              onOpen={vi.fn()}
+              teamCollaborationEnabled
+            />
+          );
         });
       const close = () => act(async () => root.render(null));
       const card = () =>
