@@ -917,11 +917,10 @@ export function V1App({
         sessionId,
         groups: sidebarProjects,
         open: (row) => setRoute({ ...openSidebarConversation(row), sessionId }),
-        reading: () => Boolean(store?.current().reading),
         refresh: () => void loadInventory({ silent: true }),
         options
       }),
-    [sidebarProjects, loadInventory, store, setRoute]
+    [sidebarProjects, loadInventory, setRoute]
   );
   const openProject = (projectId: string) => {
     const latest = sidebarProjects
