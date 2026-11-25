@@ -22,12 +22,13 @@ const CLOSED_BLOCK = new RegExp(
 // tag. Everything from an unclosed opening tag onward is harness text.
 const UNCLOSED_BLOCK = new RegExp(`<(?:${tagPattern})\\b[\\s\\S]*$`, "i");
 
+// Removes harness blocks but keeps the rest of the text, line breaks
+// included, for parsers that still need its structure.
+export const stripHarnessBlocks = (text: string): string =>
+  text.replace(CLOSED_BLOCK, " ").replace(UNCLOSED_BLOCK, " ").trim();
+
 export const stripHarnessMarkup = (text: string): string =>
-  text
-    .replace(CLOSED_BLOCK, " ")
-    .replace(UNCLOSED_BLOCK, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  stripHarnessBlocks(text).replace(/\s+/g, " ").trim();
 
 // Returns a displayable Conversation title, or null when the stored title is
 // empty or only harness text.

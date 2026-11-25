@@ -1,6 +1,10 @@
 import { createRecallActivityRepository } from "./recall-activity-repository.js";
 import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
-import { personalOwnerIdSchema, stripHarnessMarkup } from "@koed-labs/shared";
+import {
+  personalOwnerIdSchema,
+  stripHarnessBlocks,
+  stripHarnessMarkup
+} from "@koed-labs/shared";
 import {
   createPersonalSelectionConsumerRepository,
   createPersonalInventorySelectionRepository
@@ -3191,8 +3195,9 @@ export const deriveProvisionalSessionTitle = (
     return null;
   }
   // Strip AI Client context before presentation shortens the text, so a long
-  // injected block can't crowd out the User's words.
-  const presented = presentMemoryText(stripHarnessMarkup(content), {
+  // injected block can't crowd out the User's words. Keep line breaks: the
+  // Codex request parser looks for its "My request for Codex:" heading line.
+  const presented = presentMemoryText(stripHarnessBlocks(content), {
     project_name: getStringField(metadata ?? {}, "projectName"),
     project_path: getStringField(metadata ?? {}, "projectPath")
   });

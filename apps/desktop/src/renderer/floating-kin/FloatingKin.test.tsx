@@ -392,6 +392,33 @@ describe("Floating Kin", () => {
     );
   });
 
+  it("doesn't bring back a Conversation's old excerpt after switching away and back", async () => {
+    const other = `${sessionId.slice(0, -1)}9`;
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [conversation, { ...conversation, sessionId: other }],
+      overflowCount: 0
+    });
+    vi.mocked(bridge.preview).mockResolvedValueOnce({
+      title: null,
+      projectName: null,
+      request: { text: "Old request in A", occurredAt: asOf },
+      reply: null
+    });
+    await render();
+    await click("Conversation 1");
+    expect(mount.textContent).toContain("Old request in A");
+    // B's read never lands before we return to A.
+    vi.mocked(bridge.preview).mockReturnValueOnce(new Promise(() => {}));
+    await click("Conversation 2");
+    const fresh = deferred<Awaited<ReturnType<FloatingKinBridge["preview"]>>>();
+    vi.mocked(bridge.preview).mockReturnValueOnce(fresh.promise);
+    await click("Conversation 1");
+    expect(mount.textContent).not.toContain("Old request in A");
+    await act(async () => fresh.resolve(null));
+    expect(mount.textContent).not.toContain("Old request in A");
+  });
+
   it("reopens the last summary above the generate actions and links to AI models", async () => {
     bridge.onPresentation = (listener) => {
       listener({ placement: "desktop", revision: 7 });

@@ -80,8 +80,14 @@ const floatingKinRecentItemSql = `
 // an assistant reply that has been quiet for a while also counts as finished.
 // Work with no end marker counts as active only while it is fresh; otherwise
 // the turn is unknown and the chip falls back to its capture age. Claude child
-// agents run inside the main turn, so their events never reopen it.
+// agents run inside the main turn, so their events never reopen it. Codex
+// writes many native event types, so every Codex item counts as work except
+// bookkeeping records and developer or system messages.
 export const floatingKinTurnQuietSeconds = 30;
+const codexBookkeepingEvents = `('token_count','token_usage_record','world_state',
+  'session_meta','turn_context','thread_settings_applied',
+  'inter_agent_communication_metadata')`;
+const codexMessageRoleSql = `ci.raw_json->'payload'->>'role'`;
 export const floatingKinTurnActiveMinutes = 10;
 const floatingKinTurnSql = (owner: string) => `
   select case
@@ -95,9 +101,11 @@ const floatingKinTurnSql = (owner: string) => `
       when ci.source_event_type in ('task_complete','turn_aborted','turn_completed')
         or ci.metadata->>'semanticControl'='turn_completed' then 'end'
       when ci.source_event_type in ('agent_message','assistant_message')
+        or (ci.source_kind='codex' and ci.source_event_type='message'
+          and ${codexMessageRoleSql}='assistant')
         or (ci.metadata->>'canonicalConversationItemKind'='message'
           and ci.metadata->>'canonicalConversationItemActor' in ('agent','assistant')
-          and coalesce(ci.raw_json->'payload'->>'role', 'assistant') <> 'user') then 'reply'
+          and coalesce(${codexMessageRoleSql}, 'assistant') <> 'user') then 'reply'
       else 'work'
     end kind
     from conversation_items ci
@@ -114,13 +122,12 @@ const floatingKinTurnSql = (owner: string) => `
         and ci.raw_json->>'parentToolUseId' is null
       ))
       and (
-        ci.source_event_type in ('task_complete','turn_aborted','turn_completed','task_started',
-          'user_message','agent_message','assistant_message','tool_call','tool_result','agent_reasoning',
-          -- Codex native response items and tool events.
-          'reasoning','function_call','function_call_output','custom_tool_call',
-          'custom_tool_call_output','local_shell_call','web_search_call',
-          'exec_command_begin','exec_command_end','patch_apply_begin','patch_apply_end',
-          'mcp_tool_call_begin','mcp_tool_call_end')
+        (ci.source_kind='codex'
+          and ci.source_event_type not in ${codexBookkeepingEvents}
+          and coalesce(ci.metadata->>'canonicalConversationItemKind', '') <> 'system:message'
+          and coalesce(${codexMessageRoleSql}, '') not in ('developer','system'))
+        or ci.source_event_type in ('task_complete','turn_aborted','turn_completed','task_started',
+          'user_message','agent_message','assistant_message','tool_call','tool_result','agent_reasoning')
         or ci.metadata->>'semanticControl'='turn_completed'
         or ci.metadata->>'canonicalConversationItemKind' in
           ('message','tool_call','tool_result','reasoning','reasoning_summary')

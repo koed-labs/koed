@@ -257,13 +257,15 @@ export function useCapturedPreview(
     value: FloatingKinPreview;
   }>();
   useEffect(() => {
-    // Closing the panel forgets its preview, so reopening waits for a fresh,
-    // still-eligible read instead of showing the old excerpt.
-    if (!sessionId) {
-      setSample(undefined);
-      return;
-    }
-    if (!bridge) return;
+    // Cached text belongs to the Conversation that stays open: closing the
+    // panel or switching to another Conversation forgets it, so returning
+    // waits for a fresh, still-eligible read.
+    setSample((previous) =>
+      previous && sessionId && previous.key.sessionId === sessionId
+        ? previous
+        : undefined
+    );
+    if (!sessionId || !bridge) return;
     let current = true;
     void bridge
       .preview({ sessionId })

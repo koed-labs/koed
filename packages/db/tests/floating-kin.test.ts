@@ -181,6 +181,7 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         adapter?: string;
         transport?: "transcript" | "hook";
         component?: string;
+        role?: string;
       }>
     ) => {
       const claude = runtime === "claude-code";
@@ -193,7 +194,10 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
       });
       await repo.createConversationItems(actor, {
         items: items.map(
-          ({ type, secondsAgo, adapter, transport, component }, index) => ({
+          (
+            { type, secondsAgo, adapter, transport, component, role },
+            index
+          ) => ({
             sessionId: session.id,
             externalSessionId,
             externalTurnId: "turn",
@@ -211,7 +215,10 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
             sourceRecordType: claude ? "session_message" : "event_msg",
             sourceEventType: type,
             eventTime: ago(secondsAgo),
-            rawJson: { type: "event_msg", payload: { type } },
+            rawJson: {
+              type: role ? "response_item" : "event_msg",
+              payload: role ? { type, role } : { type }
+            },
             rawText: type.endsWith("message") ? "text" : undefined,
             sourceHash: randomUUID(),
             idempotencyKey: randomUUID(),
@@ -291,6 +298,31 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
       [codexTool]: "active",
       [claudeChildAfterStop]: "idle",
       [piRequest]: "unknown"
+    });
+    const third = await repo.createUser({
+      email: `kin-${randomUUID()}@example.test`
+    });
+    actor = { userId: third.id };
+    // Any Codex native event that isn't bookkeeping counts as work.
+    const codexToolSearch = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 12 * 60 },
+      { type: "tool_search_output", secondsAgo: 1 },
+      { type: "token_count", secondsAgo: 0 }
+    ]);
+    // A fresh native assistant message without canonical metadata is a reply.
+    const codexFreshReply = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 12 * 60 },
+      { type: "message", role: "assistant", secondsAgo: 2 }
+    ]);
+    const codexQuietReply = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 12 * 60 },
+      { type: "message", role: "assistant", secondsAgo: 60 },
+      { type: "message", role: "developer", secondsAgo: 1 }
+    ]);
+    expect(await turnsFor()).toEqual({
+      [codexToolSearch]: "active",
+      [codexFreshReply]: "active",
+      [codexQuietReply]: "idle"
     });
   });
 

@@ -13,9 +13,10 @@ transcript (Claude Code child agents never reopen a finished turn):
 - A turn-end marker (Codex `task_complete` or `turn_aborted`, the Claude Code
   Stop hook) or an assistant reply that has been quiet for 30 seconds means
   the turn finished.
-- A request, tool call or result (including Codex native tool events),
-  reasoning, or a fresh reply means it is underway, but only while something
-  was captured in the last 10 minutes.
+- A request, tool call or result, reasoning, or a fresh reply means it is
+  underway, but only while something was captured in the last 10 minutes. For
+  Codex, any captured event counts except bookkeeping records and developer or
+  system messages.
 
 Once the dot goes, the capture age takes its place. When capture can't tell,
 the chip shows the age too, which doesn't mean the Conversation is idle or

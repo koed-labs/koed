@@ -1102,7 +1102,13 @@ export function V1App({
     inventoryScope,
     Boolean(profile && !showOnboarding),
     openKinAiModels,
-    openKinConversation
+    openKinConversation,
+    {
+      route,
+      rowsLoaded: Boolean(
+        snapshot && ((inventoryReady && !snapshot.loading) || snapshot.error)
+      )
+    }
   );
   if (!profile)
     return profileReadError ? (

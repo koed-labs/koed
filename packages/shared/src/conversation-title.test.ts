@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   displayConversationTitle,
+  stripHarnessBlocks,
   stripHarnessMarkup
 } from "./conversation-title.js";
 
@@ -25,6 +26,14 @@ describe("conversation titles", () => {
       )
     ).toBeNull();
     expect(displayConversationTitle('<paseo-system version="1" ki')).toBeNull();
+  });
+
+  it("can keep line breaks for parsers that need the text's structure", () => {
+    expect(
+      stripHarnessBlocks(
+        "<system-reminder>ctx</system-reminder>\n## My request for Codex:\nShip it"
+      )
+    ).toBe("## My request for Codex:\nShip it");
   });
 
   it("keeps ordinary titles and other angle-bracket text", () => {

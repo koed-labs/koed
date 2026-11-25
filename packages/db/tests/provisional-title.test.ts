@@ -14,6 +14,24 @@ describe("provisional Conversation titles", () => {
     ).toBe("Review the onboarding flow");
   });
 
+  it("finds the Codex request after an injected block and an attachment list", () => {
+    expect(
+      deriveProvisionalSessionTitle(
+        "user",
+        [
+          "<system-reminder>Context for the agent.</system-reminder>",
+          "# Files mentioned by the user:",
+          "",
+          "## CleanShot 2026-11-25 at 09.00.00.png: /tmp/CleanShot.png",
+          "",
+          "## My request for Codex:",
+          "Review the onboarding flow"
+        ].join("\n"),
+        undefined
+      )
+    ).toBe("Review the onboarding flow");
+  });
+
   it("has no title when the message is only injected context", () => {
     expect(
       deriveProvisionalSessionTitle(

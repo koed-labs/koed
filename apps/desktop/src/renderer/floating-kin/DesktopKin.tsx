@@ -25,10 +25,16 @@ import { clientNames } from "./FloatingKinPanel.js";
 import { useKinSurfaceActivity } from "./use-floating-kin.js";
 
 type FocusFallback = () => void;
-type Anchor = { top: number; left: number; pointer: number };
+type Anchor = {
+  top: number;
+  left: number;
+  pointer: number;
+  // The modal sidebar the trigger sits in, if any. The panel must render
+  // inside it, or the modal treats clicks on the panel as outside clicks.
+  modal: HTMLElement | null;
+};
 
 const panelGap = 8;
-const pendingOpenMs = 30_000;
 
 // Beside the chip or row that opened the panel.
 function anchorFor(trigger: HTMLElement): Anchor {
@@ -42,7 +48,8 @@ function anchorFor(trigger: HTMLElement): Anchor {
     top,
     left: edge + panelGap,
     // Points back at the trigger's vertical centre.
-    pointer: box.top + box.height / 2 - top
+    pointer: box.top + box.height / 2 - top,
+    modal: trigger.closest<HTMLElement>('[data-mobile="true"]')
   };
 }
 
@@ -86,6 +93,9 @@ function AnchoredPanel({
     return () => observer.disconnect();
   }, [surface]);
   const top = fitPanelTop(anchor.top, height, window.innerHeight);
+  // Inside the modal sidebar, fixed positioning is relative to its popup
+  // (it is transformed), so convert from window coordinates.
+  const origin = anchor.modal?.getBoundingClientRect() ?? { top: 0, left: 0 };
   return createPortal(
     <section
       className="fk-surface"
@@ -95,15 +105,15 @@ function AnchoredPanel({
       tabIndex={-1}
       style={
         {
-          top,
-          left: anchor.left,
+          top: top - origin.top,
+          left: anchor.left - origin.left,
           "--fk-pointer-top": `${anchor.pointer + anchor.top - top}px`
         } as React.CSSProperties
       }
     >
       {panel}
     </section>,
-    document.body
+    anchor.modal ?? document.body
   );
 }
 
@@ -119,7 +129,11 @@ export function useDesktopKin(
   openAiModels?: () => void,
   // Opens a captured Conversation by its session id; false when Desktop
   // has no row for it.
-  openConversation?: (sessionId: string) => boolean
+  openConversation?: (sessionId: string) => boolean,
+  // Lets an overlay request made while Desktop loads wait for its row. Any
+  // change of `route` (the User choosing somewhere else) cancels it, and so
+  // does `rowsLoaded` turning true without a row for it.
+  navigation?: { route: unknown; rowsLoaded: boolean }
 ) {
   const [presentation, setPresentation] = useState<KinPresentation | null>(
     null
@@ -129,22 +143,35 @@ export function useDesktopKin(
     if (openAiModels) return bridge?.onOpenAiModels(openAiModels);
   }, [bridge, openAiModels]);
   // A request from the overlay can arrive while Desktop is still loading its
-  // rows. Hold it briefly and retry whenever the rows change.
-  const pendingOpen = useRef<{ sessionId: string; until: number } | null>(null);
+  // rows. Hold it, and retry whenever the rows change, until it opens, the
+  // rows finish loading without it, or the User goes somewhere else.
+  const pendingOpen = useRef<{ sessionId: string; route: unknown } | null>(
+    null
+  );
+  const route = navigation?.route;
+  const rowsLoaded = navigation?.rowsLoaded ?? true;
+  const latestNavigation = useRef({ route, rowsLoaded });
+  latestNavigation.current = { route, rowsLoaded };
   useLayoutEffect(() => {
     if (openConversation)
       return bridge?.onOpenConversation((sessionId) => {
-        pendingOpen.current = openConversation(sessionId)
-          ? null
-          : { sessionId, until: Date.now() + pendingOpenMs };
+        const current = latestNavigation.current;
+        pendingOpen.current =
+          openConversation(sessionId) || current.rowsLoaded
+            ? null
+            : { sessionId, route: current.route };
       });
   }, [bridge, openConversation]);
   useEffect(() => {
     const pending = pendingOpen.current;
     if (!pending || !openConversation) return;
-    if (Date.now() > pending.until || openConversation(pending.sessionId))
+    if (pending.route !== route) {
       pendingOpen.current = null;
-  }, [openConversation]);
+      return;
+    }
+    if (openConversation(pending.sessionId) || rowsLoaded)
+      pendingOpen.current = null;
+  }, [openConversation, route, rowsLoaded]);
   useLayoutEffect(() => {
     bridge?.setShellVisible(shellVisible);
   }, [bridge, shellVisible]);
@@ -200,13 +227,30 @@ export function useDesktopKin(
     };
   }, [anchor, summary.selected]);
   const { toggle, close } = summary;
+  // A click while the Kin is still moving back to the sidebar is queued and
+  // replayed once the sidebar holds it, instead of being silently dropped.
+  const queuedOpen = useRef<{
+    sessionId: string;
+    trigger: HTMLButtonElement;
+  } | null>(null);
   const open = useCallback(
     (sessionId: string, trigger: HTMLButtonElement) => {
+      if (!inApp) {
+        queuedOpen.current = { sessionId, trigger };
+        return;
+      }
+      queuedOpen.current = null;
       setAnchor({ trigger, at: anchorFor(trigger) });
       toggle(sessionId, trigger);
     },
-    [toggle]
+    [inApp, toggle]
   );
+  useEffect(() => {
+    const queued = queuedOpen.current;
+    if (!inApp || !queued) return;
+    queuedOpen.current = null;
+    if (queued.trigger.isConnected) open(queued.sessionId, queued.trigger);
+  }, [inApp, open]);
 
   const avatar = inApp ? <RailKin active={sample.recentCapture} /> : null;
   const chips =

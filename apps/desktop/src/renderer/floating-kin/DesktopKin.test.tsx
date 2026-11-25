@@ -253,7 +253,15 @@ it("opens a Conversation requested while Desktop is still loading once its row a
     cancel: vi.fn(async () => {})
   } as unknown as DesktopKinBridge;
   const opened: string[] = [];
-  function Harness({ rows }: { rows: string[] }) {
+  function Harness({
+    rows,
+    route,
+    rowsLoaded
+  }: {
+    rows: string[];
+    route: object;
+    rowsLoaded: boolean;
+  }) {
     const open = useCallback(
       (sessionId: string) => {
         if (!rows.includes(sessionId)) return false;
@@ -262,23 +270,39 @@ it("opens a Conversation requested while Desktop is still loading once its row a
       },
       [rows]
     );
-    useDesktopKin(bridge, null, true, undefined, open);
+    useDesktopKin(bridge, null, true, undefined, open, { route, rowsLoaded });
     return null;
   }
+  const home = { kind: "home" };
+  const render = (rows: string[], route: object, rowsLoaded = false) =>
+    act(async () =>
+      root.render(<Harness rows={rows} route={route} rowsLoaded={rowsLoaded} />)
+    );
   try {
-    await act(async () => root.render(<Harness rows={[]} />));
-    await act(async () => showConversation("loading-session"));
+    // Opens once its row appears, however long loading takes.
+    await render([], home);
+    await act(async () => showConversation("a"));
+    await render(["other"], home);
     expect(opened).toEqual([]);
-    await act(async () => root.render(<Harness rows={["other"]} />));
-    expect(opened).toEqual([]);
-    await act(async () =>
-      root.render(<Harness rows={["other", "loading-session"]} />)
-    );
-    expect(opened).toEqual(["loading-session"]);
-    await act(async () =>
-      root.render(<Harness rows={["loading-session", "again"]} />)
-    );
-    expect(opened).toEqual(["loading-session"]);
+    await render(["other", "a"], home);
+    expect(opened).toEqual(["a"]);
+    await render(["a", "again"], home);
+    expect(opened).toEqual(["a"]);
+
+    // The User choosing somewhere else cancels it.
+    await render([], home);
+    await act(async () => showConversation("b"));
+    const chosen = { kind: "recall" };
+    await render([], chosen);
+    await render(["b"], chosen, true);
+    expect(opened).toEqual(["a"]);
+
+    // Loading finishing without its row drops it.
+    await render([], chosen, false);
+    await act(async () => showConversation("c"));
+    await render([], chosen, true);
+    await render(["c"], chosen, true);
+    expect(opened).toEqual(["a"]);
   } finally {
     await act(async () => root.unmount());
     mount.remove();
@@ -532,4 +556,195 @@ it("moves a panel opened near the bottom up so its actions stay in the window", 
   expect(fitPanelTop(120, 300, 640)).toBe(120);
   // Taller than the window: pinned to the top margin and scrolled inside.
   expect(fitPanelTop(560, 900, 640)).toBe(8);
+});
+
+it("opens a row's panel inside the modal sidebar so it can take clicks and focus", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const root = createRoot(mount);
+  const sessionId = "00000000-0000-4000-8000-0000000000b1";
+  const bridge = {
+    onPresentation: (listener: (state: KinPresentation) => void) => {
+      listener({ placement: "sidebar", revision: 0 });
+      return () => {};
+    },
+    setShellVisible: vi.fn(),
+    onOpenAiModels: () => () => {},
+    onOpenConversation: () => () => {},
+    confirmPresentation: vi.fn(),
+    activity: vi.fn(async () => ({
+      state: "running" as const,
+      overflowCount: 0,
+      conversations: [
+        {
+          sessionId,
+          client: "codex" as const,
+          lastActivityAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          projectId: null
+        }
+      ]
+    })),
+    summarize: vi.fn(async () => ({ status: "unavailable" as const })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
+    cancel: vi.fn(async () => {})
+  } as unknown as DesktopKinBridge;
+  const projects: SidebarProject[] = [
+    {
+      id: "project",
+      name: "Koed",
+      latestAt: new Date().toISOString(),
+      conversations: [
+        {
+          key: `session:${sessionId}`,
+          aliases: [`session:${sessionId}`],
+          title: "Modal row",
+          client: "codex",
+          latestAt: new Date().toISOString(),
+          sessionId,
+          route: { kind: "conversation", projectId: "project", threadId: "t" },
+          projectName: "Koed"
+        }
+      ]
+    }
+  ];
+  const noop = () => {};
+  function Harness() {
+    const kin = useDesktopKin(bridge, null, true);
+    return (
+      <div data-mobile="true" data-testid="modal">
+        <NavigationShell
+          projects={projects}
+          route={{ kind: "home" }}
+          scopeKey={null}
+          onSelect={noop}
+          onHome={noop}
+          onSettings={noop}
+          onBack={noop}
+          onForward={noop}
+          canGoBack={false}
+          canGoForward={false}
+          onRetry={noop}
+          kinAvatar={kin.avatar}
+          kinLive={kin.live}
+          kinPanel={kin.panel}
+          kinChips={kin.chips}
+        >
+          home
+        </NavigationShell>
+      </div>
+    );
+  }
+  try {
+    await act(async () => root.render(<Harness />));
+    const marker = () =>
+      mount.querySelector<HTMLButtonElement>(".v1-nav-projects .fk-row-live");
+    await vi.waitFor(() => expect(marker()).not.toBeNull());
+    await act(async () => marker()!.click());
+    const panel = document.querySelector('[data-fk-placement="anchored"]');
+    expect(panel).not.toBeNull();
+    expect(panel!.closest('[data-testid="modal"]')).not.toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    mount.remove();
+  }
+});
+
+it("replays a marker click made while the Kin is still returning to the sidebar", async () => {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const root = createRoot(mount);
+  const sessionId = "00000000-0000-4000-8000-0000000000b1";
+  let change: (state: KinPresentation) => void = () => {};
+  const bridge = {
+    onPresentation: (listener: (state: KinPresentation) => void) => {
+      change = listener;
+      listener({ placement: "sidebar", revision: 1, sidebarPending: true });
+      return () => {};
+    },
+    setShellVisible: vi.fn(),
+    onOpenAiModels: () => () => {},
+    onOpenConversation: () => () => {},
+    confirmPresentation: vi.fn(),
+    activity: vi.fn(async () => ({
+      state: "running" as const,
+      overflowCount: 0,
+      conversations: [
+        {
+          sessionId,
+          client: "codex" as const,
+          lastActivityAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          projectId: null
+        }
+      ]
+    })),
+    summarize: vi.fn(async () => ({ status: "unavailable" as const })),
+    preview: vi.fn(async () => null),
+    latest: vi.fn(async () => ({ action: null })),
+    reopen: vi.fn(async () => null),
+    cancel: vi.fn(async () => {})
+  } as unknown as DesktopKinBridge;
+  const projects: SidebarProject[] = [
+    {
+      id: "project",
+      name: "Koed",
+      latestAt: new Date().toISOString(),
+      conversations: [
+        {
+          key: `session:${sessionId}`,
+          aliases: [`session:${sessionId}`],
+          title: "Modal row",
+          client: "codex",
+          latestAt: new Date().toISOString(),
+          sessionId,
+          route: { kind: "conversation", projectId: "project", threadId: "t" },
+          projectName: "Koed"
+        }
+      ]
+    }
+  ];
+  const noop = () => {};
+  function Harness() {
+    const kin = useDesktopKin(bridge, null, true);
+    return (
+      <div>
+        <NavigationShell
+          projects={projects}
+          route={{ kind: "home" }}
+          scopeKey={null}
+          onSelect={noop}
+          onHome={noop}
+          onSettings={noop}
+          onBack={noop}
+          onForward={noop}
+          canGoBack={false}
+          canGoForward={false}
+          onRetry={noop}
+          kinAvatar={kin.avatar}
+          kinLive={kin.live}
+          kinPanel={kin.panel}
+          kinChips={kin.chips}
+        >
+          home
+        </NavigationShell>
+      </div>
+    );
+  }
+  try {
+    await act(async () => root.render(<Harness />));
+    const marker = () =>
+      mount.querySelector<HTMLButtonElement>(".v1-nav-projects .fk-row-live");
+    await vi.waitFor(() => expect(marker()).not.toBeNull());
+    await act(async () => marker()!.click());
+    const panel = () =>
+      document.querySelector('[data-fk-placement="anchored"]');
+    expect(panel()).toBeNull();
+    await act(async () => change({ placement: "sidebar", revision: 1 }));
+    expect(panel()).not.toBeNull();
+    expect(marker()!.getAttribute("aria-expanded")).toBe("true");
+  } finally {
+    await act(async () => root.unmount());
+    mount.remove();
+  }
 });
