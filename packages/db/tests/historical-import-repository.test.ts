@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import {
   calculateConversationSourceReplicationContentDigest,
@@ -1823,6 +1823,123 @@ describeDb("journal-backed historical import repository", () => {
     });
   });
 
+  it.each(["source ID", "artifact identity", "run detail"] as const)(
+    "reports snapshot-consistent progress by %s when Projection commits",
+    async (lookup) => {
+      const repo = createMemorySourceRepository(pool);
+      const { id: userId } = await repo.createUser({
+        email: `historical-snapshot-${randomUUID()}@example.com`
+      });
+      const actor = { userId };
+      const fixture = await createJournalFixture(repo, { ownerId: userId });
+      const run = await repo.createHistoricalImportRun(actor);
+      const source = await repo.createHistoricalImportSource(actor, {
+        runId: run.id,
+        artifactId: fixture.artifactId,
+        aiClient: "codex"
+      });
+      for (const [expectedState, state] of [
+        ["discovered", "eligible"],
+        ["eligible", "queued"]
+      ] as const) {
+        await repo.transitionHistoricalImportRun(actor, {
+          runId: run.id,
+          expectedState,
+          state
+        });
+        await repo.transitionHistoricalImportSource(actor, {
+          sourceId: source!.id,
+          expectedState,
+          state
+        });
+      }
+      await repo.ingestHistoricalImportBatch(actor, {
+        sourceId: source!.id,
+        expectedSourceOffset: 0,
+        sourceOffset: fixture.frontier,
+        sourceLine: 2,
+        segmentIndex: fixture.segmentIndex,
+        lastVerifiedDigest: fixture.segmentDigest,
+        items: [sourceItem({ externalSessionId: fixture.externalSessionId })]
+      });
+
+      const readPool = createDbPool({ connectionString: databaseUrl! });
+      const reader = createMemorySourceRepository(readPool);
+      const readStatus = async () => {
+        if (lookup === "run detail") {
+          return (await reader.getHistoricalImportRun(actor, run.id))
+            ?.sources[0];
+        }
+        if (lookup === "artifact identity") {
+          return reader.getHistoricalImportSourceByIdentity(actor, {
+            artifactId: fixture.artifactId
+          });
+        }
+        return reader.getHistoricalImportSource(actor, source!.id);
+      };
+      const promisePool: {
+        query(text: string, values: unknown[]): Promise<pg.QueryResult>;
+      } = readPool;
+      const query = promisePool.query.bind(promisePool);
+      let crossedBarrier = false;
+      const barrier = vi
+        .spyOn(promisePool, "query")
+        .mockImplementation(async (text, values) => {
+          const result = await query(text, values);
+          // Commit on a separate pool after the first progress statement returns.
+          if (
+            !crossedBarrier &&
+            text.includes("conversation_item_observations")
+          ) {
+            crossedBarrier = true;
+            await repo.projectPendingConversationItems(actor, { limit: 10 });
+          }
+          return result;
+        });
+      try {
+        await expect(readStatus()).resolves.toMatchObject({
+          rawIngested: true,
+          projected: false,
+          projectedRecordCount: 0,
+          embeddingEligibleEventCount: 0,
+          lcmEligibleEventCount: 0,
+          semanticReady: false,
+          lcmComplete: true
+        });
+        expect(crossedBarrier).toBe(true);
+        await expect(readStatus()).resolves.toMatchObject({
+          rawIngested: true,
+          projected: true,
+          projectedRecordCount: 1,
+          embeddingEligibleEventCount: 1,
+          embeddedEventCount: 0,
+          lcmEligibleEventCount: 1,
+          lcmCompletedEventCount: 0,
+          semanticReady: false,
+          lcmComplete: false
+        });
+        expect(
+          await pool.query(
+            `select projected_record_count, embedding_eligible_event_count, lcm_eligible_event_count
+             from historical_import_sources where id = $1`,
+            [source!.id]
+          )
+        ).toMatchObject({
+          rows: [
+            {
+              projected_record_count: 0,
+              embedding_eligible_event_count: 0,
+              lcm_eligible_event_count: 0
+            }
+          ]
+        });
+      } finally {
+        barrier.mockRestore();
+        await readPool.end();
+      }
+    }
+  );
+
   it("reconciles terminal observations rather than distinct canonical items", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
@@ -1945,7 +2062,10 @@ describeDb("journal-backed historical import repository", () => {
       repo.getHistoricalImportSource(actor, source!.id)
     ).resolves.toMatchObject({
       rawIngested: false,
-      projected: false
+      projected: false,
+      projectedRecordCount: 3,
+      lcmEligibleEventCount: 1,
+      lcmComplete: false
     });
     await expect(repo.reconcileHistoricalImportCompletion()).resolves.toEqual({
       sourcesCompleted: 0,

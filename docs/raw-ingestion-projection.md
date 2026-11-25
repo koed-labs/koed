@@ -706,10 +706,15 @@ Captured Session is rejected. Observation writes and cursor acknowledgements
 commit together. If the source's terminal count falls short, Projection is
 complete only when the same User and Captured Session have at least one durable
 historical observation and all their historical observations are terminal. This
-does not increase the source's recorded terminal count. Worker reconciliation
-refreshes progress on retry without rewriting observations or cursors.
-Completion and LCM finalization use Projection, Embedding, and LCM progress
-computed from the same database snapshot.
+does not increase the source's recorded terminal count. Before the cursor
+reaches the frontier, status still reports partial counts, but does not run
+Projection completion checks.
+
+Source status by ID or artifact identity, and source status in run detail, read
+Projection, Embedding, and LCM progress in one database statement without
+persisting the counters. Worker reconciliation uses the same calculation and
+persists counters on retry without rewriting observations or cursors. Completion
+and LCM finalization use progress computed from the same database snapshot.
 
 Embedding and LCM progress remain separate gates. The terminal `completed`
 import state requires semantic and LCM completion; reaching the historical
