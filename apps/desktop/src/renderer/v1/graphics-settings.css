@@ -1,0 +1,45 @@
+@scope (.v1-settings-popup.v1-app.v1-project-ui) {
+  .graphics-resolution-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(150px, 34%);
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
+    overflow: hidden;
+    background: var(--v1-field);
+  }
+  .graphics-resolution-setting {
+    align-self: center;
+    min-width: 0;
+    padding-inline: 15px;
+  }
+  .graphics-resolution-card + .group-block {
+    margin-top: 20px;
+  }
+  .graphics-kin-preview {
+    min-height: 148px;
+    display: grid;
+    place-items: center;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border-left: 1px solid var(--border);
+    background: var(--v1-rail);
+  }
+  .graphics-kin-preview .v1-kin-spot {
+    --spot-x: 0px;
+    --spot-y: calc(50% - 40px);
+    --spot-size: 76px;
+    z-index: -1;
+    filter: blur(8px);
+  }
+  @media (max-width: 840px) {
+    .graphics-resolution-card {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .graphics-kin-preview {
+      border-top: 1px solid var(--border);
+      border-left: 0;
+    }
+  }
+}

@@ -3,13 +3,15 @@ import type { PersonalProjectKin } from "@koed-labs/shared";
 import {
   KIN_COLOURS,
   KIN_DEFAULTS,
+  PixelkinAccessories,
   clone,
   editKin,
+  kinFileToSpec,
   kinToJson,
   readKin,
   type Kin,
   type KinShape
-} from "./vendor/index.js";
+} from "@koed-labs/kin-engine";
 
 // The agent's look is a Create your Kin character. The profile stores it as
 // that tool's JSON file, so a Kin made in the generator loads unchanged.
@@ -62,6 +64,22 @@ function legacyLook(value: Record<string, unknown>): AgentLook | null {
   return look;
 }
 
+function migrateAccessories(spec: Record<string, unknown>) {
+  const { face } = spec;
+  if (!record(face) || "items" in face) return spec;
+
+  const itemId = (value: unknown) =>
+    PixelkinAccessories.find(({ id }) => id === value)?.id;
+  const halloween = itemId(face.halloween);
+  // Halloween replaced all other equipment. Christmas only replaced the hat.
+  const items = halloween
+    ? [halloween]
+    : [itemId(face.christmas) ?? itemId(face.hat), itemId(face.glasses)].filter(
+        (id) => id !== undefined
+      );
+  return { ...spec, face: { ...face, items } };
+}
+
 // Accepts a Kin, a Create your Kin file or a legacy look; anything else is
 // replaced by the default rather than failing the screen that shows it.
 export function normalizeAgentLook(value: unknown): AgentLook {
@@ -69,7 +87,7 @@ export function normalizeAgentLook(value: unknown): AgentLook {
   if ("shape" in value && !("body" in value))
     return legacyLook(value) ?? clone(DEFAULT_AGENT_LOOK);
   try {
-    return readKin(value);
+    return readKin(migrateAccessories(kinFileToSpec(value)));
   } catch {
     return clone(DEFAULT_AGENT_LOOK);
   }

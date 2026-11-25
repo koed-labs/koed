@@ -1,4 +1,4 @@
-import { KIN_DEFAULTS } from "../pixelkin/vendor/index.js";
+import { KIN_DEFAULTS } from "@koed-labs/kin-engine";
 // The nine Kin from the homepage crowd. Keep each silhouette, material and
 // face together so other scenes can use the same characters.
 const specs = [

@@ -7,7 +7,10 @@ import {
   presentationPreferencesGetChannel,
   presentationPreferencesSetChannel
 } from "./protocol.js";
-import type { PresentationPreferences } from "../window/presentation-preferences.js";
+import {
+  kinResolutions,
+  type PresentationPreferences
+} from "./presentation-preferences-protocol.js";
 import type { DesktopAccelerationApi } from "@koed-labs/server";
 import {
   accelerationChannel,
@@ -89,6 +92,19 @@ import {
 const setupRunOptionsSchema = z
   .object({ acknowledgeOperatorProcessing: z.literal(true).optional() })
   .strict();
+
+const presentationPreferencesPatchSchema = z
+  .strictObject({
+    graphicsAcceleration: z.boolean(),
+    showMenuBar: z.boolean(),
+    floatingKin: z.boolean(),
+    kinResolution: z.enum(kinResolutions)
+  })
+  .partial()
+  .refine((patch) => {
+    const values = Object.values(patch);
+    return values.length > 0 && values.every((value) => value !== undefined);
+  });
 
 export const invokeChannel = "koed:invoke";
 
@@ -216,7 +232,7 @@ export const registerDesktopCommandHandlers = (
     ) => Promise<DesktopLaunchAtStartupState>;
     getPresentationPreferences?: () => PresentationPreferences;
     setPresentationPreferences?: (
-      value: PresentationPreferences
+      value: Partial<PresentationPreferences>
     ) => PresentationPreferences;
     selectProjectDirectory?: () => Promise<unknown>;
   }
@@ -341,31 +357,11 @@ export const registerDesktopCommandHandlers = (
   ipcMain.handle(presentationPreferencesSetChannel, (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins))
       throw new Error("Untrusted Desktop IPC sender.");
-    if (
-      !value ||
-      typeof value !== "object" ||
-      Object.keys(value).some(
-        (key) =>
-          key !== "graphicsAcceleration" &&
-          key !== "showMenuBar" &&
-          key !== "floatingKin"
-      ) ||
-      !("graphicsAcceleration" in value) ||
-      typeof value.graphicsAcceleration !== "boolean" ||
-      !("showMenuBar" in value) ||
-      typeof value.showMenuBar !== "boolean" ||
-      ("floatingKin" in value && typeof value.floatingKin !== "boolean")
-    )
-      throw new Error("Invalid presentation preferences.");
+    const patch = presentationPreferencesPatchSchema.safeParse(value);
+    if (!patch.success) throw new Error("Invalid presentation preferences.");
     if (!options.setPresentationPreferences)
       throw new Error("Presentation settings are unavailable.");
-    return options.setPresentationPreferences({
-      graphicsAcceleration: value.graphicsAcceleration,
-      showMenuBar: value.showMenuBar,
-      ...("floatingKin" in value && typeof value.floatingKin === "boolean"
-        ? { floatingKin: value.floatingKin }
-        : {})
-    });
+    return options.setPresentationPreferences(patch.data);
   });
   ipcMain.handle(themePreferenceSetChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {

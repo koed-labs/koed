@@ -148,8 +148,8 @@ At least one currently ready, authenticated AI Client is required to continue.
 
 The setup presentation uses the staged Pixelkin prototype design: a large Kin,
 real setup progress, client discovery and connection, and a final celebration.
-The renderer and expressions come from Desktop's vendored Pixelkin engine;
-no website scripts are loaded. Reduced motion and a WebGL fallback preserve
+Desktop bundles the renderer, expressions, and accessory meshes from
+`@koed-labs/kin-engine`. Reduced motion and a WebGL fallback preserve
 usable status feedback. Onboarding follows the system appearance and does not
 change the persisted theme preference.
 Setup begins only after **Get Started** authorizes local installation. Desktop
@@ -285,12 +285,9 @@ packaging, signing, runtime distribution, or packaged smoke support.
   variables, or public CLI flags. See [Desktop CLI launcher](../../docs/desktop-cli.md)
   for opt-in installation and PATH management. Linux launcher installation is
   disabled until durable executable and CLI paths can be verified.
-- The agent's Pixelkin comes from the Pixelkin engine in the `pixelkin-lab`
-  repository. Until that repository is public, the renderer keeps a copy in
-  `src/renderer/v1/pixelkin/vendor/`. Do not edit it by hand: change
-  `pixelkin-lab`, then run
-  `pnpm --filter @koed-labs/desktop pixelkin:sync <path to pixelkin-lab>`. A test
-  fails if the copy differs from the commit recorded in `vendor/SOURCE.json`.
+- Update the Kin engine by changing the pinned `@koed-labs/kin-engine` version
+  in Desktop's package manifest and refreshing the workspace lockfile. Vite
+  bundles the engine, its mesh assets, and its license with the renderer.
 
 ### Privacy asset management before startup
 

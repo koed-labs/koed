@@ -3,7 +3,8 @@ import { Button, Switch } from "@koed-labs/ui";
 import { Laptop, Sun, Moon, Check } from "lucide-react";
 import type { DesktopApi, DesktopLaunchAtStartupState } from "../../types.js";
 import type { ThemeStore } from "../state/theme.js";
-import { Group, Row } from "./settings-controls.js";
+import { Group, PageLink, Row, type Detail } from "./settings-controls.js";
+import type { PresentationSettingsState } from "./use-presentation-preferences.js";
 const themes = [
   { value: "system", label: "System", Icon: Laptop },
   { value: "light", label: "Light", Icon: Sun },
@@ -127,49 +128,12 @@ function LaunchSetting({ api }: { api?: DesktopApi["launchAtStartup"] }) {
   );
 }
 function PresentationSettings({
-  api
+  presentation
 }: {
-  api?: DesktopApi["presentationPreferences"];
+  presentation: PresentationSettingsState;
 }) {
-  const [state, setState] = useState<
-    | (Awaited<
-        ReturnType<NonNullable<DesktopApi["presentationPreferences"]>["get"]>
-      > & { floatingKin?: boolean })
-    | null
-  >(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!api) return;
-    let active = true;
-    void api
-      .get()
-      .then((value) => {
-        if (active) setState(value);
-      })
-      .catch(() => {
-        if (active) setError("Window settings could not be read.");
-      });
-    return () => {
-      active = false;
-    };
-  }, [api]);
-  if (!api) return null;
-  const change = async (
-    key: "graphicsAcceleration" | "showMenuBar" | "floatingKin",
-    enabled: boolean
-  ) => {
-    if (!state) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setState(await api.set({ ...state, [key]: enabled }));
-    } catch {
-      setError("Window settings could not be changed.");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { available, saved, busy, update } = presentation;
+  if (!available) return null;
   return (
     <>
       <Row
@@ -178,47 +142,35 @@ function PresentationSettings({
       >
         <Switch
           aria-label="Show Koed in the menu bar"
-          checked={state?.showMenuBar ?? false}
-          disabled={!state || busy}
-          onCheckedChange={(value) => void change("showMenuBar", value)}
-        />
-      </Row>
-      <Row
-        title="Graphics acceleration"
-        description="Takes effect after restarting Koed."
-      >
-        <Switch
-          aria-label="Graphics acceleration"
-          checked={state?.graphicsAcceleration ?? false}
-          disabled={!state || busy}
-          onCheckedChange={(value) =>
-            void change("graphicsAcceleration", value)
-          }
+          checked={saved?.showMenuBar ?? false}
+          disabled={!saved || busy}
+          onCheckedChange={(showMenuBar) => void update({ showMenuBar })}
         />
       </Row>
       {navigator.platform.startsWith("Mac") && (
         <Row title="Chief of Staff" description="Turn Floating Kin on or off.">
           <Switch
             aria-label="Chief of Staff"
-            checked={state?.floatingKin ?? false}
-            disabled={!state || busy}
-            onCheckedChange={(value) => void change("floatingKin", value)}
+            checked={saved?.floatingKin ?? false}
+            disabled={!saved || busy}
+            onCheckedChange={(floatingKin) => void update({ floatingKin })}
           />
         </Row>
       )}
-      {error && <p role="alert">{error}</p>}
     </>
   );
 }
 export function GeneralPreferences({
   themeStore,
   launchAtStartup,
-  presentationPreferences,
+  presentation,
+  onOpenPage,
   onRestartOnboarding
 }: {
   themeStore: ThemeStore;
   launchAtStartup?: DesktopApi["launchAtStartup"];
-  presentationPreferences?: DesktopApi["presentationPreferences"];
+  presentation: PresentationSettingsState;
+  onOpenPage: (page: Detail) => void;
   onRestartOnboarding?: () => void | Promise<void>;
 }) {
   const theme = useSyncExternalStore(themeStore.subscribe, themeStore.current);
@@ -245,7 +197,8 @@ export function GeneralPreferences({
       {theme.error && <p role="alert">{theme.error}</p>}
       <Group title="On this device">
         <LaunchSetting api={launchAtStartup} />
-        <PresentationSettings api={presentationPreferences} />
+        <PresentationSettings presentation={presentation} />
+        <PageLink page="graphics" onOpen={onOpenPage} />
         {onRestartOnboarding && (
           <Row
             title="Setup"
@@ -262,6 +215,7 @@ export function GeneralPreferences({
           </Row>
         )}
       </Group>
+      {presentation.error && <p role="alert">{presentation.error}</p>}
       {error && <p role="alert">{error}</p>}
     </>
   );

@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LoadingKin } from "./LoadingKin.js";
 const engine = vi.hoisted(() => ({ render: vi.fn(), lose: vi.fn() }));
-vi.mock("../pixelkin/vendor/index.js", async (original) => ({
+vi.mock("@koed-labs/kin-engine", async (original) => ({
   ...(await original<object>()),
   CrowdGLRenderer: class {
     available = true;

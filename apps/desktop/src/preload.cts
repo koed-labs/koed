@@ -4,7 +4,7 @@ import {
   presentationPreferencesGetChannel,
   presentationPreferencesSetChannel
 } from "./ipc/protocol.js";
-import type { PresentationPreferences } from "./window/presentation-preferences.js";
+import type { PresentationPreferencesApi } from "./ipc/presentation-preferences-protocol.js";
 import { accelerationChannel } from "./ipc/acceleration-protocol.js";
 import type { AccelerationChoice } from "@koed-labs/server";
 import { contextBridge, ipcRenderer } from "electron";
@@ -110,11 +110,9 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     set: (preference: "light" | "dark" | "system") =>
       ipcRenderer.invoke(themePreferenceSetChannel, preference)
   }),
-  presentationPreferences: Object.freeze({
-    get: (): Promise<PresentationPreferences> =>
-      ipcRenderer.invoke(presentationPreferencesGetChannel),
-    set: (value: PresentationPreferences): Promise<PresentationPreferences> =>
-      ipcRenderer.invoke(presentationPreferencesSetChannel, value)
+  presentationPreferences: Object.freeze<PresentationPreferencesApi>({
+    get: () => ipcRenderer.invoke(presentationPreferencesGetChannel),
+    set: (value) => ipcRenderer.invoke(presentationPreferencesSetChannel, value)
   }),
   performance: Object.freeze({
     inspect: () =>

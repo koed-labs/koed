@@ -1,7 +1,22 @@
-// Shared by onboarding and Home's large Kin. Keep the canvas detail and
-// surface treatment together so the two stages retain the same finish.
-export function kinStageSize(width: number, height: number) {
-  const scale = Math.max(2, Math.min(window.devicePixelRatio || 1, 3));
+import type { KinResolution } from "../../../ipc/presentation-preferences-protocol.js";
+
+const resolutionLimits: Record<KinResolution, number> = {
+  classic: 96,
+  balanced: 160,
+  max: Infinity
+};
+
+// Keep the stage aspect ratio when a lower preset caps the render size.
+export function kinStageSize(
+  width: number,
+  height: number,
+  resolution: KinResolution = "max"
+) {
+  const displayScale = Math.max(2, Math.min(window.devicePixelRatio || 1, 3));
+  const scale = Math.min(
+    displayScale,
+    resolutionLimits[resolution] / Math.max(width, height, 1)
+  );
   return {
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale))

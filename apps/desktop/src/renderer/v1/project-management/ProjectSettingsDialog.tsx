@@ -383,7 +383,12 @@ export function ProjectSettingsDialog({
                 aria-label="Kin preview"
               >
                 <div className="v1-kin-spot" aria-hidden="true" />
-                <Pixelkin look={draft.look} size={142} hopOnChange />
+                <Pixelkin
+                  look={draft.look}
+                  size={142}
+                  presentation="stage"
+                  hopOnChange
+                />
               </div>
               <AgentLookPicker
                 look={draft.look}

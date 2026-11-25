@@ -69,10 +69,10 @@ Conversations keep their execution owner, while a new Conversation can choose
 a configured client. Managed execution, approvals, streaming, and draft recovery
 use the existing controller with the new presentation.
 
-Window graphics acceleration is a local Electron preference applied on the next
-app launch. It never changes embedding or privacy inference acceleration. The
-menu-bar preference changes only the tray visibility; existing service lifecycle
-and native menu commands are retained.
+Window graphics acceleration in **General → Graphics** is a local Electron
+preference applied on the next app launch. It never changes embedding or privacy
+inference acceleration. The menu-bar preference changes only the tray visibility;
+existing service lifecycle and native menu commands are retained.
 
 AI settings retain the existing single default AI Client, model, and reasoning
 level for new Conversations. Available models and reasoning levels come from

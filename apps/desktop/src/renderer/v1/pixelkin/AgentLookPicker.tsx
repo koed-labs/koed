@@ -20,7 +20,7 @@ import {
   editKin,
   limitKinSaturation,
   type KinShape
-} from "./vendor/index.js";
+} from "@koed-labs/kin-engine";
 
 const shapes = {
   sphere: { label: "Sphere", Icon: Circle },

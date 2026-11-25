@@ -11,6 +11,7 @@ import type {
 } from "@koed-labs/shared";
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "./window/theme-preference.js";
+import type { PresentationPreferencesApi } from "./ipc/presentation-preferences-protocol.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { V1StateDesktopApi } from "./ipc/v1-state-protocol.js";
 import type {
@@ -233,13 +234,7 @@ export interface DesktopApi {
       preference: DesktopThemePreference
     ) => Promise<{ preference: DesktopThemePreference; resolvedDark: boolean }>;
   };
-  presentationPreferences?: {
-    get: () => Promise<{ graphicsAcceleration: boolean; showMenuBar: boolean }>;
-    set: (value: {
-      graphicsAcceleration: boolean;
-      showMenuBar: boolean;
-    }) => Promise<{ graphicsAcceleration: boolean; showMenuBar: boolean }>;
-  };
+  presentationPreferences?: PresentationPreferencesApi;
   acceleration?: DesktopAccelerationApi;
   performance?: DesktopPerformanceApi;
   hardwareAcceleration?: {

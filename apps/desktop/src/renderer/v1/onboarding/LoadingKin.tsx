@@ -5,10 +5,14 @@ import {
   KIN_DEFAULTS,
   clone,
   kinMember
-} from "../pixelkin/vendor/index.js";
+} from "@koed-labs/kin-engine";
 import { KinSpin } from "./kin-spin.js";
 import { kinStageSize, kinStageSurface } from "../pixelkin/presentation.js";
 import { createHappyJoyCycle, onboardingSkins } from "./kin-presentation.js";
+import {
+  currentKinResolution,
+  subscribeKinResolution
+} from "../../state/kin-resolution.js";
 
 type Props = {
   initialized?: boolean;
@@ -31,8 +35,7 @@ const ease = (n: number) => {
 const differentIndex = (current: number, length: number) =>
   (current + 1 + Math.floor(Math.random() * (length - 1))) % length;
 
-// Choreography follows the retained prototype. Rendering and expressions come
-// exclusively from the engine vendored on this branch.
+// Choreography follows the retained prototype.
 export function LoadingKin({
   initialized = true,
   complete,
@@ -271,8 +274,10 @@ export function LoadingKin({
             y: (target.y - position.y) / length,
             z: (target.z - position.z) / length
           };
+          const resolution = currentKinResolution();
+          canvas.dataset.kinResolution = resolution;
           renderer.render({
-            ...kinStageSize(width, height),
+            ...kinStageSize(width, height, resolution),
             pixelStep: 1,
             camera: {
               position,
@@ -400,9 +405,11 @@ export function LoadingKin({
         setStatus("fallback");
       };
       canvas.addEventListener("webglcontextlost", onContextLost);
+      const unsubscribeResolution = subscribeKinResolution(requestFrame);
       requestFrame();
       setStatus("ready");
       dispose = () => {
+        unsubscribeResolution();
         wake.current = () => {};
         control.removeEventListener("pointerdown", onDown);
         control.removeEventListener("pointermove", onMove);

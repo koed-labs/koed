@@ -489,11 +489,7 @@ const run = async () => {
     const kinState = await evaluate(
       "document.querySelector('.lp-kin-scene').dataset.kinState"
     );
-    assert.equal(
-      kinState,
-      "ready",
-      "Branch Pixelkin engine renders in Electron"
-    );
+    assert.equal(kinState, "ready", "Published Kin engine renders in Electron");
     await evaluate(
       "document.querySelector('.lp-kin-scene canvas').dispatchEvent(new Event('webglcontextlost'))"
     );
