@@ -60,8 +60,10 @@
   box-sizing: border-box;
   display: grid;
   place-items: center;
-  padding-bottom: var(--ledge);
+  padding: 0 0 var(--ledge);
+  border: 0;
   border-radius: 16px;
+  cursor: pointer;
   color: #fff;
   background:
     repeating-conic-gradient(rgb(0 0 0 / 0.16) 0 25%, transparent 0 50%) 0 0 /
@@ -97,7 +99,16 @@
 .v1-home-keycaps li[data-state="unsure"] .v1-home-keycap {
   opacity: 0.45;
 }
-.v1-home-keycaps li[data-state="attention"] .v1-home-keycap {
+.v1-home-keycap:hover {
+  filter: brightness(1.12);
+}
+.v1-home-keycap:focus-visible,
+.v1-home-history-chip:focus-visible {
+  outline: 2px solid var(--v1-fg2);
+  outline-offset: 5px;
+}
+.v1-home-keycaps li[data-state="attention"] .v1-home-keycap,
+.v1-home-keycaps li[data-model-problem] .v1-home-keycap {
   box-shadow:
     inset 0 calc(-1 * var(--ledge)) 0 color-mix(in srgb, var(--cap), #000 38%),
     inset 0 2px 0 rgb(255 255 255 / 0.22),
@@ -111,17 +122,16 @@
   color: var(--v1-muted);
   background: var(--v1-surface);
 }
-/* Connected and done carry a green dot, not a green fill, so they don't
-   blur into the Codex keycap's own green. */
-.v1-home-keycaps li[data-state="connected"] .v1-home-pill:not([data-lifecycle]),
-.v1-home-keycaps li .v1-home-pill[data-lifecycle="completed"] {
+/* Keep the Connected marker distinct from the Codex keycap's green. */
+.v1-home-keycaps
+  li[data-state="connected"]:not([data-model-problem])
+  .v1-home-pill {
   color: var(--v1-fg2);
   background: var(--v1-surface);
 }
 .v1-home-keycaps
-  li[data-state="connected"]
-  .v1-home-pill:not([data-lifecycle])::before,
-.v1-home-keycaps li .v1-home-pill[data-lifecycle="completed"]::before {
+  li[data-state="connected"]:not([data-model-problem])
+  .v1-home-pill::before {
   content: "";
   display: inline-block;
   width: 6px;
@@ -131,7 +141,8 @@
   vertical-align: 1px;
   background: var(--v1-heat-2);
 }
-.v1-home-keycaps li[data-state="attention"] .v1-home-pill {
+.v1-home-keycaps li[data-state="attention"] .v1-home-pill,
+.v1-home-keycaps li[data-model-problem] .v1-home-pill {
   color: var(--v1-heat-3);
   background: color-mix(in srgb, var(--v1-heat-3) 14%, transparent);
 }
@@ -421,12 +432,34 @@
 .v1-home-top-progress {
   position: relative;
   z-index: 5;
-  width: min(560px, 100%);
-  margin: 0 auto 20px;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
   text-align: center;
 }
-/* At the top of the stage there's no room above, so the skipped
-   explanation opens downward, over the keycaps. */
+.v1-home-history-chip {
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.v1-home-history-detail {
+  position: absolute;
+  inset: 100% auto auto 50%;
+  transform: translateX(-50%);
+  width: min(350px, 80vw);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--v1-surface);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 0.2);
+}
+.v1-home-history-detail ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--v1-muted);
+}
+/* Open downward to keep the AI Client keycaps accessible. */
 .v1-home-top-progress .v1-home-skip-help [role="tooltip"] {
   top: calc(100% + 8px);
   bottom: auto;
@@ -576,18 +609,6 @@
 }
 .v1-home-pill {
   white-space: nowrap;
-}
-.v1-home-keycaps li .v1-home-pill[data-lifecycle] {
-  color: var(--v1-muted);
-  background: var(--v1-surface);
-}
-.v1-home-keycaps li .v1-home-pill[data-lifecycle="running"] {
-  color: var(--v1-accent-text);
-  background: color-mix(in srgb, var(--v1-accent) 16%, transparent);
-}
-.v1-home-keycaps li .v1-home-pill[data-stuck] {
-  color: var(--v1-heat-3);
-  background: color-mix(in srgb, var(--v1-heat-3) 14%, transparent);
 }
 .v1-home-warnings {
   position: absolute;

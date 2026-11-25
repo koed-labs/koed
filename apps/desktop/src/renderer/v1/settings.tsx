@@ -25,6 +25,7 @@ import {
 import { SettingsTools, SettingsToolPage } from "./settings-tools.js";
 import { GeneralPreferences } from "./settings-general.js";
 import { SettingsModels } from "./settings-ai.js";
+import type { ClientId } from "./onboarding/model.js";
 import {
   SettingsServicePage,
   SettingsServicesOverview,
@@ -54,6 +55,7 @@ export type V1SettingsProps = {
   onClose: () => void;
   initialTab?: V1SettingsTab | "agent";
   initialPage?: V1SettingsPage;
+  clientTarget?: { id: ClientId; opener: HTMLButtonElement } | null;
   cliInstall?: DesktopApi["cliInstall"];
   onRestartOnboarding?: () => Promise<void> | void;
   launchAtStartup?: DesktopApi["launchAtStartup"];
@@ -68,6 +70,7 @@ export function V1Settings({
   onClose,
   initialTab = "general",
   initialPage,
+  clientTarget,
   cliInstall = window.koedDesktop?.cliInstall,
   onRestartOnboarding,
   launchAtStartup = window.koedDesktop?.launchAtStartup,
@@ -90,6 +93,7 @@ export function V1Settings({
   const servicesRefreshDeadline = useRef<number | null>(null);
   const snapshot = useDesktopStatus(statusStore);
   const activeTab = useRef<HTMLButtonElement>(null);
+  const aiClientRow = useRef<HTMLDivElement>(null);
   const [opener] = useState(() =>
     document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -223,8 +227,8 @@ export function V1Settings({
       <DialogPopup
         className="v1-settings-popup v1-app v1-project-ui"
         showCloseButton={false}
-        initialFocus={activeTab}
-        finalFocus={() => opener}
+        initialFocus={() => aiClientRow.current ?? activeTab.current}
+        finalFocus={() => clientTarget?.opener ?? opener}
       >
         <DialogTitle className="sr-only">Desktop Settings</DialogTitle>
         <nav className="settings-nav" aria-label="Settings sections">
@@ -328,6 +332,8 @@ export function V1Settings({
             ))}
           {tab === "ai" && (
             <SettingsModels
+              focusClient={clientTarget?.id}
+              focusRef={aiClientRow}
               api={localAiClients}
               statusStore={statusStore}
               snapshot={snapshot}

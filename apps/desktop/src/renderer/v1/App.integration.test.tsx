@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { homeStatus } from "./home/home-status.fixture.js";
+import { memoryModelFixture } from "./onboarding/memory-model.fixture.js";
 import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   type PersonalDesktopApi,
@@ -249,6 +250,130 @@ describe("V1App launch integration", () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  it.each([false, true])(
+    "opens AI models from a signed-out Claude square and restores focus (saved: %s)",
+    async (saved) => {
+      const fixture = memoryModelFixture(() => ["claude"]);
+      const initial = (await fixture.list()).readModel;
+      const readModel = {
+        ...initial,
+        settings: saved
+          ? [
+              {
+                flowKey: "mcp_memory_answer" as const,
+                provider: "claude" as const,
+                aiClientInstanceId: "claude.default",
+                model: "haiku",
+                reasoningEffort: "medium",
+                timeoutMs: 120000,
+                maxAttempts: 2,
+                createdAt: "",
+                updatedAt: ""
+              }
+            ]
+          : []
+      };
+      const localAiClients = {
+        list: vi.fn(async () => ({ readModel })),
+        refresh: vi.fn(async () => ({ readModel }))
+      };
+      desktopStatus.status = {
+        ...desktopStatus.status,
+        claudeCode: {
+          configured: true,
+          detected: true,
+          state: "needs_attention",
+          details: { captureConfigured: true, mcpConfigured: true }
+        },
+        aiClients: {
+          claude: {
+            instanceId: "claude.default",
+            installed: { state: "healthy" },
+            authentication: "unauthenticated",
+            capabilities: [],
+            snapshotState: "current"
+          }
+        }
+      } as unknown as KoedServerStatus;
+      Object.defineProperty(window, "koedDesktop", {
+        configurable: true,
+        value: {
+          localAiClients,
+          v1State: {
+            readProfile: async () => ({
+              agentName: "Ada",
+              onboarding: { selections: {}, completed: true }
+            }),
+            readIdentity: async () => ({
+              ownerId: uuid(3),
+              scopeKey: "a".repeat(64)
+            }),
+            readProvenance: async () => ({
+              schemaVersion: 1,
+              projects: {},
+              conversations: {}
+            })
+          }
+        }
+      });
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      await act(async () =>
+        root!.render(
+          <V1App
+            personalMemoryApi={{} as never}
+            managedConversations={null}
+            statusStore={{ refresh: async () => undefined } as never}
+            themeStore={{ load: async () => undefined } as never}
+          />
+        )
+      );
+      const square = container.querySelector<HTMLButtonElement>(
+        'button.v1-home-keycap[data-client="claude"]'
+      )!;
+      expect(square).not.toBeNull();
+      expect(square.closest("li")?.textContent).toBe(
+        saved ? "Memory Model unavailable" : ""
+      );
+      expect(localAiClients.refresh).not.toHaveBeenCalled();
+      await act(async () => {
+        square.focus();
+        square.click();
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect(
+        document.querySelector('[role="tab"][aria-selected="true"]')
+          ?.textContent
+      ).toBe("AI models");
+      expect(document.activeElement).toBe(
+        document.querySelector('.client-row[data-client="claude"]')
+      );
+      const model = document.querySelector('[aria-label="Memory Model"]')!;
+      if (saved) {
+        expect(model.textContent).toContain(
+          "Saved: Claude Code · haiku · medium"
+        );
+        expect(model.querySelector('[role="alert"]')?.textContent).toContain(
+          "claude auth login"
+        );
+      } else expect(model.querySelector('[role="alert"]')).toBeNull();
+      await act(async () =>
+        document
+          .querySelector<HTMLButtonElement>(
+            'button[aria-label="Close settings"]'
+          )!
+          .click()
+      );
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect(document.activeElement).toBe(square);
+    }
+  );
 
   const previewCases = [
     "success",

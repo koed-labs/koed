@@ -71,6 +71,40 @@ function executionLimits(read: LocalAiClientReadModel) {
   return { error: "", limits: limits as MemoryModelInput["limits"] };
 }
 
+// Home reads recorded capability evidence on the existing status cadence.
+// Opening Settings, not rendering Home, can run active discovery.
+export function useMemoryModelRead(
+  api: Pick<MemoryModelApi, "list"> | undefined,
+  statusRevision: number,
+  scope: string | null,
+  settingsOpen: boolean
+) {
+  const [observation, setObservation] = useState<{
+    api: typeof api;
+    scope: typeof scope;
+    read: LocalAiClientReadModel | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!api || settingsOpen) return;
+    let active = true;
+    void api.list().then(
+      (result) => {
+        if (active)
+          setObservation({ api, scope, read: result?.readModel ?? null });
+      },
+      () => {
+        if (active) setObservation({ api, scope, read: null });
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [api, scope, settingsOpen, statusRevision]);
+  return observation?.scope === scope && observation.api === api
+    ? observation.read
+    : null;
+}
+
 export function useMemoryModel(
   api?: MemoryModelApi,
   connectedProviders?: readonly Selection["provider"][]
@@ -83,11 +117,16 @@ export function useMemoryModel(
   const writing = useRef(false);
   const [saved, setSaved] = useState(false);
   const [refreshing, setRefreshing] = useState(!!api);
-  const [revision, setRevision] = useState(0);
+  const [reload, setReload] = useState({ revision: 0, discover: true });
+  const readFrom = useRef(api);
+  const onboarding = !!connectedProviders;
   useEffect(() => {
     let active = true;
-    setRead(null);
-    setDraft(null);
+    if (readFrom.current !== api || onboarding) {
+      readFrom.current = api;
+      setRead(null);
+      setDraft(null);
+    }
     setSaved(false);
     setSaveError("");
     setLoadError("");
@@ -98,6 +137,7 @@ export function useMemoryModel(
           const cached = await api.list();
           if (!active) return;
           setRead(cached.readModel);
+          if (!reload.discover) return;
           const latest = await api.refresh();
           if (active) {
             setRead(latest.readModel);
@@ -112,7 +152,7 @@ export function useMemoryModel(
     return () => {
       active = false;
     };
-  }, [api, revision]);
+  }, [api, reload, onboarding]);
 
   const assignments = read
     ? memoryModelFlowKeys.map((key) => assignmentFrom(read, key))
@@ -199,6 +239,12 @@ export function useMemoryModel(
     }
   }
   const choice = draft ?? initial;
+  const savedSelections =
+    !connectedProviders && read
+      ? read.settings.filter((setting) =>
+          memoryModelFlowKeys.some((key) => key === setting.flowKey)
+        )
+      : [];
   const instance = instances.find(
     (i) =>
       i.instanceId === choice?.ai_client_instance_id &&
@@ -324,9 +370,20 @@ export function useMemoryModel(
     refreshing,
     unchanged: matches(choice, common),
     mixed: !!read && !common && !draft,
-    unavailable: !!common && !draft && (!model || !effort),
+    savedSelections,
+    confirmedRead: refreshing || loadError ? null : read,
     loadError,
+    settingsError: saveError || execution?.error,
     error: saveError || execution?.error || loadError,
-    retry: () => setRevision((n) => n + 1)
+    retry: () =>
+      setReload((previous) => ({
+        revision: previous.revision + 1,
+        discover: true
+      })),
+    reread: () =>
+      setReload((previous) => ({
+        revision: previous.revision + 1,
+        discover: false
+      }))
   };
 }

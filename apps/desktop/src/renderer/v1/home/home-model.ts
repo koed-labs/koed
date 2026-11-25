@@ -9,7 +9,10 @@ import {
   setupStepsFromStatus,
   type SetupStep
 } from "../../views/onboarding/setup-model.js";
-import { aiClientHealth } from "../client-health.js";
+import {
+  aiClientHealth,
+  type savedMemoryModelProblems
+} from "../client-health.js";
 import { clients, type ClientId } from "../onboarding/model.js";
 
 export type HomeProblem = {
@@ -61,11 +64,13 @@ export const homeProblems = (status: KoedServerStatus): HomeProblem[] => {
       id: `client-${id}`,
       title: label,
       message: health.description,
-      action: {
-        command: `repair_${id}`,
-        label: `Repair ${label}`,
-        requiresConsent: true
-      }
+      action: health.repairable
+        ? {
+            command: `repair_${id}`,
+            label: `Repair ${label}`,
+            requiresConsent: true
+          }
+        : null
     });
   }
   if (unhealthy(status.captureHook))
@@ -249,6 +254,8 @@ export type HomeClient = {
   state: "connected" | "detected" | "unsure" | "attention";
   label: string;
   version: string | null;
+  repairable?: boolean;
+  modelProblem?: boolean;
 };
 
 const clientLabels: Record<HomeClient["state"], string> = {
@@ -260,24 +267,35 @@ const clientLabels: Record<HomeClient["state"], string> = {
 
 // Detected or configured AI Clients; a configured client stays listed even
 // when detection is unavailable. Health matches Settings via aiClientHealth.
-export function homeClients(status: KoedServerStatus | null): HomeClient[] {
+export function homeClients(
+  status: KoedServerStatus | null,
+  modelProblems: ReturnType<typeof savedMemoryModelProblems> = []
+): HomeClient[] {
   if (!status) return [];
   return clients.flatMap(({ id, label: name }) => {
     const health = aiClientHealth(id, status);
-    if (!health.installed && !health.configured) return [];
-    const snapshot = status.aiClients?.[id]?.snapshotState;
-    const state: HomeClient["state"] = !health.configured
-      ? "detected"
-      : health.needsAttention
-        ? "attention"
-        : snapshot === "stale" || snapshot === "unknown"
+    const modelProblem = modelProblems.some(({ provider }) => provider === id);
+    if (
+      !health.installed &&
+      !health.configured &&
+      !health.needsAttention &&
+      !modelProblem
+    )
+      return [];
+    const state: HomeClient["state"] = health.needsAttention
+      ? "attention"
+      : health.connected
+        ? "connected"
+        : health.unknown || !health.installed
           ? "unsure"
-          : "connected";
+          : "detected";
     return [
       {
         id,
         name,
         state,
+        modelProblem,
+        repairable: health.repairable,
         label: state === "attention" ? health.description : clientLabels[state],
         // "2.1.312 (Claude Code)" repeats the name beside it.
         version:
