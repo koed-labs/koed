@@ -5,13 +5,18 @@ import { KinSpin } from "../onboarding/kin-spin.js";
 import { addPixelkin, createPixelkinActor, setPixelkinKin } from "./stage.js";
 import { kinStageSize, kinStageSurface } from "./presentation.js";
 
-const engine = vi.hoisted(() => ({ render: vi.fn() }));
+const engine = vi.hoisted(() => ({
+  ready: Promise.resolve(),
+  render: vi.fn()
+}));
 vi.mock("@koed-labs/kin-engine", async (original) => ({
   ...(await original<object>()),
   CrowdGLRenderer: class {
     available = true;
     canvas = document.createElement("canvas");
-    ready = Promise.resolve();
+    get ready() {
+      return engine.ready;
+    }
     render = engine.render;
   }
 }));
@@ -187,7 +192,10 @@ describe("Kin stage rendering", () => {
     }
   );
   describe("idle rendering", () => {
-    const setup = (focused: boolean, animateUnfocused = false) => {
+    const setup = (
+      focused: boolean,
+      options?: Parameters<typeof addPixelkin>[1]
+    ) => {
       const frames: FrameRequestCallback[] = [];
       vi.stubGlobal("WebGL2RenderingContext", class {});
       vi.stubGlobal(
@@ -210,7 +218,7 @@ describe("Kin stage rendering", () => {
         drawImage: vi.fn()
       } as unknown as CanvasRenderingContext2D);
       const actor = createPixelkinActor(canvas, KIN_DEFAULTS, 64, "avatar");
-      const remove = addPixelkin(actor, { animateUnfocused });
+      const remove = addPixelkin(actor, options);
       return { frames, hasFocus, actor, remove };
     };
 
@@ -255,8 +263,34 @@ describe("Kin stage rendering", () => {
       }
     });
 
+    it("repaints a still Kin once when accessory artwork finishes loading", async () => {
+      const { frames, remove } = setup(true, { still: true });
+      let finishLoad!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        finishLoad = resolve;
+      });
+      engine.render.mockImplementationOnce(() => {
+        engine.ready = ready;
+      });
+      try {
+        frames[0]!(100);
+        expect(frames).toHaveLength(1);
+        finishLoad();
+        await ready;
+        expect(frames).toHaveLength(2);
+        frames[1]!(150);
+        await ready;
+        expect(engine.render).toHaveBeenCalledTimes(2);
+        expect(frames).toHaveLength(2);
+      } finally {
+        remove();
+      }
+    });
+
     it("keeps a visible opt-in Kin animated after blur, without painting other Kin", () => {
-      const { frames, hasFocus, actor, remove } = setup(true, true);
+      const { frames, hasFocus, actor, remove } = setup(true, {
+        animateUnfocused: true
+      });
       const removeOther = addPixelkin(
         createPixelkinActor(actor.canvas, KIN_DEFAULTS, 40)
       );

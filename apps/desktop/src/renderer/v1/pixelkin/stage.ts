@@ -246,7 +246,11 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
   }
   gl.render(scene);
   // Mask artwork can complete after the first draw, including on still Kin.
-  if (gl.ready !== readyFrame) void gl.ready.then(wakePixelkins, () => {});
+  const ready = gl.ready;
+  if (ready !== readyFrame) {
+    readyFrame = ready;
+    void ready.then(wakePixelkins, () => {});
+  }
   // Stage Kin retain every rendered pixel; small avatars use integer zoom.
   const size = stage ? pixels : pixels * zoom;
   if (actor.canvas.width !== size) {
