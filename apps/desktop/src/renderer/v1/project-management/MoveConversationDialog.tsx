@@ -69,7 +69,11 @@ export function MoveConversationDialog(
               value={destination}
               options={review.projects
                 .filter((p) => p.id !== source?.id)
-                .map((p) => ({ value: p.id, label: p.name }))}
+                .map((p) => ({
+                  value: p.id,
+                  label: p.name,
+                  look: projectKinLook(p.id, p.namedProject?.kin)
+                }))}
               onChange={setDestination}
               disabled={busy}
             />
