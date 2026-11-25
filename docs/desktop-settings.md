@@ -8,8 +8,10 @@ General lists Appearance, On this device, and Optional tools, in that order.
 Appearance selects System, Light, or Dark. Device preferences include opening
 Koed at login, menu-bar visibility, and a nested Graphics page.
 Run setup again remains available when the installation supports it.
-On macOS, **Chief of Staff** is off by default. Turn it on to show Floating Kin
-and see [recent captured activity](floating-kin.md) without opening the main window.
+On macOS, the **Chief of Staff** switch controls whether the Kin can float
+outside the Koed window. It is off by default. The Kin and its
+[recent captured activity](floating-kin.md) are still available in Koed when
+floating is off.
 
 Open **Graphics** to choose **Classic**, **Balanced**, or **Max** Kin resolution.
 The preview updates as you move the slider. Desktop saves your choice when you

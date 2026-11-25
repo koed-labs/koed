@@ -72,6 +72,7 @@ it("opens sync conflict review even when a retained exclusion blocks membership 
           onSave={vi.fn()}
           onRefresh={vi.fn()}
           onDelete={vi.fn()}
+          deviceSync
         />
       )
     );
@@ -93,6 +94,42 @@ it("opens sync conflict review even when a retained exclusion blocks membership 
     expect(document.body.textContent).toContain("Project catalog");
     expect(document.body.textContent).toContain("Other name");
     expect(button("Review this choice").disabled).toBe(false);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it("hides the Sync page while Personal Device Sync is off", async () => {
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const projects = mergeProjectSources(f.inventory(), []);
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  const navigation = () =>
+    [...document.querySelectorAll(".v1-pm-nav-link")].map((link) =>
+      link.textContent?.trim()
+    );
+  try {
+    await act(async () =>
+      root.render(
+        <ProjectSettingsDialog
+          api={f.api}
+          store={new PersonalMemoryStore(f.api)}
+          projects={projects}
+          projectId={projectId}
+          page="sync"
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          onRefresh={vi.fn()}
+          onDelete={vi.fn()}
+        />
+      )
+    );
+    expect(navigation()).toEqual(["General", "Kin", "Conversations"]);
+    expect(document.querySelector(".v1-pm-page-heading")?.textContent).toBe(
+      "General"
+    );
   } finally {
     await act(async () => root.unmount());
     container.remove();
@@ -420,15 +457,19 @@ it("keeps a staged exclusion individually undoable when its final rule is remove
     );
     expect(row(excludedTitle)?.textContent).toContain("Will be excluded");
     expect(row(excludedTitle)?.textContent).not.toContain(
-      "Leaves with this rule"
+      "Leaves with this Anchor"
     );
-    expect(row(untouchedTitle)?.textContent).toContain("Leaves with this rule");
+    expect(row(untouchedTitle)?.textContent).toContain(
+      "Leaves with this Anchor"
+    );
     expect(action(`Undo for ${untouchedTitle}`)).toBeNull();
     const ruleStatus = () =>
       document.querySelector(".v1-pm-group-toggle")?.textContent;
     expect(ruleStatus()).toContain("Will be removed · 5 leave");
     await click(action(`Undo for ${excludedTitle}`)!);
-    expect(row(excludedTitle)?.textContent).toContain("Leaves with this rule");
+    expect(row(excludedTitle)?.textContent).toContain(
+      "Leaves with this Anchor"
+    );
     expect(action(`Undo for ${excludedTitle}`)).toBeNull();
     expect(action(`Undo for ${ruleName}`)).not.toBeNull();
     expect(ruleStatus()).toContain("Will be removed · 6 leave");
@@ -525,7 +566,7 @@ it("distinguishes same-named Folder rule options by path, device, and directory 
         />
       )
     );
-    await click(button("Add rule"));
+    await click(button("Add Anchor"));
     const options = [
       ...document.querySelectorAll<HTMLElement>("[role=menuitem]")
     ];
@@ -735,7 +776,7 @@ it("groups suggestions by rule and saves ticked ones with the Project's changes"
     expect(document.body.textContent).not.toContain("Suggested 1");
     // The first section is the Project's rules, titled without a count.
     const heading = document.querySelector(".v1-pm-group-heading h3")!;
-    expect(heading.textContent).toBe("Rules");
+    expect(heading.textContent).toBe("Anchors");
     expect(heading.querySelector(".v1-pm-coin")).toBeNull();
     await openGroups();
     const text = document.body.textContent ?? "";

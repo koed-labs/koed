@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_LOOK,
+  chiefOfStaffAppearance,
   normalizeAgentLook,
   parseAgentLook,
   projectKinEquipped,
@@ -95,6 +96,19 @@ describe("agent Kin", () => {
     ])
       expect(parseAgentLook(value)).toEqual(DEFAULT_AGENT_LOOK);
     expect(normalizeAgentLook(null)).toEqual(DEFAULT_AGENT_LOOK);
+  });
+  it("uses the logo gradient by default without overriding saved looks", () => {
+    expect(chiefOfStaffAppearance()).toMatchObject({
+      look: {
+        body: { shape: "roundedBox" },
+        palette: { base: "#3083ff", gradient: true }
+      },
+      gradientTop: "#e8d31a"
+    });
+    const saved = chiefOfStaffAppearance('{"shape":"tall","color":"mint"}');
+    expect(saved.look.body.shape).toBe("capsule");
+    expect(saved.look.palette.base).toBe("#55cca3");
+    expect(saved.gradientTop).toBeUndefined();
   });
   it("reads a Kin back from an onboarding draft", () => {
     const look = editKin(clone(DEFAULT_AGENT_LOOK), "body.shape", "sphere");

@@ -47,6 +47,8 @@ export type PersonalMemorySnapshot = {
   error: string | null;
   inventoryPhase: "empty" | "preview" | "full";
   loading: boolean;
+  // True while the latest inventory read, silent or not, hasn't finished.
+  reading?: boolean;
   projectOrder: string[];
   projectsById: ReadonlyMap<string, DesktopProject>;
   revision: number;
@@ -58,6 +60,26 @@ export type PersonalMemoryListener = () => void;
 export const personalMemoryThreadKey = (
   thread: Pick<PersonalDesktopProjectThread, "projectId" | "id">
 ): string => `${thread.projectId}:${thread.id}`;
+
+/**
+ * Change notices name a Conversation by its captured source: the capture
+ * project (often the working folder) and the AI Client's thread ID. Inventory
+ * may group that Conversation under a Git Anchor, Folder, or named Project, so
+ * match the source thread against every place the capture project can appear.
+ */
+const changeNamesThread = (
+  thread: PersonalDesktopProjectThread,
+  projectId: string,
+  threadId: string
+): boolean =>
+  Boolean(thread.sourceThreadId) &&
+  thread.sourceThreadId === threadId &&
+  [
+    thread.sourceProject?.id,
+    thread.sourceProject?.path,
+    thread.projectPath,
+    thread.capturedCwd
+  ].includes(projectId);
 
 const emptySnapshot = (): PersonalMemorySnapshot => ({
   inventory: {
@@ -127,11 +149,7 @@ export class PersonalMemoryStore {
           eventIds.add(id);
           this.#detailRefreshEventIds.set(key, eventIds);
           for (const thread of this.#snapshot.threadsByKey.values()) {
-            if (
-              thread.sourceThreadId &&
-              thread.sourceProject?.id === projectId &&
-              thread.sourceThreadId === threadId
-            ) {
+            if (changeNamesThread(thread, projectId, threadId)) {
               const namedKey = personalMemoryThreadKey(thread);
               const pending =
                 this.#detailRefreshEventIds.get(namedKey) ?? new Set<string>();
@@ -217,9 +235,11 @@ export class PersonalMemoryStore {
 
   async loadProjects({ silent = false } = {}): Promise<PersonalMemorySnapshot> {
     const request = ++this.#projectRequest;
-    if (!silent) {
-      this.#replace({ ...this.#snapshot, loading: true, error: null });
-    }
+    this.#replace({
+      ...this.#snapshot,
+      reading: true,
+      ...(silent ? {} : { loading: true, error: null })
+    });
     let complete = false;
     let preview: PersonalDesktopProject[] | undefined;
     let details: {
@@ -270,6 +290,7 @@ export class PersonalMemoryStore {
         inventoryPhase:
           phase === "preview" && !graphProjects.length ? "empty" : phase,
         loading: phase === "preview",
+        reading: phase === "preview",
         projectOrder: projects.map(({ id }) => id),
         projectsById,
         revision: this.#snapshot.revision + 1,
@@ -370,6 +391,7 @@ export class PersonalMemoryStore {
       this.#replace({
         ...this.#snapshot,
         loading: false,
+        reading: false,
         error: cause instanceof Error ? cause.message : String(cause)
       });
       return this.#snapshot;

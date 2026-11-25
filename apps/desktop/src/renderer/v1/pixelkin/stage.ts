@@ -32,6 +32,11 @@ export type PixelkinActor = {
   gradientTop?: string;
   hopAt: number | null;
   gaze: [number, number];
+  // A screen-chosen gaze direction that overrides following the pointer.
+  fixedGaze?: [number, number] | null;
+  // Draws the Kin smaller than its canvas (1 = the usual tight framing), so
+  // turned arms stay inside.
+  fit?: number;
   kin: Kin;
   member: KinMember;
   rest: ReturnType<typeof kinRestFrame>;
@@ -177,14 +182,15 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
   if (hop >= 1) actor.hopAt = null;
   const air = hop < 0 || hop >= 1 ? 0 : hop;
   const jump = 4 * air * (1 - air);
-  const [gx, gy] = canMove ? aim(actor) : actor.gaze;
+  const [gx, gy] = actor.fixedGaze ?? (canMove ? aim(actor) : actor.gaze);
   actor.gaze[0] += (gx - actor.gaze[0]) * 0.25;
   actor.gaze[1] += (gy - actor.gaze[1]) * 0.25;
   const [lookX, lookY] = actor.gaze;
   // Breathing, sway and turn towards the pointer follow the lab's solo motion.
   const phase = t * 2.05 + actor.member.phase;
   const breathing = motion ? Math.sin(phase) * 0.025 * IDLE : 0;
-  const scale = actor.rest.visualScale;
+  const fit = actor.fit ?? 1;
+  const scale = actor.rest.visualScale * fit;
   actor.member.gradientComplement = actor.gradientTop;
   setKinPose(actor.member, {
     expression:
@@ -215,7 +221,7 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
         member: actor.member,
         x: 0,
         y:
-          actor.rest.bodyY +
+          actor.rest.bodyY * fit +
           ((motion ? Math.sin(phase) * 0.026 * IDLE : 0) + jump * 0.22) * scale,
         z: 0,
         yaw:

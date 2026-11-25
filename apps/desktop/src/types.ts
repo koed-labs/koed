@@ -20,6 +20,7 @@ import type {
   LocalAiClientResponse
 } from "./ipc/local-ai-client-protocol.js";
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
+import type { DesktopKinBridge } from "./ipc/floating-kin-protocol.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { CliInstallApi } from "./cli-install/protocol.js";
 import type { DesktopUpdateApi } from "@koed-labs/shared/desktop-update-contract";
@@ -191,6 +192,7 @@ export interface DesktopLaunchAtStartupState {
 export interface DesktopApi {
   account?: AccountDesktopApi;
   featureFlags?: DesktopFeatureFlags;
+  kin?: DesktopKinBridge;
   invoke: <T = unknown>(
     command: string,
     args?: Record<string, unknown>

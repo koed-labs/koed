@@ -1,6 +1,10 @@
 import { createRecallActivityRepository } from "./recall-activity-repository.js";
 import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
-import { personalOwnerIdSchema } from "@koed-labs/shared";
+import {
+  personalOwnerIdSchema,
+  stripHarnessBlocks,
+  stripHarnessMarkup
+} from "@koed-labs/shared";
 import {
   createPersonalSelectionConsumerRepository,
   createPersonalInventorySelectionRepository
@@ -62,14 +66,18 @@ import { createPersonalProjectRuleRepository } from "./personal-project-rule-rep
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import {
   getFloatingKinActivity,
+  readFloatingKinPreviewHeader,
+  readFloatingKinProjectedPreview,
   readFloatingKinRawRows,
   readFloatingKinSealedRows
 } from "./floating-kin-repository.js";
 import {
   floatingKinEvidenceBudgetBytes,
   floatingKinEvidenceLimit,
+  floatingKinPreviewTextLimit,
   type FloatingKinEvidence,
-  type FloatingKinEvidenceRequest
+  type FloatingKinEvidenceRequest,
+  type FloatingKinPreview
 } from "@koed-labs/shared";
 import { checkDatabase, createDb } from "./connection.js";
 import {
@@ -2476,6 +2484,7 @@ const floatingKinTranscriptText = (
 
 type FloatingKinRawRow = ConversationProjectionRawRow & {
   turn_closed: boolean;
+  observed_at: Date;
   has_sealed_projection: boolean;
   evidence_turn: string;
   evidence_project: string;
@@ -2488,6 +2497,13 @@ type FloatingKinSealedRow = {
   matching_raw_count: number;
 };
 const floatingKinEvidenceTextLimit = 8192;
+type FloatingKinPreviewSide = "request" | "reply";
+const boundedFloatingKinPreviewText = (text: string | null) =>
+  text
+    ?.trim()
+    .slice(0, floatingKinPreviewTextLimit)
+    .replace(/[\uD800-\uDBFF]$/, "")
+    .trimEnd() || null;
 const isOversizedClaudeInitiatingBlock = (
   row: FloatingKinRawRow,
   actor: MemoryActor | null,
@@ -3170,7 +3186,7 @@ const normalizeSessionTitle = (value: unknown): string | null => {
   return normalized ? normalized.slice(0, 120) : null;
 };
 
-const deriveProvisionalSessionTitle = (
+export const deriveProvisionalSessionTitle = (
   actor: MemoryActor,
   content: string,
   metadata: Record<string, unknown> | undefined
@@ -3178,7 +3194,10 @@ const deriveProvisionalSessionTitle = (
   if (actor !== "user") {
     return null;
   }
-  const presented = presentMemoryText(content, {
+  // Strip AI Client context before presentation shortens the text, so a long
+  // injected block can't crowd out the User's words. Keep line breaks: the
+  // Codex request parser looks for its "My request for Codex:" heading line.
+  const presented = presentMemoryText(stripHarnessBlocks(content), {
     project_name: getStringField(metadata ?? {}, "projectName"),
     project_path: getStringField(metadata ?? {}, "projectPath")
   });
@@ -3189,11 +3208,7 @@ const deriveProvisionalSessionTitle = (
   ) {
     return null;
   }
-  const cleaned = presented
-    .replace(
-      /<environment_context\b[^>]*>[\s\S]*?<\/environment_context>/gi,
-      " "
-    )
+  const cleaned = stripHarnessMarkup(presented)
     .replace(/<image\b[\s\S]*?<\/image>/gi, " ")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]+)`/g, "$1")
@@ -4425,12 +4440,14 @@ export const createMemorySourceRepository = (
   });
   const readFloatingKinRawEvidence = async (
     actor: ActorContext,
-    sessionId: string
+    sessionId: string,
+    previewRoles?: Map<string, FloatingKinPreviewSide>
   ): Promise<FloatingKinEvidence | null> => {
     const { rows } = await readFloatingKinRawRows<FloatingKinRawRow>(
       pool,
       actor,
-      sessionId
+      sessionId,
+      { preview: Boolean(previewRoles) }
     );
     const head = rows[0];
     if (!head || head.turn_closed) return null;
@@ -4442,6 +4459,7 @@ export const createMemorySourceRepository = (
     let sequence = Infinity;
     let truncated = false;
     let initiating: FloatingKinRawRow | undefined;
+    const recentSince = Date.now() - 30 * 60 * 1000;
     try {
       for (const candidate of rows.slice(0, floatingKinEvidenceLimit)) {
         if (
@@ -4455,6 +4473,7 @@ export const createMemorySourceRepository = (
           !sameFloatingKinTurn(head, candidate) ||
           candidate.turn_closed ||
           !candidate.event_time ||
+          (previewRoles && candidate.observed_at.getTime() <= recentSince) ||
           candidate.source_sequence === null ||
           candidate.source_sequence >= sequence
         )
@@ -4466,7 +4485,13 @@ export const createMemorySourceRepository = (
         if (isOversizedClaudeInitiatingBlock(row, actorType, content))
           return gap;
         truncated ||= content.length > floatingKinEvidenceTextLimit;
-        items.push(rawEvidenceItem(row, content));
+        // A sealed source may establish the boundary, but only Projection supplies its preview.
+        if (!previewRoles || !candidate.has_sealed_projection) {
+          items.push(rawEvidenceItem(row, content));
+          if (actorType === "user") previewRoles?.set(row.id, "request");
+          else if (actorType === "agent" || actorType === "assistant")
+            previewRoles?.set(row.id, "reply");
+        }
         if (actorType === "user") {
           if (row.source_kind !== "claude-code")
             return { items: items.reverse(), truncated };
@@ -4479,6 +4504,61 @@ export const createMemorySourceRepository = (
     return initiating && completeClaudeInitiatingMessage(hydrated, initiating)
       ? { items: items.reverse(), truncated }
       : gap;
+  };
+  const readFloatingKinPreviewSnippets = async (
+    actor: ActorContext,
+    sessionId: string
+  ) => {
+    const previewRoles = new Map<string, FloatingKinPreviewSide>();
+    const [raw, projected] = await Promise.all([
+      readFloatingKinRawEvidence(actor, sessionId, previewRoles),
+      readFloatingKinProjectedPreview(pool, actor, sessionId)
+    ]);
+    const snippets: Pick<
+      NonNullable<FloatingKinPreview>,
+      FloatingKinPreviewSide
+    > = { request: null, reply: null };
+    const add = (
+      side: FloatingKinPreviewSide,
+      content: string | null,
+      occurredAt: string
+    ) => {
+      const text = boundedFloatingKinPreviewText(content);
+      if (
+        text &&
+        (!snippets[side] || snippets[side].occurredAt <= occurredAt)
+      ) {
+        snippets[side] = { text, occurredAt };
+      }
+    };
+    for (const { id, role, content, event_time } of projected) {
+      const plaintext =
+        content !== ENCRYPTED_MESSAGE_CONTENT
+          ? content
+          : options.envelopeEncryptionProvider
+            ? await decryptAuthorizedEncryptedFieldPayload(
+                pool,
+                options.envelopeEncryptionProvider,
+                {
+                  ownerUserId: actor.userId,
+                  sourceTable: "messages",
+                  sourceId: id,
+                  sourceColumn: "content"
+                }
+              )
+            : null;
+      add(
+        role === "user" ? "request" : "reply",
+        typeof plaintext === "string" ? plaintext : null,
+        event_time.toISOString()
+      );
+    }
+    // Only items returned by the existing unfinished-turn proof can become snippets.
+    for (const item of raw?.items ?? []) {
+      const side = previewRoles.get(item.id);
+      if (side) add(side, item.text, item.occurredAt);
+    }
+    return snippets;
   };
   const floatingKinSealedPayload = async (
     actor: ActorContext,
@@ -4504,7 +4584,7 @@ export const createMemorySourceRepository = (
       pool,
       actor,
       input.sessionId,
-      ids
+      { evidenceIds: ids }
     );
     if (!rows.length) return [];
     const needsSeal = (row: FloatingKinRawRow) =>
@@ -4525,8 +4605,7 @@ export const createMemorySourceRepository = (
             pool,
             actor,
             input.sessionId,
-            undefined,
-            row.id
+            { initiatingFor: row.id }
           );
         const blocks = await Promise.all(candidates.map(readRaw));
         const first = blocks.at(-1)?.row;
@@ -4594,8 +4673,7 @@ export const createMemorySourceRepository = (
               pool,
               actor,
               input.sessionId,
-              undefined,
-              row.id
+              { initiatingFor: row.id }
             );
           const users = await Promise.all(candidates.map(readRaw));
           if (
@@ -4695,6 +4773,15 @@ export const createMemorySourceRepository = (
     }),
     ...createCapturedSessionRepository(pool),
     getFloatingKinActivity: (actor) => getFloatingKinActivity(pool, actor),
+    async getFloatingKinPreview(actor, { sessionId }) {
+      const header = await readFloatingKinPreviewHeader(pool, actor, sessionId);
+      if (!header) return null;
+      return {
+        title: boundedFloatingKinPreviewText(header.title),
+        projectName: boundedFloatingKinPreviewText(header.project_name),
+        ...(await readFloatingKinPreviewSnippets(actor, sessionId))
+      };
+    },
     async getFloatingKinEvidence(actor, input) {
       if (input.evidenceIds && input.action === "conversation") {
         const [raw, sealed] = await Promise.all([

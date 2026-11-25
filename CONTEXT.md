@@ -9,6 +9,13 @@ on infrastructure controlled by the operator.
 An external AI tool that produces conversations and may call Koed for capture or recall.
 _Avoid_: MCP server, model provider, assistant
 
+**Anchor**:
+A **Git Anchor** or **Folder** that groups Conversations by where they were
+recorded. A named Project includes Conversations through its Anchors as well as
+directly. A captured Conversation with a recorded Git Anchor or Folder is also
+grouped under that Anchor.
+_Avoid_: Project rule, source rule, inclusion rule
+
 **Answer Synthesis**:
 Producing a response from recalled memory evidence.
 _Avoid_: Recall, search, evidence retrieval
@@ -119,8 +126,11 @@ _Avoid_: Project membership, all remote aliases, sharing permission
 
 **Kin**:
 A Koed companion that represents a Project or helps a User make sense of recent
-captured work. It reflects what Koed has captured, not what an AI Client is
-currently doing, and does not control a Conversation.
+captured work. It reflects what Koed has captured and does not control a
+Conversation. Its recent Conversation chips can also show whether a turn looks
+underway: reported explicitly by Pi, otherwise a best guess from captured turn
+markers and recent items that can lag or be wrong. It never controls or
+confirms an AI Client's work.
 _Avoid_: Live agent monitor, Conversation owner
 
 **Koed**:
@@ -219,8 +229,8 @@ _Avoid_: Agent status, read receipt, exact activity log
 A local AI-client or code context such as a repository, working directory,
 filepath, ref, branch, or cwd, or a named local grouping of Conversations
 created by the User or automatically from recorded sources. A named Project does not require a folder. It includes
-Conversations directly or through Git Anchor and Folder rules. Those rules
-include existing and future matching Conversations. Membership preserves the
+Conversations directly or through its Anchors (Git Anchors and Folders). An
+Anchor includes existing and future matching Conversations. Membership preserves the
 Conversations' Git and Folder context and does not move Memory. A Conversation
 can belong to several named Projects. Named Projects do not contain other Projects.
 _Avoid_: Workspace, stable shared memory ID
@@ -385,8 +395,8 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A local **API Token** or **Remote MCP Grant** authorizes the **Local AI Runtime** to work against its configured backend without conferring **Team Membership** or **Workspace Access**
 - A **Remote MCP Grant** may delegate Team recall only within the owning **User's** current **Team Membership**, **Workspace Access**, and active **Share Grants**
 - A **Project** may provide local context for zero or more **Conversations**
-- A named **Project** groups **Conversations** through explicit inclusion,
-  **Git Anchor** rules, and **Folder** rules
+- A named **Project** groups **Conversations** through explicit inclusion and
+  its **Anchors**: **Git Anchors** and **Folders**
 - Named **Project** membership preserves source context, ownership, and the
   logical lifespan of **Memory**
 - A **Conversation** retains its original recorded **Git Anchor** and **Folder**

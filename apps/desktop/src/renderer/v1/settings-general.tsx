@@ -148,7 +148,10 @@ function PresentationSettings({
         />
       </Row>
       {navigator.platform.startsWith("Mac") && (
-        <Row title="Chief of Staff" description="Turn Floating Kin on or off.">
+        <Row
+          title="Chief of Staff"
+          description="Let the Kin float outside the Koed window."
+        >
           <Switch
             aria-label="Chief of Staff"
             checked={saved?.floatingKin ?? false}

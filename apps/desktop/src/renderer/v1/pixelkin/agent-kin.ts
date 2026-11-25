@@ -19,6 +19,35 @@ export type AgentLook = Kin;
 
 export const DEFAULT_AGENT_LOOK: AgentLook = clone(KIN_DEFAULTS);
 
+export const chiefOfStaffBrand = {
+  look: {
+    ...DEFAULT_AGENT_LOOK,
+    body: {
+      ...DEFAULT_AGENT_LOOK.body,
+      shape: "roundedBox",
+      width: 2,
+      height: 2,
+      depth: 0.9,
+      arms: true
+    },
+    face: { ...DEFAULT_AGENT_LOOK.face, personality: "joyful" },
+    palette: { base: "#3083ff", grayscale: false, gradient: true }
+  } satisfies AgentLook,
+  gradientTop: "#e8d31a"
+};
+
+export function chiefOfStaffAppearance(value?: string): {
+  look: AgentLook;
+  gradientTop?: string;
+} {
+  try {
+    const look = readAgentLook(JSON.parse(value ?? "null"));
+    return look ? { look } : chiefOfStaffBrand;
+  } catch {
+    return chiefOfStaffBrand;
+  }
+}
+
 const record = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -119,17 +148,19 @@ function migrateAccessories(spec: Record<string, unknown>) {
   };
 }
 
-// Accepts a Kin, a Create your Kin file or a legacy look; anything else is
-// replaced by the default rather than failing the screen that shows it.
-export function normalizeAgentLook(value: unknown): AgentLook {
-  if (!record(value)) return clone(DEFAULT_AGENT_LOOK);
-  if ("shape" in value && !("body" in value))
-    return legacyLook(value) ?? clone(DEFAULT_AGENT_LOOK);
+function readAgentLook(value: unknown): AgentLook | null {
+  if (!record(value)) return null;
+  if ("shape" in value && !("body" in value)) return legacyLook(value);
   try {
     return readKin(migrateAccessories(kinFileToSpec(value)));
   } catch {
-    return clone(DEFAULT_AGENT_LOOK);
+    return null;
   }
+}
+
+// Accepts a Kin, a Create your Kin file or a legacy look.
+export function normalizeAgentLook(value: unknown): AgentLook {
+  return readAgentLook(value) ?? clone(DEFAULT_AGENT_LOOK);
 }
 
 export function parseAgentLook(value: string | undefined): AgentLook {

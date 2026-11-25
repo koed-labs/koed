@@ -34,7 +34,11 @@ import {
   scopeDesktopWindowIpc
 } from "./ipc/commands.js";
 import { registerFloatingKinIpc } from "./ipc/floating-kin.js";
-import { floatingKinChannels } from "./ipc/floating-kin-protocol.js";
+import {
+  floatingKinChannels,
+  type KinPresentation
+} from "./ipc/floating-kin-protocol.js";
+import { resolveKinPlacement } from "./window/floating-kin-placement.js";
 import { registerDesktopUpdateIpc } from "./ipc/update.js";
 import {
   createUpdateDiscovery,
@@ -80,7 +84,10 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { createFloatingKinWindow } from "./window/floating-kin-window.js";
-import { createFloatingKinRuntime } from "./koed-server/floating-kin.js";
+import {
+  createFloatingKinLaunchState,
+  createFloatingKinRuntime
+} from "./koed-server/floating-kin.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
 import { createDesktopCliInstallManager } from "./cli-install/manager.js";
 import {
@@ -154,6 +161,7 @@ let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let floatingKin: ReturnType<typeof createFloatingKinWindow> | null = null;
+let clearKinRenderer = () => {};
 let quitting = false;
 let desktopMenuBar: DesktopMenuBar | null = null;
 let disposeDesktopUpdateIpc: (() => void) | null = null;
@@ -386,6 +394,9 @@ const createWindow = async () => {
     )
   );
   mainWindow = window;
+  window.webContents.on("did-navigate", () => {
+    if (window === mainWindow) clearKinRenderer();
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://") || url.startsWith("http://")) {
       void openExternal(url);
@@ -401,17 +412,19 @@ const createWindow = async () => {
     }
   });
   window.once("ready-to-show", () => window.show());
-
-  if (devServerUrl) {
-    await window.loadURL(devServerUrl);
-  } else {
-    await window.loadURL(`${KOED_APP_SCHEME}://app/`);
-  }
+  window.webContents.on("render-process-gone", () => {
+    if (window === mainWindow) clearKinRenderer();
+  });
   const personalMemoryController = new AbortController();
   window.once("closed", () => {
     personalMemoryController.abort();
-    if (mainWindow === window) mainWindow = null;
+    if (mainWindow === window) {
+      mainWindow = null;
+      clearKinRenderer();
+    }
   });
+  await window.loadURL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`);
+  if (window.isDestroyed()) return;
   void server
     .subscribePersonalMemory((change) => {
       if (!window.isDestroyed()) {
@@ -470,18 +483,128 @@ const addFloatingKinMenuItem = (focus: () => void): MenuItem => {
 
 const configureFloatingKin = (
   server: KoedServerManager,
-  account: ReturnType<typeof createAccountController>
+  account: ReturnType<typeof createAccountController>,
+  launchPending: () => boolean
 ) => {
-  if (process.platform !== "darwin" || quitting) return () => {};
-  const target = new URL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`);
+  const canFloat = process.platform === "darwin";
+  const desktopUrl = new URL(devServerUrl ?? `${KOED_APP_SCHEME}://app/`).href;
+  const target = new URL(desktopUrl);
   target.hash = "floating-kin";
   const url = target.href;
+  let floatingEnabled = false;
+  // A foreground launch has not handed off from the main window yet.
+  let desktopAnchorAvailable = backgroundLaunchPending;
+  let desktopReady = false;
+  let aiModelsRequested = false;
+  let conversationRequested: string | null = null;
+  let dockWait: ReturnType<typeof setTimeout> | undefined;
+  const clearDockWait = () => {
+    clearTimeout(dockWait);
+    dockWait = undefined;
+  };
+  let presentation: KinPresentation = { placement: "sidebar", revision: 0 };
   const overlay = createFloatingKinWindow({
     appDir,
     url,
-    onDismiss: () => cancel()
+    onDismiss: () => cancel(),
+    onHidden: () => {
+      if (!presentation.sidebarPending) return;
+      presentation = { ...presentation, sidebarPending: false };
+      publish();
+    }
   });
+  const menuItem = canFloat ? addFloatingKinMenuItem(overlay.focus) : null;
   const getWebContents = () => overlay.getWindow()?.webContents ?? null;
+  const getDesktopContents = () =>
+    mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+  const showRequestedAiModels = () => {
+    const contents = getDesktopContents();
+    if (
+      !aiModelsRequested ||
+      !desktopReady ||
+      !contents ||
+      contents.isDestroyed() ||
+      contents.getURL() !== desktopUrl
+    )
+      return;
+    aiModelsRequested = false;
+    contents.send(floatingKinChannels.showAiModels);
+  };
+  const showRequestedConversation = () => {
+    const contents = getDesktopContents();
+    if (
+      !conversationRequested ||
+      !desktopReady ||
+      !contents ||
+      contents.isDestroyed() ||
+      contents.getURL() !== desktopUrl
+    )
+      return;
+    const sessionId = conversationRequested;
+    conversationRequested = null;
+    contents.send(floatingKinChannels.showConversation, sessionId);
+  };
+  const revealDesktop = (
+    request: { aiModels?: boolean; sessionId?: string } = {}
+  ) => {
+    if (!overlay.isShowing() || quitting) return;
+    if (request.aiModels) aiModelsRequested = true;
+    if (request.sessionId) conversationRequested = request.sessionId;
+    void showDesktopWindow()
+      .then(() => {
+        showRequestedAiModels();
+        showRequestedConversation();
+      })
+      .catch(() => {
+        if (request.aiModels) aiModelsRequested = false;
+        if (request.sessionId) conversationRequested = null;
+        console.warn("Could not open Koed Desktop from Floating Kin.");
+      });
+  };
+  const publish = () => {
+    const contents = getDesktopContents();
+    if (contents && !contents.isDestroyed() && contents.getURL() === desktopUrl)
+      contents.send(floatingKinChannels.presentationChanged, presentation);
+    const panel = getWebContents();
+    if (panel && !panel.isDestroyed() && panel.getURL() === url)
+      panel.send(floatingKinChannels.presentationChanged, presentation);
+  };
+  const reconcile = (mainFocused = mainWindow?.isFocused() ?? false) => {
+    const placement = resolveKinPlacement({
+      floatingEnabled: floatingEnabled && desktopAnchorAvailable,
+      mainFocused
+    });
+    if (placement !== presentation.placement) {
+      cancel("all");
+      // Commit removal in Desktop before showing the native panel. On return,
+      // reveal the sidebar Kin only after the native panel is actually hidden.
+      clearDockWait();
+      if (placement === "desktop" && desktopReady) {
+        // A hung renderer may never acknowledge removing its dock.
+        dockWait = setTimeout(() => {
+          clearDockWait();
+          reconcile();
+        }, 750);
+      }
+      presentation = {
+        placement,
+        sidebarPending: placement === "sidebar" && overlay.isShowing(),
+        revision: presentation.revision + 1
+      };
+      publish();
+    }
+    const showOverlay =
+      placement === "desktop" && (!dockWait || overlay.isShowing());
+    overlay.setVisible(showOverlay, presentation.revision);
+    if (menuItem) menuItem.enabled = showOverlay;
+  };
+  clearKinRenderer = () => {
+    desktopReady = false;
+    clearDockWait();
+    if (!mainWindow) desktopAnchorAvailable = true;
+    cancel("desktop");
+    reconcile();
+  };
   const initialAccount = account.current();
   let accountKey = `${initialAccount.status}:${initialAccount.profile?.id ?? ""}`;
   const cancel = registerFloatingKinIpc({
@@ -489,27 +612,64 @@ const configureFloatingKin = (
     getWebContents,
     url,
     mainWindowFocused: () => mainWindow?.isFocused() ?? false,
+    overlayVisible: overlay.isShowing,
+    presentation: () => presentation,
+    completeExit: overlay.completeExit,
+    openDesktop: () => revealDesktop(),
+    openAiModels: () => revealDesktop({ aiModels: true }),
+    openConversation: (sessionId) => revealDesktop({ sessionId }),
+    desktop: {
+      getWebContents: getDesktopContents,
+      url: desktopUrl,
+      isShellVisible: () =>
+        desktopReady &&
+        Boolean(mainWindow?.isVisible() && !mainWindow.isMinimized()),
+      setShellVisible: (visible) => {
+        desktopReady = visible;
+        if (visible) {
+          showRequestedAiModels();
+          showRequestedConversation();
+        }
+        if (!visible && dockWait) {
+          clearDockWait();
+          reconcile();
+        }
+      },
+      confirmPresentation: () => {
+        if (!dockWait || presentation.placement !== "desktop") return;
+        clearDockWait();
+        reconcile();
+      }
+    },
     runtime: createFloatingKinRuntime({
       koedHome: resolveApplicationKoedHome(koedEnvironment),
       // Cached observation only. Refresh notifies subscribers that may reconcile.
       lifecycle: () => server.lifecycle.current()?.state ?? "starting",
+      launchPending,
       accountKey: () => accountKey
     }),
     interactive: overlay.setInteractive,
     resize: overlay.setSize,
     drag: overlay.drag
   });
-  // A fresh window drops all rendered evidence when the runtime or User changes.
-  const unsubscribeLifecycle = server.lifecycle.subscribe(overlay.reset);
+  // Drop rendered evidence when the runtime or User changes.
+  const invalidate = () => {
+    cancel("all");
+    overlay.reset();
+    presentation = { ...presentation, revision: presentation.revision + 1 };
+    publish();
+  };
+  const unsubscribeLifecycle = server.lifecycle.subscribe(invalidate);
   const unsubscribeAccount = account.subscribe((state) => {
     const next = `${state.status}:${state.profile?.id ?? ""}`;
     if (next === accountKey) return;
     accountKey = next;
-    cancel();
-    overlay.reset();
+    invalidate();
   });
   const publishFocus = (focused: boolean, window: BrowserWindow) => {
     if (window !== mainWindow) return;
+    desktopAnchorAvailable = true;
+    reconcile(focused);
     const contents = getWebContents();
     if (contents && !contents.isDestroyed() && contents.getURL() === url)
       contents.send(floatingKinChannels.mainWindowFocusChanged, focused);
@@ -523,14 +683,17 @@ const configureFloatingKin = (
   app.once("will-quit", () => {
     app.off("browser-window-focus", onMainFocus);
     app.off("browser-window-blur", onMainBlur);
+    clearDockWait();
     unsubscribeLifecycle();
     unsubscribeAccount();
   });
   floatingKin = overlay;
-  const menuItem = addFloatingKinMenuItem(overlay.focus);
+  reconcile();
   return (enabled: boolean) => {
-    menuItem.enabled = enabled;
-    overlay.setEnabled(enabled);
+    floatingEnabled = canFloat && enabled;
+    if (!floatingEnabled) overlay.setEnabled(false);
+    reconcile();
+    if (floatingEnabled) overlay.setEnabled(true);
   };
 };
 
@@ -644,7 +807,12 @@ const bootstrap = async () => {
     app.dock?.setIcon(desktopIconPath);
   }
   registerAppProtocol();
-  const setFloatingKinEnabled = configureFloatingKin(server, controller);
+  const kinLaunch = createFloatingKinLaunchState();
+  const setFloatingKinEnabled = configureFloatingKin(
+    server,
+    controller,
+    kinLaunch.pending
+  );
   const desktopWindowIpc = scopeDesktopWindowIpc(ipcMain, () =>
     mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null
   );
@@ -876,6 +1044,7 @@ const bootstrap = async () => {
   });
   server.lifecycle.start();
   setFloatingKinEnabled(presentationPreferences.floatingKin);
+  let runtimeResumed = false;
   await startDesktopWindowAndRuntime({
     background: backgroundLaunchPending,
     createWindow,
@@ -900,7 +1069,8 @@ const bootstrap = async () => {
         );
       }
       const result = await server.resume();
-      if (shouldRefreshLocalAiClientsAfterResume(result)) {
+      runtimeResumed = shouldRefreshLocalAiClientsAfterResume(result);
+      if (runtimeResumed) {
         void server
           .localAiClients({ operation: "refresh" })
           .catch(() => undefined);
@@ -909,6 +1079,7 @@ const bootstrap = async () => {
       return result;
     },
     onRuntimeSettled: () => {
+      kinLaunch.settle(runtimeResumed);
       attachPackagedSmokeHarness({
         packaged: app.isPackaged,
         argv: process.argv,

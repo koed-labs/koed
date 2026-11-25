@@ -1,11 +1,12 @@
-html:has(.fk-surface),
-body:has(.fk-surface) {
+html:has(.fk-surface[data-fk-placement="desktop"]),
+body:has(.fk-surface[data-fk-placement="desktop"]) {
   margin: 0;
   background: transparent;
   overflow: hidden;
 }
 
-.fk-surface {
+.fk-surface,
+.fk-rail-activity {
   --fk-bg: #fcfcfb;
   --fk-text: #222225;
   --fk-muted: #5f5f66;
@@ -13,6 +14,10 @@ body:has(.fk-surface) {
   --fk-subtle: #eeeeef;
   --fk-accent: #464bb3;
   --fk-green: #228055;
+  color: var(--fk-text);
+}
+
+.fk-surface[data-fk-placement="desktop"] {
   position: fixed;
   inset: auto 0 0 auto;
   display: flex;
@@ -24,7 +29,6 @@ body:has(.fk-surface) {
   padding: 10px 12px;
   pointer-events: none;
   box-sizing: border-box;
-  color: var(--fk-text);
   font:
     13px/1.45 -apple-system,
     BlinkMacSystemFont,
@@ -33,8 +37,279 @@ body:has(.fk-surface) {
   color-scheme: light dark;
 }
 
+.fk-surface[data-fk-placement="desktop"][data-visible="false"] {
+  transform: translate(48px, 42px);
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .fk-surface[data-fk-placement="desktop"] {
+    transition:
+      transform 220ms ease,
+      opacity 220ms ease;
+  }
+}
+
+/* Desktop sidebar: the Kin sits on the rail's Home button. When it rests it
+   glances up and right, smiles, and fades to the Koed logo. */
+/* The Kin's canvas is wider than the button; the menu button otherwise
+   truncates its last span child. */
+.v1-nav-rail .v1-nav-rail-kin,
+.v1-nav-rail .v1-nav-rail-kin > .fk-rail-kin {
+  overflow: visible;
+}
+.fk-rail-kin {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+}
+.fk-rail-kin > * {
+  grid-area: 1 / 1;
+  justify-self: center;
+  align-self: center;
+}
+.fk-rail-kin .v1-pixelkin {
+  /* The canvas is larger than the 42px button, and an overflowing grid item
+     aligns to the start edge; equal negative margins keep it centred on the
+     logo. Matches railKinSize in FloatingKin.tsx. */
+  margin: calc((42px - 68px) / 2);
+  transform: rotate(-8deg);
+}
+.fk-rail-kin .fk-rest-logo {
+  width: 36px;
+  height: 36px;
+}
+/* Both the rail Kin and the Floating Kin rest as the Koed logo. */
+.fk-resting .fk-rest-logo {
+  opacity: 0;
+}
+.fk-resting[data-phase="logo"] .fk-rest-logo {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* Waking: the logo fades out as the Kin fades in mid-glance. */
+  .fk-resting[data-phase="arriving"] .v1-pixelkin {
+    animation: fk-rail-in 450ms ease-out both;
+  }
+  .fk-resting[data-phase="arriving"] .fk-rest-logo {
+    animation: fk-rail-logo-out 450ms ease-in forwards;
+  }
+  /* Resting: the glance holds, then the Kin fades into the logo. */
+  .fk-resting[data-phase="leaving"] .v1-pixelkin {
+    animation: fk-rail-out 450ms ease-in 700ms forwards;
+  }
+  .fk-resting[data-phase="leaving"] .fk-rest-logo {
+    animation: fk-rail-logo-in 450ms ease-out 700ms forwards;
+  }
+}
+@keyframes fk-rail-in {
+  from {
+    opacity: 0;
+    scale: 0.85;
+  }
+}
+@keyframes fk-rail-logo-out {
+  from {
+    opacity: 1;
+    scale: 1;
+  }
+  to {
+    opacity: 0;
+    scale: 0.85;
+  }
+}
+@keyframes fk-rail-out {
+  to {
+    opacity: 0;
+    scale: 0.85;
+  }
+}
+@keyframes fk-rail-logo-in {
+  from {
+    opacity: 0;
+    scale: 0.85;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+/* Live green, readable on both v1 themes. */
+.v1-app {
+  --fk-live: #58ca93;
+}
+.v1-app[data-theme="light"],
+:root.light .v1-app {
+  --fk-live: #1d7a4e;
+}
+
+/* A Conversation row the Kin is tracking. */
+.v1-nav-conversation-wrap[data-live] .v1-nav-conversation time {
+  display: none;
+}
+.v1-nav-conversation-wrap[data-live] .v1-nav-conversation {
+  padding-right: 64px;
+}
+.v1-nav-conversation-wrap:is(:hover, :focus-within)
+  .fk-row-live:not(:focus-visible) {
+  visibility: hidden;
+}
+.v1-nav-conversation-wrap:has(.fk-row-live:focus-visible) .v1-pm-row-menu {
+  opacity: 0;
+}
+@media (hover: none) {
+  .fk-row-live {
+    visibility: hidden;
+  }
+}
+/* The marker sits where a row's time would. Like the time, it gives way to
+   the row's Actions button on hover; keyboard focus keeps it reachable. */
+.fk-row-live {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  translate: 0 -50%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--v1-muted);
+  font: inherit;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.fk-row-live:hover,
+.fk-row-live[aria-expanded="true"] {
+  border-color: var(--v1-border);
+  background: var(--v1-surface);
+  color: var(--v1-fg);
+}
+.fk-row-live:focus-visible {
+  outline: 2px solid var(--v1-accent);
+  outline-offset: 1px;
+}
+.fk-row-live .fk-dot {
+  --fk-green: var(--fk-live);
+}
+.fk-rail-activity {
+  overflow: auto;
+  scrollbar-width: none;
+  padding: 6px 0;
+  text-align: center;
+  font-size: 10px;
+}
+.fk-rail-activity .fk-dock {
+  align-items: center;
+  margin-block: 2px 6px;
+}
+.fk-rail-activity .fk-chip {
+  position: relative;
+  width: 42px;
+  padding: 4px 2px;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+/* The label line keeps its height whether it shows the dot or the age. */
+.fk-rail-activity .fk-chip-label {
+  display: grid;
+  place-items: center;
+  min-height: 1.45em;
+}
+.fk-rail-activity .fk-chip {
+  --fk-green: var(--fk-live);
+}
+.fk-rail-activity .fk-chip:focus-visible {
+  outline: 2px solid var(--fk-accent);
+  outline-offset: -2px;
+}
+
+/* The summary panel opens beside its chip or row, over the main view. */
+.fk-surface[data-fk-placement="anchored"] {
+  position: fixed;
+  z-index: 40;
+  max-height: calc(100vh - 16px);
+  display: flex;
+  font:
+    13px/1.45 -apple-system,
+    BlinkMacSystemFont,
+    system-ui,
+    sans-serif;
+}
+.fk-surface[data-fk-placement="anchored"] .fk-panel {
+  position: relative;
+  max-height: inherit;
+}
+/* Placeholder lines while the first preview loads. */
+.fk-skeleton {
+  display: block;
+  height: 0.8em;
+  border-radius: 4px;
+  background: var(--fk-subtle);
+}
+.fk-skeleton-title {
+  width: 60%;
+  height: 1em;
+  margin-block: 0.2em;
+}
+.fk-preview-loading {
+  display: grid;
+  gap: 7px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .fk-skeleton {
+    animation: fk-skeleton-pulse 1.2s ease-in-out infinite alternate;
+  }
+}
+@keyframes fk-skeleton-pulse {
+  to {
+    opacity: 0.45;
+  }
+}
+.fk-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* In the modal sidebar sheet the panel spans the sheet, over its rows. */
+.fk-surface[data-fk-in-modal] .fk-panel {
+  width: 100%;
+}
+.fk-surface[data-fk-in-modal] .fk-panel::before {
+  display: none;
+}
+/* A pointer on the panel's leading edge ties it to the chip or row that
+   opened it. */
+.fk-surface[data-fk-placement="anchored"] .fk-panel::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: clamp(12px, calc(var(--fk-pointer-top, 24px) - 5px), calc(100% - 24px));
+  width: 10px;
+  height: 10px;
+  background: var(--fk-bg);
+  border-left: 1px solid var(--fk-line);
+  border-bottom: 1px solid var(--fk-line);
+  transform: rotate(45deg);
+}
+.fk-surface[data-fk-placement="anchored"] .fk-body {
+  max-height: min(420px, 60vh);
+}
+
 @media (prefers-color-scheme: dark) {
-  .fk-surface {
+  .fk-surface,
+  .fk-rail-activity {
     --fk-bg: #212126;
     --fk-text: #f2f2f4;
     --fk-muted: #b1b1ba;
@@ -130,18 +405,16 @@ body:has(.fk-surface) {
   background: var(--fk-text);
   box-shadow: 0 0 0 2px var(--fk-bg);
 }
+/* The live dot takes the capture age's place while a turn looks underway. */
 .fk-dot {
+  display: inline-block;
   width: 7px;
   height: 7px;
-  margin-left: 2px;
   border-radius: 50%;
-  background: var(--fk-muted);
-}
-.fk-dot[data-recent="true"] {
   background: var(--fk-green);
 }
 @media (prefers-reduced-motion: no-preference) {
-  .fk-dot[data-recent="true"] {
+  .fk-dot {
     animation: fk-pulse 1.8s infinite;
   }
 }
@@ -162,13 +435,25 @@ body:has(.fk-surface) {
   padding: 7px 13px 7px 7px;
   max-width: 310px;
 }
-.fk-surface .fk-kin-avatar {
+.fk-kin-avatar {
   position: relative;
   display: grid;
   place-items: center;
   width: 88px;
   height: 88px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.fk-surface .fk-kin-avatar[data-fk-hit] {
   pointer-events: none;
+}
+.fk-kin-avatar > * {
+  grid-area: 1 / 1;
+}
+.fk-kin-avatar .fk-rest-logo {
+  width: 56px;
+  height: 56px;
 }
 .fk-kin-avatar .v1-pixelkin,
 .fk-kin-avatar::after {
@@ -186,7 +471,7 @@ body:has(.fk-surface) {
   inset: 16%;
   border-radius: 20%;
 }
-.fk-surface [data-fk-handle] {
+.fk-surface[data-fk-placement="desktop"] [data-fk-handle] {
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -197,13 +482,6 @@ body:has(.fk-surface) {
 .fk-surface [data-fk-handle] > *,
 .fk-chip > :not([data-fk-handle]) {
   pointer-events: none;
-}
-.fk-sleep-mark {
-  position: absolute;
-  inset: 4px 8px auto auto;
-  color: var(--fk-text);
-  text-shadow: 0 0 4px var(--fk-bg);
-  font-weight: 700;
 }
 .fk-panel {
   display: flex;
@@ -217,24 +495,62 @@ body:has(.fk-surface) {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 10px;
   padding: 10px 13px;
   border-bottom: 1px solid var(--fk-line);
 }
 .fk-header h2 {
   font-size: 14px;
   margin: 0;
+  /* Holds the line while the first preview loads with no title yet. */
+  min-height: 1.45em;
 }
 .fk-header small,
 .fk-note {
   color: var(--fk-muted);
   font-size: 12px;
 }
+.fk-header > div {
+  flex: 1;
+  min-width: 0;
+}
+/* Title and meta stay on one line each and end in an ellipsis before the
+   close button. */
+.fk-header h2,
+.fk-meta,
+.fk-header button.fk-title-link {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .fk-header button {
+  flex: none;
   border: 0;
   border-radius: 6px;
   background: var(--fk-subtle);
   width: 26px;
   height: 26px;
+}
+/* The Conversation title opens it in Koed Desktop. */
+.fk-header button.fk-title-link {
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  padding: 0;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+}
+.fk-header button.fk-title-link:hover,
+.fk-header button.fk-title-link:focus-visible {
+  text-decoration-color: currentColor;
 }
 .fk-body {
   max-height: 324px;
@@ -264,6 +580,9 @@ body:has(.fk-surface) {
   white-space: pre-wrap;
   user-select: text;
 }
+.fk-preview p {
+  white-space: normal;
+}
 .fk-sources summary {
   cursor: pointer;
   color: var(--fk-accent);
@@ -279,7 +598,14 @@ body:has(.fk-surface) {
 }
 .fk-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+.fk-actions .fk-settings-button {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  padding: 6px;
 }
 .fk-body button {
   border: 1px solid var(--fk-line);

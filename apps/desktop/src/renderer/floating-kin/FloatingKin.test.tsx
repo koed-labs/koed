@@ -3,6 +3,7 @@ import { act, Profiler } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FloatingKinSummary } from "@koed-labs/shared";
+import type { KinPresentation } from "../../ipc/floating-kin-protocol.js";
 import * as pixelkin from "../v1/pixelkin/Pixelkin.js";
 import { FloatingKin, type FloatingKinBridge } from "./FloatingKin.js";
 
@@ -52,7 +53,21 @@ beforeEach(() => {
       overflowCount: 0
     })),
     summarize: vi.fn(async () => answered),
+    preview: vi.fn<FloatingKinBridge["preview"]>(async () => null),
+    latest: vi.fn(
+      async (): Promise<{ action: "conversation" | "project" | null }> => ({
+        action: null
+      })
+    ),
+    reopen: vi.fn(async () => ({
+      action: "project" as const,
+      result: answered
+    })),
+    openAiModels: vi.fn(),
+    openConversation: vi.fn(),
     cancel: vi.fn(async () => undefined),
+    completeExit: vi.fn(),
+    openDesktop: vi.fn(),
     setInteractive: vi.fn(),
     setSize: vi.fn(),
     drag: vi.fn(),
@@ -78,6 +93,50 @@ const click = (name: string) =>
     expect(button).toBeDefined();
     button?.click();
   });
+
+it("drops captured chips and summary state even when a handoff reverses in one render", async () => {
+  let publish: (state: KinPresentation) => void = () => {};
+  bridge.onPresentation = (listener) => {
+    publish = listener;
+    return () => {};
+  };
+  await render();
+  await act(async () => publish({ placement: "desktop", revision: 1 }));
+  await click("Conversation 1");
+  expect(mount.querySelector(".fk-panel")).not.toBeNull();
+  const fresh = deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+  vi.mocked(bridge.activity).mockReturnValueOnce(fresh.promise);
+  await act(async () => {
+    publish({ placement: "sidebar", revision: 2 });
+    publish({ placement: "desktop", revision: 3 });
+  });
+  expect(mount.querySelector(".fk-panel, .fk-chip")).toBeNull();
+  expect(bridge.activity).toHaveBeenLastCalledWith(3);
+  await act(async () => fresh.resolve({ state: "stopped" }));
+});
+
+it("completes a pending Home handoff only after the native renderer finishes sliding", async () => {
+  let publish: (state: KinPresentation) => void = () => {};
+  bridge.onPresentation = (listener) => {
+    publish = listener;
+    return () => {};
+  };
+  await render();
+  await act(async () => publish({ placement: "desktop", revision: 1 }));
+  const finished = deferred<void>();
+  const surface = mount.querySelector("main")!;
+  Object.defineProperty(surface, "getAnimations", {
+    value: () => [{ transitionProperty: "opacity", finished: finished.promise }]
+  });
+  await act(async () =>
+    publish({ placement: "sidebar", revision: 2, sidebarPending: true })
+  );
+  expect(surface.inert).toBe(true);
+  expect(mount.querySelector(".fk-chip")).toBeNull();
+  expect(bridge.completeExit).not.toHaveBeenCalled();
+  await act(async () => finished.resolve());
+  expect(bridge.completeExit).toHaveBeenCalledExactlyOnceWith(2);
+});
 
 const mouseOver = (target: Element, from?: Element) =>
   act(async () => {
@@ -126,14 +185,372 @@ async function renderQuiet() {
   return mount.querySelector<HTMLElement>(".fk-kin-avatar")!;
 }
 
+// Resting holds the glance, then fades into the logo.
+const restFadeMs = 700 + 450;
+
 function expectKinAwake(kin: HTMLElement, awake: boolean) {
-  expect(kin.querySelector(".fk-sleep-mark") !== null).toBe(!awake);
-  expect(
-    kin.querySelector(".v1-pixelkin")?.getAttribute("data-expression")
-  ).toBe(awake ? "happy" : "sleepy");
+  expect(kin.getAttribute("aria-description")).toBe(
+    awake ? "Awake" : "Resting"
+  );
+  expect(kin.querySelector(".fk-sleep-mark")).toBeNull();
+}
+
+function expectLogo(kin: HTMLElement, logo: boolean) {
+  expect(kin.dataset.phase === "logo").toBe(logo);
+  expect(kin.querySelector(".v1-pixelkin") === null).toBe(logo);
+  expect(kin.querySelector(".fk-rest-logo")).not.toBeNull();
 }
 
 describe("Floating Kin", () => {
+  it("expires Pi Working while the next activity poll is stalled, without closing its capture preview", async () => {
+    const piConversation = {
+      ...conversation,
+      client: "pi" as const,
+      workingUntil: "2026-11-18T12:00:17.000Z"
+    };
+    const pending =
+      deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+    const activity = vi.mocked(bridge.activity);
+    activity
+      .mockResolvedValueOnce({
+        state: "running",
+        conversations: [piConversation],
+        overflowCount: 0
+      })
+      .mockReturnValueOnce(pending.promise);
+    await render();
+
+    const chip = mount.querySelector(".fk-chip")!;
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
+    expect(chip.getAttribute("aria-label")).toContain("Working");
+    await click("Pi Conversation 1");
+    const panel = mount.querySelector('[role="dialog"]')!;
+    expect(panel.textContent).toContain("Captured 12s ago");
+    expect(bridge.preview).toHaveBeenCalledExactlyOnceWith({ sessionId });
+
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
+    expect(activity).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(activity).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(1_999));
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(chip.querySelector(".fk-dot")).toBeNull();
+    expect(chip.getAttribute("aria-label")).toBe(
+      "Pi Conversation 1. Captured 12s ago."
+    );
+    expect(mount.querySelector('[role="dialog"]')).toBe(panel);
+    expect(bridge.preview).toHaveBeenCalledTimes(1);
+    expect(activity).toHaveBeenCalledTimes(2);
+  });
+
+  it("recognizes a fresh Pi lease after the clock moves backward", async () => {
+    const piConversation = { ...conversation, client: "pi" as const };
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [
+        { ...piConversation, workingUntil: "2026-11-18T12:00:12.500Z" }
+      ],
+      overflowCount: 0
+    });
+    await render();
+    const chip = mount.querySelector(".fk-chip")!;
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(chip.querySelector(".fk-dot")).toBeNull();
+
+    vi.setSystemTime(new Date("2026-11-18T12:00:10.000Z"));
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [
+        { ...piConversation, workingUntil: "2026-11-18T12:00:13.000Z" }
+      ],
+      overflowCount: 0
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(2_500));
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(chip.querySelector(".fk-dot")).toBeNull();
+  });
+
+  it.each([
+    ["Codex", "codex", "2026-11-18T12:00:17.000Z"],
+    ["Claude Code", "claude-code", "2026-11-18T12:00:17.000Z"],
+    ["Pi", "pi", "2026-11-18T12:00:12.000Z"],
+    ["Pi", "pi", undefined]
+  ] as const)(
+    "keeps %s capture-only without a fresh Pi lease (%s, %s)",
+    async (name, client, workingUntil) => {
+      const row = {
+        ...conversation,
+        client,
+        ...(workingUntil ? { workingUntil } : {})
+      };
+      vi.mocked(bridge.activity).mockResolvedValue({
+        state: "running",
+        conversations: [row],
+        overflowCount: 0
+      });
+      await render();
+
+      const chip = mount.querySelector(".fk-chip")!;
+      expect(chip.textContent).toBe("12s");
+      expect(chip.querySelector(".fk-dot")).toBeNull();
+      expect(chip.getAttribute("aria-label")).toBe(
+        `${name} Conversation 1. Captured 12s ago.`
+      );
+    }
+  );
+
+  it("shows captured context only on chip selection without running a summary", async () => {
+    vi.mocked(bridge.preview).mockResolvedValue({
+      title: "Check release readiness",
+      projectName: "Release tooling",
+      request: { text: "Which checks are outstanding?", occurredAt: asOf },
+      reply: {
+        text: "The typecheck passed.",
+        occurredAt: "2026-11-18T11:59:58Z"
+      }
+    });
+    await render();
+    expect(bridge.preview).not.toHaveBeenCalled();
+    await click("Conversation 1");
+    expect(bridge.preview).toHaveBeenCalledExactlyOnceWith({ sessionId });
+    const panel = mount.querySelector('[role="dialog"]')!;
+    for (const text of [
+      "Check release readiness",
+      "Release tooling",
+      "Captured 12s ago",
+      "Which checks are outstanding?",
+      "Previous captured reply",
+      "The typecheck passed."
+    ]) {
+      expect(panel.textContent).toContain(text);
+    }
+    expect(bridge.summarize).not.toHaveBeenCalled();
+  });
+
+  it("drops pending context on close and refreshes only for a new capture", async () => {
+    const previous =
+      deferred<Awaited<ReturnType<FloatingKinBridge["preview"]>>>();
+    vi.mocked(bridge.preview).mockReturnValueOnce(previous.promise);
+    await render();
+    await click("Conversation 1");
+    await click("Close summary");
+    await click("Conversation 1");
+    await act(async () =>
+      previous.resolve({
+        title: "Stale title",
+        projectName: null,
+        request: null,
+        reply: null
+      })
+    );
+    expect(mount.textContent).not.toContain("Stale title");
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    expect(bridge.preview).toHaveBeenCalledTimes(2);
+    vi.mocked(bridge.activity).mockResolvedValueOnce({
+      state: "running",
+      conversations: [
+        { ...conversation, lastActivityAt: "2026-11-18T12:00:10Z" }
+      ],
+      overflowCount: 0
+    });
+    vi.mocked(bridge.preview).mockResolvedValueOnce({
+      title: "New capture",
+      projectName: null,
+      request: null,
+      reply: null
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    expect(mount.textContent).toContain("New capture");
+    expect(bridge.preview).toHaveBeenCalledTimes(3);
+    expect(bridge.summarize).not.toHaveBeenCalled();
+  });
+
+  it("doesn't show a closed panel's old excerpt while a reopened panel reads again", async () => {
+    vi.mocked(bridge.preview).mockResolvedValueOnce({
+      title: "Old title",
+      projectName: null,
+      request: { text: "Old request", occurredAt: asOf },
+      reply: null
+    });
+    await render();
+    await click("Conversation 1");
+    expect(mount.textContent).toContain("Old request");
+    await click("Close summary");
+    const fresh = deferred<Awaited<ReturnType<FloatingKinBridge["preview"]>>>();
+    vi.mocked(bridge.preview).mockReturnValueOnce(fresh.promise);
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    await click("Conversation 1");
+    expect(mount.textContent).not.toContain("Old request");
+    expect(mount.textContent).not.toContain("Old title");
+    await act(async () => fresh.resolve(null));
+    expect(mount.textContent).not.toContain("Old request");
+    expect(mount.querySelector("#fk-panel-title")?.textContent).toBe(
+      "Conversation"
+    );
+  });
+
+  it("doesn't bring back a Conversation's old excerpt after switching away and back", async () => {
+    const other = `${sessionId.slice(0, -1)}9`;
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [conversation, { ...conversation, sessionId: other }],
+      overflowCount: 0
+    });
+    vi.mocked(bridge.preview).mockResolvedValueOnce({
+      title: null,
+      projectName: null,
+      request: { text: "Old request in A", occurredAt: asOf },
+      reply: null
+    });
+    await render();
+    await click("Conversation 1");
+    expect(mount.textContent).toContain("Old request in A");
+    // B's read never lands before we return to A.
+    vi.mocked(bridge.preview).mockReturnValueOnce(new Promise(() => {}));
+    await click("Conversation 2");
+    const fresh = deferred<Awaited<ReturnType<FloatingKinBridge["preview"]>>>();
+    vi.mocked(bridge.preview).mockReturnValueOnce(fresh.promise);
+    await click("Conversation 1");
+    expect(mount.textContent).not.toContain("Old request in A");
+    // A clean loading state while the fresh read is pending.
+    expect(mount.querySelector(".fk-preview-loading")).not.toBeNull();
+    expect(mount.querySelector("#fk-panel-title .fk-skeleton")).not.toBeNull();
+    expect(mount.textContent).toContain("Loading captured context…");
+    await act(async () => fresh.resolve(null));
+    expect(mount.querySelector(".fk-preview-loading")).toBeNull();
+    expect(mount.textContent).not.toContain("Old request in A");
+  });
+
+  it("shows a summary's error instead of the loading note while the preview loads", async () => {
+    vi.mocked(bridge.preview).mockReturnValueOnce(new Promise(() => {}));
+    vi.mocked(bridge.summarize).mockResolvedValueOnce({
+      status: "client_unavailable"
+    });
+    await render();
+    await click("Conversation 1");
+    expect(mount.textContent).toContain("Loading captured context…");
+    await click("Summarize conversation");
+    const status = mount.querySelector('[role="dialog"] [role="status"]')!;
+    expect(status.textContent).toContain("require a ready Codex or Pi");
+    expect(status.classList.contains("fk-visually-hidden")).toBe(false);
+  });
+
+  it("closes only the panel on Escape, without reaching an enclosing modal", async () => {
+    await render();
+    await click("Conversation 1");
+    const panel = mount.querySelector('[role="dialog"]')!;
+    const outer = vi.fn();
+    document.addEventListener("keydown", outer);
+    try {
+      await act(async () => {
+        panel
+          .querySelector("button")!
+          .dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+          );
+      });
+    } finally {
+      document.removeEventListener("keydown", outer);
+    }
+    expect(mount.querySelector('[role="dialog"]')).toBeNull();
+    expect(outer).not.toHaveBeenCalled();
+  });
+
+  it("reopens the last summary above the generate actions and links to AI models", async () => {
+    bridge.onPresentation = (listener) => {
+      listener({ placement: "desktop", revision: 7 });
+      return () => {};
+    };
+    vi.mocked(bridge.latest).mockResolvedValue({ action: "project" });
+    await render();
+    await click("Conversation 1");
+    const panel = mount.querySelector('[role="dialog"]')!;
+    expect(panel.textContent).not.toContain("Uses your assigned AI Client");
+    expect(
+      [...panel.querySelectorAll("button")].map((button) => button.textContent)
+    ).toEqual([
+      "Conversation",
+      "×",
+      "Open last summary",
+      "Summarize conversation",
+      ""
+    ]);
+    await click("Conversation");
+    expect(bridge.openConversation).toHaveBeenCalledExactlyOnceWith(
+      7,
+      sessionId
+    );
+    await click("Open last summary");
+    // The summary title isn't the Conversation's, so it isn't a link.
+    expect(panel.querySelector(".fk-title-link")).toBeNull();
+    expect(panel.textContent).toContain("Project summary");
+    expect(panel.textContent).toContain(answered.captured);
+    expect(bridge.reopen).toHaveBeenCalledExactlyOnceWith(
+      { sessionId, projectId: "koed" },
+      7
+    );
+    expect(bridge.summarize).not.toHaveBeenCalled();
+    await click("AI models settings");
+    expect(bridge.openAiModels).toHaveBeenCalledExactlyOnceWith(7);
+  });
+
+  it("keeps captured context available when opening the last summary fails", async () => {
+    vi.mocked(bridge.preview).mockResolvedValue({
+      title: "Release checks",
+      projectName: null,
+      request: { text: "Run the preflight", occurredAt: asOf },
+      reply: null
+    });
+    vi.mocked(bridge.latest).mockResolvedValue({ action: "conversation" });
+    vi.mocked(bridge.reopen).mockResolvedValue(null);
+    await render();
+    await click("Conversation 1");
+    await click("Open last summary");
+    const content = mount.querySelector('[role="dialog"]')?.textContent;
+    expect(content).toContain("Last summary is no longer available.");
+    expect(content).toContain("Release checks");
+    expect(content).toContain("Run the preflight");
+  });
+
+  it("opens Desktop only for an avatar click on the visible revision", async () => {
+    let publish: (state: KinPresentation) => void = () => {};
+    bridge.onPresentation = (listener) => {
+      publish = listener;
+      return () => {};
+    };
+    await render();
+    await act(async () => publish({ placement: "desktop", revision: 7 }));
+    const avatar = mount.querySelector(
+      'button[aria-label="Open Koed Desktop"]'
+    )!;
+    const hit = vi.spyOn(document, "elementFromPoint").mockReturnValue(avatar);
+    await pointer(avatar, "pointerdown", 100);
+    await pointer(avatar, "pointerup", 100);
+    await capturedClick(avatar);
+    expect(bridge.openDesktop).toHaveBeenCalledExactlyOnceWith(7);
+
+    await pointer(avatar, "pointerdown", 100);
+    await pointer(avatar, "pointermove", 110);
+    await pointer(avatar, "pointerup", 110);
+    await capturedClick(avatar);
+    hit.mockReturnValue(mount.querySelector("main"));
+    await pointer(avatar, "pointerdown", 100);
+    await pointer(avatar, "pointerup", 103);
+    await capturedClick(avatar);
+    await click("Conversation 1");
+    expect(mount.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(bridge.openDesktop).toHaveBeenCalledTimes(1);
+    await click("Open Koed Desktop");
+    expect(bridge.openDesktop).toHaveBeenCalledTimes(2);
+    await act(async () => publish({ placement: "sidebar", revision: 8 }));
+    expect(
+      mount.querySelector('button[aria-label="Open Koed Desktop"]')
+    ).toBeNull();
+  });
+
   it("enables the engine's arms on the standalone Kin, not the Project Kin chip", async () => {
     const renderPixelkin = vi.spyOn(pixelkin, "Pixelkin");
     await render();
@@ -211,7 +628,7 @@ describe("Floating Kin", () => {
     expect(bridge.drag).not.toHaveBeenCalled();
   });
 
-  it("drags the sleeping Kin using absolute coordinates and stays interactive across gaps", async () => {
+  it("drags the resting Kin using absolute coordinates and stays interactive across gaps", async () => {
     const kin = await renderQuiet();
     const capture = vi.spyOn(kin, "setPointerCapture");
     vi.spyOn(document, "elementFromPoint").mockReturnValue(
@@ -321,6 +738,30 @@ describe("Floating Kin", () => {
       expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
     }
   );
+  it("shows the live dot for a turn captured as underway, and the age once it's idle", async () => {
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [{ ...conversation, client: "codex", turn: "active" }],
+      overflowCount: 0
+    });
+    await render();
+    const chip = mount.querySelector(".fk-chip")!;
+    expect(chip.querySelector(".fk-dot")).not.toBeNull();
+    expect(chip.textContent).toBe("");
+    expect(chip.getAttribute("aria-label")).toBe(
+      "Codex Conversation 1. Working. Captured 12s ago."
+    );
+
+    vi.mocked(bridge.activity).mockResolvedValue({
+      state: "running",
+      conversations: [{ ...conversation, client: "codex", turn: "idle" }],
+      overflowCount: 0
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(chip.querySelector(".fk-dot")).toBeNull();
+    expect(chip.textContent).toMatch(/^1m$/);
+  });
+
   it("caps recent capture chips and includes local and remote overflow", async () => {
     bridge.activity = vi.fn(async () => ({
       state: "running" as const,
@@ -342,11 +783,10 @@ describe("Floating Kin", () => {
   it("renders captured and inferred fields with Koed time and assigned model", async () => {
     await render();
     await click("Captured 12s ago");
-    await click("Summarize Project");
+    await click("Summarize conversation");
     expect(bridge.summarize).toHaveBeenCalledWith({
       sessionId,
-      action: "project",
-      projectId: conversation.projectId
+      action: "conversation"
     });
     expect(mount.textContent).toContain("CapturedRead local tests.");
     expect(mount.textContent).toContain("InferredLikely checking timing.");
@@ -365,6 +805,7 @@ describe("Floating Kin", () => {
     "invalidates only Project summaries on change to %s",
     async (_, nextProjectId) => {
       let projectId: string | null = conversation.projectId;
+      vi.mocked(bridge.latest).mockResolvedValue({ action: "project" });
       bridge.activity = vi.fn(async () => ({
         state: "running" as const,
         conversations: [{ ...conversation, projectId }],
@@ -392,37 +833,38 @@ describe("Floating Kin", () => {
         expect(document.activeElement).toBe(body);
       };
 
-      await click("Summarize Project");
+      await click("Open last summary");
       expect(mount.textContent).toContain("Read local tests.");
       body.focus();
       await updateProject(nextProjectId);
       expect(mount.textContent).not.toContain("Read local tests.");
       expect(bridge.cancel).not.toHaveBeenCalled();
-      expect(
-        mount.querySelector<HTMLButtonElement>(".fk-actions button:last-child")
-          ?.disabled
-      ).toBe(nextProjectId === null);
       await updateProject(conversation.projectId);
       expect(mount.textContent).not.toContain("Read local tests.");
 
-      const pending = deferred<FloatingKinSummary>();
-      vi.mocked(bridge.summarize).mockReturnValueOnce(pending.promise);
-      await click("Summarize Project");
-      expect(mount.textContent).toContain("Summarizing captured work");
+      const pending = deferred<{
+        action: "project";
+        result: typeof answered;
+      }>();
+      vi.mocked(bridge.reopen).mockReturnValueOnce(pending.promise);
+      await click("Open last summary");
+      expect(mount.textContent).toContain("Opening last summary");
       body.focus();
       await updateProject(nextProjectId);
-      expect(mount.textContent).not.toContain("Summarizing captured work");
+      expect(mount.textContent).not.toContain("Opening last summary");
       expect(bridge.cancel).toHaveBeenCalledOnce();
       await updateProject(conversation.projectId);
-      await act(async () => pending.resolve(answered));
+      await act(async () =>
+        pending.resolve({ action: "project", result: answered })
+      );
       expect(mount.textContent).not.toContain("Read local tests.");
-      expect(mount.textContent).toContain("Recent Conversation");
+      expect(mount.textContent).toContain("Conversation");
 
       const pendingConversation = deferred<FloatingKinSummary>();
       vi.mocked(bridge.summarize).mockReturnValueOnce(
         pendingConversation.promise
       );
-      await click("Summarize Conversation");
+      await click("Summarize conversation");
       body.focus();
       await updateProject(nextProjectId);
       expect(mount.textContent).toContain("Conversation summary");
@@ -440,7 +882,7 @@ describe("Floating Kin", () => {
     bridge.summarize = vi.fn(() => summary.promise);
     await render();
     await click("Captured 12s ago");
-    await click("Summarize Conversation");
+    await click("Summarize conversation");
     expect(bridge.summarize).toHaveBeenCalledWith({
       sessionId,
       action: "conversation"
@@ -457,7 +899,7 @@ describe("Floating Kin", () => {
     bridge.summarize = vi.fn(() => summary.promise);
     await render();
     await click("Captured 12s ago");
-    await click("Summarize Conversation");
+    await click("Summarize conversation");
     await click("Cancel");
     expect(mount.textContent).toContain("Cancelling summary");
     expect(
@@ -469,7 +911,7 @@ describe("Floating Kin", () => {
     ).toBe(false);
   });
 
-  it("restores chip focus on Escape and disables Project summary without a Project", async () => {
+  it("restores chip focus on Escape and offers Conversation summary without a Project", async () => {
     bridge.activity = vi.fn(async () => ({
       state: "running" as const,
       conversations: [{ ...conversation, projectId: null }],
@@ -478,9 +920,8 @@ describe("Floating Kin", () => {
     await render();
     await click("Captured 12s ago");
     expect(
-      mount.querySelector<HTMLButtonElement>(".fk-actions button:last-child")
-        ?.disabled
-    ).toBe(true);
+      mount.querySelector<HTMLButtonElement>(".fk-actions button")?.disabled
+    ).toBe(false);
     expect(document.activeElement?.getAttribute("aria-label")).toBe(
       "Close summary"
     );
@@ -507,83 +948,187 @@ describe("Floating Kin", () => {
     expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
   });
 
-  it("wakes for one minute after hover without showing a quiet message", async () => {
+  it("shows the Kin on appearing, then rests as the logo three seconds later", async () => {
     const kin = await renderQuiet();
-    expectKinAwake(kin, false);
-    await mouseOver(kin);
     expectKinAwake(kin, true);
-    expect(kin.getAttribute("aria-description")).toBe("Awake");
-    expect(bridge.setInteractive).toHaveBeenLastCalledWith(true);
-    await mouseOver(mount.querySelector("main")!, kin);
-    expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
-    await act(async () => kin.focus());
-    expect(mount.querySelector('[role="tooltip"]')).toBeNull();
-    expect(mount.textContent).not.toContain("No recent capture");
-    await act(async () => vi.advanceTimersByTimeAsync(59_999));
+    expectLogo(kin, false);
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
     expectKinAwake(kin, true);
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expectKinAwake(kin, false);
-    expect(kin.getAttribute("aria-description")).toBe("Sleeping");
+    // It glances up and right with a joy face before fading.
+    expect(kin.dataset.phase).toBe("leaving");
+    expect(
+      kin.querySelector(".v1-pixelkin")?.getAttribute("data-expression")
+    ).toBe("joy");
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
   });
 
-  it("matches the sleep mark to capture freshness even with older Conversation chips", async () => {
+  it("reappears without a runtime status while its fresh read is pending", async () => {
+    let present: (presentation: {
+      placement: "desktop" | "sidebar";
+      revision: number;
+    }) => void = () => {};
+    bridge.onPresentation = (listener) => {
+      present = listener;
+      listener({ placement: "desktop", revision: 1 });
+      return () => {};
+    };
+    await render();
+    await act(async () => present({ placement: "sidebar", revision: 2 }));
+    const next = deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+    bridge.activity = vi.fn(() => next.promise);
+    await act(async () => present({ placement: "desktop", revision: 3 }));
+    expect(mount.querySelector('[role="status"]')).toBeNull();
+    await act(async () => next.resolve({ state: "starting" }));
+    expect(mount.querySelector('[role="status"]')?.textContent).toContain(
+      "Local runtime starting"
+    );
+  });
+
+  it("slides in only after its first activity read sizes the content", async () => {
+    let present: (presentation: {
+      placement: "desktop" | "sidebar";
+      revision: number;
+    }) => void = () => {};
+    bridge.onPresentation = (listener) => {
+      present = listener;
+      return () => {};
+    };
+    const first =
+      deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
+    bridge.activity = vi.fn(() => first.promise);
+    await render();
+    const surface = mount.querySelector<HTMLElement>("main")!;
+    await act(async () => present({ placement: "desktop", revision: 1 }));
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(surface.dataset.visible).toBe("false");
+
+    await act(async () =>
+      first.resolve({
+        state: "running",
+        conversations: [conversation],
+        overflowCount: 0
+      })
+    );
+    expect(mount.querySelector(".fk-chip")).not.toBeNull();
+    // Two frames: paint the hidden start, then change from it.
+    for (let frame = 0; frame < 4; frame += 1)
+      await act(async () => vi.advanceTimersByTimeAsync(20));
+    expect(surface.dataset.visible).toBe("true");
+
+    await act(async () => present({ placement: "sidebar", revision: 2 }));
+    expect(surface.dataset.visible).toBe("false");
+  });
+
+  it("wakes from the logo while a Conversation chip is hovered", async () => {
+    bridge.activity = vi.fn(async () => ({
+      state: "running" as const,
+      conversations: [conversation],
+      overflowCount: 0
+    }));
     await render();
     const kin = mount.querySelector<HTMLElement>(".fk-kin-avatar")!;
+    const chip = mount.querySelector<HTMLElement>(".fk-chip")!;
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
+    await mouseOver(chip);
     expectKinAwake(kin, true);
-    const pending =
-      deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
-    vi.mocked(bridge.activity).mockReturnValueOnce(pending.promise);
-    await act(async () => vi.advanceTimersByTimeAsync(47_999));
+    expect(kin.dataset.phase).toBe("arriving");
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expectKinAwake(kin, true);
+    await mouseOver(mount.querySelector("main")!, chip);
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
     expectKinAwake(kin, true);
     await act(async () => vi.advanceTimersByTimeAsync(1));
-    expect(mount.querySelector(".fk-chip")).not.toBeNull();
     expectKinAwake(kin, false);
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
   });
 
-  it("stays awake while the main Desktop window is focused, independently of the hover timer", async () => {
-    const unsubscribe = vi.fn();
-    vi.mocked(bridge.onMainWindowFocus).mockReturnValue(unsubscribe);
+  it("keeps its look while it leaves for the sidebar", async () => {
+    let present: (presentation: {
+      placement: "desktop" | "sidebar";
+      revision: number;
+      sidebarPending?: boolean;
+    }) => void = () => {};
+    bridge.onPresentation = (listener) => {
+      present = listener;
+      listener({ placement: "desktop", revision: 1 });
+      return () => {};
+    };
     const kin = await renderQuiet();
-    const notify = vi.mocked(bridge.onMainWindowFocus).mock.calls[0]![0];
-    expectKinAwake(kin, false);
-    await act(async () => notify(true));
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    await act(async () =>
+      present({ placement: "sidebar", revision: 2, sidebarPending: true })
+    );
+    // Same element, still live, and it does not start resting mid-exit.
+    expect(mount.querySelector(".fk-kin-avatar")).toBe(kin);
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
     expectKinAwake(kin, true);
-    await mouseOver(kin);
-    await act(async () => vi.advanceTimersByTimeAsync(60_001));
-    expectKinAwake(kin, true);
-    await act(async () => notify(false));
-    expectKinAwake(kin, false);
-    await act(async () => root.render(null));
-    expect(unsubscribe).toHaveBeenCalledOnce();
+    expectLogo(kin, false);
   });
 
-  it("hands keyboard focus from the sleeping Kin to the first chip when capture arrives", async () => {
-    const sleepingKin = await renderQuiet();
+  it("wakes on hover and rests three seconds after the pointer leaves", async () => {
+    const kin = await renderQuiet();
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
+    await mouseOver(kin);
+    expectKinAwake(kin, true);
+    expect(kin.dataset.phase).toBe("arriving");
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(true);
+    // Hovering keeps it live however long the pointer stays.
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expectKinAwake(kin, true);
+    expect(kin.dataset.phase).toBe("live");
+    await mouseOver(mount.querySelector("main")!, kin);
+    expect(bridge.setInteractive).toHaveBeenLastCalledWith(false);
+    expect(mount.querySelector('[role="tooltip"]')).toBeNull();
+    expect(mount.textContent).not.toContain("No recent capture");
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
+    expectKinAwake(kin, true);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expectKinAwake(kin, false);
+    await act(async () => vi.advanceTimersByTimeAsync(restFadeMs));
+    expectLogo(kin, true);
+  });
+
+  it("keeps keyboard focus on the avatar when a Conversation chip arrives", async () => {
+    bridge.onPresentation = (listener) => {
+      listener({ placement: "desktop", revision: 1 });
+      return () => {};
+    };
+    const kin = await renderQuiet();
+    expect(kin).toBeInstanceOf(HTMLButtonElement);
     vi.mocked(bridge.activity).mockResolvedValue({
       state: "running",
       conversations: [conversation],
       overflowCount: 0
     });
-    await act(async () => sleepingKin.focus());
-    expect(document.activeElement).toBe(sleepingKin);
+    await act(async () => kin.focus());
+    expect(document.activeElement).toBe(kin);
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
-    expect(document.activeElement).toBe(mount.querySelector(".fk-chip"));
+    expect(mount.querySelector(".fk-chip")).not.toBeNull();
+    expect(document.activeElement).toBe(kin);
     expect(mount.querySelector('[role="tooltip"]')).toBeNull();
   });
 
-  it("keeps the same Floating Kin visible before the runtime is ready", async () => {
+  it("shows only the Kin until the first activity read lands", async () => {
     const activity =
       deferred<Awaited<ReturnType<FloatingKinBridge["activity"]>>>();
     bridge.activity = vi.fn(() => activity.promise);
     await render();
 
-    const status = mount.querySelector('[role="status"]');
-    expect(status?.textContent).toContain("Local runtime starting");
+    // A pending read is not a runtime state, so no status pill flashes.
+    expect(mount.querySelector('[role="status"]')).toBeNull();
+    expect(mount.textContent).not.toContain("Local runtime starting");
     const avatar = mount.querySelector('[aria-label="Floating Kin avatar"]');
     expect(
       avatar?.querySelector<HTMLElement>(".v1-pixelkin")?.style.width
     ).toBe("88px");
-    expect(status?.querySelector(".v1-pixelkin")).toBeNull();
 
     await act(async () =>
       activity.resolve({

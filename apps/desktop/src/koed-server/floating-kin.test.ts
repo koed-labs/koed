@@ -7,7 +7,10 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { createFloatingKinRuntime } from "./floating-kin.js";
+import {
+  createFloatingKinLaunchState,
+  createFloatingKinRuntime
+} from "./floating-kin.js";
 
 it("does not contact the runtime while stopped or starting", async () => {
   let lifecycle: "stopped" | "starting" = "stopped";
@@ -19,6 +22,75 @@ it("does not contact the runtime while stopped or starting", async () => {
   expect(await runtime.activity()).toEqual({ state: "stopped" });
   lifecycle = "starting";
   expect(await runtime.activity()).toEqual({ state: "starting" });
+});
+
+it("bounds the wait for registration even if resume succeeds before publication", () => {
+  let now = 1000;
+  const launch = createFloatingKinLaunchState(() => now);
+  expect(launch.pending()).toBe(true);
+  launch.settle(true);
+  expect(launch.pending()).toBe(true);
+  now += 12_000;
+  expect(launch.pending()).toBe(false);
+
+  const failed = createFloatingKinLaunchState(() => now);
+  failed.settle(false);
+  expect(failed.pending()).toBe(false);
+
+  const stalled = createFloatingKinLaunchState(() => now);
+  now += 60_000;
+  expect(stalled.pending()).toBe(false);
+  stalled.settle(true);
+  expect(stalled.pending()).toBe(false);
+});
+
+it("reports starting only for a missing registration during launch before the first successful activity read", async () => {
+  const koedHome = mkdtempSync(join(tmpdir(), "koed-floating-kin-"));
+  const server = createServer((_request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify({ conversations: [], overflowCount: 0 }));
+  });
+  let launchPending = true;
+  const runtime = createFloatingKinRuntime({
+    koedHome,
+    lifecycle: () => "running",
+    launchPending: () => launchPending,
+    accountKey: () => "signed_out:"
+  });
+  try {
+    expect(await runtime.activity()).toEqual({ state: "starting" });
+    launchPending = false;
+    expect(await runtime.activity()).toEqual({ state: "unavailable" });
+    launchPending = true;
+
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("No HTTP address");
+    mkdirSync(join(koedHome, "run"));
+    const path = join(koedHome, "run", "local-ai-runtime.json");
+    writeFileSync(path, "{}", { mode: 0o600 });
+    expect(await runtime.activity()).toEqual({ state: "unavailable" });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        protocolVersion: 1,
+        url: `http://127.0.0.1:${address.port}`,
+        authorization: `Bearer ${"a".repeat(32)}`,
+        pid: process.pid,
+        startedAt: new Date().toISOString()
+      })
+    );
+    expect(await runtime.activity()).toMatchObject({ state: "running" });
+    rmSync(path);
+    expect(await runtime.activity()).toEqual({ state: "unavailable" });
+  } finally {
+    server.closeAllConnections();
+    server.close();
+    rmSync(koedHome, { recursive: true, force: true });
+  }
 });
 
 const statuses = ["signed_out", "reauthentication_required"];
@@ -55,6 +127,12 @@ it.each(statuses)("uses local authority while %s", async (status) => {
     model: "test-model",
     effort: null
   };
+  const preview = {
+    title: "Test the release",
+    projectName: "Release",
+    request: { text: "Run the focused tests.", occurredAt: capturedAt },
+    reply: null
+  };
   const calls: unknown[] = [];
   let accountKey = `${status}:`;
   let onSummary = () => {};
@@ -79,6 +157,12 @@ it.each(statuses)("uses local authority while %s", async (status) => {
           overflowCount: 0
         })
       );
+    } else if (request.url?.endsWith("/preview")) {
+      response.end(JSON.stringify(preview));
+    } else if (request.url?.endsWith("/summary/latest")) {
+      response.end(JSON.stringify({ action: "project" }));
+    } else if (request.url?.endsWith("/summary/open")) {
+      response.end(JSON.stringify({ action: "project", result: answer }));
     } else if (calls.length === 4) {
       response.on("close", onDisconnect);
       onSummary();
@@ -143,13 +227,53 @@ it.each(statuses)("uses local authority while %s", async (status) => {
     expect(await summary).toEqual({ status: "cancelled" });
     await disconnected;
 
+    const target = { sessionId: input.sessionId, projectId: input.projectId };
+    const signal = new AbortController().signal;
+    expect(await runtime.latest(target, signal)).toEqual({ action: "project" });
+    expect(await runtime.reopen(target, signal)).toEqual({
+      action: "project",
+      result: answer
+    });
+    expect(calls.slice(-2)).toEqual([
+      [
+        "POST",
+        "/v1/desktop/floating-kin/summary/latest",
+        authorization,
+        JSON.stringify(target)
+      ],
+      [
+        "POST",
+        "/v1/desktop/floating-kin/summary/open",
+        authorization,
+        JSON.stringify(target)
+      ]
+    ]);
+
+    const previewInput = { sessionId: input.sessionId };
+    expect(await runtime.preview(previewInput, signal)).toEqual(preview);
+    expect(calls.at(-1)).toEqual([
+      "POST",
+      "/v1/desktop/floating-kin/preview",
+      authorization,
+      JSON.stringify(previewInput)
+    ]);
+
     denied = true;
+    expect(await runtime.latest(target, signal)).toEqual({ action: null });
+    expect(await runtime.reopen(target, signal)).toBeNull();
+    expect(await runtime.preview(previewInput, signal)).toBeNull();
     expect(await runtime.activity()).toEqual({ state: "unavailable" });
     expect(
       await runtime.summarize(input, new AbortController().signal)
     ).toEqual({ status: "unavailable" });
     denied = false;
 
+    beforeResponse = () => {
+      accountKey = "signed_in:changed-user";
+    };
+    expect(await runtime.preview(previewInput, signal)).toBeNull();
+    accountKey = `${status}:`;
+    expect(await runtime.reopen(target, signal)).toBeNull();
     beforeResponse = () => {
       accountKey = "signed_in:first-user";
     };
@@ -167,7 +291,7 @@ it.each(statuses)("uses local authority while %s", async (status) => {
       JSON.stringify({ ...registration, url: "https://example.com:1234" })
     );
     expect(await runtime.activity()).toEqual({ state: "unavailable" });
-    expect(calls).toHaveLength(8);
+    expect(calls).toHaveLength(16);
   } finally {
     server.closeAllConnections();
     server.close();

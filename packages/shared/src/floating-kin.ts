@@ -10,7 +10,11 @@ const conversation = z
     sessionId,
     projectId: projectId.nullable(),
     client,
-    lastActivityAt: capturedAt
+    lastActivityAt: capturedAt,
+    workingUntil: capturedAt.optional(),
+    // Best guess from captured items: "active" while a turn looks underway,
+    // "idle" once it looks finished. Absent when capture can't tell.
+    turn: z.enum(["active", "idle"]).optional()
   })
   .strict();
 
@@ -20,6 +24,26 @@ export const floatingKinActivitySchema = z
     overflowCount: z.number().int().nonnegative()
   })
   .strict();
+
+export const floatingKinPreviewTextLimit = 240;
+export const floatingKinPreviewRequestSchema = z.strictObject({ sessionId });
+const previewText = z.string().min(1).max(floatingKinPreviewTextLimit);
+const previewSnippet = z.strictObject({
+  text: previewText,
+  occurredAt: capturedAt
+});
+export const floatingKinPreviewSchema = z
+  .strictObject({
+    title: previewText.nullable(),
+    projectName: previewText.nullable(),
+    request: previewSnippet.nullable(),
+    reply: previewSnippet.nullable()
+  })
+  .nullable();
+export type FloatingKinPreviewRequest = z.infer<
+  typeof floatingKinPreviewRequestSchema
+>;
+export type FloatingKinPreview = z.infer<typeof floatingKinPreviewSchema>;
 
 const conversationSummary = z.strictObject({
   sessionId,
@@ -71,20 +95,20 @@ export const floatingKinEvidenceSchema = z
   })
   .strict();
 
+const floatingKinAnsweredSummarySchema = z.strictObject({
+  status: z.literal("answered"),
+  captured: z.string().min(1).max(8192),
+  inferred: z.string().min(1).max(8192).nullable(),
+  asOf: capturedAt,
+  truncated: z.boolean(),
+  sources: z.array(source).min(1).max(64),
+  client,
+  model: z.string().min(1).max(256),
+  effort: z.string().min(1).max(256).nullable()
+});
+
 export const floatingKinSummarySchema = z.union([
-  z
-    .object({
-      status: z.literal("answered"),
-      captured: z.string().min(1).max(8192),
-      inferred: z.string().min(1).max(8192).nullable(),
-      asOf: capturedAt,
-      truncated: z.boolean(),
-      sources: z.array(source).min(1).max(64),
-      client,
-      model: z.string().min(1).max(256),
-      effort: z.string().min(1).max(256).nullable()
-    })
-    .strict(),
+  floatingKinAnsweredSummarySchema,
   z
     .object({
       status: z.enum([
@@ -98,6 +122,32 @@ export const floatingKinSummarySchema = z.union([
     })
     .strict()
 ]);
+
+const summaryAction = z.enum(["conversation", "project"]);
+
+export const floatingKinSummaryTargetSchema = z.strictObject({
+  sessionId,
+  projectId: projectId.nullable()
+});
+export const floatingKinSummaryLatestSchema = z.strictObject({
+  action: summaryAction.nullable()
+});
+export const floatingKinSummaryOpenSchema = z
+  .strictObject({
+    action: summaryAction,
+    result: floatingKinAnsweredSummarySchema
+  })
+  .nullable();
+
+export type FloatingKinSummaryTarget = z.infer<
+  typeof floatingKinSummaryTargetSchema
+>;
+export type FloatingKinSummaryLatest = z.infer<
+  typeof floatingKinSummaryLatestSchema
+>;
+export type FloatingKinSummaryOpen = z.infer<
+  typeof floatingKinSummaryOpenSchema
+>;
 
 export type FloatingKinActivity = z.infer<typeof floatingKinActivitySchema>;
 export type FloatingKinEvidence = z.infer<typeof floatingKinEvidenceSchema>;

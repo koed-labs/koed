@@ -140,7 +140,7 @@ export function ConversationProjectsDialog(props: OrganizationDialogProps) {
                                 project.namedProject?.kin,
                                 project.kinItems
                               )}
-                              size={24}
+                              size={36}
                               className="v1-pm-row-kin"
                               motion="still"
                             />

@@ -22,10 +22,17 @@ counts as original evidence and when it stays unresolved.
   It does not match subfolders, or a replacement directory at the same path.
 - **Git Anchor** matches the selected repository across matching clones and
   worktrees, independently of Folder selection.
-- **Named Project** groups Conversations directly or through Folder and Git
-  Anchor rules. Rules match existing and future Conversations. A Conversation
+- **Anchor** is a Git Anchor or a Folder. Project settings lists a Project's
+  Anchors and adds one with **Add Anchor**.
+- **Named Project** groups Conversations directly or through its Anchors. An
+  Anchor matches existing and future Conversations. A Conversation
   can belong to several named Projects, but Projects do not nest. An exclusion
   overrides every inclusion reason in that Project only.
+
+Use **Project memberships** to manage the named Projects that include a
+Conversation. When it belongs to exactly one named Project, **Move to Project**
+can replace that membership. In the sidebar, **No anchor** is a view for
+Conversations with no Git Anchor or Folder, not an Anchor you can assign.
 
 **Add to Project** changes membership without changing source context.
 **Correct source context** previews a change to the effective Folder or Git
@@ -59,7 +66,7 @@ but does not establish which device recorded the Conversation.
 Guarded historical Git Anchor hints use reviewed source correction and a
 fresh device-side score before preview and apply.
 When saving a Project suggestion, Koed previews whether the correction would
-newly include the Conversation in that exact Project through its rules. This is
+newly include the Conversation in that exact Project through its Anchors. This is
 not direct membership. A Folder hint alone never changes attribution or
 membership.
 

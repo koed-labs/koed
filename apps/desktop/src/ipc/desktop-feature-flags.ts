@@ -1,5 +1,7 @@
 export type DesktopFeatureFlags = Readonly<{
   teamCollaborationEnabled: boolean;
+  // Personal Device Sync is opt-in; Desktop hides its controls while it is off.
+  personalDeviceSyncEnabled: boolean;
 }>;
 
 export const desktopTeamCollaborationValue = (
@@ -11,5 +13,7 @@ export const desktopFeatureFlagsFromEnvironment = (
 ): DesktopFeatureFlags =>
   Object.freeze({
     teamCollaborationEnabled:
-      desktopTeamCollaborationValue(environment) === "true"
+      desktopTeamCollaborationValue(environment) === "true",
+    personalDeviceSyncEnabled:
+      environment.KOED_PERSONAL_DEVICE_SYNC_ENABLED === "true"
   });

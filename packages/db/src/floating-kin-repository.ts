@@ -58,6 +58,86 @@ const floatingKinLiveItemSql = (
       and a->>'sourceRuntime'=s.source_runtime::text)
 `;
 
+// Claude Code child agents write their own transcripts into the same session.
+// Only the main transcript speaks for the User's request and the main turn.
+const floatingKinMainTranscriptSql = `(ci.source_kind <> 'claude-code' or (
+  starts_with(ci.external_item_id, 'main:')
+  and coalesce(ci.metadata->>'sourceComponentId', 'main')='main'
+))`;
+
+const floatingKinRecentItemSql = `
+  ci.event_time > now() - interval '30 minutes'
+  and ci.observed_at > now() - interval '30 minutes'
+  and ${conversationMessageSql}
+  and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
+  and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
+`;
+
+// Guess whether a Codex or Claude Code turn is underway from its latest
+// captured signal. Pi is left out: only its extension's live report counts.
+// Turn-end markers come from transcripts (Codex task_complete) and hooks
+// (Claude Code turn_completed). Codex doesn't always record task_complete, so
+// an assistant reply that has been quiet for a while also counts as finished.
+// Work with no end marker counts as active only while it is fresh; otherwise
+// the turn is unknown and the chip falls back to its capture age. Claude child
+// agents run inside the main turn, so their events never reopen it. Codex
+// writes many native event types, so every Codex item counts as work except
+// bookkeeping records and developer or system messages.
+export const floatingKinTurnQuietSeconds = 30;
+// Thread renames and rollbacks change the thread, not the turn.
+const codexBookkeepingEvents = `('token_count','token_usage_record','world_state',
+  'session_meta','turn_context','thread_settings_applied',
+  'inter_agent_communication_metadata','thread_name_updated','thread_rolled_back')`;
+const codexMessageRoleSql = `ci.raw_json->'payload'->>'role'`;
+export const floatingKinTurnActiveMinutes = 10;
+const floatingKinTurnSql = (owner: string) => `
+  select case
+    when sig.kind='end' then 'idle'
+    when sig.kind='reply'
+      and sig.event_time <= now() - interval '${floatingKinTurnQuietSeconds} seconds' then 'idle'
+    when sig.event_time > now() - interval '${floatingKinTurnActiveMinutes} minutes' then 'active'
+  end turn
+  from (
+    select ci.event_time, case
+      when ci.source_event_type in ('task_complete','turn_aborted','turn_completed')
+        or ci.metadata->>'semanticControl'='turn_completed' then 'end'
+      when ci.source_event_type in ('agent_message','assistant_message')
+        or (ci.source_kind='codex' and ci.source_event_type='message'
+          and ${codexMessageRoleSql}='assistant')
+        or (ci.metadata->>'canonicalConversationItemKind'='message'
+          and ci.metadata->>'canonicalConversationItemActor' in ('agent','assistant')
+          and coalesce(${codexMessageRoleSql}, 'assistant') <> 'user') then 'reply'
+      else 'work'
+    end kind
+    from conversation_items ci
+    where ci.session_id=recent.session_id and ci.owner_user_id=${owner}
+      and ci.visibility='personal' and ci.import_observed_at is null
+      and ci.personal_deleted_at is null and ci.memory_excluded_at is null
+      and ci.event_time is not null and ci.event_time <= now()
+      and ci.event_time > now() - interval '30 minutes'
+      and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
+      and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
+      and (ci.source_kind <> 'claude-code' or (
+        coalesce(ci.metadata->>'sourceComponentId', 'main')='main'
+        and ci.raw_json->>'parentAgentId' is null
+        and ci.raw_json->>'parentToolUseId' is null
+      ))
+      and (
+        (ci.source_kind='codex'
+          and ci.source_event_type not in ${codexBookkeepingEvents}
+          and coalesce(ci.metadata->>'canonicalConversationItemKind', '') <> 'system:message'
+          and coalesce(${codexMessageRoleSql}, '') not in ('developer','system'))
+        or ci.source_event_type in ('task_complete','turn_aborted','turn_completed','task_started',
+          'user_message','agent_message','assistant_message','tool_call','tool_result','agent_reasoning')
+        or ci.metadata->>'semanticControl'='turn_completed'
+        or ci.metadata->>'canonicalConversationItemKind' in
+          ('message','tool_call','tool_result','reasoning','reasoning_summary')
+      )
+    order by ci.event_time desc, ci.source_sequence desc nulls last, ci.id desc
+    limit 1
+  ) sig
+`;
+
 export const floatingKinOwnerSelection = (actor: ActorContext) =>
   JSON.stringify({ ownerUserId: actor.userId, searchDomain: "global" });
 
@@ -76,35 +156,35 @@ export const getFloatingKinActivity = async (
     client: FloatingKinActivity["conversations"][number]["client"];
     activity_at: Date;
     total: string;
+    turn: "active" | "idle" | null;
   }>(
     `with latest as (
     select s.id session_id, max(ci.event_time) activity_at
     from conversation_items ci join sessions s on s.id=ci.session_id
     where ${floatingKinLiveItemSql("$1", "$2", "$3")}
-      and ci.event_time > now() - interval '30 minutes'
-      and ci.observed_at > now() - interval '30 minutes'
-      and ${conversationMessageSql}
-      and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
-      and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
+      and ${floatingKinRecentItemSql}
     group by s.id
   ), recent as (
     select *, count(*) over () total from latest
     order by activity_at desc, session_id limit $4
   )
   select recent.*, project.project_id,
+    case when s.source_runtime::text <> 'pi' then turn.turn end turn,
     case when s.source_runtime='codex-cli' then 'codex' else s.source_runtime::text end client
   from recent join sessions s on s.id=recent.session_id
   cross join lateral (${floatingKinProjectLookupSql}) project
+  left join lateral (${floatingKinTurnSql("$1")}) turn on true
   order by recent.activity_at desc, recent.session_id`,
     [actor.userId, floatingKinOwnerSelection(actor), adapters, displayLimit]
   );
   return {
     conversations: result.rows.map(
-      ({ session_id, project_id, client, activity_at }) => ({
+      ({ session_id, project_id, client, activity_at, turn }) => ({
         sessionId: session_id,
         projectId: project_id,
         client,
-        lastActivityAt: activity_at.toISOString()
+        lastActivityAt: activity_at.toISOString(),
+        ...(turn ? { turn } : {})
       })
     ),
     overflowCount: Math.max(
@@ -129,14 +209,21 @@ export const readFloatingKinRawRows = <Row extends pg.QueryResultRow>(
   pool: pg.Pool,
   actor: ActorContext,
   sessionId: string,
-  evidenceIds?: string[],
-  initiatingFor?: string
+  {
+    evidenceIds,
+    initiatingFor,
+    preview = false
+  }: {
+    evidenceIds?: string[];
+    initiatingFor?: string;
+    preview?: boolean;
+  } = {}
 ) =>
   pool.query<Row>(
     `select ci.*, s.metadata session_metadata,
       ${projectionProject("ci")} as evidence_project,
       ${projectionTurn("ci")} as evidence_turn,
-      ($6::uuid[] is not null and exists (
+      (($6::uuid[] is not null or $8::boolean) and exists (
         select 1 from memory_event_sources ref join memory_events me on me.id=ref.memory_event_id
         where ref.conversation_item_id=ci.id and ref.source_role='derived_from'
           and me.owner_user_id=ci.owner_user_id and me.session_id=ci.session_id
@@ -178,10 +265,7 @@ export const readFloatingKinRawRows = <Row extends pg.QueryResultRow>(
     and not (coalesce(ci.metadata->'encryptedConversationItemColumns', '[]'::jsonb) ? 'metadata')
     and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
     and (${conversationMessageSql} or (ci.source_kind='claude-code' and ci.source_record_type='session_message'))
-    and (ci.source_kind <> 'claude-code' or (
-      starts_with(ci.external_item_id, 'main:')
-      and coalesce(ci.metadata->>'sourceComponentId', 'main')='main'
-    ))
+    and ${floatingKinMainTranscriptSql}
     and (case when $7::uuid is not null then exists (
       select 1 from conversation_items target where target.id=$7
         and target.owner_user_id=ci.owner_user_id and target.session_id=ci.session_id
@@ -207,7 +291,8 @@ export const readFloatingKinRawRows = <Row extends pg.QueryResultRow>(
       sessionId,
       floatingKinEvidenceLimit + 1,
       evidenceIds ?? null,
-      initiatingFor ?? null
+      initiatingFor ?? null,
+      preview
     ]
   );
 
@@ -225,6 +310,75 @@ const eligibleSealedLineageSql = `
       and ci.metadata->>'encryptedSourceColumn' is distinct from 'metadata'
     ), false)
   )`;
+
+export const readFloatingKinPreviewHeader = async (
+  pool: pg.Pool,
+  actor: ActorContext,
+  sessionId: string
+) => {
+  const { rows } = await pool.query<{
+    title: string | null;
+    project_name: string | null;
+  }>(
+    `select case when jsonb_typeof(s.metadata->'threadName')='string'
+      then s.metadata->>'threadName' end title,
+      (select case when count(*)=1 then min(p.name) end
+       from personal_named_projects p where ${personalSessionProjectMembershipSql("s", "p")}) project_name
+    from sessions s where s.id=$4 and exists (
+      select 1 from conversation_items ci where ci.session_id=s.id
+        and ${floatingKinLiveItemSql("$1", "$2", "$3")}
+        and ${floatingKinRecentItemSql}
+    )`,
+    [actor.userId, floatingKinOwnerSelection(actor), adapters, sessionId]
+  );
+  return rows[0];
+};
+
+export const readFloatingKinProjectedPreview = async (
+  pool: pg.Pool,
+  actor: ActorContext,
+  sessionId: string
+) => {
+  const { rows } = await pool.query<{
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    event_time: Date;
+  }>(
+    `select latest.* from (values ('user'), ('assistant')) roles(role)
+    cross join lateral (
+      select m.id, m.role, m.content, ci.event_time
+      from conversation_items ci join sessions s on s.id=ci.session_id
+      join messages m on m.session_id=s.id and m.owner_user_id=ci.owner_user_id
+        and m.visibility=ci.visibility
+        and m.idempotency_key='message:' || case
+          when jsonb_typeof(ci.metadata->'canonicalConversationItemKey')='string'
+            and ci.metadata->>'canonicalConversationItemKey' ~ '[^[:space:]]'
+          then ci.metadata->>'canonicalConversationItemKey' else ci.canonical_item_key end
+        and m.source_hash='message:' || ci.source_hash and m.source_event_time=ci.event_time
+      where s.id=$4 and ${floatingKinLiveItemSql("$1", "$2", "$3")}
+        and ${floatingKinRecentItemSql} and ci.projection_status='projected'
+        and ${floatingKinMainTranscriptSql}
+        and m.role::text=roles.role and m.invalidated_at is null and m.recall_eligible
+        and m.presentation_mode <> 'hidden' and m.presentation_renderer='message'
+        and exists (
+          select 1 from memory_event_sources source
+          join memory_events me on me.id=source.memory_event_id
+          where source.conversation_item_id=ci.id and source.source_role='derived_from'
+            and me.session_id=s.id and me.owner_user_id=ci.owner_user_id and me.visibility=ci.visibility
+            and me.event_type='captured' and me.seal_reason is not null and me.include_in_lcm
+            and me.payload->'metadata'->'semanticItemManifest' @> jsonb_build_array(
+              jsonb_build_object('sourceIds', jsonb_build_array(ci.id::text), 'includeInLcm', true)
+            )
+            and me.invalidated_at is null and me.personal_deleted_at is null and me.source_event_time <= now()
+            and (${semanticMemoryEventEligibleSql("me")}) ${eligibleSealedLineageSql}
+        )
+      order by ci.event_time desc, ci.source_sequence desc nulls last, ci.id, m.id limit 1
+    ) latest`,
+    [actor.userId, floatingKinOwnerSelection(actor), adapters, sessionId]
+  );
+  return rows;
+};
 
 export const readFloatingKinSealedRows = <Row extends pg.QueryResultRow>(
   pool: pg.Pool,

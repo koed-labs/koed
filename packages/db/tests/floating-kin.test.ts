@@ -108,9 +108,9 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
           second === 6 ? "claude-code" : "codex-cli"
         )
       );
-    await capture(other.id, 59);
-    await capture(owner.id, -3600);
-    await capture(owner.id, 58, { approvalReview: true });
+    const foreign = await capture(other.id, 59);
+    const old = await capture(owner.id, -3600);
+    const approval = await capture(owner.id, 58, { approvalReview: true });
     const historical = await capture(owner.id, 57);
     const deleted = await capture(owner.id, 56);
     await pool!.query(
@@ -126,10 +126,36 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         sessionId: session.id,
         projectId: null,
         client: index === 0 ? "claude-code" : "codex",
-        lastActivityAt: timestamp(6 - index)
+        lastActivityAt: timestamp(6 - index),
+        // A fresh request with no reply yet looks like a turn underway.
+        turn: "active"
       })),
       overflowCount: 1
     });
+    expect(
+      await repo.getFloatingKinPreview(actor, {
+        sessionId: expected[5]!.session.id
+      })
+    ).toEqual({
+      title: null,
+      projectName: null,
+      reply: null,
+      request: { text: "secret", occurredAt: timestamp(1) }
+    });
+    for (const { session } of [foreign, old, approval, historical, deleted]) {
+      expect(
+        await repo.getFloatingKinPreview(actor, { sessionId: session.id })
+      ).toBeNull();
+    }
+    await pool!.query(
+      "update conversation_items set observed_at=now() - interval '31 minutes' where id=$1",
+      [expected[5]!.item.id]
+    );
+    expect(
+      await repo.getFloatingKinPreview(actor, {
+        sessionId: expected[5]!.session.id
+      })
+    ).toBeNull();
     const raw = await repo.getFloatingKinEvidence(actor, {
       action: "conversation",
       sessionId: expected[0]!.session.id
@@ -137,6 +163,180 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect(raw.items.map(({ kind, text }) => [kind, text])).toEqual([
       ["conversation_item", "secret"]
     ]);
+  });
+
+  it("guesses whether each Conversation's turn is underway from its latest captured signal", async () => {
+    const repo = createMemorySourceRepository(pool!);
+    const owner = await repo.createUser({
+      email: `kin-${randomUUID()}@example.test`
+    });
+    let actor = { userId: owner.id };
+    const ago = (seconds: number) =>
+      new Date(Date.now() - seconds * 1000).toISOString();
+    const conversation = async (
+      runtime: "codex-cli" | "claude-code" | "pi",
+      items: Array<{
+        type: string;
+        secondsAgo: number;
+        adapter?: string;
+        transport?: "transcript" | "hook";
+        component?: string;
+        role?: string;
+      }>
+    ) => {
+      const claude = runtime === "claude-code";
+      const pi = runtime === "pi";
+      const externalSessionId = randomUUID();
+      const session = await repo.createCapturedSession(actor, {
+        externalSessionId,
+        sourceRuntime: runtime,
+        captureMethod: "api"
+      });
+      await repo.createConversationItems(actor, {
+        items: items.map(
+          (
+            { type, secondsAgo, adapter, transport, component, role },
+            index
+          ) => ({
+            sessionId: session.id,
+            externalSessionId,
+            externalTurnId: "turn",
+            sourceSequence: index + 1,
+            externalItemId: `item-${index}`,
+            sourceKind: claude ? "claude-code" : pi ? "pi" : "codex",
+            sourceAdapterVersion:
+              adapter ??
+              (claude
+                ? "claude-code-transcript-v1"
+                : pi
+                  ? "pi-session-v1"
+                  : "codex-transcript-v1"),
+            sourceTransport: transport ?? "transcript",
+            sourceRecordType: claude ? "session_message" : "event_msg",
+            sourceEventType: type,
+            eventTime: ago(secondsAgo),
+            rawJson: {
+              type: role ? "response_item" : "event_msg",
+              payload: role ? { type, role } : { type }
+            },
+            rawText: type.endsWith("message") ? "text" : undefined,
+            sourceHash: randomUUID(),
+            idempotencyKey: randomUUID(),
+            metadata: component ? { sourceComponentId: component } : {}
+          })
+        )
+      });
+      return session.id;
+    };
+    const finished = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 90 },
+      { type: "agent_message", secondsAgo: 80 },
+      { type: "task_complete", secondsAgo: 79 }
+    ]);
+    const quietReply = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 120 },
+      { type: "agent_message", secondsAgo: 60 }
+    ]);
+    const working = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 70 },
+      { type: "task_started", secondsAgo: 69 },
+      { type: "agent_message", secondsAgo: 5 }
+    ]);
+    const stale = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 20 * 60 }
+    ]);
+    const claudeDone = await conversation("claude-code", [
+      { type: "user_message", secondsAgo: 50 },
+      { type: "agent_message", secondsAgo: 10 },
+      {
+        type: "turn_completed",
+        secondsAgo: 9,
+        adapter: "claude-code-hook-signal-v1",
+        transport: "hook"
+      }
+    ]);
+    const turnsFor = async () =>
+      Object.fromEntries(
+        (await repo.getFloatingKinActivity(actor)).conversations.map(
+          ({ sessionId, turn }) => [sessionId, turn ?? "unknown"]
+        )
+      );
+    expect(await turnsFor()).toEqual({
+      [finished]: "idle",
+      [quietReply]: "idle",
+      [working]: "active",
+      [stale]: "unknown",
+      [claudeDone]: "idle"
+    });
+    // The feed shows at most five Conversations, so check the rest separately.
+    const second = await repo.createUser({
+      email: `kin-${randomUUID()}@example.test`
+    });
+    actor = { userId: second.id };
+    // Codex native tool output counts as work in the current turn.
+    const codexTool = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 12 * 60 },
+      { type: "function_call_output", secondsAgo: 1 }
+    ]);
+    // A Claude child agent's events after the main Stop don't reopen it.
+    const claudeChildAfterStop = await conversation("claude-code", [
+      { type: "user_message", secondsAgo: 40 },
+      { type: "agent_message", secondsAgo: 20 },
+      {
+        type: "turn_completed",
+        secondsAgo: 19,
+        adapter: "claude-code-hook-signal-v1",
+        transport: "hook"
+      },
+      { type: "tool_result", secondsAgo: 5, component: "subagent.fixture" }
+    ]);
+    // Pi is never guessed: only its extension's live report counts.
+    const piRequest = await conversation("pi", [
+      { type: "user_message", secondsAgo: 5 }
+    ]);
+    expect(await turnsFor()).toEqual({
+      [codexTool]: "active",
+      [claudeChildAfterStop]: "idle",
+      [piRequest]: "unknown"
+    });
+    const third = await repo.createUser({
+      email: `kin-${randomUUID()}@example.test`
+    });
+    actor = { userId: third.id };
+    // Any Codex native event that isn't bookkeeping counts as work.
+    const codexToolSearch = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 12 * 60 },
+      { type: "tool_search_output", secondsAgo: 1 },
+      { type: "token_count", secondsAgo: 0 }
+    ]);
+    // A fresh native assistant message without canonical metadata is a reply.
+    const codexFreshReply = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 12 * 60 },
+      { type: "message", role: "assistant", secondsAgo: 2 }
+    ]);
+    const codexQuietReply = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 12 * 60 },
+      { type: "message", role: "assistant", secondsAgo: 60 },
+      { type: "message", role: "developer", secondsAgo: 1 }
+    ]);
+    // Renaming or rolling back a finished thread isn't a new turn.
+    const codexRenamed = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 90 },
+      { type: "task_complete", secondsAgo: 60 },
+      { type: "thread_name_updated", secondsAgo: 1 }
+    ]);
+    const codexRolledBack = await conversation("codex-cli", [
+      { type: "user_message", secondsAgo: 90 },
+      { type: "task_complete", secondsAgo: 60 },
+      { type: "thread_rolled_back", secondsAgo: 1 }
+    ]);
+    expect(await turnsFor()).toEqual({
+      [codexToolSearch]: "active",
+      [codexFreshReply]: "active",
+      [codexQuietReply]: "idle",
+      [codexRenamed]: "idle",
+      [codexRolledBack]: "idle"
+    });
   });
 
   const claudeTurn = async () => {
@@ -237,6 +437,10 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     };
     return {
       add,
+      preview: () =>
+        repo.getFloatingKinPreview(actor, { sessionId: session.id }),
+      project: () =>
+        repo.projectPendingConversationItems(actor, { limit: 100 }),
       read: (evidenceIds?: string[]) =>
         repo.getFloatingKinEvidence(actor, { ...input, evidenceIds })
     };
@@ -266,7 +470,7 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
   });
 
   it("does not admit a partial initiating Claude message and preserves all eligible blocks once complete", async () => {
-    const { add, read } = await claudeTurn();
+    const { add, read, preview } = await claudeTurn();
     const content = [
       { type: "text", text: "first" },
       { type: "tool_result", text: "internal tool output" },
@@ -274,6 +478,12 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     ];
     const [first] = await add({ content });
     await add({ content, index: 2 });
+    expect(await preview()).toEqual({
+      title: null,
+      projectName: null,
+      request: null,
+      reply: null
+    });
     expect((await read()).items).toEqual([]);
     expect((await read([first!.id])).items).toEqual([]);
     await add({ content, index: 1 });
@@ -348,6 +558,41 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect((await read([prompt!.id, child!.id, update!.id])).items).toEqual(
       items
     );
+  });
+
+  it("keeps a projected child agent's prompt out of the main request", async () => {
+    const { add, preview, project } = await claudeTurn();
+    await add({ age: 5000 });
+    await add({
+      role: "assistant",
+      message: "main-reply",
+      sequence: 1100,
+      age: 4500,
+      content: [{ type: "text", text: "main reply" }]
+    });
+    await add({ completion: true, age: 4000 });
+    await add({
+      component: "subagent.fixture",
+      turn: "child-turn",
+      sequence: 1200,
+      age: 3000,
+      content: [{ type: "text", text: "child prompt" }]
+    });
+    await add({
+      component: "subagent.fixture",
+      turn: "child-turn",
+      role: "assistant",
+      message: "child-reply",
+      sequence: 1300,
+      age: 2500,
+      content: [{ type: "text", text: "child reply" }]
+    });
+    await add({ completion: true, turn: "child-turn", age: 2000 });
+    await project();
+    expect(await preview()).toMatchObject({
+      request: { text: "first" },
+      reply: { text: "main reply" }
+    });
   });
 
   it("falls back when Claude rows do not prove the initiating message is complete", async () => {
@@ -518,7 +763,7 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
           }
         ]
       });
-    await add("user_message", "previous", 1, {}, "previous");
+    const older = await add("user_message", "previous", 1, {}, "previous");
     await add("user_message", "current prompt", 2);
     const [update] = await add("agent_message", "current update", 3);
     await upsertEncryptedFieldPayloadWithClient(pool!, actor, encryption, {
@@ -538,6 +783,15 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     await add("reasoning", "hidden thought", 4);
     await add("agent_message", "approval secret", 5, { approvalReview: true });
     const input = { sessionId: session.id, action: "conversation" as const };
+    const previewInput = { sessionId: session.id };
+    expect(await repo.getFloatingKinPreview(actor, previewInput)).toMatchObject(
+      {
+        title: null,
+        projectName: null,
+        request: { text: "current prompt" },
+        reply: { text: "current update" }
+      }
+    );
     const raw = await repo.getFloatingKinEvidence(actor, input);
     expect(raw.items.map(({ kind, text }) => [kind, text])).toEqual([
       ["conversation_item", "current prompt"],
@@ -567,15 +821,17 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         ...input,
         evidenceIds: raw.items.map(({ id }) => id)
       });
-    await add("user_message", "newer turn", 6, {}, "newer");
+    await add("user_message", "u".repeat(280), 6, {}, "newer");
+    let lastUpdateId: string | undefined;
     for (let sequence = 10; sequence < 43; sequence++) {
-      await add(
+      const [item] = await add(
         "agent_message",
         `newer update ${sequence}`,
         sequence,
         {},
         "newer"
       );
+      lastUpdateId = item!.id;
     }
     expect((await revalidate()).items).toEqual(raw.items);
     await add("task_complete", "control", 7);
@@ -584,6 +840,10 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect((await revalidate()).items).toEqual(raw.items);
     await add("task_complete", "control", 8, {}, "newer");
     await repo.projectPendingConversationItems(actor, { limit: 100 });
+    await pool!.query(
+      "update conversation_items set event_time=now() - interval '31 minutes' where id=$1",
+      [older[0]!.id]
+    );
     const sealed = await repo.getFloatingKinEvidence(actor, input);
     expect(sealed.items.map(({ kind, text }) => [kind, text])).toEqual(
       expect.arrayContaining([
@@ -593,6 +853,10 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     );
     expect(JSON.stringify(sealed)).not.toMatch(
       /raw secret|hidden thought|approval secret|control/
+    );
+    await pool!.query(
+      `update sessions set metadata=metadata || $2::jsonb where id=$1`,
+      [session.id, JSON.stringify({ threadName: `   ${"t".repeat(300)}   ` })]
     );
     const project = await repo.createNamedPersonalProject(actor, {
       name: "Kin scope"
@@ -608,6 +872,14 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
         projectId: project.projectId
       })
     ).toEqual(sealed);
+    expect(await repo.getFloatingKinPreview(actor, previewInput)).toMatchObject(
+      {
+        title: "t".repeat(240),
+        projectName: "Kin scope",
+        request: { text: "u".repeat(240) },
+        reply: { text: "newer update 42" }
+      }
+    );
     const sealedIds = sealed.items.map(({ id }) => id);
     expect(
       (
@@ -646,5 +918,40 @@ describe.skipIf(!databaseUrl)("Floating Kin Personal activity", () => {
     expect(
       (await repo.getFloatingKinActivity(actor)).conversations[0]?.projectId
     ).toBe(project.projectId);
+
+    const { rowCount } = await pool!.query(
+      `update memory_events me set payload=jsonb_set(payload, '{metadata,semanticItemManifest}', (
+         select jsonb_agg(case when entry->'sourceIds' ? $1::text
+           then jsonb_set(entry, '{includeInLcm}', 'false') else entry end order by ordinality)
+         from jsonb_array_elements(payload->'metadata'->'semanticItemManifest') with ordinality entries(entry, ordinality)
+       )) where me.include_in_lcm and me.seal_reason is not null and exists (
+         select 1 from memory_event_sources ref where ref.memory_event_id=me.id and ref.conversation_item_id=$1::uuid
+       )`,
+      [lastUpdateId]
+    );
+    expect(rowCount).toBeGreaterThan(0);
+    expect(
+      (await repo.getFloatingKinPreview(actor, previewInput))?.reply?.text
+    ).toBe("newer update 41");
+
+    const [promptItem] = await add(
+      "user_message",
+      "sealed prompt",
+      50,
+      {},
+      "unfinished"
+    );
+    await add("agent_message", "unfinished reply", 51, {}, "unfinished");
+    await repo.projectPendingConversationItems(actor, { limit: 20 });
+    const { rowCount: invalidatedSeals } = await pool!.query(
+      `update memory_events me set include_in_lcm=false
+       from memory_event_sources ref where ref.memory_event_id=me.id
+         and ref.conversation_item_id=$1 and me.seal_reason is not null`,
+      [promptItem!.id]
+    );
+    expect(invalidatedSeals).toBe(1);
+    const unfinished = await repo.getFloatingKinPreview(actor, previewInput);
+    expect(unfinished?.request?.text).not.toBe("sealed prompt");
+    expect(unfinished?.reply?.text).toBe("unfinished reply");
   });
 });
