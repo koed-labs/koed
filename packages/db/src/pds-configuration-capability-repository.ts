@@ -80,9 +80,14 @@ export const createPdsConfigurationCapabilityRepository = (
       } else {
         // Attach only to this signer's matching base refresh. An out-of-order
         // extension cannot replace a newer ad or resurrect expired support.
+        const record = {
+          canonicalAdvertisement: input.canonicalAdvertisement,
+          canonicalRequestProof: input.canonicalRequestProof
+        };
         await client.query(
-          `update pds_configuration_capabilities set extended_record=jsonb_build_object(
-             'baseProof',canonical_request_proof,'canonicalAdvertisement',$4::text,'canonicalRequestProof',$5::text),updated_at=now()
+          `update pds_configuration_capabilities set extended_record=coalesce(extended_record,'{}'::jsonb) ||
+             case when $4::boolean then jsonb_build_object('kinAccessories', $5::jsonb || jsonb_build_object('baseProof',canonical_request_proof))
+               else $5::jsonb || jsonb_build_object('baseProof',canonical_request_proof) end,updated_at=now()
            where group_id=$1 and device_id=$2 and canonical_advertisement=$3
            and canonical_request_proof::jsonb->>'deviceSigningKeyId'=$6
            and canonical_request_proof::jsonb->>'nonce'=$7`,
@@ -93,8 +98,8 @@ export const createPdsConfigurationCapabilityRepository = (
               ...view,
               features: basePdsConfigurationFeatures(view.features)
             }),
-            input.canonicalAdvertisement,
-            input.canonicalRequestProof,
+            view.features.includes("project_kin_accessories_v1"),
+            JSON.stringify(record),
             auth.signingKeyId,
             baseNonce
           ]
@@ -109,7 +114,10 @@ export const createPdsConfigurationCapabilityRepository = (
     }
   },
   async listPdsConfigurationCapabilities(
-    input: PdsRelayAuthContext & { includeExtended?: boolean }
+    input: PdsRelayAuthContext & {
+      includeExtended?: boolean;
+      includeKinAccessories?: boolean;
+    }
   ): Promise<PdsConfigurationCapabilityRecord[]> {
     const client = await pool.connect();
     try {
@@ -125,11 +133,20 @@ export const createPdsConfigurationCapabilityRepository = (
         > | null;
       }>(
         `select c.device_id,c.canonical_advertisement,c.canonical_request_proof,
-          case when $3::boolean and c.extended_record->>'baseProof'=c.canonical_request_proof then c.extended_record end as extended_record
+          case
+            when $4::boolean and c.extended_record->'kinAccessories'->>'baseProof'=c.canonical_request_proof
+              then c.extended_record->'kinAccessories'
+            when $3::boolean and c.extended_record->>'baseProof'=c.canonical_request_proof
+              then c.extended_record end as extended_record
          from pds_configuration_capabilities c
         join personal_device_group_members m on m.group_id=c.group_id and m.device_id=c.device_id and m.status='active'
         where c.group_id=$1 and c.device_id<>$2 and c.expires_at>now() order by c.device_id limit 64`,
-        [auth.groupDbId, auth.deviceId, input.includeExtended ?? false]
+        [
+          auth.groupDbId,
+          auth.deviceId,
+          input.includeExtended ?? false,
+          input.includeKinAccessories ?? false
+        ]
       );
       await client.query("commit");
       return result.rows.map((row) => ({

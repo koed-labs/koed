@@ -3,6 +3,8 @@ import {
   DEFAULT_AGENT_LOOK,
   normalizeAgentLook,
   parseAgentLook,
+  projectKinLook,
+  projectKinSettings,
   sameAgentLook,
   serializeAgentLook
 } from "./agent-kin.js";
@@ -68,4 +70,20 @@ describe("agent Kin", () => {
     const look = editKin(clone(DEFAULT_AGENT_LOOK), "body.shape", "sphere");
     expect(sameAgentLook(normalizeAgentLook(clone(look)), look)).toBe(true);
   });
+});
+
+it("loads and saves only available Project Kin accessories", () => {
+  const saved = {
+    shape: "roundedBox",
+    colour: "#55cca3",
+    personality: "neutral",
+    items: ["cap", "ghost", "beanie", "circle_eyeglasses", "bowler", "unknown"]
+  } as const;
+  const look = projectKinLook("project", { ...saved, items: [...saved.items] });
+  expect(look.face.items).toEqual(["bowler", "circle_eyeglasses"]);
+  expect(projectKinSettings(look)).toEqual({
+    ...saved,
+    items: ["bowler", "circle_eyeglasses"]
+  });
+  expect(projectKinSettings(projectKinLook("project")).items).toBeUndefined();
 });

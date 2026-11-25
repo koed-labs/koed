@@ -114,11 +114,34 @@ const projectShapes: readonly KinShape[] = [
   "capsule"
 ];
 
+export const PROJECT_KIN_ACCESSORIES = PixelkinAccessories.filter(
+  (item) => item.unlockBit === undefined
+);
+const projectKinItemIds = new Set(PROJECT_KIN_ACCESSORIES.map(({ id }) => id));
+const projectKinItems = (items: readonly string[]) =>
+  items.filter((id) => projectKinItemIds.has(id));
+
+function setProjectKinAccessories(look: AgentLook, items: readonly string[]) {
+  editKin(look, "face.items", projectKinItems(items));
+  // Apply slot rules before sorting so the latest equipped item wins.
+  look.face.items.sort();
+  return look;
+}
+
+export function withProjectKinAccessories(
+  look: AgentLook,
+  items: readonly string[]
+) {
+  return setProjectKinAccessories(clone(look), items);
+}
+
 export function projectKinSettings(look: AgentLook): PersonalProjectKin {
+  const items = projectKinItems(look.face.items).sort();
   return personalProjectKinSchema.parse({
     shape: look.body.shape,
     colour: look.palette.base,
-    personality: look.face.personality
+    personality: look.face.personality,
+    ...(items.length > 0 && { items })
   });
 }
 
@@ -140,7 +163,10 @@ export function projectKinLook(
     "palette.base",
     saved?.colour ?? colour?.hex ?? look.palette.base
   );
-  if (saved) editKin(look, "face.personality", saved.personality);
+  if (saved) {
+    editKin(look, "face.personality", saved.personality);
+    if (saved.items) setProjectKinAccessories(look, saved.items);
+  }
   look.seed = value % 100000;
   return look;
 }

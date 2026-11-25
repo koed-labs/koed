@@ -20,7 +20,8 @@ const baseFeatures = [
 ] as const;
 export const personalConfigurationFeatureSchema = z.enum([
   ...baseFeatures,
-  "project_kin_v1"
+  "project_kin_v1",
+  "project_kin_accessories_v1"
 ]);
 export type PersonalConfigurationFeature = z.infer<
   typeof personalConfigurationFeatureSchema
@@ -37,6 +38,12 @@ export const pdsConfigurationFeaturesSchema = z
   .refine(
     (features) => new Set(features).size === features.length,
     "Configuration capabilities must be distinct"
+  )
+  .refine(
+    (features) =>
+      !features.includes("project_kin_accessories_v1") ||
+      features.includes("project_kin_v1"),
+    "Project Kin accessories require Project Kin support"
   );
 export const pdsConfigurationCapabilityAdvertisementSchema = z
   .object({

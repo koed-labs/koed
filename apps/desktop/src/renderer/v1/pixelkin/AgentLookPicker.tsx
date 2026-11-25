@@ -25,7 +25,7 @@ import {
 const shapes = {
   sphere: { label: "Sphere", Icon: Circle },
   cube: { label: "Cube", Icon: Box },
-  roundedBox: { label: "Rounded cube", Icon: SquareRoundCorner },
+  roundedBox: { label: "Rounded", Icon: SquareRoundCorner },
   capsule: { label: "Capsule", Icon: RectangleVertical }
 } satisfies Record<KinShape, { label: string; Icon: typeof Box }>;
 

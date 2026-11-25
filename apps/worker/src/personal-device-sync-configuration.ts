@@ -26,14 +26,16 @@ import {
   type PdsSessionPackage
 } from "@koed-labs/shared";
 
-function hasProjectKin(payload: PersonalConfigurationPayload) {
-  return (
-    payload.kind === "project_membership" &&
-    payload.snapshot.revisions.some(
-      ({ operation }) =>
-        operation.kind === "set_project" && operation.kin !== undefined
-    )
+function projectKinFeature(
+  payload: PersonalConfigurationPayload
+): PersonalConfigurationFeature | undefined {
+  if (payload.kind !== "project_membership") return;
+  const looks = payload.snapshot.revisions.flatMap(({ operation }) =>
+    operation.kind === "set_project" && operation.kin ? [operation.kin] : []
   );
+  if (looks.some(({ items }) => items !== undefined))
+    return "project_kin_accessories_v1";
+  if (looks.length > 0) return "project_kin_v1";
 }
 
 type Scope = {
@@ -152,7 +154,8 @@ export const createPdsConfigurationRuntime = (
         "source_context_v1",
         "project_membership_v1",
         "project_defaults_v1",
-        "project_kin_v1"
+        "project_kin_v1",
+        "project_kin_accessories_v1"
       ]);
     advertisedAt = Date.now();
   };
@@ -227,7 +230,7 @@ export const createPdsConfigurationRuntime = (
           });
         afterViewProjectIdentity = views.nextProjectIdentity ?? undefined;
         const capabilities = await relay.configurationCapabilities({
-          includeExtended: true
+          includeKinAccessories: true
         });
         const requireRecipients = (feature: PersonalConfigurationFeature) =>
           requirePdsConfigurationCapability({
@@ -253,8 +256,16 @@ export const createPdsConfigurationRuntime = (
         let staged = 0,
           more = Boolean(views.nextProjectIdentity);
         const supportsKin = supported("project_kin_v1");
+        const supportsAccessories = supported("project_kin_accessories_v1");
         const stage = async (payload: PersonalConfigurationPayload) => {
-          if (!supportsKin && hasProjectKin(payload)) return;
+          const feature = projectKinFeature(payload);
+          if (
+            feature &&
+            (!supportsKin ||
+              (feature === "project_kin_accessories_v1" &&
+                !supportsAccessories))
+          )
+            return;
           const record = signPersonalConfigurationRecord(
             {
               protocol: PERSONAL_CONFIGURATION_PROTOCOL,
@@ -463,8 +474,8 @@ export const createPdsConfigurationRuntime = (
               }))
             )
               throw new Error("PdsConfigurationLifecycleChangedError");
-            if (hasProjectKin(record.revision.payload))
-              requireRecipients("project_kin_v1");
+            const kinFeature = projectKinFeature(record.revision.payload);
+            if (kinFeature) requireRecipients(kinFeature);
             requireRecipients(
               record.revision.payload.kind === "source_context"
                 ? "source_context_v1"

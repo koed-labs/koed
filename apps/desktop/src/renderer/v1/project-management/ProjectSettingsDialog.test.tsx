@@ -160,6 +160,7 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
       preview().querySelector(".v1-pixelkin")!.getAttribute("data-kin-colour")
     ).toBe(initial.palette.base);
     const shape = initial.body.shape === "sphere" ? "Cube" : "Sphere";
+    await click(button("Appearance"));
     await click(button(shape));
     await click(button("Cancel"));
     await click(button("Discard changes"));
@@ -168,6 +169,31 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
     await act(async () => root.render(null));
     await open();
     expect(button("Save changes").disabled).toBe(true);
+    const accessoryNames = () =>
+      [...document.querySelectorAll(".v1-pm-kin-catalogue button")].map(
+        (tile) => tile.getAttribute("aria-label")
+      );
+    const tile = (label: string) =>
+      document.querySelector<HTMLButtonElement>(
+        `.v1-pm-kin-catalogue button[aria-label="${label}"]`
+      )!;
+    expect(accessoryNames()).toEqual(["Beanie", "Classic bowler hat"]);
+    await click(tile("Beanie"));
+    await click(tile("Classic bowler hat"));
+    expect(tile("Beanie").getAttribute("aria-pressed")).toBe("false");
+    expect(tile("Classic bowler hat").getAttribute("aria-pressed")).toBe(
+      "true"
+    );
+    await click(button("Eyewear"));
+    expect(accessoryNames()).toEqual([
+      "Circle sunglasses",
+      "Circle eyeglasses",
+      "Square sunglasses",
+      "Square eyeglasses",
+      "Aviator"
+    ]);
+    await click(tile("Circle eyeglasses"));
+    await click(button("Appearance"));
     await click(button(shape));
     await click(swatch());
     await click(personality());
@@ -184,12 +210,20 @@ it("previews, discards and retries a Kin edit, then restores the saved Kin for a
     const kin = {
       shape: shape.toLowerCase(),
       colour: "#55cca3",
-      personality: "curious"
+      personality: "curious",
+      items: ["bowler", "circle_eyeglasses"]
     };
     expect(f.projects.get(projectId)!.meta.kin).toEqual(kin);
     await act(async () => root.render(null));
     await open();
     expect(button("Save changes").disabled).toBe(true);
+    expect(
+      document.querySelector('[aria-label="Remove Classic bowler hat"]')
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[aria-label="Remove Circle eyeglasses"]')
+    ).not.toBeNull();
+    await click(button("Appearance"));
     expect(button(shape).getAttribute("aria-pressed")).toBe("true");
     expect(swatch().getAttribute("aria-pressed")).toBe("true");
     expect(personality().textContent).toContain("Curious");

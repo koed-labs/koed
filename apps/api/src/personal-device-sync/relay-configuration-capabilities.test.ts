@@ -4,7 +4,8 @@ import { z } from "zod";
 import {
   PdsRelayClient,
   requirePdsConfigurationCapability,
-  type PdsConfigurationCapabilityRecord
+  type PdsConfigurationCapabilityRecord,
+  type PersonalConfigurationFeature
 } from "@koed-labs/shared";
 import {
   createDbPool,
@@ -28,6 +29,15 @@ const legacyAdvertisement = z.strictObject({
   advertisedAt: z.iso.datetime({ offset: true }),
   expiresAt: z.iso.datetime({ offset: true })
 });
+const kinFeatures = [...base, "project_kin_v1"] as const;
+const kinAdvertisement = legacyAdvertisement.extend({
+  features: z.array(z.enum(kinFeatures)).min(1).max(4),
+  baseNonce: z.string()
+});
+const accessoryFeatures = [
+  ...kinFeatures,
+  "project_kin_accessories_v1"
+] as const;
 
 function client(
   member: ReturnType<typeof personalSourceDeviceFixture>["origin"],
@@ -57,8 +67,25 @@ describe("signed configuration capabilities during upgrades", () => {
     await client(
       personalSourceDeviceFixture().origin,
       fetch
-    ).advertiseConfigurationCapabilities([...base, "project_kin_v1"]);
+    ).advertiseConfigurationCapabilities([...accessoryFeatures]);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("advertises the legacy Kin view to a relay without the accessory extension", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.baseNonce) {
+        expect(kinAdvertisement.parse(body).features).toEqual(kinFeatures);
+        return Response.json({ accepted: true });
+      }
+      expect(legacyAdvertisement.parse(body).features).toEqual(base);
+      return Response.json({ accepted: true, extensionNonce: "a".repeat(43) });
+    });
+    await client(
+      personalSourceDeviceFixture().origin,
+      fetch
+    ).advertiseConfigurationCapabilities([...accessoryFeatures]);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it.skipIf(!process.env.DATABASE_URL)(
@@ -98,7 +125,7 @@ describe("signed configuration capabilities during upgrades", () => {
       const check = (
         records: PdsConfigurationCapabilityRecord[],
         deviceId: string,
-        feature: (typeof base)[number] | "project_kin_v1"
+        feature: PersonalConfigurationFeature
       ) =>
         requirePdsConfigurationCapability({
           records,
@@ -114,10 +141,7 @@ describe("signed configuration capabilities during upgrades", () => {
       try {
         await runDbMigrations(pool);
         await f.initialize(pool, f.origin);
-        await origin.advertiseConfigurationCapabilities([
-          ...base,
-          "project_kin_v1"
-        ]);
+        await origin.advertiseConfigurationCapabilities([...accessoryFeatures]);
         await receiver.advertiseConfigurationCapabilities([...base]);
         const legacy = await receiver.configurationCapabilities();
         expect(readLegacyFeatures(legacy)).toEqual(base);
@@ -135,7 +159,20 @@ describe("signed configuration capabilities during upgrades", () => {
           includeExtended: true
         });
         expect(upgraded).toHaveLength(1);
+        expect(
+          kinAdvertisement.parse(
+            JSON.parse(upgraded[0]!.canonicalAdvertisement)
+          ).features
+        ).toEqual(kinFeatures);
         check(upgraded, f.origin.deviceId, "project_kin_v1");
+        expect(() =>
+          check(upgraded, f.origin.deviceId, "project_kin_accessories_v1")
+        ).toThrow(/pending/i);
+        const accessoryAware = await receiver.configurationCapabilities({
+          includeKinAccessories: true
+        });
+        expect(accessoryAware).toHaveLength(1);
+        check(accessoryAware, f.origin.deviceId, "project_kin_accessories_v1");
         // Insert a base-only refresh before delivering the in-flight extension.
         // Equal timestamps ensure that only the base nonce distinguishes them.
         const generation = new Date();
@@ -143,21 +180,28 @@ describe("signed configuration capabilities during upgrades", () => {
           origin.advertiseConfigurationCapabilities([...base], generation)
         );
         const delayed = client(f.origin, async (url, init) => {
-          if (JSON.parse(String(init?.body)).baseNonce) await downgrade();
+          if (
+            JSON.parse(String(init?.body)).baseNonce &&
+            !downgrade.mock.calls.length
+          )
+            await downgrade();
           return fetch(url, init);
         });
         await delayed.advertiseConfigurationCapabilities(
-          [...base, "project_kin_v1"],
+          [...accessoryFeatures],
           generation
         );
         expect(downgrade).toHaveBeenCalledOnce();
         const downgraded = await receiver.configurationCapabilities({
-          includeExtended: true
+          includeKinAccessories: true
         });
         expect(readLegacyFeatures(downgraded)).toEqual(base);
         check(downgraded, f.origin.deviceId, "project_membership_v1");
         expect(() =>
           check(downgraded, f.origin.deviceId, "project_kin_v1")
+        ).toThrow(/pending/i);
+        expect(() =>
+          check(downgraded, f.origin.deviceId, "project_kin_accessories_v1")
         ).toThrow(/pending/i);
       } finally {
         await app.close();

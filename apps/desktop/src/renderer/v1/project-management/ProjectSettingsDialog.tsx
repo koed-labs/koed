@@ -29,7 +29,7 @@ import {
 } from "./project-settings-model.js";
 import { projectErrorMessage } from "./use-organization-review.js";
 
-import { Pixelkin } from "../pixelkin/Pixelkin.js";
+import { ProjectKinEditor } from "./ProjectKinEditor.js";
 import { SuggestionCoin } from "./ProjectCoins.js";
 import {
   ConversationsPanel,
@@ -44,7 +44,6 @@ import {
 import { recordingOriginWarning } from "./proposal-text.js";
 import { clientOf, type SuggestionRow } from "./use-folder-suggestions.js";
 import type { SupportedAiClientDriverId } from "@koed-labs/shared/ai-client-contract";
-import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
 
 const pages = [
   { id: "general", name: "General", Icon: Settings2 },
@@ -372,30 +371,11 @@ export function ProjectSettingsDialog({
             </Button>
           )}
           {draft && !editError && panel === "kin" && (
-            <fieldset
+            <ProjectKinEditor
+              look={draft.look}
               disabled={busy}
-              className="v1-pm-kin-builder"
-              aria-label="Project Kin"
-            >
-              <div
-                className="v1-pm-kin-preview"
-                role="img"
-                aria-label="Kin preview"
-              >
-                <div className="v1-kin-spot" aria-hidden="true" />
-                <Pixelkin
-                  look={draft.look}
-                  size={142}
-                  presentation="stage"
-                  hopOnChange
-                />
-              </div>
-              <AgentLookPicker
-                look={draft.look}
-                disabled={busy}
-                onChange={(look) => mutate((old) => ({ ...old, look }))}
-              />
-            </fieldset>
+              onChange={(look) => mutate((old) => ({ ...old, look }))}
+            />
           )}
           {draft && !editError && panel === "general" && (
             <>

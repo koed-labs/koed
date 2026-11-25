@@ -42,10 +42,12 @@ organization remain available. Legacy managed execution APIs and background
 workers are not retired by this UI change; descriptions of those workflows below
 are historical, not V1 Desktop capabilities.
 
-In **Project settings → Kin**, choose a body shape, colour, and personality. The
-Kin appears under a spotlight beside the controls. Home labels it with the Project name. Each Project starts with a
-look generated from its ID. Saving a Kin updates Home and syncs the choice to
-paired Personal devices.
+In **Project settings → Kin**, use **Appearance** to choose a body shape, colour,
+and personality. Use **Accessories** to browse and equip items that require no
+server unlock. The preview updates as you equip an item. Items that occupy the
+same slot replace one another. Remove an item from the **Equipped** list.
+Each Project starts with a look generated from its ID. Saving updates the Kin on
+Home and syncs the look to compatible paired Personal devices.
 
 Project settings also manages names, source rules, Conversation membership, and
 Personal Device sync. Sync review remains available when Conversation membership

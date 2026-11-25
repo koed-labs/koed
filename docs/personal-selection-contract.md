@@ -926,8 +926,9 @@ are still required. Direct inclusion previews account for exclusions, and any
 change to the reviewed exclusion state makes apply stale.
 
 A saved Project Kin travels with the name in the signed Project catalog revision.
-The catalog stores the body shape, colour, and personality. Concurrent edits use
-the existing catalog conflict review. Each choice includes both its name and Kin.
+The catalog stores the body shape, colour, personality, and optional accessory
+IDs. Concurrent edits use the existing catalog conflict review. Each choice
+includes both its name and Kin.
 A catalog history containing a saved Kin waits until all paired recipients
 advertise `project_membership_v1` and `project_kin_v1`. Every device refreshes
 the signed three-feature format used by older readers. An upgraded relay
@@ -935,10 +936,13 @@ acknowledges support for a second, independently signed view with additional
 features. The two views have the same device, signing key, base features, and
 lifetime. The second signature also binds the nonce of that exact base refresh. Only a reader requesting `?extended=1` can receive the extended
 view. A later base refresh supersedes both views, including after a downgrade.
-Older relays receive just the base advertisement. Upgrade the relay and all
-paired devices to exchange customized Kins. Other membership histories
-use `project_membership_v1`. Project defaults and source context use
-`project_defaults_v1` and `source_context_v1` respectively.
+Accessory-bearing catalog histories also require `project_kin_accessories_v1`.
+An accessory-aware relay accepts a third signed view tied to the same base nonce.
+Only readers requesting `?extended=1&kinAccessories=1` receive that view. A base
+refresh supersedes all signed views. Older relays can still carry the views they
+support. Upgrade the relay and all paired devices to exchange accessories. Other
+membership histories use `project_membership_v1`. Project defaults and source
+context use `project_defaults_v1` and `source_context_v1` respectively.
 
 ## Capture Policy independence
 

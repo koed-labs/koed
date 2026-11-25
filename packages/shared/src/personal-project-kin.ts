@@ -18,7 +18,12 @@ export const personalProjectKinSchema = z
       "curious",
       "skittish",
       "indignant"
-    ])
+    ]),
+    items: z
+      .array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,95}$/u))
+      .max(16)
+      .refine((items) => new Set(items).size === items.length)
+      .optional()
   })
   .strict();
 export type PersonalProjectKin = z.infer<typeof personalProjectKinSchema>;
