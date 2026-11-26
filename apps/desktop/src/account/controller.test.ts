@@ -10,6 +10,17 @@ const profile = {
   email: "alex@example.com",
   emailVerified: true
 };
+const details = {
+  userId: profile.id,
+  emailUpdates: {
+    email: profile.email,
+    subscribed: false,
+    revision: 0,
+    noticeVersion: "fixture-v1",
+    noticeText: "Synthetic consent check."
+  },
+  kin: { unlockMask: "0x0", catalogVersion: "1.1.0" }
+};
 const config: AccountConfig = {
   clientId: "client_desktop",
   environment: "staging",
@@ -66,6 +77,28 @@ function fixture(configuration: AccountConfig = config) {
   });
   return { controller, runtime, fetch, credentials };
 }
+async function signedInWithEmailPreference() {
+  const f = fixture({
+    ...config,
+    profileApiOrigin: "https://account.example.test"
+  });
+  f.fetch.mockResolvedValueOnce(Response.json(details));
+  await f.controller.command({ operation: "signIn", screen: "sign-in" });
+  await f.controller.callback(config.callbackUri + "?code=code&state=sealed");
+  f.fetch.mockClear();
+  vi.mocked(f.runtime.validate).mockClear();
+  const renewal = {
+    valid: true,
+    refreshed: true,
+    session: {
+      ...f.credentials,
+      accessToken: "renewed-access",
+      refreshToken: "renewed-refresh"
+    },
+    claims: { sub: profile.id, sid: "fixture-session" }
+  };
+  return { ...f, renewal };
+}
 afterEach(() => vi.unstubAllGlobals());
 describe("optional account lifecycle", () => {
   it("does not initialize provider or networking when unconfigured", async () => {
@@ -102,17 +135,6 @@ describe("optional account lifecycle", () => {
       ...config,
       profileApiOrigin
     });
-    const details = {
-      userId: profile.id,
-      emailUpdates: {
-        email: profile.email,
-        subscribed: false,
-        revision: 0,
-        noticeVersion: "fixture-v1",
-        noticeText: "Synthetic consent check."
-      },
-      kin: { unlockMask: "0x0", catalogVersion: "1.1.0" }
-    };
     const snapshots: unknown[] = [];
     controller.subscribe((state) => snapshots.push(state));
     fetch
@@ -145,6 +167,89 @@ describe("optional account lifecycle", () => {
       /sensitive|secret-code|sealed|user_2/
     );
   });
+  it("saves the renewed session before sending an email preference with its access token", async () => {
+    const { controller, runtime, fetch, credentials, renewal } =
+      await signedInWithEmailPreference();
+    vi.mocked(runtime.validate).mockResolvedValueOnce(renewal);
+    const subscribed = {
+      ...details.emailUpdates,
+      subscribed: true,
+      revision: 1
+    };
+    fetch.mockImplementationOnce(async () => {
+      expect(await runtime.read()).toEqual(renewal.session);
+      return Response.json(subscribed);
+    });
+    const next = await controller.command({
+      operation: "setEmailUpdates",
+      subscribed: true,
+      stateRevision: controller.current().revision
+    });
+    expect(runtime.validate).toHaveBeenCalledWith(credentials);
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://account.example.test/v1/account/email-updates"),
+      expect.objectContaining({
+        method: "PUT",
+        headers: expect.objectContaining({
+          Authorization: "Bearer renewed-access"
+        })
+      })
+    );
+    expect(next.details).toEqual({
+      status: "ready",
+      value: { ...details, emailUpdates: subscribed }
+    });
+  });
+
+  it("keeps consent unconfirmed when the renewed session cannot be saved", async () => {
+    const { controller, runtime, fetch, renewal } =
+      await signedInWithEmailPreference();
+    vi.mocked(runtime.validate).mockResolvedValueOnce(renewal);
+    vi.mocked(runtime.save).mockRejectedValueOnce(
+      new Error("Storage unavailable")
+    );
+    const next = await controller.command({
+      operation: "setEmailUpdates",
+      subscribed: true,
+      stateRevision: controller.current().revision
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(next).toMatchObject({
+      busy: false,
+      messageCode: "email_updates_unconfirmed"
+    });
+  });
+
+  it.each(["signOut", "reportProfileOffline"] as const)(
+    "does not send consent when %s interrupts token renewal",
+    async (operation) => {
+      const { controller, runtime, fetch, renewal } =
+        await signedInWithEmailPreference();
+      let resume!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      vi.mocked(runtime.validate).mockImplementationOnce(async () => {
+        await pending;
+        return renewal;
+      });
+      const save = controller.command({
+        operation: "setEmailUpdates",
+        subscribed: true,
+        stateRevision: controller.current().revision
+      });
+      await vi.waitFor(() => expect(runtime.validate).toHaveBeenCalledOnce());
+      await controller.command({ operation });
+      resume();
+      const next = await save;
+      expect(fetch).not.toHaveBeenCalled();
+      expect(next.busy).toBe(false);
+      expect(await runtime.read()).toEqual(
+        operation === "signOut" ? null : renewal.session
+      );
+    }
+  );
+
   it("requires a new profile read after going offline and ignores late account data", async () => {
     const { controller, fetch, runtime, credentials } = fixture({
       ...config,

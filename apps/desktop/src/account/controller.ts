@@ -309,16 +309,25 @@ export function createAccountController(input: {
       const current = () =>
         epoch === profileEpoch && isCurrentProfile(snapshot.userId, version);
       publish({ busy: true, messageCode: null });
-      return serial(async () => {
+      await serial(async () => {
         try {
-          if (!current()) return state;
+          if (!current()) return;
           const session = await sdk().read();
-          if (!current()) return state;
+          if (!current()) return;
           if (!session || session.user.id !== snapshot.userId) {
             throw new Error("Account session changed");
           }
+          const validated = await sdk().validate(session);
+          if (!isCurrentProfile(snapshot.userId, version)) return;
+          if (sdk().profile(validated).id !== snapshot.userId) {
+            throw new Error("Account session changed");
+          }
+          // Going offline cancels the preference update, but the same account
+          // still needs its rotated refresh token for the next connection.
+          if (validated.refreshed) await sdk().save(validated.session);
+          if (!current()) return;
           const emailUpdates = await profileApi.setEmailUpdates(
-            session.accessToken,
+            validated.session.accessToken,
             command.subscribed,
             snapshot.emailUpdates
           );
@@ -346,8 +355,8 @@ export function createAccountController(input: {
             publish({ busy: false });
           }
         }
-        return state;
       });
+      return state;
     }
     const version = generation;
     profileConnected = true;

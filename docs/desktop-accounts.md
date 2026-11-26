@@ -144,7 +144,7 @@ build, supply an HTTPS origin as `KOED_ACCOUNT_PROFILE_API_ORIGIN` at build
 time. Desktop keeps its existing sign-in mode. Electron main sends the
 WorkOS access token and returns the profile to Desktop.
 Open **Settings → Account**, or choose **Expand** in the sidebar account menu. The profile card shows the signed-in User, Free tier, and the WorkOS account creation date when available. Use the **Email updates** checkbox to read the notice and change consent for the displayed address. Desktop shows
-the saved preference and a notification after the API confirms it. If Desktop cannot confirm the change, the notification prompts you to refresh your profile. Open **Project settings → Kin → Accessories**
+the saved preference and a notification after the API confirms it. Desktop renews an expired session before saving the preference when your sign-in is still valid. If Desktop cannot confirm the change, the notification prompts you to refresh your profile. Open **Project settings → Kin → Accessories**
 to see and equip the items available to that account. If the API is unavailable, retry
 with **Refresh profile** on the Account page. Desktop shows a notification when the refresh succeeds or fails. Free items stay available and saved Kins retain their
 appearance.
