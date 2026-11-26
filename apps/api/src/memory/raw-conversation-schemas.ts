@@ -30,6 +30,12 @@ const providerIdentifierSchema = tokenIdentifierSchema(
   512,
   "Provider identifiers"
 );
+// Pi can preserve both the provider call ID and item ID in one tool reference.
+const toolCallIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]*(?:\|[A-Za-z0-9][A-Za-z0-9._:/@-]*)?$/);
 const classificationTokenSchema = tokenIdentifierSchema(
   128,
   "Classification fields"
@@ -86,7 +92,7 @@ const conversationMetadataSchema = z
     toolEventKind: classificationTokenSchema.nullable().optional(),
     toolName: toolNameSchema.nullable().optional(),
     callId: providerIdentifierSchema.nullable().optional(),
-    toolCallId: providerIdentifierSchema.nullable().optional(),
+    toolCallId: toolCallIdentifierSchema.nullable().optional(),
     status: classificationTokenSchema.nullable().optional(),
     threadKind: z.enum(["conversation", "subagent"]).nullable().optional(),
     parentThreadId: providerIdentifierSchema.nullable().optional(),
