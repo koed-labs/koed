@@ -52,6 +52,7 @@ import {
 import type { ProjectMetadataV1 } from "@koed-labs/shared";
 import type { CodexHistoricalCandidate } from "./codex-historical-ingestion.js";
 import { CodexCompressedTranscriptReader } from "./codex-compressed-transcript.js";
+import { resolveLocalAiClientInstance } from "./ai-client-instance-registry.js";
 import { resolveCodexAppServerBinary } from "./codex-app-server-runner.js";
 import {
   createCodexHistoryMetadataReader,
@@ -173,6 +174,27 @@ const configuredTranscriptRoot = (
   return resolved;
 };
 
+// Setup records where Codex is installed. A packaged app started from Finder
+// does not inherit the shell PATH, so the command name alone may not resolve.
+// An unusable registration must not stop capture from starting.
+const registeredCodexExecutable = (
+  env: NodeJS.ProcessEnv
+): string | undefined => {
+  try {
+    return resolveLocalAiClientInstance({
+      instanceId: "codex.default",
+      driverId: "codex",
+      env
+    })?.executablePath;
+  } catch {
+    logger.warn(
+      { aiClient: "codex" },
+      "registered Codex instance is unusable; history metadata uses the Codex command name"
+    );
+    return undefined;
+  }
+};
+
 export const resolveCodexTranscriptWatcherConfig = (
   env: NodeJS.ProcessEnv = process.env
 ): CodexTranscriptWatcherConfig => {
@@ -187,6 +209,7 @@ export const resolveCodexTranscriptWatcherConfig = (
     .map((value) => value.trim())
     .filter(Boolean)
     .map((value) => configuredTranscriptRoot(value, home));
+  const koedHome = path.resolve(env.KOED_HOME ?? path.join(home, ".koed"));
   return {
     roots: uniqueAbsoluteRoots(
       configuredRoots?.length
@@ -196,10 +219,12 @@ export const resolveCodexTranscriptWatcherConfig = (
             path.join(codexHome, "archived_sessions")
           ]
     ),
-    koedHome: path.resolve(env.KOED_HOME ?? path.join(home, ".koed")),
+    koedHome,
     futureCaptureOnly: env.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1",
     historyMetadata: {
-      binary: resolveCodexAppServerBinary(env),
+      binary:
+        registeredCodexExecutable({ ...env, KOED_HOME: koedHome }) ??
+        resolveCodexAppServerBinary(env),
       codexHome,
       env: { ...env }
     },
