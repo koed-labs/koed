@@ -1,5 +1,20 @@
 # @koed/koed
 
+## 1.4.0
+
+### Minor Changes
+
+- bab3429: The live Chief of Staff Kin now sits atop the left rail, with live Conversation chips docked beneath it, and fades to the Koed logo when quiet. Chips and tracked sidebar rows show a green dot while a turn looks underway (reported by Pi, a best guess for Codex and Claude Code), otherwise their capture age. Home shows import progress above logo-only AI Client keycaps. Titles no longer show injected AI Client context, and quitting no longer shows an EPIPE error.
+- 7227b2f: Desktop uses the published Kin engine for onboarding, avatars, and Floating Kin. Previously saved looks retain their accessories. The Project settings preview uses the same high-resolution rendering as Home.
+
+  General settings now includes a Graphics page with three Kin resolution presets, a live preview, and the existing graphics acceleration switch.
+
+  Project Kin settings adds a live accessory gallery for items that require no server unlock. Accessories stay on this device.
+
+### Patch Changes
+
+- 65ef40c: Fix live capture for Pi sessions whose tool-call IDs contain a pipe separator, including Pi sessions launched through Paseo.
+
 ## 1.3.0
 
 ### Minor Changes
