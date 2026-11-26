@@ -595,6 +595,87 @@ describe("AI Client capability publisher", () => {
     }
   });
 
+  it("publishes a partial Pi model catalog without raw diagnostics", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-publisher-pi-partial-")
+    );
+    roots.push(root);
+    const registryPath = path.join(root, "instances.json");
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "pi.default",
+            driverId: "pi",
+            displayName: "Pi",
+            executablePath: executable(root, "pi"),
+            configHome: root
+          }
+        ]
+      })
+    );
+    const diagnostics = [
+      {
+        code: "model_discovery_partial",
+        message: "Pi capability discovery skipped 1 of 2 model candidates.",
+        severity: "warning" as const,
+        details: { failedModel: "test/unconfirmed" }
+      }
+    ];
+    vi.spyOn(aiClientDriverRegistry.get("pi")!, "discover").mockResolvedValue({
+      installationIdentityHash: "a".repeat(64),
+      clientVersion: "0.84.2",
+      authenticationState: "authenticated",
+      healthState: "healthy",
+      models: [{ id: "test/confirmed", provenance: "reported" }],
+      capabilities: [{ ...descriptor(), diagnostics }],
+      diagnostics
+    });
+    const recordAiClientCapabilitySnapshot = vi
+      .fn<MemoryApiClient["recordAiClientCapabilitySnapshot"]>()
+      .mockResolvedValue({});
+    const apiClient = {
+      upsertAiClientInstance: vi.fn(async () => ({})),
+      recordAiClientCapabilitySnapshot
+    } as unknown as MemoryApiClient;
+
+    await publishAiClientCapabilities(apiClient, {
+      KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath
+    });
+
+    const publishedDiagnostic = {
+      code: "model_discovery_partial",
+      message: "AI Client model discovery was incomplete.",
+      severity: "warning"
+    };
+    expect(recordAiClientCapabilitySnapshot.mock.calls).toHaveLength(1);
+    const [instanceId, snapshot] =
+      recordAiClientCapabilitySnapshot.mock.calls[0]!;
+    expect(instanceId).toBe("pi.default");
+    expect(snapshot).toMatchObject({
+      authentication_state: "authenticated",
+      health_state: "healthy",
+      models: [{ id: "test/confirmed", provenance: "reported" }]
+    });
+    const capabilities = snapshot.capabilities as {
+      descriptors: Record<string, AiClientCapabilityDescriptor>;
+      diagnostics: AiClientCapabilityDescriptor["diagnostics"];
+    };
+    expect(
+      capabilities.diagnostics.filter(
+        ({ code }) => code !== "local_config_identity"
+      )
+    ).toEqual([publishedDiagnostic]);
+    const synthesis = capabilities.descriptors.local_synthesis;
+    expect(synthesis).toMatchObject({
+      support: "supported",
+      readiness: "ready"
+    });
+    expect(synthesis?.diagnostics).toEqual([publishedDiagnostic]);
+  });
+
   it("isolates malformed configured entries from healthy instances", async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-publisher-malformed-")

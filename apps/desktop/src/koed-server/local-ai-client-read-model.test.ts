@@ -46,7 +46,9 @@ describe("local AI Client read model", () => {
                 supportedReasoningEfforts: ["low"]
               }
             ],
-            capabilities: {},
+            capabilities: {
+              diagnostics: [{ code: "model_discovery_partial" }]
+            },
             observedAt: "",
             expiresAt: "",
             stale: true
@@ -58,6 +60,9 @@ describe("local AI Client read model", () => {
       {}
     );
 
+    expect(model.capabilitySnapshots[0]).toMatchObject({
+      modelCatalogPartial: true
+    });
     expect(model.capabilitySnapshots[0]?.models[0]).toMatchObject({
       id: "gpt-5.6-luna",
       fullId: "openai/gpt-5.6-luna"

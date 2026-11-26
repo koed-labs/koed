@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import {
   calculateConversationSourceReplicationContentDigest,
   calculateConversationSourceReplicationManifestDigest,
   calculateConversationSourceRootDigest,
+  codexCanonicalConversationItemKey,
   conversationSourceRewriteGenerationId,
   CONVERSATION_SOURCE_REPLICATION_PROTOCOL,
   generateConversationSourceReplicationOriginKeyPair,
@@ -1822,7 +1823,124 @@ describeDb("journal-backed historical import repository", () => {
     });
   });
 
-  it("completes ready historical sources and runs during worker reconciliation", async () => {
+  it.each(["source ID", "artifact identity", "run detail"] as const)(
+    "reports snapshot-consistent progress by %s when Projection commits",
+    async (lookup) => {
+      const repo = createMemorySourceRepository(pool);
+      const { id: userId } = await repo.createUser({
+        email: `historical-snapshot-${randomUUID()}@example.com`
+      });
+      const actor = { userId };
+      const fixture = await createJournalFixture(repo, { ownerId: userId });
+      const run = await repo.createHistoricalImportRun(actor);
+      const source = await repo.createHistoricalImportSource(actor, {
+        runId: run.id,
+        artifactId: fixture.artifactId,
+        aiClient: "codex"
+      });
+      for (const [expectedState, state] of [
+        ["discovered", "eligible"],
+        ["eligible", "queued"]
+      ] as const) {
+        await repo.transitionHistoricalImportRun(actor, {
+          runId: run.id,
+          expectedState,
+          state
+        });
+        await repo.transitionHistoricalImportSource(actor, {
+          sourceId: source!.id,
+          expectedState,
+          state
+        });
+      }
+      await repo.ingestHistoricalImportBatch(actor, {
+        sourceId: source!.id,
+        expectedSourceOffset: 0,
+        sourceOffset: fixture.frontier,
+        sourceLine: 2,
+        segmentIndex: fixture.segmentIndex,
+        lastVerifiedDigest: fixture.segmentDigest,
+        items: [sourceItem({ externalSessionId: fixture.externalSessionId })]
+      });
+
+      const readPool = createDbPool({ connectionString: databaseUrl! });
+      const reader = createMemorySourceRepository(readPool);
+      const readStatus = async () => {
+        if (lookup === "run detail") {
+          return (await reader.getHistoricalImportRun(actor, run.id))
+            ?.sources[0];
+        }
+        if (lookup === "artifact identity") {
+          return reader.getHistoricalImportSourceByIdentity(actor, {
+            artifactId: fixture.artifactId
+          });
+        }
+        return reader.getHistoricalImportSource(actor, source!.id);
+      };
+      const promisePool: {
+        query(text: string, values: unknown[]): Promise<pg.QueryResult>;
+      } = readPool;
+      const query = promisePool.query.bind(promisePool);
+      let crossedBarrier = false;
+      const barrier = vi
+        .spyOn(promisePool, "query")
+        .mockImplementation(async (text, values) => {
+          const result = await query(text, values);
+          // Commit on a separate pool after the first progress statement returns.
+          if (
+            !crossedBarrier &&
+            text.includes("conversation_item_observations")
+          ) {
+            crossedBarrier = true;
+            await repo.projectPendingConversationItems(actor, { limit: 10 });
+          }
+          return result;
+        });
+      try {
+        await expect(readStatus()).resolves.toMatchObject({
+          rawIngested: true,
+          projected: false,
+          projectedRecordCount: 0,
+          embeddingEligibleEventCount: 0,
+          lcmEligibleEventCount: 0,
+          semanticReady: false,
+          lcmComplete: true
+        });
+        expect(crossedBarrier).toBe(true);
+        await expect(readStatus()).resolves.toMatchObject({
+          rawIngested: true,
+          projected: true,
+          projectedRecordCount: 1,
+          embeddingEligibleEventCount: 1,
+          embeddedEventCount: 0,
+          lcmEligibleEventCount: 1,
+          lcmCompletedEventCount: 0,
+          semanticReady: false,
+          lcmComplete: false
+        });
+        expect(
+          await pool.query(
+            `select projected_record_count, embedding_eligible_event_count, lcm_eligible_event_count
+             from historical_import_sources where id = $1`,
+            [source!.id]
+          )
+        ).toMatchObject({
+          rows: [
+            {
+              projected_record_count: 0,
+              embedding_eligible_event_count: 0,
+              lcm_eligible_event_count: 0
+            }
+          ]
+        });
+      } finally {
+        barrier.mockRestore();
+        await readPool.end();
+      }
+    }
+  );
+
+  it("reconciles terminal observations rather than distinct canonical items", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
       email: `historical-completion-${randomUUID()}@example.com`
@@ -1854,8 +1972,18 @@ describeDb("journal-backed historical import repository", () => {
       { userId: owner.id },
       { runId: run.id, expectedState: "queued", state: "importing" }
     );
+    const canonicalKey = (stableItemId: string) =>
+      codexCanonicalConversationItemKey({
+        externalThreadId: fixture.externalSessionId,
+        externalTurnId: "turn-1",
+        stableItemId,
+        component: "control"
+      });
     const rawOnly = {
       ...sourceItem({ externalSessionId: fixture.externalSessionId }),
+      canonicalStableItemId: "retained-record",
+      canonicalItemKey: canonicalKey("retained-record"),
+      observationComponent: "control",
       sourceEventType: "provider_internal_record",
       rawJson: { type: "provider_internal_record", retained: true },
       rawText: "",
@@ -1866,40 +1994,330 @@ describeDb("journal-backed historical import repository", () => {
         sourceEventTimeAccuracy: "source"
       }
     };
-    await repo.ingestHistoricalImportBatch(
-      { userId: owner.id },
-      {
-        sourceId: source!.id,
-        expectedSourceOffset: 0,
-        sourceOffset: fixture.frontier,
-        sourceLine: 2,
-        segmentIndex: fixture.segmentIndex,
-        lastVerifiedDigest: fixture.segmentDigest,
-        items: [rawOnly]
-      }
+    const actor = { userId: owner.id };
+    const boundary = {
+      sourceId: source!.id,
+      segmentIndex: fixture.segmentIndex,
+      lastVerifiedDigest: fixture.segmentDigest
+    };
+    const unresolved = {
+      ...sourceItem({
+        externalSessionId: fixture.externalSessionId,
+        byteOffset: 80
+      }),
+      observationOnly: true,
+      observationKind: "control",
+      observationComponent: "unresolved",
+      projectionStatus: "raw_only"
+    } as const;
+    await repo.ingestHistoricalImportBatch(actor, {
+      ...boundary,
+      expectedSourceOffset: 0,
+      sourceOffset: 96,
+      sourceLine: 1,
+      items: [
+        rawOnly,
+        { ...rawOnly, idempotencyKey: `${rawOnly.idempotencyKey}:repeat` },
+        unresolved
+      ]
+    });
+    await repo.projectPendingConversationItems(actor, { limit: 10 });
+    const observations = await pool.query(
+      `select count(*)::int as observations,
+              count(distinct conversation_item_id)::int as items,
+              count(*) filter (where conversation_item_id is null
+                and ingestion_status = 'identity_unresolved')::int as unresolved
+       from conversation_item_observations
+       where metadata ->> 'historicalImportSourceId' = $1`,
+      [source!.id]
     );
-    await repo.projectPendingConversationItems(
-      { userId: owner.id },
-      { limit: 10 }
+    expect(observations.rows).toEqual([
+      { observations: 3, items: 1, unresolved: 1 }
+    ]);
+    const lcmCandidates = async () =>
+      (await repo.listHistoricalImportSourcesNeedingLcmFinalization()).filter(
+        (candidate) => candidate.ownerUserId === owner.id
+      );
+    const item = await pool.query<{ id: string }>(
+      "select id from conversation_items where owner_user_id = $1 and canonical_item_key = $2",
+      [owner.id, canonicalKey("retained-record")]
+    );
+    const projectId = `/projects/${fixture.externalSessionId}`;
+    const lcmEvent = await repo.createMemoryEvent(actor, {
+      projectId,
+      sessionId: fixture.sessionId,
+      actor: "user",
+      eventType: "captured",
+      rawEventType: "user_turn",
+      visibility: "personal",
+      content: "Historical content awaiting an LCM Summary",
+      sourceHash: digest(`lcm-event:${source!.id}`),
+      metadata: {
+        includeInEmbedding: false,
+        rawConversationItemId: item.rows[0]!.id
+      }
+    });
+    expect(await lcmCandidates()).toEqual([]);
+    await expect(
+      repo.getHistoricalImportSource(actor, source!.id)
+    ).resolves.toMatchObject({
+      rawIngested: false,
+      projected: false,
+      projectedRecordCount: 3,
+      lcmEligibleEventCount: 1,
+      lcmComplete: false
+    });
+    await expect(repo.reconcileHistoricalImportCompletion()).resolves.toEqual({
+      sourcesCompleted: 0,
+      runsCompleted: 0
+    });
+
+    const message = sourceItem({
+      externalSessionId: fixture.externalSessionId,
+      byteOffset: 112
+    });
+    const finalBatch = await repo.ingestHistoricalImportBatch(actor, {
+      ...boundary,
+      expectedSourceOffset: 96,
+      sourceOffset: fixture.frontier,
+      sourceLine: 2,
+      items: [message, message]
+    });
+    await expect(
+      repo.getHistoricalImportSource(actor, source!.id)
+    ).resolves.toMatchObject({
+      rawIngested: true,
+      projected: false
+    });
+    expect(await lcmCandidates()).toEqual([]);
+    await expect(repo.reconcileHistoricalImportCompletion()).resolves.toEqual({
+      sourcesCompleted: 0,
+      runsCompleted: 0
+    });
+    const sibling = await createJournalFixture(repo, {
+      ownerId: owner.id,
+      externalSessionId: fixture.externalSessionId
+    });
+    expect(sibling.sessionId).toBe(fixture.sessionId);
+    expect(sibling.artifactId).not.toBe(fixture.artifactId);
+    const siblingRun = await repo.createHistoricalImportRun(actor);
+    const siblingSource = await repo.createHistoricalImportSource(actor, {
+      runId: siblingRun.id,
+      artifactId: sibling.artifactId,
+      aiClient: "codex"
+    });
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      await repo.transitionHistoricalImportRun(actor, {
+        runId: siblingRun.id,
+        expectedState,
+        state
+      });
+      await repo.transitionHistoricalImportSource(actor, {
+        sourceId: siblingSource!.id,
+        expectedState,
+        state
+      });
+    }
+    const siblingBatch = await repo.ingestHistoricalImportBatch(actor, {
+      sourceId: siblingSource!.id,
+      expectedSourceOffset: 0,
+      sourceOffset: sibling.frontier,
+      sourceLine: 2,
+      segmentIndex: sibling.segmentIndex,
+      lastVerifiedDigest: sibling.segmentDigest,
+      items: [
+        rawOnly, // Exact observation replay retains first source's provenance.
+        {
+          ...rawOnly,
+          idempotencyKey: `${rawOnly.idempotencyKey}:sibling`,
+          canonicalStableItemId: "sibling-record",
+          canonicalItemKey: canonicalKey("sibling-record"),
+          metadata: { ...rawOnly.metadata, transcriptByteOffset: 120 }
+        }
+      ]
+    });
+    await expect(
+      repo.getHistoricalImportSource(actor, siblingSource!.id)
+    ).resolves.toMatchObject({ rawIngested: true, projected: false });
+    const siblingEvent = await repo.createMemoryEvent(actor, {
+      projectId,
+      sessionId: sibling.sessionId,
+      actor: "user",
+      eventType: "captured",
+      rawEventType: "user_turn",
+      visibility: "personal",
+      content: "Sibling source content still awaiting embedding",
+      sourceHash: digest(`sibling-event:${siblingSource!.id}`),
+      metadata: { rawConversationItemId: siblingBatch.items[1]!.id }
+    });
+    await repo.projectPendingConversationItems(actor, { limit: 10 });
+    const projectedItem = await pool.query<{
+      projection_status: string;
+      projected_at: Date | null;
+    }>(
+      "select projection_status, projected_at from conversation_items where id = $1",
+      [finalBatch.items[0]!.id]
+    );
+    expect(projectedItem.rows[0]?.projection_status).toBe("projected");
+    expect(projectedItem.rows[0]?.projected_at).toBeInstanceOf(Date);
+    expect(await lcmCandidates()).toEqual([]);
+    const projectionEvents = await pool.query<{ memory_event_id: string }>(
+      "select memory_event_id from memory_event_sources where conversation_item_id = $1",
+      [finalBatch.items[0]!.id]
+    );
+    expect(projectionEvents.rows).toHaveLength(1);
+    const projectedEventId = projectionEvents.rows[0]!.memory_event_id;
+    const embeddable = await repo.getEmbeddableSource(
+      "memory_event",
+      projectedEventId
+    );
+    expect(embeddable).not.toBeNull();
+    await repo.replaceSourceEmbeddings({
+      source: embeddable!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      modelArtifactHash: "a".repeat(64),
+      tokenizer: "qwen3-embedding-0.6b-gguf",
+      inputTransform: "qwen3-retrieval-document-v1",
+      pooling: "last",
+      normalization: "l2",
+      chunks: [
+        {
+          vector: Array<number>(1024).fill(0.01),
+          chunkIndex: 0,
+          chunkCount: 1,
+          inputTokenCount: 4,
+          sourceText: "Durable historical memory"
+        }
+      ]
+    });
+
+    // Both sources must wait on the sibling's outstanding historical Embedding.
+    expect(await lcmCandidates()).toEqual([]);
+    await expect(repo.reconcileHistoricalImportCompletion()).resolves.toEqual({
+      sourcesCompleted: 0,
+      runsCompleted: 0
+    });
+    await pool.query(
+      "update memory_events set include_in_embedding = false where id = $1",
+      [siblingEvent.id]
+    );
+    // A still-pending item belonging to the other source blocks the fallback.
+    const siblingItemId = siblingBatch.items[1]!.id;
+    await pool.query(
+      "update conversation_items set projection_status = 'pending' where id = $1",
+      [siblingItemId]
+    );
+    expect(await lcmCandidates()).toEqual([]);
+    await repo.projectPendingConversationItems(actor, { limit: 10 });
+    expect(
+      (await lcmCandidates()).map((candidate) => candidate.sourceId).sort()
+    ).toEqual([source!.id, siblingSource!.id].sort());
+    const missing = await createJournalFixture(repo, { ownerId: owner.id });
+    const missingSource = await repo.createHistoricalImportSource(actor, {
+      runId: siblingRun.id,
+      artifactId: missing.artifactId,
+      aiClient: "codex"
+    });
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      await repo.transitionHistoricalImportSource(actor, {
+        sourceId: missingSource!.id,
+        expectedState,
+        state
+      });
+    }
+    const otherSessionBoundary = {
+      sourceId: missingSource!.id,
+      segmentIndex: missing.segmentIndex,
+      lastVerifiedDigest: missing.segmentDigest
+    };
+    await repo.ingestHistoricalImportBatch(actor, {
+      ...otherSessionBoundary,
+      expectedSourceOffset: 0,
+      sourceOffset: 96,
+      sourceLine: 1,
+      items: [
+        {
+          ...sourceItem({
+            externalSessionId: missing.externalSessionId,
+            byteOffset: 64
+          }),
+          projectionStatus: "raw_only"
+        }
+      ]
+    });
+    // Terminal history in the target session cannot cover a replay belonging
+    // to a different session, even though the observation key is owner-wide.
+    await expect(
+      repo.ingestHistoricalImportBatch(actor, {
+        ...otherSessionBoundary,
+        expectedSourceOffset: 96,
+        sourceOffset: missing.frontier,
+        sourceLine: 2,
+        items: [unresolved]
+      })
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "observation_integrity_conflict"
+    });
+    await expect(
+      repo.getHistoricalImportSource(actor, missingSource!.id)
+    ).resolves.toMatchObject({
+      rawIngested: false,
+      rawIngestedRecordCount: 1,
+      historicalCursorOffset: 96,
+      projected: false
+    });
+
+    const summary = await repo.createMemoryNode(actor, {
+      visibility: "personal",
+      summaryText: "Test historical summary",
+      summaryModel: "codex:test"
+    });
+    await pool.query(
+      `insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+       values ($1, $2, 0), ($1, $3, 1), ($1, $4, 2)`,
+      [summary.id, lcmEvent.id, siblingEvent.id, projectedEventId]
     );
 
     await expect(repo.reconcileHistoricalImportCompletion()).resolves.toEqual({
-      sourcesCompleted: 1,
+      sourcesCompleted: 2,
       runsCompleted: 1
     });
     await expect(
       repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
-    ).resolves.toMatchObject({ state: "completed", lcmComplete: true });
+    ).resolves.toMatchObject({
+      state: "completed",
+      rawIngestedRecordCount: 5,
+      projectedRecordCount: 4,
+      lcmComplete: true
+    });
     await expect(
       repo.getHistoricalImportRun({ userId: owner.id }, run.id)
     ).resolves.toMatchObject({ state: "completed", completedSourceCount: 1 });
+    await expect(
+      repo.getHistoricalImportSource(actor, siblingSource!.id)
+    ).resolves.toMatchObject({
+      state: "completed",
+      rawIngestedRecordCount: 2,
+      projectedRecordCount: 1,
+      lcmComplete: true,
+      projected: true
+    });
     await expect(repo.reconcileHistoricalImportCompletion()).resolves.toEqual({
       sourcesCompleted: 0,
       runsCompleted: 0
     });
   });
 
-  it("replays an acknowledged batch without duplicate rows", async () => {
+  it("replays an acknowledged batch with live readiness and no duplicate rows", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
       email: `historical-replay-${randomUUID()}@example.com`
@@ -1949,10 +2367,29 @@ describeDb("journal-backed historical import repository", () => {
       { userId: owner.id },
       input
     );
+    await repo.projectPendingConversationItems(
+      { userId: owner.id },
+      { limit: 10 }
+    );
+    const liveStatus = await repo.getHistoricalImportSource(
+      { userId: owner.id },
+      input.sourceId
+    );
+    const readiness = {
+      projected: true,
+      embeddingEligibleEventCount: 1,
+      embeddedEventCount: 0,
+      semanticReady: false,
+      lcmEligibleEventCount: 1,
+      lcmCompletedEventCount: 0,
+      lcmComplete: false
+    };
+    expect(liveStatus).toMatchObject(readiness);
     const replay = await repo.ingestHistoricalImportBatch(
       { userId: owner.id },
       input
     );
+    expect(replay.source).toMatchObject(readiness);
     expect(first.replayed).toBe(false);
     expect(replay).toMatchObject({ replayed: true, items: [] });
     const resumedSource = await repo.getHistoricalImportSourceByIdentity(

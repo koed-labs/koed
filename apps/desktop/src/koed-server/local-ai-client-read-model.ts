@@ -79,6 +79,12 @@ const readSnapshots = (value: unknown) =>
         const instanceId = text(item?.instanceId);
         if (!item || !instanceId) return [];
         const capabilities = objectValue(item.capabilities);
+        const diagnostics = capabilities?.diagnostics;
+        const modelCatalogPartial =
+          Array.isArray(diagnostics) &&
+          diagnostics.some(
+            (item) => objectValue(item)?.code === "model_discovery_partial"
+          );
         const descriptors = objectValue(capabilities?.descriptors);
         const synthesis = objectValue(descriptors?.local_synthesis);
         const managedDescriptor = (id: string) =>
@@ -94,6 +100,7 @@ const readSnapshots = (value: unknown) =>
             authenticationState: readAuthentication(item.authenticationState),
             healthState: readHealth(item.healthState),
             models: readModels(item.models),
+            ...(modelCatalogPartial ? { modelCatalogPartial } : {}),
             localSynthesis: {
               support: readSupport(synthesis?.support),
               readiness: readReadiness(synthesis?.readiness)

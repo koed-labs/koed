@@ -24,7 +24,13 @@ import {
   managedConversationUpdatesSince,
   type ManagedConversationUpdateEnvelope
 } from "../state/managed-conversation-runtime.js";
-import { V1Settings, type V1SettingsTab } from "./settings.js";
+import {
+  V1Settings,
+  type V1SettingsProps,
+  type V1SettingsTab
+} from "./settings.js";
+import { savedMemoryModelProblems } from "./client-health.js";
+import { useMemoryModelRead } from "./use-memory-model.js";
 import { Home } from "./home/Home.js";
 import { useHomeStartup } from "./home/use-home-startup.js";
 import { homeClients, homeProjectEntries } from "./home/home-model.js";
@@ -175,11 +181,18 @@ export function V1App({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<V1SettingsTab>("general");
   const [settingsRevision, setSettingsRevision] = useState(0);
-  const openKinAiModels = useCallback(() => {
-    setSettingsTab("ai");
-    setSettingsRevision((revision) => revision + 1);
-    setSettingsOpen(true);
-  }, []);
+  const [clientTarget, setClientTarget] =
+    useState<V1SettingsProps["clientTarget"]>(null);
+  const openAiModels = useCallback(
+    (target: V1SettingsProps["clientTarget"]) => {
+      setClientTarget(target);
+      setSettingsTab("ai");
+      setSettingsRevision((revision) => revision + 1);
+      setSettingsOpen(true);
+    },
+    []
+  );
+  const openKinAiModels = useCallback(() => openAiModels(null), [openAiModels]);
   const [revision, setRevision] = useState(0);
   const attemptedReconcile = useRef(new Set<string>());
   const attemptedCaptures = useRef(new Set<string>());
@@ -201,6 +214,14 @@ export function V1App({
   const canReadInventory = apiHealthy || earlyInventory;
   const onboardingFinished = Boolean(
     onboardingComplete && profile?.onboarding.completed
+  );
+  const modelRead = useMemoryModelRead(
+    route.kind === "home" && onboardingFinished && apiHealthy
+      ? window.koedDesktop?.localAiClients
+      : undefined,
+    statusRevision,
+    scopeKey,
+    settingsOpen
   );
   useEffect(() => {
     if (healthyStatus) setHasHealthyStatus(true);
@@ -1178,6 +1199,7 @@ export function V1App({
             setRoute({ kind: "home" });
           }}
           onSettings={() => {
+            setClientTarget(null);
             setSettingsTab("general");
             setSettingsOpen(true);
           }}
@@ -1287,7 +1309,11 @@ export function V1App({
               view={homeView}
               showStageHost={!window.koedDesktop?.kin}
               statusError={statusError}
-              clients={homeClients(status)}
+              clients={homeClients(
+                status,
+                savedMemoryModelProblems(modelRead, status)
+              )}
+              onOpenAiClient={(id, opener) => openAiModels({ id, opener })}
               entries={homeEntries}
               agent={agent}
               statusStore={statusStore}
@@ -1315,6 +1341,7 @@ export function V1App({
               themeStore={themeStore}
               onClose={() => setSettingsOpen(false)}
               initialTab={settingsTab}
+              clientTarget={clientTarget}
               update={update}
               version={__KOED_DESKTOP_VERSION__}
               onRestartOnboarding={async () => {
