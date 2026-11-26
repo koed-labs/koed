@@ -93,7 +93,7 @@ export const waitForNpmCandidate = async (
       verified = true;
       return true;
     },
-    options
+    { timeoutMs: 20 * 60 * 1000, ...options }
   );
   if (!verified)
     throw new Error(
