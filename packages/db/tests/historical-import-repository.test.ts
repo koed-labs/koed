@@ -2317,7 +2317,7 @@ describeDb("journal-backed historical import repository", () => {
     });
   });
 
-  it("replays an acknowledged batch without duplicate rows", async () => {
+  it("replays an acknowledged batch with live readiness and no duplicate rows", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({
       email: `historical-replay-${randomUUID()}@example.com`
@@ -2367,10 +2367,29 @@ describeDb("journal-backed historical import repository", () => {
       { userId: owner.id },
       input
     );
+    await repo.projectPendingConversationItems(
+      { userId: owner.id },
+      { limit: 10 }
+    );
+    const liveStatus = await repo.getHistoricalImportSource(
+      { userId: owner.id },
+      input.sourceId
+    );
+    const readiness = {
+      projected: true,
+      embeddingEligibleEventCount: 1,
+      embeddedEventCount: 0,
+      semanticReady: false,
+      lcmEligibleEventCount: 1,
+      lcmCompletedEventCount: 0,
+      lcmComplete: false
+    };
+    expect(liveStatus).toMatchObject(readiness);
     const replay = await repo.ingestHistoricalImportBatch(
       { userId: owner.id },
       input
     );
+    expect(replay.source).toMatchObject(readiness);
     expect(first.replayed).toBe(false);
     expect(replay).toMatchObject({ replayed: true, items: [] });
     const resumedSource = await repo.getHistoricalImportSourceByIdentity(

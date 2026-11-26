@@ -1361,7 +1361,15 @@ const ingestBatchRecord = (
     const action = await validateBatchBoundary(client, source, input);
     const policy = await requireImportPolicy(client, actor, source);
     if (action === "replay") {
-      return { items: [], source, policy, replayed: true };
+      const liveSource = await sourceQuery(
+        client,
+        actor.userId,
+        "source.id = $2",
+        [source.id],
+        true
+      );
+      if (!liveSource) throw new Error("Historical import source disappeared");
+      return { items: [], source: liveSource, policy, replayed: true };
     }
     await requireWritableRun(client, actor, source.runId);
     if (!["queued", "importing"].includes(source.state)) {
