@@ -270,6 +270,20 @@ describe("account persistence boundary", () => {
       emailVerified: true,
       profilePictureUrl: "https://images.workoscdn.com/avatar/alex.png"
     });
+    expect(
+      runtime.profile({
+        ...validated,
+        session: {
+          ...validated.session,
+          user: {
+            ...validated.session.user,
+            name: " Alex Google ",
+            firstName: null,
+            lastName: null
+          }
+        }
+      }).displayName
+    ).toBe("Alex Google");
     expect(() =>
       runtime.profile({
         ...validated,

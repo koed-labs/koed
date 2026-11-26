@@ -140,13 +140,15 @@ export function createAccountRuntime(
       const picture = accountProfilePictureUrlSchema.safeParse(
         session.user.profilePictureUrl
       );
+      const displayName =
+        session.user.name?.trim() ||
+        [session.user.firstName, session.user.lastName]
+          .map((part) => part?.trim())
+          .filter(Boolean)
+          .join(" ");
       return accountProfileSchema.parse({
         id: session.user.id,
-        displayName:
-          [session.user.firstName, session.user.lastName]
-            .filter(Boolean)
-            .join(" ")
-            .slice(0, 100) || null,
+        displayName: displayName.slice(0, 100) || null,
         email: session.user.email,
         emailVerified: session.user.emailVerified,
         profilePictureUrl: picture.success ? picture.data : null

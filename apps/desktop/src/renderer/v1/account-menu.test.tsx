@@ -80,9 +80,9 @@ const render = (api: AccountDesktopApi) =>
 const open = () =>
   act(async () => mount.querySelector<HTMLButtonElement>("button")!.click());
 const item = (label: string) =>
-  [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-    (element) => element.textContent?.trim() === label
-  )!;
+  [
+    ...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')
+  ].find((element) => element.textContent?.trim() === label)!;
 
 describe("rail account menu", () => {
   it("shows the confirmed email preference and changes it only after the save returns", async () => {
@@ -110,12 +110,12 @@ describe("rail account menu", () => {
     );
     await render(api);
     await open();
-    expect(document.querySelector('[role="menu"]')?.textContent).not.toMatch(
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toMatch(
       /Kin items|Cap/
     );
-    const preference = document.querySelector<HTMLElement>(
-      '[role="menuitemcheckbox"]'
-    )!;
+    expect(document.querySelector('[role="switch"]')).toBeNull();
+    await act(async () => item("Email updatesOff").click());
+    const preference = document.querySelector<HTMLElement>('[role="switch"]')!;
     expect(preference.getAttribute("aria-checked")).toBe("false");
     expect(
       document.getElementById(preference.getAttribute("aria-describedby")!)
@@ -145,8 +145,61 @@ describe("rail account menu", () => {
       )
     );
     expect(preference.getAttribute("aria-checked")).toBe("true");
+    await act(async () => item("Account").click());
+    expect(item("Email updatesOn")).toBeDefined();
+    expect(item("Refresh profile")).toBeDefined();
+    expect(item("Sign out")).toBeDefined();
   });
 
+  it.each([null, "ALEX@example.test"])(
+    "shows the email once when the supplied name is %s",
+    async (displayName) => {
+      const f = fixture({
+        ...signedIn,
+        profile: { ...signedIn.profile!, displayName }
+      });
+      await render(f.api);
+      await open();
+      const identity = document.querySelector(".v1-account-identity")!;
+      expect(identity.querySelector("strong")?.textContent?.toLowerCase()).toBe(
+        "alex@example.test"
+      );
+      expect(identity.querySelector("small")).toBeNull();
+    }
+  );
+  it("shows the signed-out invitation with a static Kin and an accessible close button", async () => {
+    await render(fixture().api);
+    await open();
+    const panel = document.querySelector(
+      '[role="dialog"][aria-label="Account"]'
+    )!;
+    expect(panel.textContent).toContain("gain early access to new features 🚀");
+    expect(
+      panel.querySelector(".v1-account-status .v1-account-kin")
+    ).not.toBeNull();
+    expect(panel.querySelector('[aria-label="Close account"]')).not.toBeNull();
+    expect(panel.querySelector("h2")).toBeNull();
+  });
+  it("offers retry and sign-out for a cached profile, then sign-in after expiry", async () => {
+    const f = fixture({
+      ...signedIn,
+      stale: true,
+      details: { status: "unavailable" }
+    });
+    await render(f.api);
+    await open();
+    expect(document.body.textContent).toContain("Account offline");
+    expect(item("Sign out")).toBeDefined();
+    expect(document.querySelector('[role="switch"]')).toBeNull();
+    await act(async () => item("Retry profile").click());
+    expect(f.api.refreshProfile).toHaveBeenCalledOnce();
+    await act(async () =>
+      f.publish({ ...signedOut, status: "reauthentication_required" })
+    );
+    expect(document.body.textContent).not.toContain("alex@example.test");
+    await act(async () => item("Sign in again").click());
+    expect(f.api.signIn).toHaveBeenCalledWith({ screen: "sign-in" });
+  });
   it("stays hidden until availability resolves and while main disables accounts", async () => {
     const f = fixture({ ...signedOut, status: "unavailable" });
     let resolveRead!: (value: AccountState) => void;
@@ -182,20 +235,16 @@ describe("rail account menu", () => {
     await open();
     await act(async () => item("Sign in").click());
     expect(f.api.signIn).toHaveBeenCalledWith({ screen: "sign-in" });
-    await open();
-    expect(document.querySelector('[role="menu"]')?.textContent).toContain(
-      "Finish sign-in in your browser"
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Finish signing in"
     );
-    expect(item("Cancel sign-in").getAttribute("aria-disabled")).not.toBe(
-      "true"
-    );
+    expect(item("Cancel sign-in").disabled).toBe(false);
     await act(async () => item("Cancel sign-in").click());
     expect(f.api.cancelSignIn).toHaveBeenCalledOnce();
     // A failed browser launch from the cancelled action must not overwrite the newer state.
     await act(async () =>
       rejectLaunch(new Error("Late browser launch failure"))
     );
-    await open();
     expect(item("Sign in")).toBeDefined();
     expect(document.querySelector('[role="alert"]')).toBeNull();
   });
@@ -240,9 +289,9 @@ describe("rail account menu", () => {
     });
     await render(f.api);
     await open();
-    expect(document.querySelector('[role="menu"]')?.textContent).not.toContain(
-      "Different success wording"
-    );
+    expect(
+      document.querySelector('[role="dialog"]')?.textContent
+    ).not.toContain("Different success wording");
     await act(async () =>
       f.publish({
         messageCode: "browser_sign_out_failed",
@@ -261,7 +310,7 @@ describe("rail account menu", () => {
     await act(async () => window.dispatchEvent(new Event("focus")));
     await open();
     expect(document.querySelector('[role="alert"]')).toBeNull();
-    expect(item("Sign in").getAttribute("aria-disabled")).not.toBe("true");
+    expect(item("Sign in").disabled).toBe(false);
     expect(f.api.signIn).not.toHaveBeenCalled();
     expect(f.api.refreshProfile).not.toHaveBeenCalled();
   });

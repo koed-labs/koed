@@ -144,7 +144,8 @@ origin. A loopback HTTP origin can serve local fixtures. For a packaged
 build, supply an HTTPS origin as `KOED_ACCOUNT_PROFILE_API_ORIGIN` at build
 time. Desktop keeps its existing sign-in mode. Electron main sends the
 WorkOS access token and returns the profile to Desktop.
-Use the account menu to set email updates for the displayed address. Desktop shows
+Open the account badge in the sidebar to see the current email preference. Select
+**Email updates** to read the notice and change the preference for the displayed address. Desktop shows
 the saved preference after the API confirms it. Open **Project settings → Kin → Accessories**
 to see and equip the items available to that account. If the API is unavailable, retry
 from the account menu. Free items stay available and saved Kins retain their
@@ -179,7 +180,7 @@ A sign-out return page does not end a session when visited directly.
 
 ## Profile pictures
 
-The account menu displays the WorkOS name and email as read-only text.
+The account menu shows the full name from WorkOS, or the first and last names when supplied separately. If WorkOS supplies only an email address, the menu shows it once.
 It shows a profile picture when WorkOS supplies a supported URL.
 Initials appear while the picture loads, when it is absent, or when loading fails.
 
