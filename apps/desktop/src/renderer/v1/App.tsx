@@ -1177,8 +1177,8 @@ export function V1App({
             setSelectedProjectId(null);
             setRoute({ kind: "home" });
           }}
-          onSettings={() => {
-            setSettingsTab("general");
+          onSettings={(tab) => {
+            setSettingsTab(tab);
             setSettingsOpen(true);
           }}
           onBack={navigation.back}

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@koed-labs/ui";
-import { Check, X } from "lucide-react";
+import {
+  DesktopNotification,
+  type DesktopNotice
+} from "../DesktopNotification.js";
 import type {
   PersonalConversationOrganizationInput,
   PersonalConversationOrganizationResult
@@ -64,12 +67,8 @@ type Modal =
       destinationId?: string;
       axis?: "git" | "folder";
     };
-// How long a confirmation, and its Undo, stay up.
-export const NOTICE_MS = 5_000;
-type Notice = {
-  message: string;
+type Notice = DesktopNotice & {
   undo?: PersonalConversationOrganizationResult;
-  error?: string;
 };
 
 export function useProjectManagement({
@@ -450,13 +449,6 @@ export function useProjectManagement({
         notice({ ...current.notice!, error: projectErrorMessage(cause) });
     }
   };
-  // A confirmation clears itself; an error stays until dismissed.
-  const clearing = current.notice && !current.notice.error;
-  useEffect(() => {
-    if (!clearing || busy) return;
-    const timer = window.setTimeout(() => notice(null), NOTICE_MS);
-    return () => window.clearTimeout(timer);
-  }, [current.notice, clearing, busy]);
   const overlays = available && (
     <>
       {modal?.kind === "create" && (
@@ -673,15 +665,11 @@ export function useProjectManagement({
         />
       )}
       {current.notice && (
-        <div
-          className="v1-project-ui v1-pm-toast"
-          role={current.notice.error ? "alert" : "status"}
+        <DesktopNotification
+          notice={current.notice}
+          paused={busy}
+          onDismiss={() => notice(null)}
         >
-          <Check />
-          <span>
-            {current.notice.message}
-            {current.notice.error && <small>{current.notice.error}</small>}
-          </span>
           {current.notice.undo && (
             <Button
               variant="ghost"
@@ -692,15 +680,7 @@ export function useProjectManagement({
               Undo
             </Button>
           )}
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label="Dismiss notification"
-            onClick={() => notice(null)}
-          >
-            <X />
-          </Button>
-        </div>
+        </DesktopNotification>
       )}
     </>
   );

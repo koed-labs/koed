@@ -136,6 +136,7 @@ export const accountProfileSchema = z
     displayName: z.string().max(100).nullable(),
     email: z.string().email(),
     emailVerified: z.boolean(),
+    joinedAt: z.iso.datetime({ offset: true }).optional(),
     // Older encrypted profiles omit this optional presentation field.
     profilePictureUrl: accountProfilePictureUrlSchema.nullable().optional()
   })

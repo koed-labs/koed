@@ -1,3 +1,5 @@
+import { AccountPanel } from "./account-panel.js";
+import { useAccountState } from "./use-account-state.js";
 import { PerformanceSettings } from "./PerformanceSettings.js";
 import { GraphicsSettings } from "./GraphicsSettings.js";
 import { usePresentationPreferences } from "./use-presentation-preferences.js";
@@ -43,7 +45,7 @@ import {
 } from "./settings-controls.js";
 import "./settings.css";
 
-const tabs = (Object.keys(sections) as Section[]).map((id) => ({
+const allTabs = (Object.keys(sections) as Section[]).map((id) => ({
   id,
   ...sections[id]
 }));
@@ -85,7 +87,17 @@ export function V1Settings({
     initialPage,
     teamCollaborationEnabled
   );
-  const { tab, page, setTab } = navigation;
+  const { page, setTab } = navigation;
+  const accountApi = window.koedDesktop?.account;
+  const { state: account, accept } = useAccountState(accountApi, false);
+  const showAccount = account
+    ? account.status !== "unavailable"
+    : !!accountApi && initialTab === "account";
+  const tabs = showAccount
+    ? allTabs
+    : allTabs.filter(({ id }) => id !== "account");
+  const tab =
+    navigation.tab === "account" && !showAccount ? "general" : navigation.tab;
   const presentation = usePresentationPreferences(presentationPreferences);
   const [serviceBusy, setServiceBusy] = useState<ServiceAction | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
@@ -302,6 +314,12 @@ export function V1Settings({
           aria-labelledby={"v1-settings-tab-" + tab}
         >
           {!page && <PageHeading page={tab} />}
+          {tab === "account" &&
+            (accountApi && account ? (
+              <AccountPanel api={accountApi} state={account} accept={accept} />
+            ) : (
+              <p role="status">Loading account…</p>
+            ))}
           {tab === "general" &&
             (!page ? (
               <>

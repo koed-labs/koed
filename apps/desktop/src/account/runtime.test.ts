@@ -256,6 +256,7 @@ describe("account persistence boundary", () => {
           id: "user_1",
           email: "alex@example.com",
           emailVerified: true,
+          createdAt: "2026-10-14T13:00:00.000Z",
           firstName: "Alex",
           lastName: "Example",
           profilePictureUrl: "https://images.workoscdn.com/avatar/alex.png"
@@ -266,6 +267,7 @@ describe("account persistence boundary", () => {
     expect(runtime.profile(validated)).toEqual({
       id: "user_1",
       displayName: "Alex Example",
+      joinedAt: "2026-10-14T13:00:00.000Z",
       email: "alex@example.com",
       emailVerified: true,
       profilePictureUrl: "https://images.workoscdn.com/avatar/alex.png"

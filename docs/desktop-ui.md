@@ -653,7 +653,7 @@ rendering path and has no dependency on the retired browser app.
 ## Optional account menu
 
 When accounts are enabled, the navigation rail shows a profile badge.
-Its menu offers sign-in, sign-out, and cancellation of a sign-in attempt.
+Its menu offers sign-in, sign-out, and cancellation of a sign-in attempt. For a signed-in User, **Expand** opens **Settings → Account** to view the profile, refresh it, or change email consent.
 Source builds disable accounts and hide the badge by default.
 
 Electron main reports account availability and sends read-only profile data to

@@ -50,12 +50,6 @@
   font-size: 13px;
   line-height: 1.45;
 }
-.v1-account-preference > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
 .v1-account-popup .v1-account-close {
   position: absolute;
   inset-block-start: 9px;
@@ -151,33 +145,13 @@
 .v1-account-row svg {
   color: var(--v1-muted);
 }
-.v1-account-row small {
-  margin-left: auto;
-  font-size: 11px;
-}
-.v1-account-row small + svg {
-  width: 14px;
-  height: 14px;
-}
-.v1-account-popup .v1-account-back {
-  margin: 9px 12px 0;
-  color: var(--v1-muted);
-}
-.v1-account-preference,
 .v1-account-status {
   padding: 19px;
   overflow-wrap: anywhere;
 }
-.v1-account-preference h3 {
-  font-size: 14px;
-}
-.v1-account-preference p,
 .v1-account-status p {
   margin: 8px 0 0;
   color: var(--v1-fg2);
-}
-.v1-account-preference small {
-  margin-top: 4px;
 }
 .v1-account-status h3 {
   font-size: 18px;

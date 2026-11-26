@@ -8,6 +8,7 @@ import {
   Info,
   Layers3,
   Settings2,
+  UserRound,
   ShieldCheck,
   Terminal
 } from "lucide-react";
@@ -28,6 +29,7 @@ export const sections = {
     icon: Settings2,
     description: "Appearance, device preferences, and optional tools."
   },
+  account: { label: "Account", icon: UserRound, description: "" },
   ai: {
     label: "AI models",
     icon: Cpu,
@@ -185,7 +187,7 @@ export function PageHeading({
         <Back label={sections[detail.parent].label} onClick={onBack} />
       )}
       <h2 tabIndex={-1}>{pages[page].label}</h2>
-      <p>{pages[page].description}</p>
+      {pages[page].description && <p>{pages[page].description}</p>}
     </header>
   );
 }

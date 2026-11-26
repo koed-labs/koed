@@ -79,7 +79,7 @@ describe("V1Settings", () => {
       )
     );
   };
-  it("keeps account access outside Settings when sign-in is available", async () => {
+  it("opens Account from Settings when sign-in is available", async () => {
     const state: AccountState = {
       status: "signed_out",
       profile: null,
@@ -94,13 +94,15 @@ describe("V1Settings", () => {
     } as unknown as AccountDesktopApi;
     window.koedDesktop = { account: accountApi } as typeof window.koedDesktop;
     await render("general");
-    expect(
-      container.querySelector('[data-settings-page="profile"]')
-    ).toBeNull();
-    expect(container.textContent).not.toContain("Your profile");
-    expect(container.querySelector('[aria-label="Theme"]')).not.toBeNull();
-    expect(accountApi.getState).not.toHaveBeenCalled();
-    expect(accountApi.onStateChanged).not.toHaveBeenCalled();
+    const tab = container.querySelector<HTMLButtonElement>(
+      "#v1-settings-tab-account"
+    )!;
+    expect(tab.getAttribute("aria-selected")).toBe("false");
+    await act(async () => tab.click());
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[role="tabpanel"]')?.textContent).toContain(
+      "Sign in to Koed"
+    );
   });
   it("writes theme through the existing ThemeStore", async () => {
     await render();
@@ -112,6 +114,7 @@ describe("V1Settings", () => {
       ).click()
     );
     expect(themeStore.set).toHaveBeenCalledWith("light");
+    expect(container.querySelector("#v1-settings-tab-account")).toBeNull();
   });
 
   it("opens Graphics from General and saves independent window preferences", async () => {

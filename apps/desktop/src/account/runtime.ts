@@ -146,7 +146,11 @@ export function createAccountRuntime(
           .map((part) => part?.trim())
           .filter(Boolean)
           .join(" ");
+      const joinedAt = accountProfileSchema.shape.joinedAt.safeParse(
+        session.user.createdAt
+      );
       return accountProfileSchema.parse({
+        joinedAt: joinedAt.success ? joinedAt.data : undefined,
         id: session.user.id,
         displayName: displayName.slice(0, 100) || null,
         email: session.user.email,
