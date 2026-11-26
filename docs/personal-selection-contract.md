@@ -928,6 +928,10 @@ change to the reviewed exclusion state makes apply stale.
 A saved Project Kin travels with the name in the signed Project catalog revision.
 The catalog stores the body shape, colour, and personality. Concurrent edits use
 the existing catalog conflict review. Each choice includes both its name and Kin.
+Desktop stores Project Kin accessory IDs on the device, scoped to the backend,
+User, and Project. Accessory edits leave the Project catalog unchanged. Earlier
+releases can still read the same database, and older peers can still receive
+Project renames and deletions.
 A catalog history containing a saved Kin waits until all paired recipients
 advertise `project_membership_v1` and `project_kin_v1`. Every device refreshes
 the signed three-feature format used by older readers. An upgraded relay

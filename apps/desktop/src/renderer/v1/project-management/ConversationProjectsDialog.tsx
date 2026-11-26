@@ -137,7 +137,8 @@ export function ConversationProjectsDialog(props: OrganizationDialogProps) {
                             <Pixelkin
                               look={projectKinLook(
                                 project.id,
-                                project.namedProject?.kin
+                                project.namedProject?.kin,
+                                project.kinItems
                               )}
                               size={36}
                               className="v1-pm-row-kin"

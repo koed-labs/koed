@@ -6,12 +6,19 @@ Open Settings with the gear button at the bottom of the Desktop sidebar. Choose 
 
 General lists Appearance, On this device, and Optional tools, in that order.
 Appearance selects System, Light, or Dark. Device preferences include opening
-Koed at login, menu-bar visibility, and graphics acceleration when supported.
+Koed at login, menu-bar visibility, and a nested Graphics page.
 Run setup again remains available when the installation supports it.
 On macOS, the **Chief of Staff** switch controls whether the Kin can float
 outside the Koed window. It is off by default. The Kin and its
 [recent captured activity](floating-kin.md) are still available in Koed when
 floating is off.
+
+Open **Graphics** to choose **Classic**, **Balanced**, or **Max** Kin resolution.
+The preview updates as you move the slider. Desktop saves your choice when you
+release the slider or select a stop with the keyboard. Classic and Balanced cap
+large Kin renders at 96 and 160 pixels respectively. Max keeps the current
+display-scaled detail. Small avatars already render at lower resolutions.
+Changes to **Graphics acceleration** take effect after restarting Koed.
 
 Optional tools always includes Command line. Privacy Filter appears when Desktop
 starts with `KOED_TEAM_COLLABORATION_ENABLED=true`. Select a card to open its
@@ -120,8 +127,8 @@ completion notice or default footer message.
 Choose CPU or the available GPU option and select **Apply**. GPU processing saves
 the shared automatic preference, allowing visible CPU fallback. Changes retain
 the embedding model and stored vectors and do not start reindexing. Switching
-to CPU retains optional CUDA assets for reuse. The General graphics acceleration
-setting is separate and controls Desktop rendering.
+to CPU retains optional CUDA assets for reuse. **General → Graphics** controls
+Desktop rendering.
 
 On a supported Linux NVIDIA device without the add-on, select **GPU · CUDA**
 to review download and free-disk requirements from the release catalog and

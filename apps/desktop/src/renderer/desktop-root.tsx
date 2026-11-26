@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import { V1App as App } from "./v1/App.js";
 import { installWindowActivity } from "./window-activity.js";
+import { setKinResolution } from "./state/kin-resolution.js";
 import "./index.css";
 
 installWindowActivity();
@@ -52,6 +53,10 @@ function DesktopRoot() {
 }
 
 export function mountDesktop(root: HTMLDivElement) {
+  void window.koedDesktop?.presentationPreferences
+    ?.get()
+    .then(({ kinResolution }) => setKinResolution(kinResolution))
+    .catch(() => {});
   createRoot(root).render(
     <StrictMode>
       <DesktopRoot />

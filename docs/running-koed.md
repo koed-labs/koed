@@ -1709,8 +1709,7 @@ Koed Desktop exposes CPU/GPU processing in Settings → Services → Hardware
 Acceleration. The preference is stored in `KOED_HOME/config/server.json`;
 changing it restarts running local Koed services. A stopped installation remains
 stopped. An explicit Operator environment policy remains authoritative and makes
-the control read-only. General graphics acceleration controls Desktop rendering
-separately.
+the control read-only. **Settings → General → Graphics** controls Desktop rendering.
 
 Hardware status uses the same service tokens as startup. Source checkouts prefer
 environment variables set before launch, then `.env` values, then saved tokens.

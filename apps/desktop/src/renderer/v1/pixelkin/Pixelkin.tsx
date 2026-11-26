@@ -11,6 +11,7 @@ import {
   type PixelkinActor
 } from "./stage.js";
 import type { KinSpin } from "../onboarding/kin-spin.js";
+import type { KinResolution } from "../../../ipc/presentation-preferences-protocol.js";
 import "./pixelkin.css";
 
 export function Pixelkin({
@@ -24,11 +25,13 @@ export function Pixelkin({
   spin = null,
   presentation = "avatar",
   motion = "focused",
+  resolution,
   gaze = null,
   fit = 1
 }: {
   presentation?: "avatar" | "stage";
   motion?: "focused" | "unfocused" | "still";
+  resolution?: KinResolution;
   look?: AgentLook;
   // Optional second stop for a gradient-enabled look, not part of saved Kin settings.
   gradientTop?: string;
@@ -80,6 +83,7 @@ export function Pixelkin({
     if (!actor) return;
     actor.size = size;
     actor.presentation = presentation;
+    actor.resolution = resolution;
     if (shownKey.current !== lookKey) {
       shownKey.current = lookKey;
       setPixelkinKin(actor, look);
@@ -87,7 +91,7 @@ export function Pixelkin({
     }
     wakePixelkins();
     // lookKey captures every look field.
-  }, [lookKey, size, hopOnChange, presentation]);
+  }, [lookKey, size, hopOnChange, presentation, resolution]);
   useEffect(() => {
     const actor = actorRef.current;
     if (!actor) return;

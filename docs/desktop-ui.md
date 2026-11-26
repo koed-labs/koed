@@ -53,10 +53,13 @@ organization remain available. Legacy managed execution APIs and background
 workers are not retired by this UI change; descriptions of those workflows below
 are historical, not V1 Desktop capabilities.
 
-In **Project settings → Kin**, choose a body shape, colour, and personality. The
-Kin appears under a spotlight beside the controls. Home labels it with the Project name. Each Project starts with a
-look generated from its ID. Saving a Kin updates Home and syncs the choice to
-paired Personal devices.
+In **Project settings → Kin**, use **Appearance** to choose a body shape, colour,
+and personality. Use **Accessories** to browse and equip items that require no
+server unlock. The preview updates as you equip an item. Items that occupy the
+same slot replace one another. Remove an item from the **Equipped** list.
+Each Project starts with a look generated from its ID. Saving updates the Kin on
+Home. The body shape, colour, and personality sync to compatible paired Personal
+devices. Accessories stay on this Koed installation.
 
 Project settings also manages names, Anchors, Conversation membership, and
 Personal Device sync. The **Sync** page appears only when
@@ -82,10 +85,10 @@ Conversations keep their execution owner, while a new Conversation can choose
 a configured client. Managed execution, approvals, streaming, and draft recovery
 use the existing controller with the new presentation.
 
-Window graphics acceleration is a local Electron preference applied on the next
-app launch. It never changes embedding or privacy inference acceleration. The
-menu-bar preference changes only the tray visibility; existing service lifecycle
-and native menu commands are retained.
+Window graphics acceleration in **General → Graphics** is a local Electron
+preference applied on the next app launch. It never changes embedding or privacy
+inference acceleration. The menu-bar preference changes only the tray visibility;
+existing service lifecycle and native menu commands are retained.
 
 AI settings retain the existing single default AI Client, model, and reasoning
 level for new Conversations. Available models and reasoning levels come from

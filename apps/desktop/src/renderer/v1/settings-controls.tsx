@@ -46,6 +46,12 @@ export const sections = {
 };
 export type Section = keyof typeof sections;
 export const details = {
+  graphics: {
+    label: "Graphics",
+    icon: null,
+    parent: "general",
+    description: "Adjust Kin detail and graphics acceleration."
+  },
   privacy: {
     label: "Privacy Filter",
     icon: ShieldCheck,
@@ -128,13 +134,15 @@ export function PageLink({
   return (
     <Button
       variant="ghost"
-      className="page-link"
+      className={Icon ? "page-link" : "page-link page-link-plain"}
       data-settings-page={page}
       onClick={() => onOpen(page)}
     >
-      <span className="link-icon">
-        <Icon />
-      </span>
+      {Icon && (
+        <span className="link-icon">
+          <Icon />
+        </span>
+      )}
       <span className="row-copy">
         <strong>{label}</strong>
         <small>{note ?? description}</small>
