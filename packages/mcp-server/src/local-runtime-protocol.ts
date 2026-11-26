@@ -30,6 +30,24 @@ export type LocalRuntimeConversationBinding =
     }
   | { sessionId: string };
 
+/**
+ * One schema for the request boundary and for claimed durable work, so a
+ * binding the runtime accepts and persists can also be executed.
+ */
+export const localRuntimeConversationBindingSchema = z.union([
+  z.object({ sessionId: z.string().uuid() }).strict(),
+  z
+    .object({
+      externalSessionId: z
+        .string()
+        .min(1)
+        .max(4096)
+        .refine((value) => value.trim().length > 0 && !value.includes("\0")),
+      sourceRuntime: z.enum(["codex-cli", "claude-code", "pi"])
+    })
+    .strict()
+]);
+
 export interface LocalRuntimeCallerContext {
   cwd: string;
   conversation?: LocalRuntimeConversationBinding;

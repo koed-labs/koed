@@ -382,6 +382,68 @@ describe("MemoryAnswerTaskScheduler", () => {
     }
   });
 
+  it.each([
+    { externalSessionId: "native-session", sourceRuntime: "claude-code" },
+    { sessionId: "0e6f6c53-6a51-4d0e-9d0c-2f8a4a1b7c11" }
+  ] as const)(
+    "runs accepted work whose caller carries its Conversation binding: %j",
+    async (conversation) => {
+      const caller = { cwd: "/work", conversation };
+      const input = {
+        query: "decision",
+        search_domain: "global",
+        repository_context: null
+      };
+      const running = {
+        ...view(),
+        status: "running" as const,
+        attemptCount: 1,
+        fenceGeneration: 1,
+        leaseOwner: "runtime-lease",
+        leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+        request: { input, caller }
+      };
+      let available = true;
+      const api = taskApi(running, {
+        claimMemoryAnswerTask: vi.fn(async () => {
+          if (!available) return { task: null, reconciled: [] };
+          available = false;
+          return { task: running, reconciled: [] };
+        }),
+        heartbeatMemoryAnswerTask: vi.fn(async () => ({ task: running })),
+        completeMemoryAnswerTask: vi.fn(async () => ({
+          task: view({ ...running, status: "completed" })
+        })),
+        failMemoryAnswerTask: vi.fn(async () => ({
+          task: view({ ...running, status: "failed" })
+        }))
+      });
+      const execute = vi.fn(async () => ({ finalQuestion: {}, result: {} }));
+      const scheduler = new MemoryAnswerTaskScheduler(api, {
+        executeMemoryAnswerTask: execute
+      });
+      try {
+        await vi.waitFor(() =>
+          expect(api.completeMemoryAnswerTask).toHaveBeenCalledWith(
+            running.id,
+            expect.objectContaining({ fence_generation: 1 })
+          )
+        );
+        expect(execute).toHaveBeenCalledWith(
+          input,
+          caller,
+          running.id,
+          expect.any(AbortSignal),
+          expect.any(Function),
+          expect.anything()
+        );
+        expect(api.failMemoryAnswerTask).not.toHaveBeenCalled();
+      } finally {
+        await scheduler.close();
+      }
+    }
+  );
+
   it("propagates explicit cancellation to the exact claimed attempt", async () => {
     const accepted = view();
     const running = {

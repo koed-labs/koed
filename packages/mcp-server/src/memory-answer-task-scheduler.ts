@@ -14,7 +14,10 @@ import { z } from "zod";
 import { AnswerExecutionCapacity } from "./answer-admission.js";
 import type { MemoryApiClient } from "./index.js";
 import type { MemoryAnswerRetrievalClient } from "./answer-worker.js";
-import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
+import {
+  localRuntimeConversationBindingSchema,
+  type LocalRuntimeCallerContext
+} from "./local-runtime-protocol.js";
 import { logger } from "./logger.js";
 
 export type MemoryAnswerTaskView = MemoryAnswerTask;
@@ -80,6 +83,7 @@ const claimedRequestSchema = z
     caller: z
       .object({
         cwd: z.string(),
+        conversation: localRuntimeConversationBindingSchema.optional(),
         protocolVersion: z.string().optional(),
         clientInfo: z.record(z.string(), z.unknown()).optional(),
         clientCapabilities: z.record(z.string(), z.unknown()).optional()
