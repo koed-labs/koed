@@ -857,6 +857,12 @@ source components replace the assignment or resolve historical-unresolved state.
 Hook signals and filesystem discovery converge through the same Transcript
 Watcher and source registration; the watcher's own cwd never supplies the Project.
 
+### Pi tool-call identifiers
+
+Raw conversation ingestion preserves Pi tool-call identifiers that combine a
+provider call ID and item ID with `|`. The compound form is accepted in
+`metadata.toolCallId` only and remains subject to the 512-character limit.
+
 ### Pi repository context
 
 New live Pi source registrations carry the shared repository observation resolved
