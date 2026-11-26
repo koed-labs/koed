@@ -63,6 +63,48 @@ describe("atomic organization bridge", () => {
     ).rejects.toThrow();
     expect(request).toHaveBeenCalledTimes(1);
   });
+  it("binds a scoped exclusion receipt to the requested Project", async () => {
+    const fixture = createProjectManagementValidationApi();
+    const projectId = validationId(2);
+    const expectedScopeKey = "a".repeat(64);
+    const input = {
+      action: "apply_sources" as const,
+      projectId,
+      expectedVersion: 1,
+      expectedScopeKey,
+      changes: [
+        { action: "exclude_session" as const, sessionId: validationId(108) }
+      ]
+    };
+    const saved = await fixture.api.manageProject!(input);
+    const request = vi.fn(async () => saved);
+    const commands = createProjectCommands({
+      personalRequest: request,
+      lookup: {}
+    } as unknown as ProjectCommandsDeps);
+
+    await expect(commands.manage(input)).resolves.toEqual(saved);
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      `/v1/personal/projects/${projectId}/sources`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedVersion: input.expectedVersion,
+          changes: input.changes
+        })
+      },
+      expectedScopeKey
+    );
+    request.mockResolvedValueOnce({
+      ...saved,
+      project: { ...saved.project, projectId: validationId(1) }
+    });
+    await expect(commands.manage(input)).rejects.toMatchObject({
+      code: "invalid_response",
+      retryable: false
+    });
+  });
   it("uses the fixed route and binds its response to the reviewed context", async () => {
     const fixture = createProjectManagementValidationApi(),
       sessionId = validationId(100);

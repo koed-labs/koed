@@ -22,10 +22,6 @@ import type {
 } from "@koed-labs/shared/account";
 import "./account-menu.css";
 import { useAccountState } from "./use-account-state.js";
-import {
-  accountUnlockMask,
-  unlockedItemLabels
-} from "./pixelkin/account-equipment.js";
 
 export function AccountMenu({
   api = window.koedDesktop?.account
@@ -59,7 +55,6 @@ export function AccountMenu({
   };
   if (!api || !state || state.status === "unavailable") return null;
   const profile = state.profile;
-  const unlocked = unlockedItemLabels(accountUnlockMask(state));
   const emailUpdates =
     state.details?.status === "ready" ? state.details.value.emailUpdates : null;
   const signingIn = state.status === "signing_in";
@@ -116,13 +111,6 @@ export function AccountMenu({
                 <>
                   <strong>{name}</strong>
                   <span>{profile.email}</span>
-                  {state.details?.status === "ready" && (
-                    <span>
-                      {unlocked.length
-                        ? `Unlocked Kin items: ${unlocked.join(", ")}`
-                        : "Free Kin items available"}
-                    </span>
-                  )}
                   {state.details?.status === "loading" && (
                     <p className="v1-account-invitation" role="status">
                       Loading account profile…

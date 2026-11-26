@@ -42,9 +42,18 @@ import { StoreConversation } from "../views/personal/PersonalMemoryViews.js";
 import { NavigationShell } from "./NavigationShell.js";
 import { RecallActivityPage } from "./RecallActivityPage.js";
 import { useProjectManagement } from "./project-management/use-project-management.js";
+import { withLocalProjectKinItems } from "./project-management/project-kin-preferences.js";
 import { ConversationTags } from "./project-management/ConversationTags.js";
-import { buildProjectSidebar } from "./project-sidebar-model.js";
+import {
+  buildProjectSidebar,
+  matchesSidebarConversation,
+  NO_ANCHOR_ID,
+  openSidebarConversation,
+  resolveConversationByKey,
+  sidebarGroups
+} from "./project-sidebar-model.js";
 import { useNavigationHistory } from "./use-navigation-history.js";
+import { openKinConversation as openKinConversationRow } from "./kin-conversation-open.js";
 import {
   acknowledgeLateV1Capture,
   confirmV1ProjectMembership,
@@ -67,9 +76,16 @@ import {
   saveV1Profile,
   v1State
 } from "./state.js";
-import { parseAgentLook, serializeAgentLook } from "./pixelkin/agent-kin.js";
-import { DEFAULT_AGENT_LOOK } from "./visual.js";
+import {
+  chiefOfStaffAppearance,
+  chiefOfStaffBrand,
+  DEFAULT_AGENT_LOOK,
+  parseAgentLook,
+  sameAgentLook,
+  serializeAgentLook
+} from "./pixelkin/agent-kin.js";
 import { useDesktopUpdate } from "../update/use-desktop-update.js";
+import { useDesktopKin } from "../floating-kin/DesktopKin.js";
 
 const defaultStatusStore = new DesktopStatusStore();
 const defaultThemeStore = new ThemeStore();
@@ -81,10 +97,7 @@ const emptyProvenance: V1Provenance = {
 const emptyProfile: V1Profile = {
   onboarding: { selections: {}, completed: false }
 };
-const fallbackAgent: OnboardingAgent = {
-  name: "Koed",
-  look: DEFAULT_AGENT_LOOK
-};
+const fallbackAgent = { name: "Koed", ...chiefOfStaffBrand };
 export const shouldShowV1Onboarding = (
   profile: V1Profile,
   backendComplete: boolean
@@ -161,6 +174,12 @@ export function V1App({
     useState<DesktopProject | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<V1SettingsTab>("general");
+  const [settingsRevision, setSettingsRevision] = useState(0);
+  const openKinAiModels = useCallback(() => {
+    setSettingsTab("ai");
+    setSettingsRevision((revision) => revision + 1);
+    setSettingsOpen(true);
+  }, []);
   const [revision, setRevision] = useState(0);
   const attemptedReconcile = useRef(new Set<string>());
   const attemptedCaptures = useRef(new Set<string>());
@@ -253,12 +272,12 @@ export function V1App({
     revision,
     update: realtime
   });
-  const agent = useMemo<OnboardingAgent>(
+  const agent = useMemo(
     () =>
       profile
         ? {
             name: profile.agentName ?? fallbackAgent.name,
-            look: parseAgentLook(profile.agentLook)
+            ...chiefOfStaffAppearance(profile.agentLook)
           }
         : fallbackAgent,
     [profile]
@@ -551,9 +570,12 @@ export function V1App({
   const projects = useMemo(
     () =>
       scopeKey && inventoryScope === scopeKey
-        ? [...(snapshot?.projectsById.values() ?? [])]
+        ? withLocalProjectKinItems(
+            [...(snapshot?.projectsById.values() ?? [])],
+            scopeKey
+          )
         : [],
-    [snapshot, scopeKey, inventoryScope]
+    [snapshot, scopeKey, inventoryScope, revision]
   );
   const projectForIntent = useCallback(
     (intent: V1ConversationIntent) => {
@@ -874,9 +896,9 @@ export function V1App({
       .find((project) => project.id === "no-project")
       ?.conversations.find((item) => item.key === key);
     if (!conversation) return;
-    setRoute(conversation.route);
+    setRoute(openSidebarConversation(conversation, NO_ANCHOR_ID));
     setRevealProject((previous) => ({
-      projectId: "no-project",
+      projectId: NO_ANCHOR_ID,
       key: (previous?.key ?? 0) + 1
     }));
   };
@@ -889,6 +911,21 @@ export function V1App({
       ? projectManagement.management.onDrop(row, projectId).then(Boolean)
       : Promise.resolve(false);
   };
+  // The Chief of Staff opens a captured Conversation by its session id.
+  // A Conversation the Kin knows about may be newer than the cached rows
+  // (captured while Desktop was in the background). See
+  // openKinConversation for when a miss refreshes the inventory.
+  const openKinConversation = useCallback(
+    (sessionId: string, options?: { refresh?: boolean }) =>
+      openKinConversationRow({
+        sessionId,
+        groups: sidebarProjects,
+        open: (row) => setRoute({ ...openSidebarConversation(row), sessionId }),
+        refresh: () => void loadInventory({ silent: true }),
+        options
+      }),
+    [sidebarProjects, loadInventory, setRoute]
+  );
   const openProject = (projectId: string) => {
     const latest = sidebarProjects
       .find((project) => project.id === projectId)
@@ -902,7 +939,7 @@ export function V1App({
         null
       );
     if (!latest) return;
-    setRoute(latest.route);
+    setRoute(openSidebarConversation(latest, projectId));
     setRevealProject((previous) => ({
       projectId,
       key: (previous?.key ?? 0) + 1
@@ -916,44 +953,73 @@ export function V1App({
   const selectedDraft = selectedExecution
     ? (lifecycle.drafts.get(selectedExecution) ?? null)
     : null;
+  const canonicalConversation =
+    route.kind === "conversation" && route.conversationKey
+      ? resolveConversationByKey(projects, route.conversationKey)
+      : undefined;
   const routeProject =
-    route.kind === "conversation" && route.projectId
+    route.kind === "conversation" && !route.conversationKey && route.projectId
       ? projects.find((project) => project.id === route.projectId)
       : undefined;
+  const targetSessionId =
+    route.kind === "conversation"
+      ? (route.sessionId ?? selectedIntent?.capturedSessionId)
+      : undefined;
   const matchesConversation = (thread: DesktopProject["threads"][number]) =>
-    route.kind === "conversation" &&
     Boolean(
-      (route.threadId && thread.id === route.threadId) ||
-      (route.sessionId &&
-        (thread.sessionId === route.sessionId ||
-          thread.sourceReferences?.some(
-            (ref) => ref.sessionId === route.sessionId
-          ))) ||
-      (selectedIntent?.capturedSessionId &&
-        thread.sessionId === selectedIntent.capturedSessionId)
+      targetSessionId &&
+      thread.threadKind !== "subagent" &&
+      (thread.sessionId === targetSessionId ||
+        thread.sourceReferences?.some(
+          (ref) => ref.sessionId === targetSessionId
+        ))
     );
-  const capturedProject = routeProject?.threads.some(matchesConversation)
-    ? routeProject
-    : [...projects]
-        .sort((a, b) => Number(!!b.namedProject) - Number(!!a.namedProject))
-        .find((p) => p.threads.some(matchesConversation));
+  const legacyThread =
+    !targetSessionId && route.kind === "conversation" && routeProject
+      ? routeProject.threads.find((thread) => thread.id === route.threadId)
+      : undefined;
+  const capturedProject =
+    canonicalConversation?.project ??
+    (legacyThread || routeProject?.threads.some(matchesConversation)
+      ? routeProject
+      : [...projects]
+          .sort(
+            (a, b) =>
+              Number(!!b.namedProject) - Number(!!a.namedProject) ||
+              a.id.localeCompare(b.id)
+          )
+          .find((p) => p.threads.some(matchesConversation)));
   const conversationProject =
     capturedProject ??
     (selectedIntent ? projectForIntent(selectedIntent) : null);
-  const conversationThread = conversationProject
-    ? (conversationProject.threads.find((thread) =>
-        route.kind === "conversation" && route.threadId
-          ? thread.id === route.threadId
-          : Boolean(
-              selectedExecution &&
-              (thread.sessionId === selectedIntent?.capturedSessionId ||
-                sessionSelectionId(thread) === selectedExecution)
+  const conversationThread =
+    canonicalConversation?.thread ??
+    legacyThread ??
+    conversationProject?.threads.find(matchesConversation) ??
+    selectedDraft?.thread ??
+    null;
+  const originId =
+    route.kind === "conversation"
+      ? (route.originGroupId ?? route.projectId)
+      : undefined;
+  const conversationOrigin =
+    route.kind === "conversation" && originId
+      ? (originId === NO_ANCHOR_ID
+          ? sidebarGroups(sidebarProjects, verifiedPhase === "full")
+          : sidebarProjects
+        ).find(
+          (group) =>
+            group.id === originId &&
+            group.conversations.some((row) =>
+              matchesSidebarConversation(route, row)
             )
-      ) ??
-      conversationProject.threads.find(matchesConversation) ??
-      selectedDraft?.thread ??
-      null)
-    : null;
+        )
+      : undefined;
+  const conversationCrumb =
+    conversationOrigin?.name ??
+    (route.kind === "conversation" && !route.conversationKey
+      ? conversationProject?.name
+      : undefined);
   const conversationRouteId =
     selectedExecution ??
     (conversationThread ? sessionSelectionId(conversationThread) : "");
@@ -965,11 +1031,13 @@ export function V1App({
     scopeKey,
     api: personalMemoryApi,
     store,
+    onKinItemsSaved: () => setRevision((value) => value + 1),
     projects,
     onOrganized: (sessionId, nextProjects, preferredProjectId) => {
       const selectedRoute = currentRoute.current;
       if (
         selectedRoute.kind !== "conversation" ||
+        selectedRoute.conversationKey ||
         currentSession.current !== sessionId
       )
         return;
@@ -1003,7 +1071,11 @@ export function V1App({
     await saveProfile((current) => ({
       ...current,
       agentName: next.name,
-      agentLook: serializeAgentLook(next.look, next.name)
+      agentLook:
+        current.agentLook ??
+        (sameAgentLook(next.look, DEFAULT_AGENT_LOOK)
+          ? undefined
+          : serializeAgentLook(next.look, next.name))
     }));
   };
   const onSaveDraft = async (draft: OnboardingDraft) => {
@@ -1027,6 +1099,25 @@ export function V1App({
       onboarding: { ...current.onboarding, completed: true, draft: undefined }
     }));
   };
+  const showOnboarding =
+    profile && shouldShowV1Onboarding(profile, onboardingComplete);
+  const kin = useDesktopKin(
+    window.koedDesktop?.kin,
+    inventoryScope,
+    Boolean(profile && !showOnboarding),
+    openKinAiModels,
+    openKinConversation,
+    {
+      route,
+      // Rows count as loaded only once the latest read, including silent
+      // background refreshes, has finished.
+      rowsLoaded:
+        !snapshot?.reading &&
+        Boolean(
+          snapshot && ((inventoryReady && !snapshot.loading) || snapshot.error)
+        )
+    }
+  );
   if (!profile)
     return profileReadError ? (
       <main role="alert">
@@ -1044,7 +1135,7 @@ export function V1App({
     ) : (
       <p role="status">Loading Koed…</p>
     );
-  if (shouldShowV1Onboarding(profile, onboardingComplete))
+  if (showOnboarding)
     return (
       <V1Onboarding
         savedAgent={{
@@ -1080,7 +1171,7 @@ export function V1App({
                 ? "Recall activity"
                 : (conversationThread?.name ?? "Conversation")
           }
-          projectName={conversationProject?.name}
+          projectName={conversationCrumb}
           onSelect={setRoute}
           onHome={() => {
             setSelectedProjectId(null);
@@ -1097,6 +1188,7 @@ export function V1App({
           loading={inventoryLoading}
           servicesStarting={servicesStarting}
           inventoryReady={inventoryReady}
+          anchorInventoryReady={verifiedPhase === "full"}
           error={serviceError ?? snapshot?.error}
           onRetry={() => {
             if (serviceError || status?.api.state !== "healthy")
@@ -1104,6 +1196,10 @@ export function V1App({
             else void loadInventory();
           }}
           management={projectManagement.management}
+          kinAvatar={kin.avatar}
+          kinChips={kin.chips}
+          kinLive={kin.live}
+          kinPanel={kin.panel}
         >
           {pendingIntentError && (
             <p role="alert">
@@ -1136,8 +1232,8 @@ export function V1App({
                   projects={projects}
                   thread={conversationThread}
                   sourceProjectId={
-                    conversationProject.namedProject
-                      ? conversationProject.id
+                    conversationOrigin?.managed
+                      ? conversationOrigin.id
                       : undefined
                   }
                   revision={snapshot?.revision ?? 0}
@@ -1189,6 +1285,7 @@ export function V1App({
           ) : (
             <Home
               view={homeView}
+              showStageHost={!window.koedDesktop?.kin}
               statusError={statusError}
               clients={homeClients(status)}
               entries={homeEntries}
@@ -1213,6 +1310,7 @@ export function V1App({
           {projectManagement.overlays}
           {settingsOpen && (
             <V1Settings
+              key={settingsRevision}
               statusStore={statusStore}
               themeStore={themeStore}
               onClose={() => setSettingsOpen(false)}

@@ -364,11 +364,12 @@ function Keycaps({
           <span
             className="v1-home-keycap"
             data-client={client.id}
-            aria-hidden="true"
+            role="img"
+            aria-label={client.name}
+            title={client.name}
           >
             <AiClientLogo id={client.id} />
           </span>
-          <strong>{client.name}</strong>
           {progress.has(client.id) ? (
             <span
               className="v1-home-pill"
@@ -788,7 +789,7 @@ function ProjectsStage({
             )}
             <Pixelkin
               presentation="stage"
-              look={projectKinLook(entry.id, entry.kin)}
+              look={projectKinLook(entry.id, entry.kin, entry.kinItems)}
               size={layout.placements[rank]!.size}
               expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
               hopKey={
@@ -871,9 +872,10 @@ function SoloStage({
   keycaps,
   floorCoins,
   wide = false,
-  hopKey
+  hopKey,
+  showStageHost = true
 }: {
-  agent: { name: string; look: AgentLook };
+  agent: HomeAgent;
   expression: "neutral" | "surprised" | "happy";
   label: string;
   caption: ReactNode;
@@ -884,6 +886,7 @@ function SoloStage({
   wide?: boolean;
   // Bumped when a coin lands on the Koed Kin.
   hopKey?: number;
+  showStageHost?: boolean;
 }) {
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
@@ -914,17 +917,22 @@ function SoloStage({
         className="v1-home-host"
         data-coin-target
         style={placementStyle(layout, 0)}
-        {...hostSpin.handlers}
+        {...(showStageHost ? hostSpin.handlers : {})}
       >
-        <Pixelkin
-          presentation="stage"
-          look={agent.look}
-          size={layout.placements[0]!.size}
-          expression={expression}
-          hopKey={hopKey}
-          spin={hostSpin.spin}
-        />
-        <span className="v1-home-kin-shadow" aria-hidden="true" />
+        {showStageHost && (
+          <Pixelkin
+            presentation="stage"
+            look={agent.look}
+            gradientTop={agent.gradientTop}
+            size={layout.placements[0]!.size}
+            expression={expression}
+            hopKey={hopKey}
+            spin={hostSpin.spin}
+          />
+        )}
+        {showStageHost && (
+          <span className="v1-home-kin-shadow" aria-hidden="true" />
+        )}
       </div>
       {floorCoins && (
         <FloorCoins
@@ -1916,7 +1924,8 @@ function IngestionProgress({
   compact = false
 }: {
   ingestion: HomeIngestion;
-  // Under the Projects caption: the bar and the finished line only.
+  // Above the AI Clients on the Projects stage: the bar and the processed
+  // line only.
   compact?: boolean;
 }) {
   const [showSkipped, setShowSkipped] = useState(false);
@@ -1927,12 +1936,6 @@ function IngestionProgress({
     (sum, client) => sum + client.skipped,
     0
   );
-  const lastProgress = ingestion.clients
-    .map((client) => client.lastProgressAt)
-    .filter((value): value is string => Boolean(value))
-    .sort()
-    .at(-1);
-  const now = useNow(30_000);
   const activity = ingestion.clients.flatMap((client) =>
     client.activity ? [client.activity] : []
   );
@@ -1964,8 +1967,8 @@ function IngestionProgress({
         aria-valuenow={percent ?? undefined}
         aria-valuetext={
           total === null
-            ? `${ingestion.finished} conversations finished`
-            : `${ingestion.finished} of ${total} conversations finished`
+            ? `${ingestion.finished} found conversations processed`
+            : `${ingestion.finished} of ${total} found conversations processed`
         }
         className="v1-home-progress-track"
         data-indeterminate={percent === null || undefined}
@@ -1974,8 +1977,8 @@ function IngestionProgress({
       </div>
       <span className="v1-home-progress-label">
         {total === null
-          ? `${ingestion.finished} conversations finished`
-          : `${ingestion.finished} of ${total} conversations finished`}
+          ? `${ingestion.finished} found conversations processed`
+          : `${ingestion.finished} of ${total} found conversations processed`}
         {skipped > 0 ? (
           <>
             {" "}
@@ -2013,9 +2016,6 @@ function IngestionProgress({
             </span>
           </>
         ) : null}
-        {lastProgress
-          ? ` · Last activity ${formatHomeAgo(lastProgress, now)}`
-          : ""}
       </span>
     </div>
   );
@@ -2059,6 +2059,8 @@ function HomeWarnings({
   );
 }
 
+type HomeAgent = { name: string; look: AgentLook; gradientTop?: string };
+
 export function Home({
   view,
   clients,
@@ -2071,13 +2073,15 @@ export function Home({
   onDropConversation,
   conversations,
   conversationScope = "home",
-  statusError = null
+  statusError = null,
+  showStageHost = true
 }: {
   view: HomeView;
   statusError?: string | null;
+  showStageHost?: boolean;
   clients: readonly HomeClient[];
   entries: readonly HomeProjectEntry[];
-  agent: { name: string; look: AgentLook };
+  agent: HomeAgent;
   statusStore: DesktopStatusStore;
   onOpenProject: (projectId: string) => void;
   looseConversations?: readonly HomeLooseConversation[];
@@ -2161,16 +2165,23 @@ export function Home({
         <div className="v1-home-stage v1-home-recovery">
           <div
             className="v1-home-recovery-kin"
-            role="img"
-            aria-label={`${agent.name} looks concerned`}
+            role={showStageHost ? "img" : undefined}
+            aria-label={
+              showStageHost ? `${agent.name} looks concerned` : undefined
+            }
           >
-            <Pixelkin
-              look={agent.look}
-              size={290}
-              presentation="stage"
-              expression="sad"
-            />
-            <span className="v1-home-recovery-shadow" aria-hidden="true" />
+            {showStageHost && (
+              <Pixelkin
+                look={agent.look}
+                gradientTop={agent.gradientTop}
+                size={290}
+                presentation="stage"
+                expression="sad"
+              />
+            )}
+            {showStageHost && (
+              <span className="v1-home-recovery-shadow" aria-hidden="true" />
+            )}
           </div>
           <div className="v1-home-caption">
             <h1>{agent.name} needs a hand</h1>
@@ -2209,6 +2220,7 @@ export function Home({
           keycaps={<Keycaps clients={clients} statusStore={statusStore} />}
           expression="neutral"
           label="No Projects yet"
+          showStageHost={showStageHost}
           floorCoins={floorCoins}
           caption={
             <>
@@ -2237,38 +2249,30 @@ export function Home({
         {conversationCoins}
       </section>
     );
-  const total = entries.reduce((sum, entry) => sum + entry.eventCount, 0);
-  const offStage = entries.length - HOME_STAGE_LIMIT;
   return (
     <section className="v1-home" data-mood="projects">
       {warnings}
       <ProjectsStage
         floorCoins={floorCoins}
         keycaps={
-          <Keycaps
-            clients={clients}
-            statusStore={statusStore}
-            {...(view.ingestion ? { ingestion: view.ingestion } : {})}
-          />
+          <>
+            {/* History progress sits above the AI Clients it reads from. */}
+            {view.ingestion && (
+              <div className="v1-home-top-progress">
+                <IngestionProgress ingestion={view.ingestion} compact />
+              </div>
+            )}
+            <Keycaps
+              clients={clients}
+              statusStore={statusStore}
+              {...(view.ingestion ? { ingestion: view.ingestion } : {})}
+            />
+          </>
         }
         entries={entries}
         onOpenProject={onOpenProject}
         {...(onDropConversation ? { onDropConversation } : {})}
-        caption={
-          <>
-            <h1>Your Projects</h1>
-            <p className="v1-home-sub">
-              {entries.length === 1
-                ? "1 Project"
-                : `${entries.length} Projects`}{" "}
-              · {total.toLocaleString()} captured events
-              {offStage > 0 && ` · ${offStage} more in the sidebar`}
-            </p>
-            {view.ingestion && (
-              <IngestionProgress ingestion={view.ingestion} compact />
-            )}
-          </>
-        }
+        caption={null}
       />
       {conversationCoins}
     </section>

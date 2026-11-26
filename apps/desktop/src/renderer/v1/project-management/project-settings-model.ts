@@ -21,7 +21,6 @@ import { projectErrorMessage } from "./use-organization-review.js";
 import {
   projectKinLook,
   projectKinSettings,
-  sameAgentLook,
   type AgentLook
 } from "../pixelkin/agent-kin.js";
 
@@ -165,7 +164,11 @@ export async function loadProjectSettings(
   const draft: ProjectSettingsDraft = {
     project,
     name: project.name,
-    look: projectKinLook(project.id, project.namedProject.kin),
+    look: projectKinLook(
+      project.id,
+      project.namedProject.kin,
+      project.kinItems
+    ),
     sources,
     selectedSources: new Set(
       sources.filter((s) => s.inclusionId).map((s) => s.id)
@@ -181,6 +184,14 @@ export async function loadProjectSettings(
       titles.set(reference.sessionId, thread.name);
   }
   try {
+    // Every Conversation excluded from the Project, whether or not it syncs.
+    const excluded = await api.manageProject({
+      action: "list_exclusions",
+      projectId: project.id,
+      expectedVersion: project.namedProject.version
+    });
+    for (const sessionId of excluded.excludedSessionIds ?? [])
+      sessionIds.add(sessionId);
     draft.conversations = await inspectConversations(
       api,
       project,
@@ -306,13 +317,16 @@ export function settingsChanges(
     draft.project.id,
     draft.project.namedProject?.kin
   );
-  if (!sameAgentLook(originalLook, draft.look))
+  const kin = projectKinSettings(draft.look);
+  const appearanceChanged =
+    JSON.stringify(kin) !== JSON.stringify(projectKinSettings(originalLook));
+  if (appearanceChanged) {
     changes.push({
       action: "set_details",
       name: draft.name.trim(),
-      kin: projectKinSettings(draft.look)
+      kin
     });
-  else if (draft.name.trim() !== draft.project.name)
+  } else if (draft.name.trim() !== draft.project.name)
     changes.push({ action: "rename", name: draft.name.trim() });
   for (const source of draft.sources) {
     const selected = draft.selectedSources.has(source.id);

@@ -759,6 +759,14 @@ describe("Home", () => {
         .querySelector(".v1-home-host .v1-pixelkin")
         ?.getAttribute("data-kin-colour")
     ).toBe(oldAgent.look.palette.base);
+    const spin = vi.spyOn(KinSpin.prototype, "move");
+    const host = container.querySelector<HTMLElement>(".v1-home-host")!;
+    await act(async () => {
+      pointer(host, "pointerdown", 0);
+      pointer(host, "pointermove", 40);
+      pointer(host, "pointerup", 40);
+    });
+    expect(spin).toHaveBeenCalledWith(40, expect.any(Number));
     await render({
       entries: [entry("older", "2026-11-03T09:00:00Z")],
       agent: oldAgent
@@ -818,14 +826,16 @@ describe("Home", () => {
     expect(onOpenProject.mock.calls).toEqual([["koed"]]);
   });
 
-  it("points to the sidebar for Projects that don't fit on the stage", async () => {
+  it("shows the Projects stage without a heading or Project count", async () => {
     await render({
       entries: Array.from({ length: 10 }, (_, i) =>
         entry(`p${i}`, `2026-11-03T1${i % 10}:00:00Z`)
       )
     });
-    expect(container.textContent).toContain("10 Projects");
-    expect(container.textContent).toContain("3 more in the sidebar");
+    expect(container.textContent).not.toContain("Your Projects");
+    expect(container.textContent).not.toContain("10 Projects");
+    expect(container.textContent).not.toContain("captured events");
+    expect(container.querySelector(".v1-home-caption")?.textContent).toBe("");
   });
 
   it("puts the most recently active Project in front", async () => {
@@ -937,7 +947,7 @@ describe("Home", () => {
     );
     expect(container.querySelector(".v1-home-spinner")).not.toBeNull();
     expect(container.querySelector(".v1-pixelkin")).toBeNull();
-    expect(container.textContent).toContain("4 conversations finished");
+    expect(container.textContent).toContain("4 found conversations processed");
     expect(container.textContent).toContain(
       "Reading history · 45 records read"
     );
@@ -960,10 +970,10 @@ describe("Home", () => {
     // One line: finished already includes skipped, so there is no separate
     // completed count; the "?" help sits after the skipped part.
     expect(container.textContent).toContain(
-      "4 conversations finished · 1 skipped"
+      "4 found conversations processed · 1 skipped"
     );
     expect(container.textContent).not.toContain("completed");
-    expect(container.textContent).toContain("Last activity 1m ago");
+    expect(container.textContent).not.toContain("Last activity");
     const bar = container.querySelector('[role="progressbar"]')!;
     expect(bar.hasAttribute("aria-valuenow")).toBe(false);
     expect(bar.hasAttribute("data-indeterminate")).toBe(true);
@@ -1022,8 +1032,27 @@ describe("Home", () => {
       entries: [entry("a", "2026-11-03T11:00:00Z")],
       view: projectsView
     });
-    expect(container.textContent).toContain("Your Projects");
+    expect(container.querySelector(".v1-home-stage-top")).not.toBeNull();
     expect(container.querySelector(".v1-home-spinner")).toBeNull();
+  });
+
+  it("keeps import progress separate from the window's Chief of Staff avatar", async () => {
+    const entries = [entry("koed", "2026-11-03T11:00:00Z")];
+    for (const view of [reading(2), projectReading(2)]) {
+      await render({ entries, view, showStageHost: false });
+      expect(
+        container.querySelector('.v1-home-progress [role="progressbar"]')
+      ).not.toBeNull();
+      expect(
+        container.querySelector(".v1-home-progress .v1-pixelkin")
+      ).toBeNull();
+    }
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      showStageHost: false
+    });
+    expect(container.querySelector(".v1-home-host .v1-pixelkin")).toBeNull();
   });
 
   it("does not produce coins when only ingestion progress rises", async () => {
@@ -1371,9 +1400,17 @@ describe("Home", () => {
         ingestion: view.kind === "ingesting" ? view.ingestion : undefined
       }
     });
-    expect(container.textContent).toContain("Your Projects");
-    expect(container.textContent).toContain("3 of 10 conversations finished");
-    expect(container.querySelector('[role="progressbar"]')).not.toBeNull();
+    expect(container.textContent).toContain(
+      "3 of 10 found conversations processed"
+    );
+    // The bar sits above the AI Client keycaps.
+    const top = container.querySelector(".v1-home-stage-top")!;
+    expect(
+      top.firstElementChild?.querySelector('[role="progressbar"]')
+    ).not.toBeNull();
+    expect(
+      top.querySelector(".v1-home-top-progress + .v1-home-keycaps")
+    ).not.toBeNull();
     expect(
       [...container.querySelectorAll(".v1-home-pill")].map(
         (pill) => pill.textContent

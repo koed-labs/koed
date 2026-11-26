@@ -148,6 +148,24 @@ const sourceFolderPath = (paths: KoedServerPaths, key: SourceFolderKey) =>
       .digest("hex")}.json`
   );
 
+const writeSourceFolderRecord = (
+  target: string,
+  value: z.input<typeof sourceFolderSchema>
+) => {
+  const record = sourceFolderSchema.parse(value);
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(record)}\n`, {
+      mode: 0o600,
+      flag: "wx"
+    });
+    renameSync(temporary, target);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+  return record;
+};
+
 /** Missing source-time evidence is durable; a resume cannot fill it from today's disk. */
 export const pinSourceFolderObservation = (
   paths: KoedServerPaths,
@@ -158,16 +176,8 @@ export const pinSourceFolderObservation = (
 ): void => {
   const target = sourceFolderPath(paths, key);
   withProjectMetadataLock(target, () => {
-    const prior = existsSync(target)
-      ? sourceFolderSchema.parse(JSON.parse(readFileSync(target, "utf8")))
-      : undefined;
-    if (
-      prior &&
-      (prior.sourceKind !== key.sourceKind ||
-        prior.externalSessionId !== key.externalSessionId)
-    )
-      throw new Error("Folder source identity conflicts");
-    const record = sourceFolderSchema.parse({
+    const prior = readSourceFolderRecord(paths, key);
+    writeSourceFolderRecord(target, {
       version: 1,
       sourceKind: key.sourceKind,
       externalSessionId: key.externalSessionId,
@@ -183,16 +193,6 @@ export const pinSourceFolderObservation = (
           : null,
       latest: observation ?? null
     });
-    const temporary = `${target}.${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporary, `${JSON.stringify(record)}\n`, {
-        mode: 0o600,
-        flag: "wx"
-      });
-      renameSync(temporary, target);
-    } finally {
-      rmSync(temporary, { force: true });
-    }
   });
 };
 
@@ -212,6 +212,25 @@ const readSourceFolderRecord = (
   )
     throw new Error("Folder source identity conflicts");
   return record;
+};
+
+/** Snapshot both originals or seal them unresolved before independent registration. */
+export const readOrSealSourceFolderContext = (
+  paths: KoedServerPaths,
+  key: SourceFolderKey
+) => {
+  const target = sourceFolderPath(paths, key);
+  return withProjectMetadataLock(target, () => {
+    const prior = readSourceFolderRecord(paths, key);
+    if (prior) return prior;
+    return writeSourceFolderRecord(target, {
+      version: 1,
+      sourceKind: key.sourceKind,
+      externalSessionId: key.externalSessionId,
+      original: null,
+      originalRepository: null
+    });
+  });
 };
 
 export const readSourceFolderObservation = (

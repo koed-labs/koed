@@ -27,9 +27,14 @@ import {
 import {
   createGitProjectProbe,
   probeGitProject,
+  readGitProjectCommand,
+  readSelectedGitRemoteUrls,
   type GitProjectProbeResult
 } from "./git-project-probe.js";
-import { resolveRepositoryIdentity } from "./repository-identity.js";
+import {
+  resolveRepositoryIdentity,
+  resolveRepositoryRemote
+} from "./repository-identity.js";
 import { lookupAcceptedProjectSelection } from "./project-associated-selection.js";
 import { withProjectMetadataLock } from "./project-metadata-lock.js";
 import type { KoedServerPaths } from "./paths.js";
@@ -413,6 +418,19 @@ export const discoverProjectMetadata = async (
       checkoutId: observedCheckout!.id
     });
   }
+  const pendingSelection = resolveRepositoryRemote({
+    observation,
+    localSelection: observedCheckout?.selectedRemote,
+    associatedSelection
+  });
+  // Keep Git I/O outside the store lock. Identity resolution under the lock
+  // checks that the selected remote is still the one whose URLs were read.
+  const selectedRemoteUrls =
+    gitRoot && pendingSelection.state === "selected"
+      ? await readSelectedGitRemoteUrls(pendingSelection.remote.name, (args) =>
+          readGitProjectCommand(deps.execFile, gitRoot, args)
+        )
+      : null;
   return updateStore(paths, deps, (store): ProjectMetadataResult => {
     const checkout = store.checkouts.find(
       (entry) => entry.id === observedCheckout?.id
@@ -442,6 +460,7 @@ export const discoverProjectMetadata = async (
       checkoutId: checkout?.id ?? null,
       localSelection: checkout?.selectedRemote,
       associatedSelection,
+      selectedRemoteUrls,
       commonDirMarker: (() => {
         try {
           const stat = deps.statSync(observation.commonDir!);

@@ -1,16 +1,22 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { KIN_DEFAULTS } from "./vendor/index.js";
+import { KIN_DEFAULTS } from "@koed-labs/kin-engine";
 import { KinSpin } from "../onboarding/kin-spin.js";
 import { addPixelkin, createPixelkinActor, setPixelkinKin } from "./stage.js";
-import { kinStageSurface } from "./presentation.js";
+import { kinStageSize, kinStageSurface } from "./presentation.js";
 
-const engine = vi.hoisted(() => ({ render: vi.fn() }));
-vi.mock("./vendor/index.js", async (original) => ({
+const engine = vi.hoisted(() => ({
+  ready: Promise.resolve(),
+  render: vi.fn()
+}));
+vi.mock("@koed-labs/kin-engine", async (original) => ({
   ...(await original<object>()),
   CrowdGLRenderer: class {
     available = true;
     canvas = document.createElement("canvas");
+    get ready() {
+      return engine.ready;
+    }
     render = engine.render;
   }
 }));
@@ -22,6 +28,19 @@ afterEach(() => {
 });
 
 describe("Kin stage rendering", () => {
+  it("caps lower-resolution stages without stretching them or enlarging small stages", () => {
+    vi.stubGlobal("devicePixelRatio", 1);
+    expect(kinStageSize(320, 240, "classic")).toEqual({
+      width: 96,
+      height: 72
+    });
+    expect(kinStageSize(320, 240, "balanced")).toEqual({
+      width: 160,
+      height: 120
+    });
+    expect(kinStageSize(320, 240, "max")).toEqual({ width: 640, height: 480 });
+    expect(kinStageSize(30, 26, "classic")).toEqual({ width: 60, height: 52 });
+  });
   it.each([false, true])(
     "ignores hidden spins for painting and scheduling (reduced motion: %s)",
     (reduced) => {
@@ -173,7 +192,10 @@ describe("Kin stage rendering", () => {
     }
   );
   describe("idle rendering", () => {
-    const setup = (focused: boolean, animateUnfocused = false) => {
+    const setup = (
+      focused: boolean,
+      options?: Parameters<typeof addPixelkin>[1]
+    ) => {
       const frames: FrameRequestCallback[] = [];
       vi.stubGlobal("WebGL2RenderingContext", class {});
       vi.stubGlobal(
@@ -196,7 +218,7 @@ describe("Kin stage rendering", () => {
         drawImage: vi.fn()
       } as unknown as CanvasRenderingContext2D);
       const actor = createPixelkinActor(canvas, KIN_DEFAULTS, 64, "avatar");
-      const remove = addPixelkin(actor, { animateUnfocused });
+      const remove = addPixelkin(actor, options);
       return { frames, hasFocus, actor, remove };
     };
 
@@ -241,8 +263,34 @@ describe("Kin stage rendering", () => {
       }
     });
 
+    it("repaints a still Kin once when accessory artwork finishes loading", async () => {
+      const { frames, remove } = setup(true, { still: true });
+      let finishLoad!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        finishLoad = resolve;
+      });
+      engine.render.mockImplementationOnce(() => {
+        engine.ready = ready;
+      });
+      try {
+        frames[0]!(100);
+        expect(frames).toHaveLength(1);
+        finishLoad();
+        await ready;
+        expect(frames).toHaveLength(2);
+        frames[1]!(150);
+        await ready;
+        expect(engine.render).toHaveBeenCalledTimes(2);
+        expect(frames).toHaveLength(2);
+      } finally {
+        remove();
+      }
+    });
+
     it("keeps a visible opt-in Kin animated after blur, without painting other Kin", () => {
-      const { frames, hasFocus, actor, remove } = setup(true, true);
+      const { frames, hasFocus, actor, remove } = setup(true, {
+        animateUnfocused: true
+      });
       const removeOther = addPixelkin(
         createPixelkinActor(actor.canvas, KIN_DEFAULTS, 40)
       );

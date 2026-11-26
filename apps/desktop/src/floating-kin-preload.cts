@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { createKinSurfacePreloadApi } from "./ipc/desktop-kin-preload.js";
 import { subscribeToMainWindowFocus } from "./ipc/floating-kin-focus.js";
 import {
   floatingKinChannels as channels,
@@ -6,9 +7,12 @@ import {
 } from "./ipc/floating-kin-protocol.js";
 
 const bridge: FloatingKinBridge = {
-  activity: () => ipcRenderer.invoke(channels.activity),
-  summarize: (input) => ipcRenderer.invoke(channels.summarize, input),
-  cancel: () => ipcRenderer.invoke(channels.cancel),
+  ...createKinSurfacePreloadApi(ipcRenderer),
+  completeExit: (revision) => ipcRenderer.send(channels.completeExit, revision),
+  openDesktop: (revision) => ipcRenderer.send(channels.openDesktop, revision),
+  openAiModels: (revision) => ipcRenderer.send(channels.openAiModels, revision),
+  openConversation: (revision, sessionId) =>
+    ipcRenderer.send(channels.openConversation, revision, sessionId),
   setInteractive: (interactive) =>
     ipcRenderer.send(channels.setInteractive, interactive),
   setSize: (size) => ipcRenderer.send(channels.setSize, size),

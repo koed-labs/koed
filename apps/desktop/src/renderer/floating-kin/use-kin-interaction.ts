@@ -110,7 +110,7 @@ export function useKinInteraction(
     if (!pending.moved) {
       if (Math.hypot(x - pending.x, y - pending.y) < dragThreshold) return;
       pending.moved = true;
-      suppressClick.current = pending.handle.closest(".fk-chip");
+      suppressClick.current = pending.handle.closest("button");
       bridge.drag({ phase: "start", x: pending.x, y: pending.y });
       setDragging(true);
     }
@@ -125,10 +125,10 @@ export function useKinInteraction(
       : event.type === "lostpointercapture"
         ? document.elementFromPoint(pending.clientX, pending.clientY)
         : null;
-    // Chromium can click the captured handle even when released off the chip.
+    // Chromium can click the captured handle even when released off the button.
     if (released && !pending.moved) {
-      const chip = pending.handle.closest(".fk-chip");
-      if (chip && !chip.contains(target)) suppressClick.current = chip;
+      const button = pending.handle.closest("button");
+      if (button && !button.contains(target)) suppressClick.current = button;
     }
     finish(target);
   };

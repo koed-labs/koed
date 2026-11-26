@@ -1,5 +1,6 @@
 import {
   CrowdGLRenderer,
+  ItemRegistry,
   PixelkinPersonalities,
   kinMember,
   kinRestFrame,
@@ -7,9 +8,14 @@ import {
   setKinPose,
   type Kin,
   type KinMember
-} from "./vendor/index.js";
+} from "@koed-labs/kin-engine";
 import { KIN_SPIN_FRONT, type KinSpin } from "../onboarding/kin-spin.js";
 import { kinStageSize, kinStageSurface } from "./presentation.js";
+import type { KinResolution } from "../../../ipc/presentation-preferences-protocol.js";
+import {
+  currentKinResolution,
+  subscribeKinResolution
+} from "../../state/kin-resolution.js";
 
 // Every Pixelkin shares one WebGL2 renderer: the renderer draws each Kin in
 // turn and the result is copied into that Kin's own 2D canvas. One context per
@@ -19,12 +25,18 @@ export type PixelkinActor = {
   canvas: HTMLCanvasElement;
   size: number;
   presentation: "avatar" | "stage";
+  resolution?: KinResolution;
   visible: boolean;
   animateUnfocused?: boolean;
   still?: boolean;
   gradientTop?: string;
   hopAt: number | null;
   gaze: [number, number];
+  // A screen-chosen gaze direction that overrides following the pointer.
+  fixedGaze?: [number, number] | null;
+  // Draws the Kin smaller than its canvas (1 = the usual tight framing), so
+  // turned arms stay inside.
+  fit?: number;
   kin: Kin;
   member: KinMember;
   rest: ReturnType<typeof kinRestFrame>;
@@ -45,7 +57,9 @@ const MAX_PIXELS = 96;
 // The lab's idle-motion strength.
 const IDLE = 0.75;
 const actors = new Set<PixelkinActor>();
+const items = new ItemRegistry();
 let renderer: CrowdGLRenderer | null | undefined;
+let readyFrame: Promise<void> | undefined;
 let frame = 0;
 let previous = 0;
 let lastPaint = 0;
@@ -53,19 +67,21 @@ let clock = 0;
 let pointer: { x: number; y: number } | null = null;
 let observer: IntersectionObserver | null = null;
 let reducedMotion: MediaQueryList | null = null;
+let unsubscribeResolution: (() => void) | undefined;
 
 function engine(): CrowdGLRenderer | null {
   if (renderer !== undefined) return renderer;
   renderer = null;
   if (typeof WebGL2RenderingContext === "undefined") return null;
   try {
-    const created = new CrowdGLRenderer();
+    const created = new CrowdGLRenderer(items);
     if (!created.available) return null;
     created.canvas.addEventListener("webglcontextlost", () => {
       // Recreate on the next frame; actors keep their last painted image.
       if (renderer === created) renderer = undefined;
     });
     renderer = created;
+    readyFrame = created.ready;
   } catch {
     renderer = null;
   }
@@ -101,8 +117,23 @@ export function createPixelkinActor(
 export function setPixelkinKin(actor: PixelkinActor, kin: Kin) {
   actor.kin = kin;
   // A random phase keeps several Kin on one screen from blinking in unison.
-  actor.member = kinMember(kin, { seed: kin.seed, phase: Math.random() * 3.6 });
-  actor.rest = kinRestFrame(kin);
+  const member = kinMember(kin, { seed: kin.seed, phase: Math.random() * 3.6 });
+  actor.member = member;
+  actor.rest = kinRestFrame(kin, { items });
+  const equipped = member.items ?? [];
+  const pending = equipped.filter((id) => items.needsBundledMesh(id));
+  if (pending.length) {
+    // Keep drawing the body while meshes load. The shared canvas is reused
+    // immediately for the next Kin, so each draw needs its meshes up front.
+    member.items = equipped.filter((id) => !items.needsBundledMesh(id));
+    void Promise.allSettled(pending.map((id) => items.loadBundled(id))).then(
+      () => {
+        if (actor.member !== member) return;
+        member.items = equipped.filter((id) => !items.needsBundledMesh(id));
+        wakePixelkins();
+      }
+    );
+  }
   actor.personality ??= new PixelkinPersonalities.Controller();
   actor.personality.select(kin.face.personality);
   actor.expression = actor.personality.update(0) ?? "neutral";
@@ -151,14 +182,15 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
   if (hop >= 1) actor.hopAt = null;
   const air = hop < 0 || hop >= 1 ? 0 : hop;
   const jump = 4 * air * (1 - air);
-  const [gx, gy] = canMove ? aim(actor) : actor.gaze;
+  const [gx, gy] = actor.fixedGaze ?? (canMove ? aim(actor) : actor.gaze);
   actor.gaze[0] += (gx - actor.gaze[0]) * 0.25;
   actor.gaze[1] += (gy - actor.gaze[1]) * 0.25;
   const [lookX, lookY] = actor.gaze;
   // Breathing, sway and turn towards the pointer follow the lab's solo motion.
   const phase = t * 2.05 + actor.member.phase;
   const breathing = motion ? Math.sin(phase) * 0.025 * IDLE : 0;
-  const scale = actor.rest.visualScale;
+  const fit = actor.fit ?? 1;
+  const scale = actor.rest.visualScale * fit;
   actor.member.gradientComplement = actor.gradientTop;
   setKinPose(actor.member, {
     expression:
@@ -176,8 +208,9 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
   const device = Math.round(actor.size * ratio);
   const zoom = Math.ceil(device / MAX_PIXELS);
   const stage = actor.presentation === "stage";
+  const resolution = actor.resolution ?? currentKinResolution();
   const pixels = stage
-    ? kinStageSize(actor.size, actor.size).width
+    ? kinStageSize(actor.size, actor.size, resolution).width
     : Math.max(16, Math.round(device / zoom));
   const scene = kinScene({
     width: pixels,
@@ -188,7 +221,7 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
         member: actor.member,
         x: 0,
         y:
-          actor.rest.bodyY +
+          actor.rest.bodyY * fit +
           ((motion ? Math.sin(phase) * 0.026 * IDLE : 0) + jump * 0.22) * scale,
         z: 0,
         yaw:
@@ -211,12 +244,19 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer, canMove: boolean) {
     ]
   });
   if (stage) {
+    actor.canvas.dataset.kinResolution = resolution;
     Object.assign(scene, kinStageSurface(-1.25), {
       paletteMode: undefined,
       outlineViewport: { width: actor.size, height: actor.size }
     });
   }
   gl.render(scene);
+  // Mask artwork can complete after the first draw, including on still Kin.
+  const ready = gl.ready;
+  if (ready !== readyFrame) {
+    readyFrame = ready;
+    void ready.then(wakePixelkins, () => {});
+  }
   // Stage Kin retain every rendered pixel; small avatars use integer zoom.
   const size = stage ? pixels : pixels * zoom;
   if (actor.canvas.width !== size) {
@@ -293,6 +333,7 @@ const onWindowBlur = () => {
 };
 
 function start() {
+  unsubscribeResolution = subscribeKinResolution(wakePixelkins);
   reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
   reducedMotion?.addEventListener("change", wakePixelkins);
   observer =
@@ -312,6 +353,8 @@ function start() {
 }
 
 function stop() {
+  unsubscribeResolution?.();
+  unsubscribeResolution = undefined;
   cancelAnimationFrame(frame);
   frame = 0;
   previous = 0;

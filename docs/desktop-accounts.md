@@ -143,10 +143,10 @@ source build, set `DESKTOP_ACCOUNT_PROFILE_API_ORIGIN` to the account API
 origin. A loopback HTTP origin can serve local fixtures. For a packaged
 build, supply an HTTPS origin as `KOED_ACCOUNT_PROFILE_API_ORIGIN` at build
 time. Desktop keeps its existing sign-in mode. Electron main sends the
-WorkOS access token and returns the account fields to the account menu.
-Use that menu to set email updates for the displayed address. Desktop shows
-the saved preference after the API confirms it. Use Project settings to
-equip a Kin item that the account unlocks. If the API is unavailable, retry
+WorkOS access token and returns the profile to Desktop.
+Use the account menu to set email updates for the displayed address. Desktop shows
+the saved preference after the API confirms it. Open **Project settings → Kin → Accessories**
+to see and equip the items available to that account. If the API is unavailable, retry
 from the account menu. Free items stay available and saved Kins retain their
 appearance.
 

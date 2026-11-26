@@ -7,6 +7,7 @@ import type { DesktopProject } from "../../../project-memory-ui.js";
 import {
   inverseOrganizationEdit,
   moveConversationEdit,
+  requireSoleMembership,
   reviewConversationOrganization,
   type OrganizationReview
 } from "./conversation-organization.js";
@@ -84,6 +85,17 @@ const review = (): OrganizationReview => ({
   ]
 });
 describe("Conversation organization drafts", () => {
+  it("rejects a simple Move when the source is no longer the sole membership", () => {
+    const data = review();
+    expect(() => requireSoleMembership(data, id(1))).toThrow(
+      "Project memberships"
+    );
+    data.memberships[2]!.explanation.included = false;
+    expect(() => requireSoleMembership(data, id(1))).not.toThrow();
+    expect(() => requireSoleMembership(data, id(2))).toThrow(
+      "Project memberships"
+    );
+  });
   it("moves only the originating membership and keeps both source axes unchanged", () => {
     const before = review();
     const edit = moveConversationEdit(before, id(1), id(2))!;
@@ -180,6 +192,8 @@ describe("Conversation organization drafts", () => {
         axis: "folder",
         projects: data.memberships.map((m) => ({
           projectId: m.project.id,
+          beforeIncluded: m.explanation.included,
+          afterIncluded: m.explanation.reasons.some((r) => r.kind !== "folder"),
           afterReasons: m.explanation.reasons.filter((r) => r.kind !== "folder")
         }))
       }

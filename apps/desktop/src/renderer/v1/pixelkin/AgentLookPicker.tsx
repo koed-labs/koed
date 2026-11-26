@@ -4,7 +4,6 @@ import {
   Box,
   Check,
   Circle,
-  HatGlasses,
   Palette,
   Pipette,
   RectangleVertical,
@@ -13,7 +12,6 @@ import {
 } from "lucide-react";
 import { ProjectChoice } from "../project-management/controls.js";
 import { withAgentShape, type AgentLook } from "./agent-kin.js";
-import { availableHats } from "./account-equipment.js";
 import {
   KIN_COLOURS,
   KIN_SHAPES,
@@ -22,12 +20,12 @@ import {
   editKin,
   limitKinSaturation,
   type KinShape
-} from "./vendor/index.js";
+} from "@koed-labs/kin-engine";
 
 const shapes = {
   sphere: { label: "Sphere", Icon: Circle },
   cube: { label: "Cube", Icon: Box },
-  roundedBox: { label: "Rounded cube", Icon: SquareRoundCorner },
+  roundedBox: { label: "Rounded", Icon: SquareRoundCorner },
   capsule: { label: "Capsule", Icon: RectangleVertical }
 } satisfies Record<KinShape, { label: string; Icon: typeof Box }>;
 
@@ -38,17 +36,14 @@ const personalities = Object.entries(PixelkinPersonalities.profiles).map(
 export function AgentLookPicker({
   look,
   onChange,
-  disabled = false,
-  unlockMask = "0x0"
+  disabled = false
 }: {
   look: AgentLook;
   onChange: (look: AgentLook) => void;
   disabled?: boolean;
-  unlockMask?: string;
 }) {
   const colour = look.palette.base;
   const preset = KIN_COLOURS.find((entry) => entry.hex === colour);
-  const hats = [{ id: "none", label: "None" }, ...availableHats(unlockMask)];
   const changeColour = (value: string) =>
     onChange(editKin(clone(look), "palette.base", value));
 
@@ -135,27 +130,6 @@ export function AgentLookPicker({
               onChange(editKin(clone(look), "face.personality", value))
             }
           />
-        </div>
-      </Card>
-      <Card className="v1-kin-control">
-        <HatGlasses aria-hidden />
-        <div>
-          <CardTitle>Hat</CardTitle>
-          <div className="v1-kin-shapes" role="group" aria-label="Hat">
-            {hats.map(({ id, label }) => (
-              <Button
-                key={id}
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={disabled}
-                aria-pressed={look.face.hat === id}
-                onClick={() => onChange(editKin(clone(look), "face.hat", id))}
-              >
-                {label}
-              </Button>
-            ))}
-          </div>
         </div>
       </Card>
     </div>

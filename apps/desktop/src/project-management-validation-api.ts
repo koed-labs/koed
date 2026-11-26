@@ -441,6 +441,11 @@ export function createProjectManagementValidationApi() {
             explain(p, sessionId)
           )
         });
+      if (input.action === "list_exclusions")
+        return personalProjectCommandResultSchema.parse({
+          project: p.meta,
+          excludedSessionIds: [...p.exclusions.keys()]
+        });
       if (input.action === "explain_session")
         return personalProjectCommandResultSchema.parse({
           project: p.meta,

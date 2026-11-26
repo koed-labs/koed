@@ -13,25 +13,35 @@ const desktopVersion = assertKoedReleaseVersion(
   desktopPackage.version,
   "Desktop package.json"
 );
-const releaseVersionAsset = (): Plugin => ({
-  name: "koed-release-version",
+const desktopMetadataAssets = (): Plugin => ({
+  name: "koed-desktop-metadata",
   generateBundle() {
     this.emitFile({
       type: "asset" as const,
       fileName: "koed-release-version.json",
       source: `${JSON.stringify({ version: desktopVersion }, null, 2)}\n`
     });
+    this.emitFile({
+      type: "asset",
+      fileName: "licenses/kin-engine.txt",
+      source: readFileSync(
+        new URL("../LICENSE", import.meta.resolve("@koed-labs/kin-engine"))
+      )
+    });
   }
 });
 
 export default defineConfig(({ mode }) => ({
-  plugins: [releaseVersionAsset(), react(), tailwindcss()],
+  plugins: [desktopMetadataAssets(), react(), tailwindcss()],
   define: {
     __KOED_DESKTOP_VERSION__: JSON.stringify(desktopVersion)
   },
   base: "./",
   root: ".",
+  optimizeDeps: { exclude: ["@koed-labs/kin-engine"] },
   build: {
+    // Kin mesh requests use the app's own origin under the renderer CSP.
+    assetsInlineLimit: (file) => (file.endsWith(".glb") ? false : undefined),
     outDir:
       mode === "validation" || mode === "v1-validation"
         ? "dist-validation"

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@koed-labs/ui";
 import { Check, X } from "lucide-react";
 import type {
@@ -6,7 +6,10 @@ import type {
   PersonalConversationOrganizationResult
 } from "@koed-labs/shared";
 import type { PersonalDesktopApi } from "@koed-labs/shared/personal-desktop";
-import type { DesktopProject } from "../../../project-memory-ui.js";
+import {
+  mergeProjectSources,
+  type DesktopProject
+} from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
 import type { SidebarManagement } from "../ProjectSidebar.js";
 import type { SidebarConversation } from "../project-sidebar-model.js";
@@ -15,6 +18,7 @@ import {
   excludedMembership,
   inverseOrganizationEdit,
   moveConversationEdit,
+  requireSoleMembership,
   reviewConversationOrganization
 } from "./conversation-organization.js";
 import { CreateProjectDialog } from "./CreateProjectDialog.js";
@@ -26,13 +30,34 @@ import { MoveConversationDialog } from "./MoveConversationDialog.js";
 import { ConversationProjectsDialog } from "./ConversationProjectsDialog.js";
 import { SourceContextDialog } from "./SourceContextDialog.js";
 import {
+  checkNewUnlocks,
+  gatedAdditions
+} from "../pixelkin/account-equipment.js";
+import { applySuggestions } from "./apply-suggestion.js";
+import {
+  localProjectKinItems,
+  saveLocalProjectKinItems,
+  withLocalProjectKinItems
+} from "./project-kin-preferences.js";
+import {
+  inferredGitAnchorKey,
+  recordInferredGitAnchors
+} from "./infer-git-anchor.js";
+import { folderHintCache } from "./folder-hint-cache.js";
+import { useFolderSuggestions } from "./use-folder-suggestions.js";
+import { useSuggestionDismissals } from "./suggestion-dismissals.js";
+import {
   projectErrorMessage,
   type ConversationManagementTarget
 } from "./use-organization-review.js";
 
 type Modal =
   | { kind: "create" }
-  | { kind: "settings"; projectId: string; page?: ProjectSettingsPage }
+  | {
+      kind: "settings";
+      projectId: string;
+      page?: ProjectSettingsPage;
+    }
   | {
       kind: "move" | "membership" | "context";
       target: ConversationManagementTarget;
@@ -52,26 +77,32 @@ export function useProjectManagement({
   api,
   store,
   projects,
+  onKinItemsSaved,
   onOrganized
 }: {
   scopeKey: string | null;
   api: PersonalDesktopApi | null;
   store: PersonalMemoryStore | null;
   projects: readonly DesktopProject[];
+  onKinItemsSaved?: () => void;
   onOrganized: (
     sessionId: string,
     projects: readonly DesktopProject[],
     preferredProjectId?: string
   ) => void;
 }) {
+  const operationScope = useMemo(
+    () => ({ scopeKey, api, store }),
+    [scopeKey, api, store]
+  );
+  const scope = useRef(operationScope);
+  scope.current = operationScope;
   const [state, setState] = useState<{
-    scope: string | null;
+    scope: typeof operationScope;
     modal: Modal | null;
     notice: Notice | null;
-  }>({ scope: scopeKey, modal: null, notice: null });
+  }>({ scope: operationScope, modal: null, notice: null });
   const [busy, setBusy] = useState(false);
-  const scope = useRef(scopeKey);
-  scope.current = scopeKey;
   const alive = useRef(true);
   const locked = useRef(false);
   useEffect(() => {
@@ -80,37 +111,111 @@ export function useProjectManagement({
       alive.current = false;
     };
   }, []);
-  const current =
-    state.scope === scopeKey
-      ? state
-      : { scope: scopeKey, modal: null, notice: null };
+  const sameScope = (value: typeof state) => value.scope === operationScope;
+  const scopeIsCurrent = () =>
+    alive.current && scope.current === operationScope;
+  const current = sameScope(state) ? state : { modal: null, notice: null };
   const open = (modal: Modal | null) =>
     setState((old) => ({
-      scope: scopeKey,
+      scope: operationScope,
       modal,
-      notice: old.scope === scopeKey ? old.notice : null
+      notice: sameScope(old) ? old.notice : null
     }));
   const notice = (value: Notice | null) =>
-    setState((old) => ({ ...old, scope: scopeKey, notice: value }));
+    setState((old) => ({
+      scope: operationScope,
+      notice: value,
+      modal: sameScope(old) ? old.modal : null
+    }));
   const available =
     !!scopeKey &&
     !!api?.manageProject &&
     !!api.manageSourceContext &&
     !!api.createProject &&
     !!store;
-  const run = async (work: (check: () => void) => Promise<void>) => {
+  // Suggestions are worked out in the background, a little after start-up and
+  // a batch at a time, so the sidebar can show a count beside each Project.
+  const forgetSuggestions = () => folderHintCache.clear(api, scopeKey);
+  const worked = useFolderSuggestions(api ?? undefined, projects, available, {
+    scopeKey,
+    startDelayMs: 2500,
+    pauseMs: 300
+  });
+  // Background writes require recording-device evidence or a scoped local import.
+  // Unknown-device candidates stay in the User's Project review.
+  const inferred = useRef({
+    scope: operationScope,
+    attempted: new Set<string>()
+  });
+  useEffect(() => {
+    if (!api || !store || !scopeKey || !available || worked.loading) return;
+    if (inferred.current.scope !== operationScope)
+      inferred.current = { scope: operationScope, attempted: new Set() };
+    const { attempted } = inferred.current;
+    const fresh = new Map(
+      [...worked.hints].filter(
+        ([id, hints]) => !attempted.has(id) && hints.some(inferredGitAnchorKey)
+      )
+    );
+    if (fresh.size === 0) return;
+    for (const id of fresh.keys()) attempted.add(id);
+    const check = () => {
+      if (!scopeIsCurrent())
+        throw new Error("The active account or backend changed.");
+    };
+    void recordInferredGitAnchors(api, projects, fresh, scopeKey, check)
+      .then(async ({ recorded }) => {
+        if (recorded.length === 0) return;
+        check();
+        await store.loadProjects({ silent: true });
+        if (alive.current) forgetSuggestions();
+      })
+      .catch(() => {});
+    // `worked.hints` changes only when a batch lands.
+  }, [operationScope, available, worked.loading, worked.hints]);
+  // Suggestions the User turned down stay out of the list and the counts.
+  const { isDismissed, dismiss } = useSuggestionDismissals(scopeKey);
+  // Nor is a Conversation suggested for a Project it is already in (added
+  // directly, say): only the Projects it is not yet in stay on the row.
+  const members = useMemo(() => {
+    const byProject = new Map<string, Set<string>>();
+    for (const project of projects) {
+      byProject.set(
+        project.id,
+        new Set(
+          project.threads.flatMap((t) => (t.sessionId ? [t.sessionId] : []))
+        )
+      );
+    }
+    return byProject;
+  }, [projects]);
+  const shown = useMemo(
+    () =>
+      worked.rows.flatMap((row) => {
+        const open = row.proposal.projects.filter(
+          ({ id }) =>
+            !isDismissed(id, row) && !members.get(id)?.has(row.sessionId)
+        );
+        if (open.length === row.proposal.projects.length) return [row];
+        return open.length > 0
+          ? [{ ...row, proposal: { ...row.proposal, projects: open } }]
+          : [];
+      }),
+    [worked.rows, isDismissed, members]
+  );
+  const suggestions = { ...worked, rows: shown };
+  const run = async <T,>(work: (check: () => void) => Promise<T>) => {
     if (!available || locked.current)
       throw new Error("Project management is busy or unavailable.");
-    const expectedScope = scopeKey;
     const check = () => {
-      if (!alive.current || scope.current !== expectedScope)
+      if (!scopeIsCurrent())
         throw new Error("The active account or backend changed.");
     };
     check();
     locked.current = true;
     setBusy(true);
     try {
-      await work(check);
+      return await work(check);
     } finally {
       locked.current = false;
       if (alive.current) setBusy(false);
@@ -128,9 +233,44 @@ export function useProjectManagement({
       throw new Error(
         `Saved, but the sidebar could not refresh. ${snapshot.error}`
       );
-    const next = [...snapshot.projectsById.values()];
-    if (sessionId) onOrganized(sessionId, next, preferredProjectId);
-    return next;
+    if (sessionId)
+      onOrganized(
+        sessionId,
+        [...snapshot.projectsById.values()],
+        preferredProjectId
+      );
+  };
+  const readLatestProjectInventory = async (check: () => void) => {
+    check();
+    const { localCheckouts } = store!.current().inventory;
+    // A concurrent store refresh can supersede ours and leave its published
+    // snapshot behind. Review versions from a direct post-write inventory read.
+    const [latest, local] = await Promise.all([
+      api!.listProjects(),
+      api!.listProjectMetadata?.().catch(() => localCheckouts) ?? localCheckouts
+    ]);
+    check();
+    return withLocalProjectKinItems(
+      mergeProjectSources(latest, local),
+      scopeKey!
+    );
+  };
+  const reviewMove = async (
+    check: () => void,
+    sessionId: string,
+    sourceId: string
+  ) => {
+    const latest = await readLatestProjectInventory(check);
+    const review = await reviewConversationOrganization(
+      api!,
+      latest,
+      sessionId,
+      undefined,
+      scopeKey!
+    );
+    check();
+    requireSoleMembership(review, sourceId);
+    return review;
   };
   const perform = async (
     check: () => void,
@@ -143,6 +283,7 @@ export function useProjectManagement({
     const result = await api!.manageSourceContext!({
       action: "organize",
       sessionId: target.sessionId,
+      expectedScopeKey: scopeKey!,
       edit
     });
     check();
@@ -151,6 +292,7 @@ export function useProjectManagement({
         "The saved organization result is missing. Refresh before trying again."
       );
     open(null);
+    forgetSuggestions();
     notice({ message, undo: result.organization });
     try {
       await refresh(check, target.sessionId, preferredProjectId);
@@ -197,15 +339,14 @@ export function useProjectManagement({
     };
     let moved = false;
     return run(async (check) => {
-      const review = await reviewConversationOrganization(
-        api!,
-        projects,
-        target.sessionId,
-        [
-          ...(target.sourceProjectId ? [target.sourceProjectId] : []),
-          destinationId
-        ]
-      );
+      const review = target.sourceProjectId
+        ? await reviewMove(check, target.sessionId, target.sourceProjectId)
+        : await reviewConversationOrganization(
+            api!,
+            projects,
+            target.sessionId,
+            [destinationId]
+          );
       check();
       const destination = review.memberships.find(
         (m) => m.project.id === destinationId
@@ -233,7 +374,7 @@ export function useProjectManagement({
     })
       .then(() => moved)
       .catch((cause) => {
-        if (scope.current === scopeKey)
+        if (scopeIsCurrent())
           notice({
             message: "Could not move Conversation",
             error: projectErrorMessage(cause)
@@ -267,9 +408,15 @@ export function useProjectManagement({
             edit: PersonalConversationOrganizationInput,
             preferredProjectId?: string
           ) =>
-            run((check) =>
-              perform(check, modal.target, edit, preferredProjectId)
-            )
+            run(async (check) => {
+              if (modal.kind === "move" && modal.target.sourceProjectId)
+                await reviewMove(
+                  check,
+                  modal.target.sessionId,
+                  modal.target.sourceProjectId
+                );
+              await perform(check, modal.target, edit, preferredProjectId);
+            })
         }
       : null;
   const undo = async () => {
@@ -299,7 +446,7 @@ export function useProjectManagement({
         }
       });
     } catch (cause) {
-      if (scope.current === scopeKey)
+      if (scopeIsCurrent())
         notice({ ...current.notice!, error: projectErrorMessage(cause) });
     }
   };
@@ -345,27 +492,138 @@ export function useProjectManagement({
           projects={projects}
           projectId={modal.projectId}
           page={modal.page}
-          onClose={() => open(null)}
-          onSave={(project, changes) =>
+          suggestions={suggestions}
+          onClose={() => {
+            if (scopeIsCurrent()) open(null);
+          }}
+          onRefresh={() => run(readLatestProjectInventory)}
+          onSave={(project, changes, accepted, rejected, kinItems) =>
             run(async (check) => {
               check();
-              await api!.manageProject!({
-                action: "apply_sources",
-                projectId: project.id,
-                expectedVersion: project.namedProject!.version,
-                changes
-              });
+              const reviewedVersion = project.namedProject!.version;
+              // An older account build stored the hat with the synced appearance.
+              // Preserve that outfit locally before an appearance edit replaces it.
+              const legacyHat = project.namedProject?.kin?.hat;
+              if (
+                legacyHat &&
+                changes.some((change) => change.action === "set_details") &&
+                !localProjectKinItems(scopeKey!, project.id)
+              )
+                saveLocalProjectKinItems(scopeKey!, project.id, [legacyHat]);
+              const saved =
+                changes.length > 0
+                  ? await api!.manageProject!({
+                      action: "apply_sources",
+                      projectId: project.id,
+                      expectedVersion: reviewedVersion,
+                      ...(rejected.length > 0
+                        ? { expectedScopeKey: scopeKey! }
+                        : {}),
+                      changes
+                    })
+                  : undefined;
               check();
-              open(null);
-              notice({ message: "Project settings saved" });
-              try {
-                await refresh(check);
-              } catch (cause) {
+              if (saved && saved.project.projectId !== project.id)
+                throw new Error("Save response belongs to another Project.");
+              if (kinItems !== undefined) {
+                // A grant or the on-device outfit can change while other edits are saving.
+                const previous =
+                  localProjectKinItems(scopeKey!, project.id) ??
+                  (legacyHat ? [legacyHat] : []);
+                const added = gatedAdditions(kinItems, previous);
+                if (added.length) {
+                  try {
+                    await checkNewUnlocks(added, window.koedDesktop?.account);
+                  } catch (cause) {
+                    if (!saved) throw cause;
+                    await refresh(check).catch(() => {});
+                    throw new Error(
+                      "Project changes saved. Check your account before saving accessories.",
+                      { cause }
+                    );
+                  }
+                  check();
+                }
+                try {
+                  saveLocalProjectKinItems(
+                    scopeKey!,
+                    project.id,
+                    kinItems,
+                    legacyHat
+                  );
+                } catch (cause) {
+                  if (saved) await refresh(check).catch(() => {});
+                  throw new Error(
+                    saved
+                      ? "Project changes saved, but accessories could not be saved on this device."
+                      : "Accessories could not be saved on this device.",
+                    { cause }
+                  );
+                }
+                onKinItemsSaved?.();
+              }
+              if (kinItems !== undefined && !saved && accepted.length === 0) {
+                notice({ message: "Project settings saved" });
+                return withLocalProjectKinItems(projects, scopeKey!);
+              }
+              // Excluded now, so no longer suggested here or in the sidebar.
+              if (rejected.length > 0) dismiss(project.id, rejected);
+              const status: Notice = { message: "Project settings saved" };
+              if (accepted.length > 0) {
+                try {
+                  const latest = mergeProjectSources(
+                    await api!.listProjects(),
+                    []
+                  );
+                  check();
+                  // Only this Save may advance the reviewed destination version.
+                  const destination = latest.find(
+                    (entry) => entry.id === project.id
+                  );
+                  if (
+                    destination?.namedProject?.version !==
+                    (saved?.project.version ?? reviewedVersion)
+                  )
+                    throw new Error(
+                      "The destination Project changed. Review the suggestions again."
+                    );
+                  const added = await applySuggestions(
+                    api!,
+                    latest,
+                    accepted,
+                    project.id,
+                    scopeKey!,
+                    check
+                  );
+                  check();
+                  if (added.failed.length > 0) {
+                    status.message += `. ${added.done} of ${accepted.length} suggested conversations added.`;
+                    status.error = added.failed.join("\n");
+                  } else {
+                    status.message += `. Added ${added.done} ${added.done === 1 ? "conversation" : "conversations"}.`;
+                  }
+                } catch (cause) {
+                  check();
+                  status.message += ". No suggested conversations added.";
+                  status.error = projectErrorMessage(cause);
+                }
+                forgetSuggestions();
+              }
+              notice(status);
+              let saveError = status.error;
+              const reportRefreshError = (cause: unknown) => {
                 check();
-                notice({
-                  message: "Project settings saved",
-                  error: projectErrorMessage(cause)
-                });
+                saveError = [saveError, projectErrorMessage(cause)]
+                  .filter(Boolean)
+                  .join("\n");
+                notice({ ...status, error: saveError });
+              };
+              await refresh(check).catch(reportRefreshError);
+              try {
+                return await readLatestProjectInventory(check);
+              } catch (cause) {
+                reportRefreshError(cause);
+                return null;
               }
             })
           }
@@ -411,6 +669,7 @@ export function useProjectManagement({
           key={`${scopeKey}:${modal.target.sessionId}:context`}
           {...dialogProps}
           axis={modal.axis}
+          scopeKey={scopeKey}
         />
       )}
       {current.notice && (

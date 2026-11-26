@@ -31,6 +31,87 @@ export interface GitProjectProbeDeps {
   ttlMs?: number;
 }
 
+export const parseGitProjectRemotes = (output: string | null) => {
+  let ambiguous = false;
+  const remotes = new Map<string, NormalizedGitRemote>();
+  for (const line of output?.split("\n") ?? []) {
+    const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
+    if (!match) {
+      ambiguous = true;
+      continue;
+    }
+    const [, name, url] = match;
+    remotes.set(`${name}\n${url}`, normalizeGitRemoteUrl(url!, name!));
+  }
+  return {
+    ambiguous,
+    remotes: [...remotes.values()].sort((a, b) =>
+      `${a.name}:${a.fingerprint}`.localeCompare(`${b.name}:${b.fingerprint}`)
+    )
+  };
+};
+
+export const readSelectedGitRemoteUrls = async (
+  name: string,
+  read: (args: string[]) => Promise<string | null>
+) => {
+  // `remote -v` can omit fetch URLs when a push URL is configured.
+  const [fetch, push] = await Promise.all([
+    read(["remote", "get-url", "--all", "--", name]),
+    read(["remote", "get-url", "--push", "--all", "--", name])
+  ]);
+  return { name, fetch, push };
+};
+
+const runGitProjectCommand = (
+  execute: typeof execFile,
+  cwd: string,
+  args: string[]
+) =>
+  new Promise<{ value: string | null; failed: boolean; nonGit: boolean }>(
+    (done) => {
+      const finish = (
+        error: Error | null,
+        stdout: unknown,
+        stderr?: unknown
+      ) => {
+        done({
+          value: error ? null : String(stdout).trim() || null,
+          failed: Boolean(error),
+          nonGit:
+            Boolean(error) &&
+            /not a git repository/i.test(
+              typeof stderr === "string" ? stderr : ""
+            )
+        });
+      };
+      try {
+        execute(
+          "git",
+          ["-C", cwd, ...args],
+          {
+            timeout: 5_000,
+            maxBuffer: 1024 * 1024,
+            killSignal: "SIGKILL",
+            encoding: "utf8"
+          },
+          finish
+        );
+      } catch (error) {
+        finish(
+          error instanceof Error ? error : new Error("Git execution failed"),
+          ""
+        );
+      }
+    }
+  );
+
+export const readGitProjectCommand = async (
+  execute: typeof execFile,
+  cwd: string,
+  args: string[]
+) => (await runGitProjectCommand(execute, cwd, args)).value;
+
 // The probe observes Git only. The caller owns persisted configuration and salt.
 export const createGitProjectProbe = (deps: GitProjectProbeDeps = {}) => {
   const execute = deps.execFile ?? execFile;
@@ -65,44 +146,7 @@ export const createGitProjectProbe = (deps: GitProjectProbeDeps = {}) => {
       })
     );
   const command = (cwd: string, args: string[]) =>
-    new Promise<{
-      value: string | null;
-      failed: boolean;
-      nonGit: boolean;
-    }>((done) => {
-      const finish = (
-        error: Error | null,
-        stdout: unknown,
-        stderr?: unknown
-      ) => {
-        done({
-          value: error ? null : String(stdout).trim() || null,
-          failed: Boolean(error),
-          nonGit:
-            Boolean(error) &&
-            /not a git repository/i.test(
-              typeof stderr === "string" ? stderr : ""
-            )
-        });
-      };
-      try {
-        execute(
-          "git",
-          ["-C", cwd, ...args],
-          {
-            timeout: 5_000,
-            maxBuffer: 1024 * 1024,
-            encoding: "utf8"
-          },
-          finish
-        );
-      } catch (error) {
-        finish(
-          error instanceof Error ? error : new Error("Git execution failed"),
-          ""
-        );
-      }
-    });
+    runGitProjectCommand(execute, cwd, args);
   return async (
     input: GitProjectProbeInput
   ): Promise<GitProjectProbeResult> => {
@@ -151,20 +195,12 @@ export const createGitProjectProbe = (deps: GitProjectProbeDeps = {}) => {
       }
       return observation.value;
     };
-    const rawRemotes = await read(["remote", "-v"]);
-    const remotes = new Map<string, NormalizedGitRemote>();
-    for (const line of rawRemotes?.split("\n") ?? []) {
-      const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
-      if (!match) {
-        if (result.failedCommands.length === 0) result.status = "ambiguous";
-        continue;
-      }
-      const [, name, url] = match;
-      remotes.set(`${name}\n${url}`, normalizeGitRemoteUrl(url!, name!));
-    }
-    result.remotes = [...remotes.values()].sort((a, b) =>
-      `${a.name}:${a.fingerprint}`.localeCompare(`${b.name}:${b.fingerprint}`)
+    const { ambiguous, remotes } = parseGitProjectRemotes(
+      await read(["remote", "-v"])
     );
+    if (ambiguous && result.failedCommands.length === 0)
+      result.status = "ambiguous";
+    result.remotes = remotes;
     result.branch = await read(["branch", "--show-current"]);
     result.headCommit = await read(["rev-parse", "HEAD"]);
     const commonDir = await read(["rev-parse", "--git-common-dir"]);

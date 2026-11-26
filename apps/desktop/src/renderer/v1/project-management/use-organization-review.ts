@@ -26,12 +26,10 @@ export type OrganizationDialogProps = {
 export const projectErrorMessage = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
 
-export function useOrganizationReview({
-  api,
-  projects,
-  target,
-  onApply
-}: OrganizationDialogProps) {
+export function useOrganizationReview(
+  { api, projects, target, onApply }: OrganizationDialogProps,
+  expectedScopeKey?: string
+) {
   const [review, setReview] = useState<OrganizationReview>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -40,7 +38,13 @@ export function useOrganizationReview({
   const [initialProjects] = useState(projects);
   useEffect(() => {
     let current = true;
-    void reviewConversationOrganization(api, initialProjects, target.sessionId)
+    void reviewConversationOrganization(
+      api,
+      initialProjects,
+      target.sessionId,
+      undefined,
+      expectedScopeKey
+    )
       .then((value) => {
         if (current) setReview(value);
       })
@@ -50,7 +54,7 @@ export function useOrganizationReview({
     return () => {
       current = false;
     };
-  }, [api, initialProjects, target.sessionId]);
+  }, [api, initialProjects, target.sessionId, expectedScopeKey]);
   const apply = async (
     edit: PersonalConversationOrganizationInput,
     preferredProjectId?: string

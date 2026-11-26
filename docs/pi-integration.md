@@ -156,6 +156,17 @@ authorization, and task lifecycle behavior.
 
 Local AI Runtime supervises Pi Transcript Watcher. Persistent Pi JSONL session file is Conversation source of truth. Extension writes content-free wake signal containing session ID, session path, cwd, event name, and observation time.
 
+On `session_start`, the extension asks the Local AI Runtime to record the Folder.
+Only explicit `new` and `fork` events can pin it and the directory's selected Git
+remote as the Conversation's original Folder and Git Anchor. Generic `startup`
+can mean a launch or a reopen, even when the session has no messages. Like
+`resume` and `reload`, it records the latest Folder without pinning originals.
+Pi can publish a fork with copied history before the extension records its context.
+If eligible live or exact historical registration reaches the source first, it
+atomically seals both originals as unresolved and continues. A late observation
+still updates the latest Folder. See
+[Exact Folder capture and selection](personal-selection-contract.md#exact-folder-capture-and-selection).
+
 Watcher:
 
 - discovers default `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions` and `PI_CODING_AGENT_SESSION_DIR`;
@@ -174,6 +185,21 @@ Watcher:
 - performs periodic filesystem recovery, so extension signals are latency hints rather than correctness path.
 
 Pi `--no-session` sessions have no source artifact and cannot be captured automatically. Extension reports warning instead of healthy capture.
+
+### Floating Kin status
+
+On Pi versions that emit `agent_start` and `agent_settled`, the Koed extension
+reports a **Working** signal to the authenticated Local AI Runtime on loopback.
+It renews the signal every five seconds during work and clears it on settlement
+or session shutdown. If Pi exits unexpectedly, the last signal expires after
+15 seconds. Koed shows the badge only on an existing recent Personal
+Conversation chip while Pi is connected and its Capture Policy allows it. No
+badge is not an idle signal. Run Pi setup again and restart Pi to load an
+updated Koed extension.
+
+The signal contains only a session identifier, a publisher identifier, and
+lifecycle timing and state. It is not persisted or sent to a remote backend.
+This does not change the Transcript Watcher, Projection, or response streaming.
 
 ### Projection
 
@@ -279,12 +305,9 @@ Removal runs `pi remove $KOED_HOME/integrations/pi` and verifies that the active
 
 ### Repository assignments
 
-The Pi Transcript Watcher reads the Session header's checkout and applies the
-shared selected-anchor resolver when registering a new Captured Session. A
-repository root, its subdirectories, and worktrees with the same selected remote
-share a portable Project fingerprint. Non-Git checkouts retain device-local
-Project identity; unavailable metadata records an unresolved observation. The
-watcher's own cwd does not supply the Project.
+On first eligible live registration, the Pi Transcript Watcher uses the pinned
+original context or seals it as unresolved, just as exact historical registration
+does. The watcher's own working directory never supplies source context.
 
 Registration and Projection use the existing shared assignment contract.
 Duplicate, delayed, and conflicting observations cannot replace an assignment or
@@ -296,18 +319,12 @@ same effective assignment used by recall.
 
 ### Historical Project assignment
 
-Pi historical Session headers currently provide no supported source-time Git
-anchor. Fresh historical capture uses a valid absolute cwd from the verified
-Session header to discover its current Git Project. The normal anchor selection
-rules apply, and subdirectories resolve to the Git root. Missing or invalid
-recorded context stays unresolved. The importing process's cwd never supplies
-this identity, and a current branch is not attributed to historical activity.
-
-Missing folders and folders without usable Git metadata fall back to a local
-folder Project. Git selection conflicts remain unresolved. A local folder group
-claims no current checkout incarnation. Re-import,
-resumed capture, and later checkpoints preserve existing assignments, overrides,
-and the migration's unresolved history.
+Pi historical Session headers record a working directory, not a source-time Git
+Anchor or exact Folder. On first exact historical registration, Koed uses the
+original context already pinned for that Conversation or seals it as unresolved.
+It does not infer it from today's checkout. Re-import and continued capture
+preserve existing assignments and User corrections. See
+[Source-Time Attribution](source-time-attribution.md).
 
 ### Memory Answer worker tools and validation
 

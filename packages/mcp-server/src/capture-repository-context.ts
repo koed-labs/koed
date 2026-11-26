@@ -4,9 +4,11 @@ import {
   readSourceFolderObservation,
   readCurrentSourceFolderObservation,
   pinSourceFolderObservation,
+  readOrSealSourceFolderContext,
   resolveKoedServerPaths
 } from "@koed-labs/server";
 import type { RepositoryIdentity } from "@koed-labs/shared";
+import { unresolvedHistoricalRepositoryIdentity } from "./historical-repository-context.js";
 
 export const resolveCaptureFolderObservation = async (input: {
   cwd: string;
@@ -42,6 +44,22 @@ export const currentCaptureFolderObservation = (input: {
   env: NodeJS.ProcessEnv;
 }) =>
   readCurrentSourceFolderObservation(resolveKoedServerPaths(input.env), input);
+
+export const piCaptureRegistrationContext = (
+  externalSessionId: string,
+  env: NodeJS.ProcessEnv
+) => {
+  const context = readOrSealSourceFolderContext(resolveKoedServerPaths(env), {
+    sourceKind: "pi",
+    externalSessionId
+  });
+  return {
+    folderObservation: context.original ?? undefined,
+    currentFolderObservation: context.latest ?? undefined,
+    repositoryIdentity:
+      context.originalRepository ?? unresolvedHistoricalRepositoryIdentity()
+  };
+};
 
 /** Resolve an explicit capture target; never substitute the caller's cwd. */
 export const resolveCaptureRepositoryIdentity = async (input: {

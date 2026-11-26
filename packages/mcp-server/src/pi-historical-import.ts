@@ -1,8 +1,4 @@
-import { resolveHistoricalCaptureRepositoryIdentity } from "./historical-repository-context.js";
-import {
-  recordedCaptureFolderObservation,
-  currentCaptureFolderObservation
-} from "./capture-repository-context.js";
+import { piCaptureRegistrationContext } from "./capture-repository-context.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 
@@ -167,29 +163,18 @@ export const registerPiHistoricalTranscriptSource = async (
     );
   } catch (error) {
     if (!(error instanceof MemoryApiError) || error.status !== 404) throw error;
+    const liveStartLine =
+      options.frontierLine !== undefined && options.frontierLine >= 0
+        ? options.frontierLine
+        : await countTranscriptLines(target, boundary);
     artifact = artifactFrom(
       await client.ensureConversationSourceArtifact({
         sourceSession: {
           externalSessionId: identity.id,
-          folderObservation: recordedCaptureFolderObservation({
-            sourceKind: "pi",
-            externalSessionId: identity.id,
-            env
-          }),
-          currentFolderObservation: currentCaptureFolderObservation({
-            sourceKind: "pi",
-            externalSessionId: identity.id,
-            env
-          }),
+          ...piCaptureRegistrationContext(identity.id, env),
           sourceRuntime: "pi",
           captureMethod: "api",
           cwd: identity.cwd,
-          repositoryIdentity: await resolveHistoricalCaptureRepositoryIdentity({
-            sourceTime: null,
-            source: { sourceKind: "pi", externalSessionId: identity.id },
-            cwd: identity.cwd,
-            env
-          }),
           idempotencyKey: `pi-session:${identity.id}`,
           sourceHash: hash({ provider: "pi", sessionId: identity.id }),
           metadata: {
@@ -210,10 +195,7 @@ export const registerPiHistoricalTranscriptSource = async (
         journalStartOffset: 0,
         journalStartLine: 0,
         liveStartOffset: boundary,
-        liveStartLine:
-          options.frontierLine !== undefined && options.frontierLine >= 0
-            ? options.frontierLine
-            : await countTranscriptLines(target, boundary),
+        liveStartLine,
         currentSourceLength: file.size,
         sourceCreatedAt: file.birthtime.toISOString(),
         sourceModifiedAt: file.mtime.toISOString(),

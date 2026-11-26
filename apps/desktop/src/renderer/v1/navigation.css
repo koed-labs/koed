@@ -200,11 +200,33 @@
   font-size: 10px;
   opacity: 0.65;
 }
+/* Projects and Anchors each scroll on their own. */
 .v1-nav-scroll {
   gap: 0;
+  overflow: hidden;
+  padding: 10px 10px 0;
+}
+/* Projects and Anchors size to their rows and shrink to share the space. */
+.v1-nav-scroll .v1-nav-projects,
+.v1-nav-scroll .v1-nav-anchors {
+  flex: 0 1 auto;
+  /* Shrinking stops at the heading, so a section never clips its title. */
+  min-height: 32px;
   overflow-x: hidden;
-  padding: 10px 10px 28px;
-  scrollbar-gutter: stable;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.v1-nav-scroll .v1-nav-anchors:last-child,
+.v1-nav-scroll .v1-nav-projects:last-child {
+  padding-bottom: 28px;
+}
+/* Each section heading and its actions stay put while its rows scroll. */
+.v1-nav-scroll .v1-nav-section-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--v1-rail);
 }
 .v1-nav-scroll [data-slot="sidebar-group"] {
   padding: 0;
@@ -244,20 +266,48 @@
   background: var(--v1-surface);
   color: var(--v1-fg);
 }
-.v1-nav-scroll .v1-nav-pinned {
-  padding-bottom: 15px;
-  margin-bottom: 10px;
-  border-bottom: 1px solid var(--v1-hairline);
+.v1-nav-heading > .v1-nav-heading-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: auto;
+  height: 100%;
+  margin-left: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.v1-nav-heading > .v1-nav-heading-toggle:hover {
+  background: none;
+  color: inherit;
+}
+.v1-nav-section-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--v1-fg);
+}
+.v1-nav-pin-mark {
+  /* Base styles make icons blocks; the mark sits inline before the title. */
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  color: var(--v1-faint);
 }
 .v1-nav-projects [data-slot="sidebar-menu"] {
   gap: 0;
 }
 .v1-nav-project {
   text-align: left;
-  height: 38px;
+  height: 40px;
   border-radius: 9px;
   gap: 7px;
-  padding: 0 8px;
+  /* Room on the right for actions beside the row. */
+  padding: 0 36px 0 8px;
   font-size: 12px;
   font-weight: 500;
 }
@@ -321,10 +371,10 @@
   text-align: left;
   width: 100%;
   height: auto;
-  min-height: 40px;
+  min-height: 36px;
   border-radius: 9px;
   gap: 7px;
-  padding: 9px 8px;
+  padding: 6px 8px;
   font-size: 12px;
   translate: none;
 }
@@ -377,13 +427,8 @@
   fill: currentColor;
   stroke: none;
 }
-.v1-nav-client-mark.codex {
-  color: #87baa9;
-}
-.v1-nav-client-mark.claude {
-  color: #bd8b69;
-}
-.v1-nav-client-mark.pi {
+/* Monochrome, like the row badges; colour is kept for the Home keycaps. */
+.v1-nav-client-mark:is(.codex, .claude, .pi) {
   color: var(--v1-fg2);
 }
 .v1-nav-pin {
@@ -444,4 +489,20 @@
   .v1-navigation [data-slot="sidebar-gap"] {
     transition: none;
   }
+}
+.v1-nav-scroll .v1-nav-anchors {
+  margin-top: 10px;
+  border-top: 1px solid var(--v1-hairline);
+  /* Its heading carries 10px of space above it. */
+  min-height: 43px;
+}
+/* The space above the heading is part of the opaque sticky heading, so rows
+   scrolling past never show above it. */
+.v1-nav-anchors .v1-nav-section-heading {
+  box-sizing: content-box;
+  padding-top: 10px;
+}
+/* The same open Conversation in the other list: a quiet echo of the selection. */
+.v1-nav-conversation[data-also-open] {
+  color: var(--v1-accent-text);
 }

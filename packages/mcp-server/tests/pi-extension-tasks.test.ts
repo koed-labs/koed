@@ -1,4 +1,5 @@
 import {
+  existsSync,
   readFileSync,
   mkdirSync,
   mkdtempSync,
@@ -42,6 +43,16 @@ type Tool = {
   }>;
 };
 
+type LifecycleContext = {
+  cwd: string;
+  sessionManager: {
+    getSessionFile: () => string | undefined;
+    getSessionId: () => string;
+  };
+  ui: { notify: () => void };
+};
+type Handler = (event: { reason?: string }, ctx: LifecycleContext) => unknown;
+
 const setup = async () => {
   const home = mkdtempSync(join(tmpdir(), "koed-pi-tasks-"));
   roots.push(home);
@@ -80,13 +91,14 @@ const setup = async () => {
   )) as {
     default: (pi: {
       registerTool: (tool: Tool & { name: string }) => unknown;
-      on: unknown;
+      on: (name: string, handler: Handler) => unknown;
     }) => void;
   };
   const tools = new Map<string, Tool>();
+  const handlers = new Map<string, Handler>();
   extension.default({
     registerTool: (tool: Tool & { name: string }) => tools.set(tool.name, tool),
-    on: vi.fn()
+    on: (name, handler) => handlers.set(name, handler)
   });
   const invoke = (
     name: string,
@@ -99,8 +111,200 @@ const setup = async () => {
       cwd,
       sessionManager: { getSessionId: () => session }
     });
-  return { invoke, tools };
+  return { invoke, tools, handlers, home };
 };
+
+const livenessSetup = async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-02T03:04:05Z"));
+  const { handlers, home } = await setup();
+  let sessionId = "session-a";
+  let sessionFile: string | undefined = join(home, "private-transcript.jsonl");
+  const ctx = {
+    cwd: "/private/project",
+    sessionManager: {
+      getSessionFile: () => sessionFile,
+      getSessionId: () => sessionId
+    },
+    ui: { notify: vi.fn() }
+  };
+  const fetchMock = vi.fn(async (url: URL, init: RequestInit) => {
+    void url;
+    void init;
+    return Response.json({ ok: true });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const livenessCalls = () =>
+    fetchMock.mock.calls.filter(
+      ([url]) => url.pathname === "/v1/capture/pi-liveness"
+    );
+  return {
+    emit: (name: string) => handlers.get(name)?.({}, ctx),
+    setSession: (id: string, file: string | undefined) => {
+      sessionId = id;
+      sessionFile = file;
+    },
+    handlers,
+    wakePath: join(home, "run", "pi-transcript-watcher.wake"),
+    fetchMock,
+    livenessCalls,
+    payloads: (): Array<Record<string, unknown>> =>
+      livenessCalls().map(
+        ([, init]) => JSON.parse(String(init.body)) as Record<string, unknown>
+      )
+  };
+};
+
+describe("Pi metadata-only liveness", () => {
+  it("sends exact metadata on start and renews every five seconds without waking transcript capture", async () => {
+    const { emit, handlers, livenessCalls, payloads, wakePath } =
+      await livenessSetup();
+    const startedAt = Date.now();
+    expect(emit("agent_start")).toBeUndefined();
+    emit("agent_start");
+    expect(handlers.has("agent_end")).toBe(false);
+    expect(existsSync(wakePath)).toBe(false);
+    await expect.poll(() => livenessCalls().length).toBe(1);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(livenessCalls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect.poll(() => livenessCalls().length).toBe(2);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect.poll(() => livenessCalls().length).toBe(3);
+    const publisherId = payloads()[0]?.publisherId;
+    expect(publisherId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(payloads()).toEqual(
+      [0, 5_000, 10_000].map((offset, index) => ({
+        externalSessionId: "session-a",
+        publisherId,
+        sequence: index + 1,
+        observedAt: startedAt + offset,
+        working: true
+      }))
+    );
+    expect(livenessCalls()[0]?.[1]).toMatchObject({
+      method: "POST",
+      headers: { authorization: `Bearer ${"a".repeat(32)}` }
+    });
+    expect(existsSync(wakePath)).toBe(false);
+  });
+
+  it("aborts an in-flight start on quick settlement and preserves the transcript wake", async () => {
+    const { emit, fetchMock, livenessCalls, payloads, wakePath } =
+      await livenessSetup();
+    fetchMock.mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(Response.json({ ok: true })), 100);
+        })
+    );
+    emit("agent_start");
+    await expect.poll(() => livenessCalls().length).toBe(1);
+    emit("agent_settled");
+    expect(livenessCalls()[0]?.[1].signal?.aborted).toBe(true);
+    expect(existsSync(wakePath)).toBe(true);
+    await expect.poll(() => livenessCalls().length).toBe(2);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(payloads()).toMatchObject([
+      { sequence: 1, working: true },
+      { sequence: 2, working: false }
+    ]);
+  });
+
+  it("does not send a working update if Pi settles before registration is read", async () => {
+    const { emit, livenessCalls, payloads, wakePath } = await livenessSetup();
+    emit("agent_start");
+    emit("agent_settled");
+    expect(existsSync(wakePath)).toBe(true);
+    await expect.poll(() => livenessCalls().length).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(payloads()).toMatchObject([{ sequence: 2, working: false }]);
+  });
+
+  it("does not publish for ephemeral sessions or overlong session IDs", async () => {
+    const { emit, setSession, payloads, wakePath } = await livenessSetup();
+    setSession("session-a", undefined);
+    emit("agent_start");
+    emit("agent_settled");
+    expect(existsSync(wakePath)).toBe(false);
+    setSession("a".repeat(1025), "/private/transcript.jsonl");
+    emit("agent_start");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(payloads()).toEqual([]);
+  });
+
+  it.each(["session_start", "session_tree", "session_shutdown"])(
+    "clears the lease and stops renewals on %s",
+    async (event) => {
+      const { emit, fetchMock, livenessCalls, payloads } =
+        await livenessSetup();
+      fetchMock.mockImplementation(async (url, init) =>
+        url.pathname === "/v1/capture/pi-liveness"
+          ? new Promise((_resolve, reject) => {
+              init.signal?.addEventListener(
+                "abort",
+                () => reject(init.signal?.reason),
+                { once: true }
+              );
+            })
+          : Response.json({ ok: true })
+      );
+      emit("agent_start");
+      await expect.poll(() => livenessCalls().length).toBe(1);
+      await emit(event);
+      expect(livenessCalls()[0]?.[1].signal?.aborted).toBe(true);
+      await expect.poll(() => livenessCalls().length).toBe(2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(payloads()).toMatchObject([
+        { sequence: 1, working: true },
+        { sequence: 2, working: false }
+      ]);
+    }
+  );
+
+  it("drops the old heartbeat when the current session changes", async () => {
+    const { emit, setSession, payloads, livenessCalls } = await livenessSetup();
+    emit("agent_start");
+    await expect.poll(() => livenessCalls().length).toBe(1);
+    setSession("session-b", "/private/other-transcript.jsonl");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect.poll(() => livenessCalls().length).toBe(2);
+    emit("agent_start");
+    await expect.poll(() => livenessCalls().length).toBe(3);
+    expect(payloads()).toMatchObject([
+      { externalSessionId: "session-a", sequence: 1, working: true },
+      { externalSessionId: "session-a", sequence: 2, working: false },
+      { externalSessionId: "session-b", sequence: 3, working: true }
+    ]);
+  });
+
+  it("times out stalled sends and retries only at the next heartbeat", async () => {
+    const { emit, fetchMock, livenessCalls, payloads } = await livenessSetup();
+    fetchMock.mockImplementationOnce(
+      async (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => reject(init.signal?.reason),
+            { once: true }
+          );
+        })
+    );
+    emit("agent_start");
+    await expect.poll(() => livenessCalls().length).toBe(1);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(livenessCalls()).toHaveLength(1);
+    expect(livenessCalls()[0]?.[1].signal?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect.poll(() => livenessCalls().length).toBe(2);
+    expect(payloads()).toMatchObject([
+      { sequence: 1, working: true },
+      { sequence: 2, working: true }
+    ]);
+  });
+});
 
 describe("Pi explicit Memory Answer tasks", () => {
   it.each(["blocking", "non_blocking"])(

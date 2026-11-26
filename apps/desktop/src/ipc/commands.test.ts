@@ -19,6 +19,7 @@ import {
 } from "./commands.js";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { accelerationChannel } from "./acceleration-protocol.js";
+import { defaultPresentationPreferences } from "./presentation-preferences-protocol.js";
 import {
   presentationPreferencesGetChannel,
   presentationPreferencesSetChannel,
@@ -160,11 +161,14 @@ describe("desktop IPC command registry", () => {
         return { preference, resolvedDark: preference === "dark" };
       }
     );
-    const getPresentationPreferences = vi.fn(() => ({
-      graphicsAcceleration: true,
-      showMenuBar: true
-    }));
-    const setPresentationPreferences = vi.fn((value) => value);
+    let presentation = { ...defaultPresentationPreferences };
+    const getPresentationPreferences = vi.fn(() => presentation);
+    const setPresentationPreferences = vi.fn(
+      (value: Partial<typeof presentation>) => {
+        presentation = { ...presentation, ...value };
+        return presentation;
+      }
+    );
     let hardwareAccelerationEnabled = true;
     const performance = {
       inspect: vi.fn(async () => ({ snapshot: null, operation: null })),
@@ -308,13 +312,14 @@ describe("desktop IPC command registry", () => {
     const { registered, setHardwareAcceleration } = register();
     const get = registered.get(presentationPreferencesGetChannel)!;
     const set = registered.get(presentationPreferencesSetChannel)!;
-    expect(await get(renderer())).toEqual({
-      graphicsAcceleration: true,
-      showMenuBar: true
-    });
+    expect(await get(renderer())).toEqual(defaultPresentationPreferences);
     expect(
       await set(renderer(), { graphicsAcceleration: false, showMenuBar: false })
-    ).toEqual({ graphicsAcceleration: false, showMenuBar: false });
+    ).toEqual({
+      ...defaultPresentationPreferences,
+      graphicsAcceleration: false,
+      showMenuBar: false
+    });
     expect(
       await set(renderer(), {
         graphicsAcceleration: false,
@@ -324,8 +329,26 @@ describe("desktop IPC command registry", () => {
     ).toEqual({
       graphicsAcceleration: false,
       showMenuBar: true,
-      floatingKin: true
+      floatingKin: true,
+      kinResolution: "max"
     });
+    expect(await set(renderer(), { kinResolution: "classic" })).toEqual({
+      graphicsAcceleration: false,
+      showMenuBar: true,
+      floatingKin: true,
+      kinResolution: "classic"
+    });
+    expect(await set(renderer(), { showMenuBar: false })).toMatchObject({
+      showMenuBar: false,
+      kinResolution: "classic"
+    });
+    for (const patch of [
+      {},
+      { kinResolution: 96 },
+      { kinResolution: "ultra" },
+      { showMenuBar: true, kinResolution: undefined }
+    ])
+      expect(() => set(renderer(), patch)).toThrow("Invalid");
     expect(() =>
       set(renderer(), {
         graphicsAcceleration: false,

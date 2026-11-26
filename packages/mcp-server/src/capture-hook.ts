@@ -150,6 +150,14 @@ export const signalCaptureHook = (
   });
 };
 
+/** Copied Claude Code history cannot distinguish a fork from a resume. */
+const captureHookStartsConversation = (
+  metadata: CaptureHookMetadata
+): boolean =>
+  metadata.hookEventName === "SessionStart" &&
+  (metadata.sessionStartSource === "startup" ||
+    metadata.sessionStartSource === "clear");
+
 export const recordCaptureHookFolder = async (
   environment: NodeJS.ProcessEnv,
   metadata: CaptureHookMetadata,
@@ -165,9 +173,7 @@ export const recordCaptureHookFolder = async (
     const observation = metadata.cwd
       ? await observeCaptureFolder(paths, metadata.cwd, environment)
       : undefined;
-    const newConversation =
-      metadata.hookEventName === "SessionStart" &&
-      metadata.sessionStartSource === "startup";
+    const newConversation = captureHookStartsConversation(metadata);
     const repository =
       newConversation && metadata.cwd
         ? await resolveCaptureRepositoryIdentity({

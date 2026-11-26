@@ -1,7 +1,9 @@
 import type {
   FloatingKinActivity,
   FloatingKinEvidence,
-  FloatingKinEvidenceRequest
+  FloatingKinEvidenceRequest,
+  FloatingKinPreview,
+  FloatingKinPreviewRequest
 } from "@koed-labs/shared";
 import type { RecallActivityRepository } from "./recall-activity-repository.js";
 import type { MemoryModelFlowKey } from "@koed-labs/shared/ai-client-flow-defaults";
@@ -13,6 +15,7 @@ import type { PersonalProjectDefaultRepository } from "./personal-project-defaul
 import type { PersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
 import type { PersonalConfigurationRepository } from "./personal-configuration-repository.js";
 import type { PersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
+import type { PersonalFolderHintEvidenceRepository } from "./personal-folder-hint-evidence-repository.js";
 import type { PersonalConversationOrganizationRepository } from "./personal-conversation-organization-repository.js";
 import type { PersonalProjectExclusionRepository } from "./personal-project-exclusion-repository.js";
 import type { PersonalMembershipRepository } from "./personal-membership-repository.js";
@@ -2007,6 +2010,7 @@ export interface MemorySourceRepository
     PersonalProjectBatchRepository,
     PersonalProjectExclusionRepository,
     PersonalSourceCorrectionRepository,
+    PersonalFolderHintEvidenceRepository,
     PersonalConversationOrganizationRepository,
     CollaborationRepository,
     CollaborationRealtimeMaterializationRepository,
@@ -2035,6 +2039,10 @@ export interface MemorySourceRepository
     TeamConversationSourceRepository,
     WorkflowTokenUsageRepository {
   getFloatingKinActivity(actor: ActorContext): Promise<FloatingKinActivity>;
+  getFloatingKinPreview(
+    actor: ActorContext,
+    input: FloatingKinPreviewRequest
+  ): Promise<FloatingKinPreview>;
   getFloatingKinEvidence(
     actor: ActorContext,
     input: FloatingKinEvidenceRequest

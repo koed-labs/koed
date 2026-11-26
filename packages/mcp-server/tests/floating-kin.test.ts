@@ -7,6 +7,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  floatingKinActivitySchema,
+  floatingKinEvidenceRequestSchema,
+  floatingKinPreviewRequestSchema,
+  floatingKinSummarySchema
+} from "@koed-labs/shared";
+import {
+  grantAiClientConnection,
+  revokeAiClientConnection
+} from "@koed-labs/shared/ai-client-connections";
 import { afterEach, expect, it, vi } from "vitest";
 import * as runner from "../src/ai-client-runner.js";
 import { localAiClientInstanceConfigIdentity } from "../src/ai-client-instance-registry.js";
@@ -114,7 +124,9 @@ async function fixture({
   action = "conversation",
   provider = "pi",
   localChange = "none",
-  legacyAuthUnavailable = false
+  legacyAuthUnavailable = false,
+  piConnected = false,
+  maxActiveAnswers = "1"
 } = {}) {
   const home = realpathSync(
     mkdtempSync(join(tmpdir(), "koed-floating-kin-test-"))
@@ -176,13 +188,23 @@ async function fixture({
             ]
     })
   );
+  if (piConnected) grantAiClientConnection(home, "pi", 0);
   const fetchLocal = globalThis.fetch;
+  let piCaptureState = "enabled";
   const projectId = "fixture-project";
-  let evidenceReads = 0;
+  let owner = "owner";
+  let reopenedItems: typeof items | undefined;
+  const preview = {
+    title: "Captured title",
+    projectName: null,
+    request: { text: "Captured request", occurredAt: source.occurredAt },
+    reply: null
+  };
+  let evidenceForbidden = false;
   const upstream = vi
     .spyOn(globalThis, "fetch")
     .mockImplementation(async (url, options) => {
-      const { pathname } = new URL(String(url));
+      const { pathname, searchParams } = new URL(String(url));
       expect(new Headers(options?.headers).get("authorization")).toBe(
         "Bearer runtime-owner"
       );
@@ -196,6 +218,42 @@ async function fixture({
         expect(options.redirect).toBe("error");
         return Response.json(activity);
       }
+      if (
+        pathname === "/v1/memory/floating-kin/preview" &&
+        options?.method === "POST"
+      ) {
+        expect(
+          new Headers(options.headers).get("x-koed-local-runtime-authorization")
+        ).toBe(readLocalRuntimeRegistration({ KOED_HOME: home }).authorization);
+        expect(options.redirect).toBe("error");
+        const body = floatingKinPreviewRequestSchema.parse(
+          JSON.parse(String(options.body))
+        );
+        return Response.json(body.sessionId === sessionId ? preview : null);
+      }
+      if (pathname === "/v1/conversation-source-artifacts/lookup") {
+        expect(searchParams.get("source_kind")).toBe("pi");
+        const id = searchParams.get("external_session_id");
+        return id === "native-pi-id"
+          ? Response.json({ artifact: { sessionId } })
+          : Response.json({}, { status: 404 });
+      }
+      if (pathname === "/v1/capture-policy/effective") {
+        expect(searchParams.get("sessionId")).toBe(sessionId);
+        return Response.json({
+          policy: {
+            captureState: piCaptureState,
+            visibility: "personal",
+            paused: false
+          }
+        });
+      }
+      if (pathname === "/v1/access/check")
+        return Response.json({
+          ok: true,
+          auth: "bearer_api_token",
+          user: { id: owner }
+        });
       if (pathname === "/v1/memory/local-agent-settings")
         return Response.json({
           settings: assigned
@@ -212,8 +270,11 @@ async function fixture({
           new Headers(options.headers).get("x-koed-local-runtime-authorization")
         ).toBe(readLocalRuntimeRegistration({ KOED_HOME: home }).authorization);
         expect(options.redirect).toBe("error");
-        const revalidating = ++evidenceReads > 1;
-        expect(JSON.parse(String(options.body))).toEqual({
+        const body = floatingKinEvidenceRequestSchema.parse(
+          JSON.parse(String(options.body))
+        );
+        const revalidating = body.evidenceIds !== undefined;
+        expect(body).toEqual({
           sessionId,
           action,
           ...(action === "project" ? { projectId } : {}),
@@ -228,12 +289,13 @@ async function fixture({
               }
             : {})
         });
+        if (evidenceForbidden) return Response.json({}, { status: 403 });
         return Response.json({
           items:
             empty || (revalidating && revoke)
               ? []
               : revalidating
-                ? (revisedItems ?? items)
+                ? (reopenedItems ?? revisedItems ?? items)
                 : items,
           truncated: false
         });
@@ -252,7 +314,7 @@ async function fixture({
     KOED_PI_EXECUTABLE: executablePath,
     PI_CODING_AGENT_DIR: otherConfigHome,
     CLAUDE_CONFIG_DIR: otherConfigHome,
-    KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS: "1",
+    KOED_LOCAL_AI_RUNTIME_MAX_ACTIVE_ANSWERS: maxActiveAnswers,
     KOED_LOCAL_AI_RUNTIME_MAX_QUEUED_ANSWERS: "1"
   };
   const runtime = await startLocalAiRuntime({
@@ -277,6 +339,25 @@ async function fixture({
     projectId,
     executablePath,
     configHome,
+    setPiCaptureState: (state: string) => {
+      piCaptureState = state;
+    },
+    disconnectPi: () => revokeAiClientConnection(home, "pi"),
+    signalPi: (body: unknown, auth = authorization) =>
+      fetchLocal(`${runtime.url}/v1/capture/pi-liveness`, {
+        method: "POST",
+        headers: { authorization: auth, "content-type": "application/json" },
+        body: JSON.stringify(body)
+      }),
+    setOwner: (id: string) => {
+      owner = id;
+    },
+    setReopenedItems: (next: typeof items) => {
+      reopenedItems = next;
+    },
+    forbidEvidence: () => {
+      evidenceForbidden = true;
+    },
     request: (
       route: string,
       body?: unknown,
@@ -306,6 +387,95 @@ it("protects activity and forwards it with the runtime owner's API Token", async
 it("does not read activity or forward its credential to a remote API", async () => {
   const { request, upstream } = await fixture({ remote: true });
   expect((await request("activity")).status).toBe(503);
+  expect(upstream).not.toHaveBeenCalled();
+});
+
+const piSignal = {
+  externalSessionId: "native-pi-id",
+  publisherId: "03eb10bc-ecce-4a4d-a241-42268600db56",
+  sequence: 1,
+  working: true
+};
+
+it("shows only a fresh Pi lifecycle lease on eligible capture and rechecks policy", async () => {
+  const { request, signalPi, setPiCaptureState, disconnectPi } = await fixture({
+    piConnected: true
+  });
+  const observedAt = Date.now();
+  const working = { ...piSignal, observedAt };
+  const readActivity = async () =>
+    floatingKinActivitySchema.parse(await (await request("activity")).json());
+  expect((await signalPi(working, "Bearer wrong")).status).toBe(401);
+  expect(
+    (await signalPi({ ...working, transcriptPath: "/private" })).status
+  ).toBe(400);
+  expect(await readActivity()).toEqual(activity);
+  expect((await signalPi(working)).status).toBe(200);
+  expect(await readActivity()).toEqual({
+    ...activity,
+    conversations: [
+      {
+        ...activity.conversations[0],
+        workingUntil: new Date(observedAt + 15_000).toISOString()
+      }
+    ]
+  });
+  setPiCaptureState("ask");
+  expect(await readActivity()).toEqual(activity);
+  setPiCaptureState("enabled");
+  await signalPi({ ...working, sequence: 2, working: false });
+  await signalPi(working);
+  expect(await readActivity()).toEqual(activity);
+  await signalPi({ ...working, sequence: 3, observedAt: observedAt - 16_000 });
+  expect(await readActivity()).toEqual(activity);
+  await signalPi({ ...working, sequence: 4, externalSessionId: "unknown" });
+  expect(await readActivity()).toEqual(activity);
+  await signalPi({ ...working, sequence: 5 });
+  disconnectPi();
+  expect(await readActivity()).toEqual(activity);
+});
+
+it("does not forward Pi lifecycle metadata to a remote API", async () => {
+  const { signalPi, upstream } = await fixture({
+    remote: true,
+    piConnected: true
+  });
+  expect((await signalPi({ ...piSignal, observedAt: Date.now() })).status).toBe(
+    200
+  );
+  expect(upstream).not.toHaveBeenCalled();
+});
+
+it("reads a captured preview without invoking an AI Client", async () => {
+  const { request, upstream, run } = await fixture({ assigned: false });
+  const body = { sessionId };
+  expect((await request("preview", body, "Bearer wrong")).status).toBe(401);
+  expect((await request("preview", { ...body, prompt: "bad" })).status).toBe(
+    400
+  );
+  expect(upstream).not.toHaveBeenCalled();
+  const result = await request("preview", body);
+  expect(result.status).toBe(200);
+  expect(result.headers.get("cache-control")).toBe("no-store");
+  expect(await result.json()).toEqual({
+    title: "Captured title",
+    projectName: null,
+    request: { text: "Captured request", occurredAt: source.occurredAt },
+    reply: null
+  });
+  expect(
+    await (
+      await request("preview", {
+        sessionId: "84b394db-9ca0-4510-a623-d33637f059db"
+      })
+    ).json()
+  ).toBeNull();
+  expect(run).not.toHaveBeenCalled();
+});
+
+it("does not forward a captured preview to a remote API", async () => {
+  const { request, upstream } = await fixture({ remote: true });
+  expect((await request("preview", { sessionId })).status).toBe(503);
   expect(upstream).not.toHaveBeenCalled();
 });
 
@@ -423,6 +593,178 @@ it("never forwards the runtime registration bearer to a remote backend", async (
     status: "unavailable"
   });
   expect(upstream).not.toHaveBeenCalled();
+});
+
+const target = { sessionId, projectId: null };
+
+it("authenticates and strictly validates both history requests", async () => {
+  const { request, upstream } = await fixture();
+  for (const route of ["summary/latest", "summary/open"]) {
+    expect((await request(route, target, "Bearer wrong")).status).toBe(401);
+    expect((await request(route, { sessionId })).status).toBe(400);
+    expect(
+      (await request(route, { ...target, action: "conversation" })).status
+    ).toBe(400);
+  }
+  expect(upstream).not.toHaveBeenCalled();
+});
+
+it("returns only latest action metadata and reopens a successful answer without synthesis", async () => {
+  const { request, run } = await fixture();
+  expect(await (await request("summary/latest", target)).json()).toEqual({
+    action: null
+  });
+  expect(await (await request("summary/open", target)).json()).toBeNull();
+  const result = floatingKinSummarySchema.parse(
+    await (await request("summary", input)).json()
+  );
+  expect(result).toMatchObject({ status: "answered" });
+  expect(await (await request("summary/latest", target)).json()).toEqual({
+    action: "conversation"
+  });
+  expect(await (await request("summary/open", target)).json()).toEqual({
+    action: "conversation",
+    result
+  });
+  expect(run).toHaveBeenCalledOnce();
+});
+
+it("invalidates history when an uncited admitted item changes", async () => {
+  const uncited = { ...item, id: sessionId, text: "uncited" };
+  const { request, run, setReopenedItems } = await fixture({
+    items: [item, uncited]
+  });
+  expect(await (await request("summary", input)).json()).toMatchObject({
+    status: "answered"
+  });
+  setReopenedItems([item, { ...uncited, text: "changed" }]);
+  expect(await (await request("summary/open", target)).json()).toBeNull();
+  expect(await (await request("summary/latest", target)).json()).toEqual({
+    action: null
+  });
+  expect(run).toHaveBeenCalledOnce();
+});
+
+it("does not reopen history after evidence access is revoked", async () => {
+  const { request, forbidEvidence } = await fixture();
+  expect(await (await request("summary", input)).json()).toMatchObject({
+    status: "answered"
+  });
+  forbidEvidence();
+  expect(await (await request("summary/latest", target)).json()).toEqual({
+    action: null
+  });
+  expect(await (await request("summary/open", target)).json()).toBeNull();
+});
+
+it("does not share history between owners or selected Conversations", async () => {
+  const { request, setOwner } = await fixture();
+  expect(await (await request("summary", input)).json()).toMatchObject({
+    status: "answered"
+  });
+  expect(
+    await (
+      await request("summary/open", { ...target, sessionId: source.id })
+    ).json()
+  ).toBeNull();
+  setOwner("another-owner");
+  expect(await (await request("summary/latest", target)).json()).toEqual({
+    action: null
+  });
+  expect(await (await request("summary/open", target)).json()).toBeNull();
+});
+
+it("expires cached summaries even when read before expiry", async () => {
+  const { request } = await fixture();
+  const start = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+  expect(await (await request("summary", input)).json()).toMatchObject({
+    status: "answered"
+  });
+  clock.mockReturnValue(start + 29 * 60_000);
+  expect(await (await request("summary/open", target)).json()).toMatchObject({
+    action: "conversation"
+  });
+  clock.mockReturnValue(start + 30 * 60_000);
+  expect(await (await request("summary/open", target)).json()).toBeNull();
+});
+
+it("keeps the later answer when same-session synthesis completes out of order", async () => {
+  const { request, run } = await fixture({ maxActiveAnswers: "2" });
+  let finishFirst!: () => void;
+  let started!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  run.mockImplementationOnce(async () => {
+    await new Promise<void>((resolve) => {
+      finishFirst = resolve;
+      started();
+    });
+    return {
+      text: JSON.stringify({ ...generated, captured: "Older" }),
+      model: "effective-model"
+    };
+  });
+  const first = request("summary", input);
+  await firstStarted;
+  try {
+    expect(await (await request("summary", input)).json()).toMatchObject({
+      status: "answered",
+      captured: "Captured fact"
+    });
+  } finally {
+    finishFirst();
+    await first;
+  }
+  expect(await (await request("summary/open", target)).json()).toMatchObject({
+    result: { captured: "Captured fact" }
+  });
+});
+
+it("binds a Project answer to the exact requested Project and asks for three high-value bullets", async () => {
+  const { request, run, projectId } = await fixture({
+    action: "project",
+    items: [{ ...item, kind: "memory_event" }]
+  });
+  const result = floatingKinSummarySchema.parse(
+    await (
+      await request("summary", { sessionId, action: "project", projectId })
+    ).json()
+  );
+  expect(result).toMatchObject({ status: "answered" });
+  expect(run.mock.calls[0]?.[0]).toMatch(/Project.*3 high-value bullets/i);
+  for (const mismatched of [null, "other-project"]) {
+    expect(
+      await (
+        await request("summary/latest", { sessionId, projectId: mismatched })
+      ).json()
+    ).toEqual({ action: null });
+    expect(
+      await (
+        await request("summary/open", { sessionId, projectId: mismatched })
+      ).json()
+    ).toBeNull();
+  }
+  expect(
+    await (await request("summary/open", { sessionId, projectId })).json()
+  ).toEqual({ action: "project", result });
+  expect(run).toHaveBeenCalledOnce();
+});
+
+it("asks for Conversation status in short bullet lines and rejects oversized generated text", async () => {
+  const { request, run } = await fixture();
+  run.mockResolvedValueOnce({
+    text: JSON.stringify({ ...generated, captured: "x".repeat(3000) }),
+    model: "effective-model"
+  });
+  expect(await (await request("summary", input)).json()).toEqual({
+    status: "unavailable"
+  });
+  expect(run.mock.calls[0]?.[0]).toMatch(
+    /Conversation.*current task.*status.*blockers.*next action/i
+  );
+  expect(run.mock.calls[0]?.[1].systemPrompt).toMatch(/short.*bullet lines/i);
 });
 
 it("uses the newest cited item for freshness", async () => {

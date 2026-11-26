@@ -1921,6 +1921,7 @@ export type {
 export * from "./personal-project-contract.js";
 
 export * from "./personal-source-correction-contract.js";
+export * from "./personal-folder-hint-contract.js";
 
 export * from "./personal-source-context-transport.js";
 
@@ -2041,4 +2042,5 @@ export { transferredSelectionSharingScopeSchema } from "./selection-sharing-jour
 export * from "./recall-activity.js";
 
 export * from "./account-contract.js";
+export * from "./conversation-title.js";
 export * from "./floating-kin.js";

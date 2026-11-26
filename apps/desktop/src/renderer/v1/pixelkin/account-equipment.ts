@@ -1,6 +1,11 @@
-import type { AccountState } from "@koed-labs/shared/account";
-import catalog from "./kin-catalog.json" with { type: "json" };
-import { PixelkinAccessories } from "./vendor/index.js";
+import type {
+  AccountDesktopApi,
+  AccountState
+} from "@koed-labs/shared/account";
+import { isItemUnlocked, PixelkinAccessories } from "@koed-labs/kin-engine";
+
+// Only interpret server bits using the catalog agreed with the account API.
+const catalogVersion = "1.1.0";
 
 export function accountUnlockMask(state?: AccountState | null): string {
   if (
@@ -8,36 +13,30 @@ export function accountUnlockMask(state?: AccountState | null): string {
     state.stale ||
     state.details?.status !== "ready" ||
     state.profile?.id !== state.details.value.userId ||
-    state.details.value.kin.catalogVersion !== catalog.version
+    state.details.value.kin.catalogVersion !== catalogVersion
   )
     return "0x0";
   return state.details.value.kin.unlockMask;
 }
 
-const hats = catalog.items.filter((item) =>
-  PixelkinAccessories.getHat(item.id)
-);
-
-function isItemUnlocked(item: { unlockBit?: number }, mask: string) {
-  if (item.unlockBit === undefined) return true;
-  return (
-    /^0x[0-9a-f]+$/i.test(mask) &&
-    ((BigInt(mask) >> BigInt(item.unlockBit)) & 1n) === 1n
+export function gatedAdditions(
+  items: readonly string[],
+  saved: readonly string[]
+) {
+  return PixelkinAccessories.filter(
+    (item) =>
+      item.unlockBit !== undefined &&
+      items.includes(item.id) &&
+      !saved.includes(item.id)
   );
 }
 
-export function availableHats(mask: string) {
-  return hats.filter((item) => isItemUnlocked(item, mask));
-}
-
-export function canEquipHat(hat: string, mask: string) {
-  return hat === "none" || availableHats(mask).some((item) => item.id === hat);
-}
-
-export function unlockedItemLabels(mask: string) {
-  return catalog.items
-    .filter(
-      (item) => item.unlockBit !== undefined && isItemUnlocked(item, mask)
-    )
-    .map((item) => item.label);
+export async function checkNewUnlocks(
+  added: ReturnType<typeof gatedAdditions>,
+  account: AccountDesktopApi | undefined
+) {
+  if (!added.length) return;
+  const mask = accountUnlockMask(await account?.getState());
+  if (added.some((item) => !isItemUnlocked(item, mask)))
+    throw new Error("Remove unavailable accessories before saving.");
 }

@@ -1,13 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import { request } from "node:http";
+import {
+  ensureDeviceIdentity,
+  resolveKoedServerPaths,
+  readSourceFolderObservation,
+  readSourceRepositoryIdentity
+} from "@koed-labs/server";
 import { normalizeGitRemoteUrl } from "@koed-labs/shared";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { MemoryApiClient, MemoryApiError } from "../src/index.js";
-import { processPiTranscriptSignal } from "../src/pi-transcript-watcher.js";
+import {
+  processPiTranscriptSignal,
+  startPiTranscriptWatcher
+} from "../src/pi-transcript-watcher.js";
+import { startLocalAiRuntime } from "../src/local-runtime-server.js";
+import { readLocalRuntimeRegistration } from "../src/local-runtime-protocol.js";
 import { resolveCaptureFolderObservation } from "../src/capture-repository-context.js";
 
 const temporaryDirectories: string[] = [];
@@ -41,10 +53,11 @@ describe("Pi transcript watcher", () => {
     { checkout: "worktree-two", futureOnly: false },
     { checkout: "non-git", futureOnly: false },
     { checkout: "unavailable", futureOnly: false },
-    { checkout: "root", futureOnly: true }
+    { checkout: "root", futureOnly: true },
+    { checkout: "root", futureOnly: false, pendingFork: true }
   ])(
-    "preserves shared assignments and durable replay from $checkout (future only: $futureOnly)",
-    async ({ checkout, futureOnly }) => {
+    "preserves shared assignments and durable replay (%j)",
+    async ({ checkout, futureOnly, pendingFork }) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-pi-watch-"));
       temporaryDirectories.push(root);
       const sessions = path.join(root, "sessions");
@@ -88,7 +101,10 @@ describe("Pi transcript watcher", () => {
         type: "session",
         version: 3,
         id: sourceSessionId,
-        cwd
+        cwd,
+        ...(pendingFork
+          ? { parentSession: path.join(sessions, "parent.jsonl") }
+          : {})
       });
       fs.writeFileSync(
         transcriptPath,
@@ -241,7 +257,9 @@ describe("Pi transcript watcher", () => {
         }
       } as unknown as MemoryApiClient;
       const env = {
+        NODE_ENV: "test",
         KOED_HOME: path.join(root, "koed"),
+        PI_CODING_AGENT_DIR: path.join(root, "pi"),
         PI_CODING_AGENT_SESSION_DIR: sessions,
         MEMORY_PI_TRANSCRIPT_MAX_BYTES_PER_BATCH: "1024",
         KOED_HEADLESS_FUTURE_CAPTURE_ONLY: futureOnly ? "1" : "0"
@@ -254,6 +272,83 @@ describe("Pi transcript watcher", () => {
           : {}
       };
       const signal = { sourceSessionId, transcriptPath, cwd };
+      const paths = resolveKoedServerPaths(env);
+      await ensureDeviceIdentity(paths, { environment: env });
+      if (pendingFork) {
+        const stateFile = path.join(
+          env.KOED_HOME,
+          "state",
+          "pi-transcript-watcher.json"
+        );
+        fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        fs.writeFileSync(stateFile, JSON.stringify(state));
+        const runtime = await startLocalAiRuntime({
+          environment: env,
+          serviceFactory: async () => ({
+            executor: {
+              capabilities: async () => ({
+                curatedMemoryIntakeAvailable: false
+              }),
+              execute: async () => ({})
+            },
+            close: async () => undefined
+          })
+        });
+        const post = request(`${runtime.url}/v1/capture/folder-context`, {
+          method: "POST",
+          headers: {
+            authorization: readLocalRuntimeRegistration(env).authorization
+          }
+        });
+        const response = new Promise<number | undefined>((resolve, reject) => {
+          post.once("error", reject);
+          post.once("response", (reply) => {
+            reply.resume();
+            resolve(reply.statusCode);
+          });
+        });
+        post.flushHeaders(); // Hold the POST body until the published fork is discovered.
+        const watcher = startPiTranscriptWatcher(client, env);
+        try {
+          await watcher.scanNow(); // No explicit wake signal from the extension.
+          await watcher.stop(); // Prevent background scans from racing the explicit replay.
+          expect(registrations).toHaveLength(1);
+          expect(registrations[0]).toMatchObject({
+            sourceSession: { repositoryIdentity: { kind: "unresolved" } }
+          });
+          expect(createdExternalItemIds).toContain("user-1:0");
+          post.end(
+            JSON.stringify({
+              sourceKind: "pi",
+              externalSessionId: sourceSessionId,
+              cwd,
+              newConversation: true
+            })
+          );
+          expect(await response).toBe(200);
+          await processPiTranscriptSignal(client, state, signal, env);
+          expect(registrations).toHaveLength(2);
+          expect(registrations[1]).toMatchObject({
+            sourceSession: {
+              folderObservation: undefined,
+              currentFolderObservation: { normalizedPath: cwd },
+              repositoryIdentity: { kind: "unresolved" }
+            }
+          });
+          const key = {
+            sourceKind: "pi" as const,
+            externalSessionId: sourceSessionId
+          };
+          expect(readSourceFolderObservation(paths, key)).toBeUndefined();
+          expect(readSourceRepositoryIdentity(paths, key)).toBeUndefined();
+        } finally {
+          post.destroy();
+          await response.catch(() => undefined);
+          await watcher.stop();
+          await runtime.close();
+        }
+        return;
+      }
 
       await resolveCaptureFolderObservation({
         sourceKind: "pi",
@@ -263,6 +358,13 @@ describe("Pi transcript watcher", () => {
         newConversation: true
       });
 
+      if (checkout === "root")
+        git(
+          "remote",
+          "set-url",
+          "origin",
+          "https://example.test/team/pi-moved.git"
+        );
       await processPiTranscriptSignal(client, state, signal, env);
       const expectedKind =
         checkout === "non-git"
@@ -274,6 +376,8 @@ describe("Pi transcript watcher", () => {
         sourceSession: {
           sourceRuntime: "pi",
           cwd,
+          folderObservation:
+            checkout === "unavailable" ? undefined : { normalizedPath: cwd },
           repositoryIdentity: { kind: expectedKind }
         }
       });
@@ -301,12 +405,6 @@ describe("Pi transcript watcher", () => {
 
       const firstArtifact = structuredClone(artifact);
       if (checkout === "root") {
-        git(
-          "remote",
-          "set-url",
-          "origin",
-          "https://example.test/team/pi-moved.git"
-        );
         await processPiTranscriptSignal(client, state, signal, env);
         expect(registrations.at(-1)).toMatchObject({
           sourceSession: {

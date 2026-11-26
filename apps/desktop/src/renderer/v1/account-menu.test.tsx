@@ -95,7 +95,7 @@ describe("rail account menu", () => {
         noticeVersion: "fixture-v1",
         noticeText: "Send me synthetic product updates."
       },
-      kin: { unlockMask: "0x0", catalogVersion: "1.1.0" }
+      kin: { unlockMask: "0x1", catalogVersion: "1.1.0" }
     };
     const { api, publish } = fixture({
       ...signedIn,
@@ -110,6 +110,9 @@ describe("rail account menu", () => {
     );
     await render(api);
     await open();
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toMatch(
+      /Kin items|Cap/
+    );
     const preference = document.querySelector<HTMLElement>(
       '[role="menuitemcheckbox"]'
     )!;

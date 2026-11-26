@@ -1,6 +1,10 @@
 @import "./fonts.css";
 
 .v1-app {
+  /* AI Client colours for the Home keycaps. */
+  --v1-client-codex: #2f8f6b;
+  --v1-client-claude: #d97757;
+  --v1-client-pi: #4b4fa8;
   --v1-heat-1: #6aa8ff;
   --v1-heat-2: #4fd1a5;
   --v1-heat-3: #f2b544;

@@ -335,6 +335,26 @@ disk state. The Pi Local AI Runtime endpoint accepts authenticated source contex
 observations without exposing a new agent-facing tool. Unrecognized Pi start
 reasons remain unresolved. Native historical import reads recorded evidence only.
 
+The first source record fixes both originals. At an authoritative start, the same
+record also pins the directory's selected Git remote as the original Git Anchor.
+The Transcript Watcher uses recorded originals when it registers the Captured
+Session, so the Conversation joins Projects through the existing Folder and Git
+Anchor rules.
+
+| AI Client   | Authoritative Conversation start                | Does not establish a start                                                |
+| ----------- | ----------------------------------------------- | ------------------------------------------------------------------------- |
+| Codex       | `SessionStart` with source `startup` or `clear` | `resume` and all other hook events                                        |
+| Claude Code | `SessionStart` with source `startup` or `clear` | `resume` (even with copied history), `compact`, and all other hook events |
+| Pi          | `session_start` with reason `new` or `fork`     | Generic `startup`, `resume`, and `reload`                                 |
+
+Claude Code `resume` still records the latest Folder and signals the Transcript
+Watcher without scanning the transcript for a fork. For Pi, eligible live and
+exact historical registration consume both originals from one locked source
+snapshot. If no record exists, discovery seals both originals as unresolved and
+continues capture without waiting for a live observation. A late observation can
+update the latest Folder, but cannot change either original. Capture never
+backfills or reassigns an original from current disk state.
+
 Migration `0048_personal_project_model` gives existing Sessions an unresolved
 historical Folder assignment. Registration binds new source-time evidence to the
 authenticated owner, pins it once, and inherits the earliest assignment when a
@@ -358,6 +378,129 @@ retrieval and forwards its selection to every search and expansion. It does not
 reuse previous answer text as current evidence or discover an ambient repository.
 Like named Project inventory, this view reports an error above 5,000 Conversations.
 Complete enumeration uses the separate bounded selection APIs.
+
+### Advisory Folder hints
+
+The Folder-hint scorer evaluates an existing registry candidate only when a
+Conversation's effective Folder is unresolved and its original Folder reason is
+`historical_unresolved` or `missing`. The caller must verify a registry match
+for the relevant User, deployment, and local profile, including the current
+directory marker. The scorer checks the exact normalized recorded directory and
+current device against that match; it does not perform a registry lookup.
+Historical candidates can match the registry but do not earn the live registry
+vote. The scorer reads supplied evidence only; capture, import, and Desktop do
+not call it.
+
+Same-device birthtime strictly before the Conversation, matching Git remote
+fingerprints, and a live registry match each add two points. Birthtime and the
+Conversation's first timestamp must both be valid and no later than a valid
+injected evaluation time to earn birthtime points. A reliable birthtime after
+the Conversation began still vetoes the hint even if the evaluation time is
+invalid or earlier than both timestamps. Directory activity in the last 30 days
+(inclusive, not future) and a verified existing transcript file strictly inside
+the directory each add one. Strong requires at least five
+points and both birthtime and remote agreement; medium requires at least three
+and a two-point clue. Unknown origin requires remote agreement for medium.
+Conflicting metadata, an unusable directory, a known different origin device,
+a later birthtime, mismatched Git remotes, an ambiguous marker, or no verified
+candidate prevents a hint regardless of score. The raw score (0–8) measures
+supporting evidence, not probability or permission.
+
+A device-local evidence gatherer builds the scorer's input. It reads the recorded
+facts from an owner-scoped, read-only API call, then the directory's stat times, its
+current portable Git remote fingerprint, bounded top-level activity, contained
+transcript files, and a read-only Folder registry lookup. Non-replica status
+alone is not evidence of local import or recording origin. The API omits deleted and
+invalidated Conversations. It reports a known Git Anchor only when the effective
+Git identity (override if present, otherwise automatic) identifies a portable or
+device-local repository. The gatherer returns nothing when the device identity
+is not ready and never registers a directory.
+
+A linked worktree has its own directory, distinct from the main checkout's Folder.
+For an eligible Conversation, the gatherer looks for the AI Client's own record
+first, then a verified Git link for an existing checkout. Git must resolve the
+`.git` pointer to linked-worktree metadata that points back to the checkout; a
+plain `.git` directory is not a link. The `.claude/worktrees/<name>` path convention
+is used only when the checkout is missing and its recorded remote matches the
+main checkout's current remote.
+
+Claude desktop records `originCwd` (the project it was started from) beside the
+directory a session ran in. The gatherer uses a single bounded, asynchronous
+index per hint batch, built only for eligible Claude Code lookups and reused for
+both matches and misses. It matches the session ID and recorded directory. The
+origin is a path to corroborate against current device-local evidence, not a
+Folder assignment. A record that says the session ran in its own directory rules
+out a worktree parent. Codex and Pi provide no equivalent link.
+
+The worktree-parent hint suggests the main checkout's registered Folder, capped
+at medium. It requires a same-device Conversation and a known parent birthtime
+strictly earlier than the first Conversation timestamp, regardless of score.
+The current Personal API does not provide independent recording-device evidence
+for this Folder hint, so Desktop does not currently offer it. The local-import
+assumption for Git Anchor inference does not satisfy this Folder requirement.
+Missing, equal, or later birthtime disqualifies the parent. A recorded remote
+mismatch always disqualifies it; a verified Git link or a client-recorded link
+can support a hint without remote agreement. A creation hint applies to an
+existing, unregistered directory. An unreadable, oversized, or invalid local
+Folder registry does not establish that the directory is unregistered. The
+Conversation must be captured here and the directory older than it (two points), with remote
+agreement (two) strong, and activity or a contained transcript file (one each)
+making a lesser medium of at least three points. The hints for one Conversation are all returned, best first (registered Folder,
+worktree-parent, create), because a worktree usually has its own registered Folder
+and a main checkout that a Project is built on; the User chooses. The worktree
+hint also applies when the worktree directory has a Folder of its own. Branch
+names, Codex commit hashes, and parent or fork ids are deliberately not used.
+
+The Personal API does not accept a standalone Folder observation write. Owner
+authentication and a local registry match do not bind the requesting device to
+the target Conversation's capture origin. Ordinary authenticated capture still
+records observations as described above. Desktop does not offer unregistered
+creation hints as actions. When a User accepts a registered or worktree-parent
+hint, Desktop re-scores the Conversation with fresh bounded evidence and requires
+the same kind and full Folder reference. This check writes neither an observation
+nor the local Folder registry. Only the server's reviewed source correction can
+authorize an already-known Folder reference; a hint cannot supply missing evidence.
+
+Add and Add all stage approval for the exact candidate and destination Project.
+If the candidate changes before Save, the User must approve the replacement.
+For suggested additions, Desktop saves Project settings first and reads current
+Project versions before previewing each correction. It commits only a
+version-pinned preview that newly includes the explicit destination Project, and
+uses no direct membership change. The server rechecks the reviewed versions and
+source context at commit.
+
+A repository hint covers the other source axis. For a Conversation with no Git
+Anchor (automatic or chosen), run on this device in a directory that still exists
+with a portable remote, the directory's current remote is a clue to the anchor.
+It scores birthtime and a present remote (two points each), activity and a
+contained transcript file (one each), needs birthtime and at least four points,
+vetoes a recorded remote that differs from today's, and is capped at medium
+because a remote can be re-pointed. The hint carries the remote's portable
+fingerprint, which is identical for ssh, scp-style, and https spellings of the
+same repository, so a Project anchored one way matches a remote written the
+other. The desktop offers it only when a Project already uses that anchor; the
+correction selects that existing anchor and registers nothing.
+
+For unresolved historical Git Anchors with no correction history, evidence can
+identify an `assumed-local-import`: a qualifying initial native Codex artifact
+with a positively ingested historical prefix and no known copy or replica.
+Desktop matches the importing deployment and device, without treating either
+as recording provenance or changing Folder scores. Guarded inference requires
+both the recorded directory and its resolved per-worktree Git directory to
+predate the source-native start, and a current portable remote that matches an
+active Project rule. Otherwise eligible matches with missing or newer Git
+directory age evidence stay advisory. Desktop pins the authenticated backend
+and owner and rechecks the exact checkout and import basis. The owner-authorized
+API independently matches that basis at preview and apply; it does not attest
+the checkout or recording origin. See
+[ADR 0070](adr/0070-inferred-git-anchors-for-unresolved-history.md).
+
+Every hint is `suggestion-only`, including for shared or Workspace-linked
+Projects. It is not a Folder observation, selection, or repair. Scoring does not
+create a Folder, change original or effective Folder context, assign a
+Conversation, or grant sharing or Workspace Access. Optional Project context
+must come from a caller-established Folder rule and belong to the same User as
+the Folder. Neither the path nor a Git Anchor implies Project membership.
 
 ## Git Anchor inclusion rules
 
@@ -785,6 +928,10 @@ change to the reviewed exclusion state makes apply stale.
 A saved Project Kin travels with the name in the signed Project catalog revision.
 The catalog stores the body shape, colour, and personality. Concurrent edits use
 the existing catalog conflict review. Each choice includes both its name and Kin.
+Desktop stores Project Kin accessory IDs on the device, scoped to the backend,
+User, and Project. Accessory edits leave the Project catalog unchanged. Earlier
+releases can still read the same database, and older peers can still receive
+Project renames and deletions.
 A catalog history containing a saved Kin waits until all paired recipients
 advertise `project_membership_v1` and `project_kin_v1`. Every device refreshes
 the signed three-feature format used by older readers. An upgraded relay

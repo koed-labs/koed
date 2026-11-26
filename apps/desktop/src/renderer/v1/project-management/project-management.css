@@ -152,6 +152,12 @@
   font-size: 11px;
   color: var(--muted-foreground);
 }
+.v1-pm-recording-warning {
+  display: block;
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
 .v1-pm-field {
   display: flex;
   flex-direction: column;
@@ -188,13 +194,6 @@
   margin: 18px 0 0;
 }
 .v1-pm-section h3,
-.v1-pm-move-tags legend {
-  font-size: 12px;
-  line-height: 1.4;
-  font-weight: 500;
-  margin: 0 0 8px;
-  color: var(--muted-foreground);
-}
 .v1-pm-section > [data-slot="button"] {
   margin-top: 12px;
 }
@@ -331,21 +330,20 @@ label.v1-pm-choice-row:hover {
 .v1-pm-move-path {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 500;
+}
+.v1-pm-move-path > svg {
+  flex: none;
   color: var(--muted-foreground);
-  font-size: 11px;
 }
 .v1-pm-move-path span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.v1-pm-move-tags {
-  border: 0;
-  margin: 0;
-  padding: 0;
-  min-width: 0;
 }
 .v1-pm-impact {
   display: flex;
@@ -366,6 +364,72 @@ label.v1-pm-choice-row:hover {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 10px;
+}
+.v1-pm-context-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.v1-pm-context-suggested {
+  flex: 1;
+  min-width: 0;
+}
+.v1-pm-context-why {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+}
+.v1-pm-why-popup {
+  /* The shared popup balances lines, which breaks these early. */
+  text-wrap: wrap;
+  max-width: min(380px, var(--available-width, 380px));
+}
+.v1-pm-why {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: max-content;
+  max-width: 356px;
+  padding: 6px 4px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.v1-pm-why-lead {
+  font-size: 13px;
+  font-weight: 600;
+}
+.v1-pm-why-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v1-pm-why-facts li {
+  position: relative;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+.v1-pm-why-facts li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--v1-heat-2, #14946f);
+}
+.v1-pm-why-detail {
+  color: var(--muted-foreground);
 }
 .v1-pm-context-original {
   font-size: 11px;
@@ -389,7 +453,7 @@ label.v1-pm-choice-row:hover {
   display: flex;
   gap: 2px;
 }
-.v1-pm-project-heading button {
+.v1-pm-project-heading > div button {
   display: grid;
   place-items: center;
   width: 24px;
@@ -400,7 +464,7 @@ label.v1-pm-choice-row:hover {
   box-shadow: none;
   color: var(--v1-faint);
 }
-.v1-pm-project-heading button:hover:not(:disabled) {
+.v1-pm-project-heading > div button:hover:not(:disabled) {
   background: var(--v1-surface);
   color: var(--v1-fg);
 }
@@ -437,7 +501,7 @@ label.v1-pm-choice-row:hover {
   flex: 0 0 24px;
   text-align: center;
 }
-.v1-nav-conversation-wrap:is(:hover, :focus-within) time,
+.v1-nav-conversation-wrap:is(:hover, :focus-within) .v1-nav-conversation time,
 .v1-pm-has-menu:is(:hover, :focus-within) .v1-nav-project > small {
   visibility: hidden;
 }
@@ -643,4 +707,360 @@ label.v1-pm-choice-row:hover {
   .v1-pm-kin-preview {
     height: 160px;
   }
+}
+
+.v1-nav-project-kin {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+}
+
+/* Project suggestion review: the conversations lead; the controls stay quiet. */
+.v1-pm-conversation-list {
+  /* A lighter surface than the dialog in both themes. */
+  --v1-pm-list-bg: var(--v1-surface);
+  background: var(--v1-pm-list-bg);
+  outline: none;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+:root.light .v1-pm-conversation-list,
+.v1-app[data-theme="light"] .v1-pm-conversation-list {
+  --v1-pm-list-bg: var(--v1-bg);
+}
+.v1-pm-conversation-row {
+  gap: 8px;
+  min-height: 48px;
+  padding: 6px 6px 6px 12px;
+}
+.v1-pm-conversation-row .v1-nav-client-mark {
+  margin-right: 2px;
+}
+.v1-pm-conversation-row .v1-pm-row-copy b {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.v1-pm-conversation-row [data-slot="checkbox"][data-checked] {
+  border-color: var(--v1-accent);
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
+}
+.v1-pm-row-action {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+button.v1-pm-row-action svg {
+  width: 14px;
+  height: 14px;
+}
+.v1-pm-conversation-row:hover .v1-pm-row-action,
+.v1-pm-conversation-row:focus-within .v1-pm-row-action {
+  opacity: 1;
+}
+.v1-pm-row-action:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.v1-pm-row-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.v1-pm-row-action:disabled {
+  cursor: default;
+}
+/* The list takes focus on open only so the first checkbox does not; it is not
+   in the tab order, so it needs no ring. */
+.v1-app .v1-pm-conversation-list:focus-visible {
+  outline: none;
+}
+
+/* Project settings › Conversations: groups by rule. */
+.v1-pm-group-heading .v1-pm-coin,
+.v1-pm-nav-coin .v1-pm-coin {
+  width: 18px;
+  height: 18px;
+}
+.v1-pm-nav-coin {
+  margin-left: auto;
+  line-height: 0;
+}
+.v1-pm-suggested-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+/* Quiet text actions on a Conversation row, like the icon actions. */
+.v1-pm-row-text-action {
+  flex: none;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  opacity: 0.7;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.v1-pm-conversation-row:hover .v1-pm-row-text-action,
+.v1-pm-conversation-row:focus-within .v1-pm-row-text-action {
+  opacity: 1;
+}
+.v1-pm-row-text-action:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.v1-pm-row-text-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.v1-pm-row-text-action:disabled {
+  cursor: default;
+}
+.v1-pm-conversation-row.is-pending {
+  background: var(--v1-accent-soft);
+}
+.v1-pm-conversation-row.is-pending small {
+  color: var(--v1-accent-text);
+}
+/* Keeps a row's action in line when it has no menu. */
+.v1-pm-row-action-slot {
+  flex: none;
+  width: 24px;
+}
+/* A checkbox menu item draws no tick when off, so keep its text in the second
+   column instead of the narrow tick column. */
+.v1-pm-menu-check-label {
+  grid-column: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--v1-fg2);
+}
+.v1-pm-menu-check-label svg {
+  width: 13px;
+  height: 13px;
+  color: var(--v1-muted);
+}
+.v1-pm-row-lock {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+/* A section heading (In Project, Suggested) with its one action. */
+.v1-pm-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+.v1-pm-group-heading h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.v1-pm-groups {
+  display: grid;
+  gap: 6px;
+}
+/* One rule and its Conversations, closed until opened. */
+.v1-pm-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--v1-surface);
+}
+:root.light .v1-pm-group,
+.v1-app[data-theme="light"] .v1-pm-group {
+  background: var(--v1-bg);
+}
+.v1-pm-group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+}
+.v1-pm-group-head:has(> .v1-pm-recording-warning) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 0;
+  padding-bottom: 4px;
+}
+.v1-pm-group-head:has(> .v1-pm-recording-warning) > .v1-pm-group-toggle {
+  grid-column: 1 / -1;
+}
+.v1-pm-group-head > .v1-pm-recording-warning {
+  justify-self: end;
+  padding-left: 10px;
+  line-height: 1.25;
+}
+.v1-pm-group.is-pending .v1-pm-group-head {
+  background: var(--v1-accent-soft);
+}
+.v1-pm-group.is-pending .v1-pm-group-toggle small {
+  color: var(--v1-accent-text);
+}
+.v1-pm-group-toggle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px 8px 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+}
+.v1-pm-group-toggle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.v1-pm-group-toggle svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--v1-muted);
+}
+.v1-pm-group-toggle .v1-pm-group-chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform 120ms ease;
+}
+.v1-pm-group-toggle[aria-expanded="true"] .v1-pm-group-chevron {
+  transform: rotate(90deg);
+}
+.v1-pm-group-toggle b {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.v1-pm-group-toggle small {
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.v1-pm-group-head .v1-pm-row-action {
+  opacity: 1;
+}
+.v1-pm-group-body {
+  border-top: 1px solid var(--border);
+}
+.v1-pm-group-body .v1-pm-conversation-row {
+  padding-left: 34px;
+}
+.v1-pm-group-body .v1-pm-conversation-row + .v1-pm-conversation-row {
+  border-top: 1px solid var(--border);
+}
+.v1-pm-group-empty {
+  margin: 0;
+  padding: 10px 12px 10px 34px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+/* "+1 Anchor": the Conversation is listed once, under its first Anchor. */
+.v1-pm-row-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.v1-pm-menu-two-line {
+  display: grid;
+  gap: 1px;
+}
+.v1-pm-menu-two-line small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.v1-pm-rule-menu {
+  max-height: 360px;
+  overflow-y: auto;
+}
+/* A Project's Kin in a row or path, in place of a folder icon. */
+.v1-pm-row-kin {
+  flex: none;
+}
+.v1-pm-group-toggle .v1-pm-group-detail {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Project memberships: Projects the Conversation is in, then the rest, dimmed. */
+.v1-pm-membership-sections {
+  display: grid;
+  gap: 14px;
+}
+.v1-pm-membership-heading {
+  margin: 0 0 6px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+.v1-pm-conversation-row.is-outside:not(.is-pending) .v1-pm-row-kin {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+.v1-pm-conversation-row.is-outside:not(.is-pending) .v1-pm-row-copy b {
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+.v1-pm-conversation-row.is-outside:not(.is-pending) .v1-pm-row-text-action {
+  opacity: 1;
+  color: var(--foreground);
+}
+/* The sections scroll as one, so the lists need no scrollbar room of their
+   own; rows and their tint run edge to edge. */
+.v1-pm-membership-sections .v1-pm-conversation-list {
+  scrollbar-gutter: auto;
+}
+/* The chosen Project is marked like a selected Conversation. */
+.v1-pm-select [data-slot="select-item"][data-selected] {
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
+}
+/* A Project option shows its Kin beside its name. */
+.v1-pm-select-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }

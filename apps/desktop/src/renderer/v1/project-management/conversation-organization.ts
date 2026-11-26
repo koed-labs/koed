@@ -16,6 +16,7 @@ export type OrganizationReview = {
   context: PersonalSourceContextState;
   projects: readonly DesktopProject[];
   memberships: MembershipReview[];
+  expectedScopeKey?: string;
 };
 export const activeNamedProjects = (projects: readonly DesktopProject[]) =>
   projects.filter(
@@ -40,13 +41,18 @@ export async function reviewConversationOrganization(
   api: PersonalDesktopApi,
   projects: readonly DesktopProject[],
   sessionId: string,
-  projectIds?: readonly string[]
+  projectIds?: readonly string[],
+  expectedScopeKey?: string
 ): Promise<OrganizationReview> {
   if (!api.manageSourceContext || !api.manageProject)
     throw new Error("Project management is unavailable.");
   const named = activeNamedProjects(projects);
   const [source, memberships] = await Promise.all([
-    api.manageSourceContext({ action: "get", sessionId }),
+    api.manageSourceContext({
+      action: "get",
+      sessionId,
+      ...(expectedScopeKey ? { expectedScopeKey } : {})
+    }),
     Promise.all(
       named
         .filter((p) => !projectIds || projectIds.includes(p.id))
@@ -76,7 +82,12 @@ export async function reviewConversationOrganization(
     )
   )
     throw new Error("Conversation identity could not be verified.");
-  return { context: source.context, projects: named, memberships };
+  return {
+    context: source.context,
+    projects: named,
+    memberships,
+    expectedScopeKey
+  };
 }
 
 export function organizationEdit(
@@ -98,6 +109,19 @@ export function organizationEdit(
     memberships,
     corrections
   };
+}
+
+export function requireSoleMembership(
+  review: OrganizationReview,
+  sourceId: string
+) {
+  const included = review.memberships.filter(
+    (membership) => membership.explanation.included
+  );
+  if (included.length !== 1 || included[0]?.project.id !== sourceId)
+    throw new Error(
+      "Project memberships changed. Use Project memberships to review them."
+    );
 }
 
 export function moveConversationEdit(

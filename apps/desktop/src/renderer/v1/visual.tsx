@@ -19,7 +19,11 @@ import {
 } from "lucide-react";
 import "./visual.css";
 
-import { DEFAULT_AGENT_LOOK, type AgentLook } from "./pixelkin/agent-kin.js";
+import {
+  chiefOfStaffBrand,
+  DEFAULT_AGENT_LOOK,
+  type AgentLook
+} from "./pixelkin/agent-kin.js";
 import { Pixelkin } from "./pixelkin/Pixelkin.js";
 
 export { DEFAULT_AGENT_LOOK, type AgentLook } from "./pixelkin/agent-kin.js";
@@ -50,6 +54,7 @@ export type ModelPickerProps = {
   selection?: V1ModelSelection | null;
   onChange: (selection: V1ModelSelection) => void;
   look?: AgentLook;
+  gradientTop?: string;
   onOpen?: () => void;
   disabled?: boolean;
   lockedProviderId?: string;
@@ -67,7 +72,8 @@ export function ModelPicker({
   providers,
   selection,
   onChange,
-  look = DEFAULT_AGENT_LOOK,
+  look,
+  gradientTop,
   onOpen,
   disabled = false,
   lockedProviderId
@@ -227,7 +233,10 @@ export function ModelPicker({
           ) : (
             <div className="v1-reason-panel">
               <div className="v1-reason-top">
-                <Pixelkin look={look} size={22} />
+                <Pixelkin
+                  {...(look ? { look, gradientTop } : chiefOfStaffBrand)}
+                  size={22}
+                />
                 <div>
                   <b>{effortName(selection?.effort ?? "")}</b>
                   <button type="button" onClick={() => setView("models")}>

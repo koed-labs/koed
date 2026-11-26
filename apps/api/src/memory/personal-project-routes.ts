@@ -177,6 +177,19 @@ export const registerPersonalProjectRoutes = (
     }
   );
   app.post(
+    "/v1/personal/projects/:projectId/exclusions/list",
+    { preHandler: read },
+    async (request) => {
+      const user = await authenticate(request),
+        { projectId } = projectParams.parse(request.params);
+      return requireRepository().listPersonalProjectExclusions(
+        { userId: user.id },
+        projectId,
+        personalProjectVersionSchema.parse(request.body)
+      );
+    }
+  );
+  app.post(
     "/v1/personal/projects/:projectId/exclusions",
     { preHandler: write },
     async (request) => {

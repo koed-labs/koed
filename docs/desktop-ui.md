@@ -15,11 +15,29 @@ For an installation affected by an older failed Codex verification record,
 rerunning the final local verification refreshes that record.
 
 The sidebar shows the current User's Project inventory, including Conversations
-captured from supported AI Clients, including previously managed Conversations. Search, pinned
-Conversations, expandable Projects, and navigation history share the same
-Conversation pane. On narrow windows, the sidebar opens as a drawer. While
-services or inventory are loading, the sidebar shows that state rather than an
-empty Conversation list.
+captured from supported AI Clients, including previously managed Conversations.
+The sidebar provides search, expandable Projects, and navigation history. On
+narrow windows, it opens as a drawer. While services or inventory are loading,
+the sidebar shows that state rather than an empty Conversation list.
+**Projects** lists named Projects. Below it, **Anchors** lists every Git Anchor
+and Folder with captured Conversations, including Conversations a named Project
+also includes. **No anchor** lists Conversations that have no Git Anchor or
+Folder, whether or not they belong to a named Project.
+Each Anchor expands to its Conversations like a Project. Outside search, only
+one Project or Anchor is open at a time. An open group shows five Conversations
+and a **Load More** button; the Projects and Anchors lists themselves load more
+groups as their end comes into view, including when the first page fits without
+scrolling. **Projects** and **Anchors** collapse from their headings;
+**Anchors** starts collapsed. Each scrolls on its own with its heading kept in
+view. Opening a Conversation from another group doesn't change which
+Conversation is open: the clicked group sets the breadcrumb and primary
+highlight, and other visible copies are marked more quietly.
+
+Pinning a Conversation puts it first within its Projects and Anchors. Pinning
+a named Project keeps it at the top of **Projects**. From a named
+Project's ellipsis menu, choose **Pin Project** or **Unpin Project**; **Project
+settings** is in the same menu. Pins are saved locally for the current account
+and backend. They do not sync or change Project membership or access.
 
 Navigation, Settings, and setup use the positive mark in light mode and the
 negative mark in dark mode. The app and Dock use the color mark on an inset
@@ -35,14 +53,21 @@ organization remain available. Legacy managed execution APIs and background
 workers are not retired by this UI change; descriptions of those workflows below
 are historical, not V1 Desktop capabilities.
 
-In **Project settings → Kin**, choose a body shape, colour, and personality. The
-Kin appears under a spotlight beside the controls. Home labels it with the Project name. Each Project starts with a
-look generated from its ID. Saving a Kin updates Home and syncs the choice to
-paired Personal devices.
+In **Project settings → Kin**, use **Appearance** to choose a body shape, colour,
+and personality. Use **Accessories** to browse and equip free items and items unlocked for
+the signed-in account. The preview updates as you equip an item. Items that occupy the
+same slot replace one another. Remove an item from the **Equipped** list.
+Each Project starts with a look generated from its ID. Saving updates the Kin on
+Home. The body shape, colour, and personality sync to compatible paired Personal
+devices. Accessories stay on this Koed installation.
 
-Project settings also manages names, source rules, Conversation membership, and
-Personal Device sync. Sync review remains available when Conversation membership
+Project settings also manages names, Anchors, Conversation membership, and
+Personal Device sync. The **Sync** page appears only when
+`KOED_PERSONAL_DEVICE_SYNC_ENABLED` is `true`; Personal Device Sync is off by
+default. Sync review remains available when Conversation membership
 cannot be loaded. Settings blocks edits until a complete membership review loads.
+Saving from the **Conversations** tab keeps Settings open and reloads the saved
+Project so you can continue editing.
 Dragging a Conversation to a Project moves its membership
 from the source Project to the destination; other named memberships remain.
 Folder and Git Anchor references stay intact unless the User explicitly removes
@@ -60,10 +85,10 @@ Conversations keep their execution owner, while a new Conversation can choose
 a configured client. Managed execution, approvals, streaming, and draft recovery
 use the existing controller with the new presentation.
 
-Window graphics acceleration is a local Electron preference applied on the next
-app launch. It never changes embedding or privacy inference acceleration. The
-menu-bar preference changes only the tray visibility; existing service lifecycle
-and native menu commands are retained.
+Window graphics acceleration in **General → Graphics** is a local Electron
+preference applied on the next app launch. It never changes embedding or privacy
+inference acceleration. The menu-bar preference changes only the tray visibility;
+existing service lifecycle and native menu commands are retained.
 
 AI settings retain the existing single default AI Client, model, and reasoning
 level for new Conversations. Available models and reasoning levels come from
@@ -124,8 +149,7 @@ appear above Home.
   Home (the sidebar still lists it). Conversations in no Project lie on the
   stage floor as golden coins, newest first and at most 16, in the gaps
   between the front Kin; hovering or focusing one shows its title with its AI
-  Client's logo, and clicking opens it and expands "No project" in the
-  sidebar. A coin can be picked up and thrown: it flies with the flick's speed,
+  Client's logo, and clicking opens it. A coin can be picked up and thrown: it flies with the flick's speed,
   tumbling, bounces off the floor with less height each time and off the
   stage's sides and top, slides to a stop and rests flat where it lands until
   Home is reloaded. With reduced motion a dropped coin lands at once. A held coin

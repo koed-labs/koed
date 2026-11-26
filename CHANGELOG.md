@@ -1,5 +1,23 @@
 # Koed
 
+## 1.3.0
+
+### Minor Changes
+
+- c41200c: Home now uses the two-tone colour logo. Conversation coins outside a Project carry their AI Client's mark, have no cap, and new ones are thrown from the client to bounce and rest in a tidy band. Kin spin coasts further after a flick, and drags keep their momentum on release, and a coin caught mid-air falls again when released.
+
+- 1329d7d: Add Floating Kin, an opt-in macOS Desktop overlay for recent captured Personal Conversations. Open a Conversation chip to summarize its captured work or Project context through your assigned Codex or Pi client. Floating Kin shows captured activity, not live AI Client status, and never starts Koed or controls a Conversation.
+
+- ae704ab: Suggest a Folder or Project for Conversations with no Folder, and record a Git Anchor automatically when the evidence proves it. Project settings › Conversations now groups Conversations by Folder and Git Anchor rule, with Added directly last and suggestions grouped by the rule they would join; nothing changes until you save. Project memberships and Move Conversation use the same rows, and sidebar Project rows show their Kin and a settings menu instead of counts.
+
+### Patch Changes
+
+- 736ce74: Use the environment file selected by `KOED_ENV_PATH` for the API, Worker, and
+  Embedding Service, and read it with the same rules as Koed Server. Keep values
+  already set in the process environment. `koed start --daemon` and
+  `koed restart` now resolve a relative path from the directory where you run
+  them.
+
 ## 1.2.0
 
 ### Minor Changes

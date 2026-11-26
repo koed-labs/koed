@@ -6,61 +6,85 @@ import {
   openSync,
   readFileSync
 } from "node:fs";
+import { open } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { URL } from "node:url";
 
 // Standalone Pi installations cannot import the server's runtime client. Keep
 // this registration fence equivalent to local-runtime-protocol's trusted read.
+const registrationPath = (koedHome) =>
+  join(koedHome, "run", "local-ai-runtime.json");
+const registrationFlags =
+  constants.O_RDONLY |
+  (process.platform === "win32" ? 0 : constants.O_NOFOLLOW);
+
+const checkRegistrationFile = (stat) => {
+  if (
+    !stat.isFile() ||
+    (process.platform !== "win32" && (stat.mode & 0o077) !== 0) ||
+    (typeof process.getuid === "function" && stat.uid !== process.getuid())
+  )
+    throw new Error(
+      "Koed Local AI Runtime registration permissions are unsafe"
+    );
+};
+
+const parseRegistration = (content) => {
+  const registration = JSON.parse(content);
+  const url = new URL(registration.url);
+  if (
+    registration.protocolVersion !== 1 ||
+    url.protocol !== "http:" ||
+    !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
+    !url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !["", "/"].includes(url.pathname) ||
+    !/^Bearer [A-Za-z0-9_-]{32,}$/.test(registration.authorization) ||
+    !Number.isInteger(registration.pid) ||
+    registration.pid < 1 ||
+    !Number.isFinite(Date.parse(registration.startedAt))
+  )
+    throw new Error("Koed Local AI Runtime registration is invalid");
+  return registration;
+};
+
 export const readRuntimeRegistration = (koedHome) => {
-  const fd = openSync(
-    join(koedHome, "run", "local-ai-runtime.json"),
-    constants.O_RDONLY |
-      (process.platform === "win32" ? 0 : constants.O_NOFOLLOW)
-  );
+  const fd = openSync(registrationPath(koedHome), registrationFlags);
   try {
-    const stat = fstatSync(fd);
-    if (
-      !stat.isFile() ||
-      (process.platform !== "win32" && (stat.mode & 0o077) !== 0) ||
-      (typeof process.getuid === "function" && stat.uid !== process.getuid())
-    )
-      throw new Error(
-        "Koed Local AI Runtime registration permissions are unsafe"
-      );
-    const registration = JSON.parse(readFileSync(fd, "utf8"));
-    const url = new URL(registration.url);
-    if (
-      registration.protocolVersion !== 1 ||
-      url.protocol !== "http:" ||
-      !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
-      !url.port ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      !["", "/"].includes(url.pathname) ||
-      !/^Bearer [A-Za-z0-9_-]{32,}$/.test(registration.authorization) ||
-      !Number.isInteger(registration.pid) ||
-      registration.pid < 1 ||
-      !Number.isFinite(Date.parse(registration.startedAt))
-    )
-      throw new Error("Koed Local AI Runtime registration is invalid");
-    return registration;
+    checkRegistrationFile(fstatSync(fd));
+    return parseRegistration(readFileSync(fd, "utf8"));
   } finally {
     closeSync(fd);
   }
 };
 
-const request = async (
-  koedHome,
+const readLivenessRegistration = async (koedHome, signal) => {
+  const file = await open(
+    registrationPath(koedHome),
+    registrationFlags | (constants.O_NONBLOCK ?? 0)
+  );
+  try {
+    signal.throwIfAborted();
+    checkRegistrationFile(await file.stat());
+    signal.throwIfAborted();
+    return parseRegistration(await file.readFile({ encoding: "utf8", signal }));
+  } finally {
+    await file.close();
+  }
+};
+
+const requestWithRegistration = async (
+  registration,
   pathname,
   method,
   body,
   signal,
   bounded = false
 ) => {
-  const registration = readRuntimeRegistration(koedHome);
   const response = await fetch(new URL(pathname, registration.url), {
     method,
     redirect: "error",
@@ -94,6 +118,13 @@ const request = async (
   return result;
 };
 
+const request = async (koedHome, ...args) =>
+  requestWithRegistration(readRuntimeRegistration(koedHome), ...args);
+
+/** Generic startup can reopen history, even when no messages exist. */
+export const piSessionStartIsNewConversation = (reason) =>
+  reason === "new" || reason === "fork";
+
 export const recordCaptureFolderContext = (koedHome, input) =>
   request(
     koedHome,
@@ -103,6 +134,28 @@ export const recordCaptureFolderContext = (koedHome, input) =>
     undefined,
     true
   );
+
+export const recordPiLiveness = async (koedHome, input, signal) => {
+  const deadline = new globalThis.AbortController();
+  const timeout = globalThis.setTimeout(() => deadline.abort(), 4_000);
+  timeout.unref();
+  try {
+    const combined = AbortSignal.any([signal, deadline.signal]);
+    const registration = await readLivenessRegistration(koedHome, combined);
+    combined.throwIfAborted();
+    const result = await requestWithRegistration(
+      registration,
+      "/v1/capture/pi-liveness",
+      "POST",
+      input,
+      combined
+    );
+    if (result.ok !== true)
+      throw new Error("Koed Local AI Runtime did not acknowledge Pi liveness");
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+};
 
 export const createRuntimeTaskPort = (koedHome) => {
   const scope = resolve(koedHome);
