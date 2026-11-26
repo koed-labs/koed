@@ -7,7 +7,6 @@ Desktop does not require a remote Koed backend for these features.
 Open the profile badge at the bottom of the navigation rail to sign in or sign out.
 The badge shows the WorkOS picture or initials for the signed-in account.
 During sign-in, its menu shows browser instructions and a Cancel sign-in action.
-Settings does not contain an account page.
 
 Local Personal Memory remains available without sign-in and while offline.
 Sign-in does not upload Memory, change Memory ownership, rotate API Tokens, or enable Capture.
