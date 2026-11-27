@@ -24,6 +24,12 @@ import {
   integrationConsentCopy,
   type IntegrationMutationCommand
 } from "../../views/preferences/integration-consent.js";
+import { coinAge } from "../coin/coin-age.js";
+import {
+  CoinFace,
+  RestingCoin,
+  type CoinLook
+} from "../coin/ConversationCoin.js";
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
 import { wakePixelkins } from "../pixelkin/stage.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
@@ -1012,66 +1018,12 @@ function FlyingCoin({ coin, onDone }: { coin: Coin; onDone: () => void }) {
   }, [coin]);
   return (
     <span className="v1-home-coin" ref={ref}>
-      <CoinArtwork />
+      {/* Falling face-on into the Kin, warm from the AI Client's keycap. */}
+      <CoinFace
+        look={{ client: null, turns: 24, pose: "standing", glow: 0.6 }}
+        vectorSize={18}
+      />
     </span>
-  );
-}
-
-// Vector edges retain detail while the coins scale, flatten and tumble.
-function CoinArtwork({
-  client = null
-}: {
-  client?: HomeLooseConversation["client"];
-}) {
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      shapeRendering="geometricPrecision"
-      aria-hidden="true"
-    >
-      <ellipse cx="16" cy="17" rx="14.25" ry="14" fill="#7a4a12" />
-      <circle
-        cx="16"
-        cy="15"
-        r="14"
-        fill="#e0a03a"
-        stroke="#7a4a12"
-        strokeWidth="1.5"
-      />
-      <circle
-        cx="16"
-        cy="14.5"
-        r="12.5"
-        fill="#ffd166"
-        stroke="#fff4c2"
-        strokeWidth="0.75"
-      />
-      <circle cx="16" cy="14.5" r="10.25" fill="#e0a03a" />
-      <circle cx="16" cy="15.25" r="9.5" fill="#ffd166" />
-      <path
-        d="M6.5 11a10 10 0 0 1 12-6"
-        fill="none"
-        stroke="#fff4c2"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-      {client ? (
-        // The originating AI Client's mark, struck into the coin.
-        <svg x="9.25" y="8" width="13.5" height="13.5" fill="#7a4a12">
-          <AiClientLogo id={client} />
-        </svg>
-      ) : (
-        <>
-          <rect x="12.5" y="11.5" width="7" height="7" rx="1" fill="#7a4a12" />
-          <path
-            d="M13 18.5h5.5a1 1 0 0 0 1-1V12"
-            fill="none"
-            stroke="#fff4c2"
-            strokeWidth="0.75"
-          />
-        </>
-      )}
-    </svg>
   );
 }
 
@@ -1618,11 +1570,19 @@ function FloorCoin({
   const stopWindow = useRef<(() => void) | null>(null);
   useEffect(() => () => stopWindow.current?.(), []);
 
+  // Loose Conversations carry no turn count, so every floor coin is the
+  // middle weight.
+  const coinLook: CoinLook = {
+    client: conversation.client,
+    turns: 24,
+    age: coinAge(conversation.latestAt, new Date())
+  };
+
   return (
     <button
       ref={ref}
       type="button"
-      className="v1-home-floor-coin"
+      className="v1-home-floor-coin v1-coin-host"
       data-coin-conversation={conversation.key}
       data-motion={absorbed ? "absorbed" : motion.mode}
       style={
@@ -1729,7 +1689,13 @@ function FloorCoin({
         onOpen(conversation.key);
       }}
     >
-      <CoinArtwork client={conversation.client} />
+      {/* Lying on the floor, standing to face you when hovered; held or
+          thrown, it stands and shows its face. */}
+      {motion.mode === "rest" && !absorbed ? (
+        <RestingCoin look={coinLook} vectorSize={20} />
+      ) : (
+        <CoinFace look={{ ...coinLook, pose: "standing" }} vectorSize={20} />
+      )}
       {/* The coin carries the client's mark; the tooltip carries the title. */}
       <span className="v1-home-floor-tip" role="tooltip">
         {conversation.client && (

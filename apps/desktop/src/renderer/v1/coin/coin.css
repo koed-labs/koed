@@ -1,0 +1,58 @@
+/* Conversation coins drawn by kin-engine, with the vector coin as fallback. */
+
+/* kin-engine's coin, 36 CSS pixels square at any backing density. */
+.v1-coin-canvas {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 36px;
+  height: 36px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+/* The classic resolution keeps one crisp engine pixel per CSS pixel. */
+.v1-coin-canvas[data-pixelated] {
+  image-rendering: pixelated;
+}
+
+/* A resting coin stands up to face the viewer while its host is hovered or
+   focused, standing on the host's floor line. */
+.v1-coin-host [data-hover="show"] {
+  display: none;
+}
+.v1-coin-host:is(:hover, :focus-visible) [data-hover="show"] {
+  display: block;
+}
+.v1-coin-host:is(:hover, :focus-visible) [data-hover="hide"] {
+  display: none;
+}
+.v1-coin-canvas[data-hover="show"] {
+  top: auto;
+  /* The standing coin is about 20px tall, centred in its 36px frame. */
+  bottom: -8px;
+  transform: translateX(-50%);
+}
+
+/* The vector coin lying flat, as on Home's floor. */
+.v1-coin-vector {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%) scaleY(0.6);
+  transform-origin: 50% 100%;
+  filter: drop-shadow(0 2px 0 rgb(0 0 0 / 0.25));
+  pointer-events: none;
+}
+/* Standing: held, thrown or falling, the coin shows its face. */
+.v1-coin-vector[data-pose="standing"] {
+  transform: translateX(-50%);
+  filter: none;
+}
+.v1-coin-vector > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.v1-coin-vector[data-age="aged"] > svg {
+  filter: sepia(0.45) saturate(0.6) brightness(0.8);
+}

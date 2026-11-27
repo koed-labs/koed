@@ -14,6 +14,7 @@ import {
   type V1ModelSelection
 } from "./renderer/v1/visual.js";
 import { V1App } from "./renderer/v1/App.js";
+import { Home } from "./renderer/v1/home/Home.js";
 import { NavigationShell } from "./renderer/v1/NavigationShell.js";
 import { V1Onboarding } from "./renderer/v1/onboarding.js";
 import { installOnboardingValidation } from "./onboarding-validation.js";
@@ -136,6 +137,32 @@ createRoot(document.querySelector("#root")!).render(
     <ProjectManagementValidation />
   ) : new URLSearchParams(location.search).get("sidebar") === "1" ? (
     <SidebarValidation />
+  ) : new URLSearchParams(location.search).get("home") === "1" ? (
+    // Home's stage with Projects and loose Conversations on the floor.
+    <div className="v1-app" style={{ display: "flex", height: "100%" }}>
+      <Home
+        view={{ kind: "projects", warnings: [] }}
+        clients={[]}
+        agent={{ name: "Koed", look: DEFAULT_AGENT_LOOK }}
+        statusStore={statusStore}
+        onOpenProject={() => undefined}
+        entries={["koed", "koed-site", "kin-engine"].map((id, i) => ({
+          id,
+          name: id,
+          eventCount: 40 - i * 10,
+          latestAt: new Date(Date.now() - i * 3_600_000).toISOString()
+        }))}
+        looseConversations={Array.from({ length: 14 }, (_, i) => ({
+          key: `loose-${i}`,
+          title: `Loose Conversation ${i + 1}`,
+          latestAt: new Date(
+            Date.now() - [0.1, 3, 45][i % 3]! * 86_400_000
+          ).toISOString(),
+          client: (["claude", "codex", "pi", null] as const)[i % 4]!
+        }))}
+        onOpenConversation={() => undefined}
+      />
+    </div>
   ) : new URLSearchParams(location.search).get("full") === "1" ? (
     <FullAppValidation />
   ) : (

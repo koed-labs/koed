@@ -90,6 +90,10 @@ function engine(): CrowdGLRenderer | null {
 
 export const pixelkinEngineAvailable = () => engine() !== null;
 
+/** The renderer every Pixelkin shares, for other art drawn with the Kin's
+ * look (Conversation coins). Null without WebGL2. */
+export const sharedKinRenderer = engine;
+
 const reduced = () => reducedMotion?.matches ?? false;
 
 export function createPixelkinActor(
