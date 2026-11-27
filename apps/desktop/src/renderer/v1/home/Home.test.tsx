@@ -281,13 +281,20 @@ describe("Home", () => {
     const coins = [
       ...container.querySelectorAll<HTMLButtonElement>(".v1-home-floor-coin")
     ];
-    // Newest first; the tooltip names it, with its client's logo.
+    // Newest first; the tooltip names it, with its client's logo and how
+    // long ago it was active.
     expect(coins.map((coin) => coin.getAttribute("aria-label"))).toEqual([
       "Open Pi OAuth and Extension Repair",
       "Open Older loose chat"
     ]);
-    expect(coins[0]!.querySelector('[role="tooltip"]')?.textContent).toBe(
+    expect(coins[0]!.querySelector(".v1-home-floor-title")?.textContent).toBe(
       "Pi OAuth and Extension Repair"
+    );
+    expect(coins[0]!.querySelector(".v1-home-floor-ago")?.textContent).toBe(
+      "12h ago"
+    );
+    expect(coins[1]!.querySelector(".v1-home-floor-ago")?.textContent).toBe(
+      "3d ago"
     );
     expect(coins[0]!.querySelector(".v1-home-floor-client")).not.toBeNull();
     expect(coins[1]!.querySelector(".v1-home-floor-client")).toBeNull();
