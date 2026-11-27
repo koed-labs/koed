@@ -801,7 +801,9 @@ describe("Claude historical import", () => {
         async (_sourceId: string, batch: Record<string, unknown>) => {
           batches.push(batch);
           if (batch.expectedSourceOffset !== cursor.offset) {
-            throw new MemoryApiError(409, "Historical import cursor conflict");
+            throw new MemoryApiError("Historical import cursor conflict", {
+              status: 409
+            });
           }
           if (batch.kind !== "journal_range") {
             cursor = {
@@ -1026,27 +1028,40 @@ describe("Claude historical import", () => {
     expect(itemsOf(api.batches[1])[0]?.externalTurnId).toBe(pastedImageTurn);
   });
 
-  it("fails when a journal range commit does not land on the record end", async () => {
-    const api = journalApi({
-      records: [userRecord(randomUUID(), [base64Image(3_600_000)])]
-    });
-    vi.mocked(api.client.ingestHistoricalImportBatch).mockResolvedValueOnce({
-      itemCount: 1,
-      replayed: false,
-      source: {
-        historicalCursorOffset: 10,
-        historicalCursorLine: 1,
-        historicalCursorParserState: {}
-      }
-    });
+  it.each([
+    ["another offset", { historicalCursorOffset: 10 }],
+    ["another line", { historicalCursorLine: 5 }],
+    ["no turn to resume", { historicalCursorParserState: {} }]
+  ])(
+    "fails when a journal range commit answers with %s",
+    async (_case, difference) => {
+      const api = journalApi({
+        records: [
+          userRecord(randomUUID(), [base64Image(3_600_000)]),
+          assistantRecord("Seen")
+        ]
+      });
+      vi.mocked(api.client.ingestHistoricalImportBatch).mockResolvedValueOnce({
+        itemCount: 1,
+        replayed: false,
+        source: {
+          historicalCursorOffset: api.lineEnd(0),
+          historicalCursorLine: 1,
+          historicalCursorParserState: { currentTurnId: randomUUID() },
+          ...difference
+        }
+      });
 
-    await expect(
-      importClaudeHistoricalSource({
-        client: api.client,
-        source: api.source()
-      })
-    ).rejects.toThrow("claude_historical_journal_range_cursor_mismatch");
-  });
+      await expect(
+        importClaudeHistoricalSource({
+          client: api.client,
+          source: api.source()
+        })
+      ).rejects.toThrow("claude_historical_journal_range_cursor_mismatch");
+      // Nothing is sent after a commit the client cannot resume from.
+      expect(api.client.ingestHistoricalImportBatch).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it("splits records that fit one by one but not together into item batches", async () => {
     const records = Array.from({ length: 1_500 }, (_, index) =>

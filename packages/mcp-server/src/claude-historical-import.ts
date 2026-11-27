@@ -260,21 +260,25 @@ export const importClaudeHistoricalSource = async (input: {
           const committed = objectValue<{
             historicalCursorOffset?: unknown;
             historicalCursorLine?: unknown;
-            historicalCursorParserState?: unknown;
+            historicalCursorParserState?: { currentTurnId?: unknown };
           }>(
             response,
             "source",
             "claude_historical_journal_range_response_missing"
           );
+          const currentTurnId =
+            committed.historicalCursorParserState?.currentTurnId;
+          // Continue only from the exact end of this one record, with the
+          // turn the next record belongs to.
           if (
             committed.historicalCursorOffset !== chunk.end ||
-            typeof committed.historicalCursorLine !== "number"
+            committed.historicalCursorLine !== line + 1 ||
+            typeof currentTurnId !== "string"
           ) {
             throw new Error("claude_historical_journal_range_cursor_mismatch");
           }
-          line = committed.historicalCursorLine;
-          parserState = (committed.historicalCursorParserState ??
-            {}) as ClaudeTranscriptParserState;
+          line += 1;
+          parserState = { currentTurnId };
           itemCount +=
             typeof response.itemCount === "number" ? response.itemCount : 0;
         }
