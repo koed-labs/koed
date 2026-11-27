@@ -15014,8 +15014,9 @@ describe("account and access flows", () => {
     });
     const runId = jsonBody<{ run: { id: string } }>(runResponse).run.id;
 
-    // The second record is larger than an item batch may carry; the fourth
-    // has more content blocks than one record may contribute.
+    // The second record is larger than an item batch may carry, the fourth
+    // has more content blocks than one record may contribute, and the fifth
+    // lies past the historical frontier.
     const turnId = randomUUID();
     const oversizedText = "x".repeat(4_100_000);
     const lines = [
@@ -15051,6 +15052,12 @@ describe("account and access flows", () => {
             text: "b"
           }))
         }
+      },
+      {
+        type: "assistant",
+        uuid: randomUUID(),
+        timestamp: "2026-08-11T12:00:04.000Z",
+        message: { role: "assistant", content: "Captured live, not imported" }
       }
     ].map((record) => Buffer.from(`${JSON.stringify(record)}\n`));
     const journalBytes = Buffer.concat(lines);
@@ -15061,6 +15068,7 @@ describe("account and access flows", () => {
     const firstEnd = lines[0]!.byteLength;
     const secondEnd = firstEnd + lines[1]!.byteLength;
     const thirdEnd = secondEnd + lines[2]!.byteLength;
+    const frontier = thirdEnd + lines[3]!.byteLength;
     const externalSessionId = "claude-journal-range";
     const sourceFingerprint = "b".repeat(64);
 
@@ -15086,8 +15094,8 @@ describe("account and access flows", () => {
         artifactFormatVersion: 1,
         journalStartOffset: 0,
         journalStartLine: 0,
-        liveStartOffset: journalLength,
-        liveStartLine: lines.length,
+        liveStartOffset: frontier,
+        liveStartLine: 4,
         currentSourceLength: journalLength,
         sourceCreatedAt: "2026-08-11T11:59:59.000Z",
         redactedSourceLabel: "Claude session journal range"
@@ -15233,6 +15241,44 @@ describe("account and access flows", () => {
     ]);
     expect(forwardedBatches).toHaveLength(1);
 
+    // Capture Policy and the frontier are checked before the journal is read.
+    const segmentLookup = vi.spyOn(
+      repository,
+      "listConversationSourceSegmentsByIndex"
+    );
+    const setProjectCapture = (captureState: "enabled" | "disabled") =>
+      app.inject({
+        method: "PUT",
+        url: "/v1/capture-policies",
+        headers: ownerHeaders,
+        payload: {
+          targetType: "project",
+          projectId: "project-journal-range",
+          captureState,
+          visibility: "personal"
+        }
+      });
+    await setProjectCapture("disabled");
+    const blockedByPolicy = await postBatch(range);
+    await setProjectCapture("enabled");
+    const pastFrontier = await postBatch({
+      ...range,
+      sourceOffset: journalLength
+    });
+    expect([
+      [
+        blockedByPolicy.statusCode,
+        jsonBody<{ code?: string }>(blockedByPolicy).code
+      ],
+      [pastFrontier.statusCode, jsonBody<{ code?: string }>(pastFrontier).code]
+    ]).toEqual([
+      [409, "historical_import_capture_policy_blocked"],
+      [409, "historical_import_cursor_conflict"]
+    ]);
+    expect(segmentLookup).not.toHaveBeenCalled();
+    expect(forwardedBatches).toHaveLength(1);
+    segmentLookup.mockRestore();
+
     const imported = await postBatch(range);
     expect(imported.statusCode, imported.body).toBe(200);
     expect(forwardedBatches[1]).toMatchObject({
@@ -15306,7 +15352,7 @@ describe("account and access flows", () => {
     const tooManyItems = await postBatch({
       ...range,
       expectedSourceOffset: thirdEnd,
-      sourceOffset: journalLength
+      sourceOffset: frontier
     });
     expect(tooManyItems.statusCode).toBe(422);
     expect(jsonBody<{ code?: string }>(tooManyItems).code).toBe(

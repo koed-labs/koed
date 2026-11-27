@@ -6,6 +6,7 @@ import type {
 } from "@koed-labs/db";
 import { parseClaudeHistoricalImportBytes } from "@koed-labs/mcp-server/claude-transcript-parser";
 import type { FastifyInstance } from "fastify";
+import { ZodError } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
 import { readConversationSourceSegmentBytes } from "./conversation-source-journal-routes.js";
 import { createFilesystemConversationSourceStorage } from "./conversation-source-storage.js";
@@ -212,6 +213,16 @@ const journalRangeBatch = async (
       "Journal range import is not supported for this AI Client"
     );
   }
+  // Refuse before reading stored content. The repository repeats both checks
+  // in the transaction that writes the items.
+  await requireImportPolicy(context, repo, userId, source);
+  if (input.sourceOffset > source.registrationFrontierOffset) {
+    throw journalRangeError(
+      409,
+      "historical_import_cursor_conflict",
+      "Historical import cursor conflict"
+    );
+  }
   const actor = { userId };
   const [segment] = await repo.listConversationSourceSegmentsByIndex(actor, {
     artifactId: source.artifactId,
@@ -301,7 +312,13 @@ const journalRangeBatch = async (
     items = parsed.items.map((item) =>
       historicalImportJournalRangeItemSchema.parse(item)
     );
-  } catch {
+  } catch (error) {
+    // Only a record the parser or the item rules reject is a data error.
+    const invalidRecord =
+      error instanceof ZodError ||
+      (error instanceof Error &&
+        error.message.startsWith("claude_transcript_"));
+    if (!invalidRecord) throw error;
     throw journalRangeError(
       422,
       "historical_import_journal_range_invalid",
