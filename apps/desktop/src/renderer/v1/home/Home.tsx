@@ -1694,7 +1694,14 @@ function FloorCoin({
       {motion.mode === "rest" && !absorbed ? (
         <RestingCoin look={coinLook} vectorSize={20} />
       ) : (
-        <CoinFace look={{ ...coinLook, pose: "standing" }} vectorSize={20} />
+        <CoinFace
+          look={{
+            ...coinLook,
+            pose: "standing",
+            tumble: (motion.angle * Math.PI) / 180
+          }}
+          vectorSize={20}
+        />
       )}
       {/* The coin carries the client's mark; the tooltip carries the title. */}
       <span className="v1-home-floor-tip" role="tooltip">

@@ -791,7 +791,8 @@ button.v1-home-pill[data-repair]:hover {
   cursor: grabbing;
   transition: none;
 }
-.v1-home-floor-coin[data-motion="flying"] > .v1-coin-canvas,
+/* kin-engine draws the canvas coin's tumble itself; the flat vector coin
+   fakes it by squashing. */
 .v1-home-floor-coin[data-motion="flying"] > .v1-coin-vector {
   rotate: calc(var(--coin-angle, 0deg) * 0.25);
   scale: 1 cos(var(--coin-angle, 0deg));

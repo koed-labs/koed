@@ -20,10 +20,23 @@ export type CoinLook = {
   pose?: "lying" | "standing";
   /** Warm light, 0 to 1: a coin on its way into a Kin. */
   glow?: number;
+  /** A standing coin turned end over end, in radians: a thrown coin. */
+  tumble?: number;
 };
 
 /** How far a standing coin tips back towards the viewer, in radians. */
 const FACING_TILT = -0.3;
+
+/** A tumbling coin is drawn at one of this many turns, each rendered once
+ * and cached, so a spinning coin only swaps images. */
+const TUMBLE_STEPS = 32;
+const TUMBLE_STEP = (2 * Math.PI) / TUMBLE_STEPS;
+
+/** The turn to draw for `tumble`, snapped to a cached step. */
+const tumbleStep = (tumble: number) => {
+  const step = Math.round(tumble / TUMBLE_STEP) % TUMBLE_STEPS;
+  return (step < 0 ? step + TUMBLE_STEPS : step) * TUMBLE_STEP;
+};
 
 /** The vector coin's width: kin-engine's floor sizes, 14 to 28 pixels. */
 const fallbackCoinSize = (turns: number) =>
@@ -50,6 +63,7 @@ export function CoinFace({
   const [vector, setVector] = useState(() => !pixelkinEngineAvailable());
   const { client, age, turns, glow } = look;
   const pose = look.pose ?? "lying";
+  const turn = pose === "standing" ? tumbleStep(look.tumble ?? 0) : 0;
   // Repaint at the new density when the Kin's resolution setting changes.
   const resolution = useSyncExternalStore(
     subscribeKinResolution,
@@ -66,14 +80,16 @@ export function CoinFace({
       pose:
         pose === "standing"
           ? // Tipped back a little, so the face looks up at the viewer and
-            // the edge shows below it, as a lying coin's does.
-            { kind: "tumbling", angle: FACING_TILT }
+            // the edge shows below it, as a lying coin's does. A thrown coin
+            // turns end over end from there, drawn by the engine with its
+            // edge and light where they belong at every turn.
+            { kind: "tumbling", angle: FACING_TILT + turn }
           : { kind: "lying" },
       ...(glow && { glow }),
       ...(mark && { faceMark: mark })
     };
     if (!paintCoin(target, description)) setVector(true);
-  }, [vector, client, age, turns, pose, glow, resolution]);
+  }, [vector, client, age, turns, pose, glow, turn, resolution]);
 
   if (!vector)
     return (
