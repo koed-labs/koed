@@ -9,6 +9,7 @@ import {
   projectKinLook
 } from "../pixelkin/agent-kin.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
+import * as stage from "../pixelkin/stage.js";
 import { fitRestingSpots, Home, HOME_RERANK_MS } from "./Home.js";
 import type { HomeProjectEntry, HomeView } from "./home-model.js";
 
@@ -281,18 +282,99 @@ describe("Home", () => {
     const coins = [
       ...container.querySelectorAll<HTMLButtonElement>(".v1-home-floor-coin")
     ];
-    // Newest first; the tooltip names it, with its client's logo.
+    // Newest first; the tooltip names it, with its client's logo and how
+    // long ago it was active.
     expect(coins.map((coin) => coin.getAttribute("aria-label"))).toEqual([
       "Open Pi OAuth and Extension Repair",
       "Open Older loose chat"
     ]);
-    expect(coins[0]!.querySelector('[role="tooltip"]')?.textContent).toBe(
+    expect(coins[0]!.querySelector(".v1-home-floor-title")?.textContent).toBe(
       "Pi OAuth and Extension Repair"
+    );
+    expect(coins[0]!.querySelector(".v1-home-floor-ago")?.textContent).toBe(
+      "12h ago"
+    );
+    expect(coins[1]!.querySelector(".v1-home-floor-ago")?.textContent).toBe(
+      "3d ago"
     );
     expect(coins[0]!.querySelector(".v1-home-floor-client")).not.toBeNull();
     expect(coins[1]!.querySelector(".v1-home-floor-client")).toBeNull();
     await act(async () => coins[0]!.click());
     expect(onOpenConversation.mock.calls).toEqual([["newer"]]);
+  });
+
+  it("keeps Home mounted with SVG coins when the first WebGL draw throws", async () => {
+    const draw = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("WebGL context lost");
+      })
+      .mockReturnValue(null);
+    vi.spyOn(stage, "pixelkinEngineAvailable").mockReturnValue(true);
+    vi.spyOn(stage, "sharedKinRenderer").mockReturnValue({
+      render: draw,
+      canvas: document.createElement("canvas"),
+      available: true,
+      ready: Promise.resolve(),
+      gl: null
+    });
+    const onOpenConversation = vi.fn();
+    await render({
+      entries: [],
+      looseConversations: [
+        {
+          key: "loose",
+          title: "Loose chat",
+          latestAt: "2026-11-03T00:00:00Z",
+          client: null
+        }
+      ],
+      onOpenConversation
+    });
+
+    expect(draw).toHaveBeenCalled();
+    const coin = container.querySelector<HTMLButtonElement>(
+      ".v1-home-floor-coin"
+    )!;
+    expect(coin.querySelectorAll(".v1-coin-vector > svg")).toHaveLength(2);
+    await act(async () => coin.click());
+    expect(onOpenConversation).toHaveBeenCalledWith("loose");
+  });
+
+  it("does not cache coin artwork when a completed draw loses WebGL", async () => {
+    const canvas = document.createElement("canvas");
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+      clearRect: vi.fn()
+    } as unknown as CanvasRenderingContext2D);
+    const draw = vi.fn().mockReturnValue(canvas);
+    const gl = { isContextLost: () => true } as WebGL2RenderingContext;
+    vi.spyOn(stage, "pixelkinEngineAvailable").mockReturnValue(true);
+    vi.spyOn(stage, "sharedKinRenderer").mockReturnValue({
+      render: draw,
+      canvas,
+      available: true,
+      ready: Promise.resolve(),
+      gl
+    });
+    const conversation = {
+      title: "Loose chat",
+      latestAt: "2026-11-02T00:00:00Z",
+      client: null
+    };
+    await render({
+      entries: [],
+      looseConversations: [
+        { ...conversation, key: "first" },
+        { ...conversation, key: "second" }
+      ],
+      onOpenConversation: vi.fn()
+    });
+
+    expect(draw).toHaveBeenCalledTimes(4);
+    expect(
+      container.querySelectorAll(".v1-home-floor-coin .v1-coin-vector > svg")
+    ).toHaveLength(4);
   });
 
   const pointer = (

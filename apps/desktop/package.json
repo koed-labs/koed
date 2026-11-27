@@ -51,7 +51,7 @@
     "@electron/asar": "^3.4.1",
     "@electron/osx-sign": "1.3.3",
     "@koed-labs/api": "workspace:*",
-    "@koed-labs/kin-engine": "1.1.0",
+    "@koed-labs/kin-engine": "1.2.0",
     "@koed-labs/ui": "workspace:*",
     "@legendapp/list": "3.0.0-beta.44",
     "@pierre/diffs": "^1.2.5",

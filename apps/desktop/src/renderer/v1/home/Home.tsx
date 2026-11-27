@@ -24,8 +24,14 @@ import {
   integrationConsentCopy,
   type IntegrationMutationCommand
 } from "../../views/preferences/integration-consent.js";
+import { coinAge } from "../coin/coin-age.js";
+import {
+  CoinFace,
+  RestingCoin,
+  type CoinLook
+} from "../coin/ConversationCoin.js";
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
-import { wakePixelkins } from "../pixelkin/stage.js";
+import { wakePixelkins, type PixelkinCuriosity } from "../pixelkin/stage.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
 import type { ClientId } from "../onboarding/model.js";
 import { projectKinLook, type AgentLook } from "../pixelkin/agent-kin.js";
@@ -794,6 +800,7 @@ function ProjectsStage({
                 (received.get(entry.id) ?? 0)
               }
               spin={spinProps.spin}
+              curiosity={homeCuriosity}
             />
             <span className="v1-home-kin-shadow" aria-hidden="true" />
             {dropTarget?.id === entry.id && (
@@ -924,6 +931,7 @@ function SoloStage({
             expression={expression}
             hopKey={hopKey}
             spin={hostSpin.spin}
+            curiosity={homeCuriosity}
           />
         )}
         {showStageHost && (
@@ -964,6 +972,35 @@ export type HomeConversation = {
   aliases: readonly string[];
   client: "codex" | "claude" | "pi" | null;
   projectIds: readonly string[];
+};
+
+const centre = (element: Element) => {
+  const rect = element.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+};
+
+// Home's Kin watch a coin in the air, the most recently thrown if several
+// are, and now and then glance down at coins on the floor or up at AI
+// Clients before looking back at the pointer.
+const homeCuriosity: PixelkinCuriosity = {
+  lure: (kin) => {
+    let latest: { element: Element; flown: number } | null = null;
+    for (const coin of kin
+      .closest(".v1-home-stage")
+      ?.querySelectorAll('.v1-home-floor-coin[data-motion="flying"]') ?? []) {
+      const flown = Number((coin as HTMLElement).dataset.flown ?? 0);
+      if (!latest || flown > latest.flown) latest = { element: coin, flown };
+    }
+    return latest ? centre(latest.element) : null;
+  },
+  interests: (kin) =>
+    [
+      ...(kin
+        .closest(".v1-home-stage")
+        ?.querySelectorAll(
+          '.v1-home-floor-coin[data-motion="rest"], .v1-home-keycap'
+        ) ?? [])
+    ].map(centre)
 };
 
 function FlyingCoin({ coin, onDone }: { coin: Coin; onDone: () => void }) {
@@ -1012,66 +1049,12 @@ function FlyingCoin({ coin, onDone }: { coin: Coin; onDone: () => void }) {
   }, [coin]);
   return (
     <span className="v1-home-coin" ref={ref}>
-      <CoinArtwork />
+      {/* Falling face-on into the Kin, warm from the AI Client's keycap. */}
+      <CoinFace
+        look={{ client: null, turns: 24, pose: "standing", glow: 0.6 }}
+        vectorSize={18}
+      />
     </span>
-  );
-}
-
-// Vector edges retain detail while the coins scale, flatten and tumble.
-function CoinArtwork({
-  client = null
-}: {
-  client?: HomeLooseConversation["client"];
-}) {
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      shapeRendering="geometricPrecision"
-      aria-hidden="true"
-    >
-      <ellipse cx="16" cy="17" rx="14.25" ry="14" fill="#7a4a12" />
-      <circle
-        cx="16"
-        cy="15"
-        r="14"
-        fill="#e0a03a"
-        stroke="#7a4a12"
-        strokeWidth="1.5"
-      />
-      <circle
-        cx="16"
-        cy="14.5"
-        r="12.5"
-        fill="#ffd166"
-        stroke="#fff4c2"
-        strokeWidth="0.75"
-      />
-      <circle cx="16" cy="14.5" r="10.25" fill="#e0a03a" />
-      <circle cx="16" cy="15.25" r="9.5" fill="#ffd166" />
-      <path
-        d="M6.5 11a10 10 0 0 1 12-6"
-        fill="none"
-        stroke="#fff4c2"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-      {client ? (
-        // The originating AI Client's mark, struck into the coin.
-        <svg x="9.25" y="8" width="13.5" height="13.5" fill="#7a4a12">
-          <AiClientLogo id={client} />
-        </svg>
-      ) : (
-        <>
-          <rect x="12.5" y="11.5" width="7" height="7" rx="1" fill="#7a4a12" />
-          <path
-            d="M13 18.5h5.5a1 1 0 0 0 1-1V12"
-            fill="none"
-            stroke="#fff4c2"
-            strokeWidth="0.75"
-          />
-        </>
-      )}
-    </svg>
   );
 }
 
@@ -1369,7 +1352,11 @@ function FloorCoin({
   const title = useRef<HTMLSpanElement>(null);
   // A title wider than the tooltip is cut off with an ellipsis and, while the
   // tooltip is up, slides to show the rest (not under reduced motion).
-  const measureTitle = () =>
+  // When the tooltip last opened, for how long ago the Conversation was
+  // active; it is read again each time the tooltip opens.
+  const [tipAt, setTipAt] = useState(() => Date.now());
+  const measureTitle = () => {
+    setTipAt(Date.now());
     requestAnimationFrame(() => {
       const label = title.current;
       if (!label) return;
@@ -1378,6 +1365,7 @@ function FloorCoin({
         label.style.setProperty("--marquee", `-${overflow + 4}px`);
       else label.style.removeProperty("--marquee");
     });
+  };
   const [flight, setFlight] = useState<CoinMotion | null>(null);
   // How far up the resting band this coin lies; it lands on this lane.
   const lane = home.lane;
@@ -1399,6 +1387,8 @@ function FloorCoin({
   // Grabbed while still moving: letting go without a drag must resume it.
   const caught = useRef(false);
   const frame = useRef(0);
+  // When the coin last took off, so Kin watch the newest throw.
+  const flown = useRef(0);
   const ceiling = useRef(400);
   // Taken into a Project: it shrinks away until the list catches up.
   const [absorbed, setAbsorbed] = useState(false);
@@ -1466,6 +1456,7 @@ function FloorCoin({
   };
   const fly = () => {
     let last = performance.now();
+    flown.current = last;
     const step = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.032);
       last = now;
@@ -1618,13 +1609,22 @@ function FloorCoin({
   const stopWindow = useRef<(() => void) | null>(null);
   useEffect(() => () => stopWindow.current?.(), []);
 
+  // Loose Conversations carry no turn count, so every floor coin is the
+  // middle weight.
+  const coinLook: CoinLook = {
+    client: conversation.client,
+    turns: 24,
+    age: coinAge(conversation.latestAt, new Date())
+  };
+
   return (
     <button
       ref={ref}
       type="button"
-      className="v1-home-floor-coin"
+      className="v1-home-floor-coin v1-coin-host"
       data-coin-conversation={conversation.key}
       data-motion={absorbed ? "absorbed" : motion.mode}
+      data-flown={flown.current || undefined}
       style={
         {
           "--coin-x": `calc(50% + ${motion.x}px)`,
@@ -1729,7 +1729,20 @@ function FloorCoin({
         onOpen(conversation.key);
       }}
     >
-      <CoinArtwork client={conversation.client} />
+      {/* Lying on the floor, standing to face you when hovered; held or
+          thrown, it stands and shows its face. */}
+      {motion.mode === "rest" && !absorbed ? (
+        <RestingCoin look={coinLook} vectorSize={20} />
+      ) : (
+        <CoinFace
+          look={{
+            ...coinLook,
+            pose: "standing",
+            tumble: (motion.angle * Math.PI) / 180
+          }}
+          vectorSize={20}
+        />
+      )}
       {/* The coin carries the client's mark; the tooltip carries the title. */}
       <span className="v1-home-floor-tip" role="tooltip">
         {conversation.client && (
@@ -1739,6 +1752,9 @@ function FloorCoin({
         )}
         <span className="v1-home-floor-title" ref={title}>
           {conversation.title}
+        </span>
+        <span className="v1-home-floor-ago">
+          {formatHomeAgo(conversation.latestAt, tipAt)}
         </span>
       </span>
     </button>
