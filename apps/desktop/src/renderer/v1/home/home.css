@@ -766,8 +766,9 @@ button.v1-home-pill[data-repair]:hover {
      fallback flattens itself). */
   width: 20px;
   height: 12px;
-  /* Coins further back in the band lie slightly smaller and dimmer. */
-  transform: translateX(-50%) scale(calc(1 - 0.14 * var(--coin-depth, 0)));
+  /* Coins keep one size, on the floor or in the hand; those further back
+     in the band lie slightly dimmer. */
+  transform: translateX(-50%);
   opacity: calc(1 - 0.25 * var(--coin-depth, 0));
   transform-origin: 50% 100%;
   cursor: grab;

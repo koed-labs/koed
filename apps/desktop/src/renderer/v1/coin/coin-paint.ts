@@ -25,8 +25,9 @@ import { currentKinResolution } from "../../state/kin-resolution.js";
 const SCENE = 96;
 /** The part of the frame a coin's canvas keeps, around the coin. */
 export const COIN_FRAME = 36;
-/** Looking down at a lying coin, about as steeply as Home's flattened coins. */
-const FLOOR_CAMERA_HEIGHT = 7;
+/** Looking down at a lying coin, about as steeply as Home's flattened coins:
+ * the camera rises this far for each unit it stands back. */
+const FLOOR_CAMERA_SLOPE = 7 / 9;
 /** A coin held up to face the viewer is seen level, so its edge shows below
  * the face, lit from above, as on the floor. Seen from the floor camera an
  * upright coin shows its edge above the face instead, shaded upside down. */
@@ -96,16 +97,21 @@ function render(description: ConversationDescription, ratio: number) {
       objects: [{ x: 0, y: 0, z: 0, description }]
     }
   });
+  // A lying coin is seen from above at the same distance as a standing
+  // one, so it stays the same size when it lands or is picked up.
+  const { position } = base.camera;
+  const lying = description.pose?.kind === "lying";
+  const back = lying
+    ? position.z / Math.hypot(1, FLOOR_CAMERA_SLOPE)
+    : position.z;
   const scene = {
     ...base,
     camera: {
       ...base.camera,
       position: {
-        ...base.camera.position,
-        y:
-          description.pose?.kind === "lying"
-            ? FLOOR_CAMERA_HEIGHT
-            : FACING_CAMERA_HEIGHT
+        ...position,
+        y: lying ? back * FLOOR_CAMERA_SLOPE : FACING_CAMERA_HEIGHT,
+        z: back
       }
     }
   };
