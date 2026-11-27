@@ -4,11 +4,17 @@ import type {
   HistoricalImportSourceRecord,
   MemorySourceRepository
 } from "@koed-labs/db";
+import { parseClaudeHistoricalImportBytes } from "@koed-labs/mcp-server/claude-transcript-parser";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
+import { readConversationSourceSegmentBytes } from "./conversation-source-journal-routes.js";
+import { createFilesystemConversationSourceStorage } from "./conversation-source-storage.js";
 import {
   createHistoricalImportSourceSchema,
+  historicalImportBatchRequestSchema,
   historicalImportBatchSchema,
+  historicalImportJournalRangeItemSchema,
+  historicalImportJournalRangeSchema,
   historicalImportRunListSchema,
   historicalImportRunParamsSchema,
   historicalImportSourceLookupSchema,
@@ -172,6 +178,150 @@ const requireImportPolicy = async (
 type HistoricalBatchInput = ReturnType<
   typeof historicalImportBatchSchema.parse
 >;
+type HistoricalJournalRangeInput = ReturnType<
+  typeof historicalImportJournalRangeSchema.parse
+>;
+
+const CLAUDE_TRANSCRIPT_ADAPTER = "claude-code-transcript-v1";
+// A record index reserves 1000 source sequences, one per content block.
+const JOURNAL_RANGE_MAXIMUM_ITEMS = 1_000;
+
+const journalRangeError = (
+  statusCode: number,
+  code: string,
+  message: string
+): Error => Object.assign(new Error(message), { statusCode, code });
+
+/**
+ * Builds the item batch for one journal record the client could not upload.
+ * The record is read from the stored segment, so nothing here trusts client
+ * content; the repository still revalidates the cursor and Capture Policy in
+ * the transaction that writes the items.
+ */
+const journalRangeBatch = async (
+  context: ApiRouteContext,
+  repo: MemorySourceRepository,
+  userId: string,
+  source: HistoricalImportSourceRecord,
+  input: HistoricalJournalRangeInput
+): Promise<HistoricalBatchInput> => {
+  if (source.sourceAdapterVersion !== CLAUDE_TRANSCRIPT_ADAPTER) {
+    throw journalRangeError(
+      422,
+      "historical_import_journal_range_unsupported",
+      "Journal range import is not supported for this AI Client"
+    );
+  }
+  const actor = { userId };
+  const [segment] = await repo.listConversationSourceSegmentsByIndex(actor, {
+    artifactId: source.artifactId,
+    afterSegmentIndex: input.segmentIndex - 1,
+    throughSegmentIndex: input.segmentIndex,
+    limit: 1
+  });
+  if (
+    !segment ||
+    segment.plaintextDigest !== input.lastVerifiedDigest ||
+    input.expectedSourceOffset < segment.sourceStartOffset ||
+    input.sourceOffset > segment.sourceEndOffset
+  ) {
+    throw journalRangeError(
+      409,
+      "historical_import_segment_verification_failed",
+      "Historical import segment verification failed"
+    );
+  }
+  const segmentBytes = Buffer.from(
+    await readConversationSourceSegmentBytes(
+      context,
+      createFilesystemConversationSourceStorage(context.config.koedHome),
+      segment
+    )
+  );
+  const start = input.expectedSourceOffset - segment.sourceStartOffset;
+  const record = segmentBytes.subarray(
+    start,
+    input.sourceOffset - segment.sourceStartOffset
+  );
+  // Exactly one complete record: it starts after a line end and holds a
+  // single line end, its own.
+  if (
+    (start > 0 && segmentBytes[start - 1] !== 0x0a) ||
+    record.indexOf(0x0a) !== record.byteLength - 1
+  ) {
+    throw journalRangeError(
+      422,
+      "historical_import_journal_range_invalid",
+      "Journal range must cover exactly one complete record"
+    );
+  }
+  const range = {
+    expectedSourceOffset: input.expectedSourceOffset,
+    sourceOffset: input.sourceOffset,
+    segmentIndex: input.segmentIndex,
+    lastVerifiedDigest: input.lastVerifiedDigest
+  };
+  if (source.historicalCursorOffset === input.sourceOffset) {
+    // Already committed, for example after a lost response. The repository
+    // answers with a replay, or with a conflict if the import moved on.
+    return { ...range, sourceLine: source.historicalCursorLine, items: [] };
+  }
+  if (source.historicalCursorOffset !== input.expectedSourceOffset) {
+    throw journalRangeError(
+      409,
+      "historical_import_cursor_conflict",
+      "Historical import cursor conflict"
+    );
+  }
+  const artifact = await repo.getConversationSourceArtifact(
+    actor,
+    source.artifactId
+  );
+  if (!artifact) {
+    throw journalRangeError(
+      409,
+      "historical_import_artifact_unavailable",
+      "Conversation Source Artifact is unavailable"
+    );
+  }
+  const currentTurnId = source.historicalCursorParserState.currentTurnId;
+  let parsed: ReturnType<typeof parseClaudeHistoricalImportBytes>;
+  let items: HistoricalBatchInput["items"];
+  try {
+    parsed = parseClaudeHistoricalImportBytes({
+      bytes: record,
+      absoluteStartOffset: input.expectedSourceOffset,
+      lineIndexOffset: source.historicalCursorLine,
+      sessionId: source.sessionId,
+      externalSessionId: source.sourceSessionId,
+      sourceFingerprint: source.sourceFingerprint,
+      sourceComponentId: artifact.sourceComponentId,
+      ...(typeof currentTurnId === "string" ? { prior: { currentTurnId } } : {})
+    });
+    items = parsed.items.map((item) =>
+      historicalImportJournalRangeItemSchema.parse(item)
+    );
+  } catch {
+    throw journalRangeError(
+      422,
+      "historical_import_journal_range_invalid",
+      "Journal range does not hold an importable record"
+    );
+  }
+  if (items.length > JOURNAL_RANGE_MAXIMUM_ITEMS) {
+    throw journalRangeError(
+      422,
+      "historical_import_journal_range_too_many_items",
+      "Journal record holds more items than one record may contribute"
+    );
+  }
+  return {
+    ...range,
+    sourceLine: parsed.checkpoint.lineCount,
+    parserState: parsed.parserState,
+    items
+  };
+};
 
 const registerCreateRunRoute = (
   app: FastifyInstance,
@@ -399,10 +549,14 @@ const ingestHistoricalBatch = async (
   context: ApiRouteContext,
   userId: string,
   sourceId: string,
-  input: HistoricalBatchInput
+  request: HistoricalBatchInput | HistoricalJournalRangeInput
 ) => {
   const repo = context.requireRepository();
   const source = await requireSource(repo, userId, sourceId);
+  const input =
+    "kind" in request
+      ? await journalRangeBatch(context, repo, userId, source, request)
+      : request;
   return repo.ingestHistoricalImportBatch(
     { userId },
     {
@@ -431,13 +585,24 @@ const registerBatchRoute = (
       const { sourceId } = historicalImportSourceParamsSchema.parse(
         request.params
       );
-      const input = historicalImportBatchSchema.parse(request.body);
+      const input = historicalImportBatchRequestSchema.parse(request.body);
       const { items, source, policy, replayed } = await ingestHistoricalBatch(
         context,
         user.id,
         sourceId,
         input
       );
+      if ("kind" in input) {
+        // The client holds no parser state for a record it did not parse, so
+        // it continues from the committed cursor. The items stay out of the
+        // response: the record was too large to upload in the first place.
+        return {
+          itemCount: items.length,
+          source: presentSource(source, { includeResumeState: true }),
+          policy,
+          replayed
+        };
+      }
       return {
         items: items.map((item) => ({
           ...item,

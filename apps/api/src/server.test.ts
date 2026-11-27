@@ -24,6 +24,7 @@ import type {
 } from "@koed-labs/core";
 import releaseManifest from "@koed-labs/koed/package.json" with { type: "json" };
 import { ConversationPresentationVersionConflictError } from "@koed-labs/db";
+import { parseClaudeHistoricalImportBytes } from "@koed-labs/mcp-server/claude-transcript-parser";
 import pdsFixture from "../../../packages/shared/test-fixtures/personal-device-sync-v1.json" with { type: "json" };
 import type {
   ActorContext,
@@ -14775,6 +14776,22 @@ describe("account and access flows", () => {
       headers: ownerHeaders,
       payload: { ...batchPayload, lastVerifiedDigest: "d".repeat(64) }
     });
+    const unsupportedJournalRange = await app.inject({
+      method: "POST",
+      url: `/v1/historical-import-sources/${sourceId}/batches`,
+      headers: ownerHeaders,
+      payload: {
+        kind: "journal_range",
+        expectedSourceOffset: 0,
+        sourceOffset: journalLength,
+        segmentIndex: 0,
+        lastVerifiedDigest: journalDigest
+      }
+    });
+    expect(unsupportedJournalRange.statusCode).toBe(422);
+    expect(unsupportedJournalRange.json()).toMatchObject({
+      code: "historical_import_journal_range_unsupported"
+    });
     const unsafeFailure = await app.inject({
       method: "PATCH",
       url: `/v1/historical-import-sources/${sourceId}`,
@@ -14939,6 +14956,383 @@ describe("account and access flows", () => {
       jsonBody<{ artifact: { sourceGenerationId: string } }>(exactGeneration)
         .artifact.sourceGenerationId
     ).toBe(finalizedArtifact.sourceGenerationId);
+  });
+
+  it("imports one journal record by reference when it cannot be sent as items", async () => {
+    const repository = createFakeRepository();
+    const sourceSigningKey = generateKeyPairSync("ed25519");
+    const sourcePublicJwk = sourceSigningKey.publicKey.export({
+      format: "jwk"
+    });
+    if (typeof sourcePublicJwk.x !== "string") {
+      throw new Error("Test source signing key is invalid");
+    }
+    const forwardedBatches: Array<{
+      expectedSourceOffset: number;
+      sourceOffset: number;
+      sourceLine: number;
+      parserState?: Record<string, unknown>;
+      items: ConversationItemInput[];
+    }> = [];
+    const originalHistoricalIngest =
+      repository.ingestHistoricalImportBatch.bind(repository);
+    repository.ingestHistoricalImportBatch = async (actor, input) => {
+      forwardedBatches.push(input);
+      return originalHistoricalIngest(actor, input);
+    };
+    const app = await buildServer({
+      repository,
+      runMemoryJobsInlineForTests: true,
+      conversationSourceSignerFactory: (input) => ({
+        deploymentId: "00000000-0000-4000-8000-000000000001",
+        deviceInstanceId: "00000000-0000-4000-8000-000000000002",
+        keyId: input.originKeyId,
+        publicKey: sourcePublicJwk.x!,
+        sign: (payload) =>
+          sign(null, payload, sourceSigningKey.privateKey).toString("base64url")
+      })
+    });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "journal-range@example.com", password: "password123" }
+    });
+    const ownerToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(owner)),
+      payload: { name: "Historical Import" }
+    });
+    expect(ownerToken.statusCode, ownerToken.body).toBe(200);
+    const ownerHeaders = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(ownerToken).token}`
+    };
+    const runResponse = await app.inject({
+      method: "POST",
+      url: "/v1/historical-imports",
+      headers: ownerHeaders
+    });
+    const runId = jsonBody<{ run: { id: string } }>(runResponse).run.id;
+
+    // The second record is larger than an item batch may carry; the fourth
+    // has more content blocks than one record may contribute.
+    const turnId = randomUUID();
+    const oversizedText = "x".repeat(4_100_000);
+    const lines = [
+      {
+        type: "user",
+        uuid: turnId,
+        timestamp: "2026-08-11T12:00:00.000Z",
+        message: { role: "user", content: "Question before the large record" }
+      },
+      {
+        type: "assistant",
+        uuid: randomUUID(),
+        timestamp: "2026-08-11T12:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: oversizedText }]
+        }
+      },
+      {
+        type: "assistant",
+        uuid: randomUUID(),
+        timestamp: "2026-08-11T12:00:02.000Z",
+        message: { role: "assistant", content: "Answer after the large record" }
+      },
+      {
+        type: "assistant",
+        uuid: randomUUID(),
+        timestamp: "2026-08-11T12:00:03.000Z",
+        message: {
+          role: "assistant",
+          content: Array.from({ length: 1_001 }, () => ({
+            type: "text",
+            text: "b"
+          }))
+        }
+      }
+    ].map((record) => Buffer.from(`${JSON.stringify(record)}\n`));
+    const journalBytes = Buffer.concat(lines);
+    const journalLength = journalBytes.byteLength;
+    const journalDigest = createHash("sha256")
+      .update(journalBytes)
+      .digest("hex");
+    const firstEnd = lines[0]!.byteLength;
+    const secondEnd = firstEnd + lines[1]!.byteLength;
+    const thirdEnd = secondEnd + lines[2]!.byteLength;
+    const externalSessionId = "claude-journal-range";
+    const sourceFingerprint = "b".repeat(64);
+
+    const artifactResponse = await app.inject({
+      method: "POST",
+      url: "/v1/conversation-source-artifacts",
+      headers: ownerHeaders,
+      payload: {
+        sourceSession: {
+          externalSessionId,
+          sourceRuntime: "claude-code",
+          captureMethod: "api",
+          cwd: "project-journal-range",
+          idempotencyKey: `journal-session:${externalSessionId}`,
+          metadata: { projectId: "project-journal-range" }
+        },
+        sourceKind: "claude-code",
+        sourceComponentId: "main",
+        sourceComponentRole: "primary",
+        externalSessionId,
+        sourceFingerprint,
+        artifactFormat: "claude_session_jsonl",
+        artifactFormatVersion: 1,
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: journalLength,
+        liveStartLine: lines.length,
+        currentSourceLength: journalLength,
+        sourceCreatedAt: "2026-08-11T11:59:59.000Z",
+        redactedSourceLabel: "Claude session journal range"
+      }
+    });
+    expect(artifactResponse.statusCode, artifactResponse.body).toBe(200);
+    const artifactId = jsonBody<{ artifact: { id: string } }>(artifactResponse)
+      .artifact.id;
+    const segmentResponse = await app.inject({
+      method: "POST",
+      url: `/v1/conversation-source-artifacts/${artifactId}/segments`,
+      headers: ownerHeaders,
+      payload: {
+        expectedProviderOffset: 0,
+        expectedProviderLine: 0,
+        sourceEndOffset: journalLength,
+        sourceEndLine: lines.length,
+        plaintextDigest: journalDigest,
+        plaintextSize: journalLength,
+        bytesBase64: journalBytes.toString("base64"),
+        currentSourceLength: journalLength
+      }
+    });
+    expect(segmentResponse.statusCode, segmentResponse.body).toBe(200);
+    const sourceResponse = await app.inject({
+      method: "POST",
+      url: "/v1/historical-import-sources",
+      headers: ownerHeaders,
+      payload: {
+        runId,
+        artifactId,
+        aiClient: "claude",
+        detectedProject: { projectId: "project-journal-range" }
+      }
+    });
+    expect(sourceResponse.statusCode, sourceResponse.body).toBe(200);
+    const { id: sourceId, sessionId } = jsonBody<{
+      source: { id: string; sessionId: string };
+    }>(sourceResponse).source;
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      for (const url of [
+        `/v1/historical-imports/${runId}`,
+        `/v1/historical-import-sources/${sourceId}`
+      ]) {
+        const transition = await app.inject({
+          method: "PATCH",
+          url,
+          headers: ownerHeaders,
+          payload: { expectedState, state }
+        });
+        expect(transition.statusCode, transition.body).toBe(200);
+      }
+    }
+
+    const postBatch = (payload: unknown, headers = ownerHeaders) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/historical-import-sources/${sourceId}/batches`,
+        headers,
+        payload: payload as Record<string, unknown>
+      });
+    const parserInput = {
+      sessionId,
+      externalSessionId,
+      sourceFingerprint,
+      sourceComponentId: "main"
+    };
+    const asJson = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    const itemBatch = (input: {
+      line: number;
+      start: number;
+      end: number;
+      prior?: { currentTurnId?: string };
+    }) => {
+      const parsed = parseClaudeHistoricalImportBytes({
+        ...parserInput,
+        bytes: lines[input.line]!,
+        absoluteStartOffset: input.start,
+        lineIndexOffset: input.line,
+        prior: input.prior
+      });
+      return {
+        parsed,
+        payload: {
+          expectedSourceOffset: input.start,
+          sourceOffset: input.end,
+          sourceLine: input.line + 1,
+          segmentIndex: 0,
+          lastVerifiedDigest: journalDigest,
+          parserState: parsed.parserState,
+          items: asJson(parsed.items)
+        }
+      };
+    };
+
+    const first = itemBatch({ line: 0, start: 0, end: firstEnd });
+    const firstBatch = await postBatch(first.payload);
+    expect(firstBatch.statusCode, firstBatch.body).toBe(200);
+    const second = itemBatch({
+      line: 1,
+      start: firstEnd,
+      end: secondEnd,
+      prior: first.parsed.parserState
+    });
+    // The client cannot send this record as items: the request is refused
+    // before the batch is read.
+    const tooLargeForItems = await postBatch(second.payload);
+    expect(tooLargeForItems.statusCode).toBe(413);
+
+    const range = {
+      kind: "journal_range",
+      expectedSourceOffset: firstEnd,
+      sourceOffset: secondEnd,
+      segmentIndex: 0,
+      lastVerifiedDigest: journalDigest
+    };
+    const rejected = await Promise.all(
+      [
+        // Ends inside the record.
+        { ...range, sourceOffset: secondEnd - 1 },
+        // Covers two records.
+        { ...range, sourceOffset: thirdEnd },
+        // Starts inside the record.
+        { ...range, expectedSourceOffset: firstEnd + 1 },
+        { ...range, lastVerifiedDigest: "d".repeat(64) },
+        { ...range, segmentIndex: 1 }
+      ].map((payload) => postBatch(payload))
+    );
+    expect(
+      rejected.map((response) => [
+        response.statusCode,
+        jsonBody<{ code?: string }>(response).code
+      ])
+    ).toEqual([
+      [422, "historical_import_journal_range_invalid"],
+      [422, "historical_import_journal_range_invalid"],
+      [422, "historical_import_journal_range_invalid"],
+      [409, "historical_import_segment_verification_failed"],
+      [409, "historical_import_segment_verification_failed"]
+    ]);
+    expect(forwardedBatches).toHaveLength(1);
+
+    const imported = await postBatch(range);
+    expect(imported.statusCode, imported.body).toBe(200);
+    expect(forwardedBatches[1]).toMatchObject({
+      expectedSourceOffset: firstEnd,
+      sourceOffset: secondEnd,
+      sourceLine: 2,
+      parserState: { currentTurnId: turnId }
+    });
+    // Same items the client would have built, had the batch been allowed.
+    expect(asJson(forwardedBatches[1]!.items)).toEqual(
+      second.payload.items.map((item) => ({
+        ...item,
+        sourceKind: "claude-code",
+        sourceAdapterVersion: "claude-code-transcript-v1",
+        sourceTransport: "historical_import"
+      }))
+    );
+    expect(forwardedBatches[1]!.items[0]?.rawText).toHaveLength(4_100_000);
+    expect(forwardedBatches[1]!.items[0]?.externalTurnId).toBe(turnId);
+    expect(
+      jsonBody<{
+        itemCount: number;
+        replayed: boolean;
+        source: Record<string, unknown>;
+      }>(imported)
+    ).toMatchObject({
+      itemCount: 1,
+      replayed: false,
+      source: {
+        historicalCursorOffset: secondEnd,
+        historicalCursorLine: 2,
+        historicalCursorParserState: { currentTurnId: turnId }
+      }
+    });
+    // The response reports the commit without echoing the record back.
+    expect(imported.body.length).toBeLessThan(10_000);
+
+    const replayed = await postBatch(range);
+    expect(replayed.statusCode, replayed.body).toBe(200);
+    expect(
+      jsonBody<{ itemCount: number; replayed: boolean }>(replayed)
+    ).toMatchObject({ itemCount: 0, replayed: true });
+    expect(forwardedBatches[2]?.items).toEqual([]);
+    // A committed end does not excuse a range that is not one record.
+    const replayedInvalid = await Promise.all(
+      [
+        { ...range, expectedSourceOffset: firstEnd + 1 },
+        { ...range, segmentIndex: 1 }
+      ].map((payload) => postBatch(payload))
+    );
+    expect(replayedInvalid.map((response) => response.statusCode)).toEqual([
+      422, 409
+    ]);
+    expect(forwardedBatches).toHaveLength(3);
+
+    const third = itemBatch({
+      line: 2,
+      start: secondEnd,
+      end: thirdEnd,
+      prior: { currentTurnId: turnId }
+    });
+    const thirdBatch = await postBatch(third.payload);
+    expect(thirdBatch.statusCode, thirdBatch.body).toBe(200);
+    expect(third.parsed.items[0]?.externalTurnId).toBe(turnId);
+
+    const stale = await postBatch(range);
+    expect(stale.statusCode).toBe(409);
+    expect(jsonBody<{ code?: string }>(stale).code).toBe(
+      "historical_import_cursor_conflict"
+    );
+    const tooManyItems = await postBatch({
+      ...range,
+      expectedSourceOffset: thirdEnd,
+      sourceOffset: journalLength
+    });
+    expect(tooManyItems.statusCode).toBe(422);
+    expect(jsonBody<{ code?: string }>(tooManyItems).code).toBe(
+      "historical_import_journal_range_too_many_items"
+    );
+    expect(forwardedBatches).toHaveLength(4);
+
+    const outsider = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "journal-range-outsider@example.com",
+        password: "password123"
+      }
+    });
+    const outsiderToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(outsider)),
+      payload: { name: "Outsider" }
+    });
+    const outsiderRange = await postBatch(range, {
+      authorization: `Bearer ${jsonBody<TokenResponse>(outsiderToken).token}`
+    });
+    expect(outsiderRange.statusCode).toBe(404);
+    await app.close();
   });
 
   it("keeps historical controls and raw source paths off remote profiles", async () => {

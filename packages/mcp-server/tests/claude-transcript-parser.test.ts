@@ -221,35 +221,40 @@ describe("Claude transcript parser", () => {
     expect(historical.items).toHaveLength(3);
     historical.items.forEach((item, index) => {
       const source = parsed.items[index]!;
-      expect(item).toMatchObject({
-        sessionId,
-        externalThreadId: externalSessionId,
-        externalTurnId: source.externalTurnId,
-        externalItemId: source.externalItemId,
-        sourceLineNumber: source.sourceLineNumber,
-        sourceSequence: source.sourceSequence,
-        rawJson: source.rawJson,
-        rawText: source.rawText,
-        sourceHash: source.sourceHash,
-        idempotencyKey: source.idempotencyKey,
-        canonicalItemKey: source.canonicalItemKey,
-        canonicalStableItemId: source.canonicalStableItemId,
-        observationComponent: source.observationComponent,
-        projectionStatus: "pending",
-        projectionVersion: "claude-code-transcript-v1",
-        metadata: source.metadata
-      });
-      // The batch API is strict and stamps provenance itself.
-      for (const key of [
-        "sourceKind",
-        "sourceAdapterVersion",
-        "sourceTransport",
-        "externalSessionId",
-        "observedAt"
-      ]) {
-        expect(item).not.toHaveProperty(key);
-      }
+      // Compared as the JSON the batch request carries, so a dropped field
+      // or a provenance field the strict batch API rejects both fail here.
+      expect(JSON.parse(JSON.stringify(item))).toEqual(
+        JSON.parse(
+          JSON.stringify({
+            sessionId,
+            externalThreadId: externalSessionId,
+            externalTurnId: source.externalTurnId,
+            externalItemId: source.externalItemId,
+            sourceRecordType: "session_message",
+            sourceEventType: source.sourceEventType,
+            sourceLineNumber: source.sourceLineNumber,
+            sourceSequence: source.sourceSequence,
+            eventTime: source.eventTime,
+            rawJson: source.rawJson,
+            rawText: source.rawText,
+            sourceHash: source.sourceHash,
+            idempotencyKey: source.idempotencyKey,
+            canonicalItemKey: source.canonicalItemKey,
+            canonicalStableItemId: source.canonicalStableItemId,
+            observationKind: "reconciliation",
+            observationComponent: source.observationComponent,
+            projectionStatus: "pending",
+            projectionVersion: "claude-code-transcript-v1",
+            metadata: source.metadata
+          })
+        )
+      );
     });
+    expect(historical.items.map((item) => item.sourceEventType)).toEqual([
+      "agent_message",
+      "tool_call",
+      "user_message"
+    ]);
     expect(historical.items[0]?.externalTurnId).toBe("turn-before-this-range");
     expect(historical.items[2]?.sourceSequence).toBe(8_000);
   });
