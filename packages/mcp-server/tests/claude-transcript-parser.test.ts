@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { parseClaudeTranscriptJournalBytes } from "../src/claude-transcript-parser.js";
+import {
+  parseClaudeHistoricalImportBytes,
+  parseClaudeTranscriptJournalBytes
+} from "../src/claude-transcript-parser.js";
 
 describe("Claude transcript parser", () => {
   it("preserves known blocks and unknown records with deterministic identity", () => {
@@ -168,5 +171,86 @@ describe("Claude transcript parser", () => {
       sourceTransport: "historical_import",
       projectionVersion: "claude-code-transcript-v1"
     });
+  });
+  it("builds historical import items with the parser's identity and only batch fields", () => {
+    const sessionId = randomUUID();
+    const externalSessionId = randomUUID();
+    const bytes = Buffer.from(
+      [
+        {
+          type: "assistant",
+          uuid: randomUUID(),
+          timestamp: "2026-08-11T12:00:01.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Historical answer" },
+              { type: "tool_use", id: "tool-1", name: "Read", input: {} }
+            ]
+          }
+        },
+        {
+          type: "user",
+          uuid: randomUUID(),
+          timestamp: "2026-08-11T12:00:02.000Z",
+          message: { role: "user", content: "Next question" }
+        }
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n"
+    );
+    const input = {
+      bytes,
+      absoluteStartOffset: 100,
+      lineIndexOffset: 7,
+      sessionId,
+      externalSessionId,
+      sourceFingerprint: "a".repeat(64),
+      sourceComponentId: "subagent.researcher",
+      prior: { currentTurnId: "turn-before-this-range" }
+    };
+
+    const parsed = parseClaudeTranscriptJournalBytes({
+      ...input,
+      sourceTransport: "historical_import"
+    });
+    const historical = parseClaudeHistoricalImportBytes(input);
+
+    expect(historical.checkpoint).toEqual(parsed.checkpoint);
+    expect(historical.parserState).toEqual(parsed.parserState);
+    expect(historical.items).toHaveLength(3);
+    historical.items.forEach((item, index) => {
+      const source = parsed.items[index]!;
+      expect(item).toMatchObject({
+        sessionId,
+        externalThreadId: externalSessionId,
+        externalTurnId: source.externalTurnId,
+        externalItemId: source.externalItemId,
+        sourceLineNumber: source.sourceLineNumber,
+        sourceSequence: source.sourceSequence,
+        rawJson: source.rawJson,
+        rawText: source.rawText,
+        sourceHash: source.sourceHash,
+        idempotencyKey: source.idempotencyKey,
+        canonicalItemKey: source.canonicalItemKey,
+        canonicalStableItemId: source.canonicalStableItemId,
+        observationComponent: source.observationComponent,
+        projectionStatus: "pending",
+        projectionVersion: "claude-code-transcript-v1",
+        metadata: source.metadata
+      });
+      // The batch API is strict and stamps provenance itself.
+      for (const key of [
+        "sourceKind",
+        "sourceAdapterVersion",
+        "sourceTransport",
+        "externalSessionId",
+        "observedAt"
+      ]) {
+        expect(item).not.toHaveProperty(key);
+      }
+    });
+    expect(historical.items[0]?.externalTurnId).toBe("turn-before-this-range");
+    expect(historical.items[2]?.sourceSequence).toBe(8_000);
   });
 });

@@ -216,3 +216,63 @@ export const parseClaudeTranscriptJournalBytes = (input: {
     parserState: { currentTurnId }
   };
 };
+
+/**
+ * One parsed item in the shape the historical import batch accepts. The API
+ * stamps source kind, adapter version, transport and session provenance, so
+ * those fields stay out. The API builds journal range batches with this same
+ * mapping, which keeps both paths byte-identical.
+ */
+export const claudeHistoricalImportItem = (
+  item: RawConversationItemRequest
+) => ({
+  observationOnly: item.observationOnly,
+  sessionId: item.sessionId,
+  turnId: item.turnId,
+  externalThreadId: item.externalThreadId,
+  externalTurnId: item.externalTurnId,
+  externalItemId: item.externalItemId,
+  parentExternalItemId: item.parentExternalItemId,
+  sourceRecordType: item.sourceRecordType,
+  sourceEventType: item.sourceEventType,
+  sourceLineNumber: item.sourceLineNumber,
+  sourceSequence: item.sourceSequence,
+  eventTime: item.eventTime,
+  rawJson: item.rawJson,
+  rawText: item.rawText,
+  logicalSourceId: item.logicalSourceId,
+  transportChunkIndex: item.transportChunkIndex,
+  transportChunkCount: item.transportChunkCount,
+  transportChunkText: item.transportChunkText,
+  transportChunkEncoding: item.transportChunkEncoding,
+  sourceHash: item.sourceHash,
+  idempotencyKey: item.idempotencyKey,
+  canonicalItemKey: item.canonicalItemKey,
+  canonicalStableItemId: item.canonicalStableItemId,
+  canonicalSourcePriority: item.canonicalSourcePriority,
+  observationKind: item.observationKind,
+  observationComponent: item.observationComponent,
+  projectionStatus: item.projectionStatus,
+  projectionVersion: "claude-code-transcript-v1" as const,
+  metadata: item.metadata ?? {}
+});
+
+export type ClaudeHistoricalImportItem = ReturnType<
+  typeof claudeHistoricalImportItem
+>;
+
+/** Parses complete journal records into historical import batch items. */
+export const parseClaudeHistoricalImportBytes = (
+  input: Omit<
+    Parameters<typeof parseClaudeTranscriptJournalBytes>[0],
+    "sourceTransport"
+  >
+): Omit<ClaudeTranscriptParseResult, "items"> & {
+  items: ClaudeHistoricalImportItem[];
+} => {
+  const parsed = parseClaudeTranscriptJournalBytes({
+    ...input,
+    sourceTransport: "historical_import"
+  });
+  return { ...parsed, items: parsed.items.map(claudeHistoricalImportItem) };
+};

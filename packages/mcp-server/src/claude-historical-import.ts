@@ -1,4 +1,3 @@
-import type { RawConversationItemRequest } from "./conversation-source-types.js";
 import {
   discoverAllClaudeHistoricalTranscriptSignals,
   discoverClaudeHistoricalTranscriptSignals,
@@ -15,7 +14,7 @@ import {
   type ClaudeHistoricalComponentFrontier
 } from "./claude-transcript-source.js";
 import {
-  parseClaudeTranscriptJournalBytes,
+  parseClaudeHistoricalImportBytes,
   type ClaudeTranscriptParserState
 } from "./claude-transcript-parser.js";
 import { MemoryApiClient, MemoryApiError } from "./index.js";
@@ -77,38 +76,6 @@ const objectValue = <T>(
   }
   return value as T;
 };
-
-const historicalItem = (item: RawConversationItemRequest) => ({
-  observationOnly: item.observationOnly,
-  sessionId: item.sessionId,
-  turnId: item.turnId,
-  externalThreadId: item.externalThreadId,
-  externalTurnId: item.externalTurnId,
-  externalItemId: item.externalItemId,
-  parentExternalItemId: item.parentExternalItemId,
-  sourceRecordType: item.sourceRecordType,
-  sourceEventType: item.sourceEventType,
-  sourceLineNumber: item.sourceLineNumber,
-  sourceSequence: item.sourceSequence,
-  eventTime: item.eventTime,
-  rawJson: item.rawJson,
-  rawText: item.rawText,
-  logicalSourceId: item.logicalSourceId,
-  transportChunkIndex: item.transportChunkIndex,
-  transportChunkCount: item.transportChunkCount,
-  transportChunkText: item.transportChunkText,
-  transportChunkEncoding: item.transportChunkEncoding,
-  sourceHash: item.sourceHash,
-  idempotencyKey: item.idempotencyKey,
-  canonicalItemKey: item.canonicalItemKey,
-  canonicalStableItemId: item.canonicalStableItemId,
-  canonicalSourcePriority: item.canonicalSourcePriority,
-  observationKind: item.observationKind,
-  observationComponent: item.observationComponent,
-  projectionStatus: item.projectionStatus,
-  projectionVersion: "claude-code-transcript-v1" as const,
-  metadata: item.metadata ?? {}
-});
 
 const completeChunks = (input: {
   bytes: Buffer;
@@ -208,7 +175,7 @@ export const importClaudeHistoricalSource = async (input: {
         absoluteStart: offset,
         absoluteEnd
       })) {
-        const parsed = parseClaudeTranscriptJournalBytes({
+        const parsed = parseClaudeHistoricalImportBytes({
           bytes: chunk.bytes,
           absoluteStartOffset: chunk.start,
           lineIndexOffset: line,
@@ -216,10 +183,9 @@ export const importClaudeHistoricalSource = async (input: {
           externalSessionId: input.source.sourceSessionId,
           sourceFingerprint: input.source.sourceFingerprint,
           sourceComponentId: input.sourceComponentId,
-          prior: parserState,
-          sourceTransport: "historical_import"
+          prior: parserState
         });
-        const items = parsed.items.map(historicalItem);
+        const items = parsed.items;
         if (Buffer.byteLength(JSON.stringify(items), "utf8") > 3_800_000) {
           throw new Error("claude_historical_batch_payload_too_large");
         }
