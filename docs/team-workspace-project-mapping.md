@@ -87,7 +87,7 @@ appear in `unavailable_backends`; an unavailable backend does not mean its
 memory is empty.
 
 If discovery reports `capabilities_not_validated`, recheck the existing
-enrollment with `koed-server upstream refresh --id <enrolled-backend-id> --json`.
+enrollment with `koed upstream refresh --id <enrolled-backend-id> --json`.
 This refreshes the capability cache without changing permissions or credentials.
 
 Select the relevant returned Workspace and request Team recall:

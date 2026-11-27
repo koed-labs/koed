@@ -3,10 +3,11 @@
 Koed uses Drizzle in codebase-first mode for schema and migration management.
 The source of truth for database shape is
 `packages/db/src/schema.ts`; generated SQL lives in `packages/db/drizzle/`.
-The current journal contains only `0000_clean_initial_schema`, a fresh-install
-baseline. Stable installation starts with an empty database; existing alpha
-databases are not supported migration or conversion sources. After this baseline,
-future stable changes add ordered migrations and upgrade from the stable schema.
+The journal starts with `0000_clean_initial_schema`, a fresh-install baseline,
+followed by ordered stable migrations. Stable installation starts with an empty
+database; existing alpha databases are not supported migration or conversion
+sources. Stable changes add ordered migrations after the baseline and upgrade
+from the stable schema.
 
 When changing the schema:
 
@@ -24,8 +25,8 @@ repository's Oxfmt configuration. To format existing metadata separately, run
 
 `pnpm db:migrate:acceptance` uses `DATABASE_URL` to connect to a Postgres
 server and creates a separate disposable database for every acceptance case.
-The checked-in journal contains the single initial baseline and determines the
-current schema; acceptance covers:
+The checked-in journal contains the single initial baseline and the migrations
+after it, and determines the current schema; acceptance covers:
 
 - a clean run of the full migration journal;
 - current column, constraint, index, and security-trigger contracts;

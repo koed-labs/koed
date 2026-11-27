@@ -706,8 +706,8 @@ requests reject redirects rather than allowing a transport downgrade.
 
 Registering an upstream is not sufficient to route memory traffic. Route policy
 defaults are fail-closed for capture-bearing writes, Team Workspace reads,
-Share Grant management, sync/offload, and admin operations. `koed-server
-upstream refresh --id <id> --json` validates the upstream `/v1/capabilities`
+Share Grant management, sync/offload, and admin operations. `koed upstream
+refresh --id <id> --json` validates the upstream `/v1/capabilities`
 contract and records checked, expiry, schema, profile, release, and failure
 metadata. `koed upstream policy --id <id> --... enabled --json`
 explicitly enables the operation families the Operator has approved. Stale,
