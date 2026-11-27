@@ -4,7 +4,8 @@ import {
   BACKGROUND_AGENT_LAUNCH_ARGUMENT,
   BACKGROUND_AGENT_SERVICE_NAME,
   createBackgroundAgentLaunchService,
-  isBackgroundAgentLaunch
+  isBackgroundAgentLaunch,
+  isBackgroundAgentUnregistered
 } from "./launch-service.js";
 
 const loginSettings = (
@@ -32,6 +33,36 @@ const supportedInput = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("background-agent launch service", () => {
+  it("only considers the Agent unregistered when supported and fully disabled", () => {
+    expect(
+      isBackgroundAgentUnregistered({
+        supported: true,
+        enabled: false,
+        status: "disabled"
+      })
+    ).toBe(true);
+    expect(
+      isBackgroundAgentUnregistered({
+        supported: true,
+        enabled: false,
+        status: "requires-approval"
+      })
+    ).toBe(false);
+    expect(
+      isBackgroundAgentUnregistered({
+        supported: true,
+        enabled: true,
+        status: "enabled"
+      })
+    ).toBe(false);
+    expect(
+      isBackgroundAgentUnregistered({
+        supported: false,
+        enabled: false,
+        status: "unsupported"
+      })
+    ).toBe(false);
+  });
   it("does not offer registration until packaged, signed, and native-ready", async () => {
     const setLoginItemSettings = vi.fn();
     const controller = createBackgroundAgentLaunchService({
@@ -104,6 +135,42 @@ describe("background-agent launch service", () => {
       serviceName: BACKGROUND_AGENT_SERVICE_NAME
     });
   });
+
+  it("does not treat an enabled service as unregistered when openAtLogin is false", async () => {
+    const service = createBackgroundAgentLaunchService({
+      ...supportedInput(),
+      getLoginItemSettings: () =>
+        loginSettings({ openAtLogin: false, status: "enabled" }),
+      setLoginItemSettings: vi.fn()
+    });
+    const state = await service.set(false);
+    expect(isBackgroundAgentUnregistered(state)).toBe(false);
+  });
+
+  it("trusts explicit unregistered status even if the login flag is stale", async () => {
+    const service = createBackgroundAgentLaunchService({
+      ...supportedInput(),
+      getLoginItemSettings: () =>
+        loginSettings({ openAtLogin: true, status: "not-registered" }),
+      setLoginItemSettings: vi.fn()
+    });
+    expect(isBackgroundAgentUnregistered(await service.set(false))).toBe(true);
+  });
+
+  it.each(["not-found", undefined] as const)(
+    "does not report unknown native status %s as unregistered",
+    async (status) => {
+      const service = createBackgroundAgentLaunchService({
+        ...supportedInput(),
+        getLoginItemSettings: () =>
+          loginSettings({ openAtLogin: false, status }),
+        setLoginItemSettings: vi.fn()
+      });
+      await expect(service.set(false)).rejects.toThrow(
+        "Background Agent registration status is unavailable."
+      );
+    }
+  );
 
   it("recognizes only the dedicated agent argument", () => {
     expect(isBackgroundAgentLaunch([BACKGROUND_AGENT_LAUNCH_ARGUMENT])).toBe(

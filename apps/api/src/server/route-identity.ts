@@ -2957,6 +2957,23 @@ export const routeIdentityContracts = [
     "personal_memory",
     "Device-signed PDS relay cursor mutation."
   ),
+  ...[
+    "/v1/personal-device-sync/enrollment-epochs",
+    "/v1/personal-device-sync/enrollment-operations",
+    "/v1/personal-device-sync/enrollment-epoch-fence",
+    "/v1/personal-device-sync/enrollment-operation-fence"
+  ].map((path) =>
+    route(
+      "POST",
+      path,
+      "local_edge_client_credential",
+      "personal_memory",
+      "Loopback-only Desktop enrollment coordination.",
+      "none",
+      "implemented",
+      localEdgeDeploymentModes
+    )
+  ),
   route(
     "POST",
     "/v1/personal-device-sync/local-runtime-wake",

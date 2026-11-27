@@ -38,6 +38,28 @@ function runsFor(condition, outputs, { nativeHit, coreHit, failed = false }) {
   return (condition.includes("failure()") || !failed) && matches;
 }
 
+test("macOS ownership lock coverage runs for app and full validation without expanding smoke", () => {
+  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  const smoke = workflow.jobs["relevant-packaged-smoke"];
+  const full = workflow.jobs["release-candidate-validation"];
+  assert.equal(smoke.if, "needs.changes.outputs.run_app_smoke == 'true'");
+  assert.equal(full.if, "needs.changes.outputs.run_full_validation == 'true'");
+  for (const job of [smoke, full]) {
+    assert.equal(job["runs-on"], "macos-15");
+    const step = job.steps.find(
+      (item) => item.name === "Test macOS native ownership lock"
+    );
+    assert.ok(step);
+    assert.equal(step.if, undefined);
+    assert.match(step.run, /build:background-agent:native/);
+    assert.match(step.run, /KOED_OWNERSHIP_LOCK_TEST_ADDON=/);
+    assert.match(
+      step.run,
+      /vitest run src\/background-agent\/ownership-lock\.test\.ts/
+    );
+  }
+});
+
 test("Linux combined payload and CPU smoke respect policy and cache scenarios", () => {
   const combined = [
     "Restore verified Linux native runtime payload",

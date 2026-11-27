@@ -88,7 +88,8 @@ import {
   BACKGROUND_AGENT_MACH_SERVICE_NAME,
   BACKGROUND_AGENT_SERVICE_NAME,
   createBackgroundAgentLaunchService,
-  isBackgroundAgentLaunch
+  isBackgroundAgentLaunch,
+  isBackgroundAgentUnregistered
 } from "./background-agent/launch-service.js";
 import { loadBackgroundAgentNativeBridge } from "./background-agent/native-bridge.js";
 import {
@@ -102,7 +103,10 @@ import {
   createBackgroundAgentXpcServer
 } from "./background-agent/xpc-transport.js";
 import { createBackgroundAgentController } from "./background-agent/agent-controller.js";
-import { createDesktopBackgroundAgentController } from "./background-agent/desktop-controller.js";
+import {
+  createDesktopBackgroundAgentController,
+  readLaunchStateOrBlockRuntime
+} from "./background-agent/desktop-controller.js";
 import {
   consumeDesktopActivation,
   createDesktopWindowActivator,
@@ -595,7 +599,7 @@ const quitBackgroundAgent = async () => {
       "Koed must stop successfully before quitting the Background Agent."
     );
   const launchState = await backgroundAgentLaunchService.set(false);
-  if (launchState.enabled)
+  if (!isBackgroundAgentUnregistered(launchState))
     throw new Error("Background Agent could not be unregistered.");
   app.quit();
 };
@@ -666,13 +670,19 @@ const bootstrapBackgroundAgent = async () => {
 const bootstrap = async () => {
   await app.whenReady();
   const launchConfiguration = backgroundAgentLaunchConfiguration.read();
-  const launchState = await backgroundAgentLaunchService.get();
+  const launchState = await readLaunchStateOrBlockRuntime(
+    backgroundAgentLaunchService,
+    desktopBackgroundAgentRuntime
+  );
   if (
     launchConfiguration.kind === "valid" &&
-    (launchState.enabled || !process.env.KOED_HOME?.trim())
+    (!launchState ||
+      launchState.enabled ||
+      launchState.status === "requires-approval" ||
+      !process.env.KOED_HOME?.trim())
   ) {
     koedEnvironment.KOED_HOME = launchConfiguration.configuration.koedHome;
-  } else if (launchState.enabled && launchConfiguration.kind !== "valid") {
+  } else if (launchState?.enabled && launchConfiguration.kind !== "valid") {
     desktopBackgroundAgentRuntime.activateUnavailable(
       "Background Agent launch configuration is missing or invalid."
     );
@@ -748,9 +758,12 @@ const bootstrap = async () => {
     launchConfiguration: backgroundAgentLaunchConfiguration,
     manager: server,
     runtimeLifecycle: desktopBackgroundAgentRuntime,
+    initialRegistrationUnavailable: !launchState,
     createClient: createBackgroundAgentClient
   });
-  await desktopBackgroundAgentController.initialize();
+  await desktopBackgroundAgentController.initialize().catch((error) => {
+    console.error("Background Agent status could not be initialized:", error);
+  });
   if (process.platform === "darwin" && !app.isPackaged) {
     app.dock?.setIcon(desktopIconPath);
   }

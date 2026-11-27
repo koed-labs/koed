@@ -17,6 +17,10 @@ export type BackgroundAgentLaunchState = {
   supported: boolean;
 };
 
+export const isBackgroundAgentUnregistered = (
+  state: BackgroundAgentLaunchState
+): boolean => state.supported && !state.enabled && state.status === "disabled";
+
 export interface BackgroundAgentLaunchService {
   get(): Promise<BackgroundAgentLaunchState>;
   set(enabled: boolean): Promise<BackgroundAgentLaunchState>;
@@ -113,8 +117,7 @@ const stateFromSettings = (
       supported: true
     };
   }
-  return settings.openAtLogin &&
-    (settings.status === undefined || settings.status === "enabled")
-    ? enabledState()
-    : disabledState();
+  if (settings.status === "enabled") return enabledState();
+  if (settings.status === "not-registered") return disabledState();
+  throw new Error("Background Agent registration status is unavailable.");
 };

@@ -958,6 +958,7 @@ jobs:
 
       - name: Build signed Desktop artifacts
         env:
+          DESKTOP_MACOS_APPLE_TEAM_ID: ${{ vars.DESKTOP_MACOS_APPLE_TEAM_ID }}
           KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-release/koed-runtime
           CSC_LINK: ${{ secrets.DESKTOP_MACOS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_MACOS_CSC_KEY_PASSWORD }}

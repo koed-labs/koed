@@ -323,6 +323,50 @@ describe("local Embedding Service runtime", () => {
     ]);
   });
 
+  it.each([
+    { mode: "release-managed", detached: true },
+    { mode: "source", detached: undefined }
+  ])(
+    "launches $mode embedding with detached=$detached",
+    ({ mode, detached }) => {
+      const root = tempDir();
+      const selectionRoot = resolve(root, "runtime/native/selections/verified");
+      const serverPaths =
+        mode === "release-managed"
+          ? { ...paths(root), nativeSelectionRoot: selectionRoot }
+          : paths(root);
+      const appRuntime =
+        mode === "release-managed"
+          ? packagedRuntime(resolve(root, "verified-app-generation"))
+          : undefined;
+      const serviceEntry =
+        appRuntime?.embeddingServiceEntry ??
+        resolve(root, "apps/embedding-service/dist/index.js");
+      const llamaServer = resolve(
+        mode === "release-managed" ? selectionRoot : root,
+        mode === "release-managed"
+          ? "llama.cpp/llama-server"
+          : "vendor/llama.cpp/llama-server"
+      );
+      let spawnOptions: { detached?: boolean } | undefined;
+      const result = startLocalEmbeddingRuntime(
+        serverPaths,
+        {},
+        {
+          appRuntime,
+          existsSync: (path) => path === serviceEntry || path === llamaServer,
+          spawn: (_command, _args, options) => {
+            spawnOptions = options;
+            return { pid: 12, on: () => undefined } as never;
+          }
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(spawnOptions?.detached).toBe(detached);
+    }
+  );
+
   it("reports missing runtime files without tokens", async () => {
     const root = tempDir();
     const status = await collectLocalEmbeddingRuntimeStatus(paths(root), {

@@ -91,7 +91,10 @@ type CompletionFailure =
   | "malformed"
   | "size";
 
-const harness = (completionFailure?: CompletionFailure) => {
+const harness = (
+  completionFailure?: CompletionFailure,
+  localFailure?: string
+) => {
   const koedHome = mkdtempSync(resolve(tmpdir(), "koed-pairing-client-"));
   homes.push(koedHome);
   storeDesktopLocalCredential(koedHome, {
@@ -144,6 +147,14 @@ const harness = (completionFailure?: CompletionFailure) => {
       }
       localCalls.push(url.pathname);
       localRequestCount += 1;
+      if (url.pathname === localFailure) {
+        return new Response(
+          JSON.stringify({ error: "Local admission rejected" }),
+          {
+            status: 409
+          }
+        );
+      }
       return new Response(
         JSON.stringify(
           localRequestCount === 1
@@ -274,7 +285,14 @@ const harness = (completionFailure?: CompletionFailure) => {
   };
 };
 
-const redeem = async (fixture: ReturnType<typeof harness>) =>
+const redeem = async (
+  fixture: ReturnType<typeof harness>,
+  enrollmentOperation?: {
+    instanceId: string;
+    epochId: string;
+    operationId: string;
+  }
+) =>
   await redeemPersonalDevicePairing({
     link: `${invitationOrigin}/pair/${invitationId}#token=${token}`,
     deviceLabel: "Joining laptop",
@@ -282,12 +300,136 @@ const redeem = async (fixture: ReturnType<typeof harness>) =>
     localControlUrl: localOrigin,
     koedHome: fixture.koedHome,
     environment: {},
+    enrollmentOperation,
     fetch: fixture.fetch,
     runPersonalSync: fixture.runPersonalSync,
     withJsonFd: fixture.withJsonFd
   });
 
 describe("Personal device pairing client", () => {
+  const operation = {
+    instanceId: "instance-1",
+    epochId: "epoch-1",
+    operationId: "operation-1"
+  };
+  const tagNames = [
+    "x-koed-enrollment-instance-id",
+    "x-koed-enrollment-epoch-id",
+    "x-koed-enrollment-operation-id"
+  ];
+
+  it("sends registered operation tags only to both local requests", async () => {
+    const fixture = harness();
+    await redeem(fixture, operation);
+    const localHeaders: Headers[] = [];
+    for (const [input, init] of fixture.fetch.mock.calls) {
+      const headers = new Headers(init?.headers);
+      if (new URL(String(input)).origin === localOrigin)
+        localHeaders.push(headers);
+      else for (const name of tagNames) expect(headers.has(name)).toBe(false);
+    }
+    expect(localHeaders).toHaveLength(2);
+    for (const headers of localHeaders) {
+      expect(tagNames.map((name) => headers.get(name))).toEqual([
+        "instance-1",
+        "epoch-1",
+        "operation-1"
+      ]);
+    }
+  });
+
+  it.each(["mutate", "remove"])(
+    "keeps original tags when caller attempts to %s capability between local requests",
+    async (action) => {
+      const fixture = harness();
+      const mutableOperation = { ...operation };
+      const options = {
+        link: `${invitationOrigin}/pair/${invitationId}#token=${token}`,
+        deviceLabel: "Joining laptop",
+        requestId: randomUUID(),
+        localControlUrl: localOrigin,
+        koedHome: fixture.koedHome,
+        environment: {},
+        enrollmentOperation: mutableOperation as
+          | typeof mutableOperation
+          | undefined,
+        fetch: fixture.fetch,
+        runPersonalSync: async (
+          ...args: Parameters<typeof fixture.runPersonalSync>
+        ) => {
+          const result = await fixture.runPersonalSync(...args);
+          if (args[0][1] === "bind-local-user") {
+            if (action === "mutate")
+              Object.assign(mutableOperation, {
+                instanceId: "changed",
+                epochId: "changed",
+                operationId: "changed"
+              });
+            else options.enrollmentOperation = undefined;
+          }
+          return result;
+        },
+        withJsonFd: fixture.withJsonFd
+      };
+      await redeemPersonalDevicePairing(options);
+      const calls = fixture.fetch.mock.calls.filter(
+        ([input]) => new URL(String(input)).origin === localOrigin
+      );
+      expect(calls).toHaveLength(2);
+      for (const [, init] of calls) {
+        const headers = new Headers(init?.headers);
+        expect(tagNames.map((name) => headers.get(name))).toEqual([
+          "instance-1",
+          "epoch-1",
+          "operation-1"
+        ]);
+      }
+    }
+  );
+
+  it("rejects incomplete capability before network access", async () => {
+    const fixture = harness();
+    await expect(
+      redeem(fixture, { ...operation, operationId: "" })
+    ).rejects.toThrow("Invalid enrollment operation");
+    expect(fixture.fetch).not.toHaveBeenCalled();
+  });
+
+  it("leaves standalone requests untagged", async () => {
+    const fixture = harness();
+    await redeem(fixture);
+    for (const [, init] of fixture.fetch.mock.calls) {
+      const headers = new Headers(init?.headers);
+      for (const name of tagNames) expect(headers.has(name)).toBe(false);
+    }
+  });
+
+  it.each(["local-group-reconciliation", "local-runtime-wake"])(
+    "does not retry untagged when %s rejects admission",
+    async (endpoint) => {
+      const fixture = harness(
+        undefined,
+        `/v1/personal-device-sync/${endpoint}`
+      );
+      await expect(redeem(fixture, operation)).rejects.toThrow(
+        "Local admission rejected"
+      );
+      const calls = fixture.fetch.mock.calls.filter(
+        ([input]) => new URL(String(input)).origin === localOrigin
+      );
+      expect(calls).toHaveLength(
+        endpoint === "local-group-reconciliation" ? 1 : 2
+      );
+      for (const [, init] of calls) {
+        const headers = new Headers(init?.headers);
+        expect(tagNames.map((name) => headers.get(name))).toEqual([
+          "instance-1",
+          "epoch-1",
+          "operation-1"
+        ]);
+      }
+    }
+  );
   it("recovers dropped completion response with fresh message id without rerunning local commit", async () => {
     const fixture = harness("drop");
 

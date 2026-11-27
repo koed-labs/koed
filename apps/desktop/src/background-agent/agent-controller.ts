@@ -123,7 +123,8 @@ export const createBackgroundAgentController = (input: {
 
   const readResponse = (request: BackgroundAgentRequest) => {
     const result = input.store.read();
-    if (result.kind === "valid") return respond(request, result.state);
+    if (result.kind === "valid")
+      return respond(request, result.state, { ok: true });
     const message =
       result.kind === "missing"
         ? "Background Agent state is not initialized."

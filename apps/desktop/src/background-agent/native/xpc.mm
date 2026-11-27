@@ -3,6 +3,14 @@
 #import <Foundation/Foundation.h>
 #import <dispatch/dispatch.h>
 
+#include <sys/file.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cmath>
+#include <cstring>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -73,6 +81,8 @@ struct ServerState {
   Napi::FunctionReference onRequest;
   Napi::FunctionReference onDisconnect;
   Napi::ThreadSafeFunction events;
+  uint32_t disconnectCredits = 0;
+  uint32_t queuedRequests = 0;
   __strong NSXPCListener *listener = nil;
   __strong id<NSXPCListenerDelegate> delegate = nil;
 };
@@ -80,8 +90,10 @@ struct ServerState {
 std::mutex pendingRepliesMutex;
 std::unordered_map<uint64_t, PendingReply> pendingReplies;
 std::atomic<uint64_t> nextReplyId{1};
-Napi::FunctionReference serverConstructor;
-Napi::FunctionReference connectionConstructor;
+struct AddonConstructors {
+  Napi::FunctionReference server;
+  Napi::FunctionReference connection;
+};
 
 NSString *toNSString(const std::string &value) {
   NSString *result = [[NSString alloc] initWithBytes:value.data()
@@ -166,6 +178,13 @@ void callServerEvent(Napi::Env env,
                      ServerEvent *event) {
   std::unique_ptr<ServerEvent> eventGuard(event);
   if (event == nullptr) return;
+  if (event->state) {
+    std::lock_guard<std::mutex> lock(event->state->mutex);
+    if (event->kind == ServerEvent::Kind::Disconnect)
+      --event->state->disconnectCredits;
+    else
+      --event->state->queuedRequests;
+  }
   if (env == nullptr || !event->state) {
     if (event->replyId != 0) completeReply(event->replyId, @"");
     return;
@@ -186,19 +205,16 @@ void callServerEvent(Napi::Env env,
                         createReplyFunction(env, event->replyId)});
 }
 
-void enqueueServerEvent(const std::shared_ptr<ServerState> &state,
-                        ServerEvent *event) {
+napi_status enqueueServerEventLocked(const std::shared_ptr<ServerState> &state,
+                                     ServerEvent *event) {
   event->state = state;
-  napi_status status = napi_closing;
-  {
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (!state->closed.load())
-      status = state->events.NonBlockingCall(event, callServerEvent);
-  }
-  if (status != napi_ok) {
-    if (event->replyId != 0) completeReply(event->replyId, @"");
-    delete event;
-  }
+  if (state->closed.load()) return napi_closing;
+  if (event->kind == ServerEvent::Kind::Request &&
+      state->queuedRequests >= maxPendingRequests) return napi_queue_full;
+  const auto status = state->events.NonBlockingCall(event, callServerEvent);
+  if (status == napi_ok && event->kind == ServerEvent::Kind::Request)
+    ++state->queuedRequests;
+  return status;
 }
 
 void closeServer(const std::shared_ptr<ServerState> &state) {
@@ -228,9 +244,11 @@ void closeServer(const std::shared_ptr<ServerState> &state) {
  @private
   std::shared_ptr<ServerState> _state;
   std::string _connectionId;
+  std::shared_ptr<std::atomic<bool>> _disconnected;
 }
 - (instancetype)initWithState:(std::shared_ptr<ServerState>)state
-                 connectionId:(std::string)connectionId;
+                 connectionId:(std::string)connectionId
+                disconnected:(std::shared_ptr<std::atomic<bool>>)disconnected;
 @end
 
 @interface KoedAgentListenerDelegate : NSObject <NSXPCListenerDelegate> {
@@ -280,7 +298,8 @@ class ServerHandle : public Napi::ObjectWrap<ServerHandle> {
   bool startListener(Napi::Env env, const std::string &serviceName) {
     state_->events = Napi::ThreadSafeFunction::New(
         env, Napi::Function::New(env, [](const Napi::CallbackInfo &) {}),
-        "Koed Background Agent XPC events", maxPendingRequests, 1);
+        "Koed Background Agent XPC events",
+        maxPendingRequests + maxActiveConnections, 1);
     @try {
       state_->listener =
           [[NSXPCListener alloc] initWithMachServiceName:toNSString(serviceName)];
@@ -307,6 +326,7 @@ uint64_t storeRequestReply(const std::shared_ptr<ServerState> &state,
 
 void handleServerRequest(const std::shared_ptr<ServerState> &state,
                          const std::string &connectionId,
+                         const std::shared_ptr<std::atomic<bool>> &disconnected,
                          NSString *payload,
                          void (^reply)(NSString *)) {
   if ([payload lengthOfBytesUsingEncoding:NSUTF8StringEncoding] >
@@ -326,13 +346,24 @@ void handleServerRequest(const std::shared_ptr<ServerState> &state,
     state->pendingRequests.fetch_sub(1);
     if (reply != nil) reply(response ?: @"");
   };
-  const auto requestId = storeRequestReply(state, connectionId, boundedReply);
-  auto *event = new ServerEvent{ServerEvent::Kind::Request,
-                                connectionId,
-                                toUtf8(payload),
-                                requestId,
-                                nullptr};
-  enqueueServerEvent(state, event);
+  uint64_t requestId = 0;
+  napi_status status = napi_closing;
+  ServerEvent *event = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (!state->closed.load() && !disconnected->load()) {
+      requestId = storeRequestReply(state, connectionId, boundedReply);
+      event = new ServerEvent{ServerEvent::Kind::Request, connectionId,
+                              toUtf8(payload), requestId, nullptr};
+      status = enqueueServerEventLocked(state, event);
+    }
+  }
+  if (status != napi_ok) {
+    if (requestId != 0) completeReply(requestId, @"");
+    else boundedReply(@"");
+    delete event;
+    return;
+  }
   dispatch_after(
       dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
       dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
@@ -344,17 +375,19 @@ void handleServerRequest(const std::shared_ptr<ServerState> &state,
 
 @implementation KoedAgentRequestHandler
 - (instancetype)initWithState:(std::shared_ptr<ServerState>)state
-                 connectionId:(std::string)connectionId {
+                 connectionId:(std::string)connectionId
+                disconnected:(std::shared_ptr<std::atomic<bool>>)disconnected {
   self = [super init];
   if (self) {
     _state = std::move(state);
     _connectionId = std::move(connectionId);
+    _disconnected = std::move(disconnected);
   }
   return self;
 }
 
 - (void)request:(NSString *)payload reply:(void (^)(NSString *))reply {
-  handleServerRequest(_state, _connectionId, payload, reply);
+  handleServerRequest(_state, _connectionId, _disconnected, payload, reply);
 }
 @end
 
@@ -376,34 +409,51 @@ void handleServerRequest(const std::shared_ptr<ServerState> &state,
     return NO;
   }
 
-  const auto active = state->activeConnections.fetch_add(1);
-  if (active >= maxActiveConnections) {
-    state->activeConnections.fetch_sub(1);
-    [connection invalidate];
-    return NO;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->closed.load() || state->disconnectCredits >= maxActiveConnections)
+      return NO;
+    ++state->disconnectCredits;
+    state->activeConnections.fetch_add(1);
   }
 
   const std::string connectionId = toUtf8([[NSUUID UUID] UUIDString]);
   auto disconnected = std::make_shared<std::atomic<bool>>(false);
   auto *handler = [[KoedAgentRequestHandler alloc]
       initWithState:state
-       connectionId:connectionId];
+       connectionId:connectionId
+      disconnected:disconnected];
   connection.exportedInterface =
       [NSXPCInterface interfaceWithProtocol:@protocol(KoedBackgroundAgentXpc)];
   connection.exportedObject = handler;
   connection.invalidationHandler = ^{
-    if (disconnected->exchange(true)) return;
-    state->activeConnections.fetch_sub(1);
+    auto *event = new ServerEvent{ServerEvent::Kind::Disconnect, connectionId, "", 0,
+                                  nullptr};
+    napi_status status;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (disconnected->exchange(true)) { delete event; return; }
+      state->activeConnections.fetch_sub(1);
+      status = enqueueServerEventLocked(state, event);
+      if (status != napi_ok) --state->disconnectCredits;
+    }
     completeRepliesFor(state->serverId, connectionId);
-    enqueueServerEvent(
-        state, new ServerEvent{ServerEvent::Kind::Disconnect, connectionId, "", 0,
-                               nullptr});
+    if (status != napi_ok) {
+      delete event;
+      if (status != napi_closing) NSLog(@"Background Agent XPC disconnect delivery failed: %d", status);
+    }
   };
   @try {
     [connection resume];
     return YES;
   } @catch (NSException *) {
-    if (!disconnected->exchange(true)) state->activeConnections.fetch_sub(1);
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (!disconnected->exchange(true)) {
+        state->activeConnections.fetch_sub(1);
+        --state->disconnectCredits;
+      }
+    }
     [connection invalidate];
     return NO;
   }
@@ -582,28 +632,149 @@ class ConnectionHandle : public Napi::ObjectWrap<ConnectionHandle> {
 };
 
 Napi::Value listen(const Napi::CallbackInfo &info) {
-  if (serverConstructor.IsEmpty()) {
+  auto *constructors = static_cast<AddonConstructors *>(info.Data());
+  if (constructors->server.IsEmpty()) {
     Napi::Error::New(info.Env(), "Background Agent listener is unavailable.")
         .ThrowAsJavaScriptException();
     return info.Env().Undefined();
   }
-  return serverConstructor.New({info[0], info[1], info[2], info[3]});
+  return constructors->server.New({info[0], info[1], info[2], info[3]});
 }
 
 Napi::Value connect(const Napi::CallbackInfo &info) {
-  if (connectionConstructor.IsEmpty()) {
+  auto *constructors = static_cast<AddonConstructors *>(info.Data());
+  if (constructors->connection.IsEmpty()) {
     Napi::Error::New(info.Env(), "Background Agent connection is unavailable.")
         .ThrowAsJavaScriptException();
     return info.Env().Undefined();
   }
-  return connectionConstructor.New({info[0], info[1]});
+  return constructors->connection.New({info[0], info[1]});
+}
+
+std::mutex ownershipMutex;
+struct OwnershipDescriptor { napi_env env; int fd; };
+std::unordered_map<uint32_t, OwnershipDescriptor> ownershipDescriptors;
+uint32_t nextOwnershipHandle = 1;
+
+void cleanupOwnershipLocks(void *data) {
+  std::lock_guard<std::mutex> guard(ownershipMutex);
+  for (auto it = ownershipDescriptors.begin(); it != ownershipDescriptors.end();) {
+    if (it->second.env == data) {
+      close(it->second.fd);
+      it = ownershipDescriptors.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+Napi::Value ownershipError(Napi::Env env, const char *message) {
+  Napi::Error::New(env, message).ThrowAsJavaScriptException();
+  return env.Undefined();
+}
+
+Napi::Value tryAcquireOwnershipLock(const Napi::CallbackInfo &info) {
+  auto env = info.Env();
+  if (info.Length() != 1 || !info[0].IsString())
+    return ownershipError(env, "Ownership lock requires an absolute directory path.");
+  std::string path = info[0].As<Napi::String>().Utf8Value();
+  if (path.empty() || path[0] != '/' || path.find('\0') != std::string::npos)
+    return ownershipError(env, "Ownership lock requires an absolute directory path.");
+  int directory = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory < 0) return ownershipError(env, "Cannot open ownership lock directory.");
+  size_t start = 1;
+  while (start < path.size()) {
+    size_t end = path.find('/', start);
+    std::string part = path.substr(start, end == std::string::npos ? end : end - start);
+    if (part.empty() || part == "." || part == "..") {
+      close(directory);
+      return ownershipError(env, "Invalid ownership lock directory path.");
+    }
+    int next = openat(directory, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    close(directory);
+    if (next < 0) return ownershipError(env, "Cannot open ownership lock directory.");
+    directory = next;
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  struct stat dirStat;
+  struct statfs filesystem;
+  if (fstat(directory, &dirStat) != 0 || dirStat.st_uid != geteuid() ||
+      (dirStat.st_mode & 077) != 0 || fstatfs(directory, &filesystem) != 0 ||
+      !(filesystem.f_flags & MNT_LOCAL)) {
+    close(directory);
+    return ownershipError(env, "Ownership lock directory is not private and local.");
+  }
+  int fd = openat(directory, "runtime-ownership.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) {
+    close(directory);
+    return ownershipError(env, "Cannot open ownership lock file.");
+  }
+  struct stat fileStat, pathStat;
+  bool valid = fstat(fd, &fileStat) == 0 && S_ISREG(fileStat.st_mode) &&
+      fileStat.st_uid == geteuid() && (fileStat.st_mode & 077) == 0 && fileStat.st_nlink == 1;
+  if (!valid) {
+    close(fd); close(directory);
+    return ownershipError(env, "Ownership lock file is unsafe.");
+  }
+  if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    int error = errno;
+    close(fd); close(directory);
+    if (error == EWOULDBLOCK || error == EAGAIN) return env.Null();
+    return ownershipError(env, "Cannot acquire ownership lock.");
+  }
+  valid = fstatat(directory, "runtime-ownership.lock", &pathStat, AT_SYMLINK_NOFOLLOW) == 0 &&
+      pathStat.st_dev == fileStat.st_dev && pathStat.st_ino == fileStat.st_ino && pathStat.st_nlink == 1;
+  close(directory);
+  if (!valid) {
+    close(fd);
+    return ownershipError(env, "Ownership lock file changed during acquisition.");
+  }
+  std::lock_guard<std::mutex> guard(ownershipMutex);
+  while (nextOwnershipHandle == 0 || ownershipDescriptors.count(nextOwnershipHandle)) ++nextOwnershipHandle;
+  uint32_t handle = nextOwnershipHandle++;
+  ownershipDescriptors.emplace(handle, OwnershipDescriptor{env, fd});
+  return Napi::Number::New(env, handle);
+}
+
+Napi::Value releaseOwnershipLock(const Napi::CallbackInfo &info) {
+  auto env = info.Env();
+  if (info.Length() != 1 || !info[0].IsNumber())
+    return ownershipError(env, "Invalid ownership lock handle.");
+  double value = info[0].As<Napi::Number>().DoubleValue();
+  if (!std::isfinite(value) || value < 1 || value > UINT32_MAX ||
+      value != static_cast<uint32_t>(value))
+    return ownershipError(env, "Invalid ownership lock handle.");
+  std::lock_guard<std::mutex> guard(ownershipMutex);
+  auto it = ownershipDescriptors.find(static_cast<uint32_t>(value));
+  if (it == ownershipDescriptors.end() || it->second.env != env)
+    return ownershipError(env, "Unknown ownership lock handle.");
+  int fd = it->second.fd;
+  ownershipDescriptors.erase(it);
+  // close() errors leave descriptor state unspecified; never retry this handle.
+  if (close(fd) != 0) return ownershipError(env, "Ownership lock release result is indeterminate.");
+  return env.Undefined();
 }
 
 Napi::Object initialize(Napi::Env env, Napi::Object exports) {
-  serverConstructor = Napi::Persistent(ServerHandle::Define(env));
-  connectionConstructor = Napi::Persistent(ConnectionHandle::Define(env));
-  exports.Set("listen", Napi::Function::New(env, listen));
-  exports.Set("connect", Napi::Function::New(env, connect));
+  if (napi_add_env_cleanup_hook(env, cleanupOwnershipLocks, env) != napi_ok) {
+    Napi::Error::New(env, "Cannot register ownership lock cleanup.").ThrowAsJavaScriptException();
+    return exports;
+  }
+  auto *constructors = new AddonConstructors();
+  if (napi_add_env_cleanup_hook(env, [](void *data) {
+        delete static_cast<AddonConstructors *>(data);
+      }, constructors) != napi_ok) {
+    delete constructors;
+    Napi::Error::New(env, "Cannot register XPC constructor cleanup.").ThrowAsJavaScriptException();
+    return exports;
+  }
+  constructors->server = Napi::Persistent(ServerHandle::Define(env));
+  constructors->connection = Napi::Persistent(ConnectionHandle::Define(env));
+  exports.Set("listen", Napi::Function::New(env, listen, "listen", constructors));
+  exports.Set("connect", Napi::Function::New(env, connect, "connect", constructors));
+  exports.Set("tryAcquireOwnershipLock", Napi::Function::New(env, tryAcquireOwnershipLock));
+  exports.Set("releaseOwnershipLock", Napi::Function::New(env, releaseOwnershipLock));
   exports.Set("teamId", Napi::String::New(env, KOED_SIGNING_TEAM_ID_VALUE));
   auto limits = Napi::Object::New(env);
   limits.Set("maxPayloadBytes", Napi::Number::New(env, maxPayloadBytes));

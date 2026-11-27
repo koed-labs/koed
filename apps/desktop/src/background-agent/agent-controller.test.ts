@@ -98,6 +98,19 @@ describe("background-agent controller", () => {
     expect(hello).toMatchObject({ state: "starting", generation: 1 });
   });
 
+  it("answers Hello and status successfully while runtime needs attention", async () => {
+    const { controller, store } = createFixture();
+    store.markNeedsAttention(0);
+    const state = store.read();
+    if (state.kind !== "valid") throw new Error("State is missing.");
+
+    for (const kind of ["hello", "status"] as const) {
+      await expect(
+        controller.handle(makeReadRequest(kind, state.state.installationId))
+      ).resolves.toMatchObject({ ok: true, state: "needs_attention" });
+    }
+  });
+
   it("starts only after verification resume and persists ready state", async () => {
     const { controller, manager, store } = createFixture();
 

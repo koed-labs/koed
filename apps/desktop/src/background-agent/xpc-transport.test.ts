@@ -39,10 +39,12 @@ const responseFor = (
 
 const createBridge = () => {
   let listener: NativeXpcRequestHandler | undefined;
+  let disconnect: ((connectionId: string) => void) | undefined;
   let nextConnection = 0;
   const bridge: BackgroundAgentNativeBridge = {
-    listen: vi.fn((_serviceName, _requirement, handler) => {
+    listen: vi.fn((_serviceName, _requirement, handler, onDisconnect) => {
       listener = handler;
+      disconnect = onDisconnect;
       return { close: vi.fn() };
     }),
     connect: vi.fn(() => {
@@ -65,10 +67,240 @@ const createBridge = () => {
       };
     })
   };
-  return { bridge, getListener: () => listener };
+  return {
+    bridge,
+    getListener: () => listener,
+    disconnect: (id: string) => disconnect?.(id)
+  };
 };
 
 describe("background-agent XPC transport", () => {
+  it("bounds queued requests while a handler is stalled", async () => {
+    const { bridge, getListener } = createBridge();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const handler = vi.fn(async (request: BackgroundAgentRequest) => {
+      await pending;
+      return responseFor(request, "stopped", 0);
+    });
+    const server = createBackgroundAgentXpcServer({
+      bridge,
+      ...identity,
+      handler
+    });
+    const payload = JSON.stringify({
+      protocolVersion: BACKGROUND_AGENT_PROTOCOL_VERSION,
+      requestId: randomUUID(),
+      installationId: identity.installationId,
+      homeIdentity: identity.homeIdentity,
+      kind: "hello"
+    });
+    const listener = getListener()!;
+    void listener("blocker", payload, vi.fn());
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    const replies = Array.from({ length: 100 }, () => vi.fn());
+    for (const reply of replies) void listener("other", payload, reply);
+    expect(replies.some((reply) => reply.mock.calls.length > 0)).toBe(true);
+    server.close();
+    finish();
+  });
+
+  it("expires queued work before it can dispatch after a stalled handler", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, getListener } = createBridge();
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const handler = vi.fn(async (request: BackgroundAgentRequest) => {
+        await pending;
+        return responseFor(request, "stopped", 0);
+      });
+      const server = createBackgroundAgentXpcServer({
+        bridge,
+        ...identity,
+        handler
+      });
+      const payload = JSON.stringify({
+        protocolVersion: BACKGROUND_AGENT_PROTOCOL_VERSION,
+        requestId: randomUUID(),
+        installationId: identity.installationId,
+        homeIdentity: identity.homeIdentity,
+        kind: "hello"
+      });
+      const listener = getListener()!;
+      void listener("blocker", payload, vi.fn());
+      await Promise.resolve();
+      const reply = vi.fn();
+      void listener("queued", payload, reply);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(reply).toHaveBeenCalledWith("");
+      finish();
+      await vi.runAllTimersAsync();
+      expect(handler).toHaveBeenCalledTimes(1);
+      server.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases disconnected queued work without waiting for the stalled handler", async () => {
+    const { bridge, getListener, disconnect } = createBridge();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const handler = vi.fn(async (request: BackgroundAgentRequest) => {
+      await pending;
+      return responseFor(request, "stopped", 0);
+    });
+    const server = createBackgroundAgentXpcServer({
+      bridge,
+      ...identity,
+      handler
+    });
+    const payload = JSON.stringify({
+      protocolVersion: BACKGROUND_AGENT_PROTOCOL_VERSION,
+      requestId: randomUUID(),
+      installationId: identity.installationId,
+      homeIdentity: identity.homeIdentity,
+      kind: "hello"
+    });
+    const listener = getListener()!;
+    void listener("blocker", payload, vi.fn());
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    const reply = vi.fn();
+    void listener("queued", payload, reply);
+    disconnect("queued");
+    expect(reply).toHaveBeenCalledWith("");
+    finish();
+    server.close();
+  });
+
+  it("does not authenticate or dispatch queued work after disconnect during hello", async () => {
+    const { bridge, getListener, disconnect } = createBridge();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const seen: string[] = [];
+    const cleanup: string[] = [];
+    const server = createBackgroundAgentXpcServer({
+      bridge,
+      ...identity,
+      onDisconnect: (id: string) => cleanup.push(id),
+      handler: async (
+        request: BackgroundAgentRequest,
+        context: { connectionId: string }
+      ) => {
+        seen.push(`${context.connectionId}:${request.kind}`);
+        if (request.kind === "hello") await pending;
+        return responseFor(request, "stopped", 0);
+      }
+    });
+    const listener = getListener()!;
+    const request = (kind: string) =>
+      JSON.stringify({
+        protocolVersion: BACKGROUND_AGENT_PROTOCOL_VERSION,
+        requestId: randomUUID(),
+        installationId: identity.installationId,
+        homeIdentity: identity.homeIdentity,
+        kind
+      });
+    const helloReply = vi.fn();
+    const statusReply = vi.fn();
+    void listener("one", request("hello"), helloReply);
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    void listener("one", request("status"), statusReply);
+    disconnect("one");
+    finish();
+    await vi.waitFor(() => expect(helloReply).toHaveBeenCalled());
+    expect(seen).toEqual(["one:hello"]);
+    expect(cleanup).toEqual(["one", "one"]);
+    expect(helloReply).toHaveBeenCalledWith("");
+    expect(statusReply).toHaveBeenCalledWith("");
+    server.close();
+  });
+
+  it("cleans up on close and rejects queued work", async () => {
+    const { bridge, getListener } = createBridge();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const cleanup = vi.fn();
+    const handler = vi.fn(async (request: BackgroundAgentRequest) => {
+      await pending;
+      return responseFor(request, "stopped", 0);
+    });
+    const server = createBackgroundAgentXpcServer({
+      bridge,
+      ...identity,
+      handler,
+      onClose: cleanup
+    });
+    const payload = JSON.stringify({
+      protocolVersion: BACKGROUND_AGENT_PROTOCOL_VERSION,
+      requestId: randomUUID(),
+      installationId: identity.installationId,
+      homeIdentity: identity.homeIdentity,
+      kind: "hello"
+    });
+    const reply = vi.fn();
+    void getListener()!("one", payload, reply);
+    await Promise.resolve();
+    server.close();
+    server.close();
+    finish();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledWith(""));
+    expect(cleanup).toHaveBeenCalledTimes(2);
+  });
+
+  it("cleans up resources created by an in-flight handler after disconnect", async () => {
+    const { bridge, getListener, disconnect } = createBridge();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const owners = new Set<string>();
+    const handler = vi.fn(
+      async (
+        request: BackgroundAgentRequest,
+        context: { connectionId: string }
+      ) => {
+        await pending;
+        owners.add(context.connectionId);
+        return responseFor(request, "stopped", 0);
+      }
+    );
+    const server = createBackgroundAgentXpcServer({
+      bridge,
+      ...identity,
+      handler,
+      onDisconnect: (id: string) => {
+        owners.delete(id);
+      }
+    });
+    const payload = JSON.stringify({
+      protocolVersion: BACKGROUND_AGENT_PROTOCOL_VERSION,
+      requestId: randomUUID(),
+      installationId: identity.installationId,
+      homeIdentity: identity.homeIdentity,
+      kind: "hello"
+    });
+    const reply = vi.fn();
+    void getListener()!("one", payload, reply);
+    await vi.waitFor(() => expect(handler).toHaveBeenCalled());
+    disconnect("one");
+    finish();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalled());
+    expect(owners.size).toBe(0);
+    server.close();
+  });
+
   it("builds an exact Team ID and bundle identifier peer requirement", () => {
     expect(
       buildBackgroundAgentCodeRequirement(

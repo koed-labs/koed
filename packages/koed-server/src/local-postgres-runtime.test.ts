@@ -13,7 +13,8 @@ import {
   localPostgresEnv,
   resolveBundledPostgresMode,
   resolveLocalPostgresRuntimePaths,
-  startLocalPostgresRuntime
+  startLocalPostgresRuntime,
+  stopLocalPostgresRuntime
 } from "./local-postgres-runtime.js";
 import type { KoedServerPaths } from "./paths.js";
 
@@ -58,8 +59,16 @@ const paths = (root: string): KoedServerPaths => ({
   repoRoot: root
 });
 
+const spawnResultValue = (status: number | null) => ({
+  stdout: "",
+  stderr: "",
+  status,
+  signal: null,
+  pid: 1,
+  output: []
+});
 const spawnResult = (status = 0, stderr = "") =>
-  ({ stdout: "", stderr, status, signal: null, pid: 1, output: [] }) as never;
+  ({ ...spawnResultValue(status), stderr }) as never;
 
 afterEach(() => {
   for (const path of temps.splice(0)) {
@@ -68,6 +77,253 @@ afterEach(() => {
 });
 
 describe("local Postgres runtime", () => {
+  it("fails closed when previously owned Postgres has missing metadata", () => {
+    const result = stopLocalPostgresRuntime(
+      paths(tempDir()),
+      {},
+      {
+        existsSync: (path) => !String(path).endsWith("PG_VERSION"),
+        spawnSync: () => spawnResult(0)
+      }
+    );
+    expect(result).toMatchObject({ ok: false, stopped: false });
+  });
+
+  it("allows an explicitly never-initialized Postgres to be skipped", () => {
+    const result = stopLocalPostgresRuntime(
+      paths(tempDir()),
+      {},
+      {
+        existsSync: (path) => !String(path).endsWith("PG_VERSION"),
+        neverInitialized: true,
+        spawnSync: () => {
+          throw new Error("unexpected spawn");
+        }
+      }
+    );
+    expect(result).toMatchObject({ ok: true, stopped: false });
+  });
+
+  it.each([1, 2, 4, null])(
+    "does not report a failed status probe (%s) as stopped",
+    (status) => {
+      const result = stopLocalPostgresRuntime(
+        paths(tempDir()),
+        {},
+        {
+          existsSync: () => true,
+          spawnSync: () =>
+            ({
+              stdout: "",
+              stderr: "status probe failed",
+              status,
+              signal: null,
+              pid: 1,
+              output: []
+            }) as never
+        }
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("status probe failed");
+    }
+  );
+
+  it("reports spawn errors without assuming the server stopped", () => {
+    const result = stopLocalPostgresRuntime(
+      paths(tempDir()),
+      {},
+      {
+        existsSync: () => true,
+        spawnSync: () =>
+          ({
+            stdout: null,
+            stderr: null,
+            status: null,
+            error: new Error("spawn failed")
+          }) as never
+      }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      stopped: false,
+      error: "spawn failed"
+    });
+  });
+
+  it("reports stop command spawn errors without throwing", () => {
+    let calls = 0;
+    const result = stopLocalPostgresRuntime(
+      paths(tempDir()),
+      {},
+      {
+        existsSync: () => true,
+        spawnSync: () =>
+          ++calls === 1
+            ? spawnResult(0)
+            : ({
+                stdout: null,
+                stderr: null,
+                status: null,
+                error: new Error("stop failed")
+              } as never)
+      }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      stopped: false,
+      error: "stop failed"
+    });
+  });
+
+  it("stops a running Postgres using fast shutdown", () => {
+    const commands: string[][] = [];
+    const result = stopLocalPostgresRuntime(
+      paths(tempDir()),
+      {},
+      {
+        existsSync: () => true,
+        spawnSync: (_command, args) => {
+          commands.push(args as string[]);
+          return spawnResult(0);
+        }
+      }
+    );
+    expect(result).toMatchObject({ ok: true, stopped: true });
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toEqual(["status", "-D", expect.any(String)]);
+    expect(commands[1]).toEqual([
+      "stop",
+      "-D",
+      expect.any(String),
+      "-m",
+      "fast"
+    ]);
+  });
+
+  it("recognizes pg_ctl status exit 3 as not running", () => {
+    const result = stopLocalPostgresRuntime(
+      paths(tempDir()),
+      {},
+      {
+        existsSync: () => true,
+        spawnSync: () => spawnResult(3)
+      }
+    );
+    expect(result).toMatchObject({ ok: true, stopped: false });
+  });
+
+  it.each([1, 2, 4, null])(
+    "refuses launch after inconclusive preflight status %s",
+    (status) => {
+      const commands: string[] = [];
+      const result = startLocalPostgresRuntime(
+        paths(tempDir()),
+        {},
+        {
+          existsSync: () => true,
+          spawnSync: (_command, args) => {
+            commands.push(args[0] ?? "");
+            return args[0] === "status"
+              ? ({
+                  ...spawnResultValue(status),
+                  stderr: "probe failed"
+                } as never)
+              : spawnResult();
+          }
+        }
+      );
+      expect(result.ok).toBe(false);
+      expect(result.started).toBe(false);
+      expect(result.status.details).toMatchObject({ stderr: "probe failed" });
+      expect(commands).not.toContain("start");
+    }
+  );
+
+  it("reports preflight spawn errors without launching", () => {
+    const commands: string[] = [];
+    const result = startLocalPostgresRuntime(
+      paths(tempDir()),
+      {},
+      {
+        existsSync: () => true,
+        spawnSync: (_command, args) => {
+          commands.push(args[0] ?? "");
+          return args[0] === "status"
+            ? ({
+                ...spawnResultValue(null),
+                error: new Error("probe spawn failed")
+              } as never)
+            : spawnResult();
+        }
+      }
+    );
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result.status.details)).toContain(
+      "probe spawn failed"
+    );
+    expect(commands).not.toContain("start");
+  });
+
+  it.each(["exit", "spawn"])(
+    "marks failed launch (%s) as uncertain",
+    (failure) => {
+      const commands: string[] = [];
+      const result = startLocalPostgresRuntime(
+        paths(tempDir()),
+        {},
+        {
+          existsSync: () => true,
+          spawnSync: (_command, args) => {
+            commands.push(args[0] ?? "");
+            if (args[0] === "status") return spawnResult(3);
+            if (args[0] === "start")
+              return (
+                failure === "exit"
+                  ? { ...spawnResultValue(1), stderr: "launch failed" }
+                  : {
+                      ...spawnResultValue(null),
+                      error: new Error("launch spawn failed")
+                    }
+              ) as never;
+            return spawnResult();
+          }
+        }
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        started: false,
+        launchUncertain: true
+      });
+      expect(JSON.stringify(result.status.details)).toContain(
+        failure === "exit" ? "launch failed" : "launch spawn failed"
+      );
+      expect(commands).not.toContain("-h");
+    }
+  );
+
+  it.each([0, 3])(
+    "preserves ownership after database failure with preflight %s",
+    (status) => {
+      const commands: string[] = [];
+      const result = startLocalPostgresRuntime(
+        paths(tempDir()),
+        {},
+        {
+          existsSync: () => true,
+          spawnSync: (command, args) => {
+            commands.push(args[0] ?? "");
+            if (args[0] === "status") return spawnResult(status);
+            if (command.endsWith("psql"))
+              return spawnResult(1, "database failed");
+            return spawnResult();
+          }
+        }
+      );
+      expect(result).toMatchObject({ ok: false, started: status === 3 });
+      expect(commands.includes("start")).toBe(status === 3);
+    }
+  );
+
   it("never substitutes bundled Postgres after a native selection is admitted", () => {
     const root = tempDir();
     const selected = resolve(root, "runtime/native/selections/verified");
@@ -184,7 +440,7 @@ describe("local Postgres runtime", () => {
         spawnSync: (command, args) => {
           commands.push({ command, args });
           if (command.endsWith("pg_ctl") && args.includes("status")) {
-            return spawnResult(1, "not running");
+            return spawnResult(3, "not running");
           }
           return spawnResult();
         }

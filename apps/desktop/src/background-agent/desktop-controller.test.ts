@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BackgroundAgentXpcClient } from "./xpc-transport.js";
 import { createBackgroundAgentStateStore } from "./state.js";
 import { createBackgroundAgentRuntimeLifecycle } from "./runtime-lifecycle.js";
-import { createDesktopBackgroundAgentController } from "./desktop-controller.js";
+import {
+  createDesktopBackgroundAgentController,
+  readLaunchStateOrBlockRuntime
+} from "./desktop-controller.js";
 
 const temporaryRoots: string[] = [];
 
@@ -18,7 +21,9 @@ const createFixture = (
     stopError?: Error;
     stopResult?: { ok: boolean; state: string; message?: string };
     launchStatus?: "enabled" | "requires-approval";
+    pendingDisabled?: boolean;
     launchSetError?: Error;
+    initialRegistrationUnavailable?: boolean;
   } = {}
 ) => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "koed-agent-desktop-"));
@@ -43,7 +48,15 @@ const createFixture = (
     clear: vi.fn(() => sequence.push("clear-configuration"))
   };
   const launchService = {
-    get: vi.fn(async () => launchState(input.enabled ?? false)),
+    get: vi.fn(async () =>
+      input.pendingDisabled
+        ? {
+            enabled: false,
+            status: "requires-approval" as const,
+            supported: true
+          }
+        : launchState(input.enabled ?? false)
+    ),
     set: vi.fn(async (enabled: boolean) => {
       sequence.push(enabled ? "register" : "unregister");
       if (input.launchSetError) throw input.launchSetError;
@@ -72,6 +85,10 @@ const createFixture = (
     stop
   } as unknown as BackgroundAgentXpcClient;
   const runtimeLifecycle = createBackgroundAgentRuntimeLifecycle();
+  if (input.initialRegistrationUnavailable)
+    runtimeLifecycle.activateUnavailable(
+      "Background Agent registration status is unavailable."
+    );
   const manager = {
     lifecycle: {
       refresh: vi.fn(() => ({
@@ -87,6 +104,7 @@ const createFixture = (
     launchConfiguration,
     manager,
     runtimeLifecycle,
+    initialRegistrationUnavailable: input.initialRegistrationUnavailable,
     createClient: vi.fn(() => client)
   });
   return {
@@ -109,6 +127,58 @@ afterEach(() => {
 });
 
 describe("Desktop Background Agent controller", () => {
+  it("reconnects to a registered Agent after a transient bootstrap status failure", async () => {
+    const fixture = createFixture({
+      enabled: true,
+      initialRegistrationUnavailable: true
+    });
+    await fixture.controller.initialize();
+    await expect(fixture.runtimeLifecycle.status()).resolves.toMatchObject({
+      ok: true
+    });
+  });
+
+  it("keeps runtime unavailable if registration resolves disabled after bootstrap uncertainty", async () => {
+    const fixture = createFixture({ initialRegistrationUnavailable: true });
+    const state = await fixture.controller.initialize();
+    expect(state.runtimeState).toBe("needs_attention");
+    expect(fixture.runtimeLifecycle.isActive()).toBe(true);
+  });
+  it("blocks local runtime but permits Desktop bootstrap if registration status is unavailable", async () => {
+    const fixture = createFixture();
+    fixture.launchService.get.mockRejectedValue(
+      new Error("status unavailable")
+    );
+    await expect(
+      readLaunchStateOrBlockRuntime(
+        fixture.launchService,
+        fixture.runtimeLifecycle
+      )
+    ).resolves.toBeNull();
+    expect(fixture.runtimeLifecycle.isActive()).toBe(true);
+    expect(() => fixture.runtimeLifecycle.status()).toThrow(
+      /registration status is unavailable/i
+    );
+  });
+  it("reports unconfirmed ownership when an Agent unregisters outside Desktop", async () => {
+    const fixture = createFixture({ enabled: true });
+    await fixture.controller.initialize();
+    fixture.launchService.get.mockResolvedValue({
+      enabled: false,
+      status: "disabled",
+      supported: true
+    });
+
+    const status = await fixture.controller.get();
+
+    expect(status).toMatchObject({
+      enabled: false,
+      status: "disabled",
+      runtimeState: "needs_attention"
+    });
+    expect(status.message).toMatch(/shutdown.*not confirmed/i);
+    expect(fixture.runtimeLifecycle.isActive()).toBe(true);
+  });
   it("keeps the runtime adapter active when a registered Agent has invalid state", async () => {
     const { controller, runtimeLifecycle } = createFixture({
       enabled: true,
@@ -122,6 +192,179 @@ describe("Desktop Background Agent controller", () => {
       "Background Agent state is missing."
     );
   });
+
+  it.each(["initialize", "get"] as const)(
+    "retains ownership immediately after %s sees pending approval",
+    async (method) => {
+      const { controller, runtimeLifecycle } = createFixture({
+        pendingDisabled: true
+      });
+
+      await controller[method]();
+
+      expect(runtimeLifecycle.isActive()).toBe(true);
+    }
+  );
+
+  it("retains ownership when enabling an already pending registration", async () => {
+    const { controller, launchService, runtimeLifecycle } = createFixture({
+      pendingDisabled: true
+    });
+
+    await controller.set(true);
+
+    expect(runtimeLifecycle.isActive()).toBe(true);
+    expect(launchService.set).not.toHaveBeenCalled();
+  });
+
+  it.each(["initialize", "get", "set"] as const)(
+    "fails closed when %s cannot read registration status",
+    async (method) => {
+      const { controller, launchService, runtimeLifecycle } = createFixture();
+      launchService.get.mockRejectedValueOnce(new Error("Status unavailable."));
+
+      await expect(
+        method === "set" ? controller.set(true) : controller[method]()
+      ).rejects.toThrow("Status unavailable.");
+      expect(runtimeLifecycle.isActive()).toBe(true);
+    }
+  );
+
+  it("serializes concurrent enables through a failed registration", async () => {
+    const { controller, launchService, runtimeLifecycle } = createFixture();
+    let rejectRegistration!: (error: Error) => void;
+    const pending = new Promise<never>((_, reject) => {
+      rejectRegistration = reject;
+    });
+    let started!: () => void;
+    const registrationStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    launchService.set.mockImplementationOnce(async () => {
+      started();
+      return pending;
+    });
+    const first = controller.set(true);
+    const firstFailure = expect(first).rejects.toThrow("Registration failed.");
+    await registrationStarted;
+    const second = controller.set(true);
+    rejectRegistration(new Error("Registration failed."));
+    await firstFailure;
+    await second;
+    expect(runtimeLifecycle.isActive()).toBe(true);
+    expect(launchService.set).toHaveBeenCalledTimes(2);
+  });
+
+  it("reconnects after transient registration status failure", async () => {
+    const { controller, launchService, runtimeLifecycle, client } =
+      createFixture({ enabled: true });
+    launchService.get.mockRejectedValueOnce(new Error("Status unavailable."));
+    await expect(controller.get()).rejects.toThrow("Status unavailable.");
+    await controller.get();
+    await runtimeLifecycle.status();
+    expect(client.status).toHaveBeenCalled();
+  });
+
+  it("stops an Agent before recovering from unavailable status to disabled", async () => {
+    const { controller, launchService, runtimeLifecycle, stop } =
+      createFixture();
+    launchService.get.mockRejectedValueOnce(new Error("Status unavailable."));
+    await expect(controller.get()).rejects.toThrow("Status unavailable.");
+    await controller.set(false);
+    expect(stop).toHaveBeenCalledWith(true);
+    expect(runtimeLifecycle.isActive()).toBe(false);
+  });
+
+  it.each(["missing", "invalid", "unavailable"] as const)(
+    "fails closed when %s state follows a transient status failure",
+    async (kind) => {
+      const { controller, launchService, runtimeLifecycle, store } =
+        createFixture({ missingState: true });
+      if (kind === "invalid")
+        vi.spyOn(store, "read").mockReturnValue({
+          kind: "invalid",
+          reason: "Invalid state"
+        });
+      if (kind === "unavailable")
+        vi.spyOn(store, "read").mockImplementation(() => {
+          throw new Error("Configuration unavailable");
+        });
+      launchService.get.mockRejectedValueOnce(new Error("Status unavailable."));
+
+      await expect(controller.get()).rejects.toThrow("Status unavailable.");
+      await controller.get();
+      for (const enabled of [true, false]) {
+        await expect(controller.set(enabled)).rejects.toThrow(
+          /Restore.*before changing registration/
+        );
+        expect(runtimeLifecycle.isActive()).toBe(true);
+        expect(() => runtimeLifecycle.status()).toThrow(
+          /Restore.*before changing registration/
+        );
+      }
+      expect(launchService.set).not.toHaveBeenCalled();
+    }
+  );
+
+  it("retains ownership if recovery Stop fails", async () => {
+    const { controller, launchService, runtimeLifecycle } = createFixture({
+      stopError: new Error("Agent is unreachable.")
+    });
+    launchService.get.mockRejectedValueOnce(new Error("Status unavailable."));
+    await expect(controller.get()).rejects.toThrow("Status unavailable.");
+    await expect(controller.set(false)).rejects.toThrow(
+      "Agent is unreachable."
+    );
+    expect(runtimeLifecycle.isActive()).toBe(true);
+  });
+
+  it("retains ownership when registration returns pending approval", async () => {
+    const { controller, launchService, runtimeLifecycle } = createFixture();
+    launchService.set.mockResolvedValueOnce({
+      enabled: false,
+      status: "requires-approval",
+      supported: true
+    });
+
+    await controller.set(true);
+
+    expect(runtimeLifecycle.isActive()).toBe(true);
+  });
+
+  it.each(["pending", "unavailable"] as const)(
+    "retains ownership when registration fails and status is %s",
+    async (status) => {
+      const { controller, launchService, runtimeLifecycle } = createFixture({
+        launchSetError: new Error("Registration failed.")
+      });
+      if (status === "pending") {
+        launchService.get
+          .mockResolvedValueOnce({
+            enabled: false,
+            status: "disabled",
+            supported: true
+          })
+          .mockResolvedValueOnce({
+            enabled: false,
+            status: "requires-approval",
+            supported: true
+          });
+      } else {
+        launchService.get
+          .mockResolvedValueOnce({
+            enabled: false,
+            status: "disabled",
+            supported: true
+          })
+          .mockRejectedValueOnce(new Error("Status unavailable."));
+      }
+
+      await expect(controller.set(true)).rejects.toThrow(
+        "Registration failed."
+      );
+      expect(runtimeLifecycle.isActive()).toBe(true);
+    }
+  );
 
   it("refuses to register the Agent while the Desktop owns a live runtime", async () => {
     const { controller, launchService, runtimeLifecycle } = createFixture({
@@ -215,7 +458,7 @@ describe("Desktop Background Agent controller", () => {
     expect(launchConfiguration.clear).not.toHaveBeenCalled();
   });
 
-  it("unregisters a LaunchAgent that is still awaiting approval without XPC", async () => {
+  it("stops the Agent before unregistering when approval is pending", async () => {
     const { controller, launchService, stop, runtimeLifecycle } = createFixture(
       {
         enabled: true,
@@ -229,9 +472,22 @@ describe("Desktop Background Agent controller", () => {
       status: "disabled"
     });
 
-    expect(stop).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledWith(true);
     expect(launchService.set).toHaveBeenCalledWith(false);
     expect(runtimeLifecycle.isActive()).toBe(false);
+  });
+
+  it("does not release ownership if pending approval cannot be stopped", async () => {
+    const { controller, launchService, runtimeLifecycle } = createFixture({
+      pendingDisabled: true,
+      stopError: new Error("Agent is unreachable.")
+    });
+
+    await expect(controller.set(false)).rejects.toThrow(
+      "Agent is unreachable."
+    );
+    expect(launchService.set).not.toHaveBeenCalled();
+    expect(runtimeLifecycle.isActive()).toBe(true);
   });
 
   it("keeps the remote owner active if LaunchAgent unregister fails", async () => {

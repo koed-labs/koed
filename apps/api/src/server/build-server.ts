@@ -67,6 +67,7 @@ import {
   projectPersonalNoteToMemory
 } from "../collaboration/personal-note-memory.js";
 import { createPdsCheckpointPublicationService } from "../personal-device-sync/checkpoint-publication.js";
+import type { EnrollmentFence } from "../personal-device-sync/enrollment-fence.js";
 import { createCollaborationActionGrantLifecycle } from "../local-edge/collaboration-action-grant-lifecycle.js";
 import {
   createLocalSharedMemoryCandidatePreparation,
@@ -215,9 +216,14 @@ export {
 };
 
 export interface BuildServerOptions {
+  enrollmentFence?: EnrollmentFence;
+  /** Internal construction-only mode; not configured by HTTP or environment. */
+  readonly managedEnrollmentMode?: boolean;
   /** Test/deployment injection; production uses the configured database. */
   remoteMcpOAuthStore?: RemoteMcpOAuthStore;
   repository?: MemorySourceRepository;
+  /** Internal construction-only observer; does not transfer ownership. */
+  onRepositoryReady?: (repository: MemorySourceRepository | null) => void;
   collaborationRepository?: CollaborationRepository &
     CollaborationRealtimeMaterializationRepository;
   retentionRepository?: RetentionLifecycleRepository;
@@ -315,6 +321,10 @@ const createDefaultResolveUpstreamAuthorization =
   };
 
 export const buildServer = async (options: BuildServerOptions = {}) => {
+  const managedEnrollmentMode = options.managedEnrollmentMode === true;
+  const enrollmentFence = options.enrollmentFence;
+  if (managedEnrollmentMode && !enrollmentFence)
+    throw new Error("Managed enrollment requires an injected fence");
   const config = resolveApiServerConfig();
 
   if (config.test) {
@@ -755,6 +765,26 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   app.addHook("onRequest", (request, reply, done) => {
     reply.header("x-request-id", request.id);
     done();
+  });
+
+  app.addHook("onRequest", async (request) => {
+    if (
+      !["POST", "PUT", "PATCH", "DELETE"].includes(request.method) ||
+      (request.method === "POST" &&
+        [
+          "/v1/personal-device-sync/local-group-reconciliation",
+          "/v1/personal-device-sync/local-runtime-wake"
+        ].includes(request.routeOptions.url ?? ""))
+    )
+      return;
+    if (
+      request.headers["x-koed-enrollment-instance-id"] !== undefined ||
+      request.headers["x-koed-enrollment-epoch-id"] !== undefined ||
+      request.headers["x-koed-enrollment-operation-id"] !== undefined
+    )
+      throw Object.assign(new Error("PDS enrollment tags are unsupported"), {
+        statusCode: 400
+      });
   });
 
   const corsOrigins = config.corsOrigins;
@@ -2047,7 +2077,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerManagedConversationRoutes(app, routeContext);
   registerSourceControlRoutes(app, routeContext);
   registerManagedConversationRunnerRoutes(app, routeContext);
-  registerPersonalDeviceSyncRoutes(app, routeContext);
+  registerPersonalDeviceSyncRoutes(
+    app,
+    routeContext,
+    enrollmentFence,
+    managedEnrollmentMode
+  );
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
   registerCuratedMemoryRoutes(app, routeContext);
@@ -2070,5 +2105,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   collaborationRealtimeService?.registerRoutes();
   collaborationRealtimeBroker?.registerRoutes();
 
+  options.onRepositoryReady?.(repository);
   return app;
 };

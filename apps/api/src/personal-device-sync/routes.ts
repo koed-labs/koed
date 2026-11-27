@@ -1,8 +1,9 @@
 import type { KeyObject } from "node:crypto";
+import { EnrollmentFence, EnrollmentFenceError } from "./enrollment-fence.js";
 import { registerPersonalProjectSelectionRoutes } from "./project-selection-routes.js";
 import { pdsSessionPackageDigest } from "@koed-labs/shared";
 import { pdsConversationItemsForClosure } from "./local-source.js";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   canonicalizePdsJson,
   comparePdsCanonicalIds,
@@ -721,8 +722,247 @@ const verifiedLocalGroupReplica = (
 
 export const registerPersonalDeviceSyncRoutes = (
   app: FastifyInstance,
-  context: ApiRouteContext
+  context: ApiRouteContext,
+  fence: EnrollmentFence = new EnrollmentFence(),
+  managedEnrollmentMode = false
 ): void => {
+  const requireStandaloneControl = async () => {
+    if (managedEnrollmentMode)
+      throw pdsError("PDS HTTP enrollment controls are disabled", 403);
+  };
+  const controlLimits = new Map<
+    string,
+    { start: number; requests: number; active: number }
+  >();
+  const fenceLimits = new Map<
+    string,
+    { start: number; requests: number; active: number }
+  >();
+  let fenceAdmission = { start: Date.now(), requests: 0 };
+  let activeAdmissions = 0;
+  const admittedRequests = new WeakSet<FastifyRequest>();
+  const runningFences = new WeakSet<FastifyRequest>();
+  const bodyDeadlines = new WeakMap<FastifyRequest, NodeJS.Timeout>();
+  let activeFences = 0;
+  const admitFence = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (
+      context.config.deploymentProfile !== "local_personal" ||
+      !isLoopbackHostname(request.ip)
+    )
+      throw pdsError(
+        "PDS Desktop governance is restricted to the local Personal boundary",
+        403
+      );
+    const now = Date.now();
+    if (now - fenceAdmission.start >= 60_000 || now < fenceAdmission.start)
+      fenceAdmission = { start: now, requests: 0 };
+    if (activeAdmissions >= 32) {
+      reply.header("retry-after", "1");
+      throw pdsError("PDS fence admission capacity exceeded", 429);
+    }
+    if (++fenceAdmission.requests > 240) {
+      reply.header(
+        "retry-after",
+        String(
+          Math.max(1, Math.ceil((fenceAdmission.start + 60_000 - now) / 1000))
+        )
+      );
+      throw pdsError("PDS fence admission limit exceeded", 429);
+    }
+    activeAdmissions++;
+    admittedRequests.add(request);
+    reply.raw.once("close", () => releaseIdleAdmission(request));
+    const deadline = setTimeout(() => request.raw.destroy(), 5_000);
+    deadline.unref();
+    bodyDeadlines.set(request, deadline);
+    request.raw.once("end", () => {
+      clearTimeout(deadline);
+      bodyDeadlines.delete(request);
+    });
+  };
+  const releaseAdmission = (request: FastifyRequest) => {
+    const deadline = bodyDeadlines.get(request);
+    if (deadline) clearTimeout(deadline);
+    bodyDeadlines.delete(request);
+    if (admittedRequests.delete(request)) activeAdmissions--;
+  };
+  const releaseIdleAdmission = (request: FastifyRequest) => {
+    if (!runningFences.has(request)) releaseAdmission(request);
+  };
+  const releaseFenceAdmission = async (request: FastifyRequest) => {
+    releaseIdleAdmission(request);
+  };
+  const runFence = async <T>(
+    request: FastifyRequest,
+    action: () => Promise<T>
+  ) => {
+    // A disconnected request may still reach the handler after an async hook.
+    if (!admittedRequests.has(request))
+      throw pdsError("PDS fence request is no longer admitted", 429);
+    runningFences.add(request);
+    try {
+      return await action();
+    } finally {
+      runningFences.delete(request);
+      releaseAdmission(request);
+    }
+  };
+  const desktopCredential = (request: FastifyRequest) => {
+    if (
+      request.headers.authorization
+        ?.trim()
+        .split(/\s+/, 1)[0]
+        ?.toLowerCase() !== "koed-desktop"
+    )
+      throw pdsError("PDS Desktop credential required", 403);
+    if (
+      context.config.deploymentProfile !== "local_personal" ||
+      !isLoopbackHostname(request.ip)
+    )
+      throw pdsError(
+        "PDS Desktop governance is restricted to the local Personal boundary",
+        403
+      );
+    const stored = readDesktopLocalCredentialAuthorization(
+      context.config.koedHome
+    );
+    const credential =
+      stored &&
+      verifyDesktopLocalCredentialAuthorization(
+        context.config.koedHome,
+        request.headers.authorization,
+        {
+          ownerUserId: stored.ownerUserId,
+          operationFamily:
+            request.method === "GET"
+              ? "personal_collaboration_read"
+              : "personal_collaboration_write"
+        }
+      );
+    if (!credential) throw pdsError("PDS Desktop credential is invalid", 401);
+    return credential;
+  };
+  const desktopUser = async (
+    credential: ReturnType<typeof desktopCredential>
+  ) => {
+    const user = await context
+      .requireRepository()
+      .getUser(credential.ownerUserId);
+    if (!user) throw pdsError("PDS Desktop credential is invalid", 401);
+    return user;
+  };
+  const control = async <T>(
+    request: FastifyRequest,
+    action: (owner: string) => T,
+    fenceReply?: FastifyReply
+  ): Promise<T> => {
+    const credential = desktopCredential(request);
+    const owner = `desktop:${credential.credentialKeyId}`;
+    const limits = fenceReply ? fenceLimits : controlLimits;
+    const now = Date.now();
+    for (const [key, value] of limits) {
+      if (value.active === 0 && now - value.start >= 60_000) limits.delete(key);
+    }
+    let limit = limits.get(owner);
+    if (!limit) {
+      if (limits.size >= 1024) {
+        fenceReply?.header("retry-after", "60");
+        throw pdsError("PDS fence control capacity exceeded", 429);
+      }
+      limit = { start: now, requests: 0, active: 0 };
+      limits.set(owner, limit);
+    }
+    if (now - limit.start >= 60_000 || now < limit.start) {
+      limit.start = now;
+      limit.requests = 0;
+    }
+    if (
+      limit.active >= 8 ||
+      limit.requests >= 120 ||
+      (fenceReply && activeFences >= 16)
+    ) {
+      fenceReply?.header(
+        "retry-after",
+        limit.active >= 8 || activeFences >= 16
+          ? "1"
+          : String(Math.max(1, Math.ceil((limit.start + 60_000 - now) / 1000)))
+      );
+      throw pdsError("PDS fence control limit exceeded", 429);
+    }
+    limit.active++;
+    limit.requests++;
+    if (fenceReply) activeFences++;
+    try {
+      await desktopUser(credential);
+      return action(owner);
+    } catch (error) {
+      if (error instanceof EnrollmentFenceError)
+        throw pdsError(
+          `PDS enrollment fence: ${error.code}`,
+          error.code === "invalid_input"
+            ? 400
+            : error.code === "capacity_exceeded"
+              ? 429
+              : 409
+        );
+      throw error;
+    } finally {
+      limit.active--;
+      if (fenceReply) activeFences--;
+    }
+  };
+  const registration = (body: unknown, owner: string) => {
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      throw pdsError("PDS fence input is invalid");
+    const input = body as Record<string, unknown>;
+    if (
+      typeof input.instanceId !== "string" ||
+      typeof input.epochId !== "string"
+    )
+      throw pdsError("PDS fence input is invalid");
+    return { instanceId: input.instanceId, epochId: input.epochId, owner };
+  };
+  const taggedAdmission = async (request: FastifyRequest) => {
+    const instanceId = request.headers["x-koed-enrollment-instance-id"];
+    const epochId = request.headers["x-koed-enrollment-epoch-id"];
+    const operationId = request.headers["x-koed-enrollment-operation-id"];
+    if (
+      instanceId === undefined &&
+      epochId === undefined &&
+      operationId === undefined
+    ) {
+      if (managedEnrollmentMode)
+        throw pdsError("PDS enrollment tags are required", 403);
+      return null;
+    }
+    if (
+      typeof instanceId !== "string" ||
+      typeof epochId !== "string" ||
+      typeof operationId !== "string"
+    )
+      throw pdsError("PDS enrollment tags are invalid");
+    const credential = desktopCredential(request);
+    await desktopUser(credential);
+    try {
+      return fence.enter({
+        instanceId,
+        epochId,
+        operationId,
+        owner: `desktop:${credential.credentialKeyId}`
+      });
+    } catch (error) {
+      if (error instanceof EnrollmentFenceError)
+        throw pdsError(
+          `PDS enrollment fence: ${error.code}`,
+          error.code === "invalid_input"
+            ? 400
+            : error.code === "capacity_exceeded"
+              ? 429
+              : 409
+        );
+      throw error;
+    }
+  };
   const sessionUser = async (request: FastifyRequest) => {
     const scheme = request.headers.authorization
       ?.trim()
@@ -734,45 +974,84 @@ export const registerPersonalDeviceSyncRoutes = (
         403
       );
     if (scheme === "koed-desktop") {
-      if (
-        context.config.deploymentProfile !== "local_personal" ||
-        !isLoopbackHostname(request.ip)
-      ) {
-        throw pdsError(
-          "PDS Desktop governance is restricted to the local Personal boundary",
-          403
-        );
-      }
-      const stored = readDesktopLocalCredentialAuthorization(
-        context.config.koedHome
-      );
-      const operationFamily =
-        request.method === "GET"
-          ? "personal_collaboration_read"
-          : "personal_collaboration_write";
-      const credential = stored
-        ? verifyDesktopLocalCredentialAuthorization(
-            context.config.koedHome,
-            request.headers.authorization,
-            {
-              ownerUserId: stored.ownerUserId,
-              operationFamily
-            }
-          )
-        : null;
-      const user = credential
-        ? await context.requireRepository().getUser(credential.ownerUserId)
-        : null;
-      if (!user) {
-        throw pdsError("PDS Desktop credential is invalid", 401);
-      }
-      return user;
+      return desktopUser(desktopCredential(request));
     }
     return context.auth.authenticateSession(request);
   };
   const repo = context.requireRepository;
 
   registerPersonalProjectSelectionRoutes(app, context, sessionUser);
+
+  app.post(
+    "/v1/personal-device-sync/enrollment-epochs",
+    {
+      onRequest: requireStandaloneControl,
+      preHandler: context.rateLimit.memoryWrite
+    },
+    async (request) =>
+      control(request, (owner) => ({
+        instanceId: fence.instanceId,
+        epochId: fence.createEpoch(owner)
+      }))
+  );
+  app.post(
+    "/v1/personal-device-sync/enrollment-operations",
+    {
+      onRequest: requireStandaloneControl,
+      preHandler: context.rateLimit.memoryWrite
+    },
+    async (request) =>
+      control(request, (owner) => ({
+        operationId: fence.register(registration(request.body, owner))
+      }))
+  );
+  app.post(
+    "/v1/personal-device-sync/enrollment-epoch-fence",
+    {
+      onRequest: [requireStandaloneControl, admitFence],
+      onResponse: releaseFenceAdmission,
+      onRequestAbort: releaseFenceAdmission,
+      bodyLimit: 4096
+    },
+    async (request, reply) =>
+      runFence(request, () =>
+        control(
+          request,
+          (owner) => ({
+            instanceId: fence.instanceId,
+            status: fence.fenceEpochAndDrain(registration(request.body, owner))
+          }),
+          reply
+        )
+      )
+  );
+  app.post(
+    "/v1/personal-device-sync/enrollment-operation-fence",
+    {
+      onRequest: [requireStandaloneControl, admitFence],
+      onResponse: releaseFenceAdmission,
+      onRequestAbort: releaseFenceAdmission,
+      bodyLimit: 4096
+    },
+    async (request, reply) =>
+      runFence(request, () =>
+        control(
+          request,
+          (owner) => {
+            const base = registration(request.body, owner);
+            const operationId = (request.body as Record<string, unknown>)
+              .operationId;
+            if (typeof operationId !== "string")
+              throw pdsError("PDS fence input is invalid");
+            return {
+              instanceId: fence.instanceId,
+              status: fence.fenceAndDrain({ ...base, operationId })
+            };
+          },
+          reply
+        )
+      )
+  );
 
   app.post(
     "/v1/personal-device-sync/local-group-reconciliation",
@@ -788,16 +1067,21 @@ export const registerPersonalDeviceSyncRoutes = (
         );
       }
       const user = await sessionUser(request);
-      const input = pdsLocalGroupReconciliationSchema.parse(request.body);
-      const verified = verifiedLocalGroupReplica(input);
-      const reconciled = await repo().reconcilePersonalDeviceGroupReplica({
-        userId: user.id,
-        localDeploymentId: browserDeploymentId(context),
-        group: verified.group,
-        statements: verified.statements,
-        certificates: verified.certificates
-      });
-      return { group: publicGroup(reconciled), local_user_id: user.id };
+      const release = await taggedAdmission(request);
+      try {
+        const input = pdsLocalGroupReconciliationSchema.parse(request.body);
+        const verified = verifiedLocalGroupReplica(input);
+        const reconciled = await repo().reconcilePersonalDeviceGroupReplica({
+          userId: user.id,
+          localDeploymentId: browserDeploymentId(context),
+          group: verified.group,
+          statements: verified.statements,
+          certificates: verified.certificates
+        });
+        return { group: publicGroup(reconciled), local_user_id: user.id };
+      } finally {
+        release?.();
+      }
     }
   );
 
@@ -815,8 +1099,13 @@ export const registerPersonalDeviceSyncRoutes = (
         );
       }
       await sessionUser(request);
-      await repo().wakePdsLocalSync("desktop_runtime_updated");
-      return { accepted: true };
+      const release = await taggedAdmission(request);
+      try {
+        await repo().wakePdsLocalSync("desktop_runtime_updated");
+        return { accepted: true };
+      } finally {
+        release?.();
+      }
     }
   );
 

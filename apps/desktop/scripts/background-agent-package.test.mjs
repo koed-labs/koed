@@ -36,14 +36,23 @@ test("LaunchAgent plist uses bundle-relative executable and XPC Mach service", (
   );
   assert.match(
     plist,
-    /<key>ProgramArguments<\/key>\s*<array>\s*<string>--koed-background-agent<\/string>/u
+    /<key>ProgramArguments<\/key>\s*<array>\s*<string>Contents\/MacOS\/Koed<\/string>\s*<string>--koed-background-agent<\/string>\s*<\/array>/u
   );
   assert.match(
     plist,
     /<key>MachServices<\/key>\s*<dict>\s*<key>ai\.koed\.desktop\.background-agent<\/key>\s*<true\s*\/>/u
   );
   assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\s*\/>/u);
+});
+
+test("LaunchAgent retains restart behavior for bootstrap failures", () => {
+  const plist = createBackgroundAgentLaunchAgentPlist("Koed");
   assert.match(plist, /<key>KeepAlive<\/key>\s*<true\s*\/>/u);
+});
+
+test("LaunchAgent uses adaptive process priority", () => {
+  const plist = createBackgroundAgentLaunchAgentPlist("Koed");
+  assert.match(plist, /<key>ProcessType<\/key>\s*<string>Adaptive<\/string>/u);
 });
 
 test("plist writer includes signed builds and removes stale assets from unsupported builds", () => {

@@ -1,17 +1,143 @@
 import { resolve } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  truncateSync
+} from "node:fs";
 import { PINNED_PRIVACY_MODEL_REVISION } from "@koed-labs/shared";
 import { resolveKoedServerPaths } from "./paths.js";
 import { writePrivacyInstallationRecord } from "./privacy-installation-record.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   collectLocalPrivacyRuntimeHealthStatus,
+  startLocalPrivacyRuntime,
   localPrivacyEnv
 } from "./local-privacy-runtime.js";
 import type { KoedServerPaths } from "./paths.js";
 import type { KoedAppRuntime } from "./app-runtime.js";
+import * as privacyModelRuntime from "./privacy-model-runtime.js";
+import {
+  PRIVACY_MODEL_FILES,
+  resolvePrivacyModelPaths
+} from "./privacy-model-runtime.js";
+import type { ChildProcess } from "node:child_process";
 
 describe("native Privacy Filter Service runtime", () => {
+  it("rejects an already aborted startup before model verification or spawn", async () => {
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: "/nonexistent-privacy-test"
+    });
+    const controller = new AbortController();
+    const reason = new Error("startup cancelled");
+    controller.abort(reason);
+    const spawn = vi.fn();
+
+    await expect(
+      startLocalPrivacyRuntime(
+        paths,
+        {},
+        {
+          existsSync: () => true,
+          spawn,
+          signal: controller.signal
+        }
+      )
+    ).rejects.toBe(reason);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("interrupts model hashing on abort without spawning a child", async () => {
+    mkdirSync("../../scratch", { recursive: true });
+    const root = mkdtempSync(resolve("../../scratch/privacy-abort-"));
+    try {
+      const paths = resolveKoedServerPaths({ KOED_HOME: root });
+      const blobs = resolvePrivacyModelPaths(paths).blobsDir;
+      mkdirSync(blobs, { recursive: true });
+      const blob = resolve(blobs, PRIVACY_MODEL_FILES[0]!.sha256);
+      closeSync(openSync(blob, "w"));
+      truncateSync(blob, 64 * 1024 * 1024);
+      const controller = new AbortController();
+      const spawn = vi.fn();
+      const pending = startLocalPrivacyRuntime(
+        paths,
+        {},
+        {
+          existsSync: () => true,
+          spawn,
+          signal: controller.signal
+        }
+      );
+      setImmediate(() => controller.abort());
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it("does not spawn when cancellation arrives as verification completes", async () => {
+    const controller = new AbortController();
+    const spawn = vi.fn();
+    const status = vi
+      .spyOn(privacyModelRuntime, "collectPrivacyModelStatus")
+      .mockImplementation(async () => {
+        controller.abort();
+        return {
+          ok: true,
+          state: "installed",
+          message: "verified",
+          modelPath: "/models",
+          files: []
+        };
+      });
+    try {
+      await expect(
+        startLocalPrivacyRuntime(
+          resolveKoedServerPaths({ KOED_HOME: "/privacy-test" }),
+          {},
+          { existsSync: () => true, spawn, signal: controller.signal }
+        )
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      status.mockRestore();
+    }
+  });
+
+  it("returns ownership of a child even if cancellation happens during spawn", async () => {
+    const controller = new AbortController();
+    const child = { pid: 123 } as ChildProcess;
+    const status = vi
+      .spyOn(privacyModelRuntime, "collectPrivacyModelStatus")
+      .mockResolvedValue({
+        ok: true,
+        state: "installed",
+        message: "verified",
+        modelPath: "/models",
+        files: []
+      });
+    try {
+      const result = await startLocalPrivacyRuntime(
+        resolveKoedServerPaths({ KOED_HOME: "/privacy-test" }),
+        {},
+        {
+          existsSync: () => true,
+          signal: controller.signal,
+          spawn: () => {
+            controller.abort();
+            return child;
+          }
+        }
+      );
+      expect(result.process).toBe(child);
+      expect(result.ok).toBe(true);
+    } finally {
+      status.mockRestore();
+    }
+  });
+
   it("retains verified CPU fallback only for the matching CUDA generation and preserves explicit controls", () => {
     mkdirSync("scratch", { recursive: true });
     const root = mkdtempSync(resolve("scratch/privacy-cpu-record-"));

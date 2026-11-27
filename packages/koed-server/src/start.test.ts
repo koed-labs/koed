@@ -29,6 +29,10 @@ import {
   vi
 } from "vitest";
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
+import * as appRuntime from "./app-runtime.js";
+import * as runtimeSelection from "./service-runtime-selection.js";
+import { PinCleanupError } from "./generation-lifecycle.js";
+import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import type { RuntimeOwner } from "./component-contract.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { setupCore } from "./setup.js";
@@ -46,6 +50,15 @@ import {
   releaseKoedServerSupervisorLock
 } from "./supervisor-lock.js";
 import type { KoedServerStatus } from "./types.js";
+import {
+  acquireControlPlaneAdmission,
+  assertControlPlaneAdmission,
+  releaseControlPlaneAdmission
+} from "./control-plane/admission.js";
+
+let privacyStartOverride:
+  | typeof import("./local-privacy-runtime.js").startLocalPrivacyRuntime
+  | undefined;
 
 vi.mock("./local-privacy-runtime.js", async (importOriginal) => {
   const original =
@@ -53,18 +66,22 @@ vi.mock("./local-privacy-runtime.js", async (importOriginal) => {
   return {
     ...original,
     startLocalPrivacyRuntime: async (
-      _paths: unknown,
-      environment: NodeJS.ProcessEnv
-    ) => ({
-      ok: true,
-      env: environment,
-      process: child(45),
-      status: {
-        runtime: "native-privacy",
-        state: "starting",
-        message: "Privacy Filter Service is starting."
-      }
-    })
+      paths: Parameters<typeof original.startLocalPrivacyRuntime>[0],
+      environment: NodeJS.ProcessEnv,
+      options: Parameters<typeof original.startLocalPrivacyRuntime>[2]
+    ) =>
+      privacyStartOverride
+        ? privacyStartOverride(paths, environment, options)
+        : {
+            ok: true,
+            env: environment,
+            process: child(45),
+            status: {
+              runtime: "native-privacy",
+              state: "starting",
+              message: "Privacy Filter Service is starting."
+            }
+          }
   };
 });
 
@@ -273,6 +290,12 @@ const createNativeResources = (root: string) => {
   };
 };
 
+const createPostgresMetadata = (home: string): void => {
+  const directory = resolve(home, "data/postgres");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(resolve(directory, "PG_VERSION"), "17\n");
+};
+
 const createSourceDesktopDbRuntime = (
   root: string,
   ownerUserId: string,
@@ -393,13 +416,395 @@ const closeServer = (server: Server): Promise<void> =>
   new Promise((resolveClose) => server.close(() => resolveClose()));
 
 afterEach(() => {
+  privacyStartOverride = undefined;
   vi.restoreAllMocks();
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
 });
 
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
 describe("start supervisor", () => {
+  it("reuses a retained admission for sequential runtime sessions", async () => {
+    const root = realpathSync(tempDir());
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/db",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://operator:8000",
+      MEMORY_API_TOKEN: "test-runtime-token"
+    };
+    const paths = resolveKoedServerPaths(environment);
+    const admission = acquireControlPlaneAdmission(paths)!;
+    const spawn = vi.fn(() => child(10));
+    try {
+      for (let i = 0; i < 2; i++) {
+        await startKoedServer({
+          ...cleanShutdownAfterReady(),
+          environment,
+          admission,
+          timeoutMs: 1,
+          pollIntervalMs: 1,
+          spawnSync: () => spawnResult(),
+          spawn,
+          collectStatus: async () => healthyStatus(root)
+        });
+        expect(() =>
+          assertControlPlaneAdmission(admission, paths)
+        ).not.toThrow();
+      }
+      expect(spawn).toHaveBeenCalledTimes(4);
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
+  it("retains reusable admission when startup is cancelled before effects", async () => {
+    const root = realpathSync(tempDir());
+    const environment = { KOED_HOME: root, KOED_REPO_ROOT: root };
+    const paths = resolveKoedServerPaths(environment);
+    const admission = acquireControlPlaneAdmission(paths)!;
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await expect(
+        startKoedServer({ environment, admission, signal: controller.signal })
+      ).rejects.toThrow("stopped before readiness");
+      expect(() => assertControlPlaneAdmission(admission, paths)).not.toThrow();
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
+
+  it("does not launch children if persisting the packaged generation fails", async () => {
+    const root = realpathSync(tempDir());
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/db",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://operator:8000",
+      MEMORY_API_TOKEN: "test-runtime-token"
+    };
+    const paths = resolveKoedServerPaths(environment);
+    const admission = acquireControlPlaneAdmission(paths)!;
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      "packaged"
+    );
+    const release = vi.fn(async () => {});
+    vi.spyOn(
+      runtimeSelection,
+      "pinAndResolvePackagedRuntime"
+    ).mockResolvedValue({
+      pin: { generation: { id: "generation-1" }, release },
+      runtime: {}
+    } as never);
+    const spawn = vi.fn(() => child(10));
+    const persistGenerationBeforeEffects = vi.fn(async () => {
+      throw new Error("state persistence failed");
+    });
+    try {
+      await expect(
+        startKoedServer({
+          environment,
+          admission,
+          spawn,
+          spawnSync: () => spawnResult(),
+          persistGenerationBeforeEffects
+        })
+      ).rejects.toThrow("state persistence failed");
+      expect(persistGenerationBeforeEffects).toHaveBeenCalledWith(
+        "generation-1"
+      );
+      expect(spawn).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseControlPlaneAdmission(admission);
+    }
+  });
+
+  it("blocks restarting or releasing admission when pin cleanup is uncertain", async () => {
+    const root = realpathSync(tempDir());
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/db",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://operator:8000",
+      MEMORY_API_TOKEN: "test-runtime-token"
+    };
+    const paths = resolveKoedServerPaths(environment);
+    const admission = acquireControlPlaneAdmission(paths)!;
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      "packaged"
+    );
+    vi.spyOn(
+      runtimeSelection,
+      "pinAndResolvePackagedRuntime"
+    ).mockResolvedValue({
+      pin: {
+        generation: { id: "generation-1" },
+        release: async () => {
+          throw new Error("release uncertain");
+        }
+      },
+      runtime: {}
+    } as never);
+    await expect(
+      startKoedServer({
+        environment,
+        admission,
+        spawnSync: () => spawnResult(),
+        persistGenerationBeforeEffects: () => {
+          throw new Error("state failure");
+        }
+      })
+    ).rejects.toThrow("release uncertain");
+    await expect(startKoedServer({ environment, admission })).rejects.toThrow(
+      "cleanup is uncertain"
+    );
+    expect(() => releaseControlPlaneAdmission(admission)).toThrow(
+      "cleanup is uncertain"
+    );
+  });
+
+  it("rejects overlapping sessions using the same retained admission", async () => {
+    const root = realpathSync(tempDir());
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external",
+      DATABASE_URL: "postgres://operator/db",
+      REDIS_URL: "redis://operator:6379",
+      EMBEDDING_SERVICE_URL: "http://operator:8000",
+      MEMORY_API_TOKEN: "test-runtime-token"
+    };
+    const paths = resolveKoedServerPaths(environment);
+    const admission = acquireControlPlaneAdmission(paths)!;
+    const entered = deferred();
+    const pending = deferred();
+    const controller = new AbortController();
+    const first = startKoedServer({
+      environment,
+      admission,
+      signal: controller.signal,
+      spawnSync: () => spawnResult(),
+      spawn: () => child(10),
+      collectStatus: async () => {
+        entered.resolve();
+        await pending.promise;
+        return healthyStatus(root);
+      }
+    });
+    try {
+      await entered.promise;
+      await expect(startKoedServer({ environment, admission })).rejects.toThrow(
+        "session already active"
+      );
+    } finally {
+      controller.abort();
+      pending.resolve();
+      await first.catch(() => undefined);
+      releaseControlPlaneAdmission(admission);
+    }
+  });
+
+  it.each(["abort", "api exit"])(
+    "blocks later launches during credential provisioning on %s",
+    async (failure) => {
+      const root = tempDir();
+      createNativeResources(root);
+      createPostgresMetadata(root);
+      const entered = deferred();
+      const release = deferred();
+      const controller = new AbortController();
+      const embedding = controlledChild(10);
+      const api = controlledChild(11);
+      const children = [embedding, api];
+      const onReady = vi.fn();
+      const spawn = vi.fn(() => children.shift()!.process);
+      const running = startKoedServer({
+        signal: controller.signal,
+        onReady,
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_AUTO_PORTS: "0",
+          KOED_RUNTIME_MODE: "local-personal",
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        spawnSync: (command, args) =>
+          command.endsWith("pg_ctl") && args.includes("status")
+            ? { ...spawnResult(), status: 3 }
+            : spawnResult(),
+        spawn,
+        collectStatus: async () => healthyStatus(root),
+        provisionLocalApiToken: async () => {
+          entered.resolve();
+          await release.promise;
+          return { token: "test" } as never;
+        }
+      });
+      const outcome = expect(running).rejects.toThrow(
+        failure === "abort"
+          ? "Koed startup was stopped before readiness"
+          : "Essential managed child api exited unexpectedly with code 1"
+      );
+      await entered.promise;
+      if (failure === "abort") controller.abort();
+      else api.exit(1);
+      release.resolve();
+      await outcome;
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(embedding.signals).toEqual(["SIGTERM"]);
+      expect(api.signals).toEqual(failure === "abort" ? ["SIGTERM"] : []);
+      expect(onReady).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["before spawn", "after spawn"])(
+    "waits for privacy creation and blocks later launches on abort %s",
+    async (phase) => {
+      const root = tempDir();
+      createNativeResources(root);
+      createPostgresMetadata(root);
+      const entered = deferred();
+      const release = deferred();
+      const controller = new AbortController();
+      const privacy = controlledChild(42);
+      const launches: string[] = [];
+      const commands: string[] = [];
+      let postgresRunning = false;
+      const onReady = vi.fn();
+      privacyStartOverride = async (_paths, env, options) => {
+        if (phase === "after spawn")
+          options!.spawn!("privacy", [], {} as never);
+        entered.resolve();
+        await release.promise;
+        if (phase === "before spawn")
+          options!.spawn!("privacy", [], {} as never);
+        return {
+          ok: true,
+          env,
+          process: privacy.process,
+          status: { runtime: "native-privacy", state: "starting" }
+        };
+      };
+      const running = startKoedServer({
+        signal: controller.signal,
+        onReady,
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local",
+          KOED_TEAM_COLLABORATION_ENABLED: "true",
+          MEMORY_API_TOKEN: "test"
+        },
+        spawnSync: (command, args) => {
+          commands.push(`${command} ${args.join(" ")}`);
+          if (command.endsWith("pg_ctl") && args.includes("status"))
+            return { ...spawnResult(), status: postgresRunning ? 0 : 3 };
+          if (command.endsWith("pg_ctl") && args.includes("start"))
+            postgresRunning = true;
+          if (command.endsWith("pg_ctl") && args.includes("stop"))
+            postgresRunning = false;
+          return spawnResult();
+        },
+        spawn: (command) => {
+          launches.push(command);
+          return privacy.process;
+        },
+        collectStatus: async () => healthyStatus(root)
+      });
+      const outcome = expect(running).rejects.toThrow(
+        "Koed startup was stopped before readiness"
+      );
+      await entered.promise;
+      controller.abort();
+      expect(commands.some((command) => command.includes(" stop "))).toBe(
+        false
+      );
+      const paths = resolveKoedServerPaths({
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root
+      });
+      const held = acquireKoedServerSupervisorLock(paths);
+      expect(held.acquired).toBe(false);
+      release.resolve();
+      await outcome;
+      expect(launches).toEqual(phase === "after spawn" ? ["privacy"] : []);
+      expect(privacy.signals).toEqual(
+        phase === "after spawn" ? ["SIGTERM"] : []
+      );
+      expect(commands.some((command) => command.includes(" stop "))).toBe(true);
+      expect(onReady).not.toHaveBeenCalled();
+      const next = acquireKoedServerSupervisorLock(paths);
+      expect(next.acquired).toBe(true);
+      releaseKoedServerSupervisorLock(next);
+    }
+  );
+
+  it("does not launch setup or services when startup is already aborted", async () => {
+    const root = tempDir();
+    const controller = new AbortController();
+    controller.abort();
+    const launch = vi.fn(() => spawnResult());
+    const spawn = vi.fn(() => child(1));
+    const onReady = vi.fn();
+    await expect(
+      startKoedServer({
+        environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
+        signal: controller.signal,
+        spawnSync: launch,
+        spawn,
+        onReady
+      })
+    ).rejects.toThrow("Koed startup was stopped before readiness.");
+    expect(launch).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(onReady).not.toHaveBeenCalled();
+  });
+
+  it("does not launch worker when API already exited synchronously", async () => {
+    const root = tempDir();
+    const api = controlledChild(1);
+    api.exit(1);
+    const spawn = vi.fn(() => api.process);
+    await expect(
+      startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "external",
+          KOED_DEPENDENCY_MODE: "external",
+          DATABASE_URL: "postgres://operator/db",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://operator:8000"
+        },
+        spawnSync: () => spawnResult(),
+        spawn,
+        collectStatus: async () => healthyStatus(root)
+      })
+    ).rejects.toThrow(
+      "Essential managed child api exited unexpectedly with code 1"
+    );
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects caller-constructed Desktop runtime authority", async () => {
     await expect(
       startKoedServer({
@@ -1252,6 +1657,7 @@ describe("start supervisor", () => {
 
   it("starts bundled-local native Postgres and Embedding Service without Docker", async () => {
     const root = tempDir();
+    createPostgresMetadata(root);
     const resources = createNativeResources(root);
     mkdirSync(resolve(root, "models"));
     writeFileSync(
@@ -1299,7 +1705,7 @@ describe("start supervisor", () => {
           return {
             stdout: "",
             stderr: "not running",
-            status: 1,
+            status: 3,
             signal: null,
             pid: 1,
             output: []
@@ -1353,8 +1759,136 @@ describe("start supervisor", () => {
     ]);
   });
 
+  it("retains supervisor protection without stopping an unowned server after failed launch", async () => {
+    const root = tempDir();
+    createNativeResources(root);
+    mkdirSync(resolve(root, "data/postgres"), { recursive: true });
+    writeFileSync(resolve(root, "data/postgres/PG_VERSION"), "17");
+    const pgCommands: string[] = [];
+    const leaseCommands: string[] = [];
+
+    await expect(
+      startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local",
+          KOED_AUTO_PORTS: "0",
+          MEMORY_API_TOKEN: "test-runtime-token"
+        },
+        spawnSync: (command, args) => {
+          if (args.includes("release-lease"))
+            leaseCommands.push("release-lease");
+          if (command.endsWith("pg_ctl")) {
+            pgCommands.push(args[0] ?? "");
+            if (args[0] === "status")
+              return { ...spawnResult(), status: 3 } as never;
+            if (args[0] === "start")
+              return {
+                ...spawnResult(),
+                status: 1,
+                stderr: "launch failed"
+              } as never;
+          }
+          return spawnResult();
+        }
+      })
+    ).rejects.toThrow(/launch failed[\s\S]*Cleanup failed:[\s\S]*uncertain/i);
+
+    expect(pgCommands).toEqual(["status", "start"]);
+    expect(leaseCommands).toEqual([]);
+    expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(true);
+    expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(false);
+  });
+
+  it("retains runtime state and supervisor lock when Postgres cleanup cannot be confirmed", async () => {
+    const root = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    const runtime = appRuntime.resolveKoedAppRuntimeForExecution(
+      paths,
+      {},
+      existsSync,
+      undefined,
+      undefined,
+      "source"
+    );
+    const release = vi.fn(async () => {});
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      "packaged"
+    );
+    vi.spyOn(
+      runtimeSelection,
+      "pinAndResolvePackagedRuntime"
+    ).mockResolvedValue({
+      runtime,
+      pin: { release } as never
+    });
+    createNativeResources(root);
+    mkdirSync(resolve(root, "models"));
+    writeFileSync(
+      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
+      "model"
+    );
+    mkdirSync(resolve(root, "data/postgres"), { recursive: true });
+    writeFileSync(resolve(root, "data/postgres/PG_VERSION"), "17");
+    let statusCalls = 0;
+    let spawned = 0;
+    const startupError = new Error("startup probe failed", {
+      cause: new Error("underlying probe failure")
+    });
+
+    const failure = await startKoedServer({
+      ...cleanShutdownAfterReady(),
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_AUTO_PORTS: "0",
+        MEMORY_API_TOKEN: "test-runtime-token"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (command, args) => {
+        if (command.endsWith("pg_ctl") && args.includes("status")) {
+          statusCalls++;
+          return {
+            stdout: "",
+            stderr: statusCalls === 1 ? "not running" : "status probe failed",
+            status: statusCalls === 1 ? 3 : 1,
+            signal: null,
+            pid: 1,
+            output: []
+          } as never;
+        }
+        return spawnResult();
+      },
+      spawn: () => child(++spawned),
+      collectStatus: async () => {
+        throw startupError;
+      }
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).cause).toBeInstanceOf(AggregateError);
+    const aggregate = (failure as Error).cause as AggregateError;
+    expect(aggregate.message).toContain("startup probe failed");
+    expect(aggregate.message).toContain("status probe failed");
+    expect(aggregate.errors[0]).toBe(startupError);
+    expect(aggregate.errors[0].cause).toBe(startupError.cause);
+    expect(aggregate.errors[1]).toBeInstanceOf(Error);
+    expect(aggregate.errors[1].message).toContain("status probe failed");
+    expect(statusCalls).toBeGreaterThanOrEqual(2);
+    expect(release).not.toHaveBeenCalled();
+    expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(true);
+    expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(true);
+  });
+
   it("loads runtime and path settings from the selected env before startup", async () => {
     const root = tempDir();
+    createPostgresMetadata(root);
     const resources = createNativeResources(root);
     createSourceDesktopDbRuntime(root, "77777777-7777-4777-8777-777777777777");
     const modelsDir = resolve(root, "shared-models");
@@ -1414,7 +1948,7 @@ describe("start supervisor", () => {
           return {
             stdout: "",
             stderr: "not running",
-            status: 1,
+            status: 3,
             signal: null,
             pid: 1,
             output: []
@@ -1556,6 +2090,7 @@ describe("start supervisor", () => {
 
   it("uses the configured bundled-local embedding model directory", async () => {
     const root = tempDir();
+    createPostgresMetadata(root);
     createNativeResources(root);
     const embeddingDir = resolve(root, "embedding");
     mkdirSync(embeddingDir);
@@ -1583,7 +2118,7 @@ describe("start supervisor", () => {
           return {
             stdout: "",
             stderr: "not running",
-            status: 1,
+            status: 3,
             signal: null,
             pid: 1,
             output: []
@@ -1630,6 +2165,7 @@ describe("start supervisor", () => {
 
   it("defaults bundled-local mode to the local work queue even when repo env is BullMQ", async () => {
     const root = tempDir();
+    createPostgresMetadata(root);
     createNativeResources(root);
     writeFileSync(
       resolve(root, ".env"),
@@ -1689,6 +2225,7 @@ describe("start supervisor", () => {
 
   it("allocates and persists free local ports for Desktop bundled-local startup", async () => {
     const root = tempDir();
+    createPostgresMetadata(root);
     createNativeResources(root);
     const ownerUserId = "77777777-7777-4777-8777-777777777777";
     createSourceDesktopDbRuntime(root, ownerUserId);
@@ -1723,7 +2260,7 @@ describe("start supervisor", () => {
             return {
               stdout: "",
               stderr: "not running",
-              status: 1,
+              status: 3,
               signal: null,
               pid: 1,
               output: []
@@ -1789,6 +2326,7 @@ describe("start supervisor", () => {
 
   it("does not inherit implicit repo env ports for a new Desktop device", async () => {
     const root = tempDir();
+    createPostgresMetadata(root);
     createNativeResources(root);
     createSourceDesktopDbRuntime(root, "77777777-7777-4777-8777-777777777777");
     writeFileSync(
@@ -1819,7 +2357,7 @@ describe("start supervisor", () => {
           return {
             stdout: "",
             stderr: "not running",
-            status: 1,
+            status: 3,
             signal: null,
             pid: 1,
             output: []
@@ -1888,6 +2426,193 @@ describe("start supervisor", () => {
       expect(releaseKoedServerSupervisorLock(lock)).toBe(true);
     }
   );
+
+  it.each([true, false])(
+    "retries a failed selection pin release once after cleanup (retry succeeds: %s)",
+    async (retrySucceeds) => {
+      const root = tempDir();
+      const selectionError = new Error("selection failed");
+      const initialError = new Error("initial pin release failed");
+      const retryError = new Error("retry pin release failed");
+      const release = vi.fn(async () => {
+        if (!retrySucceeds) throw retryError;
+      });
+      const pin = { release } as never;
+      const error = new runtimeSelection.RuntimeSelectionPinReleaseError(
+        pin,
+        selectionError,
+        initialError
+      );
+      vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+        "packaged"
+      );
+      vi.spyOn(
+        runtimeSelection,
+        "pinAndResolvePackagedRuntime"
+      ).mockRejectedValue(error);
+      const spawn = vi.fn(() => child(1));
+      const failure = await startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_AUTO_PORTS: "0",
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        spawn
+      }).catch((cause: unknown) => cause as Error);
+
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(spawn).not.toHaveBeenCalled();
+      if (!failure) throw new Error("Expected startup to fail");
+      expect(failure.message).toContain("selection failed");
+      expect(failure.message).toContain("initial pin release failed");
+      if (!retrySucceeds) {
+        expect(failure.message).toContain("retry pin release failed");
+        expect(failure.cause).toBeInstanceOf(AggregateError);
+        expect((failure.cause as AggregateError).errors).toEqual([
+          error,
+          retryError
+        ]);
+      } else {
+        expect(failure.cause).toBe(error);
+      }
+      expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(
+        !retrySucceeds
+      );
+    }
+  );
+
+  it.each([
+    ["standalone", false],
+    ["standalone", true],
+    ["desktop", false],
+    ["desktop", true]
+  ])(
+    "retains supervisor authority after %s acquisition cleanup uncertainty (shutdown: %s)",
+    async (kind, shutdown) => {
+      const root = tempDir();
+      const paths = resolveKoedServerPaths({
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root
+      });
+      let capability: ReturnType<typeof verifyDesktopRuntimeBundle> | undefined;
+      if (kind === "desktop") {
+        const resources = resolve(root, "resources");
+        const runtime = resolve(resources, "koed-runtime");
+        mkdirSync(runtime, { recursive: true });
+        writeFileSync(
+          resolve(runtime, "desktop-bundle-manifest.json"),
+          JSON.stringify({
+            schemaVersion: 1,
+            component: "base",
+            productVersion: "0.9.0",
+            target: { platform: "linux", architecture: "x64" },
+            files: []
+          })
+        );
+        capability = verifyDesktopRuntimeBundle(resources);
+      }
+      const acquisitionError = new AggregateError(
+        [new Error("action"), new Error("store release")],
+        "store uncertainty"
+      );
+      const cleanupError = new Error("cleanup uncertain");
+      const release = vi.fn(async () => {});
+      const pinError = new PinCleanupError(
+        acquisitionError,
+        cleanupError,
+        release
+      );
+      let rejectAcquisition!: (error: unknown) => void;
+      const acquisition = new Promise<never>((_, reject) => {
+        rejectAcquisition = reject;
+      });
+      vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+        "packaged"
+      );
+      const selection = vi
+        .spyOn(runtimeSelection, "pinAndResolvePackagedRuntime")
+        .mockReturnValue(acquisition);
+      const spawn = vi.fn(() => child(1));
+      const controller = new AbortController();
+      const starting = startKoedServer({
+        signal: controller.signal,
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_AUTO_PORTS: "0",
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        desktopRuntimeCapability: capability,
+        spawn
+      }).catch((error: unknown) => error as Error);
+      await vi.waitFor(() => expect(selection).toHaveBeenCalled());
+      expect(acquireKoedServerSupervisorLock(paths).acquired).toBe(false);
+      if (shutdown) controller.abort();
+      expect(acquireKoedServerSupervisorLock(paths).acquired).toBe(false);
+      rejectAcquisition(pinError);
+      const failure = await starting;
+      expect(failure.cause).toBe(pinError);
+      expect(pinError.errors).toEqual([acquisitionError, cleanupError]);
+      expect(release).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+      expect(acquireKoedServerSupervisorLock(paths).acquired).toBe(false);
+    }
+  );
+
+  it("retains supervisor lock when shutdown pin release fails", async () => {
+    const root = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    const runtime = appRuntime.resolveKoedAppRuntimeForExecution(
+      paths,
+      {},
+      existsSync,
+      undefined,
+      undefined,
+      "source"
+    );
+    const releaseError = new Error("shutdown pin release failed");
+    const release = vi.fn(async () => {
+      throw releaseError;
+    });
+    vi.spyOn(appRuntime, "resolveKoedAppRuntimeExecution").mockReturnValue(
+      "packaged"
+    );
+    vi.spyOn(
+      runtimeSelection,
+      "pinAndResolvePackagedRuntime"
+    ).mockResolvedValue({
+      runtime,
+      pin: { release } as never
+    });
+    const failure = await startKoedServer({
+      ...cleanShutdownAfterReady(),
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_AUTO_PORTS: "0",
+        KOED_RUNTIME_MODE: "external",
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://operator:8000",
+        MEMORY_API_TOKEN: "test-runtime-token"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: () => spawnResult(),
+      spawn: () => child(10),
+      collectStatus: async () => healthyStatus(root)
+    }).catch((cause: unknown) => cause as Error);
+    expect(release).toHaveBeenCalledTimes(1);
+    if (!failure) throw new Error("Expected shutdown to fail");
+    expect(failure.message).toContain("shutdown pin release failed");
+    expect(failure.cause).toBe(releaseError);
+    expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(true);
+  });
 
   it("rejects a stopped generation owned by another control plane", async () => {
     const root = realpathSync(tempDir());
@@ -2069,6 +2794,7 @@ describe("start supervisor", () => {
         CODEX_CONFIG_PATH: resolve(root, "codex/config.toml")
       };
       createNativeResources(root);
+      createPostgresMetadata(environment.KOED_HOME);
       createSourceDesktopDbRuntime(
         root,
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -2114,7 +2840,7 @@ describe("start supervisor", () => {
             return spawnSync(command, args, { ...options, encoding: "utf8" });
           }
           return args.includes("status")
-            ? ({ ...spawnResult(), status: 1 } as never)
+            ? ({ ...spawnResult(), status: 3 } as never)
             : spawnResult();
         },
         spawn: (_command, args, options) => {

@@ -305,12 +305,27 @@ async function acquireLock<T>(
       });
     }
   }
+  let actionFailed = false;
+  let actionError: unknown;
   try {
     aborted(signal);
     assertDirectoryChain(home, root);
     return await fn();
+  } catch (error) {
+    actionFailed = true;
+    actionError = error;
+    throw error;
   } finally {
-    release();
+    try {
+      release();
+    } catch (releaseError) {
+      if (actionFailed)
+        throw new AggregateError(
+          [actionError, releaseError],
+          "component operation and lock release failed"
+        );
+      throw releaseError;
+    }
   }
 }
 

@@ -1,9 +1,19 @@
 #!/usr/bin/env node
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  BACKGROUND_AGENT_PLIST_NAME,
+  createBackgroundAgentLaunchAgentPlist
+} from "./background-agent-package.mjs";
 
 function commandRunner(runCommand) {
   return (command, args) => {
@@ -49,6 +59,27 @@ function verifyApp(appPath, expectedVersion, expectedTeamId, run) {
   const team = details.match(/^TeamIdentifier=(.+)$/m)?.[1];
   if (team !== expectedTeamId)
     throw new Error("Packaged Desktop signing team mismatch.");
+  const plistPath = resolve(
+    appPath,
+    "Contents/Library/LaunchAgents",
+    BACKGROUND_AGENT_PLIST_NAME
+  );
+  const addonPath = resolve(
+    appPath,
+    "Contents/Resources/app.asar.unpacked/dist-electron/background-agent/native/koed_background_xpc.node"
+  );
+  if (!existsSync(plistPath) || !existsSync(addonPath))
+    throw new Error("Packaged Background Agent assets are missing.");
+  run("plutil", ["-lint", plistPath]);
+  if (
+    readFileSync(plistPath, "utf8") !==
+    createBackgroundAgentLaunchAgentPlist("Koed")
+  )
+    throw new Error("Packaged Background Agent plist contents mismatch.");
+  run("codesign", ["--verify", "--strict", addonPath]);
+  const addonDetails = run("codesign", ["-dv", "--verbose=4", addonPath]);
+  if (addonDetails.match(/^TeamIdentifier=(.+)$/m)?.[1] !== expectedTeamId)
+    throw new Error("Packaged Background Agent signing team mismatch.");
   run("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]);
   run("xcrun", ["stapler", "validate", appPath]);
 }

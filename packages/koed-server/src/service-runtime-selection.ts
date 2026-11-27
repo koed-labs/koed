@@ -21,6 +21,22 @@ import {
   type DesktopRuntimeCapability
 } from "./desktop-runtime-capability.js";
 
+type GenerationPin = Awaited<ReturnType<typeof pinGenerationForStart>>;
+
+export class RuntimeSelectionPinReleaseError extends AggregateError {
+  constructor(
+    readonly pin: GenerationPin,
+    readonly selectionError: unknown,
+    readonly releaseError: unknown
+  ) {
+    super(
+      [selectionError, releaseError],
+      `Runtime selection failed: ${selectionError instanceof Error ? selectionError.message : String(selectionError)}. Pin release failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`
+    );
+    this.name = "RuntimeSelectionPinReleaseError";
+  }
+}
+
 const runtimeOwner = (
   paths: KoedServerPaths,
   capability?: DesktopRuntimeCapability
@@ -126,7 +142,11 @@ export async function pinAndResolvePackagedRuntime(
     assertKoedAppRuntimeAvailable(runtime, paths);
     return { runtime, pin };
   } catch (error) {
-    await pin.release();
+    try {
+      await pin.release();
+    } catch (releaseError) {
+      throw new RuntimeSelectionPinReleaseError(pin, error, releaseError);
+    }
     throw error;
   }
 }

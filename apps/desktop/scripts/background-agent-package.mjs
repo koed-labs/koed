@@ -24,6 +24,7 @@ export const createBackgroundAgentLaunchAgentPlist = (productFilename) => {
   <string>Contents/MacOS/${productFilename}</string>
   <key>ProgramArguments</key>
   <array>
+    <string>Contents/MacOS/${productFilename}</string>
     <string>--koed-background-agent</string>
   </array>
   <key>MachServices</key>
@@ -36,7 +37,7 @@ export const createBackgroundAgentLaunchAgentPlist = (productFilename) => {
   <key>KeepAlive</key>
   <true/>
   <key>ProcessType</key>
-  <string>Interactive</string>
+  <string>Adaptive</string>
 </dict>
 </plist>
 `;

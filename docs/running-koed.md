@@ -277,7 +277,10 @@ Release assembly uses one `@koed-labs/app-runtime-stage` production deployment a
 source for base and optional privacy payloads. `scripts/component-assembly.mjs`
 projects manifest dependency closures into independent component roots; shared
 packages are copied into both trees when needed, and each tree carries its own
-third-party notice inventory. Target pruning remains governed by the reviewed
+third-party notice inventory. The API and Server share the enrollment-fence IPC
+codec and dispatcher through `@koed-labs/shared/enrollment-fence-ipc`; the IPC
+client remains in Server. This package boundary alone does not activate an IPC
+channel or an enrollment barrier. Target pruning remains governed by the reviewed
 privacy native-package policy, including ONNX Runtime, Sharp, and Argon2 target
 files. Assembly removes verified Claude Agent SDK platform executables and
 prunes node-pty to reviewed target before projecting either component; assembly
@@ -335,7 +338,10 @@ The supervisor monitors essential child processes during startup as well as norm
 If a child exits or startup is stopped, it cancels readiness probes and polling delays immediately.
 It stops managed children and its native Postgres before releasing the runtime pin and supervisor lock.
 A dead API cannot become ready through further polling.
-If cleanup cannot confirm that the children stopped, the supervisor retains those ownership protections and reports the failure.
+If cleanup cannot confirm that the children stopped, the supervisor retains those ownership protections and any runtime state record it has written, and reports the failure.
+For an initialized native Postgres data directory, a failed `pg_ctl status` probe is a cleanup error; its documented not-running exit code is treated as an already-stopped result. A missing initialization marker is handled separately and does not prove that an earlier Postgres process has exited.
+Release-managed embedding runs in a separate process group for shutdown; source-mode embedding does not.
+Supervisor exit or an absent runtime record does not by itself prove that detached descendants, service helpers, or every owned listener have stopped.
 Desktop recovery must still authenticate the previous generation before restoring it.
 
 `resolveKoedAppRuntime` maps a supplied generation selection to component
@@ -471,16 +477,20 @@ authenticated XPC connection to the Agent while it is registered. Desktop
 shutdown detaches; it never transfers a live supervisor. Enabling the Agent is
 rejected while Desktop owns a running or starting runtime. If installation
 identity, saved home, or XPC state cannot be verified, the app fails closed
-instead of starting a second runtime through the CLI.
+instead of starting a second runtime through the CLI. If macOS registration
+status cannot be read during Desktop startup, Desktop remains available but
+runtime control is blocked until ownership can be established.
 
-**Stop Koed** records a durable stop and leaves the Background Agent available
-for an explicit later **Start Koed**. Disabling the Agent or choosing its
-**Quit Koed** action first requests and verifies a durable runtime Stop, then
-unregisters the LaunchAgent. This order matters: macOS terminates a running
-LaunchAgent when it is unregistered. If Stop or unregister fails, Koed retains
-the service registration and reports the failure rather than claiming the
-Agent has stopped. A LaunchAgent that is awaiting System Settings approval can
-be unregistered directly because it has not started.
+**Stop Koed** records a durable stop intent and leaves the Background Agent
+available for an explicit later **Start Koed**. Disabling the Agent or choosing
+its **Quit Koed** action requests a runtime Stop before unregistering the
+LaunchAgent. This order matters: macOS terminates a running LaunchAgent when it
+is unregistered. Stop intent, however, is not proof that every runtime process
+has exited; a verified shutdown handoff is not yet available. An unregister
+error can also leave registration status uncertain. Pending System Settings
+approval alone does not prove that an Agent has never run. Desktop requires a
+successful Stop response before unregistering in that state; if the Agent is
+unreachable, cancellation remains unavailable.
 
 The Agent uses the same `KOED_HOME` as Desktop. It is not supported in
 unpackaged or ad-hoc builds. Non-ad-hoc macOS builds configured with a valid
@@ -1388,6 +1398,13 @@ Event-only package leaves the acknowledged summary snapshot unchanged.
 
 ## Personal Device Sync V1
 
+The API has internal, construction-only managed-enrollment route groundwork. It
+is disabled by default and is not activated by the current runtime. When injected,
+it disables HTTP enrollment fence controls and requires complete valid fence
+tags for local reconciliation and wake, including browser and CLI requests.
+Other mutation routes are not covered; this is not a runtime-wide drain barrier.
+Standalone behavior remains unchanged.
+
 Browser-session PDS routes provide genesis, enrollment challenge, signed group
 transitions, key-bundle acknowledgement, scoped status/log/certificate/bundle
 retrieval, Personal Sync Policy, and Remote Account Link records. They require
@@ -1700,6 +1717,22 @@ input cannot supply an executable, artifact URL, hash, or ownership capability.
 Once selected, native embedding and Postgres executables must come from that
 admitted selection. Missing selected files fail rather than silently choosing a
 different bundled executable. A compatible older core remains usable.
+
+Component directory locks contain ownership metadata. If a lock is left behind
+or its ownership cannot be verified, automatic stale-lock removal may fail and
+manual recovery may be required. Before removing a lock, the Operator must
+verify that no Koed process or operation still owns it. Never remove or replace
+one while an operation may be running; ownership checks and removal are not
+atomic against concurrent replacement.
+
+For bundled-local Postgres, an unsuccessful status probe blocks a new start; it
+is not treated as evidence that Postgres is stopped. If a start command fails
+after attempting to launch Postgres, the outcome may be uncertain. Inspect the
+configured data directory and running processes before retrying. The supervisor
+retains its runtime protections where possible, but those protections may not
+survive the supervisor process exiting; a later retry is not proof that the
+previous launch or its children have stopped. Do not stop a potentially
+unrelated Postgres instance solely because it is using the configured directory.
 
 Existing Homebrew or combined packaged providers retain their provisioning path;
 Desktop does not silently migrate them to release composition. macOS retains its

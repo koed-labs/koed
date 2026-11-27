@@ -62,8 +62,12 @@ export const createBackgroundAgentXpcServer = (
   input: AgentIdentity & {
     bridge: BackgroundAgentNativeBridge;
     handler: (
-      request: BackgroundAgentRequest
+      request: BackgroundAgentRequest,
+      context: { connectionId: string }
     ) => Promise<BackgroundAgentResponse>;
+    // Cleanup hooks must be idempotent: in-flight handlers may settle later.
+    onDisconnect?: (connectionId: string) => void;
+    onClose?: () => void;
   }
 ) => {
   const codeRequirement = buildBackgroundAgentCodeRequirement(
@@ -71,41 +75,139 @@ export const createBackgroundAgentXpcServer = (
     input.bundleIdentifier
   );
   const authenticatedConnections = new Set<string>();
+  const connections = new Map<string, { alive: boolean; pending: number }>();
+  let closed = false;
   const requestQueue = new SerialRequestQueue();
   const listener = input.bridge.listen(
     input.serviceName,
     codeRequirement,
     (connectionId, payload, reply) => {
-      void requestQueue.enqueue(() =>
-        handleIncomingRequest(
-          connectionId,
-          payload,
-          reply,
-          input,
-          authenticatedConnections
-        )
+      if (closed) return tryReply(reply, "");
+      let connection = connections.get(connectionId);
+      if (!connection) {
+        connection = { alive: true, pending: 0 };
+        connections.set(connectionId, connection);
+      }
+      const current = connection;
+      current.pending++;
+      requestQueue.enqueue(
+        connectionId,
+        async () => {
+          try {
+            await handleIncomingRequest(
+              connectionId,
+              payload,
+              reply,
+              input,
+              authenticatedConnections,
+              () => !closed && current.alive,
+              () => {
+                if (!current.alive || closed)
+                  input.onDisconnect?.(connectionId);
+                if (closed) input.onClose?.();
+              }
+            );
+          } finally {
+            finishRequest();
+          }
+        },
+        () => {
+          tryReply(reply, "");
+          finishRequest();
+        }
       );
+
+      function finishRequest() {
+        current.pending--;
+        if (
+          !current.alive &&
+          current.pending === 0 &&
+          connections.get(connectionId) === current
+        )
+          connections.delete(connectionId);
+      }
     },
-    (connectionId) => authenticatedConnections.delete(connectionId)
+    (connectionId) => {
+      const connection = connections.get(connectionId);
+      if (connection) {
+        connection.alive = false;
+        if (connection.pending === 0) connections.delete(connectionId);
+      }
+      authenticatedConnections.delete(connectionId);
+      requestQueue.cancel(connectionId);
+      input.onDisconnect?.(connectionId);
+    }
   );
   return {
     close: () => {
+      if (closed) return;
+      closed = true;
       authenticatedConnections.clear();
-      listener.close();
+      requestQueue.cancel();
+      connections.clear();
+      try {
+        input.onClose?.();
+      } finally {
+        listener.close();
+      }
     }
   };
 };
 
 class SerialRequestQueue {
-  private tail: Promise<void> = Promise.resolve();
+  private readonly queued = new Set<{
+    connectionId: string;
+    task: () => Promise<void>;
+    cancel: () => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private running = false;
 
-  enqueue(task: () => Promise<void>) {
-    const result = this.tail.then(task, task);
-    this.tail = result.then(
-      () => undefined,
-      () => undefined
-    );
-    return result;
+  enqueue(connectionId: string, task: () => Promise<void>, cancel: () => void) {
+    if (this.queued.size >= 64) return cancel();
+    const entry = {
+      connectionId,
+      task,
+      cancel,
+      timer: setTimeout(() => this.cancelEntry(entry), requestTimeoutMs)
+    };
+    this.queued.add(entry);
+    this.drain();
+  }
+
+  cancel(connectionId?: string) {
+    for (const entry of this.queued) {
+      if (connectionId === undefined || entry.connectionId === connectionId)
+        this.cancelEntry(entry);
+    }
+  }
+
+  private cancelEntry(
+    entry: typeof this.queued extends Set<infer T> ? T : never
+  ) {
+    if (!this.queued.delete(entry)) return;
+    clearTimeout(entry.timer);
+    entry.cancel();
+  }
+
+  private drain() {
+    if (this.running) return;
+    const entry = this.queued.values().next().value;
+    if (!entry) return;
+    this.queued.delete(entry);
+    clearTimeout(entry.timer);
+    this.running = true;
+    void Promise.resolve()
+      .then(entry.task)
+      .then(
+        () => this.finish(),
+        () => this.finish()
+      );
+  }
+
+  private finish() {
+    this.running = false;
+    this.drain();
   }
 }
 
@@ -115,12 +217,16 @@ const handleIncomingRequest = async (
   reply: (response: string) => void,
   input: AgentIdentity & {
     handler: (
-      request: BackgroundAgentRequest
+      request: BackgroundAgentRequest,
+      context: { connectionId: string }
     ) => Promise<BackgroundAgentResponse>;
   },
-  authenticatedConnections: Set<string>
+  authenticatedConnections: Set<string>,
+  isAlive: () => boolean,
+  cleanupAfterHandler: () => void
 ) => {
   try {
+    if (!isAlive()) return tryReply(reply, "");
     const request = parseBackgroundAgentRequest(payload);
     assertRequestIdentity(request, input);
     if (
@@ -130,9 +236,14 @@ const handleIncomingRequest = async (
       tryReply(reply, "");
       return;
     }
-    const response = parseBackgroundAgentResponse(
-      JSON.stringify(await input.handler(request))
-    );
+    let result: BackgroundAgentResponse;
+    try {
+      result = await input.handler(request, { connectionId });
+    } finally {
+      cleanupAfterHandler();
+    }
+    const response = parseBackgroundAgentResponse(JSON.stringify(result));
+    if (!isAlive()) return tryReply(reply, "");
     assertResponseMatchesRequest(response, request, input);
     if (request.kind === "hello" && response.ok)
       authenticatedConnections.add(connectionId);

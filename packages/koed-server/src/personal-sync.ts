@@ -2755,7 +2755,8 @@ export const redeemPairingLink = async (
   deviceLabel: string,
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
-  deps: PersonalSyncDependencies = {}
+  deps: PersonalSyncDependencies = {},
+  enrollmentOperation?: import("./enrollment-fence-ipc-client.js").EnrollmentFenceOperation
 ): Promise<PersonalSyncResult> => {
   if (deviceLabel.length > 80 || /[\r\n\0]/.test(deviceLabel)) {
     fail("--device-label is invalid.");
@@ -2771,6 +2772,7 @@ export const redeemPairingLink = async (
     localControlUrl,
     koedHome: paths.koedHome,
     environment,
+    enrollmentOperation,
     fetch: deps.fetch,
     runPersonalSync: async (nestedArgs, options) =>
       await runPersonalSyncCommand(nestedArgs, paths, options.environment, {

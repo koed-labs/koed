@@ -278,6 +278,13 @@ jobs:
       - name: Build workspace
         run: pnpm build
 
+      - &test-macos-ownership-lock
+        name: Test macOS native ownership lock
+        run: |
+          pnpm --filter @koed-labs/desktop build:background-agent:native
+          KOED_OWNERSHIP_LOCK_TEST_ADDON="${GITHUB_WORKSPACE}/apps/desktop/dist-electron/background-agent/native/koed_background_xpc.node" \
+            pnpm --filter @koed-labs/desktop exec vitest run src/background-agent/ownership-lock.test.ts
+
       - name: Build macOS standalone koed-server package
         env:
           KOED_SERVER_PACKAGE_VERSION: ${{ github.sha }}
@@ -397,6 +404,8 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - *test-macos-ownership-lock
 
       - name: Build koed-server CLI
         run: pnpm --filter @koed-labs/server build

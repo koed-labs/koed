@@ -41,6 +41,8 @@ import {
   componentFixture
 } from "./component-test-fixtures.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import * as directoryLock from "./directory-lock.js";
+import * as componentVerification from "./component-verification.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import {
   readStagedGeneration,
@@ -757,6 +759,132 @@ describe("immutable component and generation store", () => {
     ).rejects.toThrow("component download failed with HTTP 404");
     expect(bodyCancelled).toBe(true);
   });
+
+  it.each([
+    { actionFails: true, releaseFails: true },
+    { actionFails: true, releaseFails: false },
+    { actionFails: false, releaseFails: true },
+    { actionFails: false, releaseFails: false }
+  ])(
+    "preserves lock operation failures: $actionFails, $releaseFails",
+    async ({ actionFails, releaseFails }) => {
+      const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+      const item = await fixture();
+      testRuntime.current = item.input.runtime;
+      const actionError = new Error("action failed");
+      const releaseError = new Error("release failed");
+      const controller = new AbortController();
+      let locked = false;
+      vi.spyOn(controller.signal, "aborted", "get").mockImplementation(() => {
+        if (locked && actionFails) throw actionError;
+        return false;
+      });
+      vi.spyOn(directoryLock, "acquireDirectoryLock").mockImplementation(() => {
+        locked = true;
+        return () => {
+          if (releaseFails) throw releaseError;
+        };
+      });
+      const operation = stageComponent(
+        paths,
+        {
+          kind: "offline",
+          archivePath: item.input.archivePath,
+          manifestPath: writeMetadata(item.input.manifestBytes)
+        },
+        { ...item.input, signal: controller.signal }
+      );
+      if (actionFails && releaseFails) {
+        const error = await operation.catch((reason: unknown) => reason);
+        expect(error).toBeInstanceOf(AggregateError);
+        expect((error as AggregateError).errors[0]).toBe(actionError);
+        expect((error as AggregateError).errors[1]).toBe(releaseError);
+      } else if (actionFails || releaseFails) {
+        await expect(operation).rejects.toBe(
+          actionFails ? actionError : releaseError
+        );
+      } else {
+        await expect(operation).resolves.toMatchObject({
+          kind: "manifest-pinned-component"
+        });
+      }
+    }
+  );
+
+  it.each([
+    {
+      actionError: new Error("async action failed"),
+      releaseFails: false,
+      releaseError: undefined
+    },
+    {
+      actionError: new Error("async action failed"),
+      releaseFails: true,
+      releaseError: new Error("release failed")
+    },
+    { actionError: undefined, releaseFails: false, releaseError: undefined },
+    { actionError: undefined, releaseFails: true, releaseError: null },
+    { actionError: null, releaseFails: false, releaseError: undefined },
+    { actionError: null, releaseFails: true, releaseError: undefined }
+  ])(
+    "preserves asynchronous action rejection $actionError with release failure $releaseFails",
+    async ({ actionError, releaseFails, releaseError }) => {
+      const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+      const item = await fixture();
+      await stageFixture(paths, item);
+      let locked = false;
+      let actionInvoked = false;
+      let released = false;
+      const verify = componentVerification.verifyExtractedComponent;
+      vi.spyOn(
+        componentVerification,
+        "verifyExtractedComponent"
+      ).mockImplementation(async (...args) => {
+        if (!locked) return verify(...args);
+        actionInvoked = true;
+        await Promise.resolve();
+        throw actionError;
+      });
+      vi.spyOn(directoryLock, "acquireDirectoryLock").mockImplementation(() => {
+        locked = true;
+        return () => {
+          released = true;
+          if (releaseFails) throw releaseError;
+        };
+      });
+      const operation = stageFixture(paths, item);
+      if (releaseFails) {
+        const error = await operation.catch((reason: unknown) => reason);
+        expect(error).toBeInstanceOf(AggregateError);
+        expect((error as AggregateError).errors).toEqual([
+          actionError,
+          releaseError
+        ]);
+      } else {
+        await expect(operation).rejects.toBe(actionError);
+      }
+      expect(actionInvoked).toBe(true);
+      expect(released).toBe(true);
+    }
+  );
+
+  it.each([undefined, null, false, 0, ""])(
+    "preserves release-thrown value %s after a successful action",
+    async (releaseError) => {
+      const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+      const item = await fixture();
+      let released = false;
+      vi.spyOn(directoryLock, "acquireDirectoryLock").mockReturnValue(() => {
+        released = true;
+        throw releaseError;
+      });
+      await expect(stageFixture(paths, item)).rejects.toBe(releaseError);
+      expect(released).toBe(true);
+      expect(
+        readdirSync(resolve(paths.componentsDir, "base"))
+      ).not.toHaveLength(0);
+    }
+  );
 
   it("aborts while waiting for component-store lock", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });

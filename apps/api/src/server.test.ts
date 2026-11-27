@@ -14,6 +14,7 @@ import {
 } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createConnection, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -71,12 +72,17 @@ import {
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
   canonicalizePdsJson,
+  signPdsRecord,
   createPdsAuthorizedKeyBundle,
   signPdsGroupDraft,
+  signPdsGroupFinal,
+  pdsFinalizedStatementHash,
+  type PdsGroupStatement,
   calculateConversationSourceClosureDigest,
   codexCanonicalConversationItemKey,
   createLocalTestKeyEnvelopeEncryptionProvider,
   storeDesktopLocalCredential,
+  rotateDesktopLocalCredential,
   decryptEncryptedJsonPackage,
   rawConversationTransportChunkGroupId,
   storeLocalEdgeClientCredential,
@@ -91,6 +97,7 @@ import {
 } from "./server/index.js";
 import type { BuildServerOptions } from "./server/index.js";
 import type { WorkosAuthKitClient } from "./auth/workos.js";
+import { EnrollmentFence } from "./personal-device-sync/enrollment-fence.js";
 
 let isolatedDefaultKoedHome: string | undefined;
 
@@ -19174,6 +19181,700 @@ describe("account and access flows", () => {
     await app.close();
   });
 
+  it("reserves bounded fence capacity after creation and memory writes are exhausted", async () => {
+    const previousHome = process.env.KOED_HOME;
+    const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+    const home = mkdtempSync(resolve(tmpdir(), "koed-fence-limits-"));
+    process.env.KOED_HOME = home;
+    process.env.KOED_DEPLOYMENT_PROFILE = "local_personal";
+    let exhaustWrites = false;
+    const repository = createFakeRepository();
+    const originalGetUser = repository.getUser.bind(repository);
+    let blockUsers: Promise<void> | undefined;
+    let started = 0;
+    repository.getUser = async (id) => {
+      if (blockUsers) {
+        started++;
+        await blockUsers;
+      }
+      return originalGetUser(id);
+    };
+    const app = await buildServer({
+      repository,
+      rateLimitStore: {
+        increment: async (key) => ({
+          count:
+            exhaustWrites && key.startsWith("memoryWrite:") ? 1_000_000 : 1,
+          resetAt: Date.now() + 60_000
+        })
+      }
+    });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: `fence-${randomUUID()}@example.com`,
+          password: "password123"
+        }
+      });
+      const userId = jsonBody<{ user: { id: string } }>(registered).user.id;
+      const desktop = storeDesktopLocalCredential(home, {
+        ownerUserId: userId,
+        operationFamilies: ["personal_collaboration_write"]
+      });
+      const headers = { authorization: desktop.authorization };
+      const create = () =>
+        app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epochs",
+          headers
+        });
+      const epoch = (await create()).json() as {
+        instanceId: string;
+        epochId: string;
+      };
+      const operation = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-operations",
+        headers,
+        payload: epoch
+      });
+      expect(operation.statusCode, operation.body).toBe(200);
+      for (let i = 0; i < 241; i++) {
+        const remote = await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epoch-fence",
+          remoteAddress: "198.51.100.1",
+          payload: {}
+        });
+        expect(remote.statusCode).toBe(403);
+      }
+      const afterRemoteFlood = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-operation-fence",
+        headers,
+        payload: { ...epoch, ...operation.json() }
+      });
+      expect(afterRemoteFlood.statusCode, afterRemoteFlood.body).toBe(200);
+      for (let i = 0; i < 118; i++) await create();
+      expect((await create()).statusCode).toBe(429);
+      exhaustWrites = true;
+      const operationFence = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-operation-fence",
+        headers,
+        payload: { ...epoch, ...operation.json() }
+      });
+      expect(operationFence.statusCode, operationFence.body).toBe(200);
+      expect(operationFence.json().status).toBe("drained");
+      const fence = () =>
+        app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epoch-fence",
+          headers,
+          payload: epoch
+        });
+      const result = await fence();
+      expect(result.statusCode, result.body).toBe(200);
+      expect(result.json().status).toBe("drained");
+      let release!: () => void;
+      blockUsers = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pending = Array.from({ length: 8 }, () => fence());
+      try {
+        while (started < 8)
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        const concurrent = await fence();
+        expect(concurrent.statusCode).toBe(429);
+        expect(concurrent.headers["retry-after"]).toBe("1");
+        expect(concurrent.body).not.toContain("drained");
+      } finally {
+        release();
+        await Promise.all(pending);
+        blockUsers = undefined;
+      }
+      let limited = result;
+      for (let i = 0; i < 250 && limited.statusCode !== 429; i++)
+        limited = await fence();
+      expect(limited.statusCode).toBe(429);
+      expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
+      expect(limited.body).not.toContain("drained");
+    } finally {
+      await app.close();
+      rmSync(home, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env.KOED_HOME;
+      else process.env.KOED_HOME = previousHome;
+      if (previousProfile === undefined)
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      else process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+    }
+  }, 60_000);
+
+  it("bounds unauthenticated fence floods before credential verification", async () => {
+    const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+    process.env.KOED_DEPLOYMENT_PROFILE = "local_personal";
+    const app = await buildServer({ repository: createFakeRepository() });
+    try {
+      let response = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epoch-fence",
+        payload: {}
+      });
+      expect(response.statusCode).toBe(403);
+      for (let i = 0; i < 240; i++) {
+        response = await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epoch-fence",
+          payload: {}
+        });
+      }
+      expect(response.statusCode).toBe(429);
+      expect(Number(response.headers["retry-after"])).toBeGreaterThan(0);
+      expect(response.body).not.toContain("drained");
+    } finally {
+      await app.close();
+      if (previousProfile === undefined)
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      else process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+    }
+  });
+
+  it("releases real socket admissions on abort, timeout and invalid bodies", async () => {
+    const previousHome = process.env.KOED_HOME;
+    const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+    const home = mkdtempSync(resolve(tmpdir(), "koed-fence-sockets-"));
+    process.env.KOED_HOME = home;
+    process.env.KOED_DEPLOYMENT_PROFILE = "local_personal";
+    const repository = createFakeRepository();
+    const originalGetUser = repository.getUser.bind(repository);
+    let failUser = false;
+    repository.getUser = async (id) => {
+      if (failUser) throw new Error("test repository failure");
+      return originalGetUser(id);
+    };
+    const app = await buildServer({ repository });
+    const sockets: Socket[] = [];
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: `socket-${randomUUID()}@example.com`,
+          password: "password123"
+        }
+      });
+      const userId = registered.json().user.id as string;
+      const desktop = storeDesktopLocalCredential(home, {
+        ownerUserId: userId,
+        operationFamilies: ["personal_collaboration_write"]
+      });
+      const headers = { authorization: desktop.authorization };
+      const epochResponse = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epochs",
+        headers
+      });
+      expect(epochResponse.statusCode).toBe(200);
+      const epoch = epochResponse.json();
+      const address = await app.listen({ port: 0, host: "127.0.0.1" });
+      const port = Number(new URL(address).port);
+      const url = `${address}/v1/personal-device-sync/enrollment-epoch-fence`;
+      const fence = () =>
+        fetch(url, {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify(epoch)
+        });
+      const openSlow = async () => {
+        const socket = createConnection({ port, host: "127.0.0.1" });
+        sockets.push(socket);
+        await new Promise<void>((resolve, reject) => {
+          socket.once("connect", resolve);
+          socket.once("error", reject);
+        });
+        socket.write(
+          "POST /v1/personal-device-sync/enrollment-epoch-fence HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"
+        );
+        return socket;
+      };
+      for (let i = 0; i < 32; i++) await openSlow();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect((await fence()).status).toBe(429);
+      sockets[0]!.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await openSlow();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect((await fence()).status).toBe(429);
+      await new Promise((resolve) => setTimeout(resolve, 5_200));
+      expect((await fence()).status).toBe(200);
+      const malformed = await fetch(url, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: "{"
+      });
+      expect(malformed.status).toBe(400);
+      const oversized = await fetch(url, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ data: "x".repeat(5000) })
+      });
+      expect(oversized.status).toBe(413);
+      failUser = true;
+      expect((await fence()).status).toBe(500);
+      failUser = false;
+      expect((await fence()).status).toBe(200);
+      const accountingSockets: Socket[] = [];
+      for (let i = 0; i < 32; i++) accountingSockets.push(await openSlow());
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const full = await fence();
+      expect(full.status).toBe(429);
+      expect(await full.text()).toContain(
+        "PDS fence admission capacity exceeded"
+      );
+      for (const socket of accountingSockets) socket.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      let floodResponse: Response | undefined;
+      for (let i = 0; i < 240; i++) {
+        floodResponse = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}"
+        });
+        if (floodResponse.status === 429) break;
+      }
+      expect(floodResponse?.status).toBe(429);
+      const rejected = await fence();
+      expect(rejected.status).toBe(429);
+      expect(await rejected.text()).not.toContain("drained");
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+      try {
+        expect((await fence()).status).toBe(200);
+      } finally {
+        clock.mockRestore();
+      }
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await app.close();
+      rmSync(home, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env.KOED_HOME;
+      else process.env.KOED_HOME = previousHome;
+      if (previousProfile === undefined)
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      else process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+    }
+  }, 20_000);
+
+  it("retains admission for disconnected active handlers and reuses it after settlement", async () => {
+    const previousHome = process.env.KOED_HOME;
+    const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+    const home = mkdtempSync(resolve(tmpdir(), "koed-fence-disconnect-"));
+    process.env.KOED_HOME = home;
+    process.env.KOED_DEPLOYMENT_PROFILE = "local_personal";
+    const repository = createFakeRepository();
+    const originalGetUser = repository.getUser.bind(repository);
+    let gate: Promise<void> | undefined;
+    let started = 0;
+    repository.getUser = async (id) => {
+      if (gate) {
+        started++;
+        await gate;
+      }
+      return originalGetUser(id);
+    };
+    const app = await buildServer({ repository });
+    const sockets: Socket[] = [];
+    let release: (() => void) | undefined;
+    let resumeHook!: () => void;
+    let hookEntered!: () => void;
+    let responseClosed!: () => void;
+    let hookResumed!: () => void;
+    const hookGate = new Promise<void>((resolve) => {
+      resumeHook = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      hookEntered = resolve;
+    });
+    const closed = new Promise<void>((resolve) => {
+      responseClosed = resolve;
+    });
+    const resumed = new Promise<void>((resolve) => {
+      hookResumed = resolve;
+    });
+    app.addHook("preHandler", async (request, reply) => {
+      if (request.headers["x-test-defer-fence"] !== "yes") return;
+      reply.raw.once("close", responseClosed);
+      hookEntered();
+      await hookGate;
+      hookResumed();
+    });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: `disconnect-${randomUUID()}@example.com`,
+          password: "password123"
+        }
+      });
+      const desktop = storeDesktopLocalCredential(home, {
+        ownerUserId: registered.json().user.id,
+        operationFamilies: ["personal_collaboration_write"]
+      });
+      const headers = { authorization: desktop.authorization };
+      const epoch = (
+        await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epochs",
+          headers
+        })
+      ).json();
+      const address = await app.listen({ port: 0, host: "127.0.0.1" });
+      const port = Number(new URL(address).port);
+      const url = `${address}/v1/personal-device-sync/enrollment-epoch-fence`;
+      const body = JSON.stringify(epoch);
+      const fence = () =>
+        fetch(url, {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body
+        });
+      expect((await fence()).status).toBe(200);
+      gate = Promise.resolve();
+      const beforeDisconnect = started;
+      const deferred = createConnection({ port, host: "127.0.0.1" });
+      sockets.push(deferred);
+      await new Promise<void>((resolve, reject) => {
+        deferred.once("connect", resolve);
+        deferred.once("error", reject);
+      });
+      deferred.write(
+        `POST /v1/personal-device-sync/enrollment-epoch-fence HTTP/1.1\r\nHost: localhost\r\nAuthorization: ${desktop.authorization}\r\nX-Test-Defer-Fence: yes\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+      );
+      await entered;
+      deferred.destroy();
+      await closed;
+      resumeHook();
+      await resumed;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(started).toBe(beforeDisconnect);
+      gate = undefined;
+      expect((await fence()).status).toBe(200);
+      for (let batch = 0; batch < 4; batch++) {
+        gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const target = started + 8;
+        const batchSockets: Socket[] = [];
+        for (let i = 0; i < 8; i++) {
+          const socket = createConnection({ port, host: "127.0.0.1" });
+          sockets.push(socket);
+          batchSockets.push(socket);
+          await new Promise<void>((resolve, reject) => {
+            socket.once("connect", resolve);
+            socket.once("error", reject);
+          });
+          socket.write(
+            `POST /v1/personal-device-sync/enrollment-epoch-fence HTTP/1.1\r\nHost: localhost\r\nAuthorization: ${desktop.authorization}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+          );
+        }
+        await vi.waitFor(() => expect(started).toBe(target), {
+          timeout: 10_000
+        });
+        for (const socket of batchSockets) socket.destroy();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect((await fence()).status).toBe(429);
+        if (batch === 0) {
+          const slow: Socket[] = [];
+          for (let i = 0; i < 24; i++) {
+            const socket = createConnection({ port, host: "127.0.0.1" });
+            sockets.push(socket);
+            slow.push(socket);
+            await new Promise<void>((resolve, reject) => {
+              socket.once("connect", resolve);
+              socket.once("error", reject);
+            });
+            socket.write(
+              "POST /v1/personal-device-sync/enrollment-epoch-fence HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          const capacity = await fence();
+          expect(capacity.status).toBe(429);
+          expect(await capacity.text()).toContain(
+            "PDS fence admission capacity exceeded"
+          );
+          for (const socket of slow) socket.destroy();
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        release!();
+        gate = undefined;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect((await fence()).status).toBe(200);
+      const accountingSockets: Socket[] = [];
+      for (let i = 0; i < 32; i++) {
+        const socket = createConnection({ port, host: "127.0.0.1" });
+        sockets.push(socket);
+        accountingSockets.push(socket);
+        await new Promise<void>((resolve, reject) => {
+          socket.once("connect", resolve);
+          socket.once("error", reject);
+        });
+        socket.write(
+          "POST /v1/personal-device-sync/enrollment-epoch-fence HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const full = await fence();
+      expect(full.status).toBe(429);
+      expect(await full.text()).toContain(
+        "PDS fence admission capacity exceeded"
+      );
+      for (const socket of accountingSockets) socket.destroy();
+    } finally {
+      resumeHook();
+      release?.();
+      for (const socket of sockets) socket.destroy();
+      await app.close();
+      rmSync(home, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env.KOED_HOME;
+      else process.env.KOED_HOME = previousHome;
+      if (previousProfile === undefined)
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      else process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+    }
+  }, 60_000);
+
+  it("enforces managed enrollment route admission without HTTP controls", async () => {
+    const previousHome = process.env.KOED_HOME;
+    const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+    const home = mkdtempSync(resolve(tmpdir(), "koed-managed-fence-"));
+    process.env.KOED_HOME = home;
+    process.env.KOED_DEPLOYMENT_PROFILE = "local_personal";
+    const wake = vi.fn(async () => undefined);
+    const repository = Object.assign(createFakeRepository(), {
+      wakePdsLocalSync: wake
+    });
+    const fence = new EnrollmentFence();
+    await expect(
+      buildServer({ repository, managedEnrollmentMode: true })
+    ).rejects.toThrow("Managed enrollment requires an injected fence");
+    const options = {
+      repository,
+      enrollmentFence: fence,
+      managedEnrollmentMode: true
+    };
+    const app = await buildServer(options);
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: `managed-${randomUUID()}@example.com`,
+          password: "password123"
+        }
+      });
+      const userId = jsonBody<{ user: { id: string } }>(registered).user.id;
+      const desktop = storeDesktopLocalCredential(home, {
+        ownerUserId: userId,
+        operationFamilies: ["personal_collaboration_write"]
+      });
+      const owner = `desktop:${desktop.credentialKeyId}`;
+      const epoch = {
+        instanceId: fence.instanceId,
+        epochId: fence.createEpoch(owner),
+        owner
+      };
+      const operationId = fence.register(epoch);
+      const tags = {
+        "x-koed-enrollment-instance-id": epoch.instanceId,
+        "x-koed-enrollment-epoch-id": epoch.epochId,
+        "x-koed-enrollment-operation-id": operationId
+      };
+      const desktopHeaders = { authorization: desktop.authorization };
+      const browserHeaders = browserSessionHeaders(cookieHeader(registered));
+      options.managedEnrollmentMode = false;
+      for (const url of [
+        "enrollment-epochs",
+        "enrollment-operations",
+        "enrollment-epoch-fence",
+        "enrollment-operation-fence"
+      ]) {
+        const responses = await Promise.all(
+          [desktopHeaders, browserHeaders, desktopHeaders].map((headers) =>
+            app.inject({
+              method: "POST",
+              url: `/v1/personal-device-sync/${url}`,
+              headers,
+              payload: { ...epoch, operationId }
+            })
+          )
+        );
+        for (const response of responses)
+          expect(response.statusCode, response.body).toBe(403);
+      }
+      for (const url of ["local-runtime-wake", "local-group-reconciliation"]) {
+        for (const headers of [
+          desktopHeaders,
+          browserHeaders,
+          {
+            ...desktopHeaders,
+            "x-koed-enrollment-instance-id": epoch.instanceId
+          }
+        ]) {
+          const response = await app.inject({
+            method: "POST",
+            url: `/v1/personal-device-sync/${url}`,
+            headers,
+            payload: {}
+          });
+          expect(
+            response.statusCode,
+            `${url}: ${response.body}`
+          ).toBeGreaterThanOrEqual(400);
+        }
+      }
+      for (const invalid of [
+        { ...tags, "x-koed-enrollment-instance-id": randomUUID() },
+        { ...tags, "x-koed-enrollment-operation-id": randomUUID() },
+        {
+          ...tags,
+          "x-koed-enrollment-epoch-id": fence.createEpoch("desktop:other")
+        }
+      ]) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/local-runtime-wake",
+          headers: { ...desktopHeaders, ...invalid }
+        });
+        expect(response.statusCode, response.body).toBe(409);
+      }
+      expect(wake).not.toHaveBeenCalled();
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-runtime-wake",
+        headers: { ...desktopHeaders, ...tags }
+      });
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect(wake).toHaveBeenCalledTimes(1);
+      wake.mockRejectedValueOnce(new Error("repository failed"));
+      const failed = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-runtime-wake",
+        headers: { ...desktopHeaders, ...tags }
+      });
+      expect(failed.statusCode).toBe(500);
+      expect(fence.fenceEpochAndDrain(epoch)).toBe("drained");
+      const stale = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-runtime-wake",
+        headers: { ...desktopHeaders, ...tags }
+      });
+      expect(stale.statusCode).toBe(409);
+      expect(wake).toHaveBeenCalledTimes(2);
+    } finally {
+      await app.close();
+      rmSync(home, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env.KOED_HOME;
+      else process.env.KOED_HOME = previousHome;
+      if (previousProfile === undefined)
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      else process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+    }
+  });
+
+  it("uses the injected enrollment fence for tagged HTTP work", async () => {
+    const previousHome = process.env.KOED_HOME;
+    const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+    const home = mkdtempSync(resolve(tmpdir(), "koed-injected-fence-"));
+    process.env.KOED_HOME = home;
+    process.env.KOED_DEPLOYMENT_PROFILE = "local_personal";
+    let unblock!: () => void;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const repository = Object.assign(createFakeRepository(), {
+      wakePdsLocalSync: async () => {
+        started();
+        await blocked;
+      }
+    });
+    const fence = new EnrollmentFence();
+    const app = await buildServer({
+      repository,
+      enrollmentFence: fence,
+      managedEnrollmentMode: true
+    });
+    try {
+      const registered = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: {
+          email: `fence-${randomUUID()}@example.com`,
+          password: "password123"
+        }
+      });
+      expect(registered.statusCode, registered.body).toBe(200);
+      const userId = jsonBody<{ user: { id: string } }>(registered).user.id;
+      const desktop = storeDesktopLocalCredential(home, {
+        ownerUserId: userId,
+        operationFamilies: ["personal_collaboration_write"]
+      });
+      const owner = `desktop:${desktop.credentialKeyId}`;
+      const epoch = {
+        instanceId: fence.instanceId,
+        epochId: fence.createEpoch(owner),
+        owner
+      };
+      const operationId = fence.register(epoch);
+      const headers = {
+        authorization: desktop.authorization,
+        "x-koed-enrollment-instance-id": epoch.instanceId,
+        "x-koed-enrollment-epoch-id": epoch.epochId,
+        "x-koed-enrollment-operation-id": operationId
+      };
+      const wake = () =>
+        app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/local-runtime-wake",
+          headers
+        });
+      const pendingWake = wake();
+      await Promise.race([
+        entered,
+        pendingWake.then((response) => {
+          throw new Error(
+            `Wake returned before admission: ${response.statusCode} ${response.body}`
+          );
+        })
+      ]);
+      expect(fence.fenceEpochAndDrain(epoch)).toBe("pending");
+      const late = await wake();
+      expect(late.statusCode, late.body).toBe(409);
+      unblock();
+      expect((await pendingWake).statusCode).toBe(200);
+      expect(fence.fenceEpochAndDrain(epoch)).toBe("drained");
+      const afterDrain = await wake();
+      expect(afterDrain.statusCode, afterDrain.body).toBe(409);
+    } finally {
+      unblock();
+      await app.close();
+      rmSync(home, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env.KOED_HOME;
+      else process.env.KOED_HOME = previousHome;
+      if (previousProfile === undefined)
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      else process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+    }
+  });
+
   it("permits a scoped Desktop credential only on the local Personal boundary", async () => {
     const previousKoedHome = process.env.KOED_HOME;
     const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
@@ -19183,8 +19884,13 @@ describe("account and access flows", () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const publicJwk = publicKey.export({ format: "jwk" }) as JsonWebKey;
     const wakePdsLocalSync = vi.fn(async () => undefined);
+    const createPersonalDeviceEnrollmentChallenge = vi.fn(async () => ({
+      id: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString()
+    }));
     const repository = Object.assign(createFakeRepository(), {
       listPersonalDeviceGroups: async () => [],
+      createPersonalDeviceEnrollmentChallenge,
       wakePdsLocalSync
     });
     const app = await buildServer({
@@ -19194,6 +19900,10 @@ describe("account and access flows", () => {
         publicKey: publicJwk.x!,
         privateKey
       }
+    });
+    let lastError: unknown;
+    app.addHook("onError", async (_request, _reply, error) => {
+      lastError = error;
     });
     try {
       const registered = await app.inject({
@@ -19229,6 +19939,575 @@ describe("account and access flows", () => {
         pairing_invitation_group_ids: []
       });
 
+      const epochResponse = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epochs",
+        headers: { authorization: desktop.authorization }
+      });
+      expect(epochResponse.statusCode, epochResponse.body).toBe(200);
+      const epoch = jsonBody<{ instanceId: string; epochId: string }>(
+        epochResponse
+      );
+      const operationResponse = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-operations",
+        headers: { authorization: desktop.authorization },
+        payload: epoch
+      });
+      expect(operationResponse.statusCode, operationResponse.body).toBe(200);
+      const operation = jsonBody<{ operationId: string }>(operationResponse);
+      const taggedHeaders = {
+        authorization: desktop.authorization,
+        "x-koed-enrollment-instance-id": epoch.instanceId,
+        "x-koed-enrollment-epoch-id": epoch.epochId,
+        "x-koed-enrollment-operation-id": operation.operationId
+      };
+      for (const headers of [
+        taggedHeaders,
+        {
+          authorization: desktop.authorization,
+          "x-koed-enrollment-instance-id": epoch.instanceId
+        },
+        {
+          authorization: desktop.authorization,
+          "x-koed-enrollment-epoch-id": epoch.epochId
+        },
+        {
+          authorization: desktop.authorization,
+          "x-koed-enrollment-operation-id": operation.operationId
+        }
+      ]) {
+        const email = `tagged-${randomUUID()}@example.com`;
+        for (const [url, payload] of [
+          [
+            "/v1/personal-device-sync/challenges",
+            { challenge_hash: "a".repeat(43) }
+          ],
+          ["/v1/personal-device-sync/enrollment-epochs", {}],
+          ["/auth/register", { email, password: "password123" }]
+        ] as const) {
+          const rejected = await app.inject({
+            method: "POST",
+            url,
+            headers,
+            payload
+          });
+          expect(rejected.statusCode, `${url}: ${rejected.body}`).toBe(400);
+          expect(rejected.body).toContain(
+            "PDS enrollment tags are unsupported"
+          );
+        }
+        const registration = await app.inject({
+          method: "POST",
+          url: "/auth/register",
+          payload: { email, password: "password123" }
+        });
+        expect(registration.statusCode, registration.body).toBe(200);
+      }
+      for (const headers of [
+        { "x-koed-enrollment-instance-id": epoch.instanceId },
+        { ...taggedHeaders, authorization: "Bearer invalid" }
+      ]) {
+        const rejected = await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/challenges",
+          headers,
+          payload: { challenge_hash: "a".repeat(43) }
+        });
+        expect(rejected.statusCode, rejected.body).toBe(400);
+      }
+      const rejectedPut = await app.inject({
+        method: "PUT",
+        url: `/v1/teams/${randomUUID()}/entitlement`,
+        headers: taggedHeaders,
+        payload: { expectedVersion: 1, status: "suspended" }
+      });
+      expect(rejectedPut.statusCode, rejectedPut.body).toBe(400);
+      expect(rejectedPut.body).toContain("PDS enrollment tags are unsupported");
+      expect(createPersonalDeviceEnrollmentChallenge).not.toHaveBeenCalled();
+      const fence = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epoch-fence",
+        headers: { authorization: desktop.authorization },
+        payload: epoch
+      });
+      expect(fence.statusCode, fence.body).toBe(200);
+      expect(jsonBody<{ status: string }>(fence).status).toBe("drained");
+      const fencedWake = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-runtime-wake",
+        headers: taggedHeaders
+      });
+      expect(fencedWake.statusCode).toBe(409);
+      expect(wakePdsLocalSync).not.toHaveBeenCalled();
+      const partial = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-runtime-wake",
+        headers: {
+          authorization: desktop.authorization,
+          "x-koed-enrollment-instance-id": epoch.instanceId
+        }
+      });
+      expect(partial.statusCode).toBe(400);
+      const browserFence = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epoch-fence",
+        headers: browserSessionHeaders(cookieHeader(registered)),
+        payload: epoch
+      });
+      expect(browserFence.statusCode).toBe(403);
+      const wrongInstance = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epoch-fence",
+        headers: { authorization: desktop.authorization },
+        payload: { ...epoch, instanceId: randomUUID() }
+      });
+      expect(wrongInstance.statusCode).toBe(409);
+      const lateRegistration = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-operations",
+        headers: { authorization: desktop.authorization },
+        payload: epoch
+      });
+      expect(lateRegistration.statusCode).toBe(409);
+
+      const activeEpochResponse = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epochs",
+        headers: { authorization: desktop.authorization }
+      });
+      const activeEpoch = activeEpochResponse.json() as {
+        instanceId: string;
+        epochId: string;
+      };
+      const activeOperationResponse = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-operations",
+        headers: { authorization: desktop.authorization },
+        payload: activeEpoch
+      });
+      const activeOperation = activeOperationResponse.json() as {
+        operationId: string;
+      };
+      let unblock!: () => void;
+      let started!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      wakePdsLocalSync.mockImplementationOnce(async () => {
+        started();
+        await blocked;
+      });
+      const pendingWake = app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-runtime-wake",
+        headers: {
+          authorization: desktop.authorization,
+          "x-koed-enrollment-instance-id": activeEpoch.instanceId,
+          "x-koed-enrollment-epoch-id": activeEpoch.epochId,
+          "x-koed-enrollment-operation-id": activeOperation.operationId
+        }
+      });
+      await Promise.race([
+        entered,
+        pendingWake.then((response) => {
+          throw new Error(
+            `Wake returned before admission: ${response.statusCode} ${response.body}`
+          );
+        })
+      ]);
+      const poll = () =>
+        app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epoch-fence",
+          headers: { authorization: desktop.authorization },
+          payload: activeEpoch
+        });
+      expect(jsonBody<{ status: string }>(await poll()).status).toBe("pending");
+      unblock();
+      expect((await pendingWake).statusCode).toBe(200);
+      expect(jsonBody<{ status: string }>(await poll()).status).toBe("drained");
+
+      const operationEpoch = jsonBody<{ instanceId: string; epochId: string }>(
+        await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epochs",
+          headers: { authorization: desktop.authorization }
+        })
+      );
+      const registerOperation = async () =>
+        jsonBody<{ operationId: string }>(
+          await app.inject({
+            method: "POST",
+            url: "/v1/personal-device-sync/enrollment-operations",
+            headers: { authorization: desktop.authorization },
+            payload: operationEpoch
+          })
+        );
+      const firstOperation = await registerOperation();
+      const siblingOperation = await registerOperation();
+      const operationPayload = { ...operationEpoch, ...firstOperation };
+      const operationFence = (
+        payload: unknown,
+        authorization = desktop.authorization
+      ) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-operation-fence",
+          headers: { authorization },
+          payload
+        });
+      const operationHeaders = (operationId: string) => ({
+        authorization: desktop.authorization,
+        "x-koed-enrollment-instance-id": operationEpoch.instanceId,
+        "x-koed-enrollment-epoch-id": operationEpoch.epochId,
+        "x-koed-enrollment-operation-id": operationId
+      });
+      let releaseOperation!: () => void;
+      let operationStarted!: () => void;
+      const operationEntered = new Promise<void>((resolve) => {
+        operationStarted = resolve;
+      });
+      const operationBlocked = new Promise<void>((resolve) => {
+        releaseOperation = resolve;
+      });
+      wakePdsLocalSync.mockImplementationOnce(async () => {
+        operationStarted();
+        await operationBlocked;
+      });
+      const operationWake = app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-runtime-wake",
+        headers: operationHeaders(firstOperation.operationId)
+      });
+      try {
+        await Promise.race([
+          operationEntered,
+          operationWake.then((response) => {
+            throw new Error(
+              `Wake returned before admission: ${response.statusCode} ${response.body}`
+            );
+          })
+        ]);
+        expect(
+          jsonBody<{ status: string }>(await operationFence(operationPayload))
+            .status
+        ).toBe("pending");
+        const late = await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/local-runtime-wake",
+          headers: operationHeaders(firstOperation.operationId)
+        });
+        expect(late.statusCode).toBe(409);
+        const sibling = await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/local-runtime-wake",
+          headers: operationHeaders(siblingOperation.operationId)
+        });
+        expect(sibling.statusCode, sibling.body).toBe(200);
+        releaseOperation();
+        expect((await operationWake).statusCode).toBe(200);
+        expect(
+          jsonBody<{ status: string }>(await operationFence(operationPayload))
+            .status
+        ).toBe("drained");
+      } finally {
+        releaseOperation();
+      }
+      for (const [payload, status] of [
+        [{ ...operationPayload, operationId: "invalid" }, 400],
+        [{ ...operationPayload, operationId: randomUUID() }, 409],
+        [{ ...operationPayload, instanceId: "invalid" }, 400],
+        [{ ...operationPayload, instanceId: randomUUID() }, 409],
+        [{ ...operationPayload, epochId: "invalid" }, 400],
+        [
+          {
+            ...operationPayload,
+            epochId: `${"0".repeat(32)}-${"0".repeat(16)}`
+          },
+          409
+        ]
+      ] as const) {
+        const response = await operationFence(payload);
+        expect(response.statusCode, response.body).toBe(status);
+        expect(response.body).not.toContain("drained");
+      }
+
+      const genesis = JSON.parse(
+        pdsFixture.signedRecords.genesis.canonicalPayloadUtf8
+      ) as PdsGroupStatement;
+      const body = genesis.draft.body as Record<string, string>;
+      genesis.draft.groupId = randomBytes(16).toString("base64url");
+      body.initialDeviceId = randomBytes(16).toString("base64url");
+      body.initialDeviceSigningKeyId = randomBytes(16).toString("base64url");
+      body.initialDeviceKemKeyId = randomBytes(16).toString("base64url");
+      const authorityKey = createPrivateKey({
+        key: {
+          kty: "OKP",
+          crv: "Ed25519",
+          d: Buffer.from(
+            pdsFixture.nonProductionKeyMaterial.authoritySigningSeedHex,
+            "hex"
+          ).toString("base64url"),
+          x: body.authorityPublicKey!
+        },
+        format: "jwk"
+      });
+      const deviceKey = createPrivateKey({
+        key: {
+          kty: "OKP",
+          crv: "Ed25519",
+          d: Buffer.from(
+            pdsFixture.nonProductionKeyMaterial.initialDeviceSigningSeedHex,
+            "hex"
+          ).toString("base64url"),
+          x: body.initialDeviceSigningPublicKey!
+        },
+        format: "jwk"
+      });
+      const authorization = {
+        signerKeyId: body.initialDeviceSigningKeyId!,
+        signature: signPdsGroupDraft(genesis.draft, deviceKey)
+      };
+      const unsignedStatement = { draft: genesis.draft, authorization };
+      const signedStatement = {
+        ...unsignedStatement,
+        authority: {
+          keyId: body.authorityKeyId!,
+          signature: signPdsGroupFinal(unsignedStatement, authorityKey)
+        }
+      };
+      const statementHash = pdsFinalizedStatementHash(signedStatement);
+      const certificate = {
+        protocol: "koed/pds/v1",
+        groupId: genesis.draft.groupId,
+        deviceId: body.initialDeviceId!,
+        deviceSigningKeyId: body.initialDeviceSigningKeyId!,
+        deviceSigningPublicKey: body.initialDeviceSigningPublicKey!,
+        deviceKemKeyId: body.initialDeviceKemKeyId!,
+        deviceKemPublicKey: body.initialDeviceKemPublicKey!,
+        epoch: "1",
+        operationFamilies: ["pds_relay"],
+        statementSequence: "1",
+        statementHash,
+        issuedAt: new Date(Date.now() - 60_000).toISOString(),
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString()
+      };
+      const reconciliation = {
+        local_device_id: body.initialDeviceId!,
+        group: {
+          group_id: genesis.draft.groupId,
+          authority_key_id: body.authorityKeyId!,
+          authority_public_key: body.authorityPublicKey!,
+          current_epoch: "1",
+          pending_epoch: null,
+          pending_statement_sequence: null,
+          pending_bundle_hash: null,
+          head: {
+            sequence: "1",
+            hash: statementHash
+          },
+          state: "active",
+          recovery: {
+            signing_key_id: body.recoverySigningKeyId!,
+            signing_public_key: body.recoverySigningPublicKey!,
+            kem_key_id: body.recoveryKemKeyId!,
+            kem_public_key: body.recoveryKemPublicKey!,
+            recovery_kit_hash: body.recoveryKitHash!
+          },
+          members: [
+            {
+              device_id: body.initialDeviceId!,
+              signing_key_id: body.initialDeviceSigningKeyId!,
+              signing_public_key: body.initialDeviceSigningPublicKey!,
+              kem_key_id: body.initialDeviceKemKeyId!,
+              kem_public_key: body.initialDeviceKemPublicKey!,
+              operation_families: ["pds_relay"],
+              status: "active",
+              admitted_sequence: "1",
+              revoked_sequence: null,
+              revoked_at: null
+            }
+          ],
+          policy: {
+            enabled: false,
+            future_closed_sessions_only: true,
+            historical_backfill_enabled: false
+          }
+        },
+        statements: [
+          {
+            sequence: "1",
+            statementHash,
+            canonicalStatement: canonicalizePdsJson(signedStatement)
+          }
+        ],
+        certificates: [
+          canonicalizePdsJson({
+            ...certificate,
+            authoritySignature: {
+              keyId: body.authorityKeyId!,
+              signature: signPdsRecord(
+                "membership-certificate",
+                certificate,
+                authorityKey
+              )
+            }
+          })
+        ]
+      };
+      const managedFence = new EnrollmentFence();
+      const managedApp = await buildServer({
+        repository,
+        enrollmentFence: managedFence,
+        managedEnrollmentMode: true
+      });
+      try {
+        const owner = `desktop:${desktop.credentialKeyId}`;
+        const managedEpoch = {
+          instanceId: managedFence.instanceId,
+          epochId: managedFence.createEpoch(owner),
+          owner
+        };
+        const managedOperation = managedFence.register(managedEpoch);
+        const managedTags = {
+          authorization: desktop.authorization,
+          "x-koed-enrollment-instance-id": managedEpoch.instanceId,
+          "x-koed-enrollment-epoch-id": managedEpoch.epochId,
+          "x-koed-enrollment-operation-id": managedOperation
+        };
+        let startManaged!: () => void;
+        let releaseManaged!: () => void;
+        const managedStarted = new Promise<void>((resolve) => {
+          startManaged = resolve;
+        });
+        const managedBlocked = new Promise<void>((resolve) => {
+          releaseManaged = resolve;
+        });
+        let mutations = 0;
+        repository.reconcilePersonalDeviceGroupReplica = async () => {
+          mutations++;
+          startManaged();
+          await managedBlocked;
+          throw new Error("test managed reconciliation failure");
+        };
+        const reconcile = (headers: Record<string, string>) =>
+          managedApp.inject({
+            method: "POST",
+            url: "/v1/personal-device-sync/local-group-reconciliation",
+            headers,
+            payload: reconciliation
+          });
+        for (const headers of [
+          { authorization: desktop.authorization },
+          browserSessionHeaders(cookieHeader(registered)),
+          {
+            authorization: desktop.authorization,
+            "x-koed-enrollment-instance-id": managedEpoch.instanceId
+          },
+          { ...managedTags, "x-koed-enrollment-operation-id": randomUUID() }
+        ]) {
+          const rejected = await reconcile(headers);
+          expect(rejected.statusCode, rejected.body).toBeGreaterThanOrEqual(
+            400
+          );
+        }
+        expect(mutations).toBe(0);
+        const pending = reconcile(managedTags);
+        try {
+          await Promise.race([
+            managedStarted,
+            pending.then((response) => {
+              throw new Error(
+                `Managed reconciliation returned early: ${response.statusCode} ${response.body}`
+              );
+            })
+          ]);
+          expect(managedFence.fenceEpochAndDrain(managedEpoch)).toBe("pending");
+          const late = await reconcile(managedTags);
+          expect(late.statusCode, late.body).toBe(409);
+          expect(mutations).toBe(1);
+        } finally {
+          releaseManaged();
+        }
+        expect((await pending).statusCode).toBe(500);
+        expect(managedFence.fenceEpochAndDrain(managedEpoch)).toBe("drained");
+      } finally {
+        await managedApp.close();
+      }
+      const reconciliationEpoch = jsonBody<{
+        instanceId: string;
+        epochId: string;
+      }>(
+        await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epochs",
+          headers: { authorization: desktop.authorization }
+        })
+      );
+      const reconciliationOperation = jsonBody<{ operationId: string }>(
+        await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-operations",
+          headers: { authorization: desktop.authorization },
+          payload: reconciliationEpoch
+        })
+      );
+      let releaseReconciliation!: () => void;
+      let reconciliationStarted!: () => void;
+      const reconciliationEntered = new Promise<void>((resolve) => {
+        reconciliationStarted = resolve;
+      });
+      const reconciliationBlocked = new Promise<void>((resolve) => {
+        releaseReconciliation = resolve;
+      });
+      repository.reconcilePersonalDeviceGroupReplica = async () => {
+        reconciliationStarted();
+        await reconciliationBlocked;
+        throw new Error("test reconciliation failure");
+      };
+      const pendingReconciliation = app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-group-reconciliation",
+        headers: {
+          authorization: desktop.authorization,
+          "x-koed-enrollment-instance-id": reconciliationEpoch.instanceId,
+          "x-koed-enrollment-epoch-id": reconciliationEpoch.epochId,
+          "x-koed-enrollment-operation-id": reconciliationOperation.operationId
+        },
+        payload: reconciliation
+      });
+      try {
+        await Promise.race([
+          reconciliationEntered,
+          pendingReconciliation.then((response) => {
+            throw new Error(
+              `Reconciliation returned before admission: ${response.statusCode} ${response.body} ${String(lastError)}`
+            );
+          })
+        ]);
+        const reconcilePoll = () =>
+          app.inject({
+            method: "POST",
+            url: "/v1/personal-device-sync/enrollment-epoch-fence",
+            headers: { authorization: desktop.authorization },
+            payload: reconciliationEpoch
+          });
+        expect(jsonBody<{ status: string }>(await reconcilePoll()).status).toBe(
+          "pending"
+        );
+        releaseReconciliation();
+        expect((await pendingReconciliation).statusCode).toBe(500);
+        expect(jsonBody<{ status: string }>(await reconcilePoll()).status).toBe(
+          "drained"
+        );
+      } finally {
+        releaseReconciliation();
+      }
+
       const wake = await app.inject({
         method: "POST",
         url: "/v1/personal-device-sync/local-runtime-wake",
@@ -19263,6 +20542,132 @@ describe("account and access flows", () => {
         headers: { authorization: desktop.authorization }
       });
       expect(remoteWake.statusCode).toBe(403);
+      const remoteControl = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epochs",
+        remoteAddress: "192.0.2.10",
+        headers: { authorization: desktop.authorization }
+      });
+      expect(remoteControl.statusCode).toBe(403);
+      const rotated = rotateDesktopLocalCredential(koedHome)!;
+      expect((await operationFence(operationPayload)).statusCode).toBe(401);
+      const rotatedOperationFence = await operationFence(
+        operationPayload,
+        rotated.authorization
+      );
+      expect(rotatedOperationFence.statusCode).toBe(409);
+      expect(rotatedOperationFence.body).toContain("owner_mismatch");
+      const oldCredential = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epoch-fence",
+        headers: { authorization: desktop.authorization },
+        payload: activeEpoch
+      });
+      expect(oldCredential.statusCode).toBe(401);
+      const otherOwner = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epoch-fence",
+        headers: { authorization: rotated.authorization },
+        payload: activeEpoch
+      });
+      expect(otherOwner.statusCode).toBe(409);
+      expect(otherOwner.body).toContain("owner_mismatch");
+      for (const authorization of [
+        "Bearer invalid",
+        "Koed-Device invalid",
+        "Koed-Desktop invalid"
+      ]) {
+        const rejected = await app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epochs",
+          headers: { authorization }
+        });
+        expect(rejected.statusCode).toBe(
+          authorization.startsWith("Koed-Desktop") ? 401 : 403
+        );
+      }
+      const currentEpochResponse = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epochs",
+        headers: { authorization: rotated.authorization }
+      });
+      const currentEpoch = jsonBody<{ instanceId: string; epochId: string }>(
+        currentEpochResponse
+      );
+      const malformed = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/local-runtime-wake",
+        headers: {
+          authorization: rotated.authorization,
+          "x-koed-enrollment-instance-id": currentEpoch.instanceId,
+          "x-koed-enrollment-epoch-id": currentEpoch.epochId,
+          "x-koed-enrollment-operation-id": "not-a-uuid"
+        }
+      });
+      expect(malformed.statusCode).toBe(400);
+      const originalGetUser = repository.getUser.bind(repository);
+      let releaseControl!: () => void;
+      let allEntered!: () => void;
+      let activeControls = 0;
+      const controlsEntered = new Promise<void>((resolve) => {
+        allEntered = resolve;
+      });
+      const controlsBlocked = new Promise<void>((resolve) => {
+        releaseControl = resolve;
+      });
+      repository.getUser = async (...args) => {
+        if (++activeControls === 8) allEntered();
+        await controlsBlocked;
+        return originalGetUser(...args);
+      };
+      const controlRequest = () =>
+        app.inject({
+          method: "POST",
+          url: "/v1/personal-device-sync/enrollment-epoch-fence",
+          headers: { authorization: rotated.authorization },
+          payload: currentEpoch
+        });
+      const controls = Array.from({ length: 8 }, () => controlRequest());
+      try {
+        await Promise.race([
+          controlsEntered,
+          ...controls.map((request) =>
+            request.then((response) => {
+              throw new Error(
+                `Control returned before blocking: ${response.statusCode} ${response.body}`
+              );
+            })
+          )
+        ]);
+        const rejected = await controlRequest();
+        expect(rejected.statusCode).toBe(429);
+        expect(rejected.body).not.toContain("drained");
+      } finally {
+        releaseControl();
+        await Promise.all(controls);
+        repository.getUser = originalGetUser;
+      }
+      let successfulPolls = 0;
+      let throttled = false;
+      for (let i = 0; i < 120; i++) {
+        const response = await controlRequest();
+        if (response.statusCode === 429) {
+          expect(response.body).not.toContain("drained");
+          throttled = true;
+          break;
+        }
+        expect(response.statusCode).toBe(200);
+        successfulPolls++;
+      }
+      expect(successfulPolls).toBeGreaterThan(100);
+      expect(throttled).toBe(true);
+      const freshCredential = rotateDesktopLocalCredential(koedHome)!;
+      const freshQuota = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/enrollment-epochs",
+        headers: { authorization: freshCredential.authorization }
+      });
+      expect(freshQuota.statusCode).toBe(200);
     } finally {
       await app.close();
       rmSync(koedHome, { recursive: true, force: true });
@@ -19272,5 +20677,5 @@ describe("account and access flows", () => {
         delete process.env.KOED_DEPLOYMENT_PROFILE;
       else process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
     }
-  });
+  }, 30_000);
 });

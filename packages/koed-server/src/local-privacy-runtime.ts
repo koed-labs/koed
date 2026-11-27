@@ -234,8 +234,10 @@ export const startLocalPrivacyRuntime = async (
     existsSync?: typeof existsSync;
     spawn?: SpawnLike;
     appRuntime?: KoedAppRuntime;
+    signal?: AbortSignal;
   } = {}
 ): Promise<LocalPrivacyRuntimeStartResult> => {
+  dependencies.signal?.throwIfAborted();
   const env = {
     ...environment,
     ...localPrivacyEnv(paths, environment, dependencies.appRuntime)
@@ -249,7 +251,7 @@ export const startLocalPrivacyRuntime = async (
     });
     return { ok: false, status, env };
   }
-  const model = await collectPrivacyModelStatus(paths);
+  const model = await collectPrivacyModelStatus(paths, dependencies.signal);
   if (!model.ok) {
     return {
       ok: false,
@@ -263,6 +265,7 @@ export const startLocalPrivacyRuntime = async (
       }
     };
   }
+  dependencies.signal?.throwIfAborted();
   const child = (dependencies.spawn ?? nodeSpawn)(
     process.execPath,
     [runtime.bootstrap, runtime.entry, model.modelPath],

@@ -648,6 +648,50 @@ describe("stopKoedServer", () => {
     });
   });
 
+  it("preserves runtime records when the Postgres status probe fails", () => {
+    const koedHome = makeHome();
+    const dataDir = resolve(koedHome, "data", "postgres");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(resolve(dataDir, "PG_VERSION"), "17");
+    writeRuntime(
+      koedHome,
+      runtime({ services: ["postgres-native"], processes: {} })
+    );
+    writeSupervisorLock(koedHome, 100);
+    const calls: Array<{ command: string; args: string[] }> = [];
+
+    const result = stopKoedServer({
+      environment: {
+        KOED_HOME: koedHome,
+        KOED_POSTGRES_PG_CTL_BIN: "/bin/pg_ctl"
+      },
+      existsSync: (path) => String(path) === "/bin/pg_ctl" || existsSync(path),
+      kill: () => undefined,
+      checkPid: () => false,
+      spawnSync: (command, args) => {
+        calls.push({ command, args });
+        return {
+          status: 1,
+          stdout: "",
+          stderr: "status probe failed",
+          pid: 1,
+          output: []
+        } as never;
+      }
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "needs_attention",
+      errors: [{ target: "postgres-native", error: "status probe failed" }]
+    });
+    expect(calls).toEqual([
+      { command: "/bin/pg_ctl", args: ["status", "-D", dataDir] }
+    ]);
+    expect(existsSync(resolve(koedHome, "run", "koed-server.json"))).toBe(true);
+    expect(existsSync(resolve(koedHome, "run", "koed-server.lock"))).toBe(true);
+  });
+
   it("loads native Postgres shutdown overrides from KOED_ENV_PATH", () => {
     const koedHome = makeHome();
     const dataDir = resolve(koedHome, "data", "postgres");

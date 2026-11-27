@@ -46,6 +46,7 @@ export interface LocalPostgresRuntimeStatus extends KoedServerComponentStatus {
 export interface LocalPostgresRuntimeStartResult {
   ok: boolean;
   started: boolean;
+  launchUncertain?: boolean;
   status: LocalPostgresRuntimeStatus;
   env: NodeJS.ProcessEnv;
 }
@@ -60,6 +61,8 @@ export interface LocalPostgresRuntimeStopResult {
 export interface LocalPostgresRuntimeDependencies {
   existsSync?: typeof existsSync;
   spawnSync?: SpawnSyncLike;
+  /** Set only when the caller knows this data directory was never initialized. */
+  neverInitialized?: boolean;
 }
 
 const trim = (value: string | undefined): string | undefined => {
@@ -366,11 +369,19 @@ export const stopLocalPostgresRuntime = (
     };
   }
   if (!exists(resolve(runtime.dataDir, "PG_VERSION"))) {
+    if (dependencies.neverInitialized) {
+      return {
+        ok: true,
+        stopped: false,
+        message:
+          "Bundled-local native Postgres data directory was not initialized."
+      };
+    }
     return {
-      ok: true,
+      ok: false,
       stopped: false,
-      message:
-        "Bundled-local native Postgres data directory was not initialized."
+      message: "Could not confirm bundled-local native Postgres has stopped.",
+      error: `Postgres metadata is missing or inaccessible: ${resolve(runtime.dataDir, "PG_VERSION")}`
     };
   }
   const status = run(
@@ -379,11 +390,23 @@ export const stopLocalPostgresRuntime = (
     environment,
     spawnSync
   );
-  if (status.status !== 0) {
+  if (status.status === 3) {
     return {
       ok: true,
       stopped: false,
       message: "Bundled-local native Postgres was not running."
+    };
+  }
+  if (status.status !== 0) {
+    return {
+      ok: false,
+      stopped: false,
+      message:
+        "Could not determine whether bundled-local native Postgres is running.",
+      error:
+        status.error?.message ||
+        status.stderr?.trim() ||
+        `exit code ${status.status ?? "unknown"}`
     };
   }
   const stopped = run(
@@ -397,7 +420,10 @@ export const stopLocalPostgresRuntime = (
       ok: false,
       stopped: false,
       message: "Could not stop bundled-local native Postgres.",
-      error: stopped.stderr.trim() || `exit code ${stopped.status ?? 1}`
+      error:
+        stopped.error?.message ||
+        stopped.stderr?.trim() ||
+        `exit code ${stopped.status ?? "unknown"}`
     };
   }
   return {
@@ -481,8 +507,32 @@ export const startLocalPostgresRuntime = (
     env,
     spawnSync
   );
+  if (
+    status.error ||
+    status.signal ||
+    (status.status !== 0 && status.status !== 3)
+  ) {
+    return {
+      ok: false,
+      started: false,
+      env,
+      status: {
+        runtime: "native-postgres",
+        state: "needs_attention",
+        message:
+          "Could not determine whether bundled-local native Postgres is running.",
+        details: {
+          exitCode: status.status,
+          stderr: status.stderr,
+          error: status.error?.message,
+          signal: status.signal
+        },
+        paths: safeRuntimePaths(runtime)
+      }
+    };
+  }
   let startedByCurrentProcess = false;
-  if (status.status !== 0) {
+  if (status.status === 3) {
     const started = run(
       runtime.pgCtlBin,
       [
@@ -497,16 +547,22 @@ export const startLocalPostgresRuntime = (
       env,
       spawnSync
     );
-    if (started.status !== 0) {
+    if (started.status !== 0 || started.error || started.signal) {
       return {
         ok: false,
         started: false,
+        launchUncertain: true,
         env,
         status: {
           runtime: "native-postgres",
           state: "needs_attention",
           message: "Could not start bundled-local native Postgres.",
-          details: { exitCode: started.status, stderr: started.stderr },
+          details: {
+            exitCode: started.status,
+            stderr: started.stderr,
+            error: started.error?.message,
+            signal: started.signal
+          },
           paths: safeRuntimePaths(runtime)
         }
       };

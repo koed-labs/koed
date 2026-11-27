@@ -256,6 +256,7 @@ function BackgroundAgentSetting({
   api?: DesktopApi["backgroundAgent"];
 }) {
   const { state, busy, error, setEnabled } = useBackgroundAgentSetting(api);
+  const approvalDescriptionId = useId();
   if (!api) return null;
   const description =
     state?.supported === false
@@ -271,13 +272,27 @@ function BackgroundAgentSetting({
       <div className="koed-preference-toggle-state">
         <Switch
           aria-label="Keep Koed running in the menu bar"
-          checked={state?.enabled ?? false}
+          aria-describedby={
+            state?.status === "requires-approval"
+              ? approvalDescriptionId
+              : undefined
+          }
+          checked={
+            !!state && (state.enabled || state.status === "requires-approval")
+          }
           disabled={!state || !state.supported || busy}
           onCheckedChange={(enabled) => void setEnabled(enabled)}
         />
+        {state?.status === "requires-approval" ? (
+          <span id={approvalDescriptionId} role="status">
+            Background Agent setup requires system approval.
+          </span>
+        ) : null}
         {busy ? <Spinner aria-label="Updating Background Agent" /> : null}
         {state?.runtimeState === "needs_attention" ? (
-          <span role="status">The Local AI Runtime needs attention.</span>
+          <span role="status">
+            {state.message ?? "The Local AI Runtime needs attention."}
+          </span>
         ) : null}
         {error ? <span role="alert">{error}</span> : null}
       </div>

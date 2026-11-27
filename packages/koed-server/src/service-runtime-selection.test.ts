@@ -39,12 +39,16 @@ import { collectKoedServerStatus } from "./status.js";
 import { createDesktopStatusRpcHandler } from "./desktop-status-rpc.js";
 import { stageComponent, stageGeneration } from "./component-store.js";
 import { activateGeneration } from "./generation-lifecycle.js";
+import * as generationLifecycle from "./generation-lifecycle.js";
 import {
   resolveKoedControlPlaneVersion,
   resolveKoedRuntimeOwner
 } from "./app-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
-import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
+import {
+  pinAndResolvePackagedRuntime,
+  RuntimeSelectionPinReleaseError
+} from "./service-runtime-selection.js";
 import {
   readCurrentDesktopGeneration,
   readCurrentGeneration
@@ -409,6 +413,142 @@ describe("packaged service runtime selection", () => {
       pinAndResolvePackagedRuntime(paths, {}, requirements)
     ).rejects.toThrow(/does not match Koed server control plane/);
     expect(() => readFileSync(paths.generationStatePath!, "utf8")).toThrow();
+  });
+
+  it("surfaces selection and pin release failures without claiming cleanup", async () => {
+    const root = tempDir();
+    const paths = await makeGeneration(root, "999.0.0");
+    const releaseError = new Error("pin release failed");
+    const pinGeneration = generationLifecycle.pinGenerationForStart;
+    let actualPin: Awaited<ReturnType<typeof pinGeneration>> | undefined;
+    vi.spyOn(generationLifecycle, "pinGenerationForStart").mockImplementation(
+      async (...args) => {
+        const pin = await pinGeneration(...args);
+        actualPin = {
+          ...pin,
+          release: async () => {
+            throw releaseError;
+          }
+        };
+        return actualPin;
+      }
+    );
+
+    const error = await pinAndResolvePackagedRuntime(
+      paths,
+      {},
+      requirements
+    ).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error).toBeInstanceOf(RuntimeSelectionPinReleaseError);
+    if (!(error instanceof RuntimeSelectionPinReleaseError)) throw error;
+    expect(error.pin).toBe(actualPin);
+    expect(error.selectionError).toBe(error.errors[0]);
+    expect(error.releaseError).toBe(releaseError);
+    expect((error as AggregateError).errors[0]).toEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(
+          /does not match Koed server control plane/
+        )
+      })
+    );
+    expect((error as AggregateError).errors[1]).toBe(releaseError);
+    expect((error as Error).message).toMatch(
+      /does not match Koed server control plane/
+    );
+    expect((error as Error).message).toContain("pin release failed");
+    expect(existsSync(paths.generationStatePath!)).toBe(true);
+  });
+
+  it("retains a real pin after selection cleanup fails and releases it on retry", async () => {
+    const paths = await makeGeneration(
+      tempDir(),
+      resolveKoedControlPlaneVersion()
+    );
+    const pinPath = paths.generationStatePath!;
+    const lockPath = resolve(paths.runDir, "generation-lifecycle.lock");
+    const ownerPath = resolve(lockPath, "owner.json");
+    let originalPin = "";
+    let originalLock = "";
+    const error = await pinAndResolvePackagedRuntime(
+      paths,
+      {},
+      requirements,
+      () => {
+        if (!originalPin) {
+          originalPin = readFileSync(pinPath, "utf8");
+          originalLock = readFileSync(ownerPath, "utf8");
+          const pin = JSON.parse(originalPin) as Record<string, unknown>;
+          writeFileSync(
+            pinPath,
+            JSON.stringify({ ...pin, pinToken: "0".repeat(64) })
+          );
+        }
+        return false;
+      }
+    ).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(RuntimeSelectionPinReleaseError);
+    if (!(error instanceof RuntimeSelectionPinReleaseError)) throw error;
+    expect(error.selectionError).toBeInstanceOf(Error);
+    expect((error.selectionError as Error).message).toContain(
+      "runtime artifacts are missing"
+    );
+    expect(error.releaseError).toBeInstanceOf(Error);
+    expect((error.releaseError as Error).message).toBe(
+      "runtime generation pin ownership cannot be confirmed"
+    );
+    expect(JSON.parse(readFileSync(pinPath, "utf8"))).toMatchObject({
+      pinToken: "0".repeat(64)
+    });
+    expect(readFileSync(ownerPath, "utf8")).toBe(originalLock);
+    await expect(error.pin.release()).rejects.toThrow(
+      "runtime generation pin ownership cannot be confirmed"
+    );
+    writeFileSync(pinPath, originalPin);
+    await error.pin.release();
+    expect(existsSync(pinPath)).toBe(false);
+    expect(existsSync(lockPath)).toBe(false);
+    await expect(error.pin.release()).resolves.toBeUndefined();
+  });
+
+  it("retains the pin when lifecycle lock ownership fails and releases after restoration", async () => {
+    const paths = await makeGeneration(
+      tempDir(),
+      resolveKoedControlPlaneVersion()
+    );
+    const selection = await pinAndResolvePackagedRuntime(
+      paths,
+      {},
+      requirements
+    );
+    const pinPath = paths.generationStatePath!;
+    const lockPath = resolve(paths.runDir, "generation-lifecycle.lock");
+    const ownerPath = resolve(lockPath, "owner.json");
+    const pin = readFileSync(pinPath, "utf8");
+    const owner = readFileSync(ownerPath, "utf8");
+    writeFileSync(
+      ownerPath,
+      JSON.stringify({
+        ...(JSON.parse(owner) as Record<string, unknown>),
+        token: "0".repeat(64)
+      })
+    );
+
+    await expect(selection.pin.release()).rejects.toThrow(
+      "runtime lifecycle lock ownership cannot be confirmed"
+    );
+    expect(readFileSync(pinPath, "utf8")).toBe(pin);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(JSON.parse(readFileSync(ownerPath, "utf8"))).toMatchObject({
+      token: "0".repeat(64)
+    });
+    writeFileSync(ownerPath, owner);
+    await selection.pin.release();
+    expect(existsSync(pinPath)).toBe(false);
+    expect(existsSync(lockPath)).toBe(false);
+    await expect(selection.pin.release()).resolves.toBeUndefined();
   });
 
   it("never spawns a current-directory MCP artifact without a verified generation", async () => {

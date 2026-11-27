@@ -7,6 +7,14 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
+    "./local-control-protocol": {
+      "types": "./dist/local-control-protocol.d.ts",
+      "import": "./dist/local-control-protocol.js"
+    },
+    "./enrollment-fence-ipc": {
+      "types": "./dist/enrollment-fence-ipc.d.ts",
+      "import": "./dist/enrollment-fence-ipc.js"
+    },
     "./project-selection": {
       "types": "./dist/project-selection-desktop.d.ts",
       "import": "./dist/project-selection-desktop.js"

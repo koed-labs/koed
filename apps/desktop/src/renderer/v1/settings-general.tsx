@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
 import { Button, Spinner, Switch } from "@koed-labs/ui";
 import { Laptop, Sun, Moon, Check } from "lucide-react";
 import type { DesktopApi, DesktopLaunchAtStartupState } from "../../types.js";
@@ -205,6 +205,7 @@ function BackgroundAgentSetting({
   api?: DesktopApi["backgroundAgent"];
 }) {
   const { state, busy, error, setEnabled } = useBackgroundAgentSetting(api);
+  const approvalDescriptionId = useId();
   if (!api) return null;
   return (
     <Row
@@ -219,13 +220,27 @@ function BackgroundAgentSetting({
     >
       <Switch
         aria-label="Keep Koed running in the menu bar"
-        checked={state?.enabled ?? false}
+        aria-describedby={
+          state?.status === "requires-approval"
+            ? approvalDescriptionId
+            : undefined
+        }
+        checked={
+          !!state && (state.enabled || state.status === "requires-approval")
+        }
         disabled={!state || !state.supported || busy}
         onCheckedChange={(enabled) => void setEnabled(enabled)}
       />
+      {state?.status === "requires-approval" ? (
+        <span id={approvalDescriptionId} role="status">
+          Background Agent setup requires system approval.
+        </span>
+      ) : null}
       {busy ? <Spinner aria-label="Updating Background Agent" /> : null}
       {state?.runtimeState === "needs_attention" ? (
-        <span role="status">The Local AI Runtime needs attention.</span>
+        <span role="status">
+          {state.message ?? "The Local AI Runtime needs attention."}
+        </span>
       ) : null}
       {error ? <span role="alert">{error}</span> : null}
     </Row>

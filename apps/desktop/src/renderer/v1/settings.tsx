@@ -56,6 +56,7 @@ export type V1SettingsProps = {
   cliInstall?: DesktopApi["cliInstall"];
   onRestartOnboarding?: () => Promise<void> | void;
   launchAtStartup?: DesktopApi["launchAtStartup"];
+  backgroundAgent?: DesktopApi["backgroundAgent"];
   presentationPreferences?: DesktopApi["presentationPreferences"];
   localAiClients?: DesktopApi["localAiClients"];
   update?: DesktopUpdateController;
@@ -70,6 +71,7 @@ export function V1Settings({
   cliInstall = window.koedDesktop?.cliInstall,
   onRestartOnboarding,
   launchAtStartup = window.koedDesktop?.launchAtStartup,
+  backgroundAgent = window.koedDesktop?.backgroundAgent,
   presentationPreferences = window.koedDesktop?.presentationPreferences,
   localAiClients = window.koedDesktop?.localAiClients,
   update,
@@ -295,6 +297,7 @@ export function V1Settings({
                   {...{
                     themeStore,
                     launchAtStartup,
+                    backgroundAgent,
                     presentationPreferences,
                     onRestartOnboarding
                   }}

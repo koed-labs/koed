@@ -68,6 +68,65 @@ describe("V1Settings", () => {
       )
     );
   };
+  it.each([false, true])(
+    "requests cancellation and describes pending approval when enabled is %s",
+    async (enabled) => {
+      const get = vi.fn(async () => ({
+        enabled,
+        status: "requires-approval" as const,
+        supported: true
+      }));
+      const set = vi.fn(async () => ({
+        enabled: false,
+        status: "disabled" as const,
+        supported: true
+      }));
+      await render("general", { backgroundAgent: { get, set } });
+      const toggle = container.querySelector<HTMLElement>(
+        '[role="switch"][aria-label="Keep Koed running in the menu bar"]'
+      )!;
+      expect(toggle.getAttribute("aria-checked")).toBe("true");
+      const description = toggle.getAttribute("aria-describedby");
+      expect(
+        description && document.getElementById(description)?.textContent
+      ).toContain("approval");
+      await act(async () => toggle.click());
+      expect(set).toHaveBeenCalledWith(false);
+    }
+  );
+
+  it("shows a failed pending cancellation without hiding the pending state", async () => {
+    const get = vi.fn(async () => ({
+      enabled: false,
+      status: "requires-approval" as const,
+      supported: true
+    }));
+    const set = vi.fn(async () => {
+      throw new Error("Background Agent could not be unregistered.");
+    });
+    await render("general", { backgroundAgent: { get, set } });
+    const toggle = container.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Keep Koed running in the menu bar"]'
+    )!;
+    await act(async () => toggle.click());
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "could not be unregistered"
+    );
+  });
+
+  it("shows the Background Agent recovery message", async () => {
+    const get = vi.fn(async () => ({
+      enabled: false,
+      status: "disabled" as const,
+      supported: true,
+      runtimeState: "needs_attention" as const,
+      message: "Shutdown could not be confirmed."
+    }));
+    await render("general", { backgroundAgent: { get, set: vi.fn(get) } });
+    expect(container.textContent).toContain("Shutdown could not be confirmed.");
+  });
+
   it("writes theme through the existing ThemeStore", async () => {
     await render();
     await act(async () =>

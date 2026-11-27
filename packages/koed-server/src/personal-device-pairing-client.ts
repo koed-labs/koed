@@ -412,6 +412,7 @@ const responseJson = async (
 };
 
 export const redeemPersonalDevicePairing = async (options: {
+  enrollmentOperation?: import("./enrollment-fence-ipc-client.js").EnrollmentFenceOperation;
   link: string;
   deviceLabel: string;
   requestId: string;
@@ -422,6 +423,23 @@ export const redeemPersonalDevicePairing = async (options: {
   runPersonalSync: RunPersonalSync;
   withJsonFd: WithJsonFd;
 }): Promise<PersonalSyncResult> => {
+  const suppliedOperation = options.enrollmentOperation;
+  const enrollmentOperation =
+    suppliedOperation === undefined
+      ? undefined
+      : {
+          instanceId: suppliedOperation?.instanceId,
+          epochId: suppliedOperation?.epochId,
+          operationId: suppliedOperation?.operationId
+        };
+  if (
+    enrollmentOperation &&
+    Object.values(enrollmentOperation).some(
+      (value) => typeof value !== "string" || !/^[\x21-\x7e]+$/.test(value)
+    )
+  ) {
+    throw new Error("Invalid enrollment operation.");
+  }
   const { invitationUrl, invitationId, token } = parseLink(options.link);
   const fetcher = options.fetch ?? globalThis.fetch;
   if (!fetcher) throw new Error("Pairing network access is unavailable.");
@@ -648,6 +666,13 @@ export const redeemPersonalDevicePairing = async (options: {
       headers: {
         accept: "application/json",
         authorization: localCredential.authorization,
+        ...(enrollmentOperation
+          ? {
+              "x-koed-enrollment-instance-id": enrollmentOperation.instanceId,
+              "x-koed-enrollment-epoch-id": enrollmentOperation.epochId,
+              "x-koed-enrollment-operation-id": enrollmentOperation.operationId
+            }
+          : {}),
         ...(body ? { "content-type": "application/json" } : {})
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
