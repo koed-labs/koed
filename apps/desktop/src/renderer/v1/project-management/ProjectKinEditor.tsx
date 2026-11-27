@@ -4,31 +4,31 @@ import { Check, X } from "lucide-react";
 import { AgentLookPicker } from "../pixelkin/AgentLookPicker.js";
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
 import {
-  PROJECT_KIN_ACCESSORIES,
   withProjectKinAccessories,
   type AgentLook
 } from "../pixelkin/agent-kin.js";
+import { isItemUnlocked, PixelkinAccessories } from "@koed-labs/kin-engine";
 import "./project-kin-editor.css";
 
 const categories = [
   {
     id: "headwear",
     label: "Headwear",
-    items: PROJECT_KIN_ACCESSORIES.filter(
+    items: PixelkinAccessories.filter(
       (item) => !item.theme && item.occupies.includes("head")
     )
   },
   {
     id: "eyewear",
     label: "Eyewear",
-    items: PROJECT_KIN_ACCESSORIES.filter(
+    items: PixelkinAccessories.filter(
       (item) => !item.theme && item.occupies.includes("eyes")
     )
   },
   {
     id: "seasonal",
     label: "Seasonal",
-    items: PROJECT_KIN_ACCESSORIES.filter((item) => item.theme)
+    items: PixelkinAccessories.filter((item) => item.theme)
   }
 ].filter(({ items }) => items.length > 0);
 
@@ -41,16 +41,26 @@ type Page = (typeof pages)[number]["id"];
 export function ProjectKinEditor({
   look,
   disabled,
+  unlockMask,
   onChange
 }: {
   look: AgentLook;
   disabled: boolean;
+  unlockMask: string;
   onChange: (look: AgentLook) => void;
 }) {
   const [page, setPage] = useState<Page>("accessories");
   const [category, setCategory] = useState(categories[0]?.id);
-  const items = categories.find(({ id }) => id === category)?.items ?? [];
-  const equipped = PROJECT_KIN_ACCESSORIES.filter(({ id }) =>
+  const available = categories
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => isItemUnlocked(item, unlockMask))
+    }))
+    .filter((group) => group.items.length > 0);
+  const selectedCategory =
+    available.find(({ id }) => id === category) ?? available[0];
+  const items = selectedCategory?.items ?? [];
+  const equipped = PixelkinAccessories.filter(({ id }) =>
     look.face.items.includes(id)
   );
   const toggle = (id: string) => {
@@ -130,12 +140,12 @@ export function ProjectKinEditor({
               role="group"
               aria-label="Accessory category"
             >
-              {categories.map(({ id, label }) => (
+              {available.map(({ id, label }) => (
                 <Button
                   key={id}
                   size="sm"
                   variant="outline"
-                  aria-pressed={category === id}
+                  aria-pressed={selectedCategory?.id === id}
                   onClick={() => setCategory(id)}
                 >
                   {label}
@@ -143,7 +153,7 @@ export function ProjectKinEditor({
               ))}
             </div>
             <div
-              key={category}
+              key={selectedCategory?.id}
               className="v1-pm-kin-catalogue"
               role="group"
               aria-label="Accessories catalogue"

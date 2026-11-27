@@ -14,7 +14,8 @@ const desktopAccountKeys = {
   DESKTOP_ACCOUNT_CLIENT_ID: "KOED_ACCOUNT_CLIENT_ID",
   DESKTOP_ACCOUNT_ENVIRONMENT: "KOED_ACCOUNT_ENVIRONMENT",
   DESKTOP_ACCOUNT_LOGIN_MODE: "KOED_ACCOUNT_LOGIN_MODE",
-  DESKTOP_ACCOUNT_FORWARDER_URL: "KOED_ACCOUNT_FORWARDER_URL"
+  DESKTOP_ACCOUNT_FORWARDER_URL: "KOED_ACCOUNT_FORWARDER_URL",
+  DESKTOP_ACCOUNT_PROFILE_API_ORIGIN: "KOED_ACCOUNT_PROFILE_API_ORIGIN"
 } as const;
 
 /** Source-only root settings; never copy unrelated .env values into Electron. */
@@ -62,7 +63,11 @@ export function packagedAccountConfig(
       KOED_ACCOUNT_CLIENT_ID: value.clientId,
       KOED_ACCOUNT_ENVIRONMENT: value.environment,
       KOED_ACCOUNT_LOGIN_MODE: value.loginMode,
-      KOED_ACCOUNT_FORWARDER_URL: value.forwarderUrl
+      KOED_ACCOUNT_FORWARDER_URL: value.forwarderUrl,
+      KOED_ACCOUNT_PROFILE_API_ORIGIN:
+        !packaged || value.profileApiOrigin?.startsWith("https://")
+          ? value.profileApiOrigin
+          : undefined
     };
   } catch {
     // Missing or invalid optional configuration never blocks local startup.

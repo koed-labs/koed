@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@koed-labs/ui";
-import { Check, X } from "lucide-react";
+import {
+  DesktopNotification,
+  type DesktopNotice
+} from "../DesktopNotification.js";
 import type {
   PersonalConversationOrganizationInput,
   PersonalConversationOrganizationResult
@@ -29,8 +32,13 @@ import {
 import { MoveConversationDialog } from "./MoveConversationDialog.js";
 import { ConversationProjectsDialog } from "./ConversationProjectsDialog.js";
 import { SourceContextDialog } from "./SourceContextDialog.js";
+import {
+  checkNewUnlocks,
+  gatedAdditions
+} from "../pixelkin/account-equipment.js";
 import { applySuggestions } from "./apply-suggestion.js";
 import {
+  localProjectKinItems,
   saveLocalProjectKinItems,
   withLocalProjectKinItems
 } from "./project-kin-preferences.js";
@@ -59,12 +67,8 @@ type Modal =
       destinationId?: string;
       axis?: "git" | "folder";
     };
-// How long a confirmation, and its Undo, stay up.
-export const NOTICE_MS = 5_000;
-type Notice = {
-  message: string;
+type Notice = DesktopNotice & {
   undo?: PersonalConversationOrganizationResult;
-  error?: string;
 };
 
 export function useProjectManagement({
@@ -445,13 +449,6 @@ export function useProjectManagement({
         notice({ ...current.notice!, error: projectErrorMessage(cause) });
     }
   };
-  // A confirmation clears itself; an error stays until dismissed.
-  const clearing = current.notice && !current.notice.error;
-  useEffect(() => {
-    if (!clearing || busy) return;
-    const timer = window.setTimeout(() => notice(null), NOTICE_MS);
-    return () => window.clearTimeout(timer);
-  }, [current.notice, clearing, busy]);
   const overlays = available && (
     <>
       {modal?.kind === "create" && (
@@ -496,6 +493,15 @@ export function useProjectManagement({
             run(async (check) => {
               check();
               const reviewedVersion = project.namedProject!.version;
+              // An older account build stored the hat with the synced appearance.
+              // Preserve that outfit locally before an appearance edit replaces it.
+              const legacyHat = project.namedProject?.kin?.hat;
+              if (
+                legacyHat &&
+                changes.some((change) => change.action === "set_details") &&
+                !localProjectKinItems(scopeKey!, project.id)
+              )
+                saveLocalProjectKinItems(scopeKey!, project.id, [legacyHat]);
               const saved =
                 changes.length > 0
                   ? await api!.manageProject!({
@@ -512,8 +518,31 @@ export function useProjectManagement({
               if (saved && saved.project.projectId !== project.id)
                 throw new Error("Save response belongs to another Project.");
               if (kinItems !== undefined) {
+                // A grant or the on-device outfit can change while other edits are saving.
+                const previous =
+                  localProjectKinItems(scopeKey!, project.id) ??
+                  (legacyHat ? [legacyHat] : []);
+                const added = gatedAdditions(kinItems, previous);
+                if (added.length) {
+                  try {
+                    await checkNewUnlocks(added, window.koedDesktop?.account);
+                  } catch (cause) {
+                    if (!saved) throw cause;
+                    await refresh(check).catch(() => {});
+                    throw new Error(
+                      "Project changes saved. Check your account before saving accessories.",
+                      { cause }
+                    );
+                  }
+                  check();
+                }
                 try {
-                  saveLocalProjectKinItems(scopeKey!, project.id, kinItems);
+                  saveLocalProjectKinItems(
+                    scopeKey!,
+                    project.id,
+                    kinItems,
+                    legacyHat
+                  );
                 } catch (cause) {
                   if (saved) await refresh(check).catch(() => {});
                   throw new Error(
@@ -636,15 +665,11 @@ export function useProjectManagement({
         />
       )}
       {current.notice && (
-        <div
-          className="v1-project-ui v1-pm-toast"
-          role={current.notice.error ? "alert" : "status"}
+        <DesktopNotification
+          notice={current.notice}
+          paused={busy}
+          onDismiss={() => notice(null)}
         >
-          <Check />
-          <span>
-            {current.notice.message}
-            {current.notice.error && <small>{current.notice.error}</small>}
-          </span>
           {current.notice.undo && (
             <Button
               variant="ghost"
@@ -655,15 +680,7 @@ export function useProjectManagement({
               Undo
             </Button>
           )}
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label="Dismiss notification"
-            onClick={() => notice(null)}
-          >
-            <X />
-          </Button>
-        </div>
+        </DesktopNotification>
       )}
     </>
   );

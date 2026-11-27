@@ -1198,9 +1198,9 @@ export function V1App({
             setSelectedProjectId(null);
             setRoute({ kind: "home" });
           }}
-          onSettings={() => {
+          onSettings={(tab) => {
             setClientTarget(null);
-            setSettingsTab("general");
+            setSettingsTab(tab);
             setSettingsOpen(true);
           }}
           onBack={navigation.back}

@@ -54,8 +54,8 @@ workers are not retired by this UI change; descriptions of those workflows below
 are historical, not V1 Desktop capabilities.
 
 In **Project settings → Kin**, use **Appearance** to choose a body shape, colour,
-and personality. Use **Accessories** to browse and equip items that require no
-server unlock. The preview updates as you equip an item. Items that occupy the
+and personality. Use **Accessories** to browse and equip free items and items unlocked for
+the signed-in account. The preview updates as you equip an item. Items that occupy the
 same slot replace one another. Remove an item from the **Equipped** list.
 Each Project starts with a look generated from its ID. Saving updates the Kin on
 Home. The body shape, colour, and personality sync to compatible paired Personal
@@ -653,7 +653,7 @@ rendering path and has no dependency on the retired browser app.
 ## Optional account menu
 
 When accounts are enabled, the navigation rail shows a profile badge.
-Its menu offers sign-in, sign-out, and cancellation of a sign-in attempt.
+Its menu offers sign-in, sign-out, and cancellation of a sign-in attempt. For a signed-in User, **Expand** opens **Settings → Account** to view the profile, refresh it, or change email consent.
 Source builds disable accounts and hide the badge by default.
 
 Electron main reports account availability and sends read-only profile data to

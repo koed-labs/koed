@@ -16,10 +16,33 @@ import {
 import type { AccountConfig } from "./config.js";
 import { AccountOperationError } from "./errors.js";
 
+export type SignupAttempt = { nonce: string; startedAt: number };
+
+export function signupState(state: string, signup: SignupAttempt) {
+  return `koed.signup.v1.${signup.nonce}.${state}`;
+}
+
+type Pending = {
+  state: string;
+  expires: number;
+  redirectUri?: string;
+  signup?: SignupAttempt;
+};
+
+function matches(pending: Pending | null, state: string): pending is Pending {
+  return (
+    !!pending &&
+    pending.expires > Date.now() &&
+    (pending.state === state ||
+      (!!pending.signup &&
+        signupState(pending.state, pending.signup) === state))
+  );
+}
+
 type StoredAccount = {
   session: Session | null;
   password: string;
-  pending: { state: string; expires: number; redirectUri?: string } | null;
+  pending: Pending | null;
   profile: AccountProfile | null;
 };
 
@@ -133,28 +156,25 @@ export function createAccountStorage(config: AccountConfig) {
         await write(data, current);
         return data.password;
       }),
-    setPending: (state: string) =>
+    setPending: (state: string, signup?: SignupAttempt) =>
       transaction(async (data, current) => {
         data.pending = {
           state,
+          signup,
           expires: Date.now() + 600000,
           redirectUri: config.redirectUri
         };
         await write(data, current);
       }),
     hasPending: (state: string) =>
-      transaction(
-        async (data) =>
-          data.pending?.state === state && data.pending.expires > Date.now()
-      ),
+      transaction(async (data) => matches(data.pending, state)),
     takePending: (state: string) =>
       transaction(async (data, current) => {
         const pending = data.pending;
+        if (!matches(pending, state)) return null;
         data.pending = null;
         await write(data, current);
-        return pending?.state === state && pending.expires > Date.now()
-          ? pending.state
-          : null;
+        return pending;
       }),
     clear() {
       const session = cached?.session ?? null;

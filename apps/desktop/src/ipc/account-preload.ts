@@ -28,6 +28,12 @@ export function createAccountPreloadApi(
       command({ operation: "signIn", screen: input.screen }),
     cancelSignIn: () => command({ operation: "cancelSignIn" }),
     refreshProfile: () => command({ operation: "refreshProfile" }),
+    reportProfileOffline: () => command({ operation: "reportProfileOffline" }),
+    setEmailUpdates: ({
+      subscribed,
+      stateRevision
+    }: Parameters<AccountDesktopApi["setEmailUpdates"]>[0]) =>
+      command({ operation: "setEmailUpdates", subscribed, stateRevision }),
     signOut: () => command({ operation: "signOut" }),
     onStateChanged(
       listener: Parameters<AccountDesktopApi["onStateChanged"]>[0]

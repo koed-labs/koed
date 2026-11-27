@@ -135,6 +135,59 @@ it("saves and clears accessories on this device without writing Project history"
   }
 });
 
+it("keeps a legacy Cap on this device through an appearance edit and lets its owner remove it", async () => {
+  vi.stubGlobal("localStorage", new Storage());
+  const f = createProjectManagementValidationApi();
+  const projectId = validationId(2);
+  const scope = "legacy-outfit";
+  await f.api.manageProject!({
+    action: "apply_sources",
+    projectId,
+    expectedVersion: 1,
+    changes: [
+      {
+        action: "set_details",
+        name: "Legacy Project",
+        kin: {
+          shape: "cube",
+          colour: "#7658e8",
+          personality: "neutral",
+          hat: "cap"
+        }
+      }
+    ]
+  });
+  let ui = settingsScreen(f, scope);
+  try {
+    await ui.open();
+    await ui.click(ui.button(/^Kin$/));
+    expect(
+      document.querySelector('.v1-pm-kin-tile[aria-label="Cap"]')
+    ).toBeNull();
+    expect(ui.rowAction("Remove Cap")).toBeTruthy();
+    await ui.click(ui.button(/^Appearance$/));
+    await ui.click(ui.button(/^Sphere$/));
+    await ui.click(ui.button(/^Save changes$/));
+    expect(f.projects.get(projectId)!.meta.kin?.hat).toBeUndefined();
+    const inventory = () =>
+      withLocalProjectKinItems(
+        mergeProjectSources(f.inventory(), []),
+        scope
+      ).find((p) => p.id === projectId);
+    expect(inventory()?.kinItems).toEqual(["cap"]);
+    await ui.cleanup();
+    ui = settingsScreen(f, scope);
+    await ui.open();
+    await ui.click(ui.button(/^Kin$/));
+    await ui.click(ui.rowAction("Remove Cap"));
+    await ui.click(ui.button(/^Save changes$/));
+    expect(inventory()?.kinItems ?? []).toEqual([]);
+  } finally {
+    await ui.cleanup();
+    vi.unstubAllGlobals();
+  }
+});
+
 it("keeps Conversations open and uses the refreshed Project version on the next save", async () => {
   const f = createProjectManagementValidationApi();
   const projectId = validationId(2);

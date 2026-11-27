@@ -30,6 +30,13 @@ import {
 } from "./project-settings-model.js";
 import { projectErrorMessage } from "./use-organization-review.js";
 
+import { isItemUnlocked } from "@koed-labs/kin-engine";
+import {
+  accountUnlockMask,
+  checkNewUnlocks,
+  gatedAdditions
+} from "../pixelkin/account-equipment.js";
+import { useAccountState } from "../use-account-state.js";
 import { ProjectKinEditor } from "./ProjectKinEditor.js";
 import { SuggestionCoin } from "./ProjectCoins.js";
 import {
@@ -101,6 +108,9 @@ export function ProjectSettingsDialog({
   /** Shows the Sync page; defaults to the Personal Device Sync switch. */
   deviceSync?: boolean;
 }) {
+  const account = window.koedDesktop?.account;
+  const { state } = useAccountState(account, false);
+  const unlockMask = accountUnlockMask(state);
   const visiblePages = deviceSync
     ? pages
     : pages.filter(({ id }) => id !== "sync");
@@ -215,6 +225,10 @@ export function ProjectSettingsDialog({
     equipped && JSON.stringify(equipped) !== JSON.stringify(initialItems)
       ? equipped
       : undefined;
+  const added = gatedAdditions(kinItems ?? [], initialItems ?? []);
+  const unavailableItem = added.some(
+    (item) => !isItemUnlocked(item, unlockMask)
+  );
   const dirty =
     kinItems !== undefined ||
     changes.length > 0 ||
@@ -280,6 +294,7 @@ export function ProjectSettingsDialog({
     }
   };
   const save = async (current: ProjectSettingsDraft) => {
+    if (added.length) await checkNewUnlocks(added, account);
     const accessoryChange: [] | [string[]] =
       kinItems === undefined ? [] : [kinItems];
     const refreshed = await onSave(
@@ -412,6 +427,7 @@ export function ProjectSettingsDialog({
           )}
           {draft && !editError && panel === "kin" && (
             <ProjectKinEditor
+              unlockMask={unlockMask}
               look={draft.look}
               disabled={busy}
               onChange={(look) => mutate((old) => ({ ...old, look }))}
@@ -562,7 +578,11 @@ export function ProjectSettingsDialog({
         </div>
         <DialogFooter className="v1-pm-settings-footer">
           <span>
-            {dirty ? footerSummary : ""}
+            {unavailableItem
+              ? "Remove unavailable accessories before saving."
+              : dirty
+                ? footerSummary
+                : ""}
             <span
               id={saveWarningId}
               className="v1-pm-recording-warning"
@@ -577,7 +597,12 @@ export function ProjectSettingsDialog({
           <Button
             aria-describedby={saveWarning ? saveWarningId : undefined}
             disabled={
-              !draft || !!editError || !dirty || !draft.name.trim() || busy
+              !draft ||
+              !!editError ||
+              !dirty ||
+              !draft.name.trim() ||
+              busy ||
+              unavailableItem
             }
             onClick={() => draft && void run(() => save(draft))}
           >

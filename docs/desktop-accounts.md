@@ -7,7 +7,8 @@ Desktop does not require a remote Koed backend for these features.
 Open the profile badge at the bottom of the navigation rail to sign in or sign out.
 The badge shows the WorkOS picture or initials for the signed-in account.
 During sign-in, its menu shows browser instructions and a Cancel sign-in action.
-Settings does not contain an account page.
+
+Choose **Create account** to start registration. With the HTTPS forwarder and account service configured, the browser shows an optional email updates checkbox before returning to Desktop. It starts unchecked. Select **Open Koed** to continue with either choice. A checked box applies to the newly created, verified account. Returning Users can change their preference in **Settings → Account**.
 
 Local Personal Memory remains available without sign-in and while offline.
 Sign-in does not upload Memory, change Memory ownership, rotate API Tokens, or enable Capture.
@@ -24,7 +25,7 @@ The source file, `apps/desktop/account-config.json`, contains:
 
 When accounts are disabled, Desktop does not initialize WorkOS or open account storage.
 Desktop also hides the badge until it reads account availability from Electron main, the process that controls the app.
-Authentication starts only when the User selects Sign in.
+Authentication starts when the User selects **Sign in** or **Create account**.
 
 To enable sign-in in a source build:
 
@@ -44,7 +45,8 @@ To enable sign-in in a source build:
 5. Complete the staging WorkOS configuration below.
 6. Restart Desktop with `pnpm desktop:start`.
 
-Desktop imports only these five public values from the root file.
+Desktop imports these five public values and the optional account API origin
+from the root file.
 For a different source environment file, set `KOED_ENV_PATH` before starting Desktop.
 Missing or unreadable environment files do not block local startup.
 
@@ -137,6 +139,18 @@ The renderer, the process that displays the interface, receives only account sta
 Tokens, callback URLs, PKCE material, and provider error payloads stay outside renderer state and support exports.
 Team and device credentials remain under separate `koed-server` control.
 
+The optional account API provides email preferences and Kin unlocks. In a
+source build, set `DESKTOP_ACCOUNT_PROFILE_API_ORIGIN` to the account API
+origin. A loopback HTTP origin can serve local fixtures. For a packaged
+build, supply an HTTPS origin as `KOED_ACCOUNT_PROFILE_API_ORIGIN` at build
+time. Desktop keeps its existing sign-in mode. Electron main sends the
+WorkOS access token and returns the profile to Desktop.
+Open **Settings → Account**, or choose **Expand** in the sidebar account menu. The profile card shows the signed-in User, Free tier, and the WorkOS account creation date when available. Use the **Email updates** checkbox to read the notice and change consent for the displayed address. Desktop shows
+the saved preference and a notification after the API confirms it. Desktop renews an expired session before saving the preference when your sign-in is still valid. If Desktop cannot confirm the change, the notification prompts you to refresh your profile. Open **Project settings → Kin → Accessories**
+to see and equip the items available to that account. If the API is unavailable, retry
+with **Refresh profile** on the Account page. Desktop shows a notification when the refresh succeeds or fails. Free items stay available and saved Kins retain their
+appearance.
+
 Electron `safeStorage` encrypts the session, cached profile, sign-in attempt, and installation secret.
 Its asynchronous APIs use the operating system credential service.
 Linux `basic_text` storage is rejected.
@@ -166,7 +180,7 @@ A sign-out return page does not end a session when visited directly.
 
 ## Profile pictures
 
-The account menu displays the WorkOS name and email as read-only text.
+The account menu shows the full name from WorkOS, or the first and last names when supplied separately. If WorkOS supplies only an email address, the menu shows it once.
 It shows a profile picture when WorkOS supplies a supported URL.
 Initials appear while the picture loads, when it is absent, or when loading fails.
 

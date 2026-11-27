@@ -60,6 +60,8 @@ export function AccountValidation() {
     const account: AccountDesktopApi = {
       getState: () => Promise.resolve(state),
       refreshProfile: () => Promise.resolve(state),
+      reportProfileOffline: () => Promise.resolve(state),
+      setEmailUpdates: () => Promise.resolve(state),
       signIn: () =>
         publish({ status: "signed_in", profile, stale: false, message: null }),
       cancelSignIn: () =>

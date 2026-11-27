@@ -184,10 +184,7 @@ const projectShapes: readonly KinShape[] = [
   "capsule"
 ];
 
-export const PROJECT_KIN_ACCESSORIES = PixelkinAccessories.filter(
-  (item) => item.unlockBit === undefined
-);
-const projectKinItemIds = new Set(PROJECT_KIN_ACCESSORIES.map(({ id }) => id));
+const projectKinItemIds = new Set(PixelkinAccessories.map(({ id }) => id));
 const projectKinItems = (items: readonly string[]) =>
   items.filter((id) => projectKinItemIds.has(id));
 
@@ -236,7 +233,8 @@ export function projectKinLook(
     saved?.colour ?? colour?.hex ?? look.palette.base
   );
   if (saved) editKin(look, "face.personality", saved.personality);
-  if (items) setProjectKinAccessories(look, items);
+  const outfit = items ?? (saved?.hat ? [saved.hat] : []);
+  setProjectKinAccessories(look, outfit);
   look.seed = value % 100000;
   return look;
 }

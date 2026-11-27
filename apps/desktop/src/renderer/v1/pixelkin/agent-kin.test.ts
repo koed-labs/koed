@@ -116,15 +116,13 @@ describe("agent Kin", () => {
   });
 });
 
-it("loads and saves only available Project Kin accessories", () => {
+it("restores known equipped items and applies the engine slot rules", () => {
   const saved = {
     shape: "roundedBox",
     colour: "#55cca3",
     personality: "neutral"
   } as const;
   const look = projectKinLook("project", saved, [
-    "cap",
-    "ghost",
     "beanie",
     "circle_eyeglasses",
     "bowler",
@@ -134,4 +132,10 @@ it("loads and saves only available Project Kin accessories", () => {
   expect(projectKinSettings(look)).toEqual(saved);
   expect(projectKinEquipped(look)).toEqual(["bowler", "circle_eyeglasses"]);
   expect(projectKinEquipped(projectKinLook("project"))).toEqual([]);
+  expect(
+    projectKinLook("project", { ...saved, hat: "cap" }).face.items
+  ).toEqual(["cap"]);
+  expect(
+    projectKinLook("project", { ...saved, hat: "cap" }, []).face.items
+  ).toEqual([]);
 });

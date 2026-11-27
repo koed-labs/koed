@@ -45,6 +45,8 @@ function fixture(initial = cached) {
   const api: AccountDesktopApi = {
     getState: vi.fn(async () => state),
     refreshProfile: vi.fn(async () => state),
+    reportProfileOffline: vi.fn(async () => state),
+    setEmailUpdates: vi.fn(async () => state),
     signIn: vi.fn(async () => state),
     signOut: vi.fn(async () => state),
     cancelSignIn: vi.fn(async () => state),
@@ -157,4 +159,17 @@ it("queues one recovery when connectivity returns during an in-flight refresh", 
   expect(f.api.refreshProfile).toHaveBeenCalledTimes(2);
   await act(async () => vi.advanceTimersByTimeAsync(60000));
   expect(f.api.refreshProfile).toHaveBeenCalledTimes(2);
+});
+
+it("reports an offline profile and refreshes it when connectivity returns", async () => {
+  const f = fixture({ ...cached, stale: false });
+  vi.mocked(f.api.reportProfileOffline).mockImplementationOnce(async () =>
+    f.publish({ details: { status: "unavailable" } })
+  );
+  await f.render();
+  await act(async () => window.dispatchEvent(new Event("offline")));
+  expect(f.api.reportProfileOffline).toHaveBeenCalledOnce();
+  expect(f.api.refreshProfile).not.toHaveBeenCalled();
+  await act(async () => window.dispatchEvent(new Event("online")));
+  expect(f.api.refreshProfile).toHaveBeenCalledOnce();
 });

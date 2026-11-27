@@ -48,7 +48,7 @@ type Props = {
   projectName?: string;
   onSelect: (route: NavigationRoute) => void;
   onHome: () => void;
-  onSettings: () => void;
+  onSettings: (tab: "account" | "general") => void;
   onBack: () => void;
   onForward: () => void;
   canGoBack: boolean;
@@ -185,9 +185,12 @@ function ShellContent(props: Props) {
                 <Settings size={19} strokeWidth={2} />
                 <DesktopUpdateDot update={props.update} />
               </>,
-              props.onSettings
+              () => props.onSettings("general")
             )}
-            <AccountMenu api={props.accountApi} />
+            <AccountMenu
+              api={props.accountApi}
+              onExpand={() => props.onSettings("account")}
+            />
           </SidebarMenu>
         </SidebarFooter>
       </Sidebar>

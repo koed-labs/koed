@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   accountStateSchema,
   type AccountCommand,
@@ -6,7 +7,9 @@ import {
 } from "@koed-labs/shared/account";
 import type { AccountConfig } from "./config.js";
 import type { AccountRuntime } from "./runtime.js";
+import type { SignupAttempt } from "./storage.js";
 import { AccountOperationError } from "./errors.js";
+import { createAccountProfileApi } from "./profile-api.js";
 
 const messages: Record<AccountMessageCode, string> = {
   configuration_invalid:
@@ -23,7 +26,9 @@ const messages: Record<AccountMessageCode, string> = {
   browser_sign_out_failed:
     "Signed out on this device. WorkOS browser sign-out could not be opened.",
   sign_in_expired: "Sign-in expired. Try again when you are ready.",
-  sign_in_failed: "Sign-in did not complete. Try again when you are ready."
+  sign_in_failed: "Sign-in did not complete. Try again when you are ready.",
+  email_updates_unconfirmed:
+    "Refresh your profile to confirm your email updates preference."
 };
 
 export function createAccountController(input: {
@@ -41,6 +46,8 @@ export function createAccountController(input: {
   };
   const isSigningIn = () => state.status === "signing_in";
   let generation = 0;
+  let profileEpoch = 0;
+  let profileConnected = true;
   let signInDeadline: ReturnType<typeof setTimeout> | undefined;
   const stopDeadline = () => {
     clearTimeout(signInDeadline);
@@ -49,8 +56,11 @@ export function createAccountController(input: {
   let runtime: AccountRuntime | undefined;
   let tail: Promise<unknown> = Promise.resolve();
   const listeners = new Set<(state: AccountState) => void>();
+  const profileApi = input.config?.profileApiOrigin
+    ? createAccountProfileApi(input.config.profileApiOrigin)
+    : undefined;
   const publish = (patch: Partial<AccountState>) => {
-    state = accountStateSchema.parse({
+    const next = {
       ...state,
       ...patch,
       ...(patch.messageCode !== undefined
@@ -59,11 +69,70 @@ export function createAccountController(input: {
           }
         : {}),
       revision: state.revision + 1
-    });
+    };
+    if (
+      next.status !== "signed_in" ||
+      next.stale ||
+      next.profile?.id !== state.profile?.id
+    ) {
+      delete next.details;
+    }
+    state = accountStateSchema.parse(next);
     for (const listener of listeners) listener(state);
     return state;
   };
   const sdk = () => (runtime ??= input.runtime());
+  const isCurrentProfile = (userId: string, version: number) =>
+    generation === version &&
+    state.status === "signed_in" &&
+    !state.stale &&
+    state.profile?.id === userId;
+  const refreshDetails = async (
+    userId: string,
+    accessToken: string,
+    version: number,
+    optIn?: { attempt: SignupAttempt; proof: string; email: string }
+  ) => {
+    if (!profileApi) return;
+    if (!isCurrentProfile(userId, version)) return;
+    if (!profileConnected) {
+      publish({ details: { status: "unavailable" } });
+      return;
+    }
+    const epoch = profileEpoch;
+    const current = () =>
+      epoch === profileEpoch && isCurrentProfile(userId, version);
+    publish({ details: { status: "loading" } });
+    try {
+      const value = await profileApi.getProfile(accessToken, userId);
+      if (
+        optIn &&
+        current() &&
+        value.emailUpdates.revision === 0 &&
+        value.emailUpdates.email === optIn.email
+      ) {
+        const { noticeVersion, noticeText } = value.emailUpdates;
+        const proof = createHash("sha256")
+          .update(
+            JSON.stringify([optIn.attempt.nonce, noticeVersion, noticeText])
+          )
+          .digest("hex");
+        if (proof === optIn.proof) {
+          value.emailUpdates = await profileApi.recordSignupOptIn(
+            accessToken,
+            value.emailUpdates
+          );
+        }
+      }
+      if (current()) publish({ details: { status: "ready", value } });
+    } catch {
+      if (current())
+        publish({
+          details: { status: "unavailable" },
+          ...(optIn && { messageCode: "email_updates_unconfirmed" as const })
+        });
+    }
+  };
   const serial = <T>(operation: () => Promise<T>): Promise<T> => {
     const work = tail.then(operation, operation);
     tail = work.catch(() => undefined);
@@ -131,6 +200,11 @@ export function createAccountController(input: {
           busy: false,
           messageCode: null
         });
+        await refreshDetails(
+          profile.id,
+          validated.session.accessToken,
+          version
+        );
       }
     } catch (error) {
       fail(error, version);
@@ -140,6 +214,15 @@ export function createAccountController(input: {
   const command = async (command: AccountCommand): Promise<AccountState> => {
     if (command.operation === "getState") return state;
     if (!input.config) return state;
+    if (command.operation === "reportProfileOffline") {
+      if (!profileApi || !profileConnected) return state;
+      profileConnected = false;
+      profileEpoch++;
+      if (state.status === "signed_in") {
+        return publish({ details: { status: "unavailable" } });
+      }
+      return state;
+    }
     if (command.operation === "cancelSignIn") {
       if (!isSigningIn()) return state;
       stopDeadline();
@@ -199,6 +282,7 @@ export function createAccountController(input: {
       if (state.status === "signed_in" || state.status === "signing_in")
         return state;
       const version = ++generation;
+      profileConnected = true;
       publish({
         status: "signing_in",
         profile: null,
@@ -234,7 +318,74 @@ export function createAccountController(input: {
       return state;
     }
     if (isSigningIn()) return state;
+    if (command.operation === "setEmailUpdates") {
+      const version = generation;
+      const epoch = profileEpoch;
+      const snapshot =
+        state.details?.status === "ready" ? state.details.value : null;
+      if (
+        !profileApi ||
+        !profileConnected ||
+        !snapshot ||
+        state.revision !== command.stateRevision ||
+        state.busy ||
+        !isCurrentProfile(snapshot.userId, version)
+      )
+        return state;
+      const current = () =>
+        epoch === profileEpoch && isCurrentProfile(snapshot.userId, version);
+      publish({ busy: true, messageCode: null });
+      await serial(async () => {
+        try {
+          if (!current()) return;
+          const session = await sdk().read();
+          if (!current()) return;
+          if (!session || session.user.id !== snapshot.userId) {
+            throw new Error("Account session changed");
+          }
+          const validated = await sdk().validate(session);
+          if (!isCurrentProfile(snapshot.userId, version)) return;
+          if (sdk().profile(validated).id !== snapshot.userId) {
+            throw new Error("Account session changed");
+          }
+          // Going offline cancels the preference update, but the same account
+          // still needs its rotated refresh token for the next connection.
+          if (validated.refreshed) await sdk().save(validated.session);
+          if (!current()) return;
+          const emailUpdates = await profileApi.setEmailUpdates(
+            validated.session.accessToken,
+            command.subscribed,
+            snapshot.emailUpdates
+          );
+          if (current())
+            publish({
+              busy: false,
+              details: {
+                status: "ready",
+                value: { ...snapshot, emailUpdates }
+              }
+            });
+        } catch {
+          if (current())
+            publish({
+              busy: false,
+              details: { status: "unavailable" },
+              messageCode: "email_updates_unconfirmed"
+            });
+        } finally {
+          if (
+            epoch !== profileEpoch &&
+            isCurrentProfile(snapshot.userId, version) &&
+            state.busy
+          ) {
+            publish({ busy: false });
+          }
+        }
+      });
+      return state;
+    }
     const version = generation;
+    profileConnected = true;
     publish({ busy: true, messageCode: null });
     return serial(() => refresh(version));
   };
@@ -310,7 +461,10 @@ export function createAccountController(input: {
             sealedState = url.searchParams.get("state");
           if (!code || !sealedState)
             throw new Error("Invalid sign-in response");
-          const session = await sdk().callback(code, sealedState);
+          const { signup, ...session } = await sdk().callback(
+            code,
+            sealedState
+          );
           if (version !== generation) return;
           const validated = await sdk().validate(session);
           const profile = sdk().profile(validated);
@@ -326,6 +480,22 @@ export function createAccountController(input: {
             busy: false,
             messageCode: null
           });
+          const proofs = url.searchParams.getAll("signup_opt_in");
+          const createdAt = profile.joinedAt
+            ? Date.parse(profile.joinedAt)
+            : NaN;
+          await refreshDetails(
+            profile.id,
+            validated.session.accessToken,
+            version,
+            signup &&
+              createdAt >= signup.startedAt &&
+              createdAt <= Date.now() &&
+              proofs.length === 1 &&
+              /^[a-f0-9]{64}$/.test(proofs[0]!)
+              ? { attempt: signup, proof: proofs[0]!, email: profile.email }
+              : undefined
+          );
         } catch (error) {
           fail(error, version);
         }

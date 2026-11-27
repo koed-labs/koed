@@ -256,6 +256,7 @@ describe("account persistence boundary", () => {
           id: "user_1",
           email: "alex@example.com",
           emailVerified: true,
+          createdAt: "2026-10-14T13:00:00.000Z",
           firstName: "Alex",
           lastName: "Example",
           profilePictureUrl: "https://images.workoscdn.com/avatar/alex.png"
@@ -266,10 +267,25 @@ describe("account persistence boundary", () => {
     expect(runtime.profile(validated)).toEqual({
       id: "user_1",
       displayName: "Alex Example",
+      joinedAt: "2026-10-14T13:00:00.000Z",
       email: "alex@example.com",
       emailVerified: true,
       profilePictureUrl: "https://images.workoscdn.com/avatar/alex.png"
     });
+    expect(
+      runtime.profile({
+        ...validated,
+        session: {
+          ...validated.session,
+          user: {
+            ...validated.session.user,
+            name: " Alex Google ",
+            firstName: null,
+            lastName: null
+          }
+        }
+      }).displayName
+    ).toBe("Alex Google");
     expect(() =>
       runtime.profile({
         ...validated,
@@ -499,61 +515,80 @@ describe("account persistence boundary", () => {
       "synthetic-administrative-key-never-send"
     );
   });
-  it("uses the HTTPS redirect with real SDK PKCE and exchanges only in main with WorkOS", async () => {
-    const fetch = vi.fn(
-      async (_url: unknown, _init?: RequestInit) =>
-        new Response(
-          JSON.stringify({
-            access_token: session.accessToken,
-            refresh_token: session.refreshToken,
-            user: {
-              object: "user",
-              id: "user_1",
-              email: "alex@example.com",
-              email_verified: true,
-              first_name: "Alex",
-              last_name: null,
-              created_at: "2026-11-17T00:00:00.000Z",
-              updated_at: "2026-11-17T00:00:00.000Z"
-            }
-          }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        )
-    );
-    vi.stubGlobal("fetch", fetch);
-    const open = vi.fn(async (_url: string) => undefined);
-    await createAccountRuntime(config, open).begin("sign-up", () => true);
-    const authorization = new URL(open.mock.calls[0]![0]);
-    expect(authorization.searchParams.get("redirect_uri")).toBe(FORWARDER_URL);
-    expect(authorization.searchParams.get("screen_hint")).toBe("sign-up");
-    expect(authorization.searchParams.get("code_challenge_method")).toBe(
-      "S256"
-    );
-    expect(fetch).not.toHaveBeenCalled();
-    const restored = createAccountRuntime(config, open);
-    const state = authorization.searchParams.get("state")!;
-    const result = await restored.callback("synthetic-code", state);
-    expect(result.accessToken).toBe(session.accessToken);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const [url, init] = fetch.mock.calls[0]!;
-    expect(String(url)).toBe(
-      "https://api.workos.com/user_management/authenticate"
-    );
-    const body = JSON.parse(String(init?.body));
-    expect(body).toMatchObject({
-      client_id: config.clientId,
-      grant_type: "authorization_code",
-      code: "synthetic-code"
-    });
-    expect(body.client_secret).toBeUndefined();
-    expect(new Headers(init?.headers).get("authorization")).toBeNull();
-    expect(JSON.stringify(fetch.mock.calls)).not.toContain(
-      "synthetic-administrative-key-never-send"
-    );
-    expect(
-      createHash("sha256").update(body.code_verifier).digest("base64url")
-    ).toBe(authorization.searchParams.get("code_challenge"));
-    await expect(restored.callback("synthetic-code", state)).rejects.toThrow();
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
+  it.each(["plain", "signup", "old-forwarder"])(
+    "uses real SDK PKCE for the %s handoff and consumes it once",
+    async (mode) => {
+      const fetch = vi.fn(
+        async (_url: unknown, _init?: RequestInit) =>
+          new Response(
+            JSON.stringify({
+              access_token: session.accessToken,
+              refresh_token: session.refreshToken,
+              user: {
+                object: "user",
+                id: "user_1",
+                email: "alex@example.com",
+                email_verified: true,
+                first_name: "Alex",
+                last_name: null,
+                created_at: "2026-11-17T00:00:00.000Z",
+                updated_at: "2026-11-17T00:00:00.000Z"
+              }
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      );
+      vi.stubGlobal("fetch", fetch);
+      const open = vi.fn(async (_url: string) => undefined);
+      const settings = {
+        ...config,
+        profileApiOrigin:
+          mode === "plain" ? undefined : "https://account.example.test"
+      };
+      await createAccountRuntime(settings, open).begin("sign-up", () => true);
+      const authorization = new URL(open.mock.calls[0]![0]);
+      expect(authorization.searchParams.get("redirect_uri")).toBe(
+        FORWARDER_URL
+      );
+      expect(authorization.searchParams.get("screen_hint")).toBe("sign-up");
+      expect(authorization.searchParams.get("code_challenge_method")).toBe(
+        "S256"
+      );
+      expect(fetch).not.toHaveBeenCalled();
+      const restored = createAccountRuntime(settings, open);
+      const wire = authorization.searchParams.get("state")!;
+      const parts = /^koed\.signup\.v1\.([A-Za-z0-9_-]{43})\.(.+)$/.exec(wire);
+      expect(!!parts).toBe(mode !== "plain");
+      const state = mode === "signup" ? parts![2]! : wire;
+      expect(await restored.hasPending(state)).toBe(true);
+      const result = await restored.callback("synthetic-code", state);
+      expect(result.signup?.nonce).toBe(
+        mode === "signup" ? parts![1] : undefined
+      );
+      expect(result.accessToken).toBe(session.accessToken);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const [url, init] = fetch.mock.calls[0]!;
+      expect(String(url)).toBe(
+        "https://api.workos.com/user_management/authenticate"
+      );
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        client_id: config.clientId,
+        grant_type: "authorization_code",
+        code: "synthetic-code"
+      });
+      expect(body.client_secret).toBeUndefined();
+      expect(new Headers(init?.headers).get("authorization")).toBeNull();
+      expect(JSON.stringify(fetch.mock.calls)).not.toContain(
+        "synthetic-administrative-key-never-send"
+      );
+      expect(
+        createHash("sha256").update(body.code_verifier).digest("base64url")
+      ).toBe(authorization.searchParams.get("code_challenge"));
+      await expect(
+        restored.callback("synthetic-code", state)
+      ).rejects.toThrow();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  );
 });
