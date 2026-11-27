@@ -3,7 +3,8 @@ import {
   repositoryIdentitySchema,
   personalProjectReferenceSchema,
   personalFolderReferenceSchema,
-  CURATED_MEMORY_REVIEW_MAX_EVIDENCE
+  CURATED_MEMORY_REVIEW_MAX_EVIDENCE,
+  type PersonalSelectionSnapshot
 } from "@koed-labs/shared";
 import { z } from "zod";
 import { memoryAnswerRetrievalHintsSchema } from "./memory-answer-request.js";
@@ -159,6 +160,31 @@ export const parseMemoryAnswerRequest = (raw: unknown) => {
   const { recall_target: _target, ...input } = request;
   void _target;
   return memoryAnswerInputSchema.parse(input);
+};
+
+/**
+ * A Personal Project or Folder selection recalls without a repository, and its
+ * pinned input records that as an explicit null. Acceptance, routing and
+ * execution read the input through this parser so they agree on that shape.
+ */
+export const parsePinnedMemoryAnswerInput = (
+  raw: unknown,
+  selection: PersonalSelectionSnapshot | undefined
+): z.infer<typeof memoryAnswerInputSchema> => {
+  if (
+    selection?.version !== 1 ||
+    (selection.target.kind !== "projects" &&
+      selection.target.kind !== "project" &&
+      selection.target.kind !== "folder")
+  )
+    return memoryAnswerInputSchema.parse(raw);
+  return {
+    ...memoryAnswerInputSchema.parse({
+      ...z.record(z.string(), z.unknown()).parse(raw),
+      repository_context: undefined
+    }),
+    repository_context: null
+  };
 };
 
 export const memoryAnswerAdapterInputSchema =

@@ -55,6 +55,7 @@ import {
 import {
   memoryAccessCheckInputSchema,
   memoryAnswerInputSchema,
+  parsePinnedMemoryAnswerInput,
   memoryExpandInputSchema,
   memoryIntakeProposeInputSchema,
   memorySearchInputSchema,
@@ -439,12 +440,7 @@ export class MemoryToolExecutor {
       (context.personalSelection.target.kind === "projects" ||
         context.personalSelection.target.kind === "project" ||
         context.personalSelection.target.kind === "folder");
-    input = memoryAnswerInputSchema.parse(
-      nonRepositorySelection
-        ? { ...input, repository_context: undefined }
-        : input
-    );
-    if (nonRepositorySelection) input = { ...input, repository_context: null };
+    input = parsePinnedMemoryAnswerInput(input, context?.personalSelection);
     const authority = context?.getExecutionAuthority() ?? {
       scope: "personal" as const
     };

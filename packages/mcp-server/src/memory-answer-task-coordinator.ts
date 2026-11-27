@@ -25,7 +25,10 @@ import type {
   MemoryAnswerTaskApi,
   MemoryAnswerTaskExecutionContext
 } from "./memory-answer-task-scheduler.js";
-import { memoryAnswerInputSchema } from "./memory-tool-schemas.js";
+import {
+  memoryAnswerInputSchema,
+  parsePinnedMemoryAnswerInput
+} from "./memory-tool-schemas.js";
 import { resolveProjectTeamWorkspaceRoute } from "./project-team-workspace-links.js";
 import {
   backendForDiscoveredWorkspace,
@@ -478,11 +481,10 @@ export const createMemoryAnswerTaskCoordinator = (
           selection.target.kind === "project" ||
           selection.target.kind === "folder")
       ) {
-        const raw = request.request.input as Record<string, unknown>;
-        const pinned = memoryAnswerInputSchema.parse({
-          ...raw,
-          repository_context: undefined
-        });
+        const pinned = parsePinnedMemoryAnswerInput(
+          request.request.input,
+          selection
+        );
         if (pinned.team_workspace_id || pinned.team_backend_id)
           throw unavailable(
             "Personal selections cannot route to Team Memory",
@@ -494,7 +496,7 @@ export const createMemoryAnswerTaskCoordinator = (
             ...request,
             request: {
               ...request.request,
-              input: { ...pinned, repository_context: null }
+              input: pinned
             }
           }
         };
