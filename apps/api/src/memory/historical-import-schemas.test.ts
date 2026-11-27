@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createHistoricalImportSourceSchema,
+  historicalImportBatchRequestSchema,
   historicalImportBatchSchema,
   historicalImportSourceLookupSchema
 } from "./historical-import-schemas.js";
@@ -53,5 +54,54 @@ describe("historical import AI Client schemas", () => {
         ]
       }).items[0]?.projectionVersion
     ).toBe("claude-code-transcript-v1");
+  });
+  const journalRange = {
+    kind: "journal_range",
+    expectedSourceOffset: 10,
+    sourceOffset: 30,
+    segmentIndex: 2,
+    lastVerifiedDigest: "a".repeat(64)
+  };
+
+  it("accepts a journal range batch that names only the range", () => {
+    expect(historicalImportBatchRequestSchema.parse(journalRange)).toEqual(
+      journalRange
+    );
+  });
+
+  it("rejects a journal range batch that carries client-built state", () => {
+    for (const extra of [
+      { items: [] },
+      { sourceLine: 1 },
+      { parserState: { currentTurnId: "turn-1" } },
+      { sourceOffset: journalRange.expectedSourceOffset }
+    ]) {
+      expect(() =>
+        historicalImportBatchRequestSchema.parse({ ...journalRange, ...extra })
+      ).toThrow();
+    }
+  });
+
+  it("keeps accepting item batches through the request union", () => {
+    const parsed = historicalImportBatchRequestSchema.parse({
+      expectedSourceOffset: 0,
+      sourceOffset: 10,
+      sourceLine: 1,
+      segmentIndex: 0,
+      lastVerifiedDigest: "a".repeat(64),
+      items: []
+    });
+    expect("items" in parsed && parsed.items).toEqual([]);
+    expect(() =>
+      historicalImportBatchRequestSchema.parse({
+        kind: "unknown_kind",
+        expectedSourceOffset: 0,
+        sourceOffset: 10,
+        sourceLine: 1,
+        segmentIndex: 0,
+        lastVerifiedDigest: "a".repeat(64),
+        items: []
+      })
+    ).toThrow();
   });
 });

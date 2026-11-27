@@ -286,3 +286,32 @@ export const historicalImportBatchSchema = z
       });
     }
   });
+
+/**
+ * Commits a range of the Conversation Source Journal without uploading items.
+ * The API reads the range from the stored journal segment and builds the items
+ * itself, so a record too large for an item batch is still imported whole.
+ */
+export const historicalImportJournalRangeSchema = z
+  .object({
+    kind: z.literal("journal_range"),
+    expectedSourceOffset: boundedOffset,
+    sourceOffset: boundedOffset,
+    segmentIndex: z.number().int().nonnegative().max(2_147_483_647),
+    lastVerifiedDigest: digest
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.sourceOffset <= value.expectedSourceOffset) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceOffset"],
+        message: "Historical journal cursor must advance"
+      });
+    }
+  });
+
+export const historicalImportBatchRequestSchema = z.union([
+  historicalImportBatchSchema,
+  historicalImportJournalRangeSchema
+]);
