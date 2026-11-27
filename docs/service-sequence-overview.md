@@ -1050,6 +1050,11 @@ health or another client's capture path.
     Pre-frontier records are historical; post-frontier/downtime-recovery records
     are live. No Team,
     Workspace Access, or Share Grant mutation occurs.
+    A Claude batch may name a journal range instead of carrying records, when
+    one transcript record is too large to send. API checks Capture Policy and
+    the registration frontier before it reads the stored segment, then commits
+    the record through the same batch transaction. The Local AI Runtime resumes
+    from the committed checkpoint and parser state in the response.
 15. Worker consumes queued jobs from Redis/BullMQ or `local_work_queue`.
     Both backends use lower-number-first priority and FIFO as the current
     within-class tie-breaker, so
