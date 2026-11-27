@@ -21,6 +21,17 @@ import {
 // turn and the result is copied into that Kin's own 2D canvas. One context per
 // avatar would exhaust Chromium's WebGL context limit on busy screens.
 type Personality = InstanceType<typeof PixelkinPersonalities.Controller>;
+type ScreenPoint = { x: number; y: number };
+
+/** What else a Kin finds worth looking at besides the pointer, asked of the
+ * screen it stands on. `kin` is the Kin's canvas. */
+export type PixelkinCuriosity = {
+  /** Something moving it can't help watching (a thrown coin), or null. */
+  lure: (kin: HTMLCanvasElement) => ScreenPoint | null;
+  /** Things it glances at now and then, before looking back. */
+  interests: (kin: HTMLCanvasElement) => readonly ScreenPoint[];
+};
+
 export type PixelkinActor = {
   canvas: HTMLCanvasElement;
   size: number;
@@ -34,6 +45,11 @@ export type PixelkinActor = {
   gaze: [number, number];
   // A screen-chosen gaze direction that overrides following the pointer.
   fixedGaze?: [number, number] | null;
+  // Lets the Kin watch a lure and glance away from the pointer now and then.
+  curiosity?: PixelkinCuriosity | null;
+  // What it is glancing at instead of the pointer, each until its stage-clock
+  // time; the next glance comes at `next`.
+  glance?: { stops: { at: ScreenPoint; until: number }[]; next: number };
   // Draws the Kin smaller than its canvas (1 = the usual tight framing), so
   // turned arms stay inside.
   fit?: number;
@@ -56,6 +72,16 @@ const HOP = 1.1;
 const MAX_PIXELS = 96;
 // The lab's idle-motion strength.
 const IDLE = 0.75;
+// A curious Kin glances away every GLANCE_EVERY seconds or so, plus up to
+// GLANCE_JITTER more, for GLANCE_FOR seconds plus up to GLANCE_LINGER more.
+// It looks at up to GLANCE_STOPS things in that time, each after the first
+// one of the GLANCE_NEAR nearest, so its eyes drift rather than dart.
+const GLANCE_EVERY = 8;
+const GLANCE_JITTER = 12;
+const GLANCE_FOR = 1.5;
+const GLANCE_LINGER = 1.5;
+const GLANCE_STOPS = 3;
+const GLANCE_NEAR = 3;
 const actors = new Set<PixelkinActor>();
 const items = new ItemRegistry();
 let renderer: CrowdGLRenderer | null | undefined;
@@ -151,11 +177,74 @@ export function setPixelkinExpression(
   wakePixelkins();
 }
 
+/** Where a Kin looks: a curious Kin watches its lure, or something it is
+ * glancing at for a moment, before the pointer. */
+export function pixelkinLookTarget(
+  actor: PixelkinActor,
+  now: number,
+  from: ScreenPoint | null,
+  random: () => number = Math.random
+): ScreenPoint | null {
+  const curiosity = actor.curiosity;
+  if (!curiosity) return from;
+  const lure = curiosity.lure(actor.canvas);
+  if (lure) return lure;
+  // Kin start out of step, so they don't all look away at once.
+  const glance = (actor.glance ??= {
+    stops: [],
+    next: now + random() * (GLANCE_EVERY + GLANCE_JITTER)
+  });
+  while (glance.stops.length && now >= glance.stops[0]!.until)
+    glance.stops.shift();
+  if (!glance.stops.length && now >= glance.next) {
+    const duration = GLANCE_FOR + random() * GLANCE_LINGER;
+    glance.stops = glancePath(curiosity.interests(actor.canvas), random).map(
+      (at, index, path) => ({
+        at,
+        until: now + (duration * (index + 1)) / path.length
+      })
+    );
+    glance.next = now + duration + GLANCE_EVERY + random() * GLANCE_JITTER;
+  }
+  if (glance.stops.length) return glance.stops[0]!.at;
+  return from;
+}
+
+/** Two or three things to look at in turn: one at random, then each time
+ * one of the few nearest to the last. */
+function glancePath(
+  interests: readonly ScreenPoint[],
+  random: () => number
+): ScreenPoint[] {
+  if (!interests.length) return [];
+  const left = [...interests];
+  const pick = (index: number) => left.splice(index, 1)[0]!;
+  const path = [pick(Math.floor(random() * left.length))];
+  const stops = Math.min(
+    2 + Math.floor(random() * (GLANCE_STOPS - 1)),
+    interests.length
+  );
+  while (path.length < stops) {
+    const last = path.at(-1)!;
+    const near = left
+      .map((point, index) => ({
+        index,
+        distance: Math.hypot(point.x - last.x, point.y - last.y)
+      }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, GLANCE_NEAR);
+    path.push(pick(near[Math.floor(random() * near.length)]!.index));
+  }
+  return path;
+}
+
 function aim(actor: PixelkinActor): [number, number] {
-  if (!pointer || reduced()) return [0, 0];
+  if (reduced()) return [0, 0];
+  const target = pixelkinLookTarget(actor, clock, pointer);
+  if (!target) return [0, 0];
   const rect = actor.canvas.getBoundingClientRect();
-  const dx = pointer.x - (rect.left + rect.width / 2),
-    dy = pointer.y - (rect.top + rect.height / 2);
+  const dx = target.x - (rect.left + rect.width / 2),
+    dy = target.y - (rect.top + rect.height / 2);
   const distance = Math.hypot(dx, dy);
   if (distance < rect.width * 0.35) return [0, 0];
   // Screen Y grows downward; the renderer’s gaze and pitch use upward Y.

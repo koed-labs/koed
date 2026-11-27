@@ -2,7 +2,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KIN_DEFAULTS } from "@koed-labs/kin-engine";
 import { KinSpin } from "../onboarding/kin-spin.js";
-import { addPixelkin, createPixelkinActor, setPixelkinKin } from "./stage.js";
+import {
+  addPixelkin,
+  createPixelkinActor,
+  pixelkinLookTarget,
+  setPixelkinKin,
+  type PixelkinActor,
+  type PixelkinCuriosity
+} from "./stage.js";
 import { kinStageSize, kinStageSurface } from "./presentation.js";
 
 const engine = vi.hoisted(() => ({
@@ -338,5 +345,57 @@ describe("Kin stage rendering", () => {
         remove();
       }
     });
+  });
+});
+
+describe("Kin curiosity", () => {
+  const pointer = { x: 500, y: 500 };
+  const curious = (curiosity: PixelkinCuriosity | null) =>
+    ({ canvas: document.createElement("canvas"), curiosity }) as PixelkinActor;
+  // A fixed sequence stands in for Math.random.
+  const sequence = (...values: number[]) => {
+    let next = 0;
+    return () => values[next++ % values.length]!;
+  };
+
+  it("follows the pointer unless curious", () => {
+    expect(pixelkinLookTarget(curious(null), 100, pointer)).toBe(pointer);
+  });
+
+  it("watches a lure over the pointer and anything it is glancing at", () => {
+    const coin = { x: 10, y: 20 };
+    let lure: typeof coin | null = coin;
+    const actor = curious({
+      lure: () => lure,
+      interests: () => [{ x: 0, y: 0 }]
+    });
+    expect(pixelkinLookTarget(actor, 0, pointer, () => 0)).toBe(coin);
+    lure = null;
+    expect(pixelkinLookTarget(actor, 0, pointer, () => 0)).toEqual({
+      x: 0,
+      y: 0
+    });
+  });
+
+  it("glances at a few nearby things in turn, then looks back", () => {
+    const far = { x: 900, y: 0 };
+    const start = { x: 0, y: 0 };
+    const near = { x: 20, y: 0 };
+    const nearer = { x: 10, y: 0 };
+    const actor = curious({
+      lure: () => null,
+      interests: () => [start, far, near, nearer]
+    });
+    actor.glance = { stops: [], next: 1 };
+    // A 2s glance starting at `start`, with three stops, each the nearest
+    // left to the one before; the next glance comes 8s after it ends.
+    const random = sequence(1 / 3, 0, 0.99, 0, 0, 0);
+    const at = (now: number) => pixelkinLookTarget(actor, now, pointer, random);
+    expect(at(0.5)).toBe(pointer);
+    expect(at(1)).toBe(start);
+    expect(at(1.7)).toBe(nearer);
+    expect(at(2.4)).toBe(near);
+    expect(at(3.1)).toBe(pointer);
+    expect(actor.glance.next).toBe(11);
   });
 });

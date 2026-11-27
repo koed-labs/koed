@@ -8,7 +8,8 @@ import {
   setPixelkinExpression,
   setPixelkinKin,
   wakePixelkins,
-  type PixelkinActor
+  type PixelkinActor,
+  type PixelkinCuriosity
 } from "./stage.js";
 import type { KinSpin } from "../onboarding/kin-spin.js";
 import type { KinResolution } from "../../../ipc/presentation-preferences-protocol.js";
@@ -27,6 +28,7 @@ export function Pixelkin({
   motion = "focused",
   resolution,
   gaze = null,
+  curiosity = null,
   fit = 1
 }: {
   presentation?: "avatar" | "stage";
@@ -50,6 +52,9 @@ export function Pixelkin({
   // Holds the gaze on a direction (x right, y up, each -1..1) instead of
   // following the pointer.
   gaze?: readonly [number, number] | null;
+  // Watches a lure (a thrown coin) and glances at the screen's interests now
+  // and then, instead of only following the pointer. Keep it stable.
+  curiosity?: PixelkinCuriosity | null;
   // Below 1 leaves margin in the canvas, so a Kin turning to the pointer
   // keeps its arms in frame.
   fit?: number;
@@ -120,6 +125,12 @@ export function Pixelkin({
       gazeX === undefined || gazeY === undefined ? null : [gazeX, gazeY];
     wakePixelkins();
   }, [gazeX, gazeY, engine, motion]);
+  useEffect(() => {
+    const actor = actorRef.current;
+    if (!actor) return;
+    actor.curiosity = curiosity;
+    if (!curiosity) delete actor.glance;
+  }, [curiosity, engine, motion]);
   const firstHop = useRef(hopKey);
   useEffect(() => {
     const actor = actorRef.current;
