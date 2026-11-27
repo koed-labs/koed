@@ -1,7 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { MemorySourceRepository } from "@koed-labs/db";
-import type { MemoryAnswerTaskExecutionAuthority } from "@koed-labs/shared";
-import { memoryAnswerInputSchema } from "@koed-labs/mcp-server/runtime-contracts";
+import {
+  personalSelectionSnapshotSchema,
+  type MemoryAnswerTaskExecutionAuthority
+} from "@koed-labs/shared";
+import { parsePinnedMemoryAnswerInput } from "@koed-labs/mcp-server/runtime-contracts";
 import { finalMemoryQuestionSchema } from "./questions-schemas.js";
 import {
   issueMemoryAnswerAuthorizationBoundary,
@@ -69,7 +72,15 @@ export const registerMemoryAnswerTaskRoutes = (
     { preHandler: memoryWrite },
     async (request) => {
       const input = acceptMemoryAnswerTaskSchema.parse(request.body);
-      const toolInput = memoryAnswerInputSchema.parse(input.request.input);
+      // The selection only decides the pinned input's shape here. The
+      // repository still checks it against the input and its owner.
+      const selection = personalSelectionSnapshotSchema.safeParse(
+        input.request.selection
+      );
+      const toolInput = parsePinnedMemoryAnswerInput(
+        input.request.input,
+        selection.success ? selection.data : undefined
+      );
       const actor = actorFor(
         await authenticateMemoryAnswerTask(
           request,

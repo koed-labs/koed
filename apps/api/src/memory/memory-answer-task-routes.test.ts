@@ -1,5 +1,9 @@
 import Fastify from "fastify";
 import type { MemorySourceRepository } from "@koed-labs/db";
+import {
+  normalizePersonalSelection,
+  personalSelectionLegacyScope
+} from "@koed-labs/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthHelpers } from "../auth/index.js";
 import type { ApiRouteContext } from "../server/context.js";
@@ -451,4 +455,104 @@ describe("Memory Answer task serving authority", () => {
     ).toBe(403);
     expect(denied.repo.getMemoryAnswerTask).not.toHaveBeenCalled();
   });
+});
+
+describe("Memory Answer task acceptance of pinned Personal selections", () => {
+  const project = { ownerUserId: userId, projectId: "project-1" };
+  const targets = {
+    projects: {
+      kind: "projects",
+      projects: [project],
+      callerSessionId: taskId
+    },
+    project: { kind: "project", project },
+    folder: {
+      kind: "folder",
+      folder: {
+        ownerUserId: userId,
+        folderId: "folder-1",
+        originatingDeploymentId: "deployment-1",
+        originatingDeviceId: "device-1",
+        originatingProfileId: "profile-1",
+        directoryIncarnationId: "incarnation-1"
+      }
+    }
+  };
+  // The Local AI Runtime pins these targets without a repository and records
+  // that with an explicit null before it submits the task.
+  const pinned = (target: (typeof targets)[keyof typeof targets]) => {
+    const selection = normalizePersonalSelection(
+      { recall_target: target },
+      userId
+    );
+    const scope = personalSelectionLegacyScope(selection);
+    return {
+      origin: "mcp",
+      max_queued: 100,
+      request: {
+        input: {
+          query: "fact",
+          search_domain: scope.searchDomain,
+          ...(scope.projectId ? { project_id: scope.projectId } : {}),
+          repository_context: null
+        },
+        caller: { cwd: "/work" },
+        requestVersion: 1,
+        selection
+      }
+    };
+  };
+
+  it.each(Object.entries(targets))(
+    "accepts a %s selection pinned without a repository",
+    async (_kind, target) => {
+      const f = fixture();
+      const payload = pinned(target);
+      const response = await f.request(
+        "/v1/memory/answer-tasks",
+        payload,
+        "Bearer personal"
+      );
+      expect(response.statusCode, response.body).toBe(200);
+      expect(f.repo.acceptMemoryAnswerTask).toHaveBeenCalledWith(
+        expect.objectContaining({ userId }),
+        expect.objectContaining({
+          request: expect.objectContaining({
+            requestVersion: 1,
+            selection: payload.request.selection,
+            input: expect.objectContaining({
+              search_domain: "project",
+              repository_context: null
+            })
+          })
+        })
+      );
+    }
+  );
+
+  it.each([
+    ["no selection", undefined],
+    ["a selection of an unknown version", { version: 2 }]
+  ])(
+    "rejects Project recall without a repository under %s",
+    async (_case, selection) => {
+      const f = fixture();
+      const { input, caller } = pinned(targets.projects).request;
+      const response = await f.request(
+        "/v1/memory/answer-tasks",
+        {
+          origin: "mcp",
+          max_queued: 100,
+          request: {
+            input,
+            caller,
+            ...(selection ? { requestVersion: 1, selection } : {})
+          }
+        },
+        "Bearer personal"
+      );
+      expect(response.statusCode).toBeGreaterThanOrEqual(400);
+      expect(f.repo.acceptMemoryAnswerTask).not.toHaveBeenCalled();
+    }
+  );
 });
