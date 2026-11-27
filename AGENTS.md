@@ -80,9 +80,9 @@ If you are making code changes, keep using the contributor guidance below.
 
 ## Current Product Boundaries
 
-- Codex and Claude Code are supported AI Clients. Use generic Koed naming for package names, binaries, env vars, and token names unless describing provider-specific discovery, capture, execution, or source provenance.
+- Codex, Claude Code, and Pi are supported AI Clients. Use generic Koed naming for package names, binaries, env vars, and token names unless describing provider-specific discovery, capture, execution, or source provenance.
 - The TypeScript capture hook is the supported Capture Hook. The Python hook has been removed.
-- The MCP Server is the recall/tool integration. The Capture Hook is the only supported automatic capture path in this build.
+- The MCP Server is the recall/tool integration. The Transcript Watcher is the only supported automatic capture path in this build; the Capture Hook only signals it and provides no transcript content.
 - `memory_answer` remains the supported recall tool name, but it must not imply backend answer synthesis.
 - Low-level memory tools are diagnostic-only and should stay hidden unless explicitly enabled.
 - The LCM Summary Service is local background work run with the MCP Server, enabled by default, and not an agent-facing tool.
