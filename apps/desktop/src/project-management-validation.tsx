@@ -35,7 +35,13 @@ export function installProjectManagementValidation() {
   fixture.api.listProjectMetadata = async () => [independent];
   let profile: V1Profile = {
     agentName: "Koed",
-    onboarding: { completed: true, selections: {} }
+    onboarding: {
+      completed: true,
+      selections: {},
+      ...(new URLSearchParams(location.search).has("tour")
+        ? { homeTour: "pending" as const }
+        : {})
+    }
   };
   const originalInvoke = bridge.invoke;
   // Exercise a running supervisor whose API becomes ready on a later probe.

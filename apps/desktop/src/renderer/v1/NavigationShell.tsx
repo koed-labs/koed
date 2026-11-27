@@ -1,5 +1,12 @@
 import { KoedLogo } from "../KoedLogo.js";
-import { useCallback, useEffect, useRef, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode
+} from "react";
 import {
   Sidebar,
   SidebarProvider,
@@ -25,6 +32,10 @@ import {
   type SidebarManagement
 } from "./ProjectSidebar.js";
 import { AccountMenu } from "./account-menu.js";
+import {
+  HomeSidebarTour,
+  type HomeSidebarTourState
+} from "./home/HomeSidebarTour.js";
 import type { AccountDesktopApi } from "@koed-labs/shared/account";
 import {
   DesktopUpdateDot,
@@ -35,11 +46,13 @@ import type {
   NavigationRoute,
   SidebarProject
 } from "./project-sidebar-model.js";
+import { SidebarResizeHandle, useSidebarWidth } from "./SidebarResizeHandle.js";
 import "./navigation.css";
 
 type Props = {
   children: ReactNode;
   projects: readonly SidebarProject[];
+  homeTour?: HomeSidebarTourState;
   route: NavigationRoute;
   scopeKey: string | null;
   title?: string;
@@ -69,18 +82,46 @@ type Props = {
   kinPanel?: (focusFallback: () => void, projectsVisible: boolean) => ReactNode;
 };
 export function NavigationShell(props: Props) {
+  const sidebarWidth = useSidebarWidth();
   return (
     <SidebarProvider
       className="v1-app v1-navigation"
-      style={{ "--sidebar-width": "280px" } as React.CSSProperties}
+      style={
+        { "--sidebar-width": `${sidebarWidth.width}px` } as React.CSSProperties
+      }
     >
-      <ShellContent {...props} />
+      <ShellContent {...props} sidebarWidth={sidebarWidth} />
     </SidebarProvider>
   );
 }
-function ShellContent(props: Props) {
+function ShellContent(
+  props: Props & { sidebarWidth: ReturnType<typeof useSidebarWidth> }
+) {
   const { isMobile, open, openMobile, setOpen, setOpenMobile } = useSidebar();
   const projectsVisible = isMobile ? openMobile : open;
+  const [tourAnchor, setTourAnchor] = useState<HTMLElement | null>(null);
+  const [tourNavigation, setTourNavigation] =
+    useState<HTMLButtonElement | null>(null);
+  const tour = props.homeTour;
+  const tourTarget = projectsVisible ? tourAnchor : tourNavigation;
+  const tourCard = tour && tourTarget && (
+    <HomeSidebarTour
+      tour={tour}
+      anchor={tourTarget}
+      focusFallback={tourNavigation}
+      sidebarVisible={projectsVisible}
+      sidebarWidth={props.sidebarWidth.width}
+      inline={isMobile && projectsVisible}
+      hasConversations={props.projects.some((project) =>
+        project.conversations.some(
+          (row) => row.sessionId && !row.managementPending
+        )
+      )}
+      hasProject={props.projects.some((project) => project.managed)}
+      canCreate={Boolean(props.management)}
+    />
+  );
+  const sidebarId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const projectsVisibleRef = useRef(projectsVisible);
@@ -195,6 +236,7 @@ function ShellContent(props: Props) {
         collapsible="offcanvas"
         className="v1-app v1-navigation-sidebar"
         aria-label="Projects and Anchors"
+        id={sidebarId}
       >
         <ProjectSidebar
           key={props.scopeKey}
@@ -215,14 +257,26 @@ function ShellContent(props: Props) {
           reveal={props.revealProject ?? null}
           management={props.management}
           live={props.kinLive}
+          tourStep={projectsVisible ? tour?.step : undefined}
+          tourProjectId={tour?.projectId}
+          onTourAnchor={setTourAnchor}
         />
+        {isMobile && projectsVisible && tourCard}
         {props.update ? <DesktopUpdateNotice update={props.update} /> : null}
       </Sidebar>
+      {!isMobile && open && (
+        <SidebarResizeHandle sidebarId={sidebarId} {...props.sidebarWidth} />
+      )}
       {props.kinPanel?.(focusKinFallback, projectsVisible)}
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>
         <header className="v1-navigation-bar">
           <SidebarTrigger
             aria-label={isMobile ? "Open navigation" : "Toggle navigation"}
+            ref={setTourNavigation}
+            data-home-tour-target="navigation"
+            data-home-tour-highlight={
+              tour && !projectsVisible ? true : undefined
+            }
           />
           <div className="v1-navigation-history">
             <button
@@ -253,6 +307,7 @@ function ShellContent(props: Props) {
             {props.title ?? "Conversation"}
           </span>
         </header>
+        {!(isMobile && projectsVisible) && tourCard}
         <div className="v1-navigation-content">{props.children}</div>
       </SidebarInset>
     </>

@@ -415,6 +415,117 @@ describe("Project sidebar interactions", () => {
     );
   });
 
+  it("clears an Anchor drag on Escape and suppresses the release click", async () => {
+    const onDrop = vi.fn(async () => true);
+    const source = projectWithConversations("repo", "Repository", 1);
+    const management: SidebarManagement = {
+      onCreateProject: () => {},
+      onProjectSettings: () => {},
+      onConversationAction: () => {},
+      onDrop
+    };
+    await act(async () =>
+      root.render(
+        <Harness
+          data={[
+            {
+              ...source,
+              source: "git",
+              conversations: source.conversations.map((row) => ({
+                ...row,
+                sessionId: "repo-1"
+              }))
+            },
+            { ...projectWithConversations("a", "Alpha", 0), managed: true }
+          ]}
+          management={management}
+        />
+      )
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          ".v1-nav-anchors .v1-nav-heading-toggle"
+        )!
+        .click()
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".v1-nav-anchors .v1-nav-project")!
+        .click()
+    );
+    const row = container.querySelector<HTMLButtonElement>(
+      ".v1-nav-anchors .v1-nav-conversation"
+    )!;
+    row.setPointerCapture = () => {};
+    const project = container.querySelector('[data-project-drop="a"]')!;
+    const elementFromPoint = vi
+      .spyOn(document, "elementFromPoint")
+      .mockReturnValue(project);
+    const pointer = (type: string, clientX: number) =>
+      row.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          button: 0,
+          pointerId: 1,
+          pointerType: "mouse",
+          clientX,
+          clientY: 25
+        })
+      );
+    const preview = () => document.querySelector(".v1-pm-drag-ghost");
+    const route = () =>
+      container.querySelector('[data-testid="route"]')?.textContent;
+    const popoverKeyDown = vi.fn((event: KeyboardEvent) =>
+      event.stopPropagation()
+    );
+    document.addEventListener("keydown", popoverKeyDown);
+    try {
+      await act(async () => {
+        pointer("pointerdown", 10);
+        pointer("pointermove", 14);
+      });
+      expect(preview()).toBeNull();
+      await act(async () => {
+        pointer("pointermove", 40);
+      });
+      expect(preview()?.textContent).toBe("Repository conversation 1");
+      expect(
+        preview()?.querySelector(".v1-nav-client-mark.codex svg")
+      ).not.toBeNull();
+      expect(project.classList.contains("v1-pm-drop-target")).toBe(true);
+
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true
+      });
+      await act(async () => {
+        row.dispatchEvent(escape);
+      });
+      expect(escape.defaultPrevented).toBe(true);
+      expect(popoverKeyDown).not.toHaveBeenCalled();
+      expect(preview()).toBeNull();
+      expect(project.classList.contains("v1-pm-drop-target")).toBe(false);
+      await act(async () => {
+        pointer("pointermove", 60);
+        pointer("pointerup", 60);
+        row.click();
+      });
+      expect(onDrop).not.toHaveBeenCalled();
+      expect(route()).toBe('{"kind":"home"}');
+      await act(async () => {
+        pointer("pointerdown", 10);
+        pointer("pointerup", 10);
+        row.click();
+      });
+      expect(route()).toContain('"sessionId":"repo-1"');
+    } finally {
+      document.removeEventListener("keydown", popoverKeyDown);
+      elementFromPoint.mockRestore();
+    }
+  });
+
   it("keeps loading Projects as the list end comes into view, even when the first page fits", async () => {
     const observers: Array<{
       callback: IntersectionObserverCallback;

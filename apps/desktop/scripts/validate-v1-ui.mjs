@@ -5,6 +5,7 @@ import { fileURLToPath, URL } from "node:url";
 import { join } from "node:path";
 import console from "node:console";
 import { setTimeout } from "node:timers";
+import { validateSidebarTour } from "./validate-sidebar-tour.mjs";
 const run = async () => {
   const scratch = fileURLToPath(
     new URL("../../../scratch/v1-ui-validation/", import.meta.url)
@@ -17,7 +18,11 @@ const run = async () => {
     width: 1440,
     height: 1000,
     show: false,
-    webPreferences: { contextIsolation: true, sandbox: true }
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false
+    }
   });
   const errors = [];
   window.webContents.on("console-message", (event) => {
@@ -210,6 +215,16 @@ const run = async () => {
       "a pointer click on Summarize starts one summary"
     );
     window.setContentSize(1440, 1000);
+    await validateSidebarTour({
+      window,
+      page,
+      evaluate,
+      waitFor,
+      paint,
+      click,
+      pointerClick,
+      capture
+    });
     await window.loadFile(page, { query: { onboarding: "1" } });
     await paint();
     assert.ok(await evaluate("!!document.querySelector('.lp-workspace')"));

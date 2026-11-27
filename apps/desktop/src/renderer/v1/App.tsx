@@ -32,6 +32,7 @@ import {
 import { savedMemoryModelProblems } from "./client-health.js";
 import { useMemoryModelRead } from "./use-memory-model.js";
 import { Home } from "./home/Home.js";
+import type { HomeSidebarTourStep } from "./home/HomeSidebarTour.js";
 import { useHomeStartup } from "./home/use-home-startup.js";
 import { homeClients, homeProjectEntries } from "./home/home-model.js";
 import "./app-layout.css";
@@ -179,6 +180,8 @@ export function V1App({
   const [independentProject, setIndependentProject] =
     useState<DesktopProject | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [homeTourStep, setHomeTourStep] = useState<HomeSidebarTourStep>(1);
+  const [homeTourProjectId, setHomeTourProjectId] = useState<string>();
   const [settingsTab, setSettingsTab] = useState<V1SettingsTab>("general");
   const [settingsRevision, setSettingsRevision] = useState(0);
   const [clientTarget, setClientTarget] =
@@ -1054,6 +1057,15 @@ export function V1App({
     store,
     onKinItemsSaved: () => setRevision((value) => value + 1),
     projects,
+    onProjectCreated: (projectId) => {
+      if (
+        profileRef.current.onboarding.homeTour === "pending" &&
+        currentRoute.current.kind === "home"
+      ) {
+        setHomeTourProjectId(projectId);
+        setHomeTourStep((step) => (step === 2 ? 3 : step));
+      }
+    },
     onOrganized: (sessionId, nextProjects, preferredProjectId) => {
       const selectedRoute = currentRoute.current;
       if (
@@ -1117,9 +1129,36 @@ export function V1App({
     await completeOnboarding?.();
     await saveProfile((current) => ({
       ...current,
-      onboarding: { ...current.onboarding, completed: true, draft: undefined }
+      onboarding: {
+        ...current.onboarding,
+        completed: true,
+        draft: undefined,
+        homeTour:
+          current.onboarding.homeTour ??
+          (current.onboarding.completed ? undefined : "pending")
+      }
     }));
   };
+  const dismissHomeTour = async () => {
+    await saveProfile((current) =>
+      current.onboarding.homeTour !== "pending"
+        ? current
+        : {
+            ...current,
+            onboarding: { ...current.onboarding, homeTour: "dismissed" }
+          }
+    );
+  };
+  const showHomeTour =
+    profile?.onboarding.homeTour === "pending" &&
+    route.kind === "home" &&
+    !settingsOpen &&
+    !projectManagement.dialogOpen &&
+    verifiedPhase === "full" &&
+    !snapshot?.error &&
+    !error &&
+    (homeView.kind === "empty" ||
+      (homeView.kind === "projects" && !homeView.ingestion?.active));
   const showOnboarding =
     profile && shouldShowV1Onboarding(profile, onboardingComplete);
   const kin = useDesktopKin(
@@ -1181,6 +1220,16 @@ export function V1App({
       >
         <NavigationShell
           projects={sidebarProjects}
+          homeTour={
+            showHomeTour
+              ? {
+                  step: homeTourStep,
+                  projectId: homeTourProjectId,
+                  onStep: setHomeTourStep,
+                  onDismiss: dismissHomeTour
+                }
+              : undefined
+          }
           update={update}
           revealProject={revealProject}
           route={route}
@@ -1350,7 +1399,8 @@ export function V1App({
                   onboarding: {
                     ...current.onboarding,
                     completed: false,
-                    draft: undefined
+                    draft: undefined,
+                    homeTour: current.onboarding.homeTour ?? "dismissed"
                   }
                 }));
                 setSettingsOpen(false);

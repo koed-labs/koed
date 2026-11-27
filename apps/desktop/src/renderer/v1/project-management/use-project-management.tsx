@@ -73,6 +73,7 @@ export function useProjectManagement({
   store,
   projects,
   onKinItemsSaved,
+  onProjectCreated,
   onOrganized
 }: {
   scopeKey: string | null;
@@ -80,6 +81,7 @@ export function useProjectManagement({
   store: PersonalMemoryStore | null;
   projects: readonly DesktopProject[];
   onKinItemsSaved?: () => void;
+  onProjectCreated?: (projectId: string) => void;
   onOrganized: (
     sessionId: string,
     projects: readonly DesktopProject[],
@@ -463,6 +465,7 @@ export function useProjectManagement({
               check();
               const result = await api!.createProject!({ name, requestId });
               check();
+              onProjectCreated?.(result.projectId);
               open(null);
               notice({ message: `Created ${name}` });
               try {
@@ -671,6 +674,7 @@ export function useProjectManagement({
     management,
     overlays,
     busy,
+    dialogOpen: Boolean(modal),
     openContext: (
       target: ConversationManagementTarget,
       axis: "git" | "folder"

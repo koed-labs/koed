@@ -782,16 +782,18 @@ describe("V1App launch integration", () => {
     root = undefined;
     expect(listeners.size).toBe(0);
   });
-  const renderOwner = async () => {
+  const renderOwner = async (
+    profile: V1Profile = {
+      agentName: "Ada",
+      onboarding: { selections: {}, completed: true }
+    }
+  ) => {
     Object.defineProperty(window, "koedDesktop", {
       configurable: true,
       value: {
         status: { subscribe: () => () => {} },
         v1State: {
-          readProfile: async () => ({
-            agentName: "Ada",
-            onboarding: { selections: {}, completed: true }
-          }),
+          readProfile: async () => profile,
           readIdentity: async () => ({
             ownerId: uuid(3),
             scopeKey: "a".repeat(64)
@@ -807,17 +809,79 @@ describe("V1App launch integration", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () =>
-      root!.render(
-        <V1App
-          personalMemoryApi={{} as never}
-          managedConversations={null}
-          statusStore={{ refresh: async () => undefined } as never}
-          themeStore={{ load: async () => undefined } as never}
-        />
-      )
-    );
+    const personalMemoryApi = {} as PersonalDesktopApi;
+    const statusStore = {
+      refresh: async () => undefined
+    } as unknown as DesktopStatusStore;
+    const themeStore = { load: async () => undefined } as never;
+    const render = () =>
+      act(async () =>
+        root!.render(
+          <V1App
+            personalMemoryApi={personalMemoryApi}
+            managedConversations={null}
+            statusStore={statusStore}
+            themeStore={themeStore}
+          />
+        )
+      );
+    await render();
+    return render;
   };
+
+  it.each(["existing Projects", "an empty inventory"])(
+    "waits for initial history import before showing the sidebar tour with %s",
+    async (scene) => {
+      const initialInventory = deferred<unknown>();
+      inventoryLoad.pending = initialInventory.promise;
+      const progress = (lifecycle: "running" | "completed") => ({
+        lifecycle,
+        selected: 1,
+        completed: lifecycle === "completed" ? 1 : 0,
+        skipped: 0,
+        updatedAt: null,
+        lastErrorCode: null,
+        failingSince: null
+      });
+      desktopStatus.status = homeStatus({
+        historicalIngestion: { codex: progress("running") }
+      });
+      const render = await renderOwner({
+        onboarding: { selections: {}, completed: true, homeTour: "pending" }
+      });
+      const tour = () => document.querySelector("[data-home-tour]");
+      expect(tour()).toBeNull();
+      await act(async () =>
+        initialInventory.resolve(
+          scene === "existing Projects"
+            ? snapshot
+            : { ...snapshot, projectsById: new Map(), projectOrder: [] }
+        )
+      );
+      expect(
+        container!.querySelector(
+          scene === "existing Projects"
+            ? ".v1-home-history-chip"
+            : ".v1-home-startup-progress"
+        )
+      ).not.toBeNull();
+      expect(tour()).toBeNull();
+
+      desktopStatus.status = homeStatus({
+        historicalIngestion: { codex: progress("completed") },
+        lifecycle: { state: "stopped", message: "Stopped" }
+      });
+      await render();
+      expect(tour()).toBeNull();
+
+      desktopStatus.status = homeStatus({
+        historicalIngestion: { codex: progress("completed") }
+      });
+      await render();
+      expect(tour()?.textContent).toContain("Find your conversations");
+    }
+  );
+
   it("reveals recovery after the initial grace and does not hide it on returning Home", async () => {
     vi.useFakeTimers();
     desktopStatus.status = homeStatus({
