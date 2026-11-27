@@ -1374,6 +1374,108 @@ test("rejects external or escaping symlinks in projected package trees", () => {
   );
 });
 
+test("permits only the verified control addon expression in its two owning modules", (t) => {
+  const source = resolve(import.meta.dirname, "../packages/koed-server/dist");
+  if (!existsSync(resolve(source, "desktop-runtime-capability.js")))
+    return t.skip("server must be built first");
+  const root = mkdtempSync(resolve(tmpdir(), "koed-control-addon-policy-"));
+  roots.push(root);
+  cpSync(source, resolve(root, "dist"), { recursive: true });
+  const closure = [
+    { manifest: { name: "@koed-labs/server" }, packageRoot: root }
+  ];
+  for (const [file, argumentText] of [
+    [
+      "dist/control-plane/host-entrypoint.js",
+      "resolveDesktopControlAddon(input.capability)"
+    ],
+    [
+      "dist/control-plane/installed-client.js",
+      "resolveDesktopControlAddon(capability)"
+    ],
+    [
+      "dist/control-plane/installed-client.js",
+      "resolveDesktopControlAddon(input.capability)"
+    ]
+  ]) {
+    assert.equal(
+      classifyRuntimeException(
+        "@koed-labs/server",
+        file,
+        { kind: "dynamic", loader: "require", argumentText },
+        closure,
+        root
+      )?.owner,
+      "verified-desktop-control-addon"
+    );
+  }
+  assert.equal(
+    classifyRuntimeException(
+      "@koed-labs/server",
+      "dist/control-plane/installed-client.js",
+      {
+        kind: "dynamic",
+        loader: "require",
+        argumentText: "resolveDesktopControlAddon(untrusted)"
+      },
+      []
+    ),
+    null
+  );
+  const alteredRoot = mkdtempSync(
+    resolve(tmpdir(), "koed-control-addon-altered-")
+  );
+  roots.push(alteredRoot);
+  cpSync(resolve(root, "dist"), resolve(alteredRoot, "dist"), {
+    recursive: true
+  });
+  const altered = resolve(
+    alteredRoot,
+    "dist/control-plane/installed-client.js"
+  );
+  writeFileSync(
+    altered,
+    `${readFileSync(altered, "utf8")}\nconst require = evil;\n`
+  );
+  const duplicates = [
+    ...closure,
+    { manifest: { name: "@koed-labs/server" }, packageRoot: alteredRoot }
+  ];
+  assert.match(
+    classifyRuntimeException(
+      "@koed-labs/server",
+      "dist/control-plane/installed-client.js",
+      {
+        kind: "dynamic",
+        loader: "require",
+        argumentText: "resolveDesktopControlAddon(capability)"
+      },
+      duplicates,
+      alteredRoot
+    ).error,
+    /differs from the reviewed source/
+  );
+  const target = resolve(root, "dist/control-plane/installed-client.js");
+  writeFileSync(
+    target,
+    `${readFileSync(target, "utf8")}\nconst resolveDesktopControlAddon = () => '/tmp/evil';\n`
+  );
+  assert.match(
+    classifyRuntimeException(
+      "@koed-labs/server",
+      "dist/control-plane/installed-client.js",
+      {
+        kind: "dynamic",
+        loader: "require",
+        argumentText: "resolveDesktopControlAddon(capability)"
+      },
+      closure,
+      root
+    ).error,
+    /differs from the reviewed source/
+  );
+});
+
 test("remote MCP dynamic contract import requires its concrete component target", () => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-remote-contract-"));
   roots.push(root);

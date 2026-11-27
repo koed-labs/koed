@@ -350,10 +350,9 @@ jobs:
           test "$(shasum -a 256 "${model}" | awk '{print $1}')" = "${EMBEDDING_MODEL_SHA256}"
           node packages/koed-server/dist/cli.js models status --kind embedding --json
 
-      - name: Run packaged Desktop native smoke
-        env:
-          KOED_EMBEDDING_ACCELERATION: cpu
-        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --embedding-model-source "${RUNNER_TEMP}/koed-model-cache/models/Qwen3-Embedding-0.6B-Q8_0.gguf" --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
+      # Positive packaged lifecycle smoke remains required for the signed release build.
+      - name: Verify ad-hoc package rejects missing control signing policy
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --expect-control-policy-unavailable --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 
       - name: Run packaged Desktop missing-asset smoke
         run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --missing-assets --mask-native-assets --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"

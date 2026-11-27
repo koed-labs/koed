@@ -9,8 +9,17 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
-import { existsSync, mkdirSync } from "node:fs";
+import {
+  setImmediate as nextTurn,
+  setTimeout as delay
+} from "node:timers/promises";
+import { existsSync, lstatSync, mkdirSync } from "node:fs";
+import {
+  assertControlPlaneAdmission,
+  beginControlPlaneSession,
+  endControlPlaneSession,
+  type ControlPlaneAdmission
+} from "./control-plane/admission.js";
 import { dirname, resolve } from "node:path";
 import {
   assertKoedAppRuntimeAvailable,
@@ -24,10 +33,16 @@ import {
   resolveEffectiveRuntimeConfig
 } from "./effective-runtime-config.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
-import { removeOwnedRuntimeState, writeRuntimeState } from "./runtime-state.js";
+import {
+  assertPriorRuntimeRecordDead,
+  removeOwnedRuntimeState,
+  writeRuntimeState
+} from "./runtime-state.js";
 import { hasReleaseRuntime } from "./runtime-artifact-source.js";
 import {
   readCurrentRuntimeOwner,
+  reclaimPriorGenerationPinForStart,
+  RuntimePinPublicationError,
   removeStaleGenerationPin,
   withLifecycleLock,
   withSourceNativeStartLock
@@ -76,7 +91,9 @@ import {
 import { allocateAndPersistLocalPorts } from "./ports.js";
 import {
   BACKGROUND_NICE_ENV,
-  lowerBackgroundServicePriority
+  lowerBackgroundServicePriority,
+  resolveManagedPriorityPrefix,
+  spawnSyncWithPriority
 } from "./process-priority.js";
 import { applyResourceProfile } from "./resource-profile.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
@@ -177,6 +194,11 @@ export interface KoedServerStartOptions {
   provisionLocalApiToken?: typeof provisionLocalApiToken;
   signal?: AbortSignal;
   desktopRuntimeCapability?: DesktopRuntimeCapability;
+  admission?: ControlPlaneAdmission;
+  persistGenerationBeforeEffects?: (
+    generationId: string
+  ) => void | Promise<void>;
+  onCleanupOutcome?: (outcome: { clean: boolean }) => void;
   /** Private supervisor status readers may use the effective service credentials. */
   onReady?: (serviceEnvironment: NodeJS.ProcessEnv) => void;
 }
@@ -820,6 +842,8 @@ const createManagedProcessMonitor = (
 ): {
   watch: (name: string, child: ChildProcess) => void;
   result: Promise<void>;
+  readonly failure: Error | undefined;
+  expectStop: (child: ChildProcess) => void;
   dispose: () => void;
 } => {
   const expectedSignals = new Set(
@@ -838,7 +862,9 @@ const createManagedProcessMonitor = (
     resolveResult = resolvePromise;
     rejectResult = rejectPromise;
   });
+  const stopping = new WeakSet<ChildProcess>();
   let settled = false;
+  let failure: Error | undefined;
   const dispose = () => {
     for (const [child, listener] of listeners) {
       child.off("exit", listener.exit);
@@ -849,6 +875,7 @@ const createManagedProcessMonitor = (
   const settle = (error?: Error) => {
     if (settled) return;
     settled = true;
+    failure = error;
     dispose();
     if (error) rejectResult(error);
     else resolveResult();
@@ -878,8 +905,14 @@ const createManagedProcessMonitor = (
         return;
       }
       const listener = {
-        exit: (code: number | null, signal: NodeJS.Signals | null) =>
-          recordExit(name, code, signal),
+        exit: (code: number | null, signal: NodeJS.Signals | null) => {
+          if (
+            stopping.has(child) &&
+            (code === 0 || signal === "SIGTERM" || signal === "SIGKILL")
+          )
+            return;
+          recordExit(name, code, signal);
+        },
         error: (error: Error) =>
           settle(
             new Error(
@@ -895,6 +928,12 @@ const createManagedProcessMonitor = (
       child.once("error", listener.error);
     },
     result,
+    expectStop: (child) => {
+      stopping.add(child);
+    },
+    get failure() {
+      return failure;
+    },
     dispose
   };
 };
@@ -912,25 +951,60 @@ export const waitForManagedProcessExits = (
   return monitor.result;
 };
 
-export const startKoedServer = async ({
-  environment = process.env,
-  pollIntervalMs = 500,
-  timeoutMs = 180_000,
-  spawnSync = nodeSpawnSync as SpawnSyncLike,
-  spawn = nodeSpawn as SpawnLike,
-  collectStatus = collectKoedServerStartupStatus,
-  provisionLocalApiToken:
-    provisionLocalApiTokenDependency = provisionLocalApiToken,
-  signal,
-  desktopRuntimeCapability,
-  onReady
-}: KoedServerStartOptions = {}): Promise<void> => {
+export class StartupCancellationError extends Error {
+  constructor(
+    message = "Koed startup was stopped before readiness.",
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = "StartupCancellationError";
+  }
+}
+
+export const startKoedServer = async (
+  options: KoedServerStartOptions = {}
+): Promise<void> => {
+  if (options.signal?.aborted) throw new StartupCancellationError();
+  if (!options.admission) return startKoedServerInternal(options);
+  const session = beginControlPlaneSession(options.admission);
+  const outcome = { clean: false };
+  try {
+    await startKoedServerInternal(options, outcome);
+  } finally {
+    endControlPlaneSession(options.admission, session, outcome.clean);
+    options.onCleanupOutcome?.(outcome);
+  }
+};
+
+const startKoedServerInternal = async (
+  {
+    environment = process.env,
+    pollIntervalMs = 500,
+    timeoutMs = 180_000,
+    spawnSync = nodeSpawnSync as SpawnSyncLike,
+    spawn = nodeSpawn as SpawnLike,
+    collectStatus = collectKoedServerStartupStatus,
+    provisionLocalApiToken:
+      provisionLocalApiTokenDependency = provisionLocalApiToken,
+    signal,
+    desktopRuntimeCapability,
+    admission,
+    persistGenerationBeforeEffects,
+    onReady
+  }: KoedServerStartOptions = {},
+  outcome?: { clean: boolean }
+): Promise<void> => {
   if (
     desktopRuntimeCapability !== undefined &&
     !validateDesktopRuntimeCapability(desktopRuntimeCapability)
   ) {
     throw new Error("validated private Desktop runtime capability is required");
   }
+  let shutdownPending = false;
+  const assertStartupActive = (): void => {
+    if (signal?.aborted || shutdownPending)
+      throw new StartupCancellationError();
+  };
   const requestedEnvironment = environment;
   const startupId = randomBytes(12).toString("hex");
   const startupStartedAt = process.hrtime.bigint();
@@ -980,16 +1054,45 @@ export const startKoedServer = async ({
       );
     if (!runtimeOwnedBy(existing, owner)) throw new Error(ownerMismatchMessage);
   };
-  assertObservedOwner(observeRuntimeLifecycle(paths));
+  if (admission) {
+    assertControlPlaneAdmission(admission, paths);
+    let priorEvidence = false;
+    for (const path of [
+      paths.runtimeStatePath,
+      paths.generationStatePath ??
+        resolve(paths.runDir, "runtime-generation.json")
+    ]) {
+      try {
+        const stat = lstatSync(path);
+        if (!stat.isFile() || stat.isSymbolicLink())
+          throw new Error("Invalid runtime evidence path");
+        priorEvidence = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    try {
+      assertPriorRuntimeRecordDead(paths.runtimeStatePath);
+    } catch (error) {
+      throw new Error("Existing runtime evidence requires Operator attention", {
+        cause: error
+      });
+    }
+    if (outcome) outcome.clean = !priorEvidence;
+  } else {
+    assertObservedOwner(observeRuntimeLifecycle(paths));
+  }
 
   ensureKoedHome(paths);
-  const supervisorLock = acquireKoedServerSupervisorLock(paths, {
-    ...(execution === "source"
-      ? { sourceOwner: resolveKoedRuntimeOwner() }
-      : {}),
-    exclusive: (action) => withLifecycleLock(paths, action)
-  });
-  if (!supervisorLock.acquired) {
+  const supervisorLock = admission
+    ? null
+    : acquireKoedServerSupervisorLock(paths, {
+        ...(execution === "source"
+          ? { sourceOwner: resolveKoedRuntimeOwner() }
+          : {}),
+        exclusive: (action) => withLifecycleLock(paths, action)
+      });
+  if (supervisorLock && !supervisorLock.acquired) {
     assertObservedOwner(observeRuntimeLifecycle(paths));
     console.log(
       JSON.stringify(
@@ -1012,7 +1115,7 @@ export const startKoedServer = async ({
   let cleanupStarted = false;
   let startupPhase = "post-lock initialization";
   const releaseSupervisorLock = (): void => {
-    if (supervisorLockReleased) return;
+    if (supervisorLockReleased || !supervisorLock) return;
     supervisorLockReleased = true;
     releaseKoedServerSupervisorLock(supervisorLock);
   };
@@ -1027,7 +1130,7 @@ export const startKoedServer = async ({
         throw error;
       }
     };
-    if (execution === "source") {
+    if (execution === "source" && !admission) {
       startupPhase = "stale generation pin cleanup";
       await initializeUnderSupervisorLock(() => {
         removeStaleGenerationPin(paths);
@@ -1157,6 +1260,7 @@ export const startKoedServer = async ({
     ];
     const childEnv = initialServiceEnv;
 
+    assertStartupActive();
     if (execution === "source") {
       startupPhase = "source environment preparation";
       runCommand(
@@ -1234,6 +1338,7 @@ export const startKoedServer = async ({
       | undefined;
     let cleanupPromise: Promise<void> | undefined;
     let cleanupCompleted = false;
+    let startupFailure: Error | undefined;
     const cleanupStartedResources = (): Promise<void> => {
       cleanupStarted = true;
       if (cleanupPromise) return cleanupPromise;
@@ -1255,8 +1360,10 @@ export const startKoedServer = async ({
         ];
         for (const name of shutdownOrder) {
           try {
+            const child = managedChildren[name];
+            if (child) managedProcessMonitor.expectStop(child);
             await stopChildProcess(
-              managedChildren[name],
+              child,
               5_000,
               name,
               name === "embeddingService" &&
@@ -1287,7 +1394,8 @@ export const startKoedServer = async ({
         }
         if (startedNativePostgres) {
           const stopped = stopLocalPostgresRuntime(paths, refreshedEnv, {
-            spawnSync
+            spawnSync,
+            requireInitialized: Boolean(admission)
           });
           startedNativePostgres = false;
           if (!stopped.ok) {
@@ -1303,7 +1411,10 @@ export const startKoedServer = async ({
     };
     let requestShutdown: () => void = () => undefined;
     const shutdownRequested = new Promise<void>((resolveShutdown) => {
-      requestShutdown = resolveShutdown;
+      requestShutdown = () => {
+        shutdownPending = true;
+        resolveShutdown();
+      };
     });
     const waitForStartupReadiness = async (
       isReady?: (
@@ -1317,8 +1428,11 @@ export const startKoedServer = async ({
         managedProcessOutcome.then(({ error }) => {
           throw error ?? new Error("Managed processes stopped during startup.");
         }),
-        shutdownRequested.then(() => {
-          throw new Error("Koed startup was stopped before readiness.");
+        shutdownRequested.then(async () => {
+          // Let failures already queued by a child or probe surface before
+          // cancelling a probe that may otherwise never finish.
+          await nextTurn();
+          throw new StartupCancellationError();
         })
       ]);
       try {
@@ -1354,17 +1468,33 @@ export const startKoedServer = async ({
     };
     if (signal?.aborted) requestShutdown();
     else signal?.addEventListener("abort", shutdown, { once: true });
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
-    // Closing the terminal must also stop the Embedding Service, which runs in
-    // its own process group and does not receive the terminal's hangup.
-    process.on("SIGHUP", shutdown);
+    if (!admission) {
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+      // Closing the terminal must also stop the Embedding Service, which runs in
+      // its own process group and does not receive the terminal's hangup.
+      process.on("SIGHUP", shutdown);
+    }
 
     const stopSupervisorLogMaintenance = maintainSupervisorLog(refreshedEnv);
     let sourceRuntimeLeaseAcquired = false;
     let startupReady = false;
+    let pinPublicationUncertain = false;
+    let cleanupEvidenceUncertain = false;
     try {
+      assertStartupActive();
+      if (outcome) outcome.clean = false;
       startupPhase = "authenticated runtime selection";
+      if (
+        admission &&
+        existsSync(
+          paths.generationStatePath ??
+            resolve(paths.runDir, "runtime-generation.json")
+        )
+      ) {
+        await reclaimPriorGenerationPinForStart(paths, admission);
+        assertStartupActive();
+      }
       if (execution === "packaged") {
         const selected = await pinAndResolvePackagedRuntime(
           paths,
@@ -1374,7 +1504,16 @@ export const startKoedServer = async ({
           desktopRuntimeCapability
         );
         generationPin = selected.pin;
+        assertStartupActive();
         appRuntime = selected.runtime;
+        if (admission) {
+          if (!persistGenerationBeforeEffects)
+            throw new Error(
+              "Control-plane generation persistence callback is required"
+            );
+          await persistGenerationBeforeEffects(generationPin.generation.id);
+        }
+        assertStartupActive();
       } else {
         appRuntime = resolveKoedAppRuntime(
           paths,
@@ -1425,14 +1564,37 @@ export const startKoedServer = async ({
       }
 
       startupPhase = "service dependency validation and startup";
-      // Local runtimes share the machine with the user's foreground apps.
-      // Server deployments keep normal priority.
+      // Keep the long-lived control plane at its priority; managed services
+      // inherit their background priority from a launch-only exec wrapper.
+      let serviceSpawn = spawn;
+      let postgresStartSpawnSync = spawnSync;
       if (config.runtimeMode !== "external") {
-        const priority = lowerBackgroundServicePriority(refreshedEnv);
-        if (priority.applied)
-          console.log(
-            `Koed background services run at nice ${priority.priority} (${BACKGROUND_NICE_ENV}).`
-          );
+        if (admission) {
+          if (process.platform !== "darwin")
+            throw new Error(
+              "Detached control-plane priority is only supported on macOS"
+            );
+          const [command, ...prefix] =
+            resolveManagedPriorityPrefix(refreshedEnv);
+          if (command) {
+            serviceSpawn = (target, args, options) =>
+              spawn(command, [...prefix, target, ...args], options);
+            postgresStartSpawnSync = (target, args, options) =>
+              spawnSyncWithPriority(
+                spawnSync,
+                [command, ...prefix],
+                target,
+                args,
+                options
+              );
+          }
+        } else {
+          const priority = lowerBackgroundServicePriority(refreshedEnv);
+          if (priority.applied)
+            console.log(
+              `Koed background services run at nice ${priority.priority} (${BACKGROUND_NICE_ENV}).`
+            );
+        }
       }
       if (config.dependencyMode === "external") {
         const queueBackend = requiredRuntime.queue;
@@ -1475,9 +1637,11 @@ export const startKoedServer = async ({
         }
       }
 
+      assertStartupActive();
       if (useBundledLocalDependencies) {
         const result = startLocalPostgresRuntime(paths, refreshedEnv, {
-          spawnSync
+          spawnSync,
+          startSpawnSync: postgresStartSpawnSync
         });
         Object.assign(refreshedEnv, result.env);
         startedNativePostgres = result.started;
@@ -1489,9 +1653,10 @@ export const startKoedServer = async ({
         emitStartupMilestone("local_postgres_start_complete");
       }
 
+      assertStartupActive();
       if (useBundledLocalDependencies && teamCollaborationEnabled) {
         const result = await startLocalPrivacyRuntime(paths, refreshedEnv, {
-          spawn,
+          spawn: serviceSpawn,
           appRuntime
         });
         Object.assign(refreshedEnv, result.env);
@@ -1507,11 +1672,12 @@ export const startKoedServer = async ({
         emitStartupMilestone("privacy_filter_process_spawned");
       }
 
+      assertStartupActive();
       if (useBundledLocalDependencies) {
         const result = startLocalEmbeddingRuntime(
           paths,
           appProcessEnvironment(refreshedEnv),
-          { spawn, appRuntime }
+          { spawn: serviceSpawn, appRuntime }
         );
         Object.assign(refreshedEnv, result.env);
         nativeEmbeddingProcess = result.process;
@@ -1526,6 +1692,7 @@ export const startKoedServer = async ({
         emitStartupMilestone("embedding_service_process_spawned");
       }
 
+      assertStartupActive();
       const api =
         appRuntime.kind === "packaged"
           ? spawnManagedProcess(
@@ -1534,7 +1701,7 @@ export const startKoedServer = async ({
               process.execPath,
               [appRuntime.apiEntry],
               appProcessEnvironment(refreshedEnv),
-              spawn,
+              serviceSpawn,
               resolve(appRuntime.root, "api")
             )
           : spawnManagedProcess(
@@ -1543,7 +1710,7 @@ export const startKoedServer = async ({
               process.execPath,
               [resolve(paths.repoRoot, "apps/api/dist/index.js")],
               appProcessEnvironment(refreshedEnv),
-              spawn,
+              serviceSpawn,
               resolve(paths.repoRoot, "apps/api")
             );
       manageChild("api", api);
@@ -1609,6 +1776,7 @@ export const startKoedServer = async ({
           `API and database did not become ready before local credential provisioning. Blocking checks: ${startupBlockingSummary(status, ["api", "database"])}. Inspect /ready and koed status --json for details.`
         );
       }
+      assertStartupActive();
       emitStartupMilestone("api_and_database_ready");
       if (desktopManagedLocal) {
         const desktopApiToken = await provisionDesktopApiToken(
@@ -1637,6 +1805,7 @@ export const startKoedServer = async ({
         emitStartupMilestone("packaged_personal_credential_provisioned");
       }
 
+      assertStartupActive();
       const finalApiToken = resolveActiveIntegrationApiToken(
         paths,
         refreshedEnv,
@@ -1672,7 +1841,7 @@ export const startKoedServer = async ({
               config.piTranscriptWatcherEnabled
             )
           },
-          spawn,
+          serviceSpawn,
           appRuntime.kind === "packaged"
             ? resolve(appRuntime.root, "mcp-server")
             : resolve(paths.repoRoot, "packages", "mcp-server")
@@ -1689,7 +1858,7 @@ export const startKoedServer = async ({
               process.execPath,
               [appRuntime.workerEntry],
               appProcessEnvironment(refreshedEnv),
-              spawn,
+              serviceSpawn,
               resolve(appRuntime.root, "worker")
             )
           : spawnManagedProcess(
@@ -1698,7 +1867,7 @@ export const startKoedServer = async ({
               process.execPath,
               [resolve(paths.repoRoot, "apps/worker/dist/index.js")],
               appProcessEnvironment(refreshedEnv),
-              spawn,
+              serviceSpawn,
               resolve(paths.repoRoot, "apps/worker")
             );
       manageChild("worker", worker);
@@ -1761,6 +1930,7 @@ export const startKoedServer = async ({
           `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed status --json for details.`
         );
       }
+      assertStartupActive();
       if (localAiRuntimeEnabled) {
         stopCapabilityMaintenance = maintainUpstreamCapabilities(paths, {
           onError: () =>
@@ -1783,17 +1953,30 @@ export const startKoedServer = async ({
         })
       ]);
       await cleanupStartedResources();
+      if (managedProcessMonitor.failure) throw managedProcessMonitor.failure;
     } catch (error) {
+      const failure = () =>
+        error instanceof StartupCancellationError
+          ? (managedProcessMonitor.failure ?? error)
+          : error;
+      if (error instanceof RuntimePinPublicationError)
+        pinPublicationUncertain = true;
       if (!startupReady) emitStartupMilestone("startup_failed");
       try {
         await cleanupStartedResources();
+        const original = failure();
+        startupFailure =
+          original instanceof Error
+            ? original
+            : new Error(String(original), { cause: original });
       } catch (cleanupError) {
-        throw new Error(
-          `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        const original = failure();
+        startupFailure = new AggregateError(
+          [original, cleanupError],
+          `${original instanceof Error ? original.message : String(original)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
           { cause: cleanupError }
         );
       }
-      throw error;
     } finally {
       stopCapabilityMaintenance();
       stopSupervisorExitMonitor();
@@ -1803,20 +1986,27 @@ export const startKoedServer = async ({
       process.off("SIGHUP", shutdown);
       signal?.removeEventListener("abort", shutdown);
       managedProcessMonitor.dispose();
-      if (runtimeStateWritten) {
+      if (runtimeStateWritten && cleanupCompleted) {
         try {
-          removeOwnedRuntimeState(paths.runtimeStatePath, {
-            pid: process.pid,
-            startedAt: supervisorStartedAt
-          });
+          if (
+            !removeOwnedRuntimeState(paths.runtimeStatePath, {
+              pid: process.pid,
+              startedAt: supervisorStartedAt
+            })
+          ) {
+            cleanupEvidenceUncertain = true;
+            console.warn(
+              "Could not clear runtime state: ownership changed during startup or shutdown."
+            );
+          }
         } catch (error) {
-          // Release the supervisor's other resources even if this record needs cleanup.
+          cleanupEvidenceUncertain = true;
           console.warn(
             `Could not clear runtime state: ${error instanceof Error ? error.message : String(error)}`
           );
         }
       }
-      if (sourceRuntimeLeaseAcquired) {
+      if (sourceRuntimeLeaseAcquired && cleanupCompleted) {
         try {
           const releaseResult = spawnSync(
             process.execPath,
@@ -1833,21 +2023,35 @@ export const startKoedServer = async ({
             }
           );
           if (releaseResult.error || releaseResult.status !== 0) {
+            cleanupEvidenceUncertain = true;
             console.warn(
               `Could not release the source-runtime lease: ${releaseResult.error?.message ?? `exit code ${releaseResult.status ?? 1}`}.`
             );
           }
         } catch (error) {
+          cleanupEvidenceUncertain = true;
           console.warn(
             `Could not release the source-runtime lease: ${error instanceof Error ? error.message : String(error)}.`
           );
         }
       }
-      if (cleanupCompleted) {
+      if (cleanupCompleted && !pinPublicationUncertain) {
         try {
           await generationPin?.release();
-        } finally {
-          releaseSupervisorLock();
+          if (!cleanupEvidenceUncertain || !admission) releaseSupervisorLock();
+          if (outcome) outcome.clean = !cleanupEvidenceUncertain;
+        } catch (error) {
+          const release =
+            error instanceof Error ? error.message : String(error);
+          startupFailure = startupFailure
+            ? new AggregateError(
+                [startupFailure, error],
+                `${startupFailure.message} Cleanup failed: ${release}`,
+                { cause: error }
+              )
+            : error instanceof Error
+              ? error
+              : new Error(release, { cause: error });
         }
       } else {
         console.error(
@@ -1855,11 +2059,12 @@ export const startKoedServer = async ({
         );
       }
     }
+    if (startupFailure) throw startupFailure;
   } catch (error) {
-    throw new Error(
-      `${startupPhase} failed: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error }
-    );
+    const message = `${startupPhase} failed: ${error instanceof Error ? error.message : String(error)}`;
+    if (error instanceof StartupCancellationError)
+      throw new StartupCancellationError(message, { cause: error });
+    throw new Error(message, { cause: error });
   } finally {
     if (!cleanupStarted) releaseSupervisorLock();
   }

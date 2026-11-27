@@ -13,7 +13,8 @@ import {
   localPostgresEnv,
   resolveBundledPostgresMode,
   resolveLocalPostgresRuntimePaths,
-  startLocalPostgresRuntime
+  startLocalPostgresRuntime,
+  stopLocalPostgresRuntime
 } from "./local-postgres-runtime.js";
 import type { KoedServerPaths } from "./paths.js";
 
@@ -184,7 +185,7 @@ describe("local Postgres runtime", () => {
         spawnSync: (command, args) => {
           commands.push({ command, args });
           if (command.endsWith("pg_ctl") && args.includes("status")) {
-            return spawnResult(1, "not running");
+            return spawnResult(3, "not running");
           }
           return spawnResult();
         }
@@ -221,6 +222,87 @@ describe("local Postgres runtime", () => {
       "CREATE EXTENSION IF NOT EXISTS vector"
     );
     expect(result.status.paths).not.toHaveProperty("password");
+  });
+
+  it("uses the service launch function only for pg_ctl start", () => {
+    const root = tempDir();
+    const bin = resolve(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const direct: string[] = [];
+    const launched: string[] = [];
+    const result = startLocalPostgresRuntime(
+      paths(root),
+      { KOED_POSTGRES_BIN_DIR: bin },
+      {
+        existsSync: (path) => !String(path).endsWith("PG_VERSION"),
+        spawnSync: (command, args) => {
+          direct.push(`${command}:${args[0]}`);
+          return command.endsWith("pg_ctl") && args[0] === "status"
+            ? spawnResult(3, "not running")
+            : spawnResult();
+        },
+        startSpawnSync: (command, args) => {
+          launched.push(`${command}:${args[0]}`);
+          return spawnResult();
+        }
+      }
+    );
+    expect(result.ok).toBe(true);
+    expect(launched).toEqual([`${resolve(bin, "pg_ctl")}:start`]);
+    expect(direct.some((entry) => entry.endsWith("pg_ctl:start"))).toBe(false);
+    expect(direct.some((entry) => entry.endsWith("pg_ctl:status"))).toBe(true);
+  });
+
+  it("does not start another Postgres when its status probe fails", () => {
+    const root = tempDir();
+    const calls: string[] = [];
+    const result = startLocalPostgresRuntime(
+      paths(root),
+      {},
+      {
+        existsSync: () => true,
+        spawnSync: (command, args) => {
+          calls.push(`${command}:${args[0]}`);
+          return args[0] === "status"
+            ? Object.assign(spawnResult(1, "denied"), {
+                error: new Error("denied")
+              })
+            : spawnResult();
+        }
+      }
+    );
+    expect(result.ok).toBe(false);
+    expect(calls.some((call) => call.endsWith("pg_ctl:start"))).toBe(false);
+  });
+
+  it("does not report confirmed shutdown when the Postgres status probe fails", () => {
+    const root = tempDir();
+    const result = stopLocalPostgresRuntime(
+      paths(root),
+      {},
+      {
+        existsSync: () => true,
+        spawnSync: () =>
+          Object.assign(spawnResult(1, "permission denied"), {
+            error: Object.assign(new Error("denied"), { code: "EACCES" })
+          })
+      }
+    );
+    expect(result.ok).toBe(false);
+    expect(result.stopped).toBe(false);
+  });
+
+  it("does not treat missing database evidence as clean when it was started by this runtime", () => {
+    const root = tempDir();
+    const result = stopLocalPostgresRuntime(
+      paths(root),
+      {},
+      {
+        existsSync: (path) => !String(path).endsWith("PG_VERSION"),
+        requireInitialized: true
+      }
+    );
+    expect(result.ok).toBe(false);
   });
 
   it("reports running status when pg_ctl status succeeds", () => {

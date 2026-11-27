@@ -1,0 +1,121 @@
+import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { URL } from "node:url";
+import {
+  createNativeBuildPlan,
+  validateSigningTeam
+} from "./build-background-agent-native-lib.mjs";
+
+test("keeps the GYP file out of the package root to prevent implicit installs", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8")
+  );
+
+  assert.equal(packageJson.scripts.install, undefined);
+  assert.equal(packageJson.scripts.preinstall, undefined);
+  assert.equal(existsSync(new URL("../binding.gyp", import.meta.url)), false);
+  assert.equal(
+    existsSync(
+      new URL("../src/background-agent/native/binding.gyp", import.meta.url)
+    ),
+    true
+  );
+});
+
+test("does not compile the macOS XPC module for other host platforms", () => {
+  assert.equal(
+    createNativeBuildPlan({
+      platform: "linux",
+      electronVersion: "45.2.3",
+      arch: "x64",
+      desktopRoot: "/repo/apps/desktop"
+    }),
+    undefined
+  );
+});
+
+test("targets the installed Electron ABI and copies to the Electron output tree", () => {
+  assert.deepEqual(
+    createNativeBuildPlan({
+      platform: "darwin",
+      electronVersion: "45.2.3",
+      arch: "arm64",
+      desktopRoot: "/repo/apps/desktop"
+    }),
+    {
+      configureArgs: [
+        "configure",
+        "--target=45.2.3",
+        "--dist-url=https://electronjs.org/headers",
+        "--arch=arm64"
+      ],
+      buildArgs: ["build"],
+      desktopRoot: "/repo/apps/desktop",
+      buildRoot: "/repo/scratch/macos-background-native-build",
+      sourcePath:
+        "/repo/scratch/macos-background-native-build/build/Release/koed_background_xpc.node",
+      destinationPath:
+        "/repo/apps/desktop/dist-electron/background-agent/native/koed_background_xpc.node"
+    }
+  );
+});
+
+test("stages and links native local-control sources and security frameworks", async () => {
+  const script = await readFile(
+    new URL("./build-background-agent-native.mjs", import.meta.url),
+    "utf8"
+  );
+  const binding = await readFile(
+    new URL("../src/background-agent/native/binding.gyp", import.meta.url),
+    "utf8"
+  );
+  assert.match(script, /local-control\.mm/u);
+  assert.match(script, /local-control\.h/u);
+  assert.match(script, /control-frame\.cc/u);
+  assert.match(script, /control-frame\.h/u);
+  assert.match(script, /control-socket\.mm/u);
+  assert.match(script, /control-socket\.h/u);
+  assert.match(script, /control-stream\.cc/u);
+  assert.match(script, /control-stream\.h/u);
+  assert.match(script, /control-node\.mm/u);
+  assert.match(script, /control-node\.h/u);
+  assert.match(binding, /local-control\.mm/u);
+  assert.match(binding, /control-frame\.cc/u);
+  assert.match(binding, /control-socket\.mm/u);
+  assert.match(binding, /control-stream\.cc/u);
+  assert.match(binding, /control-node\.mm/u);
+  assert.match(binding, /-framework Security/u);
+  assert.match(binding, /-lbsm/u);
+});
+
+test("release-mode native build requires a valid signing team", () => {
+  assert.throws(() => validateSigningTeam(undefined, true), /required/u);
+  assert.throws(() => validateSigningTeam("bad", true), /10-character/u);
+  assert.doesNotThrow(() => validateSigningTeam("ABCDEFGHIJ", true));
+  assert.doesNotThrow(() => validateSigningTeam(undefined, false));
+});
+
+test("rejects unsupported Electron versions and architectures", () => {
+  assert.throws(
+    () =>
+      createNativeBuildPlan({
+        platform: "darwin",
+        electronVersion: "45.x",
+        arch: "arm64",
+        desktopRoot: "/repo/apps/desktop"
+      }),
+    /Electron version must be an exact version/u
+  );
+  assert.throws(
+    () =>
+      createNativeBuildPlan({
+        platform: "darwin",
+        electronVersion: "45.2.3",
+        arch: "universal",
+        desktopRoot: "/repo/apps/desktop"
+      }),
+    /architecture must be arm64 or x64/u
+  );
+});

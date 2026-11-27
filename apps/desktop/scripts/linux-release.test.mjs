@@ -367,6 +367,7 @@ test("actual Linux staging preserves frozen manifest bytes and guard rejects tam
   );
   for (const name of [
     "prepare-koed-runtime.mjs",
+    "stage-local-control.mjs",
     "validate-linux-release.mjs",
     "finalize-runtime-manifests.mjs",
     "privacy-payload-inventory.mjs"
@@ -376,6 +377,11 @@ test("actual Linux staging preserves frozen manifest bytes and guard rejects tam
   cpSync(
     join(desktop, "package.json"),
     join(repo, "apps/desktop/package.json")
+  );
+  // The synthetic macOS staging case needs a fixture addon, not a native build.
+  writeFileSync(
+    join(scripts, "build-background-agent-native.mjs"),
+    `import { mkdirSync, writeFileSync } from "node:fs";\nimport { resolve } from "node:path";\nconst dir = resolve(import.meta.dirname, "../dist-electron/background-agent/native");\nmkdirSync(dir, { recursive: true });\nwriteFileSync(resolve(dir, "koed_background_xpc.node"), "fixture");\n`
   );
   const required = [
     "api/dist/index.js",

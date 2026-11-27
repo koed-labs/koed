@@ -552,7 +552,8 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
             manifest.name,
             file,
             edge,
-            closure
+            closure,
+            packageRoot
           );
           if (policy?.error) unresolved.push(detail + ": " + policy.error);
           else if (policy)
@@ -588,7 +589,8 @@ const unresolvedRuntimeEdges = (sourceRoot, closure) => {
             manifest.name,
             file,
             edge,
-            closure
+            closure,
+            packageRoot
           );
           if (policy) {
             known.push({ detail, ...policy });

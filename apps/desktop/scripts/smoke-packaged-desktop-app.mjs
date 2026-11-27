@@ -52,6 +52,7 @@ export const parseArgs = (argv) => {
     json: false,
     build: false,
     missingAssets: false,
+    expectControlPolicyUnavailable: false,
     maskNativeAssets: false,
     skipRendererFaults: false,
     verifyAcceleration: false,
@@ -74,6 +75,10 @@ export const parseArgs = (argv) => {
     }
     if (value === "--missing-assets") {
       options.missingAssets = true;
+      continue;
+    }
+    if (value === "--expect-control-policy-unavailable") {
+      options.expectControlPolicyUnavailable = true;
       continue;
     }
     if (value === "--mask-native-assets") {
@@ -151,6 +156,18 @@ export const parseArgs = (argv) => {
   if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs <= 0) {
     throw new Error("--poll-interval-ms must be a positive integer.");
   }
+  if (
+    options.expectControlPolicyUnavailable &&
+    (options.missingAssets ||
+      options.appImage ||
+      options.verifyAcceleration ||
+      options.embeddingModelSource ||
+      options.exportEmbeddingModel)
+  ) {
+    throw new Error(
+      "--expect-control-policy-unavailable conflicts with runtime smoke options."
+    );
+  }
   if (options.appImageDirect && !options.appImage)
     throw new Error("--appimage-direct requires --appimage.");
   if (options.appImageDirect && options.missingAssets)
@@ -166,6 +183,7 @@ export const parseArgs = (argv) => {
 const usage = `Usage: pnpm desktop:package:smoke -- [options]
 
 Options:
+  --expect-control-policy-unavailable  Verify an ad-hoc macOS package refuses control-plane startup
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
   --appimage <path>         Extract and smoke this exact trusted AppImage
@@ -538,6 +556,232 @@ const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? ""
   };
+};
+
+export const assertDetachedControlStart = (result, expectedInstance) => {
+  const snapshot = result?.snapshot;
+  if (
+    result?.ok !== true ||
+    !["starting", "ready"].includes(snapshot?.state) ||
+    snapshot.stopIntent !== false ||
+    typeof snapshot.instanceId !== "string" ||
+    !snapshot.instanceId ||
+    (expectedInstance && snapshot.instanceId !== expectedInstance)
+  ) {
+    throw new Error(
+      "Detached control plane did not acknowledge the expected runtime start."
+    );
+  }
+  return snapshot.instanceId;
+};
+
+export const assertDetachedControlStop = (result, expectedInstance) => {
+  const snapshot = result?.snapshot;
+  if (
+    result?.ok !== true ||
+    result.state !== "stopped" ||
+    snapshot?.state !== "stopped" ||
+    snapshot.stopIntent !== true ||
+    typeof expectedInstance !== "string" ||
+    !expectedInstance ||
+    snapshot.instanceId !== expectedInstance
+  ) {
+    throw new Error(
+      "Detached control plane did not confirm the expected durable stop."
+    );
+  }
+};
+
+export const verifyControlSmokeHost = (
+  discovery,
+  lock,
+  processIdentity,
+  instanceId
+) => {
+  if (
+    !discovery ||
+    !lock ||
+    !Number.isSafeInteger(discovery.pid) ||
+    discovery.pid <= 0 ||
+    typeof instanceId !== "string" ||
+    !instanceId ||
+    discovery.instanceId !== instanceId ||
+    lock.pid !== discovery.pid ||
+    lock.processIdentity !== discovery.processIdentity ||
+    !processIdentity ||
+    processIdentity !== discovery.processIdentity
+  ) {
+    throw new Error(
+      "Packaged control-plane discovery owner cannot be verified."
+    );
+  }
+  return discovery.pid;
+};
+
+const readVerifiedControlSmokeHost = async (koedHome, instanceId) => {
+  const [
+    { resolveKoedServerPaths },
+    { readControlDiscovery },
+    { readSupervisorLock, resolveProcessIdentity }
+  ] = await Promise.all([
+    import("../../../packages/koed-server/dist/paths.js"),
+    import("../../../packages/koed-server/dist/control-plane/discovery.js"),
+    import("../../../packages/koed-server/dist/supervisor-lock.js")
+  ]);
+  const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
+  const read = () => {
+    const discovery = readControlDiscovery(paths);
+    const lock = readSupervisorLock(resolve(paths.runDir, "koed-server.lock"));
+    const pid = verifyControlSmokeHost(
+      discovery,
+      lock,
+      discovery && resolveProcessIdentity(discovery.pid),
+      instanceId ?? discovery?.instanceId
+    );
+    return { pid, instanceId: discovery.instanceId };
+  };
+  const initial = read();
+  return {
+    ...initial,
+    isAlive: () => {
+      try {
+        const current = read();
+        return (
+          current.pid === initial.pid &&
+          current.instanceId === initial.instanceId
+        );
+      } catch {
+        return false;
+      }
+    }
+  };
+};
+
+export const cleanupSmokeControlHost = async ({
+  owner,
+  resolveIdentity,
+  isRunning,
+  signal,
+  sleep,
+  attempts = 30
+}) => {
+  if (!owner || !owner.identity) return false;
+  for (const sig of ["SIGTERM", "SIGKILL"]) {
+    if (!isRunning(owner.pid)) return true;
+    if (resolveIdentity(owner.pid) !== owner.identity) return false;
+    try {
+      signal(owner.pid, sig);
+    } catch {
+      if (isRunning(owner.pid)) return false;
+    }
+    for (let i = 0; i < attempts; i += 1) {
+      if (!isRunning(owner.pid)) return true;
+      if (resolveIdentity(owner.pid) !== owner.identity) return false;
+      await sleep(1_000);
+    }
+  }
+  return !isRunning(owner.pid);
+};
+
+export const smokeProcessMayBeRunning = (
+  pid,
+  probe = (value) => process.kill(value, 0)
+) => {
+  try {
+    probe(pid);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+};
+
+const stopDetachedSmokeRuntime = async (desktop, koedHome) => {
+  let expectedInstance;
+  try {
+    expectedInstance = (await readVerifiedControlSmokeHost(koedHome))
+      .instanceId;
+  } catch {
+    // An offline Stop can still establish clean state when there is no live host.
+  }
+  const result = await desktop.invoke("stop");
+  if (result?.snapshot) {
+    assertDetachedControlStop(result, expectedInstance);
+    return true;
+  }
+  return !expectedInstance && result?.ok === true && result.state === "stopped";
+};
+
+export const cleanupSmokeHomeAfterStop = async (
+  stopped,
+  cleanup,
+  confirmOffline = async () => false
+) => {
+  const cleaned = await cleanup();
+  return cleaned && (stopped || (await confirmOffline()));
+};
+
+const confirmOfflineSmokeStop = (layout, koedHome) => {
+  const entrypoint = resolve(
+    layout.appAsarPath,
+    "node_modules/@koed-labs/server/dist/desktop-cli-entrypoint.js"
+  );
+  const result = spawnSync(
+    layout.executable,
+    [layout.runner, "node-script", entrypoint, "stop", "--json"],
+    {
+      cwd: layout.resourcesPath,
+      env: createSmokeEnv(koedHome),
+      encoding: "utf8",
+      timeout: 30_000
+    }
+  );
+  if (result.error || result.status !== 0) return false;
+  try {
+    const value = JSON.parse(result.stdout);
+    return value?.ok === true && value.state === "stopped" && !value.snapshot;
+  } catch {
+    return false;
+  }
+};
+
+const cleanupDetachedSmokeHome = async (koedHome) => {
+  const [
+    { resolveKoedServerPaths },
+    { readSupervisorLock, resolveProcessIdentity }
+  ] = await Promise.all([
+    import("../../../packages/koed-server/dist/paths.js"),
+    import("../../../packages/koed-server/dist/supervisor-lock.js")
+  ]);
+  const lockPath = resolve(
+    resolveKoedServerPaths({ KOED_HOME: koedHome }).runDir,
+    "koed-server.lock"
+  );
+  const lock = readSupervisorLock(lockPath);
+  if (!lock) return !existsSync(lockPath);
+  if (!smokeProcessMayBeRunning(lock.pid)) return true;
+  return cleanupSmokeControlHost({
+    owner: { pid: lock.pid, identity: lock.processIdentity },
+    resolveIdentity: resolveProcessIdentity,
+    isRunning: smokeProcessMayBeRunning,
+    signal: (pid, sig) => process.kill(pid, sig),
+    sleep: (ms) => new Promise((done) => setTimeout(done, ms))
+  });
+};
+
+export const assertControlPolicyUnavailable = (result) => {
+  if (
+    result.error ||
+    result.signal ||
+    typeof result.status !== "number" ||
+    result.status === 0 ||
+    !/^Error: Local control signing policy unavailable\s*$/mu.test(
+      result.stderr ?? ""
+    )
+  ) {
+    throw new Error(
+      "Expected the packaged control plane to reject missing signing policy."
+    );
+  }
 };
 
 export const assertNoSourceCheckoutResolution = (label, payload) => {
@@ -1179,14 +1423,26 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   const startJson = parseJsonOutput("start --daemon --json", start.stdout);
   assertNoSourceCheckoutResolution("start --daemon --json", startJson);
-  if (startJson.ok === true && typeof startJson.startedPid === "number") {
-    options.daemonPids?.push(startJson.startedPid);
+  const detached = process.platform === "darwin";
+  let controlHost;
+  let instanceId;
+  let supervisorPid;
+  if (detached) {
+    instanceId = assertDetachedControlStart(startJson);
+    controlHost = await readVerifiedControlSmokeHost(koedHome, instanceId);
+    supervisorPid = controlHost.pid;
+  } else {
+    if (startJson.ok !== true || typeof startJson.startedPid !== "number") {
+      throw new Error(
+        `start --daemon --json did not include daemon start details: ${start.stdout}`
+      );
+    }
+    supervisorPid = startJson.startedPid;
+    options.daemonPids?.push(supervisorPid);
   }
-  if (startJson.ok !== true || typeof startJson.startedPid !== "number") {
-    throw new Error(
-      `start --daemon --json did not include daemon start details: ${start.stdout}`
-    );
-  }
+  const healthPoll = detached
+    ? { ...pollManager, isRunning: () => controlHost.isAlive() }
+    : pollManager;
 
   const firstStatus = await waitForHealthyStatus(
     {
@@ -1194,9 +1450,9 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       koedHome,
       timeoutMs: options.timeoutMs,
       pollIntervalMs: options.pollIntervalMs,
-      supervisorPid: startJson.startedPid
+      supervisorPid
     },
-    pollManager
+    healthPoll
   );
   finishPhase(timings, "first daemon start and health", phaseStarted);
 
@@ -1224,7 +1480,8 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     );
   }
   const { json: doctorJson } = await runSmokeDoctor({
-    isAlive: () => pidIsRunning(startJson.startedPid),
+    isAlive: () =>
+      detached ? controlHost.isAlive() : pidIsRunning(supervisorPid),
     run: async () => {
       const result = await managerCommand("doctor");
       const json = parseJsonOutput("doctor --json", result.stdout);
@@ -1238,10 +1495,10 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       koedHome,
       timeoutMs: options.timeoutMs,
       pollIntervalMs: options.pollIntervalMs,
-      supervisorPid: startJson.startedPid,
+      supervisorPid,
       requireClientIntegration: true
     },
-    pollManager
+    healthPoll
   );
   finishPhase(timings, "packaged core and Codex setup", phaseStarted);
 
@@ -1262,10 +1519,14 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   const stopJson = parseJsonOutput("stop --json", stop.stdout);
   assertNoSourceCheckoutResolution("stop --json", stopJson);
-  if (
+  if (detached) {
+    assertDetachedControlStop(stopJson, instanceId);
+    if (!controlHost.isAlive())
+      throw new Error("Control plane exited during runtime stop.");
+  } else if (
     stopJson.ok !== true ||
     stopJson.state !== "stopped" ||
-    pidIsRunning(startJson.startedPid)
+    pidIsRunning(supervisorPid)
   ) {
     throw new Error(
       `Manager stop did not terminate owned supervisor: ${stop.stdout}`
@@ -1280,17 +1541,28 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   const restartJson = parseJsonOutput("start --daemon --json", restart.stdout);
   assertNoSourceCheckoutResolution("reopen start --daemon --json", restartJson);
-  if (restartJson.ok === true && typeof restartJson.startedPid === "number") {
-    options.daemonPids?.push(restartJson.startedPid);
-  }
-  if (
-    restartJson.ok !== true ||
-    typeof restartJson.startedPid !== "number" ||
-    restartJson.startedPid === startJson.startedPid
-  ) {
-    throw new Error(
-      `reopen start --daemon --json did not include daemon start details: ${restart.stdout}`
+  let restartPid;
+  if (detached) {
+    assertDetachedControlStart(restartJson, instanceId);
+    const restartedHost = await readVerifiedControlSmokeHost(
+      koedHome,
+      instanceId
     );
+    if (restartedHost.pid !== supervisorPid)
+      throw new Error("Control-plane host changed across runtime restart.");
+    restartPid = restartedHost.pid;
+  } else {
+    if (
+      restartJson.ok !== true ||
+      typeof restartJson.startedPid !== "number" ||
+      restartJson.startedPid === supervisorPid
+    ) {
+      throw new Error(
+        `reopen start --daemon --json did not include daemon start details: ${restart.stdout}`
+      );
+    }
+    restartPid = restartJson.startedPid;
+    options.daemonPids?.push(restartPid);
   }
   const reopenedStatus = await waitForHealthyStatus(
     {
@@ -1298,9 +1570,9 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       koedHome,
       timeoutMs: options.timeoutMs,
       pollIntervalMs: options.pollIntervalMs,
-      supervisorPid: restartJson.startedPid
+      supervisorPid: restartPid
     },
-    pollManager
+    healthPoll
   );
   assertPackagedDaemonReady(reopenedStatus, "status --json after restart");
 
@@ -1312,10 +1584,14 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   const finalStopJson = parseJsonOutput("stop --json", finalStop.stdout);
   assertNoSourceCheckoutResolution("final stop --json", finalStopJson);
-  if (
+  if (detached) {
+    assertDetachedControlStop(finalStopJson, instanceId);
+    if (!controlHost.isAlive())
+      throw new Error("Control plane exited during final runtime stop.");
+  } else if (
     finalStopJson.ok !== true ||
     finalStopJson.state !== "stopped" ||
-    pidIsRunning(restartJson.startedPid)
+    pidIsRunning(restartPid)
   ) {
     throw new Error(
       `Manager final stop did not terminate owned supervisor: ${finalStop.stdout}`
@@ -1341,8 +1617,8 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     restart: restartJson,
     reopenedStatus,
     finalStop: finalStopJson,
-    startPid: startJson.startedPid,
-    restartPid: restartJson.startedPid
+    startPid: supervisorPid,
+    restartPid
   };
 };
 
@@ -1545,7 +1821,9 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
           timeoutMs: options.timeoutMs
         });
         await desktop.ready;
-        const start = await desktop.invoke("start_daemon");
+        const start = await desktop.invoke(
+          process.platform === "darwin" ? "start" : "start_daemon"
+        );
         if (typeof start?.startedPid === "number")
           daemonPids.push(start.startedPid);
         assertFailClosedTeamStart(start);
@@ -1576,6 +1854,14 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
         })
     );
   } finally {
+    let stopped = !desktop;
+    if (desktop && process.platform === "darwin") {
+      try {
+        stopped = await stopDetachedSmokeRuntime(desktop, koedHome);
+      } catch {
+        stopped = false;
+      }
+    }
     if (desktop) {
       try {
         const quit = await desktop.invoke("quit");
@@ -1590,7 +1876,21 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
         killPidBestEffort(desktop.child.pid);
       }
     }
-    removeSmokeHome(koedHome);
+    const cleaned =
+      process.platform !== "darwin" ||
+      (await cleanupSmokeHomeAfterStop(
+        stopped,
+        () => cleanupDetachedSmokeHome(koedHome),
+        () => confirmOfflineSmokeStop(layout, koedHome)
+      ));
+    if (cleaned) {
+      removeSmokeHome(koedHome);
+    } else {
+      console.error(
+        `Team smoke cleanup was not confirmed; preserving ${koedHome}`
+      );
+      process.exitCode = 1;
+    }
   }
 };
 
@@ -1650,6 +1950,33 @@ const run = async (extractedRoot) => {
   let desktop;
   try {
     const executionPlan = smokeExecutionPlan(options);
+    if (options.expectControlPolicyUnavailable) {
+      if (process.platform !== "darwin")
+        throw new Error("Control policy negative smoke requires macOS.");
+      const installedCli = resolve(
+        layout.appAsarPath,
+        "node_modules/@koed-labs/server/dist/desktop-cli-entrypoint.js"
+      );
+      const result = spawnSync(
+        layout.executable,
+        [layout.runner, "node-script", installedCli, "__control-plane-host"],
+        {
+          cwd: layout.resourcesPath,
+          env: createSmokeEnv(koedHome),
+          encoding: "utf8",
+          timeout: 30_000
+        }
+      );
+      assertControlPolicyUnavailable(result);
+      console.log(
+        JSON.stringify({
+          ok: true,
+          mode: "missing-control-signing-policy",
+          appPath: layout.appPath
+        })
+      );
+      return;
+    }
     if (executionPlan.missingAssets) {
       const runMissingAssets = () => smokeMissingAssets(layout, koedHome);
       const result = await measurePhase(
@@ -1791,6 +2118,14 @@ const run = async (extractedRoot) => {
       { cause: error }
     );
   } finally {
+    let stopped = !desktop;
+    if (desktop && process.platform === "darwin") {
+      try {
+        stopped = await stopDetachedSmokeRuntime(desktop, koedHome);
+      } catch {
+        stopped = false;
+      }
+    }
     if (desktop) {
       try {
         const stop = await desktop.invoke("quit");
@@ -1808,8 +2143,23 @@ const run = async (extractedRoot) => {
     for (const pid of daemonPids.toReversed()) {
       killPidBestEffort(pid);
     }
-    spawnSync("pkill", ["-f", koedHome], { stdio: "ignore" });
-    removeSmokeHome(koedHome);
+    if (process.platform === "darwin") {
+      const cleaned = await cleanupSmokeHomeAfterStop(
+        stopped,
+        () => cleanupDetachedSmokeHome(koedHome),
+        () => confirmOfflineSmokeStop(layout, koedHome)
+      );
+      if (cleaned) removeSmokeHome(koedHome);
+      else {
+        console.error(
+          `Smoke cleanup was not confirmed; preserving ${koedHome}`
+        );
+        process.exitCode = 1;
+      }
+    } else {
+      spawnSync("pkill", ["-f", koedHome], { stdio: "ignore" });
+      removeSmokeHome(koedHome);
+    }
   }
 };
 

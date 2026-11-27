@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /* global console, process */
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { stageLocalControl } from "./stage-local-control.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { assertStagedNativeRuntimeMatches } from "./validate-linux-release.mjs";
 import { canonicalArtifactBytes } from "../../../packages/koed-server/src/artifact-canonical-json.mjs";
@@ -70,6 +72,21 @@ if (nativeRuntimeSource) {
 }
 prunePythonEmbeddingRuntimeFiles(runtimeRoot);
 assertNoPrivacyPayload(runtimeRoot, privacyOnlyPackages);
+if (process.platform === "darwin") {
+  execFileSync(
+    process.execPath,
+    [resolve(desktopRoot, "scripts/build-background-agent-native.mjs")],
+    { stdio: "inherit" }
+  );
+  stageLocalControl({
+    platform: process.platform,
+    source: resolve(
+      desktopRoot,
+      "dist-electron/background-agent/native/koed_background_xpc.node"
+    ),
+    runtime: runtimeRoot
+  });
+}
 const preservedManifest =
   process.platform === "linux" &&
   nativeRuntimeSource &&
