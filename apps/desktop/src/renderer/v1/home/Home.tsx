@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -26,6 +27,7 @@ import {
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
 import { wakePixelkins } from "../pixelkin/stage.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
+import type { ClientId } from "../onboarding/model.js";
 import { projectKinLook, type AgentLook } from "../pixelkin/agent-kin.js";
 import {
   HOME_STAGE_LIMIT,
@@ -228,7 +230,7 @@ const useDismiss = (
 const clientCommand = (client: HomeClient): IntegrationMutationCommand | null =>
   client.state === "detected"
     ? `setup_${client.id}`
-    : client.state === "attention"
+    : client.repairable
       ? `repair_${client.id}`
       : null;
 
@@ -343,70 +345,64 @@ function ClientAction({
   );
 }
 
+type OpenAiClient = (id: ClientId, opener: HTMLButtonElement) => void;
+
 function Keycaps({
   clients,
-  ingestion,
-  statusStore
+  statusStore,
+  onOpen
 }: {
   clients: readonly HomeClient[];
-  ingestion?: HomeIngestion;
-  statusStore?: DesktopStatusStore;
+  statusStore: DesktopStatusStore;
+  onOpen?: OpenAiClient;
 }) {
-  // No clients, no row: the stage closes up instead of keeping a gap.
   if (!clients.length) return null;
-  const progress = new Map(
-    ingestion?.clients.map((client) => [client.id, client])
-  );
   return (
     <ul className="v1-home-keycaps" aria-label="AI Clients">
       {clients.map((client) => (
-        <li key={client.id} data-state={client.state}>
-          <span
+        <li
+          key={client.id}
+          data-state={client.state}
+          data-model-problem={client.modelProblem || undefined}
+        >
+          <button
+            type="button"
             className="v1-home-keycap"
             data-client={client.id}
-            role="img"
-            aria-label={client.name}
-            title={client.name}
+            aria-label={`Open ${client.name} in AI models`}
+            title={`${client.name} · ${client.label}${client.modelProblem ? " · Memory Model unavailable" : ""}`}
+            onClick={(event) => onOpen?.(client.id, event.currentTarget)}
           >
             <AiClientLogo id={client.id} />
-          </span>
-          {progress.has(client.id) ? (
-            <span
-              className="v1-home-pill"
-              data-lifecycle={progress.get(client.id)!.lifecycle}
-              data-stuck={progress.get(client.id)!.stuck || undefined}
-            >
-              {ingestionLine(progress.get(client.id)!)}
-            </span>
-          ) : statusStore && clientCommand(client) ? (
+          </button>
+          {client.state === "detected" ? (
             <ClientAction
               client={client}
               statusStore={statusStore}
               variant="pill"
             />
           ) : (
-            <span className="v1-home-pill">{client.label}</span>
+            (client.state === "attention" || client.modelProblem) && (
+              <span className="v1-home-pill">
+                {client.state === "attention"
+                  ? client.label
+                  : "Memory Model unavailable"}
+              </span>
+            )
           )}
-          {/* While history is read the pill shows progress, so the action
-              moves to the small line. */}
-          {(client.state === "detected" || client.state === "attention") && (
+          {client.repairable && (
             <small>
-              {progress.has(client.id) &&
-                (statusStore ? (
-                  <ClientAction
-                    client={client}
-                    statusStore={statusStore}
-                    variant="link"
-                  />
-                ) : client.state === "detected" ? (
-                  "Not connected"
-                ) : (
-                  "Needs attention"
-                ))}
-              {progress.has(client.id) && client.version ? " · " : null}
-              {client.state === "detected" ? client.version : null}
+              <ClientAction
+                client={client}
+                statusStore={statusStore}
+                variant="link"
+              />
             </small>
           )}
+          {client.modelProblem &&
+            (client.state === "attention" || client.state === "detected") && (
+              <small>Memory Model unavailable</small>
+            )}
         </li>
       ))}
     </ul>
@@ -2021,6 +2017,74 @@ function IngestionProgress({
   );
 }
 
+function HistoryImport({ ingestion }: { ingestion: HomeIngestion }) {
+  const id = useId();
+  const chip = useRef<HTMLButtonElement>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const open = hovered || focused || pinned;
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (root.current?.contains(document.activeElement)) chip.current?.focus();
+      setHovered(false);
+      setFocused(false);
+      setPinned(false);
+    };
+    document.addEventListener("keydown", dismiss);
+    return () => document.removeEventListener("keydown", dismiss);
+  }, [open]);
+  return (
+    <div
+      ref={root}
+      className="v1-home-top-progress"
+      onPointerEnter={(event) => {
+        if (event.pointerType !== "touch") setHovered(true);
+      }}
+      onPointerLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget))
+          setFocused(false);
+      }}
+    >
+      <button
+        ref={chip}
+        type="button"
+        className="v1-home-pill v1-home-history-chip"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => {
+          setPinned(!pinned);
+          if (pinned) {
+            setHovered(false);
+            setFocused(false);
+          }
+        }}
+      >
+        Importing history
+      </button>
+      <div id={id} className="v1-home-history-detail" hidden={!open}>
+        {open && (
+          <>
+            <IngestionProgress ingestion={ingestion} compact />
+            <ul>
+              {ingestion.clients.map((client) => (
+                <li key={client.id}>
+                  {client.name} · {ingestionLine(client)}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Non-blocking problems stay out of the way: a chip that opens the list.
 // AI Client problems are left to their keycaps.
 function HomeWarnings({
@@ -2068,6 +2132,7 @@ export function Home({
   agent,
   statusStore,
   onOpenProject,
+  onOpenAiClient,
   looseConversations = [],
   onOpenConversation,
   onDropConversation,
@@ -2084,6 +2149,7 @@ export function Home({
   agent: HomeAgent;
   statusStore: DesktopStatusStore;
   onOpenProject: (projectId: string) => void;
+  onOpenAiClient?: OpenAiClient;
   looseConversations?: readonly HomeLooseConversation[];
   conversations?: readonly HomeConversation[];
   conversationScope?: string | null;
@@ -2217,7 +2283,13 @@ export function Home({
         {warnings}
         <SoloStage
           agent={agent}
-          keycaps={<Keycaps clients={clients} statusStore={statusStore} />}
+          keycaps={
+            <Keycaps
+              clients={clients}
+              statusStore={statusStore}
+              onOpen={onOpenAiClient}
+            />
+          }
           expression="neutral"
           label="No Projects yet"
           showStageHost={showStageHost}
@@ -2256,17 +2328,12 @@ export function Home({
         floorCoins={floorCoins}
         keycaps={
           <>
-            {/* History progress sits above the AI Clients it reads from. */}
-            {view.ingestion && (
-              <div className="v1-home-top-progress">
-                <IngestionProgress ingestion={view.ingestion} compact />
-              </div>
-            )}
             <Keycaps
               clients={clients}
               statusStore={statusStore}
-              {...(view.ingestion ? { ingestion: view.ingestion } : {})}
+              onOpen={onOpenAiClient}
             />
+            {view.ingestion && <HistoryImport ingestion={view.ingestion} />}
           </>
         }
         entries={entries}

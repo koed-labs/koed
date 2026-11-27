@@ -1,11 +1,24 @@
 import { useState } from "react";
 import { Button, Card } from "@koed-labs/ui";
 import { ProjectChoice } from "./project-management/controls.js";
-import { useMemoryModel, type MemoryModelApi } from "./use-memory-model.js";
+import type { useMemoryModel } from "./use-memory-model.js";
+import { clients, type ClientId } from "./onboarding/model.js";
+import type { savedMemoryModelProblems } from "./client-health.js";
 import "./memory-model-settings.css";
 
-export function MemoryModelSettings({ api }: { api?: MemoryModelApi }) {
-  const picker = useMemoryModel(api);
+export function MemoryModelSettings({
+  picker,
+  writable,
+  problems,
+  onCheck,
+  busy
+}: {
+  picker: ReturnType<typeof useMemoryModel>;
+  writable: boolean;
+  problems: ReturnType<typeof savedMemoryModelProblems>;
+  onCheck: (id: ClientId) => void;
+  busy: boolean;
+}) {
   const [portal, setPortal] = useState<HTMLElement | null>(null);
   return (
     <section
@@ -19,6 +32,19 @@ export function MemoryModelSettings({ api }: { api?: MemoryModelApi }) {
         evidence, LCM summaries, captured-session titles, and Curated Memory
         reviews.
       </p>
+      {picker.savedSelections.length > 0 && (
+        <p>
+          Saved:{" "}
+          {Array.from(
+            new Set(
+              picker.savedSelections.map(
+                (setting) =>
+                  `${clients.find(({ id }) => id === setting.provider)?.label} · ${setting.model} · ${setting.reasoningEffort}`
+              )
+            )
+          ).join("; ")}
+        </p>
+      )}
       {picker.hasClients ? (
         <Card>
           {picker.fields.map((field) => (
@@ -27,9 +53,7 @@ export function MemoryModelSettings({ api }: { api?: MemoryModelApi }) {
               <ProjectChoice
                 {...field}
                 portalContainer={portal}
-                disabled={
-                  picker.saving || !api?.setMemoryModel || !field.options.length
-                }
+                disabled={picker.saving || !writable || !field.options.length}
               />
             </div>
           ))}
@@ -56,15 +80,42 @@ export function MemoryModelSettings({ api }: { api?: MemoryModelApi }) {
           it to all four.
         </p>
       )}
-      {picker.unavailable && (
-        <p role="status">
-          The configured model or reasoning level is unavailable.
-        </p>
+      {problems.length > 0 && (
+        <div>
+          <p role="alert">
+            {Array.from(
+              new Set(
+                problems.map(({ model, reason }) => `${model}: ${reason}`)
+              )
+            ).join(" ")}
+          </p>
+          {Array.from(new Set(problems.map(({ provider }) => provider))).map(
+            (id) => (
+              <Button
+                key={id}
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => onCheck(id)}
+              >
+                Check {clients.find((client) => client.id === id)?.label} again
+              </Button>
+            )
+          )}
+        </div>
       )}
       {picker.saved && (
         <p role="status">Memory Model saved for all four tasks.</p>
       )}
-      {picker.error && <p role="alert">{picker.error}</p>}
+      {picker.loadError && (
+        <p role="status">
+          Couldn’t check model availability.{" "}
+          <Button size="sm" variant="outline" onClick={() => picker.retry()}>
+            Check models again
+          </Button>
+        </p>
+      )}
+      {picker.settingsError && <p role="alert">{picker.settingsError}</p>}
     </section>
   );
 }

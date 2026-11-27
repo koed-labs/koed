@@ -235,6 +235,7 @@ const aiClientDiagnosticMessages: Record<string, string> = {
   capability_snapshot_stale: "Capability snapshot is stale.",
   capability_snapshot_unknown: "Capability snapshot is unavailable.",
   model_unavailable: "Configured model is unavailable.",
+  model_discovery_partial: "AI Client model discovery was incomplete.",
   profile_readiness_overlay: "Current AI Client profile readiness was used.",
   codex_version_unavailable: "Codex version could not be determined."
 };

@@ -346,10 +346,28 @@
   }
 
   .client-row {
+    flex-wrap: wrap;
     gap: 10px;
+  }
+  .client-row:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
   }
   .client-row .row-copy {
     flex: 1;
+  }
+  .client-model-note {
+    flex-basis: 100%;
+    padding-inline-start: 44px;
+    display: grid;
+    gap: 4px;
+    color: var(--muted-foreground);
+  }
+  .client-model-note > div {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
   }
   .client-icon svg {
     fill: currentColor;

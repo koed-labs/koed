@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type Ref } from "react";
 import {
   Badge,
   Button,
@@ -9,65 +9,85 @@ import {
 } from "@koed-labs/ui";
 import { Ellipsis } from "lucide-react";
 import { clients, type ClientId } from "./onboarding/model.js";
-import { aiClientHealth } from "./client-health.js";
+import {
+  aiClientHealth,
+  clientModelLimitation,
+  clientSignedOut,
+  savedMemoryModelProblems
+} from "./client-health.js";
+import { useMemoryModel } from "./use-memory-model.js";
 import { AiClientLogo } from "../views/personal/AiClientLogo.js";
 import { ConfirmAction, Group } from "./settings-controls.js";
 import { MemoryModelSettings } from "./MemoryModelSettings.js";
 import type { DesktopApi } from "../../types.js";
 import type {
-  DesktopCommand,
   DesktopStatusStore,
   StatusSnapshot
 } from "../services/desktop-commands.js";
-type Mutation =
-  | `setup_${ClientId}`
-  | `repair_${ClientId}`
-  | `remove_${ClientId}`;
+
+type Mutation = "Connect" | "Repair" | "Disconnect";
+const mutationCommands = {
+  Connect: "setup",
+  Repair: "repair",
+  Disconnect: "remove"
+} as const;
+const loginCommand = "claude auth login";
 const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
+
 export function SettingsModels({
   api,
   statusStore,
-  snapshot
+  snapshot,
+  focusClient,
+  focusRef
 }: {
   api?: DesktopApi["localAiClients"];
   statusStore: DesktopStatusStore;
   snapshot: StatusSnapshot;
+  focusClient: ClientId | null | undefined;
+  focusRef: Ref<HTMLDivElement>;
 }) {
   const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [pending, setPending] = useState<{
+    action: Mutation;
+    id: ClientId;
     label: string;
-    client: string;
-    command: Mutation;
   } | null>(null);
-  const [modelRevision, setModelRevision] = useState(0);
+  const picker = useMemoryModel(api);
+  const problems = savedMemoryModelProblems(
+    picker.confirmedRead,
+    snapshot.status
+  );
   const portal = useRef<HTMLDivElement>(null);
+  const disabled = !!snapshot.busyCommand || !snapshot.status;
   const runCheck = async (id: ClientId) => {
     setActionError(null);
+    setNotice(null);
     try {
       const result = await statusStore.run<{
         ok?: boolean;
         message?: string;
         capabilityRefresh?: { refreshed?: boolean };
-      }>(`check_${id}` as DesktopCommand);
-      if (
-        result?.capabilityRefresh?.refreshed === false ||
-        result?.ok === false
-      )
-        throw new Error(result.message ?? "AI Client check needs attention.");
-      await statusStore.refresh();
-      setModelRevision((value) => value + 1);
+      }>(`check_${id}`);
+      const discoveryFailed = result?.capabilityRefresh?.refreshed === false;
+      if (result?.ok === false || discoveryFailed) {
+        setNotice(
+          result?.message ?? "Couldn’t check AI Client capabilities. Try again."
+        );
+      }
+      if (!discoveryFailed) picker.reread();
     } catch (cause) {
       setActionError(errorText(cause));
     }
   };
   const runMutation = async () => {
     if (!pending) return;
-    const command = pending.command;
     setActionError(null);
     try {
       const result = await statusStore.run<{ ok?: boolean; message?: string }>(
-        command,
+        `${mutationCommands[pending.action]}_${pending.id}`,
         { operatorConsented: true }
       );
       if (result?.ok === false)
@@ -75,72 +95,107 @@ export function SettingsModels({
           result.message ??
             "AI Client integration did not complete successfully."
         );
-      await statusStore.refresh();
-      setModelRevision((value) => value + 1);
+      picker.reread();
+    } catch (cause) {
+      setActionError(errorText(cause));
+    }
+  };
+  const copyLogin = async () => {
+    setActionError(null);
+    try {
+      const clipboard = window.koedDesktop?.clipboard;
+      if (!clipboard) throw new Error("Clipboard is unavailable.");
+      await clipboard.writeText(loginCommand);
+      setNotice("Login command copied.");
     } catch (cause) {
       setActionError(errorText(cause));
     }
   };
   return (
     <>
+      {notice && <p role="status">{notice}</p>}
       {snapshot.error && <p role="alert">{snapshot.error}</p>}
       {actionError && <p role="alert">{actionError}</p>}
       <Group title="AI Clients">
         {clients.map(({ id, label }) => {
           const health = aiClientHealth(id, snapshot.status);
-          const { configured, installed, needsAttention } = health;
-          const disabled = !!snapshot.busyCommand || !snapshot.status;
-          const ready = configured && health.description === "Connected";
-          const change = (action: "Connect" | "Repair" | "Disconnect") =>
-            setPending({
-              label: action,
-              client: label,
-              command:
-                action === "Connect"
-                  ? `setup_${id}`
-                  : action === "Repair"
-                    ? `repair_${id}`
-                    : `remove_${id}`
-            });
+          const registration = problems.find(
+            (problem) => problem.provider === id && problem.registration
+          )?.registration;
+          const limitation =
+            registration?.reason ??
+            clientModelLimitation(id, picker.confirmedRead, snapshot.status) ??
+            problems.find(({ provider }) => provider === id)?.reason;
+          const repairable =
+            health.repairable ||
+            (health.configured &&
+              problems.some(
+                (problem) =>
+                  problem.provider === id && problem.registration?.repairable
+              ));
+          const login =
+            !registration &&
+            id === "claude" &&
+            clientSignedOut(id, picker.confirmedRead, snapshot.status);
+          const change = (action: Mutation) =>
+            setPending({ action, id, label });
           return (
-            <div key={id} className="client-row">
+            <div
+              key={id}
+              className="client-row"
+              data-client={id}
+              role="group"
+              aria-label={label}
+              tabIndex={-1}
+              ref={id === focusClient ? focusRef : undefined}
+            >
               <span className={"client-icon " + id}>
                 <AiClientLogo id={id} />
               </span>
               <div className="row-copy">
                 <strong>{label}</strong>
                 <small>
-                  {configured && !ready
+                  {health.needsAttention
                     ? health.description
-                    : !installed && !configured
-                      ? "Client unavailable on this device"
-                      : "Local AI Client"}
+                    : health.captureReady && health.mcpInstalled
+                      ? "Capture ready · MCP installed"
+                      : health.installed || health.configured
+                        ? "Local AI Client"
+                        : "Client unavailable on this device"}
                   {health.version && " · " + health.version}
                 </small>
               </div>
-              <Badge variant={ready ? "outline" : "neutral"}>
-                {ready && <i className="status-dot" />}
-                {ready
-                  ? "Ready"
-                  : needsAttention
+              <Badge variant={health.connected ? "outline" : "neutral"}>
+                {health.connected && <i className="status-dot" />}
+                {health.connected
+                  ? "Connected"
+                  : health.needsAttention
                     ? "Needs attention"
-                    : configured
-                      ? health.description
-                      : !snapshot.status
-                        ? "Checking…"
-                        : installed
-                          ? "Disconnected"
-                          : "Not installed"}
+                    : health.unknown
+                      ? "Status unsure"
+                      : health.installed
+                        ? "Disconnected"
+                        : "Not installed"}
               </Badge>
-              {!configured && (
+              {!health.configured && !health.repairable && (
                 <Button
                   size="sm"
                   variant="outline"
                   aria-label={`Connect ${label}`}
-                  disabled={disabled || !installed}
+                  disabled={disabled || !health.installed || health.unknown}
                   onClick={() => change("Connect")}
                 >
                   Connect
+                </Button>
+              )}
+              {health.needsAttention && !repairable && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={disabled}
+                  onClick={() => void runCheck(id)}
+                >
+                  Check integration again
                 </Button>
               )}
               <DropdownMenu>
@@ -158,33 +213,78 @@ export function SettingsModels({
                 </DropdownMenuTrigger>
                 <DropdownMenuPopup align="end" portalContainer={portal}>
                   <DropdownMenuItem onClick={() => void runCheck(id)}>
-                    Check connection
+                    Check again
                   </DropdownMenuItem>
-                  {configured && (
-                    <>
-                      <DropdownMenuItem onClick={() => change("Repair")}>
-                        Repair integration
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => change("Disconnect")}>
-                        Disconnect
-                      </DropdownMenuItem>
-                    </>
+                  {repairable && (
+                    <DropdownMenuItem onClick={() => change("Repair")}>
+                      Repair integration
+                    </DropdownMenuItem>
+                  )}
+                  {health.configured && (
+                    <DropdownMenuItem onClick={() => change("Disconnect")}>
+                      Disconnect
+                    </DropdownMenuItem>
                   )}
                 </DropdownMenuPopup>
               </DropdownMenu>
+              {limitation && (
+                <div className="client-model-note">
+                  <small>
+                    Memory Model:{" "}
+                    {login
+                      ? "Sign in to Claude Code in your terminal, then check again."
+                      : limitation}
+                  </small>
+                  {login && (
+                    <small>
+                      Recall through Claude Code is unavailable until you sign
+                      in to its CLI. Claude Desktop sign-in doesn’t sign in the
+                      CLI.
+                    </small>
+                  )}
+                  <div>
+                    {login && (
+                      <>
+                        <code>{loginCommand}</code>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void copyLogin()}
+                        >
+                          Copy command
+                        </Button>
+                      </>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={disabled}
+                      onClick={() => void runCheck(id)}
+                    >
+                      Check again
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
       </Group>
-      <MemoryModelSettings key={modelRevision} api={api} />
+      <MemoryModelSettings
+        picker={picker}
+        writable={!!api?.setMemoryModel}
+        problems={problems}
+        busy={disabled || picker.refreshing}
+        onCheck={(id) => void runCheck(id)}
+      />
       <div ref={portal} />
       {pending && (
         <ConfirmAction
-          title={pending.label + " " + pending.client + "?"}
-          label={pending.label}
-          destructive={pending.label === "Disconnect"}
+          title={`${pending.action} ${pending.label}?`}
+          label={pending.action}
+          destructive={pending.action === "Disconnect"}
           description={
-            pending.label === "Disconnect"
+            pending.action === "Disconnect"
               ? "Remove the Koed integration from this AI Client’s local profile."
               : "Configure the Koed integration in this AI Client’s local profile."
           }

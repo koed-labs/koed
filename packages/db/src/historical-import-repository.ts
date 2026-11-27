@@ -150,6 +150,7 @@ type SourceRow = {
   malformed_record_count: number;
   raw_ingested_record_count: number;
   projected_record_count: number;
+  projection_complete: boolean;
   embedding_eligible_event_count: number;
   embedded_event_count: number;
   embedding_eligible_estimated_token_count: string | number;
@@ -179,9 +180,59 @@ type SourceRow = {
   updated_at: Date;
 };
 
-const sourceSelect = (): string => {
-  const embedding = currentEmbeddingConfig();
-  return `
+const historicalObservationScope = (sessionIdColumn: string): string => `
+  observation.owner_user_id = source.owner_user_id
+  and observation.session_id = ${sessionIdColumn}
+  and observation.source_transport = 'historical_import'
+`;
+// Observation provenance survives canonical deduplication and live overlap.
+const SOURCE_OBSERVATION_MATCH = `
+  observation.metadata ->> 'historicalImportSourceId' = source.id::text
+`;
+const OBSERVATION_ITEM_JOIN = `
+  left join conversation_items item
+    on item.id = observation.conversation_item_id
+   and item.owner_user_id = observation.owner_user_id
+   and item.session_id = observation.session_id
+`;
+const OBSERVATION_PROJECTION_TERMINAL = `
+  case when observation.conversation_item_id is null
+    then observation.ingestion_status = 'identity_unresolved'
+    else item.projection_status = 'raw_only'
+      or (item.projection_status = 'projected' and item.projected_at is not null)
+  end
+`;
+const HISTORICAL_CURSOR_OFFSET =
+  "coalesce(historical_cursor.source_offset, artifact.journal_start_offset)";
+
+// Batch observations and cursor acknowledgements commit atomically. An exact
+// identity replay can retain another source's provenance, so a count deficit
+// requires nonempty, entirely terminal history in this owner/session instead.
+const sourceProjectionComplete = (projectedCount: string) => `
+  case when ${HISTORICAL_CURSOR_OFFSET} < artifact.live_start_offset then false
+  when ${projectedCount} >= source.raw_ingested_record_count
+    then not exists (
+      select 1 from conversation_item_observations observation
+      ${OBSERVATION_ITEM_JOIN}
+      where ${historicalObservationScope("artifact.session_id")}
+        and ${SOURCE_OBSERVATION_MATCH}
+        and (${OBSERVATION_PROJECTION_TERMINAL}) is not true
+    )
+    else (
+      select coalesce(bool_and((${OBSERVATION_PROJECTION_TERMINAL}) is true), false)
+      from conversation_item_observations observation
+      ${OBSERVATION_ITEM_JOIN}
+      where ${historicalObservationScope("artifact.session_id")}
+    )
+  end
+`;
+
+type HistoricalEmbeddingConfig = ReturnType<typeof currentEmbeddingConfig>;
+
+const sourceSelect = (
+  embedding: HistoricalEmbeddingConfig,
+  liveProgress: boolean
+): string => `
   source.id, source.run_id, source.owner_user_id, source.state,
   source.artifact_id, source.ai_client,
   artifact.source_kind,
@@ -191,8 +242,7 @@ const sourceSelect = (): string => {
   artifact.session_id,
   artifact.live_start_offset as registration_frontier_offset,
   artifact.redacted_source_label,
-  coalesce(historical_cursor.source_offset, artifact.journal_start_offset)
-    as historical_cursor_offset,
+  ${HISTORICAL_CURSOR_OFFSET} as historical_cursor_offset,
   coalesce(historical_cursor.source_line, artifact.journal_start_line)
     as historical_cursor_line,
   historical_cursor.last_verified_digest as historical_cursor_digest,
@@ -211,11 +261,32 @@ const sourceSelect = (): string => {
   source.source_event_from, source.source_event_to,
   source.discovered_record_count, source.imported_record_count,
   source.skipped_record_count, source.malformed_record_count,
-  source.raw_ingested_record_count, source.projected_record_count,
-  source.embedding_eligible_event_count, source.embedded_event_count,
-  source.embedding_eligible_estimated_token_count,
-  source.embedded_measured_token_count,
-  source.pending_embedding_estimated_token_count,
+  source.raw_ingested_record_count,
+  ${
+    liveProgress
+      ? `
+    progress.projected_count as projected_record_count,
+    progress.projection_complete,
+    progress.embedding_eligible_count as embedding_eligible_event_count,
+    progress.embedded_count as embedded_event_count,
+    progress.embedding_eligible_tokens as embedding_eligible_estimated_token_count,
+    progress.embedded_tokens as embedded_measured_token_count,
+    progress.pending_embedding_estimated_tokens as pending_embedding_estimated_token_count,
+    progress.oldest_embedded_source_time, progress.newest_embedded_source_time,
+    progress.lcm_eligible_count as lcm_eligible_event_count,
+    progress.lcm_completed_count as lcm_completed_event_count
+  `
+      : `
+    source.projected_record_count,
+    (${sourceProjectionComplete("source.projected_record_count")}) as projection_complete,
+    source.embedding_eligible_event_count, source.embedded_event_count,
+    source.embedding_eligible_estimated_token_count,
+    source.embedded_measured_token_count,
+    source.pending_embedding_estimated_token_count,
+    source.oldest_embedded_source_time, source.newest_embedded_source_time,
+    source.lcm_eligible_event_count, source.lcm_completed_event_count
+  `
+  },
   coalesce(embedding_position.queue_ahead_estimated_tokens, 0)
     as queue_ahead_estimated_token_count,
   (select sum(profile.measured_tokens_per_second)
@@ -240,17 +311,14 @@ const sourceSelect = (): string => {
       and profile.model_key = '${embedding.model}'
       and profile.embedding_dimensions = ${embedding.dimensions})
     as capacity_calibration_mode,
-  source.oldest_embedded_source_time, source.newest_embedded_source_time,
-  source.lcm_eligible_event_count, source.lcm_completed_event_count,
   source.retry_count, source.failure_reason, source.next_retry_at,
   source.detected_project, source.discovered_at, source.eligible_at,
   source.queued_at, source.import_started_at, source.paused_at,
   source.skipped_at, source.completed_at, source.failed_at,
   source.last_observed_at, source.created_at, source.updated_at
 `;
-};
 
-const SOURCE_JOINS = `
+const SOURCE_SCOPE_JOINS = `
   from historical_import_sources source
   join conversation_source_artifacts artifact
     on artifact.id = source.artifact_id
@@ -258,6 +326,9 @@ const SOURCE_JOINS = `
   left join conversation_source_consumer_cursors historical_cursor
     on historical_cursor.artifact_id = artifact.id
    and historical_cursor.consumer_kind = 'canonical_historical'
+`;
+
+const SOURCE_QUEUE_POSITION_JOIN = `
   left join lateral (
     select coalesce(sum(pending.tokens), 0)::bigint
       as queue_ahead_estimated_tokens
@@ -374,8 +445,7 @@ const mapSource = (row: SourceRow): HistoricalImportSourceRecord => {
   const cursorOffset = Number(row.historical_cursor_offset);
   const frontier = Number(row.registration_frontier_offset);
   const rawIngested = cursorOffset >= frontier;
-  const projected =
-    rawIngested && row.projected_record_count >= row.raw_ingested_record_count;
+  const projected = rawIngested && row.projection_complete;
   const fullyEmbedded =
     row.embedding_eligible_event_count === row.embedded_event_count;
   const pendingEstimatedTokens = Number(
@@ -558,13 +628,20 @@ const sourceQuery = async (
   client: pg.Pool | pg.PoolClient,
   ownerUserId: string,
   predicate: string,
-  values: unknown[]
+  values: unknown[],
+  // Mutation paths use persisted counters; only status reads need live progress.
+  liveProgress = false
 ): Promise<HistoricalImportSourceRecord | null> => {
+  const embedding = currentEmbeddingConfig();
   const result = await client.query<SourceRow>(
-    `select ${sourceSelect()} ${SOURCE_JOINS}
+    `select ${sourceSelect(embedding, liveProgress)} ${SOURCE_SCOPE_JOINS}
+      ${liveProgress ? sourceProgressJoin(embedding) : ""}
+      ${SOURCE_QUEUE_POSITION_JOIN}
       where source.owner_user_id = $1 and ${predicate}
       limit 1`,
-    [ownerUserId, ...values]
+    liveProgress
+      ? [ownerUserId, ...values, ...progressEmbeddingParameters(embedding)]
+      : [ownerUserId, ...values]
   );
   return result.rows[0] ? mapSource(result.rows[0]) : null;
 };
@@ -653,79 +730,55 @@ const refreshRunCounters = async (
   );
 };
 
-const refreshSourceProgress = async (
-  client: pg.Pool | pg.PoolClient,
-  ownerUserId: string,
-  sourceId: string
-): Promise<void> => {
-  const embedding = currentEmbeddingConfig();
-  await client.query(
-    `with source_scope as (
-       select source.id, artifact.session_id, source.imported_record_count
-       from historical_import_sources source
-       join conversation_source_artifacts artifact
-         on artifact.id = source.artifact_id
-        and artifact.owner_user_id = source.owner_user_id
-       where source.id = $2 and source.owner_user_id = $1
-     ), progress as (
-       select scope.id, scope.imported_record_count,
-         (select count(*)::int
-          from conversation_items item
-          where item.session_id = scope.session_id
-            and (
-              item.projected_at is not null
-              or item.projection_status = 'raw_only'
-            )
-            and exists (
-              select 1 from conversation_item_observations observation
-              where observation.conversation_item_id = item.id
-                and observation.source_transport = 'historical_import'
-            )) as projected_count,
+const progressEmbeddingParameters = (embedding: HistoricalEmbeddingConfig) =>
+  [embedding.model, embedding.dimensions, embedding.version] as const;
+
+// Status reads and worker refreshes use the same live progress calculation.
+const sourceProgressJoin = (embedding: HistoricalEmbeddingConfig) => `
+  cross join lateral (
+     with source_scope as (
+       select source.id, source.owner_user_id, artifact.session_id
+     ), source_observations as (
+       select observation.conversation_item_id,
+         (${OBSERVATION_PROJECTION_TERMINAL}) as projection_terminal
+       from source_scope source
+       join conversation_item_observations observation
+         on ${historicalObservationScope("source.session_id")}
+        and ${SOURCE_OBSERVATION_MATCH}
+       ${OBSERVATION_ITEM_JOIN}
+     ), session_history_events as (
+       select distinct event_source.memory_event_id
+       from source_scope source
+       join conversation_item_observations observation
+         on ${historicalObservationScope("source.session_id")}
+       join memory_event_sources event_source using (conversation_item_id)
+     ), progress as materialized (
+       select scope.id,
+         (select count(*)::int from source_observations
+          where projection_terminal) as projected_count,
          (select count(*)::int
           from memory_events event
           where event.session_id = scope.session_id
             and event.invalidated_at is null
             and event.personal_deleted_at is null
             and event.include_in_embedding
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id =
-                  event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )) as embedding_eligible_count,
+            and event.id in (select memory_event_id from session_history_events)
+         ) as embedding_eligible_count,
          (select coalesce(sum(greatest(coalesce(event.token_count, 0), 0)), 0)::bigint
           from memory_events event
           where event.session_id = scope.session_id
             and event.invalidated_at is null
             and event.personal_deleted_at is null
             and event.include_in_embedding
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id =
-                  event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )) as embedding_eligible_tokens,
+            and event.id in (select memory_event_id from session_history_events)
+         ) as embedding_eligible_tokens,
          (select count(*)::int
           from memory_events event
           where event.session_id = scope.session_id
             and event.invalidated_at is null
             and event.personal_deleted_at is null
             and event.include_in_embedding
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id =
-                  event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )
+            and event.id in (select memory_event_id from session_history_events)
             and exists (
               select 1
               from memory_embeddings embedding
@@ -769,28 +822,15 @@ const refreshSourceProgress = async (
             and event.invalidated_at is null
             and event.personal_deleted_at is null
             and event.include_in_embedding
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id = event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )) as embedded_tokens,
+            and event.id in (select memory_event_id from session_history_events)
+         ) as embedded_tokens,
          (select coalesce(sum(greatest(coalesce(event.token_count, 0), 0)), 0)::bigint
           from memory_events event
           where event.session_id = scope.session_id
             and event.invalidated_at is null
             and event.personal_deleted_at is null
             and event.include_in_embedding
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id = event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )
+            and event.id in (select memory_event_id from session_history_events)
             and not exists (
               select 1
               from memory_embeddings embedding
@@ -817,15 +857,7 @@ const refreshSourceProgress = async (
             and event.invalidated_at is null
             and event.personal_deleted_at is null
             and event.include_in_embedding
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id =
-                  event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )
+            and event.id in (select memory_event_id from session_history_events)
             and exists (
               select 1
               from memory_embeddings embedding
@@ -852,15 +884,7 @@ const refreshSourceProgress = async (
             and event.invalidated_at is null
             and event.personal_deleted_at is null
             and event.include_in_embedding
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id =
-                  event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )
+            and event.id in (select memory_event_id from session_history_events)
             and exists (
               select 1
               from memory_embeddings embedding
@@ -886,15 +910,8 @@ const refreshSourceProgress = async (
           where event.session_id = scope.session_id
             and event.invalidated_at is null
             and event.include_in_lcm
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id =
-                  event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )) as lcm_eligible_count,
+            and event.id in (select memory_event_id from session_history_events)
+         ) as lcm_eligible_count,
          (select count(distinct event.id)::int
           from memory_events event
           join memory_node_sources node_source
@@ -906,19 +923,35 @@ const refreshSourceProgress = async (
           where event.session_id = scope.session_id
             and event.invalidated_at is null
             and event.include_in_lcm
-            and exists (
-              select 1
-              from memory_event_sources event_source
-              join conversation_item_observations observation
-                on observation.conversation_item_id =
-                  event_source.conversation_item_id
-              where event_source.memory_event_id = event.id
-                and observation.source_transport = 'historical_import'
-            )) as lcm_completed_count
+            and event.id in (select memory_event_id from session_history_events)
+         ) as lcm_completed_count
        from source_scope scope
      )
+     select progress.*,
+       (${sourceProjectionComplete("progress.projected_count")}) as projection_complete
+     from progress
+  ) progress
+`;
+
+const refreshSourceProgress = async (
+  client: pg.Pool | pg.PoolClient,
+  ownerUserId: string,
+  sourceId: string
+) => {
+  const embedding = currentEmbeddingConfig();
+  const result = await client.query<{
+    importing: boolean;
+    projected: boolean;
+    fully_embedded: boolean;
+    lcm_complete: boolean;
+    lcm_pending: boolean;
+  }>(
+    `with progress as (
+       select progress.* ${SOURCE_SCOPE_JOINS}
+       ${sourceProgressJoin(embedding)}
+       where source.id = $2 and source.owner_user_id = $1
+     )
      update historical_import_sources source set
-       raw_ingested_record_count = progress.imported_record_count,
        projected_record_count = progress.projected_count,
        embedding_eligible_event_count = progress.embedding_eligible_count,
        embedded_event_count = progress.embedded_count,
@@ -930,15 +963,15 @@ const refreshSourceProgress = async (
        newest_embedded_source_time = progress.newest_embedded_source_time,
        lcm_eligible_event_count = progress.lcm_eligible_count,
        lcm_completed_event_count = progress.lcm_completed_count
-     from progress where source.id = progress.id`,
-    [
-      ownerUserId,
-      sourceId,
-      embedding.model,
-      embedding.dimensions,
-      embedding.version
-    ]
+     from progress where source.id = progress.id
+     returning source.state = 'importing' as importing,
+       progress.projection_complete as projected,
+       progress.embedded_count = progress.embedding_eligible_count as fully_embedded,
+       progress.lcm_completed_count = progress.lcm_eligible_count as lcm_complete,
+       progress.lcm_completed_count < progress.lcm_eligible_count as lcm_pending`,
+    [ownerUserId, sourceId, ...progressEmbeddingParameters(embedding)]
   );
+  return result.rows[0];
 };
 
 const projectPolicyId = (
@@ -1250,16 +1283,18 @@ const transitionSourceRecord = (
   validateTransitionFailure(input);
   return withTransaction(pool, async (client) => {
     await lockImportOwner(client, actor.userId);
-    if (input.state === "completed") {
-      await refreshSourceProgress(client, actor.userId, input.sourceId);
-    }
+    // Projection and downstream counters must describe the same snapshot.
+    const progress =
+      input.state === "completed"
+        ? await refreshSourceProgress(client, actor.userId, input.sourceId)
+        : undefined;
     const source = await requireSourceForUpdate(client, actor, input.sourceId);
     if (
       input.state === "completed" &&
       (!source.rawIngested ||
-        !source.projected ||
-        !source.fullyEmbedded ||
-        !source.lcmComplete)
+        !progress?.projected ||
+        !progress.fully_embedded ||
+        !progress.lcm_complete)
     ) {
       return null;
     }
@@ -1326,7 +1361,15 @@ const ingestBatchRecord = (
     const action = await validateBatchBoundary(client, source, input);
     const policy = await requireImportPolicy(client, actor, source);
     if (action === "replay") {
-      return { items: [], source, policy, replayed: true };
+      const liveSource = await sourceQuery(
+        client,
+        actor.userId,
+        "source.id = $2",
+        [source.id],
+        true
+      );
+      if (!liveSource) throw new Error("Historical import source disappeared");
+      return { items: [], source: liveSource, policy, replayed: true };
     }
     await requireWritableRun(client, actor, source.runId);
     if (!["queued", "importing"].includes(source.state)) {
@@ -1429,28 +1472,8 @@ const listSourcesNeedingLcmFinalization = async (
 > => {
   const candidates = await pool.query<{
     id: string;
-    owner_user_id: string;
-  }>(
-    `select source.id, source.owner_user_id
-       from historical_import_sources source
-       join conversation_source_artifacts artifact
-         on artifact.id = source.artifact_id
-       left join conversation_source_consumer_cursors cursor
-         on cursor.artifact_id = artifact.id
-        and cursor.consumer_kind = 'canonical_historical'
-      where source.state = 'importing'
-        and coalesce(cursor.source_offset, artifact.journal_start_offset)
-          >= artifact.live_start_offset`
-  );
-  await Promise.all(
-    candidates.rows.map((source) =>
-      refreshSourceProgress(pool, source.owner_user_id, source.id)
-    )
-  );
-  const result = await pool.query<{
-    id: string;
-    owner_user_id: string;
     session_id: string;
+    owner_user_id: string;
   }>(
     `select source.id, source.owner_user_id, artifact.session_id
        from historical_import_sources source
@@ -1461,18 +1484,30 @@ const listSourcesNeedingLcmFinalization = async (
         and cursor.consumer_kind = 'canonical_historical'
       where source.state = 'importing'
         and coalesce(cursor.source_offset, artifact.journal_start_offset)
-          >= artifact.live_start_offset
-        and source.projected_record_count >= source.raw_ingested_record_count
-        and source.embedded_event_count =
-          source.embedding_eligible_event_count
-        and source.lcm_completed_event_count <
-          source.lcm_eligible_event_count`
+          >= artifact.live_start_offset`
   );
-  return result.rows.map((source) => ({
-    sourceId: source.id,
-    ownerUserId: source.owner_user_id,
-    sessionId: source.session_id
-  }));
+  const eligible = await Promise.all(
+    candidates.rows.map(async (source) => {
+      const progress = await refreshSourceProgress(
+        pool,
+        source.owner_user_id,
+        source.id
+      );
+      return progress?.importing &&
+        progress.projected &&
+        progress.fully_embedded &&
+        progress.lcm_pending
+        ? [
+            {
+              sourceId: source.id,
+              ownerUserId: source.owner_user_id,
+              sessionId: source.session_id
+            }
+          ]
+        : [];
+    })
+  );
+  return eligible.flat();
 };
 
 const reconcileHistoricalImportCompletion = async (
@@ -1546,28 +1581,15 @@ export const createHistoricalImportRepository = (
   getHistoricalImportRun: async (actor, runId) => {
     const run = await getRun(pool, actor, runId);
     if (!run) return null;
-    const sourceIds = await pool.query<{ id: string }>(
-      `select id from historical_import_sources
-        where owner_user_id = $1 and run_id = $2`,
-      [actor.userId, runId]
-    );
-    await Promise.all(
-      sourceIds.rows.map((source) =>
-        refreshSourceProgress(pool, actor.userId, source.id)
-      )
-    );
-    await refreshRunCounters(pool, actor.userId, runId);
-    const refreshedRun = await getRun(pool, actor, runId);
+    const embedding = currentEmbeddingConfig();
     const sources = await pool.query<SourceRow>(
-      `select ${sourceSelect()} ${SOURCE_JOINS}
+      `select ${sourceSelect(embedding, true)} ${SOURCE_SCOPE_JOINS}
+        ${sourceProgressJoin(embedding)} ${SOURCE_QUEUE_POSITION_JOIN}
         where source.owner_user_id = $1 and source.run_id = $2
         order by source.discovered_at, source.id`,
-      [actor.userId, runId]
+      [actor.userId, runId, ...progressEmbeddingParameters(embedding)]
     );
-    return {
-      ...(refreshedRun ?? run),
-      sources: sources.rows.map(mapSource)
-    };
+    return { ...run, sources: sources.rows.map(mapSource) };
   },
   createHistoricalImportSource: (actor, input) =>
     createSourceRecord(pool, actor, input),
@@ -1577,14 +1599,16 @@ export const createHistoricalImportRepository = (
     transitionSourceRecord(pool, actor, input),
   ingestHistoricalImportBatch: (actor, input) =>
     ingestBatchRecord(pool, actor, input),
-  getHistoricalImportSource: async (actor, sourceId) => {
-    await refreshSourceProgress(pool, actor.userId, sourceId);
-    return sourceQuery(pool, actor.userId, "source.id = $2", [sourceId]);
-  },
+  getHistoricalImportSource: (actor, sourceId) =>
+    sourceQuery(pool, actor.userId, "source.id = $2", [sourceId], true),
   getHistoricalImportSourceByIdentity: (actor, identity) =>
-    sourceQuery(pool, actor.userId, "source.artifact_id = $2", [
-      identity.artifactId
-    ]),
+    sourceQuery(
+      pool,
+      actor.userId,
+      "source.artifact_id = $2",
+      [identity.artifactId],
+      true
+    ),
   listHistoricalImportSourcesNeedingLcmFinalization: () =>
     listSourcesNeedingLcmFinalization(pool),
   reconcileHistoricalImportCompletion: () =>
