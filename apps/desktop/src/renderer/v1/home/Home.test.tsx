@@ -9,6 +9,7 @@ import {
   projectKinLook
 } from "../pixelkin/agent-kin.js";
 import { KinSpin } from "../onboarding/kin-spin.js";
+import * as stage from "../pixelkin/stage.js";
 import { fitRestingSpots, Home, HOME_RERANK_MS } from "./Home.js";
 import type { HomeProjectEntry, HomeView } from "./home-model.js";
 
@@ -300,6 +301,44 @@ describe("Home", () => {
     expect(coins[1]!.querySelector(".v1-home-floor-client")).toBeNull();
     await act(async () => coins[0]!.click());
     expect(onOpenConversation.mock.calls).toEqual([["newer"]]);
+  });
+
+  it("keeps Home mounted with SVG coins when the first WebGL draw throws", async () => {
+    const draw = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("WebGL context lost");
+      })
+      .mockReturnValue(null);
+    vi.spyOn(stage, "pixelkinEngineAvailable").mockReturnValue(true);
+    vi.spyOn(stage, "sharedKinRenderer").mockReturnValue({
+      render: draw,
+      canvas: document.createElement("canvas"),
+      available: true,
+      ready: Promise.resolve(),
+      gl: null
+    });
+    const onOpenConversation = vi.fn();
+    await render({
+      entries: [],
+      looseConversations: [
+        {
+          key: "loose",
+          title: "Loose chat",
+          latestAt: "2026-11-03T00:00:00Z",
+          client: null
+        }
+      ],
+      onOpenConversation
+    });
+
+    expect(draw).toHaveBeenCalled();
+    const coin = container.querySelector<HTMLButtonElement>(
+      ".v1-home-floor-coin"
+    )!;
+    expect(coin.querySelectorAll(".v1-coin-vector > svg")).toHaveLength(2);
+    await act(async () => coin.click());
+    expect(onOpenConversation).toHaveBeenCalledWith("loose");
   });
 
   const pointer = (

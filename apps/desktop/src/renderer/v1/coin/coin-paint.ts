@@ -115,7 +115,12 @@ function render(description: ConversationDescription, ratio: number) {
       }
     }
   };
-  if (!gl.render(scene)) return null;
+  try {
+    if (!gl.render(scene)) return null;
+  } catch {
+    // Context loss can throw instead of returning null. Use the vector coin.
+    return null;
+  }
   // The engine may scale an oversized request down; read what it drew.
   const scale = Math.min(gl.canvas.width, gl.canvas.height) / SCENE;
   const size = Math.round(COIN_FRAME * ratio);

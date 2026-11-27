@@ -783,6 +783,12 @@ button.v1-home-pill[data-repair]:hover {
 .v1-home-floor-coin:focus-visible {
   transform: translateX(-50%) translateY(-3px);
 }
+/* Cover the standing face without changing the button's floor footprint. */
+.v1-home-floor-coin[data-motion="rest"]:is(:hover, :focus-visible)::before {
+  content: "";
+  position: absolute;
+  inset: -16px -4px 0;
+}
 /* Held or thrown, the coin stands up; in the air it tumbles end over end. */
 .v1-home-floor-coin:not([data-motion="rest"]) {
   height: 20px;
@@ -794,7 +800,7 @@ button.v1-home-pill[data-repair]:hover {
 }
 /* kin-engine draws the canvas coin's tumble itself; the flat vector coin
    fakes it by squashing. */
-.v1-home-floor-coin[data-motion="flying"] > .v1-coin-vector {
+.v1-home-floor-coin[data-motion="flying"] > .v1-coin-vector > svg {
   rotate: calc(var(--coin-angle, 0deg) * 0.25);
   scale: 1 cos(var(--coin-angle, 0deg));
 }
