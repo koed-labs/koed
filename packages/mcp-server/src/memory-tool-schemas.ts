@@ -171,13 +171,12 @@ export const parsePinnedMemoryAnswerInput = (
   raw: unknown,
   selection: PersonalSelectionSnapshot | undefined
 ): z.infer<typeof memoryAnswerInputSchema> => {
-  if (
-    selection?.version !== 1 ||
-    (selection.target.kind !== "projects" &&
-      selection.target.kind !== "project" &&
-      selection.target.kind !== "folder")
-  )
-    return memoryAnswerInputSchema.parse(raw);
+  const withoutRepository =
+    selection?.version === 1 &&
+    (selection.target.kind === "projects" ||
+      selection.target.kind === "project" ||
+      selection.target.kind === "folder");
+  if (!withoutRepository) return memoryAnswerInputSchema.parse(raw);
   return {
     ...memoryAnswerInputSchema.parse({
       ...z.record(z.string(), z.unknown()).parse(raw),
