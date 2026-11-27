@@ -882,6 +882,73 @@ describe("Codex Transcript Watcher source journal", () => {
     ).toThrow("too broad");
   });
 
+  const registerCodexInstance = (koedHome: string, executablePath: string) => {
+    mkdirSync(path.join(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      path.join(koedHome, "config", "ai-client-instances.json"),
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex",
+            executablePath
+          }
+        ]
+      })
+    );
+  };
+  const codexExecutable = (directory: string): string => {
+    const executable = path.join(directory, "bin", "codex");
+    mkdirSync(path.dirname(executable), { recursive: true });
+    writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 });
+    return executable;
+  };
+  const codexCommandName = process.platform === "win32" ? "codex.cmd" : "codex";
+
+  it("reads history metadata through the registered Codex executable when it is not on PATH", () => {
+    const home = temporaryDirectory();
+    const koedHome = path.join(home, "koed-home");
+    const executable = codexExecutable(home);
+    registerCodexInstance(koedHome, executable);
+
+    expect(
+      resolveCodexTranscriptWatcherConfig({
+        HOME: home,
+        KOED_HOME: koedHome,
+        PATH: "/usr/bin:/bin"
+      }).historyMetadata?.binary
+    ).toBe(executable);
+  });
+
+  it("finds the registered Codex executable under the default Koed home", () => {
+    const home = temporaryDirectory();
+    const executable = codexExecutable(home);
+    registerCodexInstance(path.join(home, ".koed"), executable);
+
+    expect(
+      resolveCodexTranscriptWatcherConfig({ HOME: home }).historyMetadata
+        ?.binary
+    ).toBe(executable);
+  });
+
+  it("keeps the Codex command name when no usable Codex instance is registered", () => {
+    const home = temporaryDirectory();
+    const koedHome = path.join(home, "koed-home");
+    const env = { HOME: home, KOED_HOME: koedHome };
+
+    expect(
+      resolveCodexTranscriptWatcherConfig(env).historyMetadata?.binary
+    ).toBe(codexCommandName);
+
+    registerCodexInstance(koedHome, path.join(home, "missing", "codex"));
+
+    expect(
+      resolveCodexTranscriptWatcherConfig(env).historyMetadata?.binary
+    ).toBe(codexCommandName);
+  });
+
   it("discovers the newest timestamped transcript first", async () => {
     const root = temporaryDirectory();
     const oldTranscript = transcriptPath(root, "rollout-2026-01-01.jsonl");

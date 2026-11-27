@@ -76,6 +76,12 @@ while active and closes an owned helper after idle time or watcher shutdown.
 It does not start a thread, run a turn or call a model. Background paginated
 migration is disabled for the helper connection.
 
+The helper starts the Codex executable registered for `codex.default` in
+`KOED_HOME/config/ai-client-instances.json`, the path that setup resolved. A
+packaged Koed app started from Finder can therefore read history metadata when
+Codex is not on its inherited `PATH`. Without a usable registration the helper
+uses `MEMORY_CODEX_APP_SERVER_BINARY` or the Codex command name on `PATH`.
+
 An unavailable helper, wrong home/identity or missing current file leaves
 capture pending with a diagnostic. Metadata failures are bounded per Codex home
 per scan, so one unavailable home does not suppress capture from another.
