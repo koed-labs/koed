@@ -27,6 +27,25 @@ export function createAccountProfileApi(origin: string) {
         throw new Error("Unexpected account profile");
       return profile;
     },
+    async recordSignupOptIn(
+      accessToken: string,
+      current: AccountDetails["emailUpdates"]
+    ) {
+      const updated = emailUpdatesPreferenceSchema.parse(
+        await request("/v1/account/signup-email-updates", accessToken, {
+          email: current.email,
+          noticeVersion: current.noticeVersion,
+          noticeText: current.noticeText
+        })
+      );
+      if (
+        !updated.subscribed ||
+        updated.revision !== 1 ||
+        updated.email !== current.email
+      )
+        throw new Error("Unexpected sign-up preference");
+      return updated;
+    },
     async setEmailUpdates(
       accessToken: string,
       subscribed: boolean,

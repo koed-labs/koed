@@ -8,6 +8,8 @@ Open the profile badge at the bottom of the navigation rail to sign in or sign o
 The badge shows the WorkOS picture or initials for the signed-in account.
 During sign-in, its menu shows browser instructions and a Cancel sign-in action.
 
+Choose **Create account** to start registration. With the HTTPS forwarder and account service configured, the browser shows an optional email updates checkbox before returning to Desktop. It starts unchecked. Select **Open Koed** to continue with either choice. A checked box applies to the newly created, verified account. Returning Users can change their preference in **Settings → Account**.
+
 Local Personal Memory remains available without sign-in and while offline.
 Sign-in does not upload Memory, change Memory ownership, rotate API Tokens, or enable Capture.
 It does not enroll a device or grant Team Membership, Workspace Access, rewards, or paid features.
@@ -23,7 +25,7 @@ The source file, `apps/desktop/account-config.json`, contains:
 
 When accounts are disabled, Desktop does not initialize WorkOS or open account storage.
 Desktop also hides the badge until it reads account availability from Electron main, the process that controls the app.
-Authentication starts only when the User selects Sign in.
+Authentication starts when the User selects **Sign in** or **Create account**.
 
 To enable sign-in in a source build:
 

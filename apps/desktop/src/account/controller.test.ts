@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAccountController } from "./controller.js";
 import type { AccountRuntime } from "./runtime.js";
@@ -101,6 +102,89 @@ async function signedInWithEmailPreference() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe("optional account lifecycle", () => {
+  it.each([
+    "checked",
+    "skipped",
+    "sign-in",
+    "existing",
+    "stale notice",
+    "prior preference",
+    "other email",
+    "duplicate",
+    "api failure"
+  ])(
+    "handles browser signup consent for %s without blocking sign-in",
+    async (scenario) => {
+      const { controller, runtime, credentials, fetch } = fixture({
+        ...config,
+        profileApiOrigin: "https://account.example.test"
+      });
+      const startedAt = Date.now() - 2000;
+      const nonce = "synthetic-attempt";
+      const pref = { ...details.emailUpdates };
+      const proof = createHash("sha256")
+        .update(JSON.stringify([nonce, pref.noticeVersion, pref.noticeText]))
+        .digest("hex");
+      if (scenario === "stale notice") pref.noticeText += " Revised.";
+      if (scenario === "prior preference") pref.revision = 2;
+      if (scenario === "other email") pref.email = "changed@example.test";
+      vi.mocked(runtime.callback).mockImplementation(async () => {
+        vi.mocked(runtime.hasPending).mockResolvedValue(false);
+        return {
+          ...credentials,
+          signup: scenario === "sign-in" ? undefined : { nonce, startedAt }
+        };
+      });
+      vi.mocked(runtime.profile).mockReturnValue({
+        ...profile,
+        joinedAt: new Date(
+          startedAt + (scenario === "existing" ? -1000 : 1000)
+        ).toISOString()
+      });
+      fetch.mockResolvedValueOnce(
+        Response.json({ ...details, emailUpdates: pref })
+      );
+      fetch.mockResolvedValueOnce(
+        scenario === "api failure"
+          ? new Response(null, { status: 503 })
+          : Response.json({ ...pref, revision: 1, subscribed: true })
+      );
+      await controller.command({
+        operation: "signIn",
+        screen: scenario === "sign-in" ? "sign-in" : "sign-up"
+      });
+      const callback = new URL(config.callbackUri + "?code=code&state=sealed");
+      if (scenario !== "skipped")
+        callback.searchParams.set("signup_opt_in", proof);
+      if (scenario === "duplicate")
+        callback.searchParams.append("signup_opt_in", proof);
+      await controller.callback(callback.href);
+      await controller.callback(callback.href);
+      expect(controller.current().status).toBe("signed_in");
+      const writes = vi
+        .mocked(globalThis.fetch)
+        .mock.calls.filter(([, init]) => init?.method === "PUT");
+      if (scenario === "checked" || scenario === "api failure") {
+        expect(writes).toHaveLength(1);
+        expect(String(writes[0]![0])).toBe(
+          "https://account.example.test/v1/account/signup-email-updates"
+        );
+        expect(JSON.parse(String(writes[0]![1]?.body))).toEqual({
+          email: pref.email,
+          noticeVersion: pref.noticeVersion,
+          noticeText: pref.noticeText
+        });
+        expect(controller.current().details).toMatchObject(
+          scenario === "checked"
+            ? { status: "ready", value: { emailUpdates: { subscribed: true } } }
+            : { status: "unavailable" }
+        );
+      } else expect(writes).toHaveLength(0);
+      expect(JSON.stringify(vi.mocked(runtime.save).mock.calls)).not.toContain(
+        nonce
+      );
+    }
+  );
   it("does not initialize provider or networking when unconfigured", async () => {
     const runtime = vi.fn();
     const controller = createAccountController({ config: null, runtime });

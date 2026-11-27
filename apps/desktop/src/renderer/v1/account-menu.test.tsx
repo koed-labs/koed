@@ -255,7 +255,8 @@ describe("rail account menu", () => {
     }
   );
   it("shows the signed-out invitation with a static Kin and an accessible close button", async () => {
-    await render(fixture().api);
+    const f = fixture();
+    await render(f.api);
     await open();
     const panel = document.querySelector(
       '[role="dialog"][aria-label="Account"]'
@@ -266,6 +267,8 @@ describe("rail account menu", () => {
     ).not.toBeNull();
     expect(panel.querySelector('[aria-label="Close account"]')).not.toBeNull();
     expect(panel.querySelector("h2")).toBeNull();
+    await act(async () => item("Create account").click());
+    expect(f.api.signIn).toHaveBeenCalledWith({ screen: "sign-up" });
   });
   it("offers retry and sign-out for a cached profile, then sign-in after expiry", async () => {
     const f = fixture({

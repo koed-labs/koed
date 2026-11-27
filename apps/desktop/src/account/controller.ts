@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   accountStateSchema,
   type AccountCommand,
@@ -6,6 +7,7 @@ import {
 } from "@koed-labs/shared/account";
 import type { AccountConfig } from "./config.js";
 import type { AccountRuntime } from "./runtime.js";
+import type { SignupAttempt } from "./storage.js";
 import { AccountOperationError } from "./errors.js";
 import { createAccountProfileApi } from "./profile-api.js";
 
@@ -88,7 +90,8 @@ export function createAccountController(input: {
   const refreshDetails = async (
     userId: string,
     accessToken: string,
-    version: number
+    version: number,
+    optIn?: { attempt: SignupAttempt; proof: string; email: string }
   ) => {
     if (!profileApi) return;
     if (!isCurrentProfile(userId, version)) return;
@@ -102,9 +105,32 @@ export function createAccountController(input: {
     publish({ details: { status: "loading" } });
     try {
       const value = await profileApi.getProfile(accessToken, userId);
+      if (
+        optIn &&
+        current() &&
+        value.emailUpdates.revision === 0 &&
+        value.emailUpdates.email === optIn.email
+      ) {
+        const { noticeVersion, noticeText } = value.emailUpdates;
+        const proof = createHash("sha256")
+          .update(
+            JSON.stringify([optIn.attempt.nonce, noticeVersion, noticeText])
+          )
+          .digest("hex");
+        if (proof === optIn.proof) {
+          value.emailUpdates = await profileApi.recordSignupOptIn(
+            accessToken,
+            value.emailUpdates
+          );
+        }
+      }
       if (current()) publish({ details: { status: "ready", value } });
     } catch {
-      if (current()) publish({ details: { status: "unavailable" } });
+      if (current())
+        publish({
+          details: { status: "unavailable" },
+          ...(optIn && { messageCode: "email_updates_unconfirmed" as const })
+        });
     }
   };
   const serial = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -435,7 +461,10 @@ export function createAccountController(input: {
             sealedState = url.searchParams.get("state");
           if (!code || !sealedState)
             throw new Error("Invalid sign-in response");
-          const session = await sdk().callback(code, sealedState);
+          const { signup, ...session } = await sdk().callback(
+            code,
+            sealedState
+          );
           if (version !== generation) return;
           const validated = await sdk().validate(session);
           const profile = sdk().profile(validated);
@@ -451,10 +480,21 @@ export function createAccountController(input: {
             busy: false,
             messageCode: null
           });
+          const proofs = url.searchParams.getAll("signup_opt_in");
+          const createdAt = profile.joinedAt
+            ? Date.parse(profile.joinedAt)
+            : NaN;
           await refreshDetails(
             profile.id,
             validated.session.accessToken,
-            version
+            version,
+            signup &&
+              createdAt >= signup.startedAt &&
+              createdAt <= Date.now() &&
+              proofs.length === 1 &&
+              /^[a-f0-9]{64}$/.test(proofs[0]!)
+              ? { attempt: signup, proof: proofs[0]!, email: profile.email }
+              : undefined
           );
         } catch (error) {
           fail(error, version);

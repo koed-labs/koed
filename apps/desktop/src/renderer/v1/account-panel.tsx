@@ -302,13 +302,28 @@ export function AccountPanel({
           </Button>
         ) : (
           !restoring && (
-            <Button
-              disabled={busy}
-              onClick={() => void run(() => api.signIn({ screen: "sign-in" }))}
-            >
-              <LogIn />
-              {expired ? "Sign in again" : "Sign in"}
-            </Button>
+            <div className="v1-account-auth-actions">
+              <Button
+                disabled={busy}
+                onClick={() =>
+                  void run(() => api.signIn({ screen: "sign-in" }))
+                }
+              >
+                <LogIn />
+                {expired ? "Sign in again" : "Sign in"}
+              </Button>
+              {!expired && (
+                <Button
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(() => api.signIn({ screen: "sign-up" }))
+                  }
+                >
+                  Create account
+                </Button>
+              )}
+            </div>
           )
         )}
       </section>

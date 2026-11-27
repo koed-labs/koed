@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   AuthKitCore,
   AuthOperations,
@@ -11,7 +12,11 @@ import {
   accountProfilePictureUrlSchema
 } from "@koed-labs/shared/account";
 import type { AccountConfig } from "./config.js";
-import { createAccountStorage } from "./storage.js";
+import {
+  createAccountStorage,
+  signupState,
+  type SignupAttempt
+} from "./storage.js";
 import { AccountOperationError } from "./errors.js";
 
 export function createAccountRuntime(
@@ -67,10 +72,25 @@ export function createAccountRuntime(
       });
 
       if (!isCurrent()) return;
-      await storage.setPending(sealedState);
+      const signup =
+        screenHint === "sign-up" &&
+        config.loginMode === "forwarder" &&
+        config.profileApiOrigin
+          ? {
+              nonce: randomBytes(32).toString("base64url"),
+              startedAt: Date.now()
+            }
+          : undefined;
+      const authorization = new URL(url);
+      if (signup)
+        authorization.searchParams.set(
+          "state",
+          signupState(sealedState, signup)
+        );
+      await storage.setPending(sealedState, signup);
       if (isCurrent()) {
         try {
-          await openExternal(url);
+          await openExternal(authorization.href);
         } catch (error) {
           throw new AccountOperationError("browser_unavailable", error);
         }
@@ -82,12 +102,19 @@ export function createAccountRuntime(
     },
     getProfile: storage.getProfile,
     setProfile: storage.setProfile,
-    async callback(code: string, state: string) {
+    async callback(
+      code: string,
+      state: string
+    ): Promise<Session & { signup?: SignupAttempt }> {
       const stored = await storage.takePending(state);
+      if (!stored) throw new Error("Sign-in attempt expired");
       const { core, client } = await provider();
       const { codeVerifier } = await core.verifyCallbackState({
-        stateFromUrl: state,
-        cookieValue: stored ?? undefined
+        stateFromUrl:
+          stored.signup && state !== stored.state
+            ? state.slice(signupState("", stored.signup).length)
+            : state,
+        cookieValue: stored.state
       });
       // The pinned public SDK accepts clientId/code/codeVerifier, not redirectUri.
       // WorkOS binds the code to the HTTPS redirect in the authorization request.
@@ -100,8 +127,10 @@ export function createAccountRuntime(
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
         user: result.user,
-        impersonator: result.impersonator
-      } satisfies Session;
+        impersonator: result.impersonator,
+        // Older forwarders echo the whole envelope. They never showed a checkbox.
+        signup: state === stored.state ? stored.signup : undefined
+      };
     },
     read: storage.read,
     save: storage.save,
