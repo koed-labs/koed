@@ -25,9 +25,9 @@ const databaseUrl = process.env.KOED_OAUTH_TEST_DATABASE_URL;
 
 // Only OAuth and task repositories are real here. User/session lookups use the
 // isolated database below; no semantic recall or Team fixture is simulated.
-describe.skipIf(!databaseUrl)(
-  "remote MCP HTTP and durable local execution",
-  () => {
+describe.skipIf(!databaseUrl).each([false, true])(
+  "remote MCP HTTP and durable local execution (progressive evidence: %s)",
+  (progressive) => {
     const database = `mcp_e2e_${randomUUID().replaceAll("-", "")}`;
     const admin = createDbPool({
       connectionString: databaseUrl ?? "postgresql://localhost/postgres"
@@ -122,7 +122,10 @@ describe.skipIf(!databaseUrl)(
         allowedOrigins: [origin],
         environment: {
           NODE_ENV: "test",
-          MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS: "true"
+          MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS: "true",
+          ...(progressive
+            ? { KOED_EXPERIMENTAL_PROGRESSIVE_EVIDENCE: "1" }
+            : {})
         },
         teamCollaborationEnabled: false
       });
@@ -350,9 +353,23 @@ describe.skipIf(!databaseUrl)(
         request: Record<string, unknown>;
       };
       expect(claimed.task.id).toBe(accepted);
+      const source = {
+        sourceType: "memory_node",
+        summaryText: "SYNTHETIC_SAVED_SOURCE " + "exact record ".repeat(5_000)
+      };
+      const inlineSource = {
+        sourceType: "memory_event",
+        summaryText: "SYNTHETIC_INLINE_SOURCE: restart the Kestrel service."
+      };
       const result = {
         markdown: "Synthetic local AI Client result",
-        citations: []
+        citations: [],
+        ...(progressive
+          ? {
+              evidence: [source, inlineSource],
+              structuredAnswer: { required_source_numbers: [1, 2] }
+            }
+          : {})
       };
       const completion = {
         lease_owner: "owner-local-worker",
@@ -413,6 +430,70 @@ describe.skipIf(!databaseUrl)(
         "Recall the synthetic decision"
       );
       expect(JSON.stringify(rows.rows)).not.toContain(result.markdown);
+      if (progressive) {
+        expect(JSON.stringify(rows.rows)).not.toContain(
+          "SYNTHETIC_SAVED_SOURCE"
+        );
+        expect(JSON.stringify(await answer)).not.toContain(
+          "SYNTHETIC_SAVED_SOURCE"
+        );
+        const delivered = (await answer).content as Array<{ text: string }>;
+        expect(JSON.parse(delivered[0]!.text)).toMatchObject({
+          next_evidence_reads: [{ source: 1, offset: 0 }],
+          inline_evidence: [{ source: 2, item: inlineSource }]
+        });
+        expect(JSON.stringify(rows.rows)).not.toContain(
+          "SYNTHETIC_INLINE_SOURCE"
+        );
+        const fetchPage = (
+          c: Client,
+          selections: Array<{ source: number; offset: number }>
+        ) =>
+          c.callTool({
+            name: "memory_answer_evidence",
+            arguments: { task_id: accepted, selections }
+          });
+        const selections = [
+          { source: 2, offset: 0 },
+          { source: 1, offset: 0 }
+        ];
+        let next = selections;
+        let full = "";
+        let readInlineSource = false;
+        while (next.length) {
+          const page = await fetchPage(client, next);
+          const content = page.content as Array<{ type: string; text: string }>;
+          expect(page.isError).not.toBe(true);
+          const body = JSON.parse(content[0]!.text) as {
+            pages: Array<{ source: number; text?: string; item?: unknown }>;
+            next_evidence_reads?: typeof next;
+          };
+          for (const record of body.pages) {
+            if (record.source === 2) {
+              expect(record.item).toEqual(inlineSource);
+              readInlineSource = true;
+            } else {
+              expect(record.source).toBe(1);
+              expect(typeof record.text).toBe("string");
+              full += record.text;
+            }
+          }
+          next = body.next_evidence_reads ?? [];
+        }
+        expect(readInlineSource).toBe(true);
+        expect(JSON.parse(full) as unknown).toEqual(source);
+        const otherReader = await connect(otherToken);
+        expect(await fetchPage(otherReader, selections)).toMatchObject({
+          isError: true
+        });
+        const revoked = await fetch(`${base}/revoke`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ client_id: clientId, token: readerToken })
+        });
+        expect(revoked.status).toBe(200);
+        await expect(fetchPage(client, selections)).rejects.toThrow();
+      }
       const restartedTasks = createMemoryAnswerTaskRepository(pool, {
         envelopeEncryptionProvider: encryptionProvider
       });

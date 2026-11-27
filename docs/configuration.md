@@ -1313,6 +1313,10 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_AI_CLIENT_INSTANCE`: selected local AI Client instance. Default `<provider>.default`.
 - `MEMORY_ANSWER_MODEL`: provider model for MCP Memory Answer synthesis. The Codex default is `gpt-5.6-luna`; Claude uses `haiku` when unset, and Pi requires an explicit full provider/model ID.
 - `MEMORY_ANSWER_REASONING_EFFORT`: provider-supported reasoning effort. Default `low`.
+- `KOED_EXPERIMENTAL_PROGRESSIVE_EVIDENCE=1`: opts in to the MCP evidence
+  delivery preview. Set it on the Local AI Runtime and the process serving
+  MCP, then restart both. Unset by default. See
+  [opt-in evidence delivery](durable-memory-answer.md#opt-in-evidence-delivery).
 - `MEMORY_ANSWER_NO_PROGRESS_TIMEOUT_MS`: maximum time without a completed
   synthesis or retrieval progress milestone (default `300000`).
 - `MEMORY_ANSWER_HARD_TIMEOUT_MS`: hard ceiling for one local Memory Answer

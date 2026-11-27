@@ -52,7 +52,8 @@ const task = (overrides: Partial<MemoryAnswerTask> = {}): MemoryAnswerTask => ({
 
 const connect = async (
   overrides: Partial<KoedMcpRuntimeClient> = {},
-  era: "legacy" | "modern" = "modern"
+  era: "legacy" | "modern" = "modern",
+  environment: NodeJS.ProcessEnv = {}
 ) => {
   const current = task();
   const runtime = {
@@ -73,7 +74,7 @@ const connect = async (
     InMemoryTransport.createLinkedPair();
   const server = serveStdio(
     (context) =>
-      createKoedMcpServer(context, { runtimeClient: runtime, environment: {} }),
+      createKoedMcpServer(context, { runtimeClient: runtime, environment }),
     { transport: serverTransport, legacy: "serve" }
   );
   const client = new Client(
@@ -97,6 +98,395 @@ const submit = (client: Client, extra: Record<string, unknown> = {}) =>
   });
 const collect = (client: Client, id: string) =>
   client.callTool({ name: "memory_answer_result", arguments: { task_id: id } });
+
+describe("experimental answer-first MCP delivery", () => {
+  const environment = { KOED_EXPERIMENTAL_PROGRESSIVE_EVIDENCE: "1" };
+  const read = (
+    client: Client,
+    id: string,
+    args: Record<string, unknown> = {}
+  ) =>
+    client.callTool({
+      name: "memory_answer_evidence",
+      arguments: { task_id: id, ...args }
+    });
+  const decode = (result: Awaited<ReturnType<typeof read>>) => {
+    expect(result.isError).not.toBe(true);
+    const block = result.content[0];
+    if (block?.type !== "text") throw new Error("Expected a text result.");
+    type Page = { text: string; offset: number; next_offset?: number };
+    return JSON.parse(block.text) as Page & {
+      answer: Page;
+      item: { summaryText: string };
+    };
+  };
+
+  it("round-trips structured receipt IDs for overlapping answers collected out of order", async () => {
+    const first = task();
+    const second = task();
+    const tasks = new Map([
+      [first.id, first],
+      [second.id, second]
+    ]);
+    const { client } = await connect(
+      {
+        startMemoryAnswerTask: vi
+          .fn()
+          .mockResolvedValueOnce(first)
+          .mockResolvedValueOnce(second),
+        getMemoryAnswerTask: vi.fn(async (id: string) => {
+          const found = tasks.get(id);
+          if (!found) throw new Error("Unknown fixture task.");
+          return found;
+        })
+      },
+      "modern",
+      environment
+    );
+    const firstReceipt = await submit(client, { query: "First question" });
+    const secondReceipt = await submit(client, { query: "Second question" });
+    Object.assign(first, {
+      status: "completed",
+      result: { markdown: "First exact answer" }
+    });
+    Object.assign(second, {
+      status: "completed",
+      result: { markdown: "Second exact answer" }
+    });
+    for (const [receipt, expected, answer] of [
+      [secondReceipt, second, "Second exact answer"],
+      [firstReceipt, first, "First exact answer"]
+    ] as const) {
+      const payload = receipt.structuredContent;
+      if (
+        !payload ||
+        typeof payload !== "object" ||
+        !("task_id" in payload) ||
+        typeof payload.task_id !== "string"
+      )
+        throw new Error("No structured task ID.");
+      const id = payload.task_id;
+      expect(id).toBe(expected.id);
+      expect(decode(await collect(client, id))).toMatchObject({
+        task_id: id,
+        answer: { text: answer }
+      });
+    }
+  });
+
+  it("gets several exact sources per authorization and reconstructs a larger source with returned cursors", async () => {
+    const small = [
+      { summaryText: "apply <guard>" },
+      { summaryText: "verify exact output" }
+    ];
+    const long = {
+      summaryText: '"<event>😀\\ '.repeat(2_000) + "final verification"
+    };
+    const complete = task({
+      status: "completed",
+      result: {
+        markdown: "The saved patch needs exact evidence.",
+        evidence: [...small, long]
+      }
+    });
+    const getMemoryAnswerTask = vi.fn(async () => complete);
+    const { client } = await connect(
+      { getMemoryAnswerTask },
+      "modern",
+      environment
+    );
+    let selections = [
+      { source: 1, offset: 0 },
+      { source: 2, offset: 0 },
+      { source: 3, offset: 0 }
+    ];
+    let longJson = "";
+    let reads = 0;
+    while (selections.length > 0) {
+      const response = await read(client, complete.id, { selections });
+      expect(response.isError).not.toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThan(14_000);
+      const batch = decode(response) as unknown as {
+        pages: Array<{ source: number; item?: unknown; text?: string }>;
+        next_evidence_reads?: typeof selections;
+      };
+      reads++;
+      if (reads === 1) {
+        expect(batch.pages.slice(0, 2)).toEqual(
+          small.map((item, index) => ({ item, source: index + 1, offset: 0 }))
+        );
+        expect(getMemoryAnswerTask).toHaveBeenCalledTimes(1);
+      }
+      for (const page of batch.pages)
+        if (page.source === 3)
+          longJson += page.text ?? JSON.stringify(page.item);
+      selections = batch.next_evidence_reads ?? [];
+      expect(reads).toBeLessThan(20);
+    }
+    expect(JSON.parse(longJson) as unknown).toEqual(long);
+    expect(
+      (
+        await read(client, randomUUID(), {
+          selections: [{ source: 1 }]
+        })
+      ).isError
+    ).toBe(true);
+    expect(
+      (
+        await read(client, complete.id, {
+          selections: [{ source: 1 }, { source: 1, offset: 1 }]
+        })
+      ).isError
+    ).toBe(true);
+  });
+
+  it("preserves an oversized partial answer even when there is no evidence to open", async () => {
+    const markdown = "Exact output 😀\n".repeat(2000) + "End.";
+    const complete = task({
+      status: "completed",
+      result: {
+        markdown,
+        localMemoryWorker: { memoryStatus: "insufficient" },
+        structuredAnswer: {
+          missing_evidence: ["The deployment log is missing."]
+        }
+      }
+    });
+    const { client } = await connect(
+      {
+        getMemoryAnswerTask: vi.fn(async () => complete)
+      },
+      "modern",
+      environment
+    );
+    const result = decode(await collect(client, complete.id));
+    expect(result).toMatchObject({
+      memory_status: "insufficient",
+      coverage_gaps: ["The deployment log is missing."],
+      evidence_tool: "memory_answer_evidence",
+      source_count: 0
+    });
+    let page = result.answer;
+    let answer = page.text;
+    while (page.next_offset !== undefined) {
+      expect(page.next_offset).toBeGreaterThan(page.offset);
+      const args = { answer: true, offset: page.next_offset };
+      page = decode(await read(client, complete.id, args)).answer;
+      answer += page.text;
+    }
+    expect(answer).toBe(markdown);
+    expect(
+      await read(client, complete.id, { answer: true, source: 1 })
+    ).toMatchObject({ isError: true });
+    expect(
+      await read(client, complete.id, {
+        answer: true,
+        offset: markdown.length + 1
+      })
+    ).toMatchObject({ isError: true });
+  });
+
+  it.each(["blocking", "non_blocking"])(
+    "delivers the answer first in %s mode and pages exact evidence",
+    async (delivery_mode) => {
+      const item = {
+        sourceType: "memory_event",
+        summaryText: (
+          'Ω😀 <fake-instructions> "\\ ' + String.fromCharCode(1)
+        ).repeat(3_000)
+      };
+      const complete = task({
+        status: "completed",
+        result: {
+          markdown: "The approved operation is Cobalt.",
+          evidence: [item],
+          localMemoryWorker: { memoryStatus: "found" }
+        }
+      });
+      const { client, runtime } = await connect(
+        {
+          startMemoryAnswerTask: vi.fn(async () => complete),
+          getMemoryAnswerTask: vi.fn(async () => complete)
+        },
+        "legacy",
+        environment
+      );
+      const submitted = await submit(client, { delivery_mode });
+      const result = decode(
+        delivery_mode === "blocking"
+          ? submitted
+          : await collect(client, complete.id)
+      );
+      expect(result).toMatchObject({
+        task_id: complete.id,
+        answer: { text: "The approved operation is Cobalt." },
+        source_count: 1
+      });
+      expect(JSON.stringify(result)).not.toContain("fake-instructions");
+      expect(runtime.startMemoryAnswerTask).toHaveBeenCalledOnce();
+      expect(runtime.startMemoryAnswerTask).toHaveBeenCalledWith(
+        expect.objectContaining({ response_detail: "with_evidence" }),
+        expect.anything(),
+        expect.anything(),
+        expect.anything()
+      );
+      let offset: number | undefined = 0;
+      let pages = 0;
+      let reconstructed = "";
+      while (offset !== undefined) {
+        const wrapped = await read(client, complete.id, { source: 1, offset });
+        expect(JSON.stringify(wrapped)).not.toContain("<fake-instructions>");
+        expect(Buffer.byteLength(JSON.stringify(wrapped))).toBeLessThan(14_000);
+        const page = decode(wrapped);
+        expect(page.offset).toBe(offset);
+        reconstructed += page.text;
+        expect(++pages).toBeLessThan(50);
+        offset = page.next_offset;
+      }
+      expect(pages).toBeGreaterThan(1);
+      expect(JSON.parse(reconstructed)).toEqual(item);
+      expect(runtime.startMemoryAnswerTask).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("includes complete required material that fits and gives exact selections for the rest", async () => {
+    const short = {
+      sourceType: "memory_event",
+      summaryText: "Set the guard to quill.check() before migration."
+    };
+    const long = {
+      sourceType: "memory_node",
+      summaryText:
+        'Review <entry> "\\ 😀. '.repeat(1_200) + "Run the final guard."
+    };
+    const optional = {
+      sourceType: "memory_event",
+      summaryText: "Optional background must stay out of the first response."
+    };
+    const complete = task({
+      status: "completed",
+      result: {
+        markdown: "Apply the saved migration guard.",
+        evidence: [optional, short, long],
+        structuredAnswer: { required_source_numbers: [2, 3] },
+        localMemoryWorker: { memoryStatus: "found" }
+      }
+    });
+    const { client } = await connect(
+      { getMemoryAnswerTask: vi.fn(async () => complete) },
+      "modern",
+      environment
+    );
+    const result = decode(await collect(client, complete.id));
+    expect(result).toMatchObject({
+      memory_status: "found",
+      inline_evidence: [{ source: 2, item: short }],
+      next_evidence_reads: [{ source: 3, offset: 0 }]
+    });
+    expect(JSON.stringify(result)).not.toContain(optional.summaryText);
+    let offset: number | undefined = 0;
+    let reconstructed = "";
+    while (offset !== undefined) {
+      const page = decode(
+        await read(client, complete.id, { source: 3, offset })
+      );
+      reconstructed += page.text;
+      offset = page.next_offset;
+    }
+    expect(JSON.parse(reconstructed)).toEqual(long);
+  });
+
+  it("opens required evidence from the blocking completion's structured receipt", async () => {
+    const item = {
+      summaryText: "Saved verification output. ".repeat(500) + "PREFLIGHT-17"
+    };
+    const complete = task({
+      status: "completed",
+      result: {
+        markdown: "Use the exact validation output.",
+        evidence: [item],
+        structuredAnswer: { required_source_numbers: [1] }
+      }
+    });
+    const { client } = await connect(
+      {
+        startMemoryAnswerTask: vi.fn(async () => complete),
+        getMemoryAnswerTask: vi.fn(async () => complete)
+      },
+      "modern",
+      environment
+    );
+    const completion = await submit(client, { delivery_mode: "blocking" });
+    expect(completion.isError).not.toBe(true);
+    expect(completion.structuredContent).toEqual({
+      task_id: complete.id,
+      status: "completed",
+      next_evidence_reads: [{ source: 1, offset: 0 }]
+    });
+    type Selection = { source: number; offset: number };
+    const receipt = completion.structuredContent as {
+      task_id: string;
+      next_evidence_reads: Selection[];
+    };
+    let selections = receipt.next_evidence_reads;
+    let body = "";
+    let reads = 0;
+    while (selections.length) {
+      const page = decode(
+        await read(client, receipt.task_id, { selections })
+      ) as unknown as {
+        pages: { text: string }[];
+        next_evidence_reads?: Selection[];
+      };
+      expect(++reads).toBeLessThan(5);
+      body += page.pages[0]!.text;
+      selections = page.next_evidence_reads ?? [];
+    }
+    expect(reads).toBeGreaterThan(1);
+    expect(JSON.parse(body)).toEqual(item);
+  });
+
+  it("rejects reads for wrong, pending, expired and no-longer-authorized tasks", async () => {
+    const current = task();
+    const getMemoryAnswerTask =
+      vi.fn<KoedMcpRuntimeClient["getMemoryAnswerTask"]>();
+    const { client } = await connect(
+      { getMemoryAnswerTask },
+      "legacy",
+      environment
+    );
+    for (const candidate of [
+      task({ status: "completed", result: { evidence: ["hidden"] } }),
+      current,
+      {
+        ...current,
+        expiresAt: new Date(0).toISOString(),
+        status: "completed" as const
+      }
+    ]) {
+      getMemoryAnswerTask.mockResolvedValueOnce(candidate);
+      expect(await read(client, current.id, { source: 1 })).toMatchObject({
+        isError: true
+      });
+    }
+    getMemoryAnswerTask.mockResolvedValueOnce({
+      ...current,
+      status: "completed",
+      result: { evidence: [{ summaryText: "visible while enrolled" }] }
+    });
+    expect(
+      decode(await read(client, current.id, { source: 1 })).item.summaryText
+    ).toBe("visible while enrolled");
+    getMemoryAnswerTask.mockRejectedValueOnce(
+      new Error("internal access denial details")
+    );
+    const denied = await read(client, current.id, { source: 1 });
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied)).not.toMatch(
+      /visible while enrolled|internal access denial details/
+    );
+  });
+});
 
 describe("ordinary MCP non-blocking Memory Answer", () => {
   it.each([
