@@ -1,5 +1,21 @@
 # Koed
 
+## 1.5.0
+
+### Minor Changes
+
+- 1e84461: Home and Settings now distinguish AI Client connection health from Memory Model availability. Selecting a client on Home opens its Settings row. Historical imports count terminal observations and wait for Projection, Embedding, and LCM progress to agree before completing.
+
+- ca91f31: Home's Conversation coins are now drawn by kin-engine, with the same renderer as the Kin. Coins render at the display's density (or as crisp pixel art with the classic Kin resolution), carry their AI Client's mark, gleam when active today and tarnish after 30 days. A hovered coin stands up to face you. Without WebGL2, Home keeps the vector coin.
+
+### Patch Changes
+
+- 8f3f8be: Fix Memory Answers requested from Claude Code and Codex failing immediately with `personal_selection_incompatible`. Accepted tasks that carry the current Conversation binding now run instead of being rejected before retrieval.
+
+- f919f61: Fix Codex Conversations never being captured when Koed Desktop is started from Finder and Codex is installed outside the inherited `PATH`, for example with Homebrew on Apple Silicon. The Transcript Watcher now reads history metadata through the Codex executable that setup registered.
+
+- 8911c9c: Give npm up to 20 minutes to make a newly published release candidate visible before timing out, without relaxing release approval or integrity checks.
+
 ## 1.4.0
 
 ### Minor Changes
