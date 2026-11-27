@@ -520,7 +520,7 @@ label.v1-pm-choice-row:hover {
 .v1-pm-dragging {
   opacity: 0.45;
 }
-.v1-pm-drag-ghost {
+.v1-app.v1-pm-drag-ghost {
   position: fixed;
   inset: 0 auto auto 0;
   z-index: 100;
@@ -528,15 +528,18 @@ label.v1-pm-choice-row:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 250px;
-  padding: 10px 12px;
+  width: max-content;
+  max-width: 250px;
+  height: auto;
+  padding: 7px 10px;
   border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--popover);
-  color: var(--foreground);
+  border: 1px solid var(--v1-border);
+  background: var(--v1-card);
+  font-size: 12px;
   box-shadow: 0 8px 28px #0004;
 }
-.v1-pm-drag-ghost span {
+.v1-pm-drag-title {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

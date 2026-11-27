@@ -20,7 +20,8 @@ export const v1ProfileSchema = z
         selections: z
           .record(z.string().max(80), z.string().max(512))
           .default({}),
-        completed: z.boolean().default(false)
+        completed: z.boolean().default(false),
+        homeTour: z.enum(["pending", "dismissed"]).optional()
       })
       .strict()
       .default({ selections: {}, completed: false })

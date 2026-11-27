@@ -543,6 +543,13 @@ const run = async () => {
     const savedLook = await evaluate(
       "window.onboardingValidation.profile().agentLook"
     );
+    assert.equal(
+      await evaluate(
+        "window.onboardingValidation.profile().onboarding.homeTour"
+      ),
+      "pending",
+      "finishing first-run setup makes the Home tour available"
+    );
     await window.reload();
     await waitFor(
       "!!document.querySelector('.v1-app') && !document.querySelector('.lp-workspace')"

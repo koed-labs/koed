@@ -23,6 +23,19 @@ the sidebar shows that state rather than an empty Conversation list.
 and Folder with captured Conversations, including Conversations a named Project
 also includes. **No anchor** lists Conversations that have no Git Anchor or
 Folder, whether or not they belong to a named Project.
+
+After setup and the initial history import, Home shows a short tour of the
+sidebar. It shows where to find captured Conversations, how to create a
+Project with **+**, and how to add a Conversation to it. Choose **Skip tour**
+to continue on your own.
+
+In a wide window, drag the right edge of the sidebar to give titles more room.
+You can also focus the divider and use the left and right arrow keys. Koed
+remembers the width when you reopen the sidebar or restart Desktop.
+To add a Conversation to a named Project, drag it from **Anchors** onto the
+Project. Its icon and title follow the pointer, and the destination Project
+highlights. You can still find the Conversation under its original Anchor.
+
 Each Anchor expands to its Conversations like a Project. Outside search, only
 one Project or Anchor is open at a time. An open group shows five Conversations
 and a **Load More** button; the Projects and Anchors lists themselves load more

@@ -62,12 +62,15 @@ import {
   type NavigationRoute
 } from "./project-sidebar-model.js";
 import { useSidebarPins } from "./use-sidebar-pins.js";
+import type { HomeSidebarTourStep } from "./home/HomeSidebarTour.js";
 import { useConversationDrag } from "./project-management/use-conversation-drag.js";
 import "./project-management/project-management.css";
 
 const CONVERSATIONS_PER_PAGE = 5;
 const GROUPS_PER_PAGE = 15;
 const LOAD_MORE_THRESHOLD = 120;
+const canDragConversation = (row: SidebarConversation) =>
+  Boolean(row.sessionId && !row.managementPending);
 
 export type SidebarLive = {
   marker: (row: SidebarConversation) => ReactNode;
@@ -88,6 +91,18 @@ export type SidebarManagement = {
   onDrop: (row: SidebarConversation, projectId: string) => Promise<unknown>;
   busy?: boolean;
 };
+
+function ConversationIcon({
+  client
+}: {
+  client: SidebarConversation["client"];
+}) {
+  return (
+    <span className={`v1-nav-client-mark ${client ?? ""}`} aria-hidden="true">
+      {client ? <AiClientLogo id={client} /> : <MessageCircle />}
+    </span>
+  );
+}
 
 function ProjectActions({
   name,
@@ -189,7 +204,10 @@ export function ProjectSidebar({
   onRetry,
   reveal,
   management,
-  live
+  live,
+  tourStep,
+  tourProjectId,
+  onTourAnchor
 }: {
   projects: readonly SidebarProject[];
   route: NavigationRoute;
@@ -207,11 +225,15 @@ export function ProjectSidebar({
   reveal?: { projectId: string; key: number } | null;
   management?: SidebarManagement;
   live?: SidebarLive;
+  tourStep?: HomeSidebarTourStep;
+  tourProjectId?: string;
+  onTourAnchor?: (element: HTMLElement | null) => void;
 }) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [visibleCounts, setVisibleCounts] = useState(new Map<string, number>());
   const initialized = useRef(false);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [anchorsOpen, setAnchorsOpen] = useState(false);
   const [projectCount, setProjectCount] = useState(GROUPS_PER_PAGE);
@@ -286,13 +308,60 @@ export function ProjectSidebar({
   const searching = Boolean(query.trim());
   const projectGroups = visible.filter((group) => !isAnchorGroup(group));
   const anchorGroups = visible.filter(isAnchorGroup);
+  const tourProject =
+    tourStep === 3
+      ? (projectGroups.find(
+          ({ id, managed }) => managed && id === tourProjectId
+        ) ?? projectGroups.find(({ managed }) => managed))
+      : undefined;
+  const tourDestinationId = tourProject?.id;
+  const tourSource = tourDestinationId
+    ? anchorGroups.find((group) =>
+        group.conversations.some(canDragConversation)
+      )
+    : undefined;
+  const tourSourceId = tourSource?.id;
+  const tourSourceKey =
+    tourSource?.conversations.find(canDragConversation)?.key;
+  const tourTarget = !tourStep
+    ? undefined
+    : tourStep === 1 && anchorGroups.length
+      ? "anchors"
+      : tourStep === 2 && management
+        ? "create-project"
+        : tourProject
+          ? "project"
+          : "projects";
+  useEffect(() => {
+    if (tourStep === 1) setAnchorsOpen(true);
+    if (!tourDestinationId) return;
+    setProjectsOpen(true);
+    if (tourSourceId) {
+      setAnchorsOpen(true);
+      setExpanded(new Set([tourSourceId]));
+    }
+    const frame = requestAnimationFrame(() => {
+      contentRef.current
+        ?.querySelector<HTMLElement>(
+          '[data-home-tour-target="project"][data-home-tour-highlight]'
+        )
+        ?.scrollIntoView?.({ block: "nearest" });
+      contentRef.current
+        ?.querySelector<HTMLElement>("[data-home-tour-source]")
+        ?.scrollIntoView?.({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [tourStep, tourDestinationId, tourSourceId, tourSourceKey]);
   // Keep the open group and the No anchor fallback accessible on every page.
   const page = (groups: SidebarProject[], count: number) =>
     query.trim()
       ? groups
       : groups.filter(
           (group, index) =>
-            index < count || group.id === NO_ANCHOR_ID || expanded.has(group.id)
+            index < count ||
+            group.id === NO_ANCHOR_ID ||
+            expanded.has(group.id) ||
+            group.id === tourDestinationId
         );
   const shownProjects = page(projectGroups, projectCount);
   const shownAnchors = page(anchorGroups, anchorCount);
@@ -316,9 +385,13 @@ export function ProjectSidebar({
     const shown = query.trim()
       ? project.conversations
       : project.conversations.filter(
-          (row, index) => index < limit || selected(row)
+          (row, index) =>
+            index < limit ||
+            selected(row) ||
+            (project.id === tourSourceId && row.key === tourSourceKey)
         );
     const remaining = project.conversations.length - shown.length;
+    const tourDestination = project.id === tourDestinationId;
     return (
       <SidebarMenuItem
         key={project.id}
@@ -342,6 +415,9 @@ export function ProjectSidebar({
           >
             <Collapsible.Trigger
               render={<SidebarMenuButton className="v1-nav-project" />}
+              ref={tourDestination ? onTourAnchor : undefined}
+              data-home-tour-target={project.managed ? "project" : undefined}
+              data-home-tour-highlight={tourDestination ? true : undefined}
             >
               {open ? <ChevronDown /> : <ChevronRight />}
               {project.managed ? (
@@ -439,31 +515,33 @@ export function ProjectSidebar({
         : { ...row, sourceProjectId: undefined };
     const canManage =
       row.sessionId && !row.managementPending && !management?.busy;
+    const dragging =
+      drag.ghost?.groupId === groupId && drag.ghost.row.key === row.key;
     const marker = live?.marker(row) ?? null;
     const showPreview = live?.preview?.(row) ?? null;
     return (
       <SidebarMenuSubItem
-        className={`v1-nav-conversation-wrap ${drag.ghost?.row.key === row.key ? "v1-pm-dragging" : ""}`}
+        className={`v1-nav-conversation-wrap ${dragging ? "v1-pm-dragging" : ""}`}
         data-live={marker ? true : undefined}
         data-row-key={`${groupId}:${row.key}`}
         key={row.key}
       >
         <SidebarMenuSubButton
-          {...drag.handlers(dragRow)}
+          {...drag.handlers(dragRow, groupId)}
           render={<button type="button" />}
           className="v1-nav-conversation"
+          data-home-tour-source={
+            groupId === tourSourceId && row.key === tourSourceKey
+              ? true
+              : undefined
+          }
           isActive={primary}
           aria-current={primary ? "page" : undefined}
           data-also-open={selected(row) && !primary ? true : undefined}
           title={`${row.title} · ${row.projectName}`}
           onClick={() => onSelect(openSidebarConversation(row, groupId))}
         >
-          <span
-            className={`v1-nav-client-mark ${row.client ?? ""}`}
-            aria-hidden="true"
-          >
-            {row.client ? <AiClientLogo id={row.client} /> : <MessageCircle />}
-          </span>
+          <ConversationIcon client={row.client} />
           <span className="v1-nav-copy">
             <span>
               {isPinned && (
@@ -586,6 +664,7 @@ export function ProjectSidebar({
         </div>
       </SidebarHeader>
       <SidebarContent
+        ref={contentRef}
         className="v1-nav-scroll"
         onClickCapture={(event) => {
           if (drag.suppressClick.current) {
@@ -608,7 +687,14 @@ export function ProjectSidebar({
             onOpenChange={setProjectsOpen}
           >
             <div className="v1-nav-heading v1-nav-section-heading v1-pm-project-heading">
-              <Collapsible.Trigger className="v1-nav-heading-toggle">
+              <Collapsible.Trigger
+                className="v1-nav-heading-toggle"
+                ref={tourTarget === "projects" ? onTourAnchor : undefined}
+                data-home-tour-target="projects"
+                data-home-tour-highlight={
+                  tourTarget === "projects" ? true : undefined
+                }
+              >
                 <ChevronDown
                   className={projectsOpen || searching ? "" : "closed"}
                 />
@@ -630,6 +716,13 @@ export function ProjectSidebar({
                     variant="ghost"
                     size="icon-xs"
                     aria-label="Create Project"
+                    ref={
+                      tourTarget === "create-project" ? onTourAnchor : undefined
+                    }
+                    data-home-tour-target="create-project"
+                    data-home-tour-highlight={
+                      tourTarget === "create-project" ? true : undefined
+                    }
                     title="Create Project"
                     disabled={management.busy}
                     onClick={management.onCreateProject}
@@ -699,7 +792,14 @@ export function ProjectSidebar({
               onOpenChange={setAnchorsOpen}
             >
               <div className="v1-nav-heading v1-nav-section-heading">
-                <Collapsible.Trigger className="v1-nav-heading-toggle">
+                <Collapsible.Trigger
+                  className="v1-nav-heading-toggle"
+                  ref={tourTarget === "anchors" ? onTourAnchor : undefined}
+                  data-home-tour-target="anchors"
+                  data-home-tour-highlight={
+                    tourTarget === "anchors" ? true : undefined
+                  }
+                >
                   <ChevronDown
                     className={anchorsOpen || searching ? "" : "closed"}
                   />
@@ -728,13 +828,14 @@ export function ProjectSidebar({
       {drag.ghost &&
         createPortal(
           <div
-            className="v1-app v1-project-ui v1-pm-drag-ghost"
+            className="v1-app v1-pm-drag-ghost"
+            aria-hidden="true"
             style={{
-              transform: `translate(${drag.ghost.x}px, ${drag.ghost.y}px)`
+              transform: `translate(${drag.ghost.x + 12}px, ${drag.ghost.y + 12}px)`
             }}
           >
-            <ArrowRight size={14} />
-            <span>{drag.ghost.row.title}</span>
+            <ConversationIcon client={drag.ghost.row.client} />
+            <span className="v1-pm-drag-title">{drag.ghost.row.title}</span>
           </div>,
           document.body
         )}
