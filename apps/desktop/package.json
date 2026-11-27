@@ -1,7 +1,7 @@
 {
   "name": "@koed-labs/desktop",
   "productName": "Koed",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Electron control surface for Koed local personal installs.",
   "author": "Koed",
   "private": true,

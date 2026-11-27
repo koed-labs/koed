@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
-  "sourceRelease": "v1.3.0",
+  "sourceRelease": "v1.4.0",
   "provenance": {
-    "releaseId": 457473700,
-    "nativeCatalogAssetId": 789364566,
-    "nativeCatalogUrl": "https://github.com/koed-labs/koed/releases/download/v1.3.0/native-runtime-catalog.json",
-    "nativeCatalogSha256": "9127ed14f6f87f9bfc6ac91f8a568b577f127a30368ddba32d22cdf7f8bcbcb8"
+    "releaseId": 459252161,
+    "nativeCatalogAssetId": 795399004,
+    "nativeCatalogUrl": "https://github.com/koed-labs/koed/releases/download/v1.4.0/native-runtime-catalog.json",
+    "nativeCatalogSha256": "a6bb258aba24e5a7cce8c2f20e5b302b89564451dcd387cccce008ca7e25906d"
   },
   "native": {
     "schemaVersion": 1,
@@ -13,7 +13,7 @@
     "core": {
       "recipeId": "f4ff165a91e23eae1278c93ee7a72376cc4e7418eea30c16ee6561cde66690e6",
       "runtimeVersion": "1.0.0",
-      "url": "https://github.com/koed-labs/koed/releases/download/v1.3.0/koed-native-core-f4ff165a91e23eae1278c93ee7a72376cc4e7418eea30c16ee6561cde66690e6-linux-x64.tar.gz",
+      "url": "https://github.com/koed-labs/koed/releases/download/v1.4.0/koed-native-core-f4ff165a91e23eae1278c93ee7a72376cc4e7418eea30c16ee6561cde66690e6-linux-x64.tar.gz",
       "sha256": "1e46555a37e69f20838fc7a78340e8519146fa20e8eb269261e638291dcbd98e",
       "manifestSha256": "4a6d8968f6505e6338d66f9bc039635fcc5a42c0ac39494f07be17fc6f43bc7d",
       "target": {
@@ -48,7 +48,7 @@
     "cuda": {
       "recipeId": "16722edc4647561a6615063cd1ad29bcf4da8ec9bc2666847069441f592a7f93",
       "runtimeVersion": "1.0.0",
-      "url": "https://github.com/koed-labs/koed/releases/download/v1.3.0/koed-native-cuda-16722edc4647561a6615063cd1ad29bcf4da8ec9bc2666847069441f592a7f93-linux-x64.tar.gz",
+      "url": "https://github.com/koed-labs/koed/releases/download/v1.4.0/koed-native-cuda-16722edc4647561a6615063cd1ad29bcf4da8ec9bc2666847069441f592a7f93-linux-x64.tar.gz",
       "sha256": "b63eca8bb05e1ef37e38bcd3d70edda3edb9b0fe984a35e9f18aa77fb4b07188",
       "manifestSha256": "47de6e6876ead9bf052477249f0a7ccaffba615de5daf9506a87ef9c4055eba6",
       "target": {
