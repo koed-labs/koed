@@ -3,6 +3,9 @@ packages:
   - "packages/*"
 
 minimumReleaseAge: 1440
+# First-party Kin engine releases are consumed as soon as they are published.
+minimumReleaseAgeExclude:
+  - "@koed-labs/kin-engine"
 trustPolicy: no-downgrade
 trustPolicyIgnoreAfter: 525600
 blockExoticSubdeps: true
