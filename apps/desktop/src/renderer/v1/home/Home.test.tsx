@@ -341,6 +341,42 @@ describe("Home", () => {
     expect(onOpenConversation).toHaveBeenCalledWith("loose");
   });
 
+  it("does not cache coin artwork when a completed draw loses WebGL", async () => {
+    const canvas = document.createElement("canvas");
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+      clearRect: vi.fn()
+    } as unknown as CanvasRenderingContext2D);
+    const draw = vi.fn().mockReturnValue(canvas);
+    const gl = { isContextLost: () => true } as WebGL2RenderingContext;
+    vi.spyOn(stage, "pixelkinEngineAvailable").mockReturnValue(true);
+    vi.spyOn(stage, "sharedKinRenderer").mockReturnValue({
+      render: draw,
+      canvas,
+      available: true,
+      ready: Promise.resolve(),
+      gl
+    });
+    const conversation = {
+      title: "Loose chat",
+      latestAt: "2026-11-02T00:00:00Z",
+      client: null
+    };
+    await render({
+      entries: [],
+      looseConversations: [
+        { ...conversation, key: "first" },
+        { ...conversation, key: "second" }
+      ],
+      onOpenConversation: vi.fn()
+    });
+
+    expect(draw).toHaveBeenCalledTimes(4);
+    expect(
+      container.querySelectorAll(".v1-home-floor-coin .v1-coin-vector > svg")
+    ).toHaveLength(4);
+  });
+
   const pointer = (
     target: Element,
     type: string,

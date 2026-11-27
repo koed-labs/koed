@@ -34,6 +34,7 @@ const FLOOR_CAMERA_SLOPE = 7 / 9;
 const FACING_CAMERA_HEIGHT = 0;
 
 const cache = new Map<string, HTMLCanvasElement>();
+const hitShapes = new WeakMap<HTMLCanvasElement, string>();
 const marks = new Map<SupportedAiClientDriverId, ConversationCoverageMask>();
 /** Each mark's client, so cache keys name the mark instead of its samples. */
 const markIds = new WeakMap<object, string>();
@@ -116,7 +117,7 @@ function render(description: ConversationDescription, ratio: number) {
     }
   };
   try {
-    if (!gl.render(scene)) return null;
+    if (!gl.render(scene) || gl.gl?.isContextLost()) return null;
   } catch {
     // Context loss can throw instead of returning null. Use the vector coin.
     return null;
@@ -141,7 +142,36 @@ function render(description: ConversationDescription, ratio: number) {
     size,
     size
   );
-  return out;
+  return gl.gl?.isContextLost() ? null : out;
+}
+
+/** Trace the opaque run on each row of the standing coin, excluding the
+ * transparent corners of its canvas from browser hit testing. */
+function coinHitShape(art: HTMLCanvasElement) {
+  const cached = hitShapes.get(art);
+  if (cached) return cached;
+  const size = art.width;
+  const pixels = art.getContext("2d")?.getImageData(0, 0, size, size).data;
+  if (!pixels) return "inset(50%)";
+  const left: string[] = [];
+  const right: string[] = [];
+  const point = (x: number, y: number) =>
+    `${(100 * x) / size}% ${(100 * y) / size}%`;
+  for (let y = 0; y < size; y++) {
+    const alpha = (x: number) => pixels[4 * (y * size + x) + 3];
+    let start = 0;
+    while (start < size && !alpha(start)) start++;
+    if (start === size) continue;
+    let end = size - 1;
+    while (end > start && !alpha(end)) end--;
+    left.push(point(start, y), point(start, y + 1));
+    right.push(point(end + 1, y), point(end + 1, y + 1));
+  }
+  const shape = left.length
+    ? `polygon(${left.concat(right.reverse()).join(", ")})`
+    : "inset(50%)";
+  hitShapes.set(art, shape);
+  return shape;
 }
 
 /** Paints a coin into `canvas`, a COIN_FRAME-pixel square in CSS. Returns
@@ -167,6 +197,8 @@ export function paintCoin(
   if (!context) return false;
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.drawImage(art, 0, 0);
+  if (canvas.dataset.hover === "show" && canvas.closest(".v1-home-floor-coin"))
+    canvas.style.setProperty("--coin-hit-shape", coinHitShape(art));
   // Classic stays crisp; denser renders let the browser filter them down.
   if (ratio === 1) canvas.dataset.pixelated = "";
   else delete canvas.dataset.pixelated;
