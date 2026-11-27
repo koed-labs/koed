@@ -916,6 +916,11 @@ button.v1-home-pill[data-repair]:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.v1-home-floor-ago {
+  flex: none;
+  color: var(--v1-muted);
+  font-variant-numeric: tabular-nums;
+}
 .v1-home-floor-coin:hover .v1-home-floor-title[style*="--marquee"],
 .v1-home-floor-coin:focus-visible .v1-home-floor-title[style*="--marquee"] {
   animation: v1-home-title-slide 4s ease-in-out 0.7s infinite alternate;

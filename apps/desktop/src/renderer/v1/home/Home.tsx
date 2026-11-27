@@ -1321,7 +1321,11 @@ function FloorCoin({
   const title = useRef<HTMLSpanElement>(null);
   // A title wider than the tooltip is cut off with an ellipsis and, while the
   // tooltip is up, slides to show the rest (not under reduced motion).
-  const measureTitle = () =>
+  // When the tooltip last opened, for how long ago the Conversation was
+  // active; it is read again each time the tooltip opens.
+  const [tipAt, setTipAt] = useState(() => Date.now());
+  const measureTitle = () => {
+    setTipAt(Date.now());
     requestAnimationFrame(() => {
       const label = title.current;
       if (!label) return;
@@ -1330,6 +1334,7 @@ function FloorCoin({
         label.style.setProperty("--marquee", `-${overflow + 4}px`);
       else label.style.removeProperty("--marquee");
     });
+  };
   const [flight, setFlight] = useState<CoinMotion | null>(null);
   // How far up the resting band this coin lies; it lands on this lane.
   const lane = home.lane;
@@ -1712,6 +1717,9 @@ function FloorCoin({
         )}
         <span className="v1-home-floor-title" ref={title}>
           {conversation.title}
+        </span>
+        <span className="v1-home-floor-ago">
+          {formatHomeAgo(conversation.latestAt, tipAt)}
         </span>
       </span>
     </button>
