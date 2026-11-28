@@ -17,12 +17,12 @@ import {
 } from "./codex-transcript-journal.js";
 import {
   buildCodexTranscriptConversationItems,
+  codexHistoricalImportItem,
   parseTranscriptJournalBytes,
   transcriptJournalParserState,
   type TranscriptContext,
   type TranscriptJournalParserState
 } from "./codex-transcript-parser.js";
-import type { RawConversationItemRequest } from "./conversation-source-types.js";
 import {
   type HistoricalCandidateSelection,
   type HistoricalProviderBatchResult,
@@ -228,46 +228,7 @@ const transitionSourceOneStep = async (
   );
 };
 
-const historicalItem = (item: RawConversationItemRequest) => ({
-  observationOnly: item.observationOnly,
-  sessionId: item.sessionId,
-  turnId: item.turnId,
-  externalThreadId: item.externalThreadId,
-  externalTurnId: item.externalTurnId,
-  externalItemId: item.externalItemId,
-  parentExternalItemId: item.parentExternalItemId,
-  sourceRecordType: item.sourceRecordType,
-  sourceEventType: item.sourceEventType,
-  sourceLineNumber: item.sourceLineNumber,
-  sourceSequence: item.sourceSequence,
-  eventTime: item.eventTime,
-  rawJson: item.rawJson,
-  rawText: item.rawText,
-  logicalSourceId: item.logicalSourceId,
-  transportChunkIndex: item.transportChunkIndex,
-  transportChunkCount: item.transportChunkCount,
-  transportChunkText: item.transportChunkText,
-  transportChunkEncoding: item.transportChunkEncoding,
-  sourceHash: item.sourceHash,
-  idempotencyKey: item.idempotencyKey,
-  canonicalItemKey: item.canonicalItemKey,
-  canonicalStableItemId: item.canonicalStableItemId,
-  canonicalSourcePriority: item.canonicalSourcePriority,
-  observationKind: item.observationKind,
-  observationComponent: item.observationComponent,
-  projectionStatus: item.projectionStatus,
-  projectionVersion: "codex-transcript-v1" as const,
-  metadata: {
-    ...(item.metadata ?? {}),
-    transcriptItemDiscriminator:
-      typeof item.metadata?.transcriptItemDiscriminator === "string" &&
-      item.metadata.transcriptItemDiscriminator.trim()
-        ? item.metadata.transcriptItemDiscriminator
-        : (item.canonicalStableItemId ??
-          item.externalItemId ??
-          `source:${item.sourceLineNumber ?? item.sourceSequence ?? 0}`)
-  }
-});
+const historicalItem = codexHistoricalImportItem;
 
 const parserState = (
   checkpoint: ReturnType<typeof parseTranscriptJournalBytes>["checkpoint"]
@@ -438,7 +399,16 @@ export const buildCodexHistoricalBatch = (input: {
           input.config.maxBatchBytes
       ) {
         if (localOffset === 0) {
-          throw new Error("historical_record_exceeds_batch_limit");
+          // The first unit of the batch does not fit and there is no smaller
+          // one. It is committed as a journal range instead of as items.
+          return {
+            bytesConsumed: 0,
+            sourceLine: line,
+            parserState: state,
+            malformedRecordCount,
+            items: [],
+            journalRangeBytes: pageEnd
+          };
         }
         break recordLoop;
       }
@@ -455,7 +425,8 @@ export const buildCodexHistoricalBatch = (input: {
     sourceLine: line,
     parserState: state,
     malformedRecordCount,
-    items
+    items,
+    journalRangeBytes: 0
   };
 };
 
@@ -492,20 +463,58 @@ const importNextBatch = async (input: {
     frontier - segment.sourceStartOffset
   );
   const available = segmentBytes.subarray(start, end);
-  const bounded = available.subarray(
-    0,
-    nextLineBoundary(available, input.config.maxBatchBytes)
-  );
-  const batch = buildCodexHistoricalBatch({
-    bytes: bounded,
-    absoluteStartOffset: input.source.historicalCursorOffset,
-    lineIndexOffset: input.source.historicalCursorLine,
-    prior: (input.source.historicalCursorParserState ??
-      {}) as TranscriptJournalParserState,
-    source: input.source,
-    selection: input.selection,
-    config: input.config
-  });
+  let boundedEnd = nextLineBoundary(available, input.config.maxBatchBytes);
+  let batch: ReturnType<typeof buildCodexHistoricalBatch>;
+  for (;;) {
+    batch = buildCodexHistoricalBatch({
+      bytes: available.subarray(0, boundedEnd),
+      absoluteStartOffset: input.source.historicalCursorOffset,
+      lineIndexOffset: input.source.historicalCursorLine,
+      prior: (input.source.historicalCursorParserState ??
+        {}) as TranscriptJournalParserState,
+      source: input.source,
+      selection: input.selection,
+      config: input.config
+    });
+    if (batch.bytesConsumed > 0 || batch.journalRangeBytes > 0) break;
+    // Nothing in the window resolved: its records are deferred until the one
+    // after them is read, and that record lies past the window.
+    const next = available.indexOf(0x0a, boundedEnd);
+    if (next < 0) break;
+    boundedEnd = next + 1;
+  }
+  const range = {
+    expectedSourceOffset: input.source.historicalCursorOffset,
+    segmentIndex: segment.segmentIndex,
+    lastVerifiedDigest: segment.plaintextDigest
+  };
+  if (batch.journalRangeBytes > 0) {
+    const parentThreadId = input.selection.adapterState?.parentThreadId;
+    try {
+      await input.client.ingestHistoricalImportBatch(input.source.id, {
+        kind: "journal_range",
+        ...range,
+        sourceOffset:
+          input.source.historicalCursorOffset + batch.journalRangeBytes,
+        threadKind:
+          input.selection.adapterState?.threadKind === "subagent"
+            ? "subagent"
+            : "conversation",
+        ...(typeof parentThreadId === "string" ? { parentThreadId } : {})
+      });
+    } catch (error) {
+      // The API holds the record but cannot import it either. Report it the
+      // way an unrepresentable record always was, so the source is skipped
+      // and newer selections keep moving.
+      if (error instanceof MemoryApiError && error.status === 422) {
+        throw new Error("historical_record_exceeds_batch_limit", {
+          cause: error
+        });
+      }
+      throw error;
+    }
+    return true;
+  }
   if (batch.bytesConsumed === 0) {
     throw new Error("historical_batch_made_no_progress");
   }
@@ -515,11 +524,9 @@ const importNextBatch = async (input: {
     .sort();
   try {
     await input.client.ingestHistoricalImportBatch(input.source.id, {
-      expectedSourceOffset: input.source.historicalCursorOffset,
+      ...range,
       sourceOffset: input.source.historicalCursorOffset + batch.bytesConsumed,
       sourceLine: batch.sourceLine,
-      segmentIndex: segment.segmentIndex,
-      lastVerifiedDigest: segment.plaintextDigest,
       parserState: batch.parserState,
       malformedRecordCount: batch.malformedRecordCount,
       ...(eventTimes[0]

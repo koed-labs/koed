@@ -23,6 +23,7 @@ import {
   type HistoricalProviderAdapter
 } from "../src/historical-ingestion-coordinator.js";
 import { MemoryApiError, type MemoryApiClient } from "../src/index.js";
+import { buildCodexHistoricalJournalRange } from "../src/codex-transcript-parser.js";
 import { historicalCompletionOutcome } from "../src/automatic-historical-provider.js";
 import {
   createClaudeHistoricalProviderAdapter,
@@ -828,6 +829,68 @@ describe("bounded Codex historical parsing", () => {
     ).toBe(true);
   });
 
+  it("builds a journal range into the items an item batch would carry", () => {
+    // A range is one unit of the batch builder. A deferred agent_message
+    // resolves together with the response_item that supersedes it, so that
+    // unit may hold more than one record.
+    const bytes = Buffer.from(
+      [
+        {
+          timestamp: "2026-08-17T00:00:02.000Z",
+          type: "event_msg",
+          payload: { type: "agent_message", message: "partial answer" }
+        },
+        {
+          timestamp: "2026-08-17T00:00:03.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            id: "resp-1",
+            content: [{ type: "output_text", text: "final answer" }]
+          }
+        }
+      ]
+        .map((record) => `${JSON.stringify(record)}\n`)
+        .join("")
+    );
+    const batch = buildCodexHistoricalBatch({
+      bytes,
+      absoluteStartOffset: 500,
+      lineIndexOffset: 7,
+      prior: {},
+      source,
+      selection: {
+        ...selection,
+        adapterState: { threadKind: "subagent", parentThreadId: "parent-1" }
+      },
+      config: {
+        maxBatchRows: 100,
+        maxBatchBytes: 100_000,
+        maxBatchRuntimeMs: 15_000,
+        maxJournalBytesPerBatch: 100_000
+      }
+    });
+    expect(batch.bytesConsumed).toBe(bytes.byteLength);
+    expect(batch.items.length).toBeGreaterThan(1);
+
+    const range = buildCodexHistoricalJournalRange({
+      bytes,
+      absoluteStartOffset: 500,
+      lineIndexOffset: 7,
+      prior: {},
+      sessionId: source.sessionId,
+      sourceSessionId: source.sourceSessionId,
+      sourceFingerprint: source.sourceFingerprint,
+      threadKind: "subagent",
+      parentThreadId: "parent-1"
+    });
+
+    expect(range.items).toEqual(batch.items);
+    expect(range.sourceLine).toBe(batch.sourceLine);
+    expect(range.parserState).toEqual(batch.parserState);
+  });
+
   it("yields on the row cap only after a complete record", () => {
     const lines = ["first", "second"].map((message, index) =>
       JSON.stringify({
@@ -1103,6 +1166,19 @@ class FakeHistoricalSourceClient {
   ) {
     this.ingestCalls.push({ sourceId, input });
     const source = this.sourcesById.get(sourceId)!;
+    if (input.kind === "journal_range") {
+      // The API reads the range itself; here it only moves the cursor.
+      const [entry] = this.segmentsByArtifact.get(source.artifactId as string)!;
+      const range = entry!.bytes.subarray(
+        input.expectedSourceOffset as number,
+        input.sourceOffset as number
+      );
+      source.historicalCursorLine =
+        (source.historicalCursorLine as number) +
+        range.filter((byte) => byte === 0x0a).length;
+      source.historicalCursorOffset = input.sourceOffset;
+      return { source, itemCount: 1 };
+    }
     source.historicalCursorOffset = input.sourceOffset;
     source.historicalCursorLine = input.sourceLine;
     source.historicalCursorParserState = input.parserState;
@@ -1119,35 +1195,116 @@ const oversizedUserMessageRecord = (timestamp: string): Buffer =>
     })}\n`
   );
 
-describe("bounded Codex historical batch failures", () => {
-  it("skips a source whose first record can never fit a batch instead of retrying it forever", async () => {
-    const bytes = oversizedUserMessageRecord("2026-08-17T00:00:01.000Z");
+describe("Codex records that cannot fit an item batch", () => {
+  const seed = (bytes: Buffer) => {
     const client = new FakeHistoricalSourceClient();
-    const source = {
-      id: "source-huge",
-      runId: "run-huge",
-      artifactId: "artifact-huge",
-      sessionId: "11111111-1111-4111-8111-111111111111",
-      sourceSessionId: "session-huge",
-      sourceFingerprint: "a".repeat(64),
-      historicalCursorOffset: 0,
-      historicalCursorLine: 0,
-      registrationFrontierOffset: bytes.byteLength,
-      state: "importing"
+    client.seedSource(
+      "artifact-huge",
+      {
+        id: "source-huge",
+        runId: "run-huge",
+        artifactId: "artifact-huge",
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        sourceSessionId: "session-huge",
+        sourceFingerprint: "a".repeat(64),
+        historicalCursorOffset: 0,
+        historicalCursorLine: 0,
+        registrationFrontierOffset: bytes.byteLength,
+        state: "importing"
+      },
+      bytes
+    );
+    return {
+      client,
+      adapter: createCodexHistoricalProviderAdapter({
+        client: client as unknown as MemoryApiClient
+      }),
+      selection: {
+        aiClient: "codex",
+        candidateId: "session-huge",
+        artifactId: "artifact-huge",
+        frontierOffset: bytes.byteLength,
+        frontierLine: 1,
+        latestActivityAt: "2026-08-17T00:00:00.000Z",
+        adapterState: { threadKind: "subagent", parentThreadId: "parent-1" }
+      },
+      digest: createHash("sha256").update(bytes).digest("hex")
     };
-    client.seedSource("artifact-huge", source, bytes);
-    const adapter = createCodexHistoricalProviderAdapter({
-      client: client as unknown as MemoryApiClient
+  };
+
+  it("commits a first record that cannot fit a batch by journal range", async () => {
+    const bytes = oversizedUserMessageRecord("2026-08-17T00:00:01.000Z");
+    const { client, adapter, selection, digest } = seed(bytes);
+
+    const first = await adapter.processNextBatch({
+      selection,
+      runId: "run-huge"
     });
-    const selection = {
-      aiClient: "codex",
-      candidateId: "session-huge",
-      artifactId: "artifact-huge",
-      frontierOffset: bytes.byteLength,
-      frontierLine: 1,
-      latestActivityAt: "2026-08-17T00:00:00.000Z",
-      adapterState: { threadKind: "conversation" }
-    };
+
+    expect(first.state).toBe("progress");
+    expect(client.transitionCalls).toEqual([]);
+    // The record travels as a range of the stored journal, with the thread
+    // context the items depend on, and never as items.
+    expect(client.ingestCalls).toEqual([
+      {
+        sourceId: "source-huge",
+        input: {
+          kind: "journal_range",
+          expectedSourceOffset: 0,
+          sourceOffset: bytes.byteLength,
+          segmentIndex: 0,
+          lastVerifiedDigest: digest,
+          threadKind: "subagent",
+          parentThreadId: "parent-1"
+        }
+      }
+    ]);
+  });
+
+  it("commits a deferred event together with the oversized record that resolves it", async () => {
+    const eventMessage = `${JSON.stringify({
+      timestamp: "2026-08-17T00:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "partial answer" }
+    })}\n`;
+    const responseItem = `${JSON.stringify({
+      timestamp: "2026-08-17T00:00:02.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        id: "resp-1",
+        content: [{ type: "output_text", text: "y".repeat(1_100_000) }]
+      }
+    })}\n`;
+    const bytes = Buffer.from(`${eventMessage}${responseItem}`);
+    const { client, adapter, selection } = seed(bytes);
+
+    const first = await adapter.processNextBatch({
+      selection,
+      runId: "run-huge"
+    });
+
+    expect(first.state).toBe("progress");
+    expect(client.ingestCalls).toHaveLength(1);
+    // One range for both records: sending the event alone would commit it
+    // without the response item that supersedes it.
+    expect(client.ingestCalls[0]?.input).toMatchObject({
+      kind: "journal_range",
+      expectedSourceOffset: 0,
+      sourceOffset: bytes.byteLength
+    });
+  });
+
+  it("skips the source when the API cannot import the journal range, instead of retrying forever", async () => {
+    const bytes = oversizedUserMessageRecord("2026-08-17T00:00:01.000Z");
+    const { client, adapter, selection } = seed(bytes);
+    vi.spyOn(client, "ingestHistoricalImportBatch").mockRejectedValue(
+      new MemoryApiError("Journal record holds too many items", {
+        status: 422,
+        payload: { code: "historical_import_journal_range_too_many_items" }
+      })
+    );
 
     const first = await adapter.processNextBatch({
       selection,
@@ -1155,7 +1312,6 @@ describe("bounded Codex historical batch failures", () => {
     });
 
     expect(first.state).toBe("skipped");
-    expect(client.ingestCalls).toEqual([]);
     expect(client.transitionCalls).toEqual([
       {
         sourceId: "source-huge",
@@ -1172,7 +1328,7 @@ describe("bounded Codex historical batch failures", () => {
       runId: "run-huge"
     });
     expect(second.state).toBe("skipped");
-    expect(client.ingestCalls).toEqual([]);
+    expect(client.ingestHistoricalImportBatch).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -2227,3 +2227,102 @@ export const buildCodexTranscriptConversationItems = (
       : [item];
   });
 };
+
+/**
+ * One Codex item in the shape the historical import batch accepts. The API
+ * stamps source kind, adapter version, transport and session provenance, and
+ * builds journal range batches with this same mapping.
+ */
+export const codexHistoricalImportItem = (
+  item: RawConversationItemRequest
+) => ({
+  observationOnly: item.observationOnly,
+  sessionId: item.sessionId,
+  turnId: item.turnId,
+  externalThreadId: item.externalThreadId,
+  externalTurnId: item.externalTurnId,
+  externalItemId: item.externalItemId,
+  parentExternalItemId: item.parentExternalItemId,
+  sourceRecordType: item.sourceRecordType,
+  sourceEventType: item.sourceEventType,
+  sourceLineNumber: item.sourceLineNumber,
+  sourceSequence: item.sourceSequence,
+  eventTime: item.eventTime,
+  rawJson: item.rawJson,
+  rawText: item.rawText,
+  logicalSourceId: item.logicalSourceId,
+  transportChunkIndex: item.transportChunkIndex,
+  transportChunkCount: item.transportChunkCount,
+  transportChunkText: item.transportChunkText,
+  transportChunkEncoding: item.transportChunkEncoding,
+  sourceHash: item.sourceHash,
+  idempotencyKey: item.idempotencyKey,
+  canonicalItemKey: item.canonicalItemKey,
+  canonicalStableItemId: item.canonicalStableItemId,
+  canonicalSourcePriority: item.canonicalSourcePriority,
+  observationKind: item.observationKind,
+  observationComponent: item.observationComponent,
+  projectionStatus: item.projectionStatus,
+  projectionVersion: "codex-transcript-v1" as const,
+  metadata: {
+    ...(item.metadata ?? {}),
+    transcriptItemDiscriminator:
+      typeof item.metadata?.transcriptItemDiscriminator === "string" &&
+      item.metadata.transcriptItemDiscriminator.trim()
+        ? item.metadata.transcriptItemDiscriminator
+        : (item.canonicalStableItemId ??
+          item.externalItemId ??
+          `source:${item.sourceLineNumber ?? item.sourceSequence ?? 0}`)
+  }
+});
+
+export type CodexHistoricalImportItem = ReturnType<
+  typeof codexHistoricalImportItem
+>;
+
+/**
+ * Builds the historical import items for a range of complete journal records
+ * that is committed as one unit. Nothing is deferred to a later range: the
+ * range ends where the importer could not make a smaller batch.
+ */
+export const buildCodexHistoricalJournalRange = (input: {
+  bytes: Uint8Array;
+  absoluteStartOffset: number;
+  lineIndexOffset: number;
+  prior: TranscriptJournalParserState;
+  sessionId: string;
+  sourceSessionId: string;
+  sourceFingerprint: string;
+  threadKind: "conversation" | "subagent";
+  parentThreadId?: string;
+}): {
+  items: CodexHistoricalImportItem[];
+  sourceLine: number;
+  parserState: TranscriptJournalParserState;
+} => {
+  const parsed = parseTranscriptJournalBytes({
+    bytes: input.bytes,
+    absoluteStartOffset: input.absoluteStartOffset,
+    lineIndexOffset: input.lineIndexOffset,
+    prior: input.prior,
+    context: {
+      threadKind: input.threadKind,
+      transcriptSessionId: input.sourceSessionId,
+      transcriptMetadata: {}
+    }
+  });
+  return {
+    items: buildCodexTranscriptConversationItems({
+      records: parsed.records,
+      indexOffset: input.lineIndexOffset,
+      sessionId: input.sessionId,
+      sourceSessionId: input.sourceSessionId,
+      sourceTransport: "historical_import",
+      sourceFingerprint: input.sourceFingerprint,
+      threadKind: input.threadKind,
+      ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {})
+    }).map(codexHistoricalImportItem),
+    sourceLine: parsed.checkpoint.lineCount,
+    parserState: transcriptJournalParserState(parsed.checkpoint)
+  };
+};
