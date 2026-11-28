@@ -15377,7 +15377,8 @@ describe("account and access flows", () => {
     const unknownKind = await postBatch({ ...range, kind: "journal_ranges" });
     expect(unknownKind.statusCode).toBe(400);
     expect(forwardedBatches).toHaveLength(4);
-    // The client steps over the unimportable record with an empty item batch.
+    // Move the cursor past the unimportable record to reach the next one.
+    // The importer does not do this itself; it keeps failing on such a record.
     const stepOver = await postBatch({
       expectedSourceOffset: thirdEnd,
       sourceOffset: fourthEnd,
