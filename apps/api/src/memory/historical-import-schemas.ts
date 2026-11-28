@@ -128,100 +128,111 @@ const historicalItemMetadataSchema = metadataSchema.and(
     .passthrough()
 );
 
-const historicalConversationItemSchema = z
-  .object({
-    observationOnly: z.boolean().optional(),
-    sessionId: z.string().uuid().optional(),
-    turnId: z.string().uuid().optional(),
-    externalThreadId: boundedText.optional(),
-    externalTurnId: boundedText.optional(),
-    externalItemId: boundedText.optional(),
-    parentExternalItemId: boundedText.optional(),
-    sourceRecordType: boundedText,
-    sourceEventType: boundedText.optional(),
-    sourceLineNumber: boundedCounter.optional(),
-    sourceSequence: boundedCounter.optional(),
-    eventTime: z.string().datetime({ offset: true }).optional(),
-    rawJson: z.unknown().refine((value) => value !== undefined),
-    rawText: z.string().max(4_000_000).optional(),
-    logicalSourceId: boundedText.optional(),
-    transportChunkIndex: boundedCounter.optional(),
-    transportChunkCount: z.number().int().positive().max(100_000).optional(),
-    transportChunkText: z.string().max(4_000_000).optional(),
-    transportChunkEncoding: boundedText.optional(),
-    sourceHash: boundedText,
-    idempotencyKey: boundedText,
-    canonicalItemKey: boundedText.optional(),
-    canonicalStableItemId: boundedText.optional(),
-    canonicalSourcePriority: z
-      .number()
-      .int()
-      .nonnegative()
-      .max(2_147_483_647)
-      .optional(),
-    observationKind: z
-      .enum([
-        "snapshot",
-        "lifecycle_started",
-        "lifecycle_completed",
-        "control",
-        "reconciliation"
-      ])
-      .optional(),
-    observationComponent: boundedText.optional(),
-    projectionStatus: z.enum(["pending", "raw_only"]).optional(),
-    projectionVersion: z
-      .enum([
-        "codex-transcript-v1",
-        "claude-code-transcript-v1",
-        "pi-session-v1"
-      ])
-      .optional(),
-    metadata: historicalItemMetadataSchema
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.observationOnly && value.canonicalItemKey) {
-      context.addIssue({
-        code: "custom",
-        path: ["canonicalItemKey"],
-        message: "Observation-only records cannot claim canonical identity"
-      });
-    }
-    const chunked = value.logicalSourceId !== undefined;
-    const chunkFields = [
-      value.transportChunkIndex,
-      value.transportChunkCount,
-      value.transportChunkText,
-      value.transportChunkEncoding
-    ];
-    if (chunked !== chunkFields.every((field) => field !== undefined)) {
-      context.addIssue({
-        code: "custom",
-        path: ["logicalSourceId"],
-        message: "Transport chunk fields must be complete"
-      });
-    }
-    if (chunked && value.transportChunkIndex! >= value.transportChunkCount!) {
-      context.addIssue({
-        code: "custom",
-        path: ["transportChunkIndex"],
-        message: "Transport chunk index is outside chunk count"
-      });
-    }
-    if (
-      !chunked &&
-      value.metadata.transcriptByteOffset === undefined &&
-      value.sourceSequence === undefined &&
-      value.sourceLineNumber === undefined
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["metadata", "transcriptByteOffset"],
-        message: "Transcript item position is required"
-      });
-    }
-  });
+const historicalConversationItem = (maximumTextLength: number) =>
+  z
+    .object({
+      observationOnly: z.boolean().optional(),
+      sessionId: z.string().uuid().optional(),
+      turnId: z.string().uuid().optional(),
+      externalThreadId: boundedText.optional(),
+      externalTurnId: boundedText.optional(),
+      externalItemId: boundedText.optional(),
+      parentExternalItemId: boundedText.optional(),
+      sourceRecordType: boundedText,
+      sourceEventType: boundedText.optional(),
+      sourceLineNumber: boundedCounter.optional(),
+      sourceSequence: boundedCounter.optional(),
+      eventTime: z.string().datetime({ offset: true }).optional(),
+      rawJson: z.unknown().refine((value) => value !== undefined),
+      rawText: z.string().max(maximumTextLength).optional(),
+      logicalSourceId: boundedText.optional(),
+      transportChunkIndex: boundedCounter.optional(),
+      transportChunkCount: z.number().int().positive().max(100_000).optional(),
+      transportChunkText: z.string().max(maximumTextLength).optional(),
+      transportChunkEncoding: boundedText.optional(),
+      sourceHash: boundedText,
+      idempotencyKey: boundedText,
+      canonicalItemKey: boundedText.optional(),
+      canonicalStableItemId: boundedText.optional(),
+      canonicalSourcePriority: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(2_147_483_647)
+        .optional(),
+      observationKind: z
+        .enum([
+          "snapshot",
+          "lifecycle_started",
+          "lifecycle_completed",
+          "control",
+          "reconciliation"
+        ])
+        .optional(),
+      observationComponent: boundedText.optional(),
+      projectionStatus: z.enum(["pending", "raw_only"]).optional(),
+      projectionVersion: z
+        .enum([
+          "codex-transcript-v1",
+          "claude-code-transcript-v1",
+          "pi-session-v1"
+        ])
+        .optional(),
+      metadata: historicalItemMetadataSchema
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (value.observationOnly && value.canonicalItemKey) {
+        context.addIssue({
+          code: "custom",
+          path: ["canonicalItemKey"],
+          message: "Observation-only records cannot claim canonical identity"
+        });
+      }
+      const chunked = value.logicalSourceId !== undefined;
+      const chunkFields = [
+        value.transportChunkIndex,
+        value.transportChunkCount,
+        value.transportChunkText,
+        value.transportChunkEncoding
+      ];
+      if (chunked !== chunkFields.every((field) => field !== undefined)) {
+        context.addIssue({
+          code: "custom",
+          path: ["logicalSourceId"],
+          message: "Transport chunk fields must be complete"
+        });
+      }
+      if (chunked && value.transportChunkIndex! >= value.transportChunkCount!) {
+        context.addIssue({
+          code: "custom",
+          path: ["transportChunkIndex"],
+          message: "Transport chunk index is outside chunk count"
+        });
+      }
+      if (
+        !chunked &&
+        value.metadata.transcriptByteOffset === undefined &&
+        value.sourceSequence === undefined &&
+        value.sourceLineNumber === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["metadata", "transcriptByteOffset"],
+          message: "Transcript item position is required"
+        });
+      }
+    });
+
+const historicalConversationItemSchema = historicalConversationItem(4_000_000);
+
+/**
+ * An item the API builds from a stored journal record. It keeps every item
+ * rule of an uploaded batch except the text length, which the journal segment
+ * size already bounds.
+ */
+export const historicalImportJournalRangeItemSchema =
+  historicalConversationItem(Number.MAX_SAFE_INTEGER);
 
 const historicalItemPosition = (
   item: z.infer<typeof historicalConversationItemSchema>
@@ -283,6 +294,30 @@ export const historicalImportBatchSchema = z
         code: "custom",
         path: ["sourceEventTo"],
         message: "Source event range is invalid"
+      });
+    }
+  });
+
+/**
+ * Commits a range of the Conversation Source Journal without uploading items.
+ * The API reads the range from the stored journal segment and builds the items
+ * itself, so a record too large for an item batch is still imported whole.
+ */
+export const historicalImportJournalRangeSchema = z
+  .object({
+    kind: z.literal("journal_range"),
+    expectedSourceOffset: boundedOffset,
+    sourceOffset: boundedOffset,
+    segmentIndex: z.number().int().nonnegative().max(2_147_483_647),
+    lastVerifiedDigest: digest
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.sourceOffset <= value.expectedSourceOffset) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceOffset"],
+        message: "Historical journal cursor must advance"
       });
     }
   });
