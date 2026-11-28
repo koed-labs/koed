@@ -4,6 +4,7 @@ import type {
   HistoricalImportSourceRecord,
   MemorySourceRepository
 } from "@koed-labs/db";
+import { safeHistoricalCursorParserState } from "@koed-labs/shared";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -35,20 +36,6 @@ const safeProjectProvenance = (
       .map((key) => [key, project[key]])
   );
 
-const safeParserState = (
-  state: Record<string, unknown>
-): Record<string, string | boolean> =>
-  Object.fromEntries(
-    [
-      "activeTurnId",
-      "currentTurnId",
-      "lastEventTime",
-      "assistantMessagePreference"
-    ]
-      .filter((key) => ["string", "boolean"].includes(typeof state[key]))
-      .map((key) => [key, state[key] as string | boolean])
-  );
-
 const presentSource = (
   source: HistoricalImportSourceRecord,
   options: { includeResumeState?: boolean } = {}
@@ -66,7 +53,7 @@ const presentSource = (
     ...safe,
     ...(options.includeResumeState
       ? {
-          historicalCursorParserState: safeParserState(
+          historicalCursorParserState: safeHistoricalCursorParserState(
             source.historicalCursorParserState
           ),
           ...(source.historicalCursorCurrentTurnId

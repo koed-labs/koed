@@ -2413,6 +2413,72 @@ describeDb("journal-backed historical import repository", () => {
     expect(Number(stored.rows[0]?.count)).toBe(1);
   });
 
+  it("stores the position in a paginated Codex history with the cursor", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-paginated-${randomUUID()}@example.com`
+    });
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const run = await repo.createHistoricalImportRun({ userId: owner.id });
+    const source = await repo.createHistoricalImportSource(
+      { userId: owner.id },
+      {
+        runId: run.id,
+        artifactId: fixture.artifactId,
+        aiClient: "codex"
+      }
+    );
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      await repo.transitionHistoricalImportRun(
+        { userId: owner.id },
+        { runId: run.id, expectedState, state }
+      );
+      await repo.transitionHistoricalImportSource(
+        { userId: owner.id },
+        { sourceId: source!.id, expectedState, state }
+      );
+    }
+    const resumeState = {
+      lastEventTime: "2026-07-01T00:00:01.000Z",
+      assistantMessagePreference: "response_item",
+      historyMode: "paginated",
+      subagentHistoryStartOrdinal: 4,
+      lastRecordOrdinal: 2,
+      approvalHelperConversation: true
+    };
+
+    await repo.ingestHistoricalImportBatch(
+      { userId: owner.id },
+      {
+        sourceId: source!.id,
+        expectedSourceOffset: 0,
+        sourceOffset: fixture.frontier,
+        sourceLine: 2,
+        segmentIndex: fixture.segmentIndex,
+        lastVerifiedDigest: fixture.segmentDigest,
+        parserState: {
+          ...resumeState,
+          rawTranscript: "must-not-be-stored"
+        },
+        items: [
+          sourceItem({
+            externalSessionId: fixture.externalSessionId,
+            byteOffset: 64
+          })
+        ]
+      }
+    );
+
+    const resumedSource = await repo.getHistoricalImportSourceByIdentity(
+      { userId: owner.id },
+      { artifactId: fixture.artifactId }
+    );
+    expect(resumedSource?.historicalCursorParserState).toEqual(resumeState);
+  });
+
   it("fails closed on wrong segment, cursor, ownership, or Capture Policy", async () => {
     const repo = createMemorySourceRepository(pool);
     const owner = await repo.createUser({

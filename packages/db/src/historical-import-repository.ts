@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { safeHistoricalCursorParserState } from "@koed-labs/shared";
 import { createDb } from "./connection.js";
 import { createConversationItemRepository } from "./conversation-item-repository.js";
 import { currentEmbeddingConfig } from "./embedding-coverage.js";
@@ -1325,30 +1326,6 @@ const transitionSourceRecord = (
   });
 };
 
-// Only fields the real Codex/Claude historical adapters ever produce for
-// mid-parse resume (see codex-historical-ingestion.ts's parserState() and
-// claude-transcript-parser.ts's { currentTurnId }) are safe to persist here.
-// This is the write-side counterpart to apps/api's safeParserState(): every
-// read path (this repository's own mapSource() included) returns the
-// persisted parser_state column verbatim, so anything not filtered out here
-// would otherwise be free-form storage for arbitrary, potentially large
-// content such as raw transcript text.
-const SAFE_HISTORICAL_PARSER_STATE_KEYS = [
-  "activeTurnId",
-  "currentTurnId",
-  "lastEventTime",
-  "assistantMessagePreference"
-] as const;
-
-const safeHistoricalParserState = (
-  state: Record<string, unknown> | undefined
-): Record<string, unknown> =>
-  Object.fromEntries(
-    SAFE_HISTORICAL_PARSER_STATE_KEYS.filter(
-      (key) => (state ?? {})[key] !== undefined
-    ).map((key) => [key, (state ?? {})[key]])
-  );
-
 const ingestBatchRecord = (
   pool: pg.Pool,
   actor: ActorContext,
@@ -1413,7 +1390,7 @@ const ingestBatchRecord = (
         input.sourceOffset,
         input.sourceLine,
         input.lastVerifiedDigest,
-        safeHistoricalParserState(input.parserState),
+        safeHistoricalCursorParserState(input.parserState),
         input.expectedSourceOffset
       ]
     );

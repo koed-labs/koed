@@ -369,8 +369,12 @@ blocking newer selections. A Codex batch-ingestion request also skips it when
 the Memory API returns HTTP 400 with one of `observation_only_canonical_identity`,
 `canonical_identity_incomplete`, `canonical_component_mismatch`, or
 `canonical_identity_mismatch`. The code is recorded as the failure reason and
-logged. Other errors, including other 400 responses and errors fetching source
-segments or content, propagate for retry.
+logged. The same applies when the Codex parser refuses a record that contradicts
+the state the batch resumed from: `codex_transcript_invalid_ordinal`,
+`codex_transcript_history_mode_changed`, or
+`codex_transcript_history_boundary_changed`. Records the parser resolved before
+the refused one are imported first. Other errors, including other 400 responses and errors fetching
+source segments or content, propagate for retry.
 
 Before each page,
 Koed compares cursor offset with bounded SHA-256 first/last prefix sentinels.

@@ -27,7 +27,11 @@ snapshots.
 
 The parser persists history mode and a subagent's own-history ordinal boundary
 in its consumer checkpoint, together with approval-helper classification when
-the native User Message establishes it. Inherited rows below that boundary remain raw
+the native User Message establishes it. Historical import stores the same fields
+and the last record ordinal with its own cursor, so a batch that starts after
+the session header resumes in the same mode. A cursor written before these
+fields were stored has no mode, and the rest of that source is imported as a
+legacy history. Inherited rows below that boundary remain raw
 evidence and do not become new child-thread Memory. Unknown completed-item
 types and invalid required identities block canonical processing rather than
 silently moving its cursor forward.
