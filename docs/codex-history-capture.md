@@ -60,6 +60,11 @@ snapshots without stalling capture. Unused snapshots are
 evicted when space is needed. Historical import re-materializes each batch from
 the native source rather than retaining an evictable temporary filename. Each
 batch rechecks root confinement and source identity before consuming the snapshot.
+When the first records of a batch do not fit the batch limits, the importer
+names their range in the Conversation Source Journal and the local API imports
+them from the stored segment, including a pending assistant event together with
+the record that resolves it. Only if the API cannot import the range is the
+source skipped.
 On startup, bounded cleanup removes recognized owner-private cache directories
 from dead processes. Live-process directories and unknown contents are left
 alone. These permission checks are validated on Linux; Windows ACL behavior

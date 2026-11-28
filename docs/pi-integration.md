@@ -228,9 +228,12 @@ the canonical source journal and historical import APIs. Capture Policy,
 Capture Pause, and workload admission are evaluated before transcript artifact
 registration or segment upload. A complete record above the ordinary upload
 target uses the canonical transport-chunk envelope. If its representation is
-still above the historical API product ceiling, Koed advances past only that
-record with a digest-addressed, raw-only gap observation and skipped-record
-counter, then continues the Conversation.
+still above the historical API product ceiling, or does not fit the envelope,
+the Local AI Runtime names the record's range in the Conversation Source
+Journal and the local API imports the complete record from the stored segment.
+Only when the API cannot import the record either does Koed advance past it
+with a digest-addressed, raw-only gap observation and skipped-record counter.
+Either way the Conversation continues.
 
 ## Managed Conversations
 

@@ -653,12 +653,14 @@ Transcript Watcher live cursor are separate
 transactional streams; neither can advance, rewind, or overwrite the other.
 Source growth is accepted, while truncation, rotation, sentinel-covered prefix
 mutation, and stale submissions fail visibly without changing either stream.
-A Claude historical import batch may instead name one complete record in a
-verified journal segment (`kind: "journal_range"`). The API reads that record
-from the Conversation Source Artifact, builds the same raw records the Local AI
-Runtime would have sent, and commits them with the parser state, counters, and
-historical checkpoint in the one batch transaction. The range must cover exactly
-one record; anything else is rejected without a write.
+A historical import batch may instead name a range of complete records in a
+verified journal segment (`kind: "journal_range"`), for records the Local AI
+Runtime cannot send as a batch. The API reads the range from the Conversation
+Source Artifact, builds the raw records with that AI Client's parser, and
+commits them with the parser state, counters, and historical checkpoint in the
+one batch transaction. A Claude Code or Pi range covers exactly one record. A
+Codex range covers the records that resolve together and carries their thread
+kind. Anything else is rejected without a write.
 The automatic coordinator identifies a source by Conversation Source Artifact,
 never by a local path; its durable selection stores only path-free source and
 Project identity. Status and canonical raw/Captured Session provenance use only
