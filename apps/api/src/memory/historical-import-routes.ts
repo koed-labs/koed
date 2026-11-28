@@ -206,6 +206,13 @@ const journalRangeError = (
 const journalRangeInvalid = (message: string): Error =>
   journalRangeError(422, "historical_import_journal_range_invalid", message);
 
+const journalRangeTooManyItems = (): Error =>
+  journalRangeError(
+    422,
+    "historical_import_journal_range_too_many_items",
+    "Journal range holds more items than one range may contribute"
+  );
+
 type JournalRangeBuildInput = {
   bytes: Buffer;
   absoluteStartOffset: number;
@@ -226,6 +233,8 @@ type JournalRangeAdapter = {
   checkRequest(request: HistoricalJournalRangeInput): void;
   build(input: JournalRangeBuildInput): {
     items: unknown[];
+    /** Set when the parser may stop short of the range end. */
+    resolvedOffset?: number;
     sourceLine: number;
     parserState: Record<string, unknown>;
   };
@@ -244,7 +253,38 @@ const refuseThreadContext = (request: HistoricalJournalRangeInput): void => {
   }
 };
 
+const codexJournalRangeAdapter: JournalRangeAdapter = {
+  // A deferred assistant event resolves only together with the record
+  // after it, so the unit the importer could not send may be several.
+  severalRecords: true,
+  checkRequest(request) {
+    if (request.threadKind === undefined) {
+      throw journalRangeInvalid("A Codex journal range needs its thread kind");
+    }
+  },
+  build({ bytes, absoluteStartOffset, source, request }) {
+    return buildCodexHistoricalJournalRange({
+      bytes,
+      absoluteStartOffset,
+      lineIndexOffset: source.historicalCursorLine,
+      prior: source.historicalCursorParserState as TranscriptJournalParserState,
+      sessionId: source.sessionId,
+      sourceSessionId: source.sourceSessionId,
+      sourceFingerprint: source.sourceFingerprint,
+      threadKind: request.threadKind!,
+      ...(request.parentThreadId
+        ? { parentThreadId: request.parentThreadId }
+        : {})
+    });
+  },
+  rejectsRecord: (error) =>
+    /malformed complete JSONL record/.test(error.message)
+};
+
 const journalRangeAdapters: Record<string, JournalRangeAdapter> = {
+  // Legacy and paginated Codex histories share one importer.
+  "codex-transcript-v1": codexJournalRangeAdapter,
+  "codex-transcript-v2": codexJournalRangeAdapter,
   "claude-code-transcript-v1": {
     severalRecords: false,
     checkRequest: refuseThreadContext,
@@ -270,36 +310,6 @@ const journalRangeAdapters: Record<string, JournalRangeAdapter> = {
       };
     },
     rejectsRecord: (error) => error.message.startsWith("claude_transcript_")
-  },
-  "codex-transcript-v1": {
-    // A deferred assistant event resolves only together with the record
-    // after it, so the unit the importer could not send may be several.
-    severalRecords: true,
-    checkRequest(request) {
-      if (request.threadKind === undefined) {
-        throw journalRangeInvalid(
-          "A Codex journal range needs its thread kind"
-        );
-      }
-    },
-    build({ bytes, absoluteStartOffset, source, request }) {
-      return buildCodexHistoricalJournalRange({
-        bytes,
-        absoluteStartOffset,
-        lineIndexOffset: source.historicalCursorLine,
-        prior:
-          source.historicalCursorParserState as TranscriptJournalParserState,
-        sessionId: source.sessionId,
-        sourceSessionId: source.sourceSessionId,
-        sourceFingerprint: source.sourceFingerprint,
-        threadKind: request.threadKind!,
-        ...(request.parentThreadId
-          ? { parentThreadId: request.parentThreadId }
-          : {})
-      });
-    },
-    rejectsRecord: (error) =>
-      /malformed complete JSONL record/.test(error.message)
   },
   "pi-session-v1": {
     severalRecords: false,
@@ -333,7 +343,12 @@ const journalRangeBatch = async (
   source: HistoricalImportSourceRecord,
   input: HistoricalJournalRangeInput
 ): Promise<HistoricalBatchInput> => {
-  const adapter = journalRangeAdapters[source.sourceAdapterVersion];
+  const adapter = Object.hasOwn(
+    journalRangeAdapters,
+    source.sourceAdapterVersion
+  )
+    ? journalRangeAdapters[source.sourceAdapterVersion]
+    : undefined;
   if (!adapter) {
     throw journalRangeError(
       422,
@@ -433,22 +448,29 @@ const journalRangeBatch = async (
       sourceComponentId: artifact.sourceComponentId,
       request: input
     });
+    if (
+      built.resolvedOffset !== undefined &&
+      built.resolvedOffset !== input.sourceOffset
+    ) {
+      // Committing the range would move the cursor past records that
+      // produced no items.
+      throw journalRangeInvalid(
+        "Journal range ends in records that are not resolved yet"
+      );
+    }
     if (built.items.length > JOURNAL_RANGE_MAXIMUM_ITEMS) {
-      throw new Error("claude_transcript_too_many_items");
+      throw journalRangeTooManyItems();
     }
     items = built.items.map((item) =>
       historicalImportJournalRangeItemSchema.parse(item)
     );
   } catch (error) {
+    // The Claude parser stops at the item limit before it builds anything.
     if (
       error instanceof Error &&
       error.message === "claude_transcript_too_many_items"
     ) {
-      throw journalRangeError(
-        422,
-        "historical_import_journal_range_too_many_items",
-        "Journal range holds more items than one range may contribute"
-      );
+      throw journalRangeTooManyItems();
     }
     // Only a record the parser or the item rules reject is a data error.
     const invalidRecord =

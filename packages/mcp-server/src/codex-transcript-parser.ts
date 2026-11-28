@@ -2297,6 +2297,8 @@ export const buildCodexHistoricalJournalRange = (input: {
   parentThreadId?: string;
 }): {
   items: CodexHistoricalImportItem[];
+  /** Where the parser stopped. Short of the range end, it still holds records. */
+  resolvedOffset: number;
   sourceLine: number;
   parserState: TranscriptJournalParserState;
 } => {
@@ -2322,6 +2324,7 @@ export const buildCodexHistoricalJournalRange = (input: {
       threadKind: input.threadKind,
       ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {})
     }).map(codexHistoricalImportItem),
+    resolvedOffset: parsed.checkpoint.offset,
     sourceLine: parsed.checkpoint.lineCount,
     parserState: transcriptJournalParserState(parsed.checkpoint)
   };

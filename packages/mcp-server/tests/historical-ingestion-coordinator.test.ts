@@ -854,11 +854,16 @@ describe("bounded Codex historical parsing", () => {
         .map((record) => `${JSON.stringify(record)}\n`)
         .join("")
     );
+    // Resumed mid-import, with the state an earlier batch left behind.
+    const prior = {
+      lastEventTime: "2026-08-17T00:00:00.000Z",
+      assistantMessagePreference: "response_item" as const
+    };
     const batch = buildCodexHistoricalBatch({
       bytes,
       absoluteStartOffset: 500,
       lineIndexOffset: 7,
-      prior: {},
+      prior,
       source,
       selection: {
         ...selection,
@@ -878,7 +883,7 @@ describe("bounded Codex historical parsing", () => {
       bytes,
       absoluteStartOffset: 500,
       lineIndexOffset: 7,
-      prior: {},
+      prior,
       sessionId: source.sessionId,
       sourceSessionId: source.sourceSessionId,
       sourceFingerprint: source.sourceFingerprint,
@@ -889,6 +894,7 @@ describe("bounded Codex historical parsing", () => {
     expect(range.items).toEqual(batch.items);
     expect(range.sourceLine).toBe(batch.sourceLine);
     expect(range.parserState).toEqual(batch.parserState);
+    expect(range.resolvedOffset).toBe(500 + bytes.byteLength);
   });
 
   it("yields on the row cap only after a complete record", () => {

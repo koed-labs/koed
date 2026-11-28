@@ -15243,7 +15243,9 @@ describe("account and access flows", () => {
         // Starts inside the record.
         { ...range, expectedSourceOffset: firstEnd + 1 },
         { ...range, lastVerifiedDigest: "d".repeat(64) },
-        { ...range, segmentIndex: 1 }
+        { ...range, segmentIndex: 1 },
+        // Thread context belongs to Codex ranges.
+        { ...range, threadKind: "conversation" }
       ].map((payload) => postBatch(payload))
     );
     expect(
@@ -15256,7 +15258,8 @@ describe("account and access flows", () => {
       [422, "historical_import_journal_range_invalid"],
       [422, "historical_import_journal_range_invalid"],
       [409, "historical_import_segment_verification_failed"],
-      [409, "historical_import_segment_verification_failed"]
+      [409, "historical_import_segment_verification_failed"],
+      [422, "historical_import_journal_range_invalid"]
     ]);
     expect(forwardedBatches).toHaveLength(1);
 
@@ -15430,6 +15433,7 @@ describe("account and access flows", () => {
     sourceRuntime: string;
     sourceKind: string;
     artifactFormat: string;
+    sessionMetadata?: Record<string, unknown>;
     lines: Buffer[];
   }) => {
     const repository = createFakeRepository();
@@ -15505,7 +15509,10 @@ describe("account and access flows", () => {
           captureMethod: "api",
           cwd: "project-journal-range",
           idempotencyKey: `journal-session:${externalSessionId}`,
-          metadata: { projectId: "project-journal-range" }
+          metadata: {
+            projectId: "project-journal-range",
+            ...input.sessionMetadata
+          }
         },
         sourceKind: input.sourceKind,
         externalSessionId,
@@ -15592,27 +15599,118 @@ describe("account and access flows", () => {
   const journalJson = <T>(value: T): T =>
     JSON.parse(JSON.stringify(value)) as T;
 
-  it("imports a Codex journal range of records that resolve together", async () => {
+  it.each([
+    ["a legacy", undefined, "codex-transcript-v1"],
+    ["a paginated", { history_mode: "paginated" }, "codex-transcript-v2"]
+  ])(
+    "imports a Codex journal range of records that resolve together from %s history",
+    async (_case, sessionMetadata, adapterVersion) => {
+      const lines = [
+        {
+          timestamp: "2026-08-17T00:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "agent_message", message: "partial answer" }
+        },
+        {
+          timestamp: "2026-08-17T00:00:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            id: "resp-1",
+            content: [{ type: "output_text", text: "y".repeat(4_100_000) }]
+          }
+        },
+        {
+          timestamp: "2026-08-17T00:00:03.000Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "next question" }
+        }
+      ].map((record) => Buffer.from(`${JSON.stringify(record)}\n`));
+      const fixture = await startJournalRangeImport({
+        aiClient: "codex",
+        sourceRuntime: "codex",
+        sourceKind: "codex",
+        artifactFormat: "codex_rollout_jsonl",
+        sessionMetadata,
+        lines
+      });
+      const unitEnd = lines[0]!.byteLength + lines[1]!.byteLength;
+      const range = {
+        kind: "journal_range",
+        expectedSourceOffset: 0,
+        sourceOffset: unitEnd,
+        segmentIndex: 0,
+        lastVerifiedDigest: fixture.journalDigest,
+        threadKind: "subagent",
+        parentThreadId: "parent-thread-1"
+      };
+
+      const cutRecord = await fixture.postBatch({
+        ...range,
+        sourceOffset: unitEnd - 1
+      });
+      expect(cutRecord.statusCode).toBe(422);
+      expect(fixture.forwardedBatches).toHaveLength(0);
+
+      const imported = await fixture.postBatch(range);
+      expect(imported.statusCode, imported.body).toBe(200);
+      const expected = buildCodexHistoricalJournalRange({
+        bytes: Buffer.concat(lines.slice(0, 2)),
+        absoluteStartOffset: 0,
+        lineIndexOffset: 0,
+        prior: {},
+        sessionId: fixture.sessionId,
+        sourceSessionId: fixture.externalSessionId,
+        sourceFingerprint: fixture.sourceFingerprint,
+        threadKind: "subagent",
+        parentThreadId: "parent-thread-1"
+      });
+      expect(expected.items.length).toBeGreaterThan(1);
+      // Same items the Codex importer would have built for this unit.
+      expect(journalJson(fixture.forwardedBatches[0]!.items)).toEqual(
+        journalJson(expected.items).map((item) => ({
+          ...item,
+          sourceKind: "codex",
+          sourceAdapterVersion: adapterVersion,
+          sourceTransport: "historical_import"
+        }))
+      );
+      expect(fixture.forwardedBatches[0]).toMatchObject({
+        sourceLine: 2,
+        parserState: journalJson(expected.parserState)
+      });
+      expect(
+        jsonBody<{ itemCount: number; source: Record<string, unknown> }>(
+          imported
+        )
+      ).toMatchObject({
+        // The superseded event is kept as an observation, not as an item.
+        itemCount: 1,
+        source: { historicalCursorOffset: unitEnd, historicalCursorLine: 2 }
+      });
+      expect(imported.body.length).toBeLessThan(10_000);
+      await fixture.app.close();
+    }
+  );
+
+  it("refuses a Codex journal range that ends in records the parser still holds", async () => {
+    // An undated record waits for the next dated one. A range that ends in
+    // it would move the cursor past bytes that produced no items.
     const lines = [
       {
         timestamp: "2026-08-17T00:00:01.000Z",
         type: "event_msg",
-        payload: { type: "agent_message", message: "partial answer" }
+        payload: { type: "user_message", message: "dated question" }
       },
       {
-        timestamp: "2026-08-17T00:00:02.000Z",
-        type: "response_item",
-        payload: {
-          type: "message",
-          role: "assistant",
-          id: "resp-1",
-          content: [{ type: "output_text", text: "y".repeat(4_100_000) }]
-        }
+        type: "event_msg",
+        payload: { type: "user_message", message: "undated follow-up" }
       },
       {
         timestamp: "2026-08-17T00:00:03.000Z",
         type: "event_msg",
-        payload: { type: "user_message", message: "next question" }
+        payload: { type: "user_message", message: "dated again" }
       }
     ].map((record) => Buffer.from(`${JSON.stringify(record)}\n`));
     const fixture = await startJournalRangeImport({
@@ -15622,59 +15720,69 @@ describe("account and access flows", () => {
       artifactFormat: "codex_rollout_jsonl",
       lines
     });
-    const unitEnd = lines[0]!.byteLength + lines[1]!.byteLength;
     const range = {
       kind: "journal_range",
       expectedSourceOffset: 0,
-      sourceOffset: unitEnd,
       segmentIndex: 0,
       lastVerifiedDigest: fixture.journalDigest,
-      threadKind: "subagent",
-      parentThreadId: "parent-thread-1"
+      threadKind: "conversation"
     };
 
-    const cutRecord = await fixture.postBatch({
+    const heldTail = await fixture.postBatch({
       ...range,
-      sourceOffset: unitEnd - 1
+      sourceOffset: lines[0]!.byteLength + lines[1]!.byteLength
     });
-    expect(cutRecord.statusCode).toBe(422);
+    expect(heldTail.statusCode).toBe(422);
+    expect(jsonBody<{ code?: string }>(heldTail).code).toBe(
+      "historical_import_journal_range_invalid"
+    );
     expect(fixture.forwardedBatches).toHaveLength(0);
 
-    const imported = await fixture.postBatch(range);
-    expect(imported.statusCode, imported.body).toBe(200);
-    const expected = buildCodexHistoricalJournalRange({
-      bytes: Buffer.concat(lines.slice(0, 2)),
-      absoluteStartOffset: 0,
-      lineIndexOffset: 0,
-      prior: {},
-      sessionId: fixture.sessionId,
-      sourceSessionId: fixture.externalSessionId,
-      sourceFingerprint: fixture.sourceFingerprint,
-      threadKind: "subagent",
-      parentThreadId: "parent-thread-1"
+    // The same records resolve once the range reaches the next dated one.
+    const resolved = await fixture.postBatch({
+      ...range,
+      sourceOffset: fixture.journalLength
     });
-    expect(expected.items.length).toBeGreaterThan(1);
-    // Same items the Codex importer would have built for this unit.
-    expect(journalJson(fixture.forwardedBatches[0]!.items)).toEqual(
-      journalJson(expected.items).map((item) => ({
-        ...item,
-        sourceKind: "codex",
-        sourceAdapterVersion: "codex-transcript-v1",
-        sourceTransport: "historical_import"
-      }))
-    );
-    expect(fixture.forwardedBatches[0]).toMatchObject({
-      sourceLine: 2,
-      parserState: journalJson(expected.parserState)
-    });
+    expect(resolved.statusCode, resolved.body).toBe(200);
+    expect(fixture.forwardedBatches[0]).toMatchObject({ sourceLine: 3 });
     expect(
-      jsonBody<{ itemCount: number; source: Record<string, unknown> }>(imported)
-    ).toMatchObject({
-      // The superseded event is kept as an observation, not as an item.
-      itemCount: 1,
-      source: { historicalCursorOffset: unitEnd, historicalCursorLine: 2 }
+      fixture.forwardedBatches[0]!.items.map((item) => item.rawText)
+    ).toEqual(["dated question", "undated follow-up", "dated again"]);
+    await fixture.app.close();
+  });
+
+  it("refuses a Codex journal range that holds more items than one range may", async () => {
+    const lines = Array.from({ length: 1_001 }, (_, index) =>
+      Buffer.from(
+        `${JSON.stringify({
+          timestamp: new Date(Date.UTC(2026, 7, 17, 0, 0, index)).toISOString(),
+          type: "event_msg",
+          payload: { type: "user_message", message: `question ${index}` }
+        })}\n`
+      )
+    );
+    const fixture = await startJournalRangeImport({
+      aiClient: "codex",
+      sourceRuntime: "codex",
+      sourceKind: "codex",
+      artifactFormat: "codex_rollout_jsonl",
+      lines
     });
-    expect(imported.body.length).toBeLessThan(10_000);
+
+    const tooMany = await fixture.postBatch({
+      kind: "journal_range",
+      expectedSourceOffset: 0,
+      sourceOffset: fixture.journalLength,
+      segmentIndex: 0,
+      lastVerifiedDigest: fixture.journalDigest,
+      threadKind: "conversation"
+    });
+
+    expect(tooMany.statusCode).toBe(422);
+    expect(jsonBody<{ code?: string }>(tooMany).code).toBe(
+      "historical_import_journal_range_too_many_items"
+    );
+    expect(fixture.forwardedBatches).toHaveLength(0);
     await fixture.app.close();
   });
 
@@ -15735,9 +15843,12 @@ describe("account and access flows", () => {
       // Two records: a Pi range is exactly one.
       fixture.postBatch({ ...range, sourceOffset: fixture.journalLength }),
       // Thread context belongs to Codex ranges.
-      fixture.postBatch({ ...range, threadKind: "conversation" })
+      fixture.postBatch({ ...range, threadKind: "conversation" }),
+      fixture.postBatch({ ...range, parentThreadId: "parent-thread-1" })
     ]);
-    expect(refused.map((response) => response.statusCode)).toEqual([422, 422]);
+    expect(refused.map((response) => response.statusCode)).toEqual([
+      422, 422, 422
+    ]);
     expect(fixture.forwardedBatches).toHaveLength(1);
 
     const imported = await fixture.postBatch(range);

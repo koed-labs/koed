@@ -400,14 +400,20 @@ export const buildCodexHistoricalBatch = (input: {
       ) {
         if (localOffset === 0) {
           // The first unit of the batch does not fit and there is no smaller
-          // one. It is committed as a journal range instead of as items.
+          // one. It is committed as a journal range instead of as items. The
+          // range ends where the parser resolved, not at records it holds.
+          const journalRangeBytes =
+            resolvedThroughOffset - input.absoluteStartOffset;
+          if (journalRangeBytes <= 0) {
+            throw new Error("historical_record_exceeds_batch_limit");
+          }
           return {
             bytesConsumed: 0,
             sourceLine: line,
             parserState: state,
             malformedRecordCount,
             items: [],
-            journalRangeBytes: pageEnd
+            journalRangeBytes
           };
         }
         break recordLoop;
@@ -560,10 +566,11 @@ const importNextBatch = async (input: {
   return true;
 };
 
-// A single complete JSONL record that itself exceeds maxBatchRows/
-// maxBatchBytes can never fit a batch, no matter how many times it is
-// retried: buildCodexHistoricalBatch only throws this on the batch's first
-// (localOffset === 0) record, so there is no smaller unit to fall back to.
+// The first unit of a batch that exceeds maxBatchRows/maxBatchBytes can never
+// fit a batch, no matter how many times it is retried, so importNextBatch
+// commits it as a journal range. This error remains for a unit the API
+// cannot import either, and for a record that does not end inside the read
+// range: there is nothing smaller to fall back to.
 // Left uncaught, the coordinator retries the same oldest chronological
 // selection forever and its "exhaust the oldest range first" ordering blocks
 // every newer selection from ever running. Skip the source instead so the
