@@ -327,9 +327,37 @@ const historicalItemsFor = (
       : {})
   }).map(historicalItem);
 
+const exceedsBatchLimits = (
+  input: Parameters<typeof buildCodexHistoricalBatch>[0],
+  items: ReturnType<typeof historicalItem>[],
+  nextItems: ReturnType<typeof historicalItem>[]
+): boolean => {
+  const combined = [...items, ...nextItems];
+  return (
+    combined.length > input.config.maxBatchRows ||
+    Buffer.byteLength(JSON.stringify(combined), "utf8") >
+      input.config.maxBatchBytes
+  );
+};
+
 const isMalformedRecordError = (error: unknown): boolean =>
   error instanceof Error &&
   /malformed complete JSONL record/.test(error.message);
+
+// The parser refuses a record that contradicts the state it resumed from: an
+// ordinal that does not advance, or a session header that changes the history
+// mode or the subagent boundary. The same bytes are refused on every pass, so
+// retrying cannot help.
+const refusedHistoryCodes = new Set([
+  "codex_transcript_invalid_ordinal",
+  "codex_transcript_history_mode_changed",
+  "codex_transcript_history_boundary_changed"
+]);
+
+const refusedHistoryCode = (error: unknown): string | undefined =>
+  error instanceof Error && refusedHistoryCodes.has(error.message)
+    ? error.message
+    : undefined;
 
 export const buildCodexHistoricalBatch = (input: {
   bytes: Buffer;
@@ -396,15 +424,14 @@ export const buildCodexHistoricalBatch = (input: {
           deferPageEndingAssistantEvent: !atGrowthCap
         });
       } catch (error) {
-        if (!isMalformedRecordError(error)) throw error;
-        // strictJsonLines throws on the first malformed line it reaches, in
-        // file order, so a page that only just started failing must be
-        // failing on the record most recently added to it: everything
-        // through lastGoodPageEnd already parsed cleanly on an earlier
-        // growth attempt (or there was no growth yet). Re-resolve that
-        // known-good prefix without deferral risk, commit it, then treat
-        // the newly-added record as the isolated malformed one, exactly as
-        // a single-record page would have.
+        const refused = refusedHistoryCode(error) !== undefined;
+        if (!refused && !isMalformedRecordError(error)) throw error;
+        // The parser throws on the first record it cannot accept, in file
+        // order, so a page that only just started failing must be failing
+        // on the record most recently added to it: everything through
+        // lastGoodPageEnd already parsed cleanly on an earlier growth
+        // attempt (or there was no growth yet). Re-resolve that known-good
+        // prefix without deferral risk and commit it.
         if (lastGoodPageEnd > localOffset) {
           const goodParsed = parseTranscriptJournalBytes({
             bytes: input.bytes.subarray(localOffset, lastGoodPageEnd),
@@ -414,10 +441,37 @@ export const buildCodexHistoricalBatch = (input: {
             context
           });
           const goodItems = historicalItemsFor(input, goodParsed.records, line);
+          if (refused) {
+            // The batch ends here, so the prefix follows the ordinary batch
+            // rules: it waits for the next batch when it does not fit with
+            // the items already collected, and the cursor moves only as far
+            // as the parser resolved, which stops before a record it still
+            // holds back.
+            if (exceedsBatchLimits(input, items, goodItems)) {
+              if (localOffset === 0) {
+                throw new Error("historical_record_exceeds_batch_limit", {
+                  cause: error
+                });
+              }
+              break recordLoop;
+            }
+            localOffset =
+              goodParsed.checkpoint.offset - input.absoluteStartOffset;
+          }
           items = [...items, ...goodItems];
           state = parserState(goodParsed.checkpoint);
           line = goodParsed.checkpoint.lineCount;
         }
+        if (refused) {
+          // End the batch before the refused record, so every record the
+          // parser resolved ahead of it is committed. A batch that cannot
+          // commit anything ahead of the refused record fails, which marks
+          // the source as unimportable.
+          if (localOffset === 0) throw error;
+          break recordLoop;
+        }
+        // Treat the newly-added record as the isolated malformed one,
+        // exactly as a single-record page would have.
         malformedRecordCount += 1;
         localOffset = pageEnd;
         line += 1;
@@ -431,18 +485,13 @@ export const buildCodexHistoricalBatch = (input: {
         continue;
       }
       const nextItems = historicalItemsFor(input, parsed.records, line);
-      const combined = [...items, ...nextItems];
-      if (
-        combined.length > input.config.maxBatchRows ||
-        Buffer.byteLength(JSON.stringify(combined), "utf8") >
-          input.config.maxBatchBytes
-      ) {
+      if (exceedsBatchLimits(input, items, nextItems)) {
         if (localOffset === 0) {
           throw new Error("historical_record_exceeds_batch_limit");
         }
         break recordLoop;
       }
-      items = combined;
+      items = [...items, ...nextItems];
       state = parserState(parsed.checkpoint);
       line = parsed.checkpoint.lineCount;
       localOffset = resolvedThroughOffset - input.absoluteStartOffset;
@@ -809,6 +858,16 @@ export const createCodexHistoricalProviderAdapter = (input: {
             config
           });
         } catch (error) {
+          const refused = refusedHistoryCode(error);
+          if (refused) {
+            await skipUnimportableSource(input.client, source, refused);
+            return {
+              state: "skipped",
+              selection: currentSelection,
+              runId: activeRunId,
+              diagnosticCode: refused
+            };
+          }
           if (!isUnrepresentableRecordError(error)) throw error;
           await skipUnimportableSource(
             input.client,

@@ -161,6 +161,10 @@ export {
   type HistoricalImportBatchConfig
 } from "./historical-admission.js";
 export {
+  safeHistoricalCursorParserState,
+  type HistoricalCursorParserState
+} from "./historical-cursor-parser-state.js";
+export {
   AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
   AUTOMATIC_HISTORICAL_WINDOW_DAYS,
   HISTORICAL_INGESTION_STALE_MS,

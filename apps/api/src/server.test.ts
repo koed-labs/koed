@@ -14657,6 +14657,10 @@ describe("account and access flows", () => {
       lastVerifiedDigest: journalDigest,
       parserState: {
         currentTurnId: "turn-1",
+        historyMode: "paginated",
+        subagentHistoryStartOrdinal: 4,
+        lastRecordOrdinal: 2,
+        approvalHelperConversation: true,
         rawTranscript: "must-not-be-presented"
       },
       malformedRecordCount: 1,
@@ -14933,7 +14937,11 @@ describe("account and access flows", () => {
     }>(resumedLookup).source;
     expect(resumedSource.historicalCursorCurrentTurnId).toBe("turn-1");
     expect(resumedSource.historicalCursorParserState).toEqual({
-      currentTurnId: "turn-1"
+      currentTurnId: "turn-1",
+      historyMode: "paginated",
+      subagentHistoryStartOrdinal: 4,
+      lastRecordOrdinal: 2,
+      approvalHelperConversation: true
     });
     expect(
       jsonBody<{ artifact: { sourceGenerationId: string } }>(exactGeneration)
