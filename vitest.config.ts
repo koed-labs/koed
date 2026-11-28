@@ -83,6 +83,10 @@ export default defineConfig({
         replacement: `${root}packages/mcp-server/src/claude-transcript-parser.ts`
       },
       {
+        find: "@koed-labs/mcp-server/pi-session-parser",
+        replacement: `${root}packages/mcp-server/src/pi-session-parser.ts`
+      },
+      {
         find: "@koed-labs/mcp-server/managed-conversation-command-types",
         replacement: `${root}packages/mcp-server/src/managed-conversation-command-types.ts`
       },

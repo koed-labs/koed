@@ -9,6 +9,10 @@ import {
   buildCodexHistoricalJournalRange,
   type TranscriptJournalParserState
 } from "@koed-labs/mcp-server/codex-transcript-parser";
+import {
+  buildPiHistoricalJournalRange,
+  type PiSessionParserState
+} from "@koed-labs/mcp-server/pi-session-parser";
 import type { FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
@@ -296,6 +300,22 @@ const journalRangeAdapters: Record<string, JournalRangeAdapter> = {
     },
     rejectsRecord: (error) =>
       /malformed complete JSONL record/.test(error.message)
+  },
+  "pi-session-v1": {
+    severalRecords: false,
+    checkRequest: refuseThreadContext,
+    build({ bytes, absoluteStartOffset, source }) {
+      return buildPiHistoricalJournalRange({
+        bytes,
+        absoluteStartOffset,
+        lineIndexOffset: source.historicalCursorLine,
+        prior: source.historicalCursorParserState as PiSessionParserState,
+        sessionId: source.sessionId,
+        sourceSessionId: source.sourceSessionId,
+        sourceFingerprint: source.sourceFingerprint
+      });
+    },
+    rejectsRecord: (error) => error.message.startsWith("pi_session_")
   }
 };
 

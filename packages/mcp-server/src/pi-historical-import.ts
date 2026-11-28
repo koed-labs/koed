@@ -10,6 +10,7 @@ import type { RawConversationItemRequest } from "./conversation-source-types.js"
 import { MemoryApiClient, MemoryApiError } from "./index.js";
 import {
   parsePiSessionJournalBytes,
+  piHistoricalImportItem,
   type PiSessionParserState
 } from "./pi-session-parser.js";
 import {
@@ -273,37 +274,7 @@ export const registerPiHistoricalTranscriptSource = async (
   };
 };
 
-const historicalItem = (item: RawConversationItemRequest) => ({
-  observationOnly: item.observationOnly,
-  sessionId: item.sessionId,
-  turnId: item.turnId,
-  externalThreadId: item.externalThreadId,
-  externalTurnId: item.externalTurnId,
-  externalItemId: item.externalItemId,
-  parentExternalItemId: item.parentExternalItemId,
-  sourceRecordType: item.sourceRecordType,
-  sourceEventType: item.sourceEventType,
-  sourceLineNumber: item.sourceLineNumber,
-  sourceSequence: item.sourceSequence,
-  eventTime: item.eventTime,
-  rawJson: item.rawJson,
-  rawText: item.rawText,
-  logicalSourceId: item.logicalSourceId,
-  transportChunkIndex: item.transportChunkIndex,
-  transportChunkCount: item.transportChunkCount,
-  transportChunkText: item.transportChunkText,
-  transportChunkEncoding: item.transportChunkEncoding,
-  sourceHash: item.sourceHash,
-  idempotencyKey: item.idempotencyKey,
-  canonicalItemKey: item.canonicalItemKey,
-  canonicalStableItemId: item.canonicalStableItemId,
-  canonicalSourcePriority: item.canonicalSourcePriority,
-  observationKind: item.observationKind,
-  observationComponent: item.observationComponent,
-  projectionStatus: item.projectionStatus,
-  projectionVersion: "pi-session-v1" as const,
-  metadata: item.metadata
-});
+const historicalItem = piHistoricalImportItem;
 
 const piHistoricalGapItem = (input: {
   source: HistoricalSource;
@@ -562,6 +533,32 @@ export const importNextPiHistoricalBatch = async (
   if (Buffer.byteLength(JSON.stringify(items), "utf8") > 3_800_000) {
     items = [];
   }
+  const range = {
+    expectedSourceOffset: source.historicalCursorOffset,
+    sourceOffset: end,
+    segmentIndex: segment.segmentIndex,
+    lastVerifiedDigest: segment.plaintextDigest
+  };
+  if (
+    items.length === 0 &&
+    parsed.items.length > 0 &&
+    available.indexOf(0x0a) === localEnd - 1
+  ) {
+    // One record that no item batch can carry. The API already stores it in
+    // the journal and imports it from there. If the API cannot import it
+    // either, the gap below keeps the Conversation moving.
+    try {
+      await client.ingestHistoricalImportBatch(source.id, {
+        kind: "journal_range",
+        ...range
+      });
+      return true;
+    } catch (error) {
+      if (!(error instanceof MemoryApiError) || error.status !== 422) {
+        throw error;
+      }
+    }
+  }
   if (items.length === 0 && parsed.items.length > 0) {
     items = [
       piHistoricalGapItem({
@@ -575,11 +572,8 @@ export const importNextPiHistoricalBatch = async (
     skippedRecordCount = 1;
   }
   await client.ingestHistoricalImportBatch(source.id, {
-    expectedSourceOffset: source.historicalCursorOffset,
-    sourceOffset: end,
+    ...range,
     sourceLine: parsed.checkpoint.lineCount,
-    segmentIndex: segment.segmentIndex,
-    lastVerifiedDigest: segment.plaintextDigest,
     parserState: parsed.parserState,
     ...(skippedRecordCount > 0 ? { skippedRecordCount } : {}),
     items

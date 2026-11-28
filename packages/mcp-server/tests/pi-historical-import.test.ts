@@ -12,6 +12,7 @@ import {
 } from "@koed-labs/server";
 
 import { MemoryApiClient, MemoryApiError } from "../src/index.js";
+import { buildPiHistoricalJournalRange } from "../src/pi-session-parser.js";
 import {
   createPiHistoricalProviderAdapter,
   importNextPiHistoricalBatch,
@@ -696,18 +697,64 @@ describe("Pi bounded historical record representation", () => {
     ]);
   });
 
-  it("persists an auditable gap above the hard payload ceiling and continues", async () => {
+  it("commits a record above the hard payload ceiling by journal range and continues", async () => {
+    const firstRecord = messageRecord("too-large", "x".repeat(4_100_000));
+    const bytes = Buffer.from(
+      `${firstRecord}${messageRecord("later", "valid after the large record")}`
+    );
+    const source = sourceFor(bytes);
+    const { batches, client } = clientFor(source, bytes);
+
+    await expect(
+      importNextPiHistoricalBatch(client, source, {
+        maxRows: 100,
+        maxBytes: 1_000_000
+      })
+    ).resolves.toBe(true);
+    // The record travels as a range of the stored journal, never as items.
+    expect(batches).toEqual([
+      {
+        kind: "journal_range",
+        expectedSourceOffset: 0,
+        sourceOffset: Buffer.byteLength(firstRecord),
+        segmentIndex: 0,
+        lastVerifiedDigest: "b".repeat(64)
+      }
+    ]);
+
+    await importNextPiHistoricalBatch(
+      client,
+      {
+        ...source,
+        historicalCursorOffset: Buffer.byteLength(firstRecord),
+        historicalCursorLine: 1
+      },
+      { maxRows: 100, maxBytes: 1_000_000 }
+    );
+    expect(batches[1]?.items).toEqual([
+      expect.objectContaining({ rawText: "valid after the large record" })
+    ]);
+  });
+
+  it("falls back to an auditable gap when the API cannot import the journal range", async () => {
     const firstRecord = messageRecord("too-large", "x".repeat(4_100_000));
     const bytes = Buffer.from(
       `${firstRecord}${messageRecord("later", "valid after gap")}`
     );
     const source = sourceFor(bytes);
     const { batches, client } = clientFor(source, bytes);
+    vi.mocked(client.ingestHistoricalImportBatch).mockRejectedValueOnce(
+      new MemoryApiError("Journal range does not hold importable records", {
+        status: 422,
+        payload: { code: "historical_import_journal_range_invalid" }
+      })
+    );
 
     await importNextPiHistoricalBatch(client, source, {
       maxRows: 100,
       maxBytes: 1_000_000
     });
+    expect(client.ingestHistoricalImportBatch).toHaveBeenCalledTimes(2);
     const gap = batches[0]!;
     expect(gap).toMatchObject({ skippedRecordCount: 1 });
     const gapItems = gap.items as Array<Record<string, unknown>>;
@@ -734,5 +781,41 @@ describe("Pi bounded historical record representation", () => {
     expect(batches[1]?.items).toEqual([
       expect.objectContaining({ rawText: "valid after gap" })
     ]);
+  });
+
+  it("builds a journal range into the whole items an item batch would chunk", async () => {
+    const identity = {
+      sessionId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      sourceFingerprint: "a".repeat(64)
+    };
+    const rangeFor = (record: string) =>
+      buildPiHistoricalJournalRange({
+        ...identity,
+        bytes: Buffer.from(record),
+        absoluteStartOffset: 0,
+        lineIndexOffset: 0
+      });
+
+    // A record small enough to send: the range holds the very same items.
+    const small = messageRecord("small", "fits an item batch");
+    const source = { ...sourceFor(Buffer.from(small)), ...identity };
+    const { batches, client } = clientFor(source, Buffer.from(small));
+    await importNextPiHistoricalBatch(client, source, {
+      maxRows: 100,
+      maxBytes: 1_000_000
+    });
+    const smallRange = rangeFor(small);
+    expect(JSON.parse(JSON.stringify(smallRange.items))).toEqual(
+      JSON.parse(JSON.stringify(batches[0]!.items))
+    );
+    expect(smallRange.sourceLine).toBe(batches[0]!.sourceLine);
+    expect(smallRange.parserState).toEqual(batches[0]!.parserState);
+
+    // A record past the transport envelope: one whole item, no chunks.
+    const large = rangeFor(messageRecord("large", "x".repeat(4_100_000)));
+    expect(large.items).toHaveLength(1);
+    expect(large.items[0]?.rawText).toHaveLength(4_100_000);
+    expect(large.items[0]?.transportChunkCount).toBeUndefined();
   });
 });

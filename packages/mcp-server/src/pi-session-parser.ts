@@ -263,3 +263,77 @@ export const parsePiSessionJournalBytes = (input: {
     parserState: state
   };
 };
+
+/**
+ * One Pi item in the shape the historical import batch accepts. The API
+ * stamps source kind, adapter version, transport and session provenance.
+ */
+export const piHistoricalImportItem = (item: RawConversationItemRequest) => ({
+  observationOnly: item.observationOnly,
+  sessionId: item.sessionId,
+  turnId: item.turnId,
+  externalThreadId: item.externalThreadId,
+  externalTurnId: item.externalTurnId,
+  externalItemId: item.externalItemId,
+  parentExternalItemId: item.parentExternalItemId,
+  sourceRecordType: item.sourceRecordType,
+  sourceEventType: item.sourceEventType,
+  sourceLineNumber: item.sourceLineNumber,
+  sourceSequence: item.sourceSequence,
+  eventTime: item.eventTime,
+  rawJson: item.rawJson,
+  rawText: item.rawText,
+  logicalSourceId: item.logicalSourceId,
+  transportChunkIndex: item.transportChunkIndex,
+  transportChunkCount: item.transportChunkCount,
+  transportChunkText: item.transportChunkText,
+  transportChunkEncoding: item.transportChunkEncoding,
+  sourceHash: item.sourceHash,
+  idempotencyKey: item.idempotencyKey,
+  canonicalItemKey: item.canonicalItemKey,
+  canonicalStableItemId: item.canonicalStableItemId,
+  canonicalSourcePriority: item.canonicalSourcePriority,
+  observationKind: item.observationKind,
+  observationComponent: item.observationComponent,
+  projectionStatus: item.projectionStatus,
+  projectionVersion: "pi-session-v1" as const,
+  metadata: item.metadata
+});
+
+export type PiHistoricalImportItem = ReturnType<typeof piHistoricalImportItem>;
+
+/**
+ * Builds the historical import items for complete Pi journal records the
+ * importer could not send. The items are the parsed ones, whole: transport
+ * chunks exist to fit an item into requests, and a journal range is built
+ * where the record is already stored.
+ */
+export const buildPiHistoricalJournalRange = (input: {
+  bytes: Uint8Array;
+  absoluteStartOffset: number;
+  lineIndexOffset: number;
+  prior?: PiSessionParserState;
+  sessionId: string;
+  sourceSessionId: string;
+  sourceFingerprint: string;
+}): {
+  items: PiHistoricalImportItem[];
+  sourceLine: number;
+  parserState: PiSessionParserState;
+} => {
+  const parsed = parsePiSessionJournalBytes({
+    bytes: input.bytes,
+    absoluteStartOffset: input.absoluteStartOffset,
+    lineIndexOffset: input.lineIndexOffset,
+    sessionId: input.sessionId,
+    externalSessionId: input.sourceSessionId,
+    sourceFingerprint: input.sourceFingerprint,
+    prior: input.prior,
+    sourceTransport: "historical_import"
+  });
+  return {
+    items: parsed.items.map(piHistoricalImportItem),
+    sourceLine: parsed.checkpoint.lineCount,
+    parserState: parsed.parserState
+  };
+};

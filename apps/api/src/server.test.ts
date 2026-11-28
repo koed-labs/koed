@@ -26,6 +26,7 @@ import releaseManifest from "@koed-labs/koed/package.json" with { type: "json" }
 import { ConversationPresentationVersionConflictError } from "@koed-labs/db";
 import { parseClaudeHistoricalImportBytes } from "@koed-labs/mcp-server/claude-transcript-parser";
 import { buildCodexHistoricalJournalRange } from "@koed-labs/mcp-server/codex-transcript-parser";
+import { buildPiHistoricalJournalRange } from "@koed-labs/mcp-server/pi-session-parser";
 import pdsFixture from "../../../packages/shared/test-fixtures/personal-device-sync-v1.json" with { type: "json" };
 import type {
   ActorContext,
@@ -15674,6 +15675,100 @@ describe("account and access flows", () => {
       source: { historicalCursorOffset: unitEnd, historicalCursorLine: 2 }
     });
     expect(imported.body.length).toBeLessThan(10_000);
+    await fixture.app.close();
+  });
+
+  it("imports a Pi journal record by reference as whole items", async () => {
+    const lines = [
+      { id: "small", text: "before the large record" },
+      { id: "large", text: "x".repeat(4_100_000) },
+      { id: "later", text: "after the large record" }
+    ].map(({ id, text }) =>
+      Buffer.from(
+        `${JSON.stringify({
+          type: "message",
+          id,
+          timestamp: "2026-08-17T00:00:00.000Z",
+          message: { role: "user", content: text }
+        })}\n`
+      )
+    );
+    const fixture = await startJournalRangeImport({
+      aiClient: "pi",
+      sourceRuntime: "pi",
+      sourceKind: "pi",
+      artifactFormat: "pi_session_jsonl",
+      lines
+    });
+    const firstEnd = lines[0]!.byteLength;
+    const secondEnd = firstEnd + lines[1]!.byteLength;
+    const identity = {
+      sessionId: fixture.sessionId,
+      sourceSessionId: fixture.externalSessionId,
+      sourceFingerprint: fixture.sourceFingerprint
+    };
+    const first = buildPiHistoricalJournalRange({
+      ...identity,
+      bytes: lines[0]!,
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0
+    });
+    const firstBatch = await fixture.postBatch({
+      expectedSourceOffset: 0,
+      sourceOffset: firstEnd,
+      sourceLine: first.sourceLine,
+      segmentIndex: 0,
+      lastVerifiedDigest: fixture.journalDigest,
+      parserState: first.parserState,
+      items: journalJson(first.items)
+    });
+    expect(firstBatch.statusCode, firstBatch.body).toBe(200);
+
+    const range = {
+      kind: "journal_range",
+      expectedSourceOffset: firstEnd,
+      sourceOffset: secondEnd,
+      segmentIndex: 0,
+      lastVerifiedDigest: fixture.journalDigest
+    };
+    const refused = await Promise.all([
+      // Two records: a Pi range is exactly one.
+      fixture.postBatch({ ...range, sourceOffset: fixture.journalLength }),
+      // Thread context belongs to Codex ranges.
+      fixture.postBatch({ ...range, threadKind: "conversation" })
+    ]);
+    expect(refused.map((response) => response.statusCode)).toEqual([422, 422]);
+    expect(fixture.forwardedBatches).toHaveLength(1);
+
+    const imported = await fixture.postBatch(range);
+    expect(imported.statusCode, imported.body).toBe(200);
+    const expected = buildPiHistoricalJournalRange({
+      ...identity,
+      bytes: lines[1]!,
+      absoluteStartOffset: firstEnd,
+      lineIndexOffset: 1
+    });
+    // More than an item batch or the transport envelope may carry, so the
+    // item arrives whole.
+    expect(Buffer.byteLength(JSON.stringify(expected.items))).toBeGreaterThan(
+      4_000_000
+    );
+    expect(expected.items[0]?.transportChunkCount).toBeUndefined();
+    expect(journalJson(fixture.forwardedBatches[1]!.items)).toEqual(
+      journalJson(expected.items).map((item) => ({
+        ...item,
+        sourceKind: "pi",
+        sourceAdapterVersion: "pi-session-v1",
+        sourceTransport: "historical_import"
+      }))
+    );
+    expect(fixture.forwardedBatches[1]).toMatchObject({ sourceLine: 2 });
+    expect(
+      jsonBody<{ source: Record<string, unknown> }>(imported).source
+    ).toMatchObject({
+      historicalCursorOffset: secondEnd,
+      historicalCursorLine: 2
+    });
     await fixture.app.close();
   });
 
