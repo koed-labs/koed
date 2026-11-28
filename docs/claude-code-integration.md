@@ -225,6 +225,13 @@ complete signed source journal, then processes only the range before the live
 activation frontier. It never treats pre-activation history as live capture and
 cannot write Team Memory.
 
+A transcript record can be too large to send as an import batch, for example a
+message with pasted screenshots. The Local AI Runtime then names the record's
+range in the Conversation Source Journal instead of sending its content, and the
+local API imports the complete record from the stored journal segment. Batches
+of several records that exceed the batch limits together are split at a record
+boundary. One record contributes at most 1,000 content blocks.
+
 ## Recall
 
 Check the MCP connection:

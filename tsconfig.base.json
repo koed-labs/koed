@@ -27,6 +27,9 @@
       "@koed-labs/mcp-server/claude-transcript-parser": [
         "./packages/mcp-server/src/claude-transcript-parser.ts"
       ],
+      "@koed-labs/mcp-server/pi-session-parser": [
+        "./packages/mcp-server/src/pi-session-parser.ts"
+      ],
       "@koed-labs/mcp-server/runtime-contracts": [
         "./packages/mcp-server/src/runtime-contracts.ts"
       ],

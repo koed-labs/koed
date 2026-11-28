@@ -1463,6 +1463,91 @@ describeDb("journal-backed historical import repository", () => {
     });
   });
 
+  it("stores an item larger than an uploaded batch may carry", async () => {
+    // A journal range batch is built by the API from the stored journal, so
+    // its items are bounded by the journal segment and not by the upload
+    // limits. The batch write itself must not add a smaller bound.
+    const repo = createMemorySourceRepository(pool);
+    const owner = await repo.createUser({
+      email: `historical-large-item-${randomUUID()}@example.com`
+    });
+    const actor = { userId: owner.id };
+    const fixture = await createJournalFixture(repo, { ownerId: owner.id });
+    const run = await repo.createHistoricalImportRun(actor);
+    const source = await repo.createHistoricalImportSource(actor, {
+      runId: run.id,
+      artifactId: fixture.artifactId,
+      aiClient: "codex",
+      detectedProject: { projectId: `/projects/${fixture.externalSessionId}` }
+    });
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      await repo.transitionHistoricalImportRun(actor, {
+        runId: run.id,
+        expectedState,
+        state
+      });
+      await repo.transitionHistoricalImportSource(actor, {
+        sourceId: source!.id,
+        expectedState,
+        state
+      });
+    }
+    // Ordinary words: the tokenizer is quadratic on one repeated character,
+    // which would test the tokenizer and not the import.
+    const largeText = Array.from(
+      { length: 600_000 },
+      (_, index) => `word${index % 977}`
+    )
+      .join(" ")
+      .slice(0, 4_100_000);
+    expect(largeText).toHaveLength(4_100_000);
+
+    const result = await repo.ingestHistoricalImportBatch(actor, {
+      sourceId: source!.id,
+      expectedSourceOffset: 0,
+      sourceOffset: fixture.frontier,
+      sourceLine: 2,
+      segmentIndex: fixture.segmentIndex,
+      lastVerifiedDigest: fixture.segmentDigest,
+      items: [
+        sourceItem({
+          externalSessionId: fixture.externalSessionId,
+          rawText: largeText
+        })
+      ]
+    });
+
+    expect(result.source).toMatchObject({
+      historicalCursorOffset: fixture.frontier,
+      importedRecordCount: 1
+    });
+    const stored = await pool.query<{
+      text_length: number;
+      json_length: number;
+    }>(
+      `select length(raw_text)::int as text_length,
+              length(raw_json -> 'payload' ->> 'message')::int as json_length
+         from conversation_items
+        where id = $1`,
+      [result.items[0]!.id]
+    );
+    expect(stored.rows[0]).toEqual({
+      text_length: 4_100_000,
+      json_length: 4_100_000
+    });
+
+    // Projection takes the item as it takes any other.
+    await repo.projectPendingConversationItems(actor, { limit: 10 });
+    const projected = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items where id = $1",
+      [result.items[0]!.id]
+    );
+    expect(projected.rows[0]?.projection_status).toBe("projected");
+  });
+
   it("reports historical pending cost and a capacity-derived ETA range", async () => {
     const repo = createMemorySourceRepository(pool);
     const capacity = createEmbeddingCapacityRepository(pool);

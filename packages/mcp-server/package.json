@@ -25,6 +25,10 @@
       "types": "./dist/claude-transcript-parser.d.ts",
       "import": "./dist/claude-transcript-parser.js"
     },
+    "./pi-session-parser": {
+      "types": "./dist/pi-session-parser.d.ts",
+      "import": "./dist/pi-session-parser.js"
+    },
     "./runtime-contracts": {
       "types": "./dist/runtime-contracts.d.ts",
       "import": "./dist/runtime-contracts.js"

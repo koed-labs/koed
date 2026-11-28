@@ -4,11 +4,28 @@ import type {
   HistoricalImportSourceRecord,
   MemorySourceRepository
 } from "@koed-labs/db";
+import { parseClaudeHistoricalImportBytes } from "@koed-labs/mcp-server/claude-transcript-parser";
+import {
+  buildCodexHistoricalJournalRange,
+  type TranscriptJournalParserState
+} from "@koed-labs/mcp-server/codex-transcript-parser";
+import {
+  buildPiHistoricalJournalRange,
+  type PiSessionParserState
+} from "@koed-labs/mcp-server/pi-session-parser";
 import type { FastifyInstance } from "fastify";
+import { ZodError } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
+import { readConversationSourceSegmentBytes } from "./conversation-source-journal-routes.js";
+import {
+  createFilesystemConversationSourceStorage,
+  type ConversationSourceStorage
+} from "./conversation-source-storage.js";
 import {
   createHistoricalImportSourceSchema,
   historicalImportBatchSchema,
+  historicalImportJournalRangeItemSchema,
+  historicalImportJournalRangeSchema,
   historicalImportRunListSchema,
   historicalImportRunParamsSchema,
   historicalImportSourceLookupSchema,
@@ -172,6 +189,346 @@ const requireImportPolicy = async (
 type HistoricalBatchInput = ReturnType<
   typeof historicalImportBatchSchema.parse
 >;
+type HistoricalJournalRangeInput = ReturnType<
+  typeof historicalImportJournalRangeSchema.parse
+>;
+
+// A record index reserves 1000 source sequences, one per content block, and
+// an item batch carries at most as many items.
+const JOURNAL_RANGE_MAXIMUM_ITEMS = 1_000;
+// How many consecutive segments one range may read. The importer reads at
+// most this many while it looks for the record that resolves deferred ones.
+const JOURNAL_RANGE_MAXIMUM_SEGMENTS = 4;
+
+const journalRangeError = (
+  statusCode: number,
+  code: string,
+  message: string
+): Error => Object.assign(new Error(message), { statusCode, code });
+
+const journalRangeInvalid = (message: string): Error =>
+  journalRangeError(422, "historical_import_journal_range_invalid", message);
+
+const journalRangeTooManyItems = (): Error =>
+  journalRangeError(
+    422,
+    "historical_import_journal_range_too_many_items",
+    "Journal range holds more items than one range may contribute"
+  );
+
+type JournalRangeBuildInput = {
+  bytes: Buffer;
+  absoluteStartOffset: number;
+  source: HistoricalImportSourceRecord;
+  sourceComponentId: string;
+  request: HistoricalJournalRangeInput;
+};
+
+/**
+ * How one AI Client's journal range becomes items. `build` runs the parser
+ * and mapping that client's importer uses for an item batch, so both paths
+ * store the same items.
+ */
+type JournalRangeAdapter = {
+  /** Whether a range may hold several complete records. */
+  severalRecords: boolean;
+  /** Request fields this adapter needs or refuses, checked before any read. */
+  checkRequest(request: HistoricalJournalRangeInput): void;
+  build(input: JournalRangeBuildInput): {
+    items: unknown[];
+    /** Set when the parser may stop short of the range end. */
+    resolvedOffset?: number;
+    sourceLine: number;
+    parserState: Record<string, unknown>;
+  };
+  /** Whether a build error means the stored record cannot be imported. */
+  rejectsRecord(error: Error): boolean;
+};
+
+const refuseThreadContext = (request: HistoricalJournalRangeInput): void => {
+  if (
+    request.threadKind !== undefined ||
+    request.parentThreadId !== undefined
+  ) {
+    throw journalRangeInvalid(
+      "Thread context applies to Codex journal ranges only"
+    );
+  }
+};
+
+const codexJournalRangeAdapter: JournalRangeAdapter = {
+  // A deferred assistant event resolves only together with the record
+  // after it, so the unit the importer could not send may be several.
+  severalRecords: true,
+  checkRequest(request) {
+    if (request.threadKind === undefined) {
+      throw journalRangeInvalid("A Codex journal range needs its thread kind");
+    }
+  },
+  build({ bytes, absoluteStartOffset, source, request }) {
+    return buildCodexHistoricalJournalRange({
+      bytes,
+      absoluteStartOffset,
+      lineIndexOffset: source.historicalCursorLine,
+      prior: source.historicalCursorParserState as TranscriptJournalParserState,
+      sessionId: source.sessionId,
+      sourceSessionId: source.sourceSessionId,
+      sourceFingerprint: source.sourceFingerprint,
+      threadKind: request.threadKind!,
+      ...(request.parentThreadId
+        ? { parentThreadId: request.parentThreadId }
+        : {})
+    });
+  },
+  rejectsRecord: (error) =>
+    /malformed complete JSONL record/.test(error.message)
+};
+
+const journalRangeAdapters: Record<string, JournalRangeAdapter> = {
+  // Legacy and paginated Codex histories share one importer.
+  "codex-transcript-v1": codexJournalRangeAdapter,
+  "codex-transcript-v2": codexJournalRangeAdapter,
+  "claude-code-transcript-v1": {
+    severalRecords: false,
+    checkRequest: refuseThreadContext,
+    build({ bytes, absoluteStartOffset, source, sourceComponentId }) {
+      const currentTurnId = source.historicalCursorParserState.currentTurnId;
+      const parsed = parseClaudeHistoricalImportBytes({
+        bytes,
+        absoluteStartOffset,
+        lineIndexOffset: source.historicalCursorLine,
+        sessionId: source.sessionId,
+        externalSessionId: source.sourceSessionId,
+        sourceFingerprint: source.sourceFingerprint,
+        sourceComponentId,
+        maximumItems: JOURNAL_RANGE_MAXIMUM_ITEMS,
+        ...(typeof currentTurnId === "string"
+          ? { prior: { currentTurnId } }
+          : {})
+      });
+      return {
+        items: parsed.items,
+        sourceLine: parsed.checkpoint.lineCount,
+        parserState: parsed.parserState
+      };
+    },
+    rejectsRecord: (error) => error.message.startsWith("claude_transcript_")
+  },
+  "pi-session-v1": {
+    severalRecords: false,
+    checkRequest: refuseThreadContext,
+    build({ bytes, absoluteStartOffset, source }) {
+      return buildPiHistoricalJournalRange({
+        bytes,
+        absoluteStartOffset,
+        lineIndexOffset: source.historicalCursorLine,
+        prior: source.historicalCursorParserState as PiSessionParserState,
+        sessionId: source.sessionId,
+        sourceSessionId: source.sourceSessionId,
+        sourceFingerprint: source.sourceFingerprint
+      });
+    },
+    rejectsRecord: (error) => error.message.startsWith("pi_session_")
+  }
+};
+
+/**
+ * Builds the item batch for a journal range the client could not upload. The
+ * range is read from the stored segment, so nothing here trusts client
+ * content; the repository still revalidates the cursor and Capture Policy in
+ * the transaction that writes the items.
+ */
+const journalRangeBatch = async (
+  context: ApiRouteContext,
+  journalStorage: () => ConversationSourceStorage,
+  repo: MemorySourceRepository,
+  userId: string,
+  source: HistoricalImportSourceRecord,
+  input: HistoricalJournalRangeInput
+): Promise<HistoricalBatchInput> => {
+  const adapter = Object.hasOwn(
+    journalRangeAdapters,
+    source.sourceAdapterVersion
+  )
+    ? journalRangeAdapters[source.sourceAdapterVersion]
+    : undefined;
+  if (!adapter) {
+    throw journalRangeError(
+      422,
+      "historical_import_journal_range_unsupported",
+      "Journal range import is not supported for this AI Client"
+    );
+  }
+  adapter.checkRequest(input);
+  // Refuse before reading stored content. The repository repeats both checks
+  // in the transaction that writes the items.
+  await requireImportPolicy(context, repo, userId, source);
+  if (input.sourceOffset > source.registrationFrontierOffset) {
+    throw journalRangeError(
+      409,
+      "historical_import_cursor_conflict",
+      "Historical import cursor conflict"
+    );
+  }
+  const actor = { userId };
+  const segmentVerificationFailed = (): Error =>
+    journalRangeError(
+      409,
+      "historical_import_segment_verification_failed",
+      "Historical import segment verification failed"
+    );
+  const [segment] = await repo.listConversationSourceSegmentsByIndex(actor, {
+    artifactId: source.artifactId,
+    afterSegmentIndex: input.segmentIndex - 1,
+    throughSegmentIndex: input.segmentIndex,
+    limit: 1
+  });
+  if (
+    !segment ||
+    segment.plaintextDigest !== input.lastVerifiedDigest ||
+    input.sourceOffset <= segment.sourceStartOffset ||
+    input.sourceOffset > segment.sourceEndOffset
+  ) {
+    throw segmentVerificationFailed();
+  }
+  // The named segment holds the end of the range. Records that resolve
+  // together can start in an earlier segment, because the journal cuts
+  // segments at record ends without regard to what a record waits for.
+  let segments = [segment];
+  if (input.expectedSourceOffset < segment.sourceStartOffset) {
+    if (!adapter.severalRecords) throw segmentVerificationFailed();
+    const covering = await repo.listConversationSourceSegments(actor, {
+      artifactId: source.artifactId,
+      afterOffset: input.expectedSourceOffset,
+      limit: JOURNAL_RANGE_MAXIMUM_SEGMENTS
+    });
+    const last = covering.findIndex(({ id }) => id === segment.id);
+    segments = covering.slice(0, last + 1);
+    const contiguous = segments.every(
+      (current, index) =>
+        index === 0 ||
+        (current.segmentIndex === segments[index - 1]!.segmentIndex + 1 &&
+          current.sourceStartOffset === segments[index - 1]!.sourceEndOffset)
+    );
+    if (
+      last < 0 ||
+      !contiguous ||
+      segments[0]!.sourceStartOffset > input.expectedSourceOffset
+    ) {
+      throw segmentVerificationFailed();
+    }
+  }
+  const firstSegment = segments[0]!;
+  const segmentBytes = Buffer.concat(
+    await Promise.all(
+      segments.map(async (current) =>
+        Buffer.from(
+          await readConversationSourceSegmentBytes(
+            context,
+            journalStorage(),
+            current
+          )
+        )
+      )
+    )
+  );
+  const start = input.expectedSourceOffset - firstSegment.sourceStartOffset;
+  const records = segmentBytes.subarray(
+    start,
+    input.sourceOffset - firstSegment.sourceStartOffset
+  );
+  // Complete records only: the range starts after a line end and ends with
+  // one. Unless the adapter resolves records together, it holds exactly one.
+  if (
+    records.byteLength !== input.sourceOffset - input.expectedSourceOffset ||
+    (start > 0 && segmentBytes[start - 1] !== 0x0a) ||
+    records.at(-1) !== 0x0a ||
+    (!adapter.severalRecords &&
+      records.indexOf(0x0a) !== records.byteLength - 1)
+  ) {
+    throw journalRangeInvalid(
+      adapter.severalRecords
+        ? "Journal range must cover complete records"
+        : "Journal range must cover exactly one complete record"
+    );
+  }
+  const range = {
+    expectedSourceOffset: input.expectedSourceOffset,
+    sourceOffset: input.sourceOffset,
+    segmentIndex: input.segmentIndex,
+    lastVerifiedDigest: input.lastVerifiedDigest
+  };
+  if (source.historicalCursorOffset === input.sourceOffset) {
+    // Already committed, for example after a lost response. The repository
+    // answers with a replay, or with a conflict if the import moved on.
+    return { ...range, sourceLine: source.historicalCursorLine, items: [] };
+  }
+  if (source.historicalCursorOffset !== input.expectedSourceOffset) {
+    throw journalRangeError(
+      409,
+      "historical_import_cursor_conflict",
+      "Historical import cursor conflict"
+    );
+  }
+  const artifact = await repo.getConversationSourceArtifact(
+    actor,
+    source.artifactId
+  );
+  if (!artifact) {
+    throw journalRangeError(
+      409,
+      "historical_import_artifact_unavailable",
+      "Conversation Source Artifact is unavailable"
+    );
+  }
+  let built: ReturnType<JournalRangeAdapter["build"]>;
+  let items: HistoricalBatchInput["items"];
+  try {
+    built = adapter.build({
+      bytes: records,
+      absoluteStartOffset: input.expectedSourceOffset,
+      source,
+      sourceComponentId: artifact.sourceComponentId,
+      request: input
+    });
+    if (
+      built.resolvedOffset !== undefined &&
+      built.resolvedOffset !== input.sourceOffset
+    ) {
+      // Committing the range would move the cursor past records that
+      // produced no items.
+      throw journalRangeInvalid(
+        "Journal range ends in records that are not resolved yet"
+      );
+    }
+    if (built.items.length > JOURNAL_RANGE_MAXIMUM_ITEMS) {
+      throw journalRangeTooManyItems();
+    }
+    items = built.items.map((item) =>
+      historicalImportJournalRangeItemSchema.parse(item)
+    );
+  } catch (error) {
+    // The Claude parser stops at the item limit before it builds anything.
+    if (
+      error instanceof Error &&
+      error.message === "claude_transcript_too_many_items"
+    ) {
+      throw journalRangeTooManyItems();
+    }
+    // Only a record the parser or the item rules reject is a data error.
+    const invalidRecord =
+      error instanceof ZodError ||
+      (error instanceof Error && adapter.rejectsRecord(error));
+    if (!invalidRecord) throw error;
+    throw journalRangeInvalid("Journal range does not hold importable records");
+  }
+  return {
+    ...range,
+    sourceLine: built.sourceLine,
+    parserState: built.parserState,
+    items
+  };
+};
 
 const registerCreateRunRoute = (
   app: FastifyInstance,
@@ -397,12 +754,24 @@ const registerSourceTransitionRoute = (
 
 const ingestHistoricalBatch = async (
   context: ApiRouteContext,
+  journalStorage: () => ConversationSourceStorage,
   userId: string,
   sourceId: string,
-  input: HistoricalBatchInput
+  request: HistoricalBatchInput | HistoricalJournalRangeInput
 ) => {
   const repo = context.requireRepository();
   const source = await requireSource(repo, userId, sourceId);
+  const input =
+    "kind" in request
+      ? await journalRangeBatch(
+          context,
+          journalStorage,
+          repo,
+          userId,
+          source,
+          request
+        )
+      : request;
   return repo.ingestHistoricalImportBatch(
     { userId },
     {
@@ -422,6 +791,13 @@ const registerBatchRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
 ): void => {
+  // Local profiles keep the journal on disk. The storage is opened once, on
+  // the first journal range, and never for an item batch.
+  let openedStorage: ConversationSourceStorage | undefined;
+  const storageForJournalRange = (): ConversationSourceStorage =>
+    (openedStorage ??= createFilesystemConversationSourceStorage(
+      context.config.koedHome
+    ));
   app.post(
     "/v1/historical-import-sources/:sourceId/batches",
     { preHandler: context.rateLimit.memoryWrite },
@@ -431,13 +807,31 @@ const registerBatchRoute = (
       const { sourceId } = historicalImportSourceParamsSchema.parse(
         request.params
       );
-      const input = historicalImportBatchSchema.parse(request.body);
+      // The batch kind picks the schema, so an item batch keeps reporting
+      // the path of the field that is wrong.
+      const body = request.body;
+      const input =
+        typeof body === "object" && body !== null && "kind" in body
+          ? historicalImportJournalRangeSchema.parse(body)
+          : historicalImportBatchSchema.parse(body);
       const { items, source, policy, replayed } = await ingestHistoricalBatch(
         context,
+        storageForJournalRange,
         user.id,
         sourceId,
         input
       );
+      if ("kind" in input) {
+        // The client holds no parser state for a record it did not parse, so
+        // it continues from the committed cursor. The items stay out of the
+        // response: the record was too large to upload in the first place.
+        return {
+          itemCount: items.length,
+          source: presentSource(source, { includeResumeState: true }),
+          policy,
+          replayed
+        };
+      }
       return {
         items: items.map((item) => ({
           ...item,

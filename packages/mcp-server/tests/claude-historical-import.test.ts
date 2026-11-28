@@ -6,6 +6,7 @@ import {
   importClaudeHistoricalSource,
   importSelectedClaudeHistory
 } from "../src/claude-historical-import.js";
+import { parseClaudeHistoricalImportBytes } from "../src/claude-transcript-parser.js";
 
 const watcherMocks = vi.hoisted(() => ({
   discover: vi.fn(),
@@ -756,50 +757,333 @@ describe("Claude historical import", () => {
     expect(client.listConversationSourceSegments).not.toHaveBeenCalled();
   });
 
-  it("rejects an oversized single record without advancing the import cursor", async () => {
-    const bytes = Buffer.from(
-      `${JSON.stringify({
-        type: "user",
-        uuid: randomUUID(),
-        timestamp: "2026-08-11T12:00:00.000Z",
-        message: { role: "user", content: "x".repeat(3_500_000) }
-      })}\n`
+  // Stands in for the API over one journal segment. It commits item batches
+  // as sent and builds journal range batches from the stored bytes, the way
+  // the route does, so the returned cursor is the one a real import resumes
+  // from.
+  const journalApi = (input: {
+    records: unknown[];
+    segmentStartOffset?: number;
+    segmentStartLine?: number;
+  }) => {
+    const lines = input.records.map((record) =>
+      Buffer.from(`${JSON.stringify(record)}\n`)
     );
+    const bytes = Buffer.concat(lines);
+    const startOffset = input.segmentStartOffset ?? 0;
+    const startLine = input.segmentStartLine ?? 0;
+    const identity = {
+      sessionId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      sourceFingerprint: "b".repeat(64)
+    };
+    const segment = {
+      id: "segment-1",
+      segmentIndex: 3,
+      sourceStartOffset: startOffset,
+      sourceEndOffset: startOffset + bytes.length,
+      plaintextDigest: "a".repeat(64)
+    };
+    let cursor: {
+      offset: number;
+      line: number;
+      parserState: { currentTurnId?: string };
+    } = { offset: startOffset, line: startLine, parserState: {} };
+    const batches: Array<Record<string, unknown>> = [];
     const client = {
       listConversationSourceSegments: vi.fn(async () => ({
-        segments: [
-          {
-            id: "oversized-segment",
-            segmentIndex: 0,
-            sourceStartOffset: 0,
-            sourceEndOffset: bytes.length,
-            plaintextDigest: "d".repeat(64)
-          }
-        ]
+        segments: [segment]
       })),
       getConversationSourceSegmentContent: vi.fn(async () => ({
         bytesBase64: bytes.toString("base64")
       })),
-      ingestHistoricalImportBatch: vi.fn()
-    } as unknown as MemoryApiClient;
-
-    await expect(
-      importClaudeHistoricalSource({
-        client,
-        source: {
-          id: randomUUID(),
-          runId: randomUUID(),
-          artifactId: randomUUID(),
-          sessionId: randomUUID(),
-          sourceSessionId: randomUUID(),
-          sourceFingerprint: "e".repeat(64),
-          historicalCursorOffset: 0,
-          historicalCursorLine: 0,
-          registrationFrontierOffset: bytes.length,
-          state: "importing"
+      ingestHistoricalImportBatch: vi.fn(
+        async (_sourceId: string, batch: Record<string, unknown>) => {
+          batches.push(batch);
+          if (batch.expectedSourceOffset !== cursor.offset) {
+            throw new MemoryApiError("Historical import cursor conflict", {
+              status: 409
+            });
+          }
+          if (batch.kind !== "journal_range") {
+            cursor = {
+              offset: batch.sourceOffset as number,
+              line: batch.sourceLine as number,
+              parserState: batch.parserState as { currentTurnId?: string }
+            };
+            return { replayed: false };
+          }
+          const parsed = parseClaudeHistoricalImportBytes({
+            bytes: bytes.subarray(
+              cursor.offset - startOffset,
+              (batch.sourceOffset as number) - startOffset
+            ),
+            absoluteStartOffset: cursor.offset,
+            lineIndexOffset: cursor.line,
+            sessionId: identity.sessionId,
+            externalSessionId: identity.sourceSessionId,
+            sourceFingerprint: identity.sourceFingerprint,
+            prior: cursor.parserState
+          });
+          cursor = {
+            offset: batch.sourceOffset as number,
+            line: parsed.checkpoint.lineCount,
+            parserState: parsed.parserState
+          };
+          return {
+            itemCount: parsed.items.length,
+            replayed: false,
+            source: {
+              historicalCursorOffset: cursor.offset,
+              historicalCursorLine: cursor.line,
+              historicalCursorParserState: cursor.parserState
+            }
+          };
         }
-      })
-    ).rejects.toThrow("claude_historical_record_exceeds_batch_limit");
-    expect(client.ingestHistoricalImportBatch).not.toHaveBeenCalled();
+      )
+    } as unknown as MemoryApiClient;
+    // The source as the next pass would look it up.
+    const source = () => ({
+      id: "source-1",
+      runId: randomUUID(),
+      artifactId: randomUUID(),
+      ...identity,
+      historicalCursorOffset: cursor.offset,
+      historicalCursorLine: cursor.line,
+      historicalCursorParserState: cursor.parserState,
+      registrationFrontierOffset: startOffset + bytes.length,
+      state: "importing"
+    });
+    const lineEnd = (index: number) =>
+      startOffset +
+      lines.slice(0, index + 1).reduce((sum, line) => sum + line.length, 0);
+    return { client, source, batches, lineEnd, segment };
+  };
+
+  const base64Image = (bytes: number) => ({
+    type: "image",
+    source: { type: "base64", media_type: "image/png", data: "A".repeat(bytes) }
+  });
+  const userRecord = (uuid: string, content: unknown) => ({
+    type: "user",
+    uuid,
+    timestamp: "2026-08-11T12:00:01.000Z",
+    message: { role: "user", content }
+  });
+  const assistantRecord = (text: string) => ({
+    type: "assistant",
+    uuid: randomUUID(),
+    timestamp: "2026-08-11T12:00:02.000Z",
+    message: { role: "assistant", content: text }
+  });
+  const itemsOf = (batch: Record<string, unknown> | undefined) =>
+    (batch?.items ?? []) as Array<Record<string, unknown>>;
+
+  it("commits a record too large to upload by journal range, one batch per pass", async () => {
+    const pastedImageTurn = randomUUID();
+    const api = journalApi({
+      records: [
+        userRecord(randomUUID(), "Question before the pasted image"),
+        userRecord(pastedImageTurn, [
+          { type: "text", text: "What does this screenshot show?" },
+          base64Image(3_600_000)
+        ]),
+        assistantRecord("It shows the import progress")
+      ]
+    });
+
+    const passes = [];
+    for (let pass = 0; pass < 3; pass += 1) {
+      passes.push(
+        await importClaudeHistoricalSource({
+          client: api.client,
+          source: api.source(),
+          maxBatches: 1
+        })
+      );
+    }
+
+    expect(passes.map((pass) => pass.batchCount)).toEqual([1, 1, 1]);
+    expect(passes.map((pass) => pass.exhausted)).toEqual([false, false, true]);
+    expect(passes.map((pass) => pass.itemCount)).toEqual([1, 2, 1]);
+    expect(api.batches).toHaveLength(3);
+    // The record travels as a range of the stored journal, never as items.
+    expect(api.batches[1]).toEqual({
+      kind: "journal_range",
+      expectedSourceOffset: api.lineEnd(0),
+      sourceOffset: api.lineEnd(1),
+      segmentIndex: 3,
+      lastVerifiedDigest: "a".repeat(64)
+    });
+    expect(api.batches[2]).toMatchObject({
+      expectedSourceOffset: api.lineEnd(1),
+      sourceOffset: api.lineEnd(2),
+      sourceLine: 3
+    });
+    // The answer belongs to the turn the unparsed record opened.
+    expect(itemsOf(api.batches[2])[0]).toMatchObject({
+      sourceEventType: "agent_message",
+      externalTurnId: pastedImageTurn
+    });
+  });
+
+  it("continues within one pass from the cursor a journal range commit returns", async () => {
+    const pastedImageTurn = randomUUID();
+    const api = journalApi({
+      segmentStartOffset: 4_096,
+      segmentStartLine: 12,
+      records: [
+        userRecord(randomUUID(), "Question before the pasted image"),
+        userRecord(pastedImageTurn, [
+          { type: "text", text: "What does this screenshot show?" },
+          base64Image(3_600_000)
+        ]),
+        assistantRecord("It shows the import progress")
+      ]
+    });
+
+    const result = await importClaudeHistoricalSource({
+      client: api.client,
+      source: api.source()
+    });
+
+    expect(result).toMatchObject({
+      batchCount: 3,
+      itemCount: 4,
+      exhausted: true
+    });
+    expect(api.batches.map((batch) => batch.kind ?? "items")).toEqual([
+      "items",
+      "journal_range",
+      "items"
+    ]);
+    // Exactly the record, up to its line end, in a segment that starts late.
+    expect(api.batches[1]).toMatchObject({
+      expectedSourceOffset: api.lineEnd(0),
+      sourceOffset: api.lineEnd(1)
+    });
+    expect(api.batches[2]).toMatchObject({
+      expectedSourceOffset: api.lineEnd(1),
+      sourceLine: 15
+    });
+    expect(itemsOf(api.batches[2])[0]?.externalTurnId).toBe(pastedImageTurn);
+  });
+
+  it("commits by journal range a record whose items outgrow the batch though its line does not", async () => {
+    const api = journalApi({
+      records: [
+        userRecord(randomUUID(), [
+          { type: "text", text: "Three screenshots" },
+          base64Image(2_000_000)
+        ]),
+        assistantRecord("Seen")
+      ]
+    });
+    expect(api.lineEnd(0)).toBeLessThan(3_500_000);
+
+    const result = await importClaudeHistoricalSource({
+      client: api.client,
+      source: api.source()
+    });
+
+    expect(result).toMatchObject({ batchCount: 2, exhausted: true });
+    expect(api.batches[0]).toEqual({
+      kind: "journal_range",
+      expectedSourceOffset: 0,
+      sourceOffset: api.lineEnd(0),
+      segmentIndex: 3,
+      lastVerifiedDigest: "a".repeat(64)
+    });
+    expect(itemsOf(api.batches[1])).toHaveLength(1);
+  });
+
+  it("accepts a replayed journal range commit and continues from its cursor", async () => {
+    const pastedImageTurn = randomUUID();
+    const api = journalApi({
+      records: [
+        userRecord(pastedImageTurn, [base64Image(3_600_000)]),
+        assistantRecord("Seen")
+      ]
+    });
+    const ingest = vi.mocked(api.client.ingestHistoricalImportBatch);
+    const commit = ingest.getMockImplementation()!;
+    // The commit was written but its response never arrived, so the same
+    // request is answered as a replay that wrote nothing new.
+    ingest.mockImplementationOnce(async (sourceId, batch) => ({
+      ...(await commit(sourceId, batch)),
+      itemCount: 0,
+      replayed: true
+    }));
+
+    const result = await importClaudeHistoricalSource({
+      client: api.client,
+      source: api.source()
+    });
+
+    expect(result).toMatchObject({
+      batchCount: 2,
+      itemCount: 1,
+      exhausted: true
+    });
+    expect(itemsOf(api.batches[1])[0]?.externalTurnId).toBe(pastedImageTurn);
+  });
+
+  it.each([
+    ["another offset", { historicalCursorOffset: 10 }],
+    ["another line", { historicalCursorLine: 5 }],
+    ["no turn to resume", { historicalCursorParserState: {} }]
+  ])(
+    "fails when a journal range commit answers with %s",
+    async (_case, difference) => {
+      const api = journalApi({
+        records: [
+          userRecord(randomUUID(), [base64Image(3_600_000)]),
+          assistantRecord("Seen")
+        ]
+      });
+      vi.mocked(api.client.ingestHistoricalImportBatch).mockResolvedValueOnce({
+        itemCount: 1,
+        replayed: false,
+        source: {
+          historicalCursorOffset: api.lineEnd(0),
+          historicalCursorLine: 1,
+          historicalCursorParserState: { currentTurnId: randomUUID() },
+          ...difference
+        }
+      });
+
+      await expect(
+        importClaudeHistoricalSource({
+          client: api.client,
+          source: api.source()
+        })
+      ).rejects.toThrow("claude_historical_journal_range_cursor_mismatch");
+      // Nothing is sent after a commit the client cannot resume from.
+      expect(api.client.ingestHistoricalImportBatch).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("splits records that fit one by one but not together into item batches", async () => {
+    const records = Array.from({ length: 1_500 }, (_, index) =>
+      assistantRecord(`Short answer ${index}`)
+    );
+    const api = journalApi({ records });
+
+    const result = await importClaudeHistoricalSource({
+      client: api.client,
+      source: api.source()
+    });
+
+    expect(result).toMatchObject({ itemCount: 1_500, exhausted: true });
+    expect(api.batches.length).toBeGreaterThan(1);
+    expect(api.batches.every((batch) => batch.kind === undefined)).toBe(true);
+    expect(api.batches.every((batch) => itemsOf(batch).length <= 1_000)).toBe(
+      true
+    );
+    expect(
+      api.batches.flatMap((batch) =>
+        itemsOf(batch).map((item) => item.sourceLineNumber)
+      )
+    ).toEqual(records.map((_, index) => index));
   });
 });

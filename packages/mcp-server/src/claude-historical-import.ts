@@ -1,4 +1,3 @@
-import type { RawConversationItemRequest } from "./conversation-source-types.js";
 import {
   discoverAllClaudeHistoricalTranscriptSignals,
   discoverClaudeHistoricalTranscriptSignals,
@@ -15,7 +14,7 @@ import {
   type ClaudeHistoricalComponentFrontier
 } from "./claude-transcript-source.js";
 import {
-  parseClaudeTranscriptJournalBytes,
+  parseClaudeHistoricalImportBytes,
   type ClaudeTranscriptParserState
 } from "./claude-transcript-parser.js";
 import { MemoryApiClient, MemoryApiError } from "./index.js";
@@ -78,45 +77,21 @@ const objectValue = <T>(
   return value as T;
 };
 
-const historicalItem = (item: RawConversationItemRequest) => ({
-  observationOnly: item.observationOnly,
-  sessionId: item.sessionId,
-  turnId: item.turnId,
-  externalThreadId: item.externalThreadId,
-  externalTurnId: item.externalTurnId,
-  externalItemId: item.externalItemId,
-  parentExternalItemId: item.parentExternalItemId,
-  sourceRecordType: item.sourceRecordType,
-  sourceEventType: item.sourceEventType,
-  sourceLineNumber: item.sourceLineNumber,
-  sourceSequence: item.sourceSequence,
-  eventTime: item.eventTime,
-  rawJson: item.rawJson,
-  rawText: item.rawText,
-  logicalSourceId: item.logicalSourceId,
-  transportChunkIndex: item.transportChunkIndex,
-  transportChunkCount: item.transportChunkCount,
-  transportChunkText: item.transportChunkText,
-  transportChunkEncoding: item.transportChunkEncoding,
-  sourceHash: item.sourceHash,
-  idempotencyKey: item.idempotencyKey,
-  canonicalItemKey: item.canonicalItemKey,
-  canonicalStableItemId: item.canonicalStableItemId,
-  canonicalSourcePriority: item.canonicalSourcePriority,
-  observationKind: item.observationKind,
-  observationComponent: item.observationComponent,
-  projectionStatus: item.projectionStatus,
-  projectionVersion: "claude-code-transcript-v1" as const,
-  metadata: item.metadata ?? {}
-});
+// What one item batch may carry. The API refuses a larger one.
+const ITEM_BATCH_MAXIMUM_BYTES = 3_800_000;
+const ITEM_BATCH_MAXIMUM_ITEMS = 1_000;
+// A longer line is not parsed here at all; the API reads it from the journal.
+const UPLOADABLE_RECORD_MAXIMUM_BYTES = 3_500_000;
+
+type JournalChunk = { bytes: Buffer; start: number; end: number };
 
 const completeChunks = (input: {
   bytes: Buffer;
   absoluteStart: number;
   absoluteEnd: number;
   maximumBytes?: number;
-}): Array<{ bytes: Buffer; start: number; end: number }> => {
-  const chunks: Array<{ bytes: Buffer; start: number; end: number }> = [];
+}): JournalChunk[] => {
+  const chunks: JournalChunk[] = [];
   const maximumBytes = input.maximumBytes ?? 512 * 1024;
   let localStart = 0;
   while (input.absoluteStart + localStart < input.absoluteEnd) {
@@ -127,9 +102,11 @@ const completeChunks = (input: {
       if (newline >= localStart) {
         localEnd = newline + 1;
       } else {
+        // One record longer than the window becomes a chunk of its own,
+        // whatever its size.
         const next = input.bytes.indexOf(0x0a, localEnd);
-        if (next < 0 || next + 1 - localStart > 3_500_000) {
-          throw new Error("claude_historical_record_exceeds_batch_limit");
+        if (next < 0) {
+          throw new Error("claude_historical_segment_record_incomplete");
         }
         localEnd = next + 1;
       }
@@ -142,6 +119,30 @@ const completeChunks = (input: {
     localStart = localEnd;
   }
   return chunks;
+};
+
+const isSingleRecord = (chunk: JournalChunk): boolean =>
+  chunk.bytes.indexOf(0x0a) === chunk.bytes.length - 1;
+
+// Halves a chunk of several records at the line end nearest its middle.
+const splitAtLineEnd = (chunk: JournalChunk): [JournalChunk, JournalChunk] => {
+  const before = chunk.bytes.lastIndexOf(
+    0x0a,
+    Math.floor(chunk.bytes.length / 2)
+  );
+  const cut = (before >= 0 ? before : chunk.bytes.indexOf(0x0a)) + 1;
+  return [
+    {
+      bytes: chunk.bytes.subarray(0, cut),
+      start: chunk.start,
+      end: chunk.start + cut
+    },
+    {
+      bytes: chunk.bytes.subarray(cut),
+      start: chunk.start + cut,
+      end: chunk.end
+    }
+  ];
 };
 
 export const importClaudeHistoricalSource = async (input: {
@@ -203,40 +204,86 @@ export const importClaudeHistoricalSource = async (input: {
         offset - segment.sourceStartOffset,
         absoluteEnd - segment.sourceStartOffset
       );
-      for (const chunk of completeChunks({
+      const pending = completeChunks({
         bytes: usable,
         absoluteStart: offset,
         absoluteEnd
-      })) {
-        const parsed = parseClaudeTranscriptJournalBytes({
-          bytes: chunk.bytes,
-          absoluteStartOffset: chunk.start,
-          lineIndexOffset: line,
-          sessionId: input.source.sessionId,
-          externalSessionId: input.source.sourceSessionId,
-          sourceFingerprint: input.source.sourceFingerprint,
-          sourceComponentId: input.sourceComponentId,
-          prior: parserState,
-          sourceTransport: "historical_import"
-        });
-        const items = parsed.items.map(historicalItem);
-        if (Buffer.byteLength(JSON.stringify(items), "utf8") > 3_800_000) {
-          throw new Error("claude_historical_batch_payload_too_large");
-        }
-        await input.client.ingestHistoricalImportBatch(input.source.id, {
+      });
+      for (let chunk = pending.shift(); chunk; chunk = pending.shift()) {
+        const range = {
           expectedSourceOffset: chunk.start,
           sourceOffset: chunk.end,
-          sourceLine: parsed.checkpoint.lineCount,
           segmentIndex: segment.segmentIndex,
-          lastVerifiedDigest: segment.plaintextDigest,
-          parserState: parsed.parserState,
-          items
-        });
+          lastVerifiedDigest: segment.plaintextDigest
+        };
+        const singleRecord = isSingleRecord(chunk);
+        const parsed =
+          singleRecord && chunk.bytes.length > UPLOADABLE_RECORD_MAXIMUM_BYTES
+            ? null
+            : parseClaudeHistoricalImportBytes({
+                bytes: chunk.bytes,
+                absoluteStartOffset: chunk.start,
+                lineIndexOffset: line,
+                sessionId: input.source.sessionId,
+                externalSessionId: input.source.sourceSessionId,
+                sourceFingerprint: input.source.sourceFingerprint,
+                sourceComponentId: input.sourceComponentId,
+                prior: parserState
+              });
+        const uploadable =
+          parsed !== null &&
+          parsed.items.length <= ITEM_BATCH_MAXIMUM_ITEMS &&
+          Buffer.byteLength(JSON.stringify(parsed.items), "utf8") <=
+            ITEM_BATCH_MAXIMUM_BYTES;
+        if (parsed && uploadable) {
+          await input.client.ingestHistoricalImportBatch(input.source.id, {
+            ...range,
+            sourceLine: parsed.checkpoint.lineCount,
+            parserState: parsed.parserState,
+            items: parsed.items
+          });
+          line = parsed.checkpoint.lineCount;
+          parserState = parsed.parserState;
+          itemCount += parsed.items.length;
+        } else if (!singleRecord) {
+          // Too much for one batch: retry it as two smaller ones.
+          pending.unshift(...splitAtLineEnd(chunk));
+          continue;
+        } else {
+          // A single record no item batch can carry. The API already stores
+          // it in the journal, so it builds the items there and returns the
+          // cursor to continue from.
+          const response = await input.client.ingestHistoricalImportBatch(
+            input.source.id,
+            { kind: "journal_range", ...range }
+          );
+          const committed = objectValue<{
+            historicalCursorOffset?: unknown;
+            historicalCursorLine?: unknown;
+            historicalCursorParserState?: { currentTurnId?: unknown };
+          }>(
+            response,
+            "source",
+            "claude_historical_journal_range_response_missing"
+          );
+          const currentTurnId =
+            committed.historicalCursorParserState?.currentTurnId;
+          // Continue only from the exact end of this one record, with the
+          // turn the next record belongs to.
+          if (
+            committed.historicalCursorOffset !== chunk.end ||
+            committed.historicalCursorLine !== line + 1 ||
+            typeof currentTurnId !== "string"
+          ) {
+            throw new Error("claude_historical_journal_range_cursor_mismatch");
+          }
+          line += 1;
+          parserState = { currentTurnId };
+          itemCount +=
+            typeof response.itemCount === "number" ? response.itemCount : 0;
+        }
         offset = chunk.end;
-        line = parsed.checkpoint.lineCount;
-        parserState = parsed.parserState;
         batchCount += 1;
-        itemCount += items.length;
         if (batchCount >= maxBatches) break segmentLoop;
       }
     }
