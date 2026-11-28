@@ -897,6 +897,68 @@ describe("bounded Codex historical parsing", () => {
     expect(range.resolvedOffset).toBe(500 + bytes.byteLength);
   });
 
+  it("builds a resumed paginated range from the stored state as an item batch does", () => {
+    // What the historical cursor keeps between batches: the API stores only
+    // these parser-state fields. Both paths resume from them alone.
+    const prior = {
+      lastEventTime: "2026-10-07T00:00:00.000Z",
+      assistantMessagePreference: "response_item" as const
+    };
+    const threadId = "00000000-0000-4000-8000-000000000001";
+    const completedMessage = (id: string, ordinal: number) => ({
+      type: "event_msg",
+      timestamp: "2026-10-07T00:00:00.000Z",
+      ordinal,
+      payload: {
+        type: "item_completed",
+        thread_id: threadId,
+        turn_id: "turn-1",
+        item: {
+          type: "AgentMessage",
+          id,
+          content: [{ type: "Text", text: `text of ${id}` }]
+        },
+        completed_at_ms: Date.parse("2026-10-07T00:00:00.000Z")
+      }
+    });
+    const bytes = Buffer.from(
+      [completedMessage("first-agent", 2), completedMessage("second-agent", 4)]
+        .map((record) => `${JSON.stringify(record)}\n`)
+        .join("")
+    );
+    const paginatedSource = { ...source, sourceSessionId: threadId };
+
+    const batch = buildCodexHistoricalBatch({
+      bytes,
+      absoluteStartOffset: 300,
+      lineIndexOffset: 1,
+      prior,
+      source: paginatedSource,
+      selection: { ...selection, adapterState: { threadKind: "subagent" } },
+      config: {
+        maxBatchRows: 100,
+        maxBatchBytes: 100_000,
+        maxBatchRuntimeMs: 15_000,
+        maxJournalBytesPerBatch: 100_000
+      }
+    });
+    const range = buildCodexHistoricalJournalRange({
+      bytes,
+      absoluteStartOffset: 300,
+      lineIndexOffset: 1,
+      prior,
+      sessionId: paginatedSource.sessionId,
+      sourceSessionId: threadId,
+      sourceFingerprint: paginatedSource.sourceFingerprint,
+      threadKind: "subagent"
+    });
+
+    expect(batch.items).toHaveLength(2);
+    expect(range.items).toEqual(batch.items);
+    expect(range.sourceLine).toBe(batch.sourceLine);
+    expect(range.parserState).toEqual(batch.parserState);
+  });
+
   it("yields on the row cap only after a complete record", () => {
     const lines = ["first", "second"].map((message, index) =>
       JSON.stringify({
