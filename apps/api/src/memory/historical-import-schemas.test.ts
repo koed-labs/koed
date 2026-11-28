@@ -95,4 +95,20 @@ describe("historical import AI Client schemas", () => {
       })
     ).toThrow();
   });
+  it("accepts the Codex thread context on a journal range batch", () => {
+    const codexRange = {
+      ...journalRange,
+      threadKind: "subagent",
+      parentThreadId: "parent-thread-1"
+    };
+    expect(historicalImportJournalRangeSchema.parse(codexRange)).toEqual(
+      codexRange
+    );
+    expect(() =>
+      historicalImportJournalRangeSchema.parse({
+        ...journalRange,
+        threadKind: "side-thread"
+      })
+    ).toThrow();
+  });
 });

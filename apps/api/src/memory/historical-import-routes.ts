@@ -5,6 +5,10 @@ import type {
   MemorySourceRepository
 } from "@koed-labs/db";
 import { parseClaudeHistoricalImportBytes } from "@koed-labs/mcp-server/claude-transcript-parser";
+import {
+  buildCodexHistoricalJournalRange,
+  type TranscriptJournalParserState
+} from "@koed-labs/mcp-server/codex-transcript-parser";
 import type { FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
@@ -185,8 +189,8 @@ type HistoricalJournalRangeInput = ReturnType<
   typeof historicalImportJournalRangeSchema.parse
 >;
 
-const CLAUDE_TRANSCRIPT_ADAPTER = "claude-code-transcript-v1";
-// A record index reserves 1000 source sequences, one per content block.
+// A record index reserves 1000 source sequences, one per content block, and
+// an item batch carries at most as many items.
 const JOURNAL_RANGE_MAXIMUM_ITEMS = 1_000;
 
 const journalRangeError = (
@@ -195,9 +199,109 @@ const journalRangeError = (
   message: string
 ): Error => Object.assign(new Error(message), { statusCode, code });
 
+const journalRangeInvalid = (message: string): Error =>
+  journalRangeError(422, "historical_import_journal_range_invalid", message);
+
+type JournalRangeBuildInput = {
+  bytes: Buffer;
+  absoluteStartOffset: number;
+  source: HistoricalImportSourceRecord;
+  sourceComponentId: string;
+  request: HistoricalJournalRangeInput;
+};
+
 /**
- * Builds the item batch for one journal record the client could not upload.
- * The record is read from the stored segment, so nothing here trusts client
+ * How one AI Client's journal range becomes items. `build` runs the parser
+ * and mapping that client's importer uses for an item batch, so both paths
+ * store the same items.
+ */
+type JournalRangeAdapter = {
+  /** Whether a range may hold several complete records. */
+  severalRecords: boolean;
+  /** Request fields this adapter needs or refuses, checked before any read. */
+  checkRequest(request: HistoricalJournalRangeInput): void;
+  build(input: JournalRangeBuildInput): {
+    items: unknown[];
+    sourceLine: number;
+    parserState: Record<string, unknown>;
+  };
+  /** Whether a build error means the stored record cannot be imported. */
+  rejectsRecord(error: Error): boolean;
+};
+
+const refuseThreadContext = (request: HistoricalJournalRangeInput): void => {
+  if (
+    request.threadKind !== undefined ||
+    request.parentThreadId !== undefined
+  ) {
+    throw journalRangeInvalid(
+      "Thread context applies to Codex journal ranges only"
+    );
+  }
+};
+
+const journalRangeAdapters: Record<string, JournalRangeAdapter> = {
+  "claude-code-transcript-v1": {
+    severalRecords: false,
+    checkRequest: refuseThreadContext,
+    build({ bytes, absoluteStartOffset, source, sourceComponentId }) {
+      const currentTurnId = source.historicalCursorParserState.currentTurnId;
+      const parsed = parseClaudeHistoricalImportBytes({
+        bytes,
+        absoluteStartOffset,
+        lineIndexOffset: source.historicalCursorLine,
+        sessionId: source.sessionId,
+        externalSessionId: source.sourceSessionId,
+        sourceFingerprint: source.sourceFingerprint,
+        sourceComponentId,
+        maximumItems: JOURNAL_RANGE_MAXIMUM_ITEMS,
+        ...(typeof currentTurnId === "string"
+          ? { prior: { currentTurnId } }
+          : {})
+      });
+      return {
+        items: parsed.items,
+        sourceLine: parsed.checkpoint.lineCount,
+        parserState: parsed.parserState
+      };
+    },
+    rejectsRecord: (error) => error.message.startsWith("claude_transcript_")
+  },
+  "codex-transcript-v1": {
+    // A deferred assistant event resolves only together with the record
+    // after it, so the unit the importer could not send may be several.
+    severalRecords: true,
+    checkRequest(request) {
+      if (request.threadKind === undefined) {
+        throw journalRangeInvalid(
+          "A Codex journal range needs its thread kind"
+        );
+      }
+    },
+    build({ bytes, absoluteStartOffset, source, request }) {
+      return buildCodexHistoricalJournalRange({
+        bytes,
+        absoluteStartOffset,
+        lineIndexOffset: source.historicalCursorLine,
+        prior:
+          source.historicalCursorParserState as TranscriptJournalParserState,
+        sessionId: source.sessionId,
+        sourceSessionId: source.sourceSessionId,
+        sourceFingerprint: source.sourceFingerprint,
+        threadKind: request.threadKind!,
+        ...(request.parentThreadId
+          ? { parentThreadId: request.parentThreadId }
+          : {})
+      });
+    },
+    rejectsRecord: (error) =>
+      /malformed complete JSONL record/.test(error.message)
+  }
+};
+
+/**
+ * Builds the item batch for a journal range the client could not upload. The
+ * range is read from the stored segment, so nothing here trusts client
  * content; the repository still revalidates the cursor and Capture Policy in
  * the transaction that writes the items.
  */
@@ -209,13 +313,15 @@ const journalRangeBatch = async (
   source: HistoricalImportSourceRecord,
   input: HistoricalJournalRangeInput
 ): Promise<HistoricalBatchInput> => {
-  if (source.sourceAdapterVersion !== CLAUDE_TRANSCRIPT_ADAPTER) {
+  const adapter = journalRangeAdapters[source.sourceAdapterVersion];
+  if (!adapter) {
     throw journalRangeError(
       422,
       "historical_import_journal_range_unsupported",
       "Journal range import is not supported for this AI Client"
     );
   }
+  adapter.checkRequest(input);
   // Refuse before reading stored content. The repository repeats both checks
   // in the transaction that writes the items.
   await requireImportPolicy(context, repo, userId, source);
@@ -249,21 +355,23 @@ const journalRangeBatch = async (
     await readConversationSourceSegmentBytes(context, journalStorage(), segment)
   );
   const start = input.expectedSourceOffset - segment.sourceStartOffset;
-  const record = segmentBytes.subarray(
+  const records = segmentBytes.subarray(
     start,
     input.sourceOffset - segment.sourceStartOffset
   );
-  // Exactly one complete record: it starts after a line end and holds a
-  // single line end, its own.
+  // Complete records only: the range starts after a line end and ends with
+  // one. Unless the adapter resolves records together, it holds exactly one.
   if (
-    record.byteLength !== input.sourceOffset - input.expectedSourceOffset ||
+    records.byteLength !== input.sourceOffset - input.expectedSourceOffset ||
     (start > 0 && segmentBytes[start - 1] !== 0x0a) ||
-    record.indexOf(0x0a) !== record.byteLength - 1
+    records.at(-1) !== 0x0a ||
+    (!adapter.severalRecords &&
+      records.indexOf(0x0a) !== records.byteLength - 1)
   ) {
-    throw journalRangeError(
-      422,
-      "historical_import_journal_range_invalid",
-      "Journal range must cover exactly one complete record"
+    throw journalRangeInvalid(
+      adapter.severalRecords
+        ? "Journal range must cover complete records"
+        : "Journal range must cover exactly one complete record"
     );
   }
   const range = {
@@ -295,22 +403,20 @@ const journalRangeBatch = async (
       "Conversation Source Artifact is unavailable"
     );
   }
-  const currentTurnId = source.historicalCursorParserState.currentTurnId;
-  let parsed: ReturnType<typeof parseClaudeHistoricalImportBytes>;
+  let built: ReturnType<JournalRangeAdapter["build"]>;
   let items: HistoricalBatchInput["items"];
   try {
-    parsed = parseClaudeHistoricalImportBytes({
-      bytes: record,
+    built = adapter.build({
+      bytes: records,
       absoluteStartOffset: input.expectedSourceOffset,
-      lineIndexOffset: source.historicalCursorLine,
-      sessionId: source.sessionId,
-      externalSessionId: source.sourceSessionId,
-      sourceFingerprint: source.sourceFingerprint,
+      source,
       sourceComponentId: artifact.sourceComponentId,
-      maximumItems: JOURNAL_RANGE_MAXIMUM_ITEMS,
-      ...(typeof currentTurnId === "string" ? { prior: { currentTurnId } } : {})
+      request: input
     });
-    items = parsed.items.map((item) =>
+    if (built.items.length > JOURNAL_RANGE_MAXIMUM_ITEMS) {
+      throw new Error("claude_transcript_too_many_items");
+    }
+    items = built.items.map((item) =>
       historicalImportJournalRangeItemSchema.parse(item)
     );
   } catch (error) {
@@ -321,25 +427,20 @@ const journalRangeBatch = async (
       throw journalRangeError(
         422,
         "historical_import_journal_range_too_many_items",
-        "Journal record holds more items than one record may contribute"
+        "Journal range holds more items than one range may contribute"
       );
     }
     // Only a record the parser or the item rules reject is a data error.
     const invalidRecord =
       error instanceof ZodError ||
-      (error instanceof Error &&
-        error.message.startsWith("claude_transcript_"));
+      (error instanceof Error && adapter.rejectsRecord(error));
     if (!invalidRecord) throw error;
-    throw journalRangeError(
-      422,
-      "historical_import_journal_range_invalid",
-      "Journal range does not hold an importable record"
-    );
+    throw journalRangeInvalid("Journal range does not hold importable records");
   }
   return {
     ...range,
-    sourceLine: parsed.checkpoint.lineCount,
-    parserState: parsed.parserState,
+    sourceLine: built.sourceLine,
+    parserState: built.parserState,
     items
   };
 };

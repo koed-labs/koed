@@ -309,7 +309,11 @@ export const historicalImportJournalRangeSchema = z
     expectedSourceOffset: boundedOffset,
     sourceOffset: boundedOffset,
     segmentIndex: z.number().int().nonnegative().max(2_147_483_647),
-    lastVerifiedDigest: digest
+    lastVerifiedDigest: digest,
+    // Codex items depend on the thread they belong to, which only the
+    // importer's selection knows.
+    threadKind: z.enum(["conversation", "subagent"]).optional(),
+    parentThreadId: boundedText.optional()
   })
   .strict()
   .superRefine((value, context) => {

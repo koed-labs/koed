@@ -25,6 +25,7 @@ import type {
 import releaseManifest from "@koed-labs/koed/package.json" with { type: "json" };
 import { ConversationPresentationVersionConflictError } from "@koed-labs/db";
 import { parseClaudeHistoricalImportBytes } from "@koed-labs/mcp-server/claude-transcript-parser";
+import { buildCodexHistoricalJournalRange } from "@koed-labs/mcp-server/codex-transcript-parser";
 import pdsFixture from "../../../packages/shared/test-fixtures/personal-device-sync-v1.json" with { type: "json" };
 import type {
   ActorContext,
@@ -14788,9 +14789,10 @@ describe("account and access flows", () => {
         lastVerifiedDigest: journalDigest
       }
     });
+    // A Codex range cannot be built without the thread kind of its items.
     expect(unsupportedJournalRange.statusCode).toBe(422);
     expect(unsupportedJournalRange.json()).toMatchObject({
-      code: "historical_import_journal_range_unsupported"
+      code: "historical_import_journal_range_invalid"
     });
     const unsafeFailure = await app.inject({
       method: "PATCH",
@@ -15419,6 +15421,260 @@ describe("account and access flows", () => {
     });
     expect(outsiderRange.statusCode).toBe(404);
     await app.close();
+  });
+
+  // A queued historical source over one journal segment, ready for batches.
+  const startJournalRangeImport = async (input: {
+    aiClient: "codex" | "pi";
+    sourceRuntime: string;
+    sourceKind: string;
+    artifactFormat: string;
+    lines: Buffer[];
+  }) => {
+    const repository = createFakeRepository();
+    const sourceSigningKey = generateKeyPairSync("ed25519");
+    const sourcePublicJwk = sourceSigningKey.publicKey.export({
+      format: "jwk"
+    });
+    if (typeof sourcePublicJwk.x !== "string") {
+      throw new Error("Test source signing key is invalid");
+    }
+    const forwardedBatches: Array<{
+      sourceLine: number;
+      parserState?: Record<string, unknown>;
+      items: ConversationItemInput[];
+    }> = [];
+    const originalHistoricalIngest =
+      repository.ingestHistoricalImportBatch.bind(repository);
+    repository.ingestHistoricalImportBatch = async (actor, batch) => {
+      forwardedBatches.push(batch);
+      return originalHistoricalIngest(actor, batch);
+    };
+    const app = await buildServer({
+      repository,
+      runMemoryJobsInlineForTests: true,
+      conversationSourceSignerFactory: (signer) => ({
+        deploymentId: "00000000-0000-4000-8000-000000000001",
+        deviceInstanceId: "00000000-0000-4000-8000-000000000002",
+        keyId: signer.originKeyId,
+        publicKey: sourcePublicJwk.x!,
+        sign: (payload) =>
+          sign(null, payload, sourceSigningKey.privateKey).toString("base64url")
+      })
+    });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: `journal-range-${input.aiClient}@example.com`,
+        password: "password123"
+      }
+    });
+    const ownerToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: browserSessionHeaders(cookieHeader(owner)),
+      payload: { name: "Historical Import" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(ownerToken).token}`
+    };
+    const runId = jsonBody<{ run: { id: string } }>(
+      await app.inject({
+        method: "POST",
+        url: "/v1/historical-imports",
+        headers
+      })
+    ).run.id;
+    const journalBytes = Buffer.concat(input.lines);
+    const journalLength = journalBytes.byteLength;
+    const journalDigest = createHash("sha256")
+      .update(journalBytes)
+      .digest("hex");
+    const externalSessionId = `${input.aiClient}-journal-range`;
+    const sourceFingerprint = "c".repeat(64);
+    const artifactResponse = await app.inject({
+      method: "POST",
+      url: "/v1/conversation-source-artifacts",
+      headers,
+      payload: {
+        sourceSession: {
+          externalSessionId,
+          sourceRuntime: input.sourceRuntime,
+          captureMethod: "api",
+          cwd: "project-journal-range",
+          idempotencyKey: `journal-session:${externalSessionId}`,
+          metadata: { projectId: "project-journal-range" }
+        },
+        sourceKind: input.sourceKind,
+        externalSessionId,
+        sourceFingerprint,
+        artifactFormat: input.artifactFormat,
+        artifactFormatVersion: 1,
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: journalLength,
+        liveStartLine: input.lines.length,
+        currentSourceLength: journalLength,
+        sourceCreatedAt: "2026-08-17T00:00:00.000Z",
+        redactedSourceLabel: "Journal range session"
+      }
+    });
+    expect(artifactResponse.statusCode, artifactResponse.body).toBe(200);
+    const artifactId = jsonBody<{ artifact: { id: string } }>(artifactResponse)
+      .artifact.id;
+    const segmentResponse = await app.inject({
+      method: "POST",
+      url: `/v1/conversation-source-artifacts/${artifactId}/segments`,
+      headers,
+      payload: {
+        expectedProviderOffset: 0,
+        expectedProviderLine: 0,
+        sourceEndOffset: journalLength,
+        sourceEndLine: input.lines.length,
+        plaintextDigest: journalDigest,
+        plaintextSize: journalLength,
+        bytesBase64: journalBytes.toString("base64"),
+        currentSourceLength: journalLength
+      }
+    });
+    expect(segmentResponse.statusCode, segmentResponse.body).toBe(200);
+    const sourceResponse = await app.inject({
+      method: "POST",
+      url: "/v1/historical-import-sources",
+      headers,
+      payload: {
+        runId,
+        artifactId,
+        aiClient: input.aiClient,
+        detectedProject: { projectId: "project-journal-range" }
+      }
+    });
+    expect(sourceResponse.statusCode, sourceResponse.body).toBe(200);
+    const { id: sourceId, sessionId } = jsonBody<{
+      source: { id: string; sessionId: string };
+    }>(sourceResponse).source;
+    for (const [expectedState, state] of [
+      ["discovered", "eligible"],
+      ["eligible", "queued"]
+    ] as const) {
+      for (const url of [
+        `/v1/historical-imports/${runId}`,
+        `/v1/historical-import-sources/${sourceId}`
+      ]) {
+        const transition = await app.inject({
+          method: "PATCH",
+          url,
+          headers,
+          payload: { expectedState, state }
+        });
+        expect(transition.statusCode, transition.body).toBe(200);
+      }
+    }
+    return {
+      app,
+      forwardedBatches,
+      sessionId,
+      externalSessionId,
+      sourceFingerprint,
+      journalDigest,
+      journalLength,
+      postBatch: (payload: Record<string, unknown>) =>
+        app.inject({
+          method: "POST",
+          url: `/v1/historical-import-sources/${sourceId}/batches`,
+          headers,
+          payload
+        })
+    };
+  };
+  const journalJson = <T>(value: T): T =>
+    JSON.parse(JSON.stringify(value)) as T;
+
+  it("imports a Codex journal range of records that resolve together", async () => {
+    const lines = [
+      {
+        timestamp: "2026-08-17T00:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "agent_message", message: "partial answer" }
+      },
+      {
+        timestamp: "2026-08-17T00:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          id: "resp-1",
+          content: [{ type: "output_text", text: "y".repeat(4_100_000) }]
+        }
+      },
+      {
+        timestamp: "2026-08-17T00:00:03.000Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "next question" }
+      }
+    ].map((record) => Buffer.from(`${JSON.stringify(record)}\n`));
+    const fixture = await startJournalRangeImport({
+      aiClient: "codex",
+      sourceRuntime: "codex",
+      sourceKind: "codex",
+      artifactFormat: "codex_rollout_jsonl",
+      lines
+    });
+    const unitEnd = lines[0]!.byteLength + lines[1]!.byteLength;
+    const range = {
+      kind: "journal_range",
+      expectedSourceOffset: 0,
+      sourceOffset: unitEnd,
+      segmentIndex: 0,
+      lastVerifiedDigest: fixture.journalDigest,
+      threadKind: "subagent",
+      parentThreadId: "parent-thread-1"
+    };
+
+    const cutRecord = await fixture.postBatch({
+      ...range,
+      sourceOffset: unitEnd - 1
+    });
+    expect(cutRecord.statusCode).toBe(422);
+    expect(fixture.forwardedBatches).toHaveLength(0);
+
+    const imported = await fixture.postBatch(range);
+    expect(imported.statusCode, imported.body).toBe(200);
+    const expected = buildCodexHistoricalJournalRange({
+      bytes: Buffer.concat(lines.slice(0, 2)),
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0,
+      prior: {},
+      sessionId: fixture.sessionId,
+      sourceSessionId: fixture.externalSessionId,
+      sourceFingerprint: fixture.sourceFingerprint,
+      threadKind: "subagent",
+      parentThreadId: "parent-thread-1"
+    });
+    expect(expected.items.length).toBeGreaterThan(1);
+    // Same items the Codex importer would have built for this unit.
+    expect(journalJson(fixture.forwardedBatches[0]!.items)).toEqual(
+      journalJson(expected.items).map((item) => ({
+        ...item,
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceTransport: "historical_import"
+      }))
+    );
+    expect(fixture.forwardedBatches[0]).toMatchObject({
+      sourceLine: 2,
+      parserState: journalJson(expected.parserState)
+    });
+    expect(
+      jsonBody<{ itemCount: number; source: Record<string, unknown> }>(imported)
+    ).toMatchObject({
+      // The superseded event is kept as an observation, not as an item.
+      itemCount: 1,
+      source: { historicalCursorOffset: unitEnd, historicalCursorLine: 2 }
+    });
+    expect(imported.body.length).toBeLessThan(10_000);
+    await fixture.app.close();
   });
 
   it("keeps historical controls and raw source paths off remote profiles", async () => {
