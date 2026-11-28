@@ -196,6 +196,9 @@ type HistoricalJournalRangeInput = ReturnType<
 // A record index reserves 1000 source sequences, one per content block, and
 // an item batch carries at most as many items.
 const JOURNAL_RANGE_MAXIMUM_ITEMS = 1_000;
+// How many consecutive segments one range may read. The importer reads at
+// most this many while it looks for the record that resolves deferred ones.
+const JOURNAL_RANGE_MAXIMUM_SEGMENTS = 4;
 
 const journalRangeError = (
   statusCode: number,
@@ -368,6 +371,12 @@ const journalRangeBatch = async (
     );
   }
   const actor = { userId };
+  const segmentVerificationFailed = (): Error =>
+    journalRangeError(
+      409,
+      "historical_import_segment_verification_failed",
+      "Historical import segment verification failed"
+    );
   const [segment] = await repo.listConversationSourceSegmentsByIndex(actor, {
     artifactId: source.artifactId,
     afterSegmentIndex: input.segmentIndex - 1,
@@ -377,22 +386,56 @@ const journalRangeBatch = async (
   if (
     !segment ||
     segment.plaintextDigest !== input.lastVerifiedDigest ||
-    input.expectedSourceOffset < segment.sourceStartOffset ||
+    input.sourceOffset <= segment.sourceStartOffset ||
     input.sourceOffset > segment.sourceEndOffset
   ) {
-    throw journalRangeError(
-      409,
-      "historical_import_segment_verification_failed",
-      "Historical import segment verification failed"
-    );
+    throw segmentVerificationFailed();
   }
-  const segmentBytes = Buffer.from(
-    await readConversationSourceSegmentBytes(context, journalStorage(), segment)
+  // The named segment holds the end of the range. Records that resolve
+  // together can start in an earlier segment, because the journal cuts
+  // segments at record ends without regard to what a record waits for.
+  let segments = [segment];
+  if (input.expectedSourceOffset < segment.sourceStartOffset) {
+    if (!adapter.severalRecords) throw segmentVerificationFailed();
+    const covering = await repo.listConversationSourceSegments(actor, {
+      artifactId: source.artifactId,
+      afterOffset: input.expectedSourceOffset,
+      limit: JOURNAL_RANGE_MAXIMUM_SEGMENTS
+    });
+    const last = covering.findIndex(({ id }) => id === segment.id);
+    segments = covering.slice(0, last + 1);
+    const contiguous = segments.every(
+      (current, index) =>
+        index === 0 ||
+        (current.segmentIndex === segments[index - 1]!.segmentIndex + 1 &&
+          current.sourceStartOffset === segments[index - 1]!.sourceEndOffset)
+    );
+    if (
+      last < 0 ||
+      !contiguous ||
+      segments[0]!.sourceStartOffset > input.expectedSourceOffset
+    ) {
+      throw segmentVerificationFailed();
+    }
+  }
+  const firstSegment = segments[0]!;
+  const segmentBytes = Buffer.concat(
+    await Promise.all(
+      segments.map(async (current) =>
+        Buffer.from(
+          await readConversationSourceSegmentBytes(
+            context,
+            journalStorage(),
+            current
+          )
+        )
+      )
+    )
   );
-  const start = input.expectedSourceOffset - segment.sourceStartOffset;
+  const start = input.expectedSourceOffset - firstSegment.sourceStartOffset;
   const records = segmentBytes.subarray(
     start,
-    input.sourceOffset - segment.sourceStartOffset
+    input.sourceOffset - firstSegment.sourceStartOffset
   );
   // Complete records only: the range starts after a line end and ends with
   // one. Unless the adapter resolves records together, it holds exactly one.

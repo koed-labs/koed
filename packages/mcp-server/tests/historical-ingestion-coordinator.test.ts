@@ -1087,23 +1087,38 @@ class FakeHistoricalSourceClient {
     source: Record<string, unknown>,
     bytes: Buffer
   ): void {
+    this.seedSegments(artifactId, source, [bytes]);
+  }
+
+  // The journal as the API holds it: consecutive segments of whole records.
+  seedSegments(
+    artifactId: string,
+    source: Record<string, unknown>,
+    segments: Buffer[]
+  ): void {
     this.sourcesByArtifact.set(artifactId, source);
     this.sourcesById.set(source.id as string, source);
-    this.segmentsByArtifact.set(artifactId, [
-      {
-        segment: {
-          id: `${artifactId}-segment-0`,
-          segmentIndex: 0,
-          sourceStartOffset: 0,
-          sourceEndOffset: bytes.byteLength,
-          sourceStartLine: 0,
-          sourceEndLine: 1,
-          plaintextDigest: createHash("sha256").update(bytes).digest("hex"),
-          plaintextSize: bytes.byteLength
-        },
-        bytes
-      }
-    ]);
+    let offset = 0;
+    this.segmentsByArtifact.set(
+      artifactId,
+      segments.map((bytes, segmentIndex) => {
+        const sourceStartOffset = offset;
+        offset += bytes.byteLength;
+        return {
+          segment: {
+            id: `${artifactId}-segment-${segmentIndex}`,
+            segmentIndex,
+            sourceStartOffset,
+            sourceEndOffset: offset,
+            sourceStartLine: 0,
+            sourceEndLine: 1,
+            plaintextDigest: createHash("sha256").update(bytes).digest("hex"),
+            plaintextSize: bytes.byteLength
+          },
+          bytes
+        };
+      })
+    );
   }
 
   async lookupHistoricalImportSource(artifactId: string) {
@@ -1174,8 +1189,12 @@ class FakeHistoricalSourceClient {
     const source = this.sourcesById.get(sourceId)!;
     if (input.kind === "journal_range") {
       // The API reads the range itself; here it only moves the cursor.
-      const [entry] = this.segmentsByArtifact.get(source.artifactId as string)!;
-      const range = entry!.bytes.subarray(
+      const journal = Buffer.concat(
+        this.segmentsByArtifact
+          .get(source.artifactId as string)!
+          .map((entry) => entry.bytes)
+      );
+      const range = journal.subarray(
         input.expectedSourceOffset as number,
         input.sourceOffset as number
       );
@@ -1204,24 +1223,22 @@ const oversizedUserMessageRecord = (timestamp: string): Buffer =>
 describe("Codex records that cannot fit an item batch", () => {
   const seed = (bytes: Buffer) => {
     const client = new FakeHistoricalSourceClient();
-    client.seedSource(
-      "artifact-huge",
-      {
-        id: "source-huge",
-        runId: "run-huge",
-        artifactId: "artifact-huge",
-        sessionId: "11111111-1111-4111-8111-111111111111",
-        sourceSessionId: "session-huge",
-        sourceFingerprint: "a".repeat(64),
-        historicalCursorOffset: 0,
-        historicalCursorLine: 0,
-        registrationFrontierOffset: bytes.byteLength,
-        state: "importing"
-      },
-      bytes
-    );
+    const source: Record<string, unknown> = {
+      id: "source-huge",
+      runId: "run-huge",
+      artifactId: "artifact-huge",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      sourceSessionId: "session-huge",
+      sourceFingerprint: "a".repeat(64),
+      historicalCursorOffset: 0,
+      historicalCursorLine: 0,
+      registrationFrontierOffset: bytes.byteLength,
+      state: "importing"
+    };
+    client.seedSource("artifact-huge", source, bytes);
     return {
       client,
+      source,
       adapter: createCodexHistoricalProviderAdapter({
         client: client as unknown as MemoryApiClient
       }),
@@ -1299,6 +1316,87 @@ describe("Codex records that cannot fit an item batch", () => {
       kind: "journal_range",
       expectedSourceOffset: 0,
       sourceOffset: bytes.byteLength
+    });
+  });
+
+  describe("when the journal splits a pending event from the record that resolves it", () => {
+    const eventMessage = Buffer.from(
+      `${JSON.stringify({
+        timestamp: "2026-08-17T00:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "agent_message", message: "partial answer" }
+      })}\n`
+    );
+    const responseItem = (text: string) =>
+      Buffer.from(
+        `${JSON.stringify({
+          timestamp: "2026-08-17T00:00:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            id: "resp-1",
+            content: [{ type: "output_text", text }]
+          }
+        })}\n`
+      );
+    // The event ends one segment; the record that resolves it starts the
+    // next, as happens when that record is larger than a segment target.
+    const seedSplit = (resolving: Buffer) => {
+      const fixture = seed(Buffer.concat([eventMessage, resolving]));
+      fixture.client.seedSegments("artifact-huge", fixture.source, [
+        eventMessage,
+        resolving
+      ]);
+      return fixture;
+    };
+
+    it("imports both as items when they fit a batch", async () => {
+      const resolving = responseItem("final answer");
+      const { client, adapter, selection } = seedSplit(resolving);
+
+      const first = await adapter.processNextBatch({
+        selection,
+        runId: "run-huge"
+      });
+
+      expect(first.state).toBe("progress");
+      expect(client.ingestCalls).toHaveLength(1);
+      const input = client.ingestCalls[0]!.input;
+      expect(input.kind).toBeUndefined();
+      // The batch ends in the second segment and names it.
+      expect(input).toMatchObject({
+        expectedSourceOffset: 0,
+        sourceOffset: eventMessage.byteLength + resolving.byteLength,
+        sourceLine: 2,
+        segmentIndex: 1,
+        lastVerifiedDigest: createHash("sha256").update(resolving).digest("hex")
+      });
+      expect(
+        (input.items as Array<Record<string, unknown>>).map(
+          (item) => item.rawText
+        )
+      ).toContain("final answer");
+    });
+
+    it("commits both by one journal range when they do not fit a batch", async () => {
+      const resolving = responseItem("y".repeat(1_100_000));
+      const { client, adapter, selection } = seedSplit(resolving);
+
+      const first = await adapter.processNextBatch({
+        selection,
+        runId: "run-huge"
+      });
+
+      expect(first.state).toBe("progress");
+      expect(client.ingestCalls).toHaveLength(1);
+      expect(client.ingestCalls[0]!.input).toMatchObject({
+        kind: "journal_range",
+        expectedSourceOffset: 0,
+        sourceOffset: eventMessage.byteLength + resolving.byteLength,
+        segmentIndex: 1,
+        lastVerifiedDigest: createHash("sha256").update(resolving).digest("hex")
+      });
     });
   });
 

@@ -436,6 +436,10 @@ export const buildCodexHistoricalBatch = (input: {
   };
 };
 
+// How many segments past the cursor's own one batch may read while it looks
+// for the record that resolves deferred ones.
+const MAXIMUM_FOLLOWING_SEGMENTS = 3;
+
 const importNextBatch = async (input: {
   client: MemoryApiClient;
   source: HistoricalSource;
@@ -463,18 +467,23 @@ const importNextBatch = async (input: {
     input.source.artifactId,
     segment
   );
-  const start = input.source.historicalCursorOffset - segment.sourceStartOffset;
+  const cursor = input.source.historicalCursorOffset;
+  const start = cursor - segment.sourceStartOffset;
   const end = Math.min(
     segmentBytes.byteLength,
     frontier - segment.sourceStartOffset
   );
-  const available = segmentBytes.subarray(start, end);
+  // The bytes read so far, from the cursor on. They span more than one
+  // segment only when the records in a segment wait for one in the next.
+  let available = segmentBytes.subarray(start, end);
+  let availableEnd = segment.sourceStartOffset + end;
+  const readSegments = [segment];
   let boundedEnd = nextLineBoundary(available, input.config.maxBatchBytes);
   let batch: ReturnType<typeof buildCodexHistoricalBatch>;
   for (;;) {
     batch = buildCodexHistoricalBatch({
       bytes: available.subarray(0, boundedEnd),
-      absoluteStartOffset: input.source.historicalCursorOffset,
+      absoluteStartOffset: cursor,
       lineIndexOffset: input.source.historicalCursorLine,
       prior: (input.source.historicalCursorParserState ??
         {}) as TranscriptJournalParserState,
@@ -484,15 +493,55 @@ const importNextBatch = async (input: {
     });
     if (batch.bytesConsumed > 0 || batch.journalRangeBytes > 0) break;
     // Nothing in the window resolved: its records are deferred until the one
-    // after them is read, and that record lies past the window.
-    const next = available.indexOf(0x0a, boundedEnd);
-    if (next < 0) break;
+    // after them is read. Take one more record, from the next segment when
+    // this one is used up.
+    let next = available.indexOf(0x0a, boundedEnd);
+    if (next < 0) {
+      if (
+        availableEnd >= frontier ||
+        readSegments.length > MAXIMUM_FOLLOWING_SEGMENTS
+      ) {
+        break;
+      }
+      const following = await input.client.listConversationSourceSegments(
+        input.source.artifactId,
+        { afterOffset: availableEnd, limit: 1 }
+      );
+      const nextSegment = Array.isArray(following.segments)
+        ? (following.segments as SourceSegment[])[0]
+        : undefined;
+      if (!nextSegment || nextSegment.sourceStartOffset !== availableEnd) {
+        throw new Error("historical_journal_segment_missing");
+      }
+      const nextBytes = await verifiedSegmentBytes(
+        input.client,
+        input.source.artifactId,
+        nextSegment
+      );
+      const usable = nextBytes.subarray(
+        0,
+        Math.min(nextBytes.byteLength, frontier - nextSegment.sourceStartOffset)
+      );
+      available = Buffer.concat([available, usable]);
+      availableEnd = nextSegment.sourceStartOffset + usable.byteLength;
+      readSegments.push(nextSegment);
+      next = available.indexOf(0x0a, boundedEnd);
+      if (next < 0) break;
+    }
     boundedEnd = next + 1;
   }
+  // A batch names the segment its end lies in.
+  const endOffset = cursor + (batch.journalRangeBytes || batch.bytesConsumed);
+  const endSegment =
+    readSegments.find(
+      (candidate) =>
+        candidate.sourceStartOffset < endOffset &&
+        endOffset <= candidate.sourceEndOffset
+    ) ?? segment;
   const range = {
-    expectedSourceOffset: input.source.historicalCursorOffset,
-    segmentIndex: segment.segmentIndex,
-    lastVerifiedDigest: segment.plaintextDigest
+    expectedSourceOffset: cursor,
+    segmentIndex: endSegment.segmentIndex,
+    lastVerifiedDigest: endSegment.plaintextDigest
   };
   if (batch.journalRangeBytes > 0) {
     const parentThreadId = input.selection.adapterState?.parentThreadId;

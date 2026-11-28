@@ -2,4 +2,4 @@
 "@koed-labs/koed": patch
 ---
 
-Import large Codex and Pi transcript records from the verified Conversation Source Journal. Codex no longer skips the rest of a Conversation at such a record, or stalls when a pending assistant event precedes it, and Pi no longer replaces it with a gap unless the record cannot be imported at all.
+Import large Codex and Pi transcript records from the verified Conversation Source Journal during automatic history import. Codex imports such a record instead of skipping the rest of the Conversation, and no longer stalls when a pending assistant event and the record that resolves it fall into different journal segments. Pi imports the record instead of leaving a gap, unless the API cannot import it.

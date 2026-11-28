@@ -15435,6 +15435,8 @@ describe("account and access flows", () => {
     artifactFormat: string;
     sessionMetadata?: Record<string, unknown>;
     lines: Buffer[];
+    /** Lines per journal segment; one segment for all lines by default. */
+    segmentLineCounts?: number[];
   }) => {
     const repository = createFakeRepository();
     const sourceSigningKey = generateKeyPairSync("ed25519");
@@ -15531,22 +15533,34 @@ describe("account and access flows", () => {
     expect(artifactResponse.statusCode, artifactResponse.body).toBe(200);
     const artifactId = jsonBody<{ artifact: { id: string } }>(artifactResponse)
       .artifact.id;
-    const segmentResponse = await app.inject({
-      method: "POST",
-      url: `/v1/conversation-source-artifacts/${artifactId}/segments`,
-      headers,
-      payload: {
-        expectedProviderOffset: 0,
-        expectedProviderLine: 0,
-        sourceEndOffset: journalLength,
-        sourceEndLine: input.lines.length,
-        plaintextDigest: journalDigest,
-        plaintextSize: journalLength,
-        bytesBase64: journalBytes.toString("base64"),
-        currentSourceLength: journalLength
-      }
-    });
-    expect(segmentResponse.statusCode, segmentResponse.body).toBe(200);
+    const segmentDigests: string[] = [];
+    let segmentOffset = 0;
+    let segmentLine = 0;
+    for (const lineCount of input.segmentLineCounts ?? [input.lines.length]) {
+      const bytes = Buffer.concat(
+        input.lines.slice(segmentLine, segmentLine + lineCount)
+      );
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const segmentResponse = await app.inject({
+        method: "POST",
+        url: `/v1/conversation-source-artifacts/${artifactId}/segments`,
+        headers,
+        payload: {
+          expectedProviderOffset: segmentOffset,
+          expectedProviderLine: segmentLine,
+          sourceEndOffset: segmentOffset + bytes.byteLength,
+          sourceEndLine: segmentLine + lineCount,
+          plaintextDigest: digest,
+          plaintextSize: bytes.byteLength,
+          bytesBase64: bytes.toString("base64"),
+          currentSourceLength: journalLength
+        }
+      });
+      expect(segmentResponse.statusCode, segmentResponse.body).toBe(200);
+      segmentDigests.push(digest);
+      segmentOffset += bytes.byteLength;
+      segmentLine += lineCount;
+    }
     const sourceResponse = await app.inject({
       method: "POST",
       url: "/v1/historical-import-sources",
@@ -15586,6 +15600,7 @@ describe("account and access flows", () => {
       externalSessionId,
       sourceFingerprint,
       journalDigest,
+      segmentDigests,
       journalLength,
       postBatch: (payload: Record<string, unknown>) =>
         app.inject({
@@ -15693,6 +15708,101 @@ describe("account and access flows", () => {
       await fixture.app.close();
     }
   );
+
+  it("imports a Codex journal range that starts in the segment before the named one", async () => {
+    // The journal cuts segments at record ends, so a pending event can end
+    // one segment while the record that resolves it fills the next.
+    const lines = [
+      {
+        timestamp: "2026-08-17T00:00:00.000Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "question" }
+      },
+      {
+        timestamp: "2026-08-17T00:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "agent_message", message: "partial answer" }
+      },
+      {
+        timestamp: "2026-08-17T00:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          id: "resp-1",
+          content: [{ type: "output_text", text: "y".repeat(4_100_000) }]
+        }
+      }
+    ].map((record) => Buffer.from(`${JSON.stringify(record)}\n`));
+    const fixture = await startJournalRangeImport({
+      aiClient: "codex",
+      sourceRuntime: "codex",
+      sourceKind: "codex",
+      artifactFormat: "codex_rollout_jsonl",
+      lines,
+      segmentLineCounts: [2, 1]
+    });
+    const unitStart = lines[0]!.byteLength;
+    const range = {
+      kind: "journal_range",
+      expectedSourceOffset: unitStart,
+      sourceOffset: fixture.journalLength,
+      segmentIndex: 1,
+      lastVerifiedDigest: fixture.segmentDigests[1],
+      threadKind: "conversation"
+    };
+    const question = buildCodexHistoricalJournalRange({
+      bytes: lines[0]!,
+      absoluteStartOffset: 0,
+      lineIndexOffset: 0,
+      prior: {},
+      sessionId: fixture.sessionId,
+      sourceSessionId: fixture.externalSessionId,
+      sourceFingerprint: fixture.sourceFingerprint,
+      threadKind: "conversation"
+    });
+    const firstBatch = await fixture.postBatch({
+      expectedSourceOffset: 0,
+      sourceOffset: unitStart,
+      sourceLine: question.sourceLine,
+      segmentIndex: 0,
+      lastVerifiedDigest: fixture.segmentDigests[0],
+      parserState: question.parserState,
+      items: journalJson(question.items)
+    });
+    expect(firstBatch.statusCode, firstBatch.body).toBe(200);
+
+    // The digest must be the named segment's own.
+    const wrongDigest = await fixture.postBatch({
+      ...range,
+      lastVerifiedDigest: fixture.segmentDigests[0]
+    });
+    expect(wrongDigest.statusCode).toBe(409);
+    expect(fixture.forwardedBatches).toHaveLength(1);
+
+    const imported = await fixture.postBatch(range);
+    expect(imported.statusCode, imported.body).toBe(200);
+    const expected = buildCodexHistoricalJournalRange({
+      bytes: Buffer.concat(lines.slice(1)),
+      absoluteStartOffset: unitStart,
+      lineIndexOffset: 1,
+      prior: question.parserState,
+      sessionId: fixture.sessionId,
+      sourceSessionId: fixture.externalSessionId,
+      sourceFingerprint: fixture.sourceFingerprint,
+      threadKind: "conversation"
+    });
+    expect(journalJson(fixture.forwardedBatches[1]!.items)).toEqual(
+      journalJson(expected.items).map((item) => ({
+        ...item,
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceTransport: "historical_import"
+      }))
+    );
+    expect(fixture.forwardedBatches[1]).toMatchObject({ sourceLine: 3 });
+    await fixture.app.close();
+  });
 
   it("refuses a Codex journal range that ends in records the parser still holds", async () => {
     // An undated record waits for the next dated one. A range that ends in
