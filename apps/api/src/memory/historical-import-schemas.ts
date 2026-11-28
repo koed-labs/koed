@@ -321,8 +321,3 @@ export const historicalImportJournalRangeSchema = z
       });
     }
   });
-
-export const historicalImportBatchRequestSchema = z.union([
-  historicalImportBatchSchema,
-  historicalImportJournalRangeSchema
-]);

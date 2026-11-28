@@ -258,4 +258,37 @@ describe("Claude transcript parser", () => {
     expect(historical.items[0]?.externalTurnId).toBe("turn-before-this-range");
     expect(historical.items[2]?.sourceSequence).toBe(8_000);
   });
+  it("stops before building a record that holds more items than allowed", () => {
+    const record = (blocks: number) =>
+      Buffer.from(
+        `${JSON.stringify({
+          type: "assistant",
+          uuid: randomUUID(),
+          message: {
+            role: "assistant",
+            content: Array.from({ length: blocks }, () => ({
+              type: "text",
+              text: "b"
+            }))
+          }
+        })}\n`
+      );
+    const parse = (bytes: Buffer) =>
+      parseClaudeHistoricalImportBytes({
+        bytes,
+        absoluteStartOffset: 0,
+        lineIndexOffset: 0,
+        sessionId: randomUUID(),
+        externalSessionId: randomUUID(),
+        sourceFingerprint: "a".repeat(64),
+        maximumItems: 3
+      });
+
+    expect(parse(record(3)).items).toHaveLength(3);
+    expect(() => parse(record(4))).toThrow("claude_transcript_too_many_items");
+    // The limit counts the whole range, not each record.
+    expect(() => parse(Buffer.concat([record(2), record(2)]))).toThrow(
+      "claude_transcript_too_many_items"
+    );
+  });
 });

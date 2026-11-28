@@ -15014,9 +15014,9 @@ describe("account and access flows", () => {
     });
     const runId = jsonBody<{ run: { id: string } }>(runResponse).run.id;
 
-    // The second record is larger than an item batch may carry, the fourth
-    // has more content blocks than one record may contribute, and the fifth
-    // lies past the historical frontier.
+    // The second record is larger than an item batch may carry, the next to
+    // last has more content blocks than one record may contribute, and the
+    // last lies past the historical frontier.
     const turnId = randomUUID();
     const oversizedText = "x".repeat(4_100_000);
     const lines = [
@@ -15060,6 +15060,21 @@ describe("account and access flows", () => {
         message: { role: "assistant", content: "Captured live, not imported" }
       }
     ].map((record) => Buffer.from(`${JSON.stringify(record)}\n`));
+    // A record whose identifiers break the item rules sits between the third
+    // and the many-block record. The journal only stores well-formed JSONL,
+    // so this is the kind of record a range can hold and not import.
+    lines.splice(
+      3,
+      0,
+      Buffer.from(
+        `${JSON.stringify({
+          type: "assistant",
+          uuid: "u".repeat(600),
+          timestamp: "2026-08-11T12:00:02.500Z",
+          message: { role: "assistant", content: "Unimportable identity" }
+        })}\n`
+      )
+    );
     const journalBytes = Buffer.concat(lines);
     const journalLength = journalBytes.byteLength;
     const journalDigest = createHash("sha256")
@@ -15068,7 +15083,8 @@ describe("account and access flows", () => {
     const firstEnd = lines[0]!.byteLength;
     const secondEnd = firstEnd + lines[1]!.byteLength;
     const thirdEnd = secondEnd + lines[2]!.byteLength;
-    const frontier = thirdEnd + lines[3]!.byteLength;
+    const fourthEnd = thirdEnd + lines[3]!.byteLength;
+    const frontier = fourthEnd + lines[4]!.byteLength;
     const externalSessionId = "claude-journal-range";
     const sourceFingerprint = "b".repeat(64);
 
@@ -15095,7 +15111,7 @@ describe("account and access flows", () => {
         journalStartOffset: 0,
         journalStartLine: 0,
         liveStartOffset: frontier,
-        liveStartLine: 4,
+        liveStartLine: 5,
         currentSourceLength: journalLength,
         sourceCreatedAt: "2026-08-11T11:59:59.000Z",
         redactedSourceLabel: "Claude session journal range"
@@ -15349,16 +15365,39 @@ describe("account and access flows", () => {
     expect(jsonBody<{ code?: string }>(stale).code).toBe(
       "historical_import_cursor_conflict"
     );
-    const tooManyItems = await postBatch({
+    const unreadable = await postBatch({
       ...range,
       expectedSourceOffset: thirdEnd,
+      sourceOffset: fourthEnd
+    });
+    expect(unreadable.statusCode).toBe(422);
+    expect(jsonBody<{ code?: string }>(unreadable).code).toBe(
+      "historical_import_journal_range_invalid"
+    );
+    const unknownKind = await postBatch({ ...range, kind: "journal_ranges" });
+    expect(unknownKind.statusCode).toBe(400);
+    expect(forwardedBatches).toHaveLength(4);
+    // The client steps over the unimportable record with an empty item batch.
+    const stepOver = await postBatch({
+      expectedSourceOffset: thirdEnd,
+      sourceOffset: fourthEnd,
+      sourceLine: 4,
+      segmentIndex: 0,
+      lastVerifiedDigest: journalDigest,
+      parserState: { currentTurnId: turnId },
+      items: []
+    });
+    expect(stepOver.statusCode, stepOver.body).toBe(200);
+    const tooManyItems = await postBatch({
+      ...range,
+      expectedSourceOffset: fourthEnd,
       sourceOffset: frontier
     });
     expect(tooManyItems.statusCode).toBe(422);
     expect(jsonBody<{ code?: string }>(tooManyItems).code).toBe(
       "historical_import_journal_range_too_many_items"
     );
-    expect(forwardedBatches).toHaveLength(4);
+    expect(forwardedBatches).toHaveLength(5);
 
     const outsider = await app.inject({
       method: "POST",

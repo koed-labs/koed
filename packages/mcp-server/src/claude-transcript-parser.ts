@@ -52,6 +52,8 @@ export const parseClaudeTranscriptJournalBytes = (input: {
   sourceComponentId?: string;
   prior?: ClaudeTranscriptParserState;
   sourceTransport?: "transcript" | "historical_import";
+  /** Refuse the range before building more items than this. */
+  maximumItems?: number;
 }): ClaudeTranscriptParseResult => {
   const bytes = Buffer.from(input.bytes);
   if (bytes.length > 0 && bytes.at(-1) !== 0x0a) {
@@ -97,6 +99,12 @@ export const parseClaudeTranscriptJournalBytes = (input: {
       typeof entry.agentId === "string" ||
       typeof entry.parentAgentId === "string";
     const blocks = content.length > 0 ? content : [entry];
+    if (
+      input.maximumItems !== undefined &&
+      items.length + blocks.length > input.maximumItems
+    ) {
+      throw new Error("claude_transcript_too_many_items");
+    }
     blocks.forEach((rawBlock, blockIndex) => {
       const block = record(rawBlock);
       const blockType =

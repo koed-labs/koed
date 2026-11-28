@@ -1495,7 +1495,15 @@ describeDb("journal-backed historical import repository", () => {
         state
       });
     }
-    const largeText = "x".repeat(4_100_000);
+    // Ordinary words: the tokenizer is quadratic on one repeated character,
+    // which would test the tokenizer and not the import.
+    const largeText = Array.from(
+      { length: 600_000 },
+      (_, index) => `word${index % 977}`
+    )
+      .join(" ")
+      .slice(0, 4_100_000);
+    expect(largeText).toHaveLength(4_100_000);
 
     const result = await repo.ingestHistoricalImportBatch(actor, {
       sourceId: source!.id,
@@ -1530,6 +1538,14 @@ describeDb("journal-backed historical import repository", () => {
       text_length: 4_100_000,
       json_length: 4_100_000
     });
+
+    // Projection takes the item as it takes any other.
+    await repo.projectPendingConversationItems(actor, { limit: 10 });
+    const projected = await pool.query<{ projection_status: string }>(
+      "select projection_status from conversation_items where id = $1",
+      [result.items[0]!.id]
+    );
+    expect(projected.rows[0]?.projection_status).toBe("projected");
   });
 
   it("reports historical pending cost and a capacity-derived ETA range", async () => {

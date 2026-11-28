@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   createHistoricalImportSourceSchema,
-  historicalImportBatchRequestSchema,
   historicalImportBatchSchema,
+  historicalImportJournalRangeSchema,
   historicalImportSourceLookupSchema
 } from "./historical-import-schemas.js";
 
@@ -64,7 +64,7 @@ describe("historical import AI Client schemas", () => {
   };
 
   it("accepts a journal range batch that names only the range", () => {
-    expect(historicalImportBatchRequestSchema.parse(journalRange)).toEqual(
+    expect(historicalImportJournalRangeSchema.parse(journalRange)).toEqual(
       journalRange
     );
   });
@@ -77,24 +77,15 @@ describe("historical import AI Client schemas", () => {
       { sourceOffset: journalRange.expectedSourceOffset }
     ]) {
       expect(() =>
-        historicalImportBatchRequestSchema.parse({ ...journalRange, ...extra })
+        historicalImportJournalRangeSchema.parse({ ...journalRange, ...extra })
       ).toThrow();
     }
   });
 
-  it("keeps accepting item batches through the request union", () => {
-    const parsed = historicalImportBatchRequestSchema.parse({
-      expectedSourceOffset: 0,
-      sourceOffset: 10,
-      sourceLine: 1,
-      segmentIndex: 0,
-      lastVerifiedDigest: "a".repeat(64),
-      items: []
-    });
-    expect("items" in parsed && parsed.items).toEqual([]);
+  it("keeps an item batch free of a batch kind", () => {
     expect(() =>
-      historicalImportBatchRequestSchema.parse({
-        kind: "unknown_kind",
+      historicalImportBatchSchema.parse({
+        kind: "journal_range",
         expectedSourceOffset: 0,
         sourceOffset: 10,
         sourceLine: 1,

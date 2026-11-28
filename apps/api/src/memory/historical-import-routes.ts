@@ -9,10 +9,12 @@ import type { FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
 import { readConversationSourceSegmentBytes } from "./conversation-source-journal-routes.js";
-import { createFilesystemConversationSourceStorage } from "./conversation-source-storage.js";
+import {
+  createFilesystemConversationSourceStorage,
+  type ConversationSourceStorage
+} from "./conversation-source-storage.js";
 import {
   createHistoricalImportSourceSchema,
-  historicalImportBatchRequestSchema,
   historicalImportBatchSchema,
   historicalImportJournalRangeItemSchema,
   historicalImportJournalRangeSchema,
@@ -201,6 +203,7 @@ const journalRangeError = (
  */
 const journalRangeBatch = async (
   context: ApiRouteContext,
+  journalStorage: () => ConversationSourceStorage,
   repo: MemorySourceRepository,
   userId: string,
   source: HistoricalImportSourceRecord,
@@ -243,11 +246,7 @@ const journalRangeBatch = async (
     );
   }
   const segmentBytes = Buffer.from(
-    await readConversationSourceSegmentBytes(
-      context,
-      createFilesystemConversationSourceStorage(context.config.koedHome),
-      segment
-    )
+    await readConversationSourceSegmentBytes(context, journalStorage(), segment)
   );
   const start = input.expectedSourceOffset - segment.sourceStartOffset;
   const record = segmentBytes.subarray(
@@ -257,6 +256,7 @@ const journalRangeBatch = async (
   // Exactly one complete record: it starts after a line end and holds a
   // single line end, its own.
   if (
+    record.byteLength !== input.sourceOffset - input.expectedSourceOffset ||
     (start > 0 && segmentBytes[start - 1] !== 0x0a) ||
     record.indexOf(0x0a) !== record.byteLength - 1
   ) {
@@ -307,12 +307,23 @@ const journalRangeBatch = async (
       externalSessionId: source.sourceSessionId,
       sourceFingerprint: source.sourceFingerprint,
       sourceComponentId: artifact.sourceComponentId,
+      maximumItems: JOURNAL_RANGE_MAXIMUM_ITEMS,
       ...(typeof currentTurnId === "string" ? { prior: { currentTurnId } } : {})
     });
     items = parsed.items.map((item) =>
       historicalImportJournalRangeItemSchema.parse(item)
     );
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "claude_transcript_too_many_items"
+    ) {
+      throw journalRangeError(
+        422,
+        "historical_import_journal_range_too_many_items",
+        "Journal record holds more items than one record may contribute"
+      );
+    }
     // Only a record the parser or the item rules reject is a data error.
     const invalidRecord =
       error instanceof ZodError ||
@@ -323,13 +334,6 @@ const journalRangeBatch = async (
       422,
       "historical_import_journal_range_invalid",
       "Journal range does not hold an importable record"
-    );
-  }
-  if (items.length > JOURNAL_RANGE_MAXIMUM_ITEMS) {
-    throw journalRangeError(
-      422,
-      "historical_import_journal_range_too_many_items",
-      "Journal record holds more items than one record may contribute"
     );
   }
   return {
@@ -564,6 +568,7 @@ const registerSourceTransitionRoute = (
 
 const ingestHistoricalBatch = async (
   context: ApiRouteContext,
+  journalStorage: () => ConversationSourceStorage,
   userId: string,
   sourceId: string,
   request: HistoricalBatchInput | HistoricalJournalRangeInput
@@ -572,7 +577,14 @@ const ingestHistoricalBatch = async (
   const source = await requireSource(repo, userId, sourceId);
   const input =
     "kind" in request
-      ? await journalRangeBatch(context, repo, userId, source, request)
+      ? await journalRangeBatch(
+          context,
+          journalStorage,
+          repo,
+          userId,
+          source,
+          request
+        )
       : request;
   return repo.ingestHistoricalImportBatch(
     { userId },
@@ -593,6 +605,13 @@ const registerBatchRoute = (
   app: FastifyInstance,
   context: ApiRouteContext
 ): void => {
+  // Local profiles keep the journal on disk. The storage is opened once, on
+  // the first journal range, and never for an item batch.
+  let openedStorage: ConversationSourceStorage | undefined;
+  const storageForJournalRange = (): ConversationSourceStorage =>
+    (openedStorage ??= createFilesystemConversationSourceStorage(
+      context.config.koedHome
+    ));
   app.post(
     "/v1/historical-import-sources/:sourceId/batches",
     { preHandler: context.rateLimit.memoryWrite },
@@ -602,9 +621,16 @@ const registerBatchRoute = (
       const { sourceId } = historicalImportSourceParamsSchema.parse(
         request.params
       );
-      const input = historicalImportBatchRequestSchema.parse(request.body);
+      // The batch kind picks the schema, so an item batch keeps reporting
+      // the path of the field that is wrong.
+      const body = request.body;
+      const input =
+        typeof body === "object" && body !== null && "kind" in body
+          ? historicalImportJournalRangeSchema.parse(body)
+          : historicalImportBatchSchema.parse(body);
       const { items, source, policy, replayed } = await ingestHistoricalBatch(
         context,
+        storageForJournalRange,
         user.id,
         sourceId,
         input
